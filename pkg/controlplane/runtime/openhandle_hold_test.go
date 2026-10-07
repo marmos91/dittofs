@@ -12,7 +12,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // fakeOpenFileSource is a test OpenFileEnumerator registered through the
@@ -42,7 +43,7 @@ func newOpenHoldRuntime(t *testing.T, shareName string) (*Runtime, metadata.Stor
 	t.Helper()
 	rt := New(nil)
 	setJournalRoot(t, rt)
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	rt.sharesSvc.InjectShareForTesting(&shares.Share{
 		Name:          shareName,
 		MetadataStore: "memory",

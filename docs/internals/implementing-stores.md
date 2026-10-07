@@ -47,12 +47,11 @@ This separation enables:
 
 Implement a custom metadata store when you need:
 
-- **Database-backed storage**: PostgreSQL, MySQL, MongoDB, Cassandra
-- **Distributed metadata**: Multi-node coordination, consensus protocols
+- **Distributed metadata**: multi-node deployments over a distributed
+  transactional key-value store (TiKV is the preferred one; planned, not
+  implemented yet)
 - **Advanced features**: Full-text search, custom indexing, complex queries
 - **Compliance**: Audit logs, versioning, immutability guarantees
-
-**Example**: A PostgreSQL-backed metadata store for enterprise environments requiring audit trails and high availability.
 
 ### Block Store Use Cases
 
@@ -112,42 +111,8 @@ Protocol handlers resolve the per-share block store via `GetBlockStoreForHandle(
 
 The metadata store interface and implementation guide remains the same as before. See the `pkg/metadata/Store` interface and reference implementations:
 
-- `pkg/metadata/store/memory/`: In-memory (fast, ephemeral)
-- `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded)
-- `pkg/metadata/store/sqlite/`: SQLite (persistent, embedded)
-- `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed)
-
-The two SQL backends are one implementation over two dialects. Most
-operation bodies live once in `pkg/metadata/store/sql/`, embedded by both the
-store and its transaction so a method written there is reachable from either.
-The `sqlite/` and `postgres/` packages carry what genuinely differs —
-connection setup, driver error mapping, statement text (via the
-`sql.Dialect` interface), snapshot export, and the handful of bodies whose
-mechanism diverges, such as `ApplyDataWrite` (sqlite selects then updates
-under the single-writer lock; postgres folds both into one statement) —
-along with the store-level wrappers described next. Read
-`pkg/metadata/store/sql/` first when tracing a SQL backend; most of what a
-caller reaches is there, not in the dialect package.
-
-**Multi-statement work needs a transaction, and `Core` cannot supply one.**
-`Core` is embedded by the pool-backed store as well as by the transaction, so
-a `Core` method also runs on the pool, where each statement autocommits
-independently and a crash between two of them leaves torn state. There are
-two ways to keep that from happening, and both are in the tree:
-
-- Make it a package-level function taking `(ctx, x Executor, d Dialect, ...)`,
-  so it can only be called with an executor the caller has already chosen —
-  `PutFileChunkRefs`, `DecrementAndReapMany`, `PutSyncedLocators`.
-- Or write it as a `Core` method and **shadow it** in each dialect package with
-  a store-level wrapper that runs it inside `WithTransaction` —
-  `DeleteShare`, `CreateRootDirectory`, `DecrementRefCountAndReap`.
-
-The shadows are load-bearing and easy to delete by accident: removing one does
-not break the build, because the promoted `Core` method still satisfies the
-interface. The write simply starts going straight to the pool. If you add a
-multi-statement `Core` method, add its shadow to **both** dialect packages in
-the same change, or use the package-level form instead. Single-statement work
-is safe as a plain `Core` method.
+- `pkg/metadata/store/badger/`: BadgerDB (embedded; on disk, or fully in
+  memory via `in_memory: true`) — the only built-in backend
 
 Conformance tests: `pkg/metadata/storetest/`
 
@@ -166,9 +131,8 @@ the full file/block set into application memory.
 ```go
 // EnumerateFileChunks streams every FileChunk's ContentHash to fn.
 // Implementations MUST:
-//   - Iterate using a backend-native cursor (Badger prefix iterator,
-//     Postgres server-side cursor with batched fetch, in-memory map
-//     iteration) -- no full-set load.
+//   - Iterate using a backend-native cursor (e.g. a Badger prefix
+//     iterator) -- no full-set load.
 //   - Honor ctx.Done(): return ctx.Err() promptly when the context is
 //     cancelled.
 //   - Emit zero-hash FileChunks the same way as non-zero-hash blocks;
@@ -193,10 +157,7 @@ backend MUST pass them:
 5. **Context cancellation**: cancelling `ctx` mid-iteration causes
    the call to return `ctx.Err()` within the polling interval.
 
-Memory-store reference: direct `range` over the in-memory map.
 Badger-store reference: `txn.NewIterator` over the FileChunk prefix.
-Postgres-store reference: server-side cursor (`DECLARE` + `FETCH`)
-with batches of 1000 rows.
 
 ### FileChunkStore narrowing
 
@@ -235,8 +196,8 @@ type FileChunkStore interface {
 
 **Engine-internal companion interface:** `pkg/block.EngineFileChunkStore`
 extends `FileChunkStore` with `GetFileChunk(ctx, id)` and
-`ListFileChunks(ctx, payloadID)` for the engine's hot paths. All four built-in
-backends (memory, badger, sqlite, postgres) satisfy it without changes — the
+`ListFileChunks(ctx, payloadID)` for the engine's hot paths. The built-in
+badger backend satisfies it without changes — the
 narrow public surface is a documentation concern, not a runtime
 restriction. Custom backends implementing `FileChunkStore` SHOULD also
 implement the engine-internal helpers if they intend to slot into the
@@ -253,20 +214,10 @@ for every file. `BlockRef` is the 3-tuple `(Hash, Offset, Size)` — see
 `pkg/block/types.go`. The list MUST be sorted by `Offset` and is
 populated on every sync finalization.
 
-Encoding requirements per backend:
-
-- **Postgres**: a separate `file_block_refs` join table keyed by
-  `(file_id, offset)`, with `INCLUDE (size, hash)` for index-only scans
-  on the read hot path. Foreign key `file_id REFERENCES files(id) ON
-  DELETE CASCADE` provides a safety net — the engine still decrements
-  `file_blocks.RefCount` for every BlockRef BEFORE deleting the file;
-  cascade catches engine-bug paths that miss the explicit decrement.
-  Hash column is `BYTEA` (32 bytes), not hex `TEXT`.
-- **Badger** and **Memory**: inline-encode `Blocks []BlockRef` inside
-  the existing `FileAttr` blob. Badger goes through
-  `pkg/metadata/store/badger/encoding.go` (gob); Memory holds typed
-  structs directly. Use `omitempty` so older blobs decode cleanly with an
-  empty `Blocks` slice.
+Badger inline-encodes `Blocks []BlockRef` inside the existing `FileAttr`
+blob via `pkg/metadata/store/badger/encoding.go` (gob). A custom backend
+may store the list however it likes; older records must decode cleanly
+with an empty `Blocks` slice.
 
 A new metadata-store method persists the list; in the built-in
 backends this is `MetadataStore.SetFileChunks(ctx, handle, []BlockRef,
@@ -283,15 +234,13 @@ The `pkg/metadata/storetest/` suite includes:
    returns the same offset-sorted slice, byte-for-byte.
 2. **Empty / legacy compat**: `FileAttr` blobs without a `Blocks`
    field decode to an empty slice without errors.
-3. **FK cascade (Postgres-only)**: deleting a file removes all
-   matching `file_block_refs` rows.
-4. **Refcount reconcile**: `∑ FileChunk.RefCount` over the FileChunkStore
+3. **Refcount reconcile**: `∑ FileChunk.RefCount` over the FileChunkStore
    equals `∑ len(FileAttr.Blocks)` over the MetadataStore at every
    quiescent point.
-5. **Refcount concurrent fuzz** (`pkg/metadata/storetest/inv02_fuzz_test.go`):
+4. **Refcount concurrent fuzz** (`pkg/metadata/storetest/inv02_fuzz_test.go`):
    100-iteration property-based fuzzer creating, deleting, and copying
    files concurrently; asserts the invariant after each operation
-   batch. Runs against all four built-in backends and any custom backend
+   batch. Runs against the built-in backend and any custom backend
    wired into the conformance harness.
 
 ### FileAttr.ObjectID + FindByObjectID
@@ -316,11 +265,8 @@ store scope, NOT per-share).
 
 Backends MUST maintain a secondary index from ObjectID to file row:
 
-| Backend  | Index                                                                       |
-|----------|-----------------------------------------------------------------------------|
-| Postgres | Partial unique: `files_object_id_idx ON files(object_id) WHERE object_id IS NOT NULL` |
-| Badger   | Secondary key `obj:{hex} -> file_id`, maintained inside each `Put`/`Delete` write batch |
-| Memory   | `map[ContentHash]uuid`, guarded by the existing store mutex                 |
+Badger keeps a secondary key `obj:{hex} -> file_id`, maintained inside
+each `Put`/`Delete` write batch.
 
 Zero-valued ObjectID (legacy / pre-quiesce) MUST NOT match any row —
 implementations short-circuit and return `(nil, nil)` on zero input.
@@ -332,9 +278,8 @@ shared `metadata.ErrConflict` sentinel.
 
 A test-only optional capability `ObjectIDIndexAccessor.CountObjectIDIndexRows`
 is exercised by the storetest `ConcurrentQuiesceRace` scenario;
-backends implement it inline (e.g., `SELECT count(*)` for Postgres,
-`txn.Get(keyObjectID(oid))`-shape for Badger, direct map probe for
-Memory). Production code MUST NOT call it.
+backends implement it inline (Badger uses a `txn.Get(keyObjectID(oid))`
+probe). Production code MUST NOT call it.
 
 Conformance scenarios live in
 `pkg/metadata/storetest/objectid_roundtrip.go` and
@@ -346,7 +291,7 @@ are still required to pass the functional scenarios).
 ### Block Record Store
 
 `BlockRecordStore` persists the bookkeeping needed by the blocks-only storage
-path. All four backends (memory, badger, sqlite, postgres) implement it and pass
+path. The badger backend implements it and passes
 the corresponding conformance group. (There is no separate local-chunk-index
 metadata contract: the local journal owns its own `(payloadID, offset)`-keyed
 byte cache internally, and the per-file **FileChunk manifest** — written by the
@@ -824,7 +769,7 @@ each share's from `blockstore.journal.*` in the server config.
 - **Reference Implementations**:
   - Journal (local tier): `pkg/block/journal/`, `pkg/block/local/memory/`
   - Block stores: `pkg/block/remote/s3/`, `pkg/block/remote/memory/`
-  - Metadata: `pkg/metadata/store/memory/`, `pkg/metadata/store/badger/`, `pkg/metadata/store/sqlite/`, `pkg/metadata/store/postgres/` (the SQL pair share `pkg/metadata/store/sql/`)
+  - Metadata: `pkg/metadata/store/badger/`
 - **Conformance Tests**: `pkg/block/blockstoretest/` (block stores), `pkg/metadata/storetest/` (metadata stores)
 - **Architecture**: `docs/ARCHITECTURE.md`
 - **Configuration**: `docs/CONFIGURATION.md`

@@ -5,7 +5,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +15,7 @@ import (
 // This simulates the exact NFSv4 scenario where the client does NOT send
 // SETATTR before WRITE, and the server must clear SUID/SGID in CommitWrite.
 func TestSUIDClearingOnWrite(t *testing.T) {
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	shareName := "/test"
 

@@ -70,6 +70,10 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "Store type is required")
 		return
 	}
+	if err := runtime.ValidateMetadataStoreType(req.Type); err != nil {
+		BadRequest(w, err.Error())
+		return
+	}
 
 	storeCfg := &models.MetadataStoreConfig{
 		ID:        uuid.New().String(),
@@ -237,6 +241,12 @@ func (h *MetadataStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var req UpdateMetadataStoreRequest
 	if !decodeJSONBody(w, r, &req) {
 		return
+	}
+	if req.Type != nil {
+		if err := runtime.ValidateMetadataStoreType(*req.Type); err != nil {
+			BadRequest(w, err.Error())
+			return
+		}
 	}
 
 	// Fetch existing store

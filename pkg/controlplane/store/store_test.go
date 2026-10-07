@@ -589,7 +589,7 @@ func TestShareOperations(t *testing.T) {
 	ctx := context.Background()
 
 	// Create prerequisite stores
-	metaStore := &models.MetadataStoreConfig{Name: "test-meta", Type: "memory"}
+	metaStore := &models.MetadataStoreConfig{Name: "test-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaStoreID, _ := store.CreateMetadataStore(ctx, metaStore)
 	localBlockStore := &models.BlockStoreConfig{Name: "test-local", Type: "fs"}
 	localBlockStoreID, _ := store.CreateBlockStore(ctx, localBlockStore)
@@ -897,7 +897,7 @@ func TestSharePermissions(t *testing.T) {
 	store.CreateUser(ctx, user)
 	group := &models.Group{Name: "permgroup"}
 	store.CreateGroup(ctx, group)
-	metaStore := &models.MetadataStoreConfig{Name: "perm-meta", Type: "memory"}
+	metaStore := &models.MetadataStoreConfig{Name: "perm-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaStoreID, _ := store.CreateMetadataStore(ctx, metaStore)
 	localBlockStore := &models.BlockStoreConfig{Name: "perm-local", Type: "fs"}
 	localBlockStoreID, _ := store.CreateBlockStore(ctx, localBlockStore)
@@ -930,7 +930,7 @@ func TestSharePermissions(t *testing.T) {
 		// sub-test is independent of execution order.
 		uUser := &models.User{Username: "upsert-user", PasswordHash: "h"}
 		store.CreateUser(ctx, uUser)
-		uMeta := &models.MetadataStoreConfig{Name: "upsert-meta", Type: "memory"}
+		uMeta := &models.MetadataStoreConfig{Name: "upsert-meta", Type: "badger", Config: `{"in_memory":true}`}
 		uMetaID, _ := store.CreateMetadataStore(ctx, uMeta)
 		uLocal := &models.BlockStoreConfig{Name: "upsert-local", Type: "fs"}
 		uLocalID, _ := store.CreateBlockStore(ctx, uLocal)
@@ -1010,7 +1010,7 @@ func TestSharePermissions(t *testing.T) {
 	t.Run("set group share permission is idempotent upsert (first call persists)", func(t *testing.T) {
 		uGroup := &models.Group{Name: "upsert-group"}
 		store.CreateGroup(ctx, uGroup)
-		uMeta2 := &models.MetadataStoreConfig{Name: "upsert-meta2", Type: "memory"}
+		uMeta2 := &models.MetadataStoreConfig{Name: "upsert-meta2", Type: "badger", Config: `{"in_memory":true}`}
 		uMetaID2, _ := store.CreateMetadataStore(ctx, uMeta2)
 		uLocal2 := &models.BlockStoreConfig{Name: "upsert-local2", Type: "fs"}
 		uLocalID2, _ := store.CreateBlockStore(ctx, uLocal2)
@@ -1244,7 +1244,7 @@ func TestMetadataStoreOperations(t *testing.T) {
 	t.Run("create metadata store", func(t *testing.T) {
 		metaStore := &models.MetadataStoreConfig{
 			Name:   "meta-store",
-			Type:   "memory",
+			Type:   "badger",
 			Config: `{}`,
 		}
 
@@ -1258,7 +1258,7 @@ func TestMetadataStoreOperations(t *testing.T) {
 	})
 
 	t.Run("duplicate metadata store fails", func(t *testing.T) {
-		metaStore := &models.MetadataStoreConfig{Name: "meta-store", Type: "memory"}
+		metaStore := &models.MetadataStoreConfig{Name: "meta-store", Type: "badger", Config: `{"in_memory":true}`}
 		_, err := store.CreateMetadataStore(ctx, metaStore)
 		if !errors.Is(err, models.ErrDuplicateStore) {
 			t.Errorf("expected ErrDuplicateStore, got %v", err)

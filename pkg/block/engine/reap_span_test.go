@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // spanningReapSink fails exactly the block that carries chunks from both runs,
@@ -88,7 +89,7 @@ func TestFlushReapSpanStopsAtTheCommittedFrontier(t *testing.T) {
 		run1Recs  = 4
 	)
 
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	j, err := journal.Open(t.TempDir(), journal.Config{CarveBlockSize: blockSize})
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)

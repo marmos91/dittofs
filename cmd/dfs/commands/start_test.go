@@ -451,7 +451,7 @@ func seedRequireKerberosShare(t *testing.T, dbPath string) {
 	// opens this same database.
 	defer func() { _ = s.Close() }()
 
-	metaID, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "memory"})
+	metaID, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "badger", Config: `{"in_memory":true}`})
 	if err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -486,7 +486,7 @@ func persistKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, na
 	t.Helper()
 
 	if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
-		Name: "krb-meta", Type: "memory",
+		Name: "krb-meta", Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}

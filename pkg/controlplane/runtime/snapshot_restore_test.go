@@ -18,7 +18,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRestoreSnapshot_Integration drives the end-to-end restore
@@ -499,7 +501,7 @@ func testRestoreInterruptedReset(t *testing.T) {
 
 	// --- Recovery: RestoreSnapshot(safetyID) ---
 	// failNextReset already cleared (one-shot consumption). Underlying
-	// MemoryMetadataStore.Reset will now run normally.
+	// BadgerMetadataStore.Reset will now run normally.
 	if _, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, safetyID, RestoreSnapshotOpts{}); err != nil {
 		t.Fatalf("RestoreSnapshot(safetyID) recovery: %v", err)
 	}
@@ -524,14 +526,14 @@ func testRestoreInterruptedReset(t *testing.T) {
 
 // restoreFixture composes the moving parts the RestoreSnapshot integration
 // suite needs. It is structurally aligned with the Phase 23 fixture but
-// uses the REAL MemoryMetadataStore (Backup/Restore/Reset all natively
+// uses the REAL BadgerMetadataStore (Backup/Restore/Reset all natively
 // supported) so populate -> snapshot -> mutate -> restore round-trips real
 // data rather than the controlled-payload synthetic envelope.
 type restoreFixture struct {
 	t             *testing.T
 	rt            *Runtime
 	store         cpstore.Store
-	meta          *metadatamemory.MemoryMetadataStore
+	meta          *badger.BadgerMetadataStore
 	failable      *failableResetable // non-nil only when opts.useFailableResetable
 	remote        *restoreRemote
 	bs            *engine.Store
@@ -560,7 +562,7 @@ type restoreFixtureOpts struct {
 	// useFailableResetable wraps the metadata store in failableResetable so
 	// the InterruptedRestore sub-test can flip failNextReset to simulate a
 	// Reset failure mid-orchestration. Other sub-tests use the plain
-	// MemoryMetadataStore directly.
+	// BadgerMetadataStore directly.
 	useFailableResetable bool
 
 	// localOnly builds the share with no remote block store (RemoteStore()
@@ -584,12 +586,12 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	rt := New(cp)
 	setJournalRoot(t, rt)
 
-	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := badgertest.NewInMemory(t)
 	metaStoreName := "memory-restore"
 	var registered metadata.Store = mem
 	var failable *failableResetable
 	if opts.useFailableResetable {
-		failable = &failableResetable{MemoryMetadataStore: mem}
+		failable = &failableResetable{BadgerMetadataStore: mem}
 		registered = failable
 	}
 	if err := rt.RegisterMetadataStore(metaStoreName, registered); err != nil {
@@ -597,7 +599,7 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	}
 	if _, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
 		Name: metaStoreName,
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -874,7 +876,7 @@ var _ remote.RemoteStore = (*restoreRemote)(nil)
 
 // ----- failableResetable: Reset-injection wrapper for InterruptedRestore -----
 
-// failableResetable embeds a MemoryMetadataStore and forwards every
+// failableResetable embeds a BadgerMetadataStore and forwards every
 // MetadataStore + Snapshotable method via method promotion. The Reset method
 // is overridden: when failNextReset is set the call returns a synthetic
 // error and the flag is consumed (one-shot). All other methods delegate
@@ -884,7 +886,7 @@ var _ remote.RemoteStore = (*restoreRemote)(nil)
 // — it is not reachable from production code, which keeps T-24-04-03 in
 // the threat model honest.
 type failableResetable struct {
-	*metadatamemory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 
 	mu             sync.Mutex
 	failNextReset  bool
@@ -902,7 +904,7 @@ func (f *failableResetable) Reset(ctx context.Context) error {
 	if shouldFail {
 		return errors.New("synthetic reset failure injected by test")
 	}
-	return f.MemoryMetadataStore.Reset(ctx)
+	return f.BadgerMetadataStore.Reset(ctx)
 }
 
 func (f *failableResetable) setFailNextReset(v bool) {

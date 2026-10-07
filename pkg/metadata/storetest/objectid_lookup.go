@@ -102,15 +102,13 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 }
 
 // testObjectID_RestartStability asserts that a quiesced ObjectID survives
-// a recompute over the round-tripped Blocks slice. For backends that have
-// no persistence concept (Memory) this is equivalent to the round-trip
-// scenario; for Badger/Postgres it additionally proves the byte-encoding
-// is deterministic and recompute-stable.
+// a recompute over the round-tripped Blocks slice, proving the
+// byte-encoding is deterministic and recompute-stable.
 //
 // The factory contract creates a fresh store per call (suite.go), so we
 // cannot literally close+reopen the same backing path here; the
 // recompute-after-UpdateAttrs-GetFile cycle is the closest equivalent that
-// runs uniformly across all three backends. Conformance harnesses that
+// runs through the factory. Conformance harnesses that
 // specifically exercise close+reopen live in the per-backend integration
 // tests.
 func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
@@ -170,13 +168,11 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 // semantics: two UpdateAttrs calls racing to claim the SAME ObjectID for
 // DIFFERENT files settle so exactly one survives in the secondary index.
 //
-// Detection is per-backend (Memory/Badger surface ErrConflict; Postgres
-// surfaces ErrAlreadyExists from the 23505 unique-violation), and
-// concurrentRaceErrIsConflict accepts both.
+// The loser is detected by concurrentRaceErrIsConflict.
 //
 // Index row count is verified via the optional ObjectIDIndexAccessor
-// capability — required by all three backends in type-assertion
-// failure means the backend forgot to implement it.
+// capability; a type-assertion failure means the backend forgot to
+// implement it.
 func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()

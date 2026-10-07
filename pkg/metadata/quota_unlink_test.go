@@ -7,7 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRemoveFileReleasesShareUsage walks the production unlink path and pins
@@ -19,7 +20,7 @@ import (
 // existence, and a quota'd share whose counter only ever rises fills
 // permanently: a delete frees no space and the next write is refused.
 func TestRemoveFileReleasesShareUsage(t *testing.T) {
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	svc := metadata.New()
 	svc.SetDeferredCommit(false)

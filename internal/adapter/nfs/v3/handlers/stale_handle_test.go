@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -128,7 +129,7 @@ func TestHandleThatDoesNotResolveIsStale(t *testing.T) {
 // reaches the branch of getFileOrError that a pre-call cancellation check
 // cannot: the context going away while the store call is in flight.
 type cancelDuringFetchStore struct {
-	*metadatamemory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 
 	armed  atomic.Bool
 	fired  atomic.Bool
@@ -141,7 +142,7 @@ func (s *cancelDuringFetchStore) GetFile(ctx context.Context, h metadata.FileHan
 		s.cancel()
 		return nil, context.Canceled
 	}
-	return s.MemoryMetadataStore.GetFile(ctx, h)
+	return s.BadgerMetadataStore.GetFile(ctx, h)
 }
 
 // TestCancelledHandleResolutionReportsIO pins that a cancellation that lands
@@ -199,8 +200,8 @@ func TestCancelledHandleResolutionReportsIO(t *testing.T) {
 			reqCtx, cancel := context.WithCancel(context.Background())
 
 			var wrapped *cancelDuringFetchStore
-			fx := handlertesting.NewHandlerFixtureWithStore(t, func(inner *metadatamemory.MemoryMetadataStore) metadata.Store {
-				wrapped = &cancelDuringFetchStore{MemoryMetadataStore: inner, cancel: cancel}
+			fx := handlertesting.NewHandlerFixtureWithStore(t, func(inner *badger.BadgerMetadataStore) metadata.Store {
+				wrapped = &cancelDuringFetchStore{BadgerMetadataStore: inner, cancel: cancel}
 				return wrapped
 			})
 

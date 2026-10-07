@@ -15,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	sqlitemeta "github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // createFileForPayload creates a regular-file inode under the share root in the
@@ -65,44 +65,18 @@ func createFileForPayload(t *testing.T, ctx context.Context, meta metadata.Store
 	return payloadID, handle
 }
 
-// flipTestCapabilities mirrors the sqlite conformance capabilities so a
-// real sqlite metadata backend can be constructed in-process.
-func flipTestCapabilities() metadata.FilesystemCapabilities {
-	return metadata.FilesystemCapabilities{
-		MaxReadSize:         1048576,
-		PreferredReadSize:   1048576,
-		MaxWriteSize:        1048576,
-		PreferredWriteSize:  1048576,
-		MaxFileSize:         9223372036854775807,
-		MaxFilenameLen:      255,
-		MaxPathLen:          4096,
-		MaxHardLinkCount:    32767,
-		SupportsHardLinks:   true,
-		SupportsSymlinks:    true,
-		CaseSensitive:       true,
-		CasePreserving:      true,
-		TimestampResolution: 1,
-	}
-}
-
-// registerSQLiteMeta builds a real (on-disk) sqlite metadata store, registers
-// it in the control-plane DB and the runtime, and returns the store handle so
-// the test can assert LocalChunkIndex state directly. A real sqlite backend
-// (not memory) exercises the T2 carryover: GetLocalLocation ↔ logblob ReadAt
-// must agree on the production index backend once prod is flipped.
-func registerSQLiteMeta(t *testing.T, rt *Runtime, cp cpstore.Store, name string) metadata.Store {
+// registerMeta builds an on-disk Badger metadata store, registers it in the
+// control-plane DB and the runtime, and returns the store handle so the test
+// can assert LocalChunkIndex state directly.
+func registerMeta(t *testing.T, rt *Runtime, cp cpstore.Store, name string) metadata.Store {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: name, Type: "sqlite"}); err != nil {
+	if _, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: name, Type: "badger"}); err != nil {
 		t.Fatalf("CreateMetadataStore(%s): %v", name, err)
 	}
-	dbPath := filepath.Join(t.TempDir(), name+".db")
-	mds, err := sqlitemeta.NewSQLiteMetadataStore(ctx, &sqlitemeta.SQLiteMetadataStoreConfig{
-		Path:        dbPath,
-		AutoMigrate: true,
-	}, flipTestCapabilities())
+	mds, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, filepath.Join(t.TempDir(), name))
 	if err != nil {
-		t.Fatalf("NewSQLiteMetadataStore(%s): %v", name, err)
+		t.Fatalf("NewBadgerMetadataStoreWithDefaults(%s): %v", name, err)
 	}
 	t.Cleanup(func() { _ = mds.Close() })
 	if err := rt.RegisterMetadataStore(name, mds); err != nil {
@@ -180,12 +154,11 @@ func countBlocks(t *testing.T, rbs remote.RemoteBlockStore) int {
 }
 
 // TestBlocksFlip_NewWriteCarvesToBlocks is the T6 activation proof at the
-// runtime/shares level on a real (sqlite) metadata backend. Once the carve
+// runtime/shares level on a real on-disk Badger metadata backend. Once the carve
 // substrate is wired globally in createBlockStoreForShare, a fresh share's new
 // write must produce a blocks/<id> object (carve) and NEVER a cas/<hash> object
 // (legacy mirrorChunk). The read path resolves the block byte-identically, and
-// the sqlite LocalChunkIndex round-trips (the T2 GetLocalLocation↔ReadAt
-// carryover, previously exercised only on the memory index).
+// the LocalChunkIndex round-trips (the T2 GetLocalLocation↔ReadAt carryover).
 func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 	ctx := context.Background()
 
@@ -201,7 +174,7 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 	rt := New(cp)
 	setJournalRoot(t, rt)
 
-	metaStore := registerSQLiteMeta(t, rt, cp, "sqlite-meta")
+	metaStore := registerMeta(t, rt, cp, "disk-meta")
 
 	remoteCfg := &models.BlockStoreConfig{Name: "mem-remote", Type: "memory"}
 	remoteID, err := cp.CreateBlockStore(ctx, remoteCfg)
@@ -212,7 +185,7 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 	shareName := "/blocks-flip"
 	if err := rt.AddShare(ctx, &ShareConfig{
 		Name:          shareName,
-		MetadataStore: "sqlite-meta",
+		MetadataStore: "disk-meta",
 		BlockStoreID:  remoteID,
 		Enabled:       true,
 	}); err != nil {
@@ -343,8 +316,8 @@ func TestBlocksFlip_GCUnionReclaimerFreesOwnerOnly(t *testing.T) {
 	rt := New(cp)
 	setJournalRoot(t, rt)
 
-	metaA := registerSQLiteMeta(t, rt, cp, "meta-a")
-	metaB := registerSQLiteMeta(t, rt, cp, "meta-b")
+	metaA := registerMeta(t, rt, cp, "meta-a")
+	metaB := registerMeta(t, rt, cp, "meta-b")
 
 	// ONE remote config, shared (ref-counted) by both shares.
 	remoteID, err := cp.CreateBlockStore(ctx, &models.BlockStoreConfig{

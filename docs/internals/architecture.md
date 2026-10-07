@@ -18,7 +18,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 - [Service Layer](#service-layer)
 - [Built-In and Custom Backends](#built-in-and-custom-backends)
 - [Directory Structure](#directory-structure)
-- [Horizontal Scaling with PostgreSQL](#horizontal-scaling-with-postgresql)
+- [Multi-Node Metadata](#multi-node-metadata)
 - [Durable Handle State Flow](#durable-handle-state-flow)
 - [Engine API + BlockRef + Cache](#engine-api--blockref--cache)
 - [File-Level Dedup: ObjectID + Merkle Root](#file-level-dedup-objectid--merkle-root)
@@ -63,9 +63,9 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │   Metadata     │  │ Per-Share BlockStore │
 │     Stores     │  │  pkg/block/     │
 │                │  │                      │
-│  - Memory      │  │  ┌──────────────┐    │
-│  - BadgerDB    │  │  │   Journal    │    │
-│  - PostgreSQL  │  │  │  (on disk)   │    │
+│  - BadgerDB    │  │  ┌──────────────┐    │
+│    (on disk or │  │  │   Journal    │    │
+│     in memory) │  │  │  (on disk)   │    │
 │                │  │  └──────┬───────┘    │
 │                │  │         │            │
 │                │  │  ┌──────▼───────┐    │
@@ -149,14 +149,9 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - **Simple CRUD interface** for file/directory metadata
 - Stores file structure, attributes, permissions
 - Implementations:
-  - `pkg/metadata/store/memory/`: In-memory (fast, ephemeral, full hard link support)
-  - `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded, path-based handles)
-  - `pkg/metadata/store/sqlite/`: SQLite (persistent, embedded, UUID-based handles)
-  - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
-- The two SQL backends share one schema and most of their operation bodies,
-  which live in `pkg/metadata/store/sql/`; their own packages carry connection
-  setup, error mapping, statement text, snapshot export, and the few bodies
-  whose mechanism diverges
+  - `pkg/metadata/store/badger/`: BadgerDB (embedded, path-based handles), the
+    only backend — on disk for single-node deployments, or fully in memory
+    (`in_memory: true`) for tests
 - File handles are opaque identifiers (implementation-specific format)
 
 ## Per-Share Block Store Isolation
@@ -423,7 +418,7 @@ The block-store GC is a fail-closed mark-sweep over the union of every live
 
 1. **Mark phase.** Stream every `FileChunk`'s `ContentHash` via the
    `MetadataStore.EnumerateFileChunks(ctx, fn)` cursor. The cursor
-   is implemented natively per backend (memory, Badger, Postgres) and
+   is implemented natively by the Badger store and
    never loads the full set into application memory. Hashes are appended
    to an on-disk live set under `<localStore>/gc-state/<runID>/db/`
    (a Badger temp store). Snapshot time `T` is captured at the start of
@@ -887,7 +882,7 @@ Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in t
 
 ```bash
 # Create named stores (created once, shared across shares)
-./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name fast-meta --in-memory
 ./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data/metadata"}'
 
@@ -974,7 +969,8 @@ No custom code required - configure via CLI:
 
 ```bash
 # Create stores
-./dfsctl store metadata add --name default-meta --type memory  # or badger, sqlite, postgres
+./dfsctl store metadata add --name default-meta --type badger \
+  --db-path /data/metadata   # or --in-memory for tests
 
 # Create share referencing the stores
 ./dfsctl store block add --name default-blocks --type memory
@@ -1035,13 +1031,9 @@ dittofs/
 │   │   ├── lock/                 # Lock manager, break/grace machinery
 │   │   ├── storetest/            # Conformance test suite for store implementations
 │   │   └── store/                # Store implementations
-│   │       ├── memory/           # In-memory (ephemeral)
-│   │       ├── badger/           # BadgerDB (persistent)
-│   │       ├── sql/              # Shared bodies for the two SQL backends
-│   │       ├── sqlite/           # SQLite dialect (persistent, embedded)
-│   │       ├── postgres/         # PostgreSQL dialect (distributed)
-│   │       ├── basestore/        # Helpers shared by every backend
-│   │       └── internal/         # Row codec, caches, retry
+│   │       ├── badger/           # BadgerDB (on disk or in memory)
+│   │       ├── basestore/        # Store-agnostic helpers
+│   │       └── internal/         # Caches, retry
 │   │
 │   ├── block/                    # Per-share block storage
 │   │   ├── blockstore.go         # BlockStore interface
@@ -1156,116 +1148,12 @@ dittofs/
     └── spec-citations/           # Verifies spec-section citations in code
 ```
 
-## Horizontal Scaling with PostgreSQL
+## Multi-Node Metadata
 
-The PostgreSQL metadata store enables horizontal scaling for high-availability and high-throughput deployments:
-
-### Architecture
-
-```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│  DittoFS #1 │  │  DittoFS #2 │  │  DittoFS #3 │
-│  (Pod 1)    │  │  (Pod 2)    │  │  (Pod 3)    │
-└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-       │                │                │
-       └────────────────┼────────────────┘
-                        │
-                   ┌────▼─────┐
-                   │PostgreSQL│
-                   │ Cluster  │
-                   └──────────┘
-```
-
-### Key Features
-
-1. **Multiple DittoFS Instances**: Run multiple instances sharing one PostgreSQL database
-2. **Load Balancing**: Use Kubernetes services or external load balancers to distribute requests
-3. **No Session Affinity Required**: Any instance can serve any request (stateless design)
-4. **Independent Connection Pools**: Each instance maintains its own connection pool (10-15 conns typical)
-5. **Statistics Caching**: 5-second TTL cache reduces database load
-6. **ACID Transactions**: Ensures consistency across concurrent operations
-
-### Deployment Example (Kubernetes)
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: dfs
-spec:
-  replicas: 3  # Multiple instances for HA
-  selector:
-    matchLabels:
-      app: dfs
-  template:
-    metadata:
-      labels:
-        app: dfs
-    spec:
-      containers:
-      - name: dfs
-        image: dfs:latest
-        ports:
-        - containerPort: 12049
-          name: nfs
-        env:
-        - name: DITTOFS_METADATA_POSTGRES_HOST
-          value: postgres-service
-        - name: DITTOFS_METADATA_POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: dfs-nfs
-spec:
-  selector:
-    app: dfs
-  ports:
-  - port: 2049
-    targetPort: 12049
-    protocol: TCP
-  type: LoadBalancer
-```
-
-### Connection Pool Sizing
-
-Connection pool sizing depends on your workload:
-
-- **Light workload** (< 10 concurrent clients): `max_conns: 10`
-- **Medium workload** (10-50 concurrent clients): `max_conns: 15`
-- **Heavy workload** (50+ concurrent clients): `max_conns: 20-25`
-
-**Formula**: `max_conns ~ 2 x expected_concurrent_operations`
-
-**PostgreSQL Limits**: Ensure PostgreSQL `max_connections` > `(DittoFS instances x max_conns)`
-
-Example: 3 DittoFS instances x 15 conns = 45 total connections needed from PostgreSQL
-
-### Performance Considerations
-
-- **Network Latency**: PostgreSQL adds ~1-2ms latency per metadata operation
-- **Statistics Caching**: Reduces expensive queries (disk usage, file counts)
-- **Query Optimization**: All queries use indexed fields for fast lookups
-- **Transaction Overhead**: Short-lived transactions minimize lock contention
-
-### Best Practices
-
-1. **Use Connection Pooling**: Keep `max_conns` reasonable (10-20 per instance)
-2. **Enable TLS**: Use `sslmode: require` or higher in production
-3. **Monitor Connections**: Watch PostgreSQL connection count and utilization
-4. **Scale Horizontally**: Add DittoFS replicas, not connection pool size
-5. **Separate Read Replicas**: For read-heavy workloads, consider PostgreSQL read replicas
+Badger is embedded in one `dfs` process, so a metadata store serves exactly one
+server. A distributed transactional key-value store — TiKV is the preferred
+one — is the planned backend for multi-node deployments; it is not implemented
+yet.
 
 ## Durable Handle State Flow
 
@@ -1307,14 +1195,8 @@ defined in `pkg/block/types.go`. `FileAttr.Blocks []BlockRef` (in
 every chunk that composes a file. It is populated on every sync
 finalization; the engine resolves a read range against it.
 
-Storage encodings differ per backend:
-
-- **Postgres** uses a separate `file_block_refs` table with PK
-  `(file_id, offset) INCLUDE (size, hash)`, FK `ON DELETE CASCADE`, hash
-  column `BYTEA`. Random 4 KiB writes touch 1–2 rows instead of rewriting a
-  ~1.5 MB TOAST blob.
-- **Badger** and **Memory** inline-encode `Blocks []BlockRef` inside the
-  existing `FileAttr` blob (gob for Badger, typed structs for Memory).
+Badger inline-encodes `Blocks []BlockRef` inside the existing `FileAttr`
+blob (gob).
 
 ### Engine API
 
@@ -1511,8 +1393,7 @@ Source-of-truth file:line anchors:
 Two concurrent flushes of byte-identical content race independently
 (no distributed locking). At commit time the partial unique index on
 `object_id` ensures exactly one write succeeds; the loser detects the
-conflict (Postgres SQLSTATE `23505` / `metadata.ErrConflict` on Memory
-and Badger), decrements its just-uploaded refs, swaps to the now-
+conflict (`metadata.ErrConflict`), decrements its just-uploaded refs, swaps to the now-
 existing target's BlockRef list, and re-commits. One wasted upload
 per loser is acceptable; GC reclaims any orphans. See
 `pkg/metadata/storetest/objectid_lookup.go` for the cross-backend
@@ -1523,14 +1404,8 @@ race conformance scenarios.
 `MetadataStore.FindByObjectID(ctx, ObjectID) ([]BlockRef, error)`
 returns `(nil, nil)` on miss; on hit returns the canonical BlockRef
 list of the matching file (per-metadata-store scope, NOT per-share).
-Backends maintain a secondary index:
-
-| Backend  | Index                                                                       |
-|----------|-----------------------------------------------------------------------------|
-| Postgres | Partial unique: `inodes_object_id_idx ON inodes(object_id) WHERE object_id IS NOT NULL` |
-| SQLite   | Partial unique: `inodes_object_id_idx ON inodes(object_id) WHERE object_id IS NOT NULL` (pure-Go `glebarez/go-sqlite`, mirrors the Postgres model) |
-| Badger   | Secondary key `obj:{hex} -> file_id`, maintained inside each `Put`/`Delete` write batch |
-| Memory   | `map[ContentHash]uuid`, guarded by the existing store mutex                 |
+Badger maintains a secondary key `obj:{hex} -> file_id` inside each
+`Put`/`Delete` write batch.
 
 Zero-valued ObjectID (legacy / pre-quiesce) is excluded from the index
 — `FindByObjectID(zero)` short-circuits to `(nil, nil)` at every layer

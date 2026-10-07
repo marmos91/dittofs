@@ -136,9 +136,8 @@ func CompactBlocks(
 	for _, v := range views {
 		// Live bytes per block: sum the WireLength of every live synced locator.
 		// Single scan: EnumerateSynced yields each marker's locator alongside its
-		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
-		// cost on the sqlite MaxOpenConns(1) pool. Folding the locator in also
-		// removes the nested-query deadlock class structurally.
+		// hash (same row), so no GetLocator round trip per hash, and fn never
+		// issues a nested store query while the scan is open.
 		liveBytes := make(map[string]int64)
 		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {
 			if loc.BlockID != "" {
@@ -150,7 +149,7 @@ func CompactBlocks(
 		}
 
 		// Collect candidate block IDs first — never GET/commit/delete while the
-		// WalkBlockRecords cursor is open (sqlite single-connection rule).
+		// WalkBlockRecords cursor is open.
 		var candidates []string
 		if err := v.WalkBlockRecords(ctx, func(rec block.BlockRecord) error {
 			report.BlocksScanned++

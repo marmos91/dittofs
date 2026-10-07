@@ -8,7 +8,8 @@ import (
 	"lukechampine.com/blake3"
 
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestColdReadIntegrity_SubBlockChunks reproduces the blocks-flip SMB cold-read
@@ -25,7 +26,7 @@ import (
 // never drives the server read path, which is why the NFS variant passed.
 func TestColdReadIntegrity_SubBlockChunks(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	bs := newEngineWithRemote(t, ms, mem)
 

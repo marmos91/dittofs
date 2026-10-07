@@ -15,7 +15,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupReparseShare wires a handler + runtime + memory metadata + memory block
@@ -36,10 +37,10 @@ func setupReparseShare(t *testing.T) (*Handler, *SMBHandlerContext, metadata.Fil
 	}
 	rt := newTestRuntime(t, cps)
 
-	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "rpmeta", Type: "memory"}); err != nil {
+	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "rpmeta", Type: "badger", Config: `{"in_memory":true}`}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	metaStore := metamemory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("rpmeta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

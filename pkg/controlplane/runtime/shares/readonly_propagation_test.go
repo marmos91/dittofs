@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestAddShare_ReadOnlyPropagatesToShareOptions asserts that a genuinely
@@ -32,7 +32,7 @@ func TestAddShare_ReadOnlyPropagatesToShareOptions(t *testing.T) {
 		{"read_write_share_stays_false", "/scratch", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mds := metamem.NewMemoryMetadataStoreWithDefaults()
+			mds := badgertest.NewInMemory(t)
 			t.Cleanup(func() { _ = mds.Close() })
 
 			svc := New()

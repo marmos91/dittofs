@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // =============================================================================
@@ -462,7 +463,7 @@ func newTreeConnectABEHandler(t *testing.T, shareName string, abe bool) (*Handle
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -577,7 +578,7 @@ func newTreeConnectCAHandler(t *testing.T, shareName string, ca bool) (*Handler,
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -920,7 +921,7 @@ func newTreeConnectGateHandler(t *testing.T, shareName string, enabled bool) (*H
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

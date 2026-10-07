@@ -41,7 +41,7 @@ const numDedupGuardStripes = 64
 // exceeds dedupAdoptionMaxAge drops out from under its own adoption while its
 // row is still unwritten, which the mark phase would then miss. Both close by
 // recording the adoption on the synced marker itself and deleting that marker
-// conditionally, which is a new store method across all four backends plus its
+// conditionally, which is a new metadata store method plus its
 // storetest conformance; do that when GC runs outside the writing process, or
 // when a carve pass can credibly stall for an hour mid-run.
 type dedupSweepGuard struct {

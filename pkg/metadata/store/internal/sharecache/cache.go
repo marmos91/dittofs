@@ -12,8 +12,7 @@ import (
 // GetShareOptions) skips the backend read and the options decode on every op.
 // Server pprof of a warm random-read run showed Badger's GetShareOptions →
 // decodeShareData at 17.4% of server CPU with its read transaction the top mutex
-// contender at 14.5%; the SQL backends pay a query per op for the same
-// near-static record.
+// contender at 14.5%, all for a near-static record.
 //
 // Shares are FEW and rarely written, so this stays unbounded (Cap 0) — the cap
 // is a deliberate choice here, not an omission. A stale entry is a WRONG

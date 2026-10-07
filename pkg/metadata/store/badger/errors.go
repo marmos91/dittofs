@@ -8,11 +8,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// mapBadgerError maps a BadgerDB error to a metadata.StoreError, giving the
-// badger backend the same single classification point the SQL backends have in
-// mapDBError (SQLite) and mapPgError (Postgres). Routing the badger sentinels
-// through one helper keeps the conformance suite and the runtime backend-
-// agnostic: a missing key, an SSI abort, and any other failure all surface as
+// mapBadgerError maps a BadgerDB error to a metadata.StoreError: the badger
+// backend's single classification point. Routing the badger sentinels through
+// one helper keeps the conformance suite and the runtime backend-agnostic: a missing key, an SSI abort, and any other failure all surface as
 // the shared metadata codes rather than leaking the raw badger sentinel.
 //
 // op names the entity or operation the error concerns and is woven into the

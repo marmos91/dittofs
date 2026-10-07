@@ -8,7 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // seedReconcileFB seeds n file_blocks rows for payloadID with the given
@@ -35,7 +36,7 @@ func seedReconcileFB(t *testing.T, ctx context.Context, store metadata.Store, pa
 // grace window.
 func TestReapStrandedRows(t *testing.T) {
 	ctx := context.Background()
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	old := time.Now().Add(-2 * time.Hour)
 
 	// A live inode referencing payload "live".
@@ -92,7 +93,7 @@ func TestReapStrandedRows(t *testing.T) {
 // TestReapStrandedRows_DryRun verifies dry-run counts but does not reap.
 func TestReapStrandedRows_DryRun(t *testing.T) {
 	ctx := context.Background()
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	old := time.Now().Add(-2 * time.Hour)
 	seedReconcileFB(t, ctx, store, "stranded", 4, old)
 

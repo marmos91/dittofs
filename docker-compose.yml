@@ -2,7 +2,6 @@
 #
 #   docker compose up -d
 #   COMPOSE_PROFILES=s3-backend docker compose up -d
-#   COMPOSE_PROFILES=postgres-backend docker compose up -d
 #
 # The bootstrap service reads COMPOSE_PROFILES to decide which stores to create,
 # so a backend is selected through that variable rather than `--profile`.
@@ -65,9 +64,6 @@ services:
       localstack:
         condition: service_healthy
         required: false
-      postgres:
-        condition: service_healthy
-        required: false
 
   localstack:
     image: localstack/localstack:4.13.1
@@ -82,24 +78,7 @@ services:
     profiles:
       - s3-backend
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: dittofs
-      POSTGRES_PASSWORD: dittofs
-      POSTGRES_DB: dittofs
-    volumes:
-      - dittofs-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dittofs -d dittofs"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    profiles:
-      - postgres-backend
-
 volumes:
   dittofs-state:
   dittofs-metadata:
   dittofs-journal:
-  dittofs-postgres:

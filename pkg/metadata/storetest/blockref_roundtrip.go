@@ -1,40 +1,19 @@
 package storetest
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"testing"
-
-	"github.com/google/uuid"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// FileChunkRefsAccessor is an optional capability backends may implement to
-// expose direct row-count access to the file_block_refs join table. The
-// conformance suite uses it only for the FK-cascade scenario, which is
-// meaningful exclusively on Postgres — Memory and Badger have no schema-level
-// concept of a separate refs table, so they skip the cascade test cleanly via
-// type-assertion failure.
-//
-// Postgres satisfies this via *PostgresMetadataStore.CountFileChunkRefs
-// (defined in pkg/metadata/store/postgres/file_block_refs.go).
-type FileChunkRefsAccessor interface {
-	// CountFileChunkRefs returns the number of file_block_refs rows for the
-	// given fileID. Test-only; never call from production code.
-	CountFileChunkRefs(ctx context.Context, fileID uuid.UUID) (int, error)
-}
-
 // runChunkRefOpsTests dispatches the ChunkRef round-trip conformance
-// scenarios against the provided factory. Each backend wires
-// RunConformanceSuite into its *_conformance_test.go, so adding scenarios here
-// automatically runs them against Memory, Badger, and Postgres.
+// scenarios against the provided factory.
 //
 // Every metadata backend MUST round-trip FileAttr.Blocks across
-// UpdateAttrs/GetFile (including replace and nil semantics). Postgres
-// additionally exercises the FK ON DELETE CASCADE behavior.
+// UpdateAttrs/GetFile (including replace and nil semantics).
 func runChunkRefOpsTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
 
@@ -48,10 +27,6 @@ func runChunkRefOpsTests(t *testing.T, factory StoreFactory) {
 
 	t.Run("ReplaceBlocks", func(t *testing.T) {
 		testChunkRef_ReplaceBlocks(t, factory)
-	})
-
-	t.Run("CascadeDeleteOnFileDelete", func(t *testing.T) {
-		testChunkRef_CascadeDeleteOnFileDelete(t, factory)
 	})
 
 	t.Run("MultiPassMerge", func(t *testing.T) {
@@ -332,8 +307,6 @@ func testChunkRef_NilBlocks(t *testing.T, factory StoreFactory) {
 
 // testChunkRef_ReplaceBlocks asserts that UpdateAttrs fully replaces the
 // previous ChunkRefs list — no leftover rows from prior UpdateAttrs calls.
-// The Postgres backend implements this via DELETE+INSERT in the same tx;
-// Memory and Badger replace the slice trivially (single-blob encoding).
 func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -391,72 +364,5 @@ func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 		if g.Hash != want.Hash || g.Offset != want.Offset || g.Size != want.Size {
 			t.Errorf("Blocks[%d] = %+v, want %+v", i, g, want)
 		}
-	}
-}
-
-// testChunkRef_CascadeDeleteOnFileDelete asserts that deleting a file row
-// cascades to the file_block_refs join table (via FK ON DELETE CASCADE).
-// Postgres-only via the FileChunkRefsAccessor capability hook; Memory
-// and Badger have no separate refs table and skip cleanly.
-func testChunkRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-
-	accessor, ok := store.(FileChunkRefsAccessor)
-	if !ok {
-		t.Skip("backend does not implement FileChunkRefsAccessor — no separate refs table to cascade")
-	}
-
-	ctx := t.Context()
-
-	rootHandle := createTestShare(t, store, "blockref-cascade")
-	fileHandle := createTestFile(t, store, "blockref-cascade", rootHandle, "cascade.bin", 0o644)
-
-	blocks := []block.ChunkRef{
-		{Hash: hashOfSeed("cas-0"), Offset: 0, Size: 4 << 20},
-		{Hash: hashOfSeed("cas-1"), Offset: 4 << 20, Size: 4 << 20},
-		{Hash: hashOfSeed("cas-2"), Offset: 8 << 20, Size: 4 << 20},
-	}
-	file, err := store.GetFile(ctx, fileHandle)
-	if err != nil {
-		t.Fatalf("GetFile: %v", err)
-	}
-	file.Blocks = blocks
-	if err := store.SetManifest(ctx, file); err != nil {
-		t.Fatalf("UpdateAttrs: %v", err)
-	}
-
-	// Capture the underlying file ID from the handle for direct row counting.
-	_, fileID, err := metadata.DecodeFileHandle(fileHandle)
-	if err != nil {
-		t.Fatalf("DecodeFileHandle: %v", err)
-	}
-
-	pre, err := accessor.CountFileChunkRefs(ctx, fileID)
-	if err != nil {
-		t.Fatalf("CountFileChunkRefs (pre-delete): %v", err)
-	}
-	if pre != len(blocks) {
-		t.Fatalf("pre-delete row count: got %d, want %d", pre, len(blocks))
-	}
-
-	// Remove the parent's child mapping first (DeleteFile expects the
-	// file row to be detachable).
-	parent, err := store.GetParent(ctx, fileHandle)
-	if err != nil {
-		t.Fatalf("GetParent: %v", err)
-	}
-	if err := store.DeleteChild(ctx, parent, "cascade.bin"); err != nil {
-		t.Fatalf("DeleteChild: %v", err)
-	}
-	if err := store.DeleteFile(ctx, fileHandle); err != nil {
-		t.Fatalf("DeleteFile: %v", err)
-	}
-
-	post, err := accessor.CountFileChunkRefs(ctx, fileID)
-	if err != nil {
-		t.Fatalf("CountFileChunkRefs (post-delete): %v", err)
-	}
-	if post != 0 {
-		t.Fatalf("post-delete row count: got %d, want 0 (FK ON DELETE CASCADE)", post)
 	}
 }

@@ -21,11 +21,8 @@ import (
 //
 //     ∑ FileChunk.RefCount  ==  ∑ len(FileAttr.Blocks)
 //
-// The property fuzzer (testINV02_PropertyFuzz) runs against all 3 backends
-// via the conformance harness. The leak-injection scenario
-// (testINV02_LeakInjection) uses an optional backend capability —
-// RefCountLeakInjector — to forcibly desynchronize a single FileChunk's
-// RefCount and verify the reconciliation arithmetic detects the drift.
+// The property fuzzer (testINV02_PropertyFuzz) runs via the conformance
+// harness.
 //
 // Bug surface this test covers:
 // style donor-refcount leaks in dedup short-circuits
@@ -44,31 +41,14 @@ const (
 	opMutateObjectID = 3
 )
 
-// RefCountLeakInjector is an optional backend capability used by the
-// leak-injection scenario to artificially desynchronize a
-// single FileChunk's RefCount from the FileAttr.Blocks references that
-// (logically) own it. Backends that cannot represent a desynchronized
-// refcount cleanly skip the scenario via type-assertion failure.
-//
-// Test-only: never call from production code. The hook bypasses the
-// FileChunkStore contract by mutating RefCount independently of any
-// IncrementRefCount / DecrementRefCount call site.
-type RefCountLeakInjector interface {
-	// InjectRefCountLeak adds leakAmount to the named block's RefCount
-	// without touching FileAttr.Blocks anywhere. The post-call invariant
-	// ∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks) is therefore violated
-	// by exactly leakAmount, which is the property the audit must detect.
-	InjectRefCountLeak(ctx context.Context, blockID string, leakAmount uint32) error
-}
-
 // testINV02_PropertyFuzz creates/deletes/copies files concurrently across
 // 10 goroutines, then asserts at the quiescent point that:
 //
 //	∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)
 //
 // Bug surface style donor leaks, missed decrements on file
-// delete, lost-update on concurrent CopyPayload. Runs against all 3
-// backends via the conformance factory.
+// delete, lost-update on concurrent CopyPayload. Runs via the conformance
+// factory.
 //
 // defaults: 100 iterations, 10 concurrent goroutines.
 func testINV02_PropertyFuzz(t *testing.T, factory StoreFactory) {
@@ -166,62 +146,6 @@ func assertObjectIDDrift(ctx context.Context, store metadata.Store, shareName st
 	})
 }
 
-// testINV02_LeakInjection asserts that the storetest reconciliation
-// arithmetic correctly detects a refcount desynchronization injected
-// via the RefCountLeakInjector capability. Backends that don't
-// implement the capability skip cleanly.
-func testINV02_LeakInjection(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-	injector, ok := store.(RefCountLeakInjector)
-	if !ok {
-		t.Skipf("backend %T does not implement RefCountLeakInjector — leak-injection scenario unavailable", store)
-	}
-
-	ctx := t.Context()
-	const shareName = "inv02-leak"
-	rootHandle := createTestShare(t, store, shareName)
-
-	// Seed one well-formed file with three ChunkRefs / three FileChunks
-	// each carrying RefCount=1. Pre-leak invariant: refs=3, refCount=3.
-	rng := rand.New(rand.NewSource(42))
-	ws := &workerState{}
-	if err := fuzzCreateFile(ctx, store, shareName, rootHandle, 0 /*workerID*/, 0 /*opID*/, rng, ws); err != nil {
-		t.Fatalf("seed create: %v", err)
-	}
-	if len(ws.files) != 1 {
-		t.Fatalf("seed create produced %d files, want 1", len(ws.files))
-	}
-	seededHandles := ws.files[0].blockIDs
-
-	totalRefs, totalRefCount, err := reconcileINV02(ctx, store, shareName)
-	if err != nil {
-		t.Fatalf("reconcileINV02 (pre-leak): %v", err)
-	}
-	if totalRefs != totalRefCount {
-		t.Fatalf("pre-leak baseline broken: refs=%d, refCount=%d (delta=%d)",
-			totalRefs, totalRefCount, int64(totalRefs)-int64(totalRefCount))
-	}
-
-	// Inject a known leak of +5 onto one of the seed blocks. After this,
-	// the invariant should report refs unchanged but refCount up by 5,
-	// i.e. delta = -5 (refs - refCount).
-	const leak uint32 = 5
-	targetID := seededHandles[0]
-	if err := injector.InjectRefCountLeak(ctx, targetID, leak); err != nil {
-		t.Fatalf("InjectRefCountLeak: %v", err)
-	}
-
-	postRefs, postRefCount, err := reconcileINV02(ctx, store, shareName)
-	if err != nil {
-		t.Fatalf("reconcileINV02 (post-leak): %v", err)
-	}
-	delta := int64(postRefs) - int64(postRefCount)
-	if delta != -int64(leak) {
-		t.Fatalf("expected delta=%d after leak of %d, got refs=%d, refCount=%d, delta=%d",
-			-int64(leak), leak, postRefs, postRefCount, delta)
-	}
-}
-
 // ============================================================================
 // Worker-state helpers
 // ============================================================================
@@ -236,8 +160,7 @@ type fuzzFileEntry struct {
 	payloadID string
 }
 
-// workerState mirrors the inline anonymous struct in testINV02_PropertyFuzz
-// so the leak-injection test can reuse the create helper.
+// workerState is the per-worker file list the fuzz helpers read and extend.
 type workerState struct {
 	files []fuzzFileEntry
 }
@@ -509,8 +432,7 @@ func isConcurrentQuiesceConflict(err error) bool {
 //	totalRefCount = ∑ FileChunk.RefCount     across all FileChunk rows
 //	                                          (keyed by ID, not hash)
 //
-// Returns both values so callers (the property fuzz + the leak-injection
-// scenario) can distinguish "invariant holds" from "invariant violated"
+// Returns both values so the caller can distinguish "invariant holds" from "invariant violated"
 // without fataling inside the helper.
 //
 // RefCount is summed per-FileChunk-ID rather than per-distinct-hash: a

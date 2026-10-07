@@ -27,7 +27,7 @@ and a **pluggable embedded metadata store**.
 |---|---|---|---|---|---|---|---|
 | **Client** | NFS+SMB server | NFS+9P+NBD server | FUSE (+gateways) | LD_PRELOAD (+FUSE) | FUSE | FUSE | FUSE |
 | **Kernel FUSE?** | **No** | No (FUSE optional) | Yes | Optional | Yes | Yes | Yes |
-| **Metadata** | pluggable embedded (badger/sqlite/pg) | embedded LSM (SlateDB) on S3 | external DB (Redis/TiKV/SQL) | single-object + POSIX metadata (⚠ encoding undocumented) | derived from S3 keys | S3 keys + `x-amz-meta-*` | remote listing + VFS cache |
+| **Metadata** | embedded badger (distributed KV, TiKV preferred, planned) | embedded LSM (SlateDB) on S3 | external DB (Redis/TiKV/SQL) | single-object + POSIX metadata (⚠ encoding undocumented) | derived from S3 keys | S3 keys + `x-amz-meta-*` | remote listing + VFS cache |
 | **Durability on fsync/close** | durable-local-cache + async S3 | NFS: early-ack · 9P/NBD: strong | default: **strong-to-S3** · `--writeback`: local+async | client-side writeback (⚠ trigger undocumented) | fsync **ignored**, flush-on-close | **synchronous** durable-on-close/fsync | async writeback (5s default) |
 | **Random writes** | ✓ | ✓ (RMW extents) | ✓ (slices) | partial/cached (Fusion for heavy) | ✗ sequential only | whole-object rewrite | needs cache-mode writes/full |
 | **Atomic rename** | ✓ | ⚠ unverified | ✓ | ✓ | limited (>1000 children fails) | ✗ copy+delete | backend-dependent |

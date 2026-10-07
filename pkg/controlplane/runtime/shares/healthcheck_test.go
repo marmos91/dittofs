@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/health"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestCombineShareReports_WorstOfDerivation drives the pure function
@@ -142,7 +143,7 @@ func TestCombineShareReports_WorstOfDerivation(t *testing.T) {
 // metadata store implementation to keep the test free of fakes.
 func TestShareHealthcheck_HealthyWithMetaOnly(t *testing.T) {
 	share := &Share{Name: "test", BlockStore: nil}
-	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	meta := badgertest.NewInMemory(t)
 	defer func() { _ = meta.Close() }()
 
 	rep := share.Healthcheck(context.Background(), meta)
@@ -159,7 +160,7 @@ func TestShareHealthcheck_HealthyWithMetaOnly(t *testing.T) {
 // runs.
 func TestShareHealthcheck_RespectsCanceledContext(t *testing.T) {
 	share := &Share{Name: "test"}
-	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	meta := badgertest.NewInMemory(t)
 	defer func() { _ = meta.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -178,7 +179,7 @@ func TestShareHealthcheck_RespectsCanceledContext(t *testing.T) {
 // a 1970 timestamp and zero latency.
 func TestShareHealthcheck_StampsTimestampAndLatency(t *testing.T) {
 	share := &Share{Name: "test"}
-	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	meta := badgertest.NewInMemory(t)
 	defer func() { _ = meta.Close() }()
 
 	rep := share.Healthcheck(context.Background(), meta)

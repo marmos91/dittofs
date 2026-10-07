@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // =============================================================================
@@ -453,7 +454,7 @@ func TestEncodeUTF16LE_DelegatesSurrogateSafe(t *testing.T) {
 // them together), then re-encoded for the directory listing byte-for-byte.
 func TestLoneSurrogateNames_CreateQueryRoundTrip(t *testing.T) {
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

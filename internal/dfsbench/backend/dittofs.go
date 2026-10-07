@@ -105,27 +105,6 @@ var dittofsDataDir = benchPath("/var/lib/bench-dittofs", "dittofs")
 // a barrier failure carries the server's own account of it.
 const dittofsServerLog = "/var/log/bench-dittofs.log"
 
-// dittofsMetaKind selects the metadata-store engine. The block store (fs local
-// cache + S3 remote) is identical across all three, so a badger/sqlite/postgres
-// A/B isolates the metadata engine — the axis that dominates create/rename/
-// dir-heavy workloads and that only badger had ever been measured on.
-type dittofsMetaKind int
-
-const (
-	metaBadger dittofsMetaKind = iota
-	metaSQLite
-	metaPostgres
-)
-
-// Postgres bench DB provisioned on the (Debian) bench VM for the postgres
-// metadata variant. Throwaway single-tenant VM — fixed literals, same
-// convention as dittofsSecret.
-const (
-	dittofsPGDB   = "dittofs_bench"
-	dittofsPGUser = "dittofs"
-	dittofsPGPass = "dittofs"
-)
-
 // dittofsDrainTimeout bounds each `dfsctl system drain-uploads` in the cold-evict
 // loop above the client's 6m default, so a large cold-evict working set drains
 // instead of aborting the cell on a bare deadline (issue #1668).
@@ -150,54 +129,9 @@ const dittofsDrainProgressSampleTimeout = 10 * time.Second
 // cliff (see dittofsSetup). The cache-cap study variants pass a small cap instead.
 const dittofsUnboundedMaxSize = int64(32) * 1024 * 1024 * 1024
 
-// dittofsAddMetadataStore registers the subject's metadata store with the
-// engine selected by kind. badger/sqlite need no server; postgres is
-// provisioned on the (throwaway, single-tenant) bench VM first. All three pair
-// with the same fs-local + S3 block store added by the caller, so a run across
-// the three variants is a clean metadata-engine A/B.
-func dittofsAddMetadataStore(ctx context.Context, kind dittofsMetaKind) error {
-	switch kind {
-	case metaSQLite:
-		return exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
-			"--name", dittofsMeta, "--type", "sqlite",
-			"--config", fmt.Sprintf(`{"path":%q}`, dittofsDataDir+"/meta.db"))
-	case metaPostgres:
-		if err := dittofsProvisionPostgres(ctx); err != nil {
-			return err
-		}
-		return exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
-			"--name", dittofsMeta, "--type", "postgres",
-			"--config", fmt.Sprintf(
-				`{"host":"127.0.0.1","port":5432,"user":%q,"password":%q,"database":%q,"sslmode":"disable"}`,
-				dittofsPGUser, dittofsPGPass, dittofsPGDB))
-	default: // metaBadger
-		return exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
-			"--name", dittofsMeta, "--type", "badger", "--db-path", dittofsDataDir+"/meta")
-	}
-}
-
-// dittofsProvisionPostgres installs, starts PostgreSQL, and (re)creates a clean
-// bench role+database. Idempotent; mirrors the apt install-on-demand idiom the
-// re-export backends use. Debian/Ubuntu bench image assumed.
-//
-// The provisioning SQL runs as the `postgres` OS user over the local socket,
-// which the default pg_hba `local all postgres peer` rule always admits — no
-// pg_hba edit needed. dfsctl then connects over TCP (127.0.0.1) as the freshly
-// created role, which the default `host all all 127.0.0.1/32 scram-sha-256` rule
-// admits with the password set below.
-//
-// Every postgres-user command uses `runuser -u postgres --`, never `su - postgres
-// -c`: the harness launches the whole matrix detached (nohup, no controlling tty
-// / login session), where `su -`'s PAM login shell misbehaves (psql exit 2).
-// runuser sets up no PAM/login/tty session, so it works identically detached or
-// interactive (issue #1671).
-func dittofsProvisionPostgres(ctx context.Context) error {
-	return provisionPostgres(ctx, dittofsPGDB, dittofsPGUser, dittofsPGPass)
-}
-
 // provisionPostgres installs+starts PostgreSQL (if needed) and (re)creates a
-// clean role+database — DROPping any prior db so each run starts empty. Shared
-// by the dittofs-postgres metadata variant and the juicefs-postgres meta store.
+// clean role+database — DROPping any prior db so each run starts empty. Used by
+// the juicefs-postgres meta store.
 func provisionPostgres(ctx context.Context, db, user, pass string) error {
 	script := fmt.Sprintf(`set -eu
 command -v pg_isready >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql; }
@@ -218,28 +152,16 @@ SQL`, db, user, pass)
 }
 
 func init() {
-	// DittoFS is registered as the full cross-product of its two performance axes:
-	// metadata engine {badger, sqlite, postgres} × durability tier {local,
-	// writeback, remote} (#1758). The block store (fs-local cache + S3 remote) is
-	// identical across all nine, so a run across them isolates each axis cleanly —
-	// the metadata-engine axis dominates create/rename, the tier axis governs the
-	// write-ack durability barrier.
+	// DittoFS is registered once per durability tier {local, writeback, remote}
+	// (#1758). The metadata store (badger) and the block store (fs-local cache +
+	// S3 remote) are identical across all three, so a run across them isolates
+	// the tier axis, which governs the write-ack durability barrier.
 	//
-	// Default names are unchanged for result-file/history continuity: the local
-	// tier keeps the bare engine name (dittofs-s3, dittofs-sqlite-s3,
-	// dittofs-postgres-s3); writeback/remote append a tier suffix. Neither suffix
-	// ends in a protocol name, so splitSystemLabel never mis-peels them.
-	engines := []struct {
-		name string // base name = local-tier name
-		kind dittofsMetaKind
-		desc string // metadata-engine phrase for the Tier string
-	}{
-		{"dittofs-s3", metaBadger, "badger"},
-		{"dittofs-sqlite-s3", metaSQLite, "sqlite"},
-		{"dittofs-postgres-s3", metaPostgres, "postgres"},
-	}
+	// The local tier keeps the bare name dittofs-s3 for result-file/history
+	// continuity; writeback/remote append a tier suffix. Neither suffix ends in a
+	// protocol name, so splitSystemLabel never mis-peels them.
 	tiers := []struct {
-		suffix     string // appended to the engine base name ("" for the default local tier)
+		suffix     string // appended to dittofs-s3 ("" for the default local tier)
 		durability string // local block store "durability": local|writeback|remote
 		behavior   string // tier phrase for the Tier string
 	}{
@@ -247,30 +169,28 @@ func init() {
 		{"-writeback", "writeback", "local-ack (%s, metadata flush relaxed) + async S3 writeback"},
 		{"-remote", "remote", "ack-on-S3 (%s, strict CLOSE/COMMIT sync to S3)"},
 	}
-	for _, e := range engines {
-		for _, t := range tiers {
-			kind, durability := e.kind, t.durability
-			register(&Backend{
-				Name:     e.name + t.suffix,
-				S3Backed: true,
-				Tier:     fmt.Sprintf(t.behavior, e.desc),
-				Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
-				Setup: func(ctx context.Context, env BackendEnv) error {
-					return dittofsSetup(ctx, env, kind, durability, dittofsUnboundedMaxSize)
-				},
-				Mount:       dittofsMount,
-				Evict:       dittofsEvict,
-				WaitSettled: dittofsWaitSettled,
-				Unmount:     func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
-				Teardown:    dittofsTeardown,
-			})
-		}
+	for _, t := range tiers {
+		durability := t.durability
+		register(&Backend{
+			Name:     "dittofs-s3" + t.suffix,
+			S3Backed: true,
+			Tier:     fmt.Sprintf(t.behavior, "badger"),
+			Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
+			Setup: func(ctx context.Context, env BackendEnv) error {
+				return dittofsSetup(ctx, env, durability, dittofsUnboundedMaxSize)
+			},
+			Mount:       dittofsMount,
+			Evict:       dittofsEvict,
+			WaitSettled: dittofsWaitSettled,
+			Unmount:     func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+			Teardown:    dittofsTeardown,
+		})
 	}
 
 	// Cache-cap variants for the cache-fill study: on the writeback tier the
 	// local-ack journal is what fills, so hard-cap max_size below the write
 	// working set and observe whether the journal applies backpressure or errors.
-	// badger engine + writeback tier only (the write path under test); the 32 GiB
+	// writeback tier only (the write path under test); the 32 GiB
 	// rows above are the unbounded scenario. Names don't end in a protocol, so
 	// splitSystemLabel won't mis-peel them.
 	for _, c := range []struct {
@@ -288,7 +208,7 @@ func init() {
 			Tier:     "local-ack (badger, metadata flush relaxed) + async S3 writeback; local cache capped at " + c.cap,
 			Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
 			Setup: func(ctx context.Context, env BackendEnv) error {
-				return dittofsSetup(ctx, env, metaBadger, "writeback", maxSize)
+				return dittofsSetup(ctx, env, "writeback", maxSize)
 			},
 			Mount:       dittofsMount,
 			Evict:       dittofsEvict,
@@ -299,7 +219,7 @@ func init() {
 	}
 }
 
-func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, durability string, maxSize int64) error {
+func dittofsSetup(ctx context.Context, env BackendEnv, durability string, maxSize int64) error {
 	id, secret, err := s3Creds()
 	if err != nil {
 		return err
@@ -371,7 +291,8 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, dur
 	if err := waitPort(ctx, dittofsSMBPort); err != nil {
 		return fmt.Errorf("dfs did not open SMB port %s: %w", dittofsSMBPort, err)
 	}
-	if err := dittofsAddMetadataStore(ctx, kind); err != nil {
+	if err := exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
+		"--name", dittofsMeta, "--db-path", dittofsDataDir+"/meta"); err != nil {
 		return err
 	}
 	// The durability tier rides the share's own two axes: what a COMMIT waits

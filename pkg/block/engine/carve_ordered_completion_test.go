@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // gatedSink wraps the production engineBlockSink and holds every CommitBlock at
@@ -100,7 +101,7 @@ func (g *gatedSink) PreserveClobberedRow(ctx context.Context, id journal.FileID,
 // syncer config: the journal's flush seam is content-agnostic.
 func newChunkedCarveFixture(t *testing.T, rbs *remotememory.Store, carveBytes int64, params chunker.Params) *carveFixture {
 	t.Helper()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	local, err := journal.Open(t.TempDir(), journal.Config{
 		CarveBlockSize: carveBytes,
 	})

@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestColdReadAtCarveSeam_PunchedRangeStaysZero drives the overlapping-row
@@ -22,7 +23,7 @@ import (
 // head. The punched range must read as zeros from either tier.
 func TestColdReadAtCarveSeam_PunchedRangeStaysZero(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 	root := createShare(t, ms, "seam")
 	pid, _ := createRealFile(t, ms, "seam", "s.bin", root)
@@ -85,7 +86,7 @@ func TestColdReadAtCarveSeam_PunchedRangeStaysZero(t *testing.T) {
 // a warm interval there, so the run stops exactly at the boundary, mid-row.
 func TestColdReadAtCarveSeam_RunEndInsideRowStaysCovered(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 	root := createShare(t, ms, "runend")
 	pid, _ := createRealFile(t, ms, "runend", "r.bin", root)

@@ -472,7 +472,7 @@ func TestDeleteNetgroup_InUse(t *testing.T) {
 	metaStore := &models.MetadataStoreConfig{
 		ID:   uuid.New().String(),
 		Name: "test-meta",
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}
 	s.CreateMetadataStore(ctx, metaStore)
 

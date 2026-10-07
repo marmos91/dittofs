@@ -20,7 +20,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupDOSAttrModeTest builds a memory-backed runtime holding a single object
@@ -36,7 +37,7 @@ func setupDOSAttrModeTest(t *testing.T, fileType metadata.FileType, mode uint32)
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("dosmode-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

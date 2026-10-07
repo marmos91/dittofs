@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
@@ -55,9 +51,8 @@ func newMetadataCoordinator(metadataStore metadata.Store) engine.MetadataCoordin
 // FileChunkStore, so GetByHash / IncrementRefCount / DecrementRefCount
 // are available on both surfaces with identical signatures.
 //
-// Without this, every coordinator mutation routes through the Postgres
-// connection pool and commits immediately on its own connection —
-// defeating the BLOCKER-2 atomic rollback contract documented in
+// Without this, every coordinator mutation would open and commit its own
+// store transaction — defeating the BLOCKER-2 atomic rollback contract documented in
 // clone.go and engine.go. The returned
 // block.FileChunkStore-shaped surface is the narrow set of methods
 // the coordinator needs.
@@ -180,12 +175,10 @@ func (c *metadataCoordinator) ReprojectBlocks(ctx context.Context, payloadID str
 // the metadata write atomically updates both Blocks AND ObjectID in the
 // same SetManifest transaction.
 //
-// Conflict mapping: a Postgres unique-violation on files_object_id_idx
-// (first-committer-wins) — or the equivalent mderrors.ErrConflict from
-// Memory/Badger — is wrapped into engine.ErrObjectIDConflict by
+// Conflict mapping: a transaction conflict on the write
+// (mderrors.ErrConflict) is wrapped into engine.ErrObjectIDConflict by
 // mapObjectIDConflict so the file-level dedup short-circuit retry path
-// in RemoteSync.applyFileLevelDedupHit detects the race uniformly across
-// backends.
+// in RemoteSync.applyFileLevelDedupHit can detect the race.
 func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
 	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
@@ -197,7 +190,7 @@ func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID s
 		}
 		// FileAttr is embedded on metadata.File (not a pointer).
 		file.Blocks = blocks
-		// Post-Flush manifest write — must persist file_block_refs.
+		// Post-Flush manifest write — must persist the manifest.
 		// Same-txn write of Blocks AND ObjectID.
 		file.ObjectID = objectID
 		if err := tx.SetManifest(ctx, file); err != nil {
@@ -208,12 +201,9 @@ func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID s
 }
 
 // GetPersistedBlocks returns the file's currently-persisted FileAttr.Blocks
-// (with content hashes) for payloadID. Resolves payloadID → file row, then
-// loads the authoritative block list: Badger/Memory return it inline from
-// GetFileByPayloadID, while Postgres' GetFileByPayloadID omits blocks (a
-// read-cost optimization), so we fall back to GetFile-by-handle which loads
-// file_block_refs. Returns an empty slice (nil) when the file has no blocks
-// yet or does not exist.
+// (with content hashes) for payloadID. GetFileByPayloadID returns the
+// manifest inline, so the lookup is the whole read. Returns an empty slice
+// (nil) when the file has no blocks yet or does not exist.
 func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error) {
 	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 	if err != nil {
@@ -226,83 +216,26 @@ func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID 
 		}
 		return nil, fmt.Errorf("coordinator: GetFileByPayloadID(%s): %w", payloadID, err)
 	}
-	if file == nil {
+	if file == nil || len(file.Blocks) == 0 {
 		return nil, nil
 	}
-	if len(file.Blocks) > 0 {
-		return file.Blocks, nil
-	}
-	// Memory's GetFileByPayloadID returns blocks inline but leaves ID zero;
-	// an empty Blocks here therefore means "no blocks yet" (the handle
-	// fallback below would build an unresolvable zero-ID handle). Postgres
-	// sets ID and omits blocks, so it takes the fallback to load
-	// file_block_refs.
-	if file.ID == uuid.Nil {
-		return nil, nil
-	}
-	handle, err := metadata.EncodeFileHandle(file)
-	if err != nil {
-		return nil, fmt.Errorf("coordinator: EncodeFileHandle(%s): %w", payloadID, err)
-	}
-	full, err := c.metadataStore.GetFile(ctx, handle)
-	if err != nil {
-		return nil, fmt.Errorf("coordinator: GetFile(%s): %w", payloadID, err)
-	}
-	if full == nil {
-		return nil, nil
-	}
-	return full.Blocks, nil
+	return file.Blocks, nil
 }
 
-// mapObjectIDConflict wraps backend conflict errors into
-// engine.ErrObjectIDConflict so the file-level dedup short-circuit can
-// detect concurrent-quiesce races uniformly across Postgres / Badger /
-// Memory. Returns nil when err is nil; returns the unwrapped error
-// untouched when no conflict signal is present so other failure modes
+// mapObjectIDConflict wraps a metadata.errors.StoreError with Code ==
+// ErrConflict into engine.ErrObjectIDConflict so the file-level dedup
+// short-circuit can detect concurrent-quiesce races. Returns nil when err
+// is nil; returns any other error untouched so other failure modes
 // propagate without false positives.
 //
-// Detection rules:
-//
-//  1. Postgres pgconn.PgError with Code "23505" AND ConstraintName
-//     "files_object_id_idx" — strong signal, wrap into
-//     ErrObjectIDConflict.
-//  2. Postgres pgconn.PgError with Code "23505" AND empty
-//     ConstraintName whose Message text mentions "object_id" —
-//     defensive fallback for drivers that strip ConstraintName under
-//     certain configurations. Other 23505 errors (e.g., file path
-//     uniqueness violations) propagate untouched.
-//  3. metadata.errors.StoreError with Code == ErrConflict — Memory and
-//     Badger surface this from their maintenance paths.
-//
-// Wrapping uses errors.Join (Go 1.20+) so callers can both
+// Wrapping uses errors.Join so callers can both
 // `errors.Is(err, engine.ErrObjectIDConflict)` AND see the underlying
-// driver/store error in logs.
+// store error in logs.
 func mapObjectIDConflict(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	// Postgres path: SQLSTATE 23505 (unique_violation).
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		// Strong signal: matching constraint name.
-		if pgErr.ConstraintName == "files_object_id_idx" {
-			return errors.Join(engine.ErrObjectIDConflict, err)
-		}
-		// Defensive fallback: empty ConstraintName + "object_id" in
-		// message text. Other 23505 errors (e.g., duplicate file path)
-		// propagate without ErrObjectIDConflict wrapping.
-		if pgErr.ConstraintName == "" && strings.Contains(pgErr.Message, "object_id") {
-			return errors.Join(engine.ErrObjectIDConflict, err)
-		}
-	}
-
-	// Memory / Badger path: errors.ErrConflict on the StoreError.
 	var storeErr *mderrors.StoreError
 	if errors.As(err, &storeErr) && storeErr.Code == mderrors.ErrConflict {
 		return errors.Join(engine.ErrObjectIDConflict, err)
 	}
-
 	return err
 }
 
@@ -330,10 +263,9 @@ func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block
 // metadataStore surface (not bound to a caller-owned txn) — the read
 // is a single-row lookup, not part of any per-flow transaction.
 //
-// Backend NotFound semantics: the Memory and Badger backends return a
-// StoreError with ErrNotFound code when the payloadID has no row; the
-// Postgres backend may return a wrapped sql.ErrNoRows. Both are mapped
-// to (zero ObjectID, nil) here so the caller's trigger evaluation does
+// NotFound semantics: the store returns a StoreError with ErrNotFound
+// code when the payloadID has no row; that is mapped to
+// (zero ObjectID, nil) here so the caller's trigger evaluation does
 // not see a transient error during the very first quiesce of a fresh
 // file.
 func (c *metadataCoordinator) GetFileObjectID(ctx context.Context, payloadID string) (block.ObjectID, error) {

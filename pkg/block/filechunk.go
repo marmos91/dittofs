@@ -48,16 +48,8 @@ type FileChunkStore interface {
 	// distinct FileChunk IDs sharing the same ContentHash when two file
 	// regions hash-match. Backends MUST tolerate this without erroring.
 	//
-	// backend implementations
-	//
-	//   - memory + badger maintain hash→id maps that silently overwrite
-	//     on collision (the most recent writer wins the hash index).
-	//   - postgres has a non-UNIQUE partial index on (hash WHERE NOT NULL)
-	//     for GetByHash speed (see migrations 000010 and 000011).
-	//     The index was UNIQUE in the original 000010 cut; that violated
-	//     this contract by rejecting cross-row hash duplicates and was
-	//     dropped to a regular partial index in 000011 to match the
-	//     memory + badger behavior.
+	// The badger store maintains a hash→id map that silently overwrites
+	// on collision (the most recent writer wins the hash index).
 	//
 	// The pinned contract: Put returns nil for any
 	// hash-already-present-on-another-row case. GetByHash MAY
@@ -108,7 +100,7 @@ type FileChunkStore interface {
 	//
 	// Atomicity matches IncrementRefCount's contract: the increment
 	// is performed under the backend's native concurrency primitive
-	// (mutex / Badger txn / Postgres conditional UPDATE) so AddRef
+	// (a Badger txn) so AddRef
 	// is TOCTOU-free against concurrent DecrementRefCount cascade
 	// (the dedup hit path otherwise races engine.Delete).
 	//
@@ -138,8 +130,7 @@ type FileChunkStore interface {
 // dedup-delete and stats fan-out (callers under
 // pkg/block/engine/).
 //
-// All three metadata backends (memory/badger/postgres) satisfy this
-// interface — the methods are concrete on the backend struct, just
+// The badger metadata store satisfies this interface — the methods are concrete on the backend struct, just
 // not on the public FileChunkStore surface. Future work will
 // eliminate the remaining call sites by routing reads through
 // FileAttr.Blocks, and this interface will go away with them.

@@ -13,7 +13,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // gatedRemote stalls the first chunk read until release is closed, so a fetch
@@ -87,7 +88,7 @@ func newEngineWithGatedRemote(t *testing.T, ms metadata.Store, rem remote.Remote
 // read as zeros.
 func TestHydrateDoesNotResurrectOverMutation(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	rem := &gatedRemote{Store: remotememory.New(), release: make(chan struct{}), entered: make(chan struct{})}
 	bs := newEngineWithGatedRemote(t, ms, rem)
 
@@ -145,7 +146,7 @@ func TestHydrateDoesNotResurrectOverMutation(t *testing.T) {
 // punch superseded, so its write-back has to leave the punched range alone.
 func TestColdWindowFetchDoesNotOverwritePunchedBytes(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 
 	rootHandle := createShare(t, ms, "coldwindow")

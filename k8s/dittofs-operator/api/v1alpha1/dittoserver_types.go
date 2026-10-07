@@ -57,7 +57,7 @@ type DittoServerSpec struct {
 	// +optional
 	Logging *LoggingSpec `json:"logging,omitempty"`
 
-	// Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
+	// Percona configures auto-creation of PerconaPGCluster for the PostgreSQL control-plane database
 	// When enabled, the operator creates a PerconaPGCluster owned by this DittoServer
 	// +optional
 	Percona *PerconaConfig `json:"percona,omitempty"`
@@ -100,7 +100,7 @@ type DittoServerSpec struct {
 // The operator creates PVCs based on these specs and mounts them in the server pod
 type StorageSpec struct {
 	// Size for the metadata store PVC (mounted at /data/store/metadata)
-	// Used by BadgerDB or other metadata backends
+	// Used by the BadgerDB metadata store
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[0-9]+(Gi|Mi|Ti)$`
 	// +kubebuilder:example="10Gi"
@@ -607,7 +607,7 @@ type DittoServerList struct {
 	Items           []DittoServer `json:"items"`
 }
 
-// PerconaConfig configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
+// PerconaConfig configures auto-creation of PerconaPGCluster for the PostgreSQL control-plane database
 type PerconaConfig struct {
 	// Enabled triggers auto-creation of PerconaPGCluster
 	// +kubebuilder:default=false

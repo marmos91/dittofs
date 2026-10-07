@@ -10,7 +10,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // localTierRecorder captures what the local tier emits through the recorder the
@@ -69,7 +70,7 @@ func meteredEngine(t *testing.T, cfg journal.Config, rec journal.MetricsRecorder
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)
 	}
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          local,
 		RemoteSync:     engine.NewRemoteSync(local, nil, ms, engine.DefaultConfig()),

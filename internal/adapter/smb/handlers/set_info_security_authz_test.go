@@ -19,7 +19,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupSecurityAuthzTest provisions a runtime + share + file and returns a
@@ -28,7 +29,7 @@ func setupSecurityAuthzTest(t *testing.T) (*Handler, *OpenFile, *metadata.AuthCo
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("authz-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

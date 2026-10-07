@@ -9,7 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // A share holds its journal's append log and index open for as long as it is
@@ -51,7 +52,7 @@ func TestShutdownReleasesShareJournals(t *testing.T) {
 	rt := New(cps)
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: journalRoot})
 	rt.SetSnapshotSchedulerConfig(0, true)
-	if err := rt.RegisterMetadataStore("test-meta", metamem.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 

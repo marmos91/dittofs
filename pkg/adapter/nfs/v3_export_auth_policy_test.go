@@ -10,7 +10,8 @@ import (
 	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newV3PolicyFixture builds an NFS adapter over a runtime holding one share,
@@ -20,7 +21,7 @@ func newV3PolicyFixture(t *testing.T) (*NFSConnection, *runtime.Runtime, metadat
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	if err := rt.RegisterMetadataStore("test-meta", metadatamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	shareCfg := &runtime.ShareConfig{

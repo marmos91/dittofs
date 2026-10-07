@@ -4,8 +4,8 @@
 // for the hybrid local tier. Presence of a marker means the corresponding
 // chunk has been successfully mirrored to the remote store at least once;
 // absence means the chunk is local-only (or has been intentionally
-// reset). Backed by whichever metadata backend the operator configured
-// (memory, badger, postgres) — no new infrastructure layer.
+// reset). Backed by the share's metadata store — no new infrastructure
+// layer.
 //
 // All three methods are idempotent by design: MarkSynced on an already-
 // marked hash is a no-op, DeleteSynced on an absent hash returns nil,

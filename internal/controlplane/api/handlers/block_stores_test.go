@@ -159,7 +159,7 @@ func TestBlockStoreHandler_Delete_InUse(t *testing.T) {
 
 	// Create a metadata store first (required for shares)
 	metaStore := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "meta-1", Type: "memory",
+		ID: uuid.New().String(), Name: "meta-1", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateMetadataStore(ctx, metaStore)
@@ -235,7 +235,7 @@ func TestShareBlockStore_CreateWithBlockStore(t *testing.T) {
 
 	// Create prerequisite stores
 	metaStore := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "meta-1", Type: "memory",
+		ID: uuid.New().String(), Name: "meta-1", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateMetadataStore(ctx, metaStore)
@@ -276,7 +276,7 @@ func TestShareBlockStore_CreateMissingBlockStore(t *testing.T) {
 
 	// Create prerequisite metadata store only
 	metaStore := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "meta-1", Type: "memory",
+		ID: uuid.New().String(), Name: "meta-1", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateMetadataStore(ctx, metaStore)

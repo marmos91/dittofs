@@ -9,7 +9,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // gatingRegistrar parks AddShare inside its metadata-registration phase — past
@@ -63,7 +64,7 @@ func (g *gatingBlockStoreProvider) GetBlockStore(ctx context.Context, name strin
 // same shutdown is closing, which is exactly what the fence exists to stop.
 func TestAddShare_RefusedOnceTheBlockStoreFenceHasRun(t *testing.T) {
 	svc := New()
-	store := metamem.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = store.Close() })
 	defaults := journalDefaults(t, svc)
 
@@ -87,7 +88,7 @@ func TestAddShare_RefusedOnceTheBlockStoreFenceHasRun(t *testing.T) {
 // had closed every other share's.
 func TestAddShare_RefusedWhenTheFenceFallsMidAdd(t *testing.T) {
 	svc := New()
-	store := metamem.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = store.Close() })
 	defaults := journalDefaults(t, svc)
 
@@ -140,7 +141,7 @@ func TestRebindShareBlockStore_RefusedWhenTheFenceFallsMidRebind(t *testing.T) {
 	const name = "/rebound"
 
 	svc := New()
-	store := metamem.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = store.Close() })
 	defaults := journalDefaults(t, svc)
 	provider := &gatingBlockStoreProvider{entered: make(chan struct{}), release: make(chan struct{})}

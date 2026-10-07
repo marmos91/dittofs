@@ -45,10 +45,10 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /m
 <!-- Use -log-level DEBUG for verbose output -->
 ```
 
-## Metadata Repository
-<!-- Which metadata repository are you using? -->
-- [ ] In-Memory (default)
-- [ ] Custom implementation
+## Metadata Store
+<!-- Which metadata store mode are you using? -->
+- [ ] Badger (on disk)
+- [ ] Badger (in memory)
 
 ## Content Repository
 <!-- Which content repository are you using? -->

@@ -80,7 +80,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 	setup := helpers.SetupStoreMatrix(t, cli, shareName, helpers.MatrixSetupConfig{
 		MetadataType: "memory",
 		BlockType:    "s3",
-	}, nil, lsHelper)
+	}, lsHelper)
 	require.NotNil(t, setup, "store-matrix setup")
 
 	// Recover the bucket name from the just-created block store. The

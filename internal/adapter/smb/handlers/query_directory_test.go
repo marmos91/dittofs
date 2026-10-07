@@ -19,7 +19,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // abeChild describes a single per-entry fixture: a regular file with the
@@ -61,7 +62,7 @@ func setupABEQueryDirTest(t *testing.T, abe bool, callerUID, callerGID uint32, c
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -283,7 +284,7 @@ func setupQueryDirTest(t *testing.T, names []string) (*Handler, *OpenFile, *meta
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

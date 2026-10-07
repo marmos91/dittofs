@@ -12,7 +12,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // assertNoOverlap fails when two manifest rows claim the same byte. Unlike
@@ -75,7 +76,7 @@ func TestManifestSoak_NoLegitimatePathOverlaps(t *testing.T) {
 	for seed := range 24 {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			t.Parallel()
-			runManifestSoak(t, metadatamemory.NewMemoryMetadataStoreWithDefaults(), 60, int64(seed))
+			runManifestSoak(t, badgertest.NewInMemory(t), 60, int64(seed))
 		})
 	}
 }

@@ -75,7 +75,7 @@ func setupNFSv42FSServer(t *testing.T) (*helpers.CLIRunner, int) {
 	metaStore := helpers.UniqueTestName("sparse-meta")
 	blockStore := helpers.UniqueTestName("sparse-block")
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err, "create metadata store")
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 

@@ -7,7 +7,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newEvictShare registers a share backed by a real journal and a memory remote,
@@ -17,7 +18,7 @@ func newEvictShare(t *testing.T, name string, payloadMiB int) (*Service, *engine
 	t.Helper()
 	ctx := context.Background()
 
-	mds := metamem.NewMemoryMetadataStoreWithDefaults()
+	mds := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = mds.Close() })
 
 	local, err := journal.Open(t.TempDir(), journal.Config{})

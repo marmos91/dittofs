@@ -16,7 +16,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // errBoomLocalPut is the sentinel error returned by failingPutLocal.
@@ -100,7 +101,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 	close(loc.release) // no waiter — let Put fail immediately
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
-	mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mds := badgertest.NewInMemory(t)
 	_ = seedFileChunk(t, fbs, rs, mds, payloadID, data)
 
 	m := newFetchSyncer(loc, rs, fbs, mds)
@@ -148,7 +149,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	loc := newFailingPutLocal()
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
-	mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mds := badgertest.NewInMemory(t)
 	_ = seedFileChunk(t, fbs, rs, mds, payloadID, data)
 
 	m := newFetchSyncer(loc, rs, fbs, mds)

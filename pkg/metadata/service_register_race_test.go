@@ -8,7 +8,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,7 +41,7 @@ func countingCoordinator() (*graceSpyCoordinator, *int32, *int32) {
 // symmetric (the coordinator is fully balanced, not left in grace).
 func TestRemoveStoreForShare_BalancesGraceCoordinator(t *testing.T) {
 	const shareName = "/graced-remove"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	persistNLMLock(t, store, shareName, "client-1")
 
 	coord, starts, ends := countingCoordinator()
@@ -77,7 +79,7 @@ func TestRemoveStoreForShare_BalancesGraceCoordinator(t *testing.T) {
 // IsInGracePeriod is read before AbortGracePeriod and is false here.
 func TestRemoveStoreForShare_NoDoubleEndWhenGraceLiftedNaturally(t *testing.T) {
 	const shareName = "/graced-natural"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	persistNLMLock(t, store, shareName, "client-1")
 
 	coord, starts, ends := countingCoordinator()
@@ -112,13 +114,13 @@ func TestRemoveStoreForShare_NoDoubleEndWhenGraceLiftedNaturally(t *testing.T) {
 // deterministically in the exact TOCTOU window between the initial
 // store-publish and the final publish re-check — no goroutines or sleeps.
 //
-// It embeds *memory.MemoryMetadataStore so it satisfies both MetadataStore and
+// It embeds *badger.BadgerMetadataStore so it satisfies both MetadataStore and
 // lock.LockStore (the recovery path type-asserts the store to lock.LockStore),
 // overriding only ListLocks. After firing the removal once it returns the real
 // persisted locks so the manager still enters grace (signalling
 // OnLockGraceStart) before the re-check observes the removal and must balance it.
 type removeMidFlightStore struct {
-	*memory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	svc       *metadata.Service
 	shareName string
 	fired     bool
@@ -131,7 +133,7 @@ func (s *removeMidFlightStore) ListLocks(ctx context.Context, q lock.LockQuery) 
 		// outside s.mu. This deletes s.stores[shareName] before our publish.
 		s.svc.RemoveStoreForShare(s.shareName)
 	}
-	return s.MemoryMetadataStore.ListLocks(ctx, q)
+	return s.BadgerMetadataStore.ListLocks(ctx, q)
 }
 
 // TestRegisterStoreForShare_RemovedMidFlightDoesNotResurrect is the Finding-2
@@ -150,7 +152,7 @@ func (s *removeMidFlightStore) ListLocks(ctx context.Context, q lock.LockQuery) 
 // publish.
 func TestRegisterStoreForShare_RemovedMidFlightDoesNotResurrect(t *testing.T) {
 	const shareName = "/raced-remove"
-	base := memory.NewMemoryMetadataStoreWithDefaults()
+	base := badgertest.NewInMemory(t)
 	persistNLMLock(t, base, shareName, "client-1")
 
 	coord, starts, ends := countingCoordinator()
@@ -159,7 +161,7 @@ func TestRegisterStoreForShare_RemovedMidFlightDoesNotResurrect(t *testing.T) {
 	svc.SetGraceCoordinator(coord)
 
 	store := &removeMidFlightStore{
-		MemoryMetadataStore: base,
+		BadgerMetadataStore: base,
 		svc:                 svc,
 		shareName:           shareName,
 	}
@@ -196,7 +198,7 @@ func TestRegisterStoreForShare_RemovedMidFlightDoesNotResurrect(t *testing.T) {
 // the re-check and must drop its manager without touching the coordinator's end.
 func TestRegisterStoreForShare_LostRaceDoesNotEndWinnerGrace(t *testing.T) {
 	const shareName = "/raced-same"
-	winner := memory.NewMemoryMetadataStoreWithDefaults()
+	winner := badgertest.NewInMemory(t)
 	persistNLMLock(t, winner, shareName, "client-1")
 
 	coord, starts, ends := countingCoordinator()
@@ -215,7 +217,7 @@ func TestRegisterStoreForShare_LostRaceDoesNotEndWinnerGrace(t *testing.T) {
 	// A second register for the SAME share with a DIFFERENT store loses the race:
 	// lmExists is true on the re-check, so it drops its manager and must NOT fire
 	// OnLockGraceEnd (the winner still owns grace).
-	loser := memory.NewMemoryMetadataStoreWithDefaults()
+	loser := badgertest.NewInMemory(t)
 	persistNLMLock(t, loser, shareName, "client-2")
 	require.NoError(t, svc.RegisterStoreForShare(shareName, loser))
 
@@ -240,7 +242,7 @@ func TestRemoveStoreForShare_ConcurrentRegisterDoesNotResurrect(t *testing.T) {
 	)
 
 	svc := metadata.New()
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	var wg sync.WaitGroup
 

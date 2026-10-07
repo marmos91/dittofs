@@ -12,7 +12,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestFetchBlock_StagesEveryChunkInBlock pins the readahead prefetch to the
@@ -54,7 +55,7 @@ func TestFetchBlock_StagesEveryChunkInBlock(t *testing.T) {
 			loc := memorylocal.New()
 			rs := remotememory.New()
 			stub := newStubFileChunkStore()
-			mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+			mds := badgertest.NewInMemory(t)
 
 			seedSyncedRemoteChunk(t, stub, rs, mds, payloadID, 0, first)
 			seedSyncedRemoteChunk(t, stub, rs, mds, payloadID, chunkSize, second)

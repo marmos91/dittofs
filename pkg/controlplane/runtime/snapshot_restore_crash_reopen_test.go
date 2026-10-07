@@ -32,9 +32,6 @@ func TestRestoreCrashRecovery_AcrossRealReopen(t *testing.T) {
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {
-			if bk.skip != "" {
-				t.Skip(bk.skip)
-			}
 			if bk.reopen == nil {
 				t.Skipf("%s cannot survive a restart (no durable reopen)", bk.name)
 			}

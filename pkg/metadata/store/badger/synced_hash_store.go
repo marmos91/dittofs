@@ -358,3 +358,24 @@ func (tx *badgerTransaction) PutSyncedLocators(ctx context.Context, chunks []blo
 	}
 	return nil
 }
+
+// MarkSyncedAtForTest rewrites hash's synced marker with first-mirror time
+// when, keeping its locator; a missing marker is created standalone. A zero
+// when writes the timestamp-less legacy form. Test-only: GC grace-window tests
+// backdate markers with it, while production stamps the time in MarkSynced.
+func (s *BadgerMetadataStore) MarkSyncedAtForTest(hash block.ContentHash, when time.Time) {
+	var nanos int64
+	if !when.IsZero() {
+		nanos = when.UnixNano()
+	}
+	err := s.db.Update(func(txn *badger.Txn) error {
+		loc, _, err := getLocatorTxn(txn, hash)
+		if err != nil {
+			return err
+		}
+		return txn.Set(keySyncedHash(hash), encodeSyncedValue(nanos, loc))
+	})
+	if err != nil {
+		panic(fmt.Sprintf("MarkSyncedAtForTest: %v", err))
+	}
+}

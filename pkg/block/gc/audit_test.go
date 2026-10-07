@@ -10,7 +10,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // seedAuditTestStore creates a memory metadata store with one share named
@@ -23,9 +25,9 @@ import (
 // Returns the store, the share name, and per-file (payloadID, []offset)
 // so a test can delete a specific backing row to manufacture a dangling
 // manifest reference.
-func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore, shareName string, payloadIDs []string, offsets [][]uint64) {
+func seedAuditTestStore(t *testing.T) (store *badger.BadgerMetadataStore, shareName string, payloadIDs []string, offsets [][]uint64) {
 	t.Helper()
-	store = metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store = badgertest.NewInMemory(t)
 	ctx := context.Background()
 	shareName = "audit-test"
 
@@ -357,7 +359,7 @@ func TestAuditRefcounts_NilStore(t *testing.T) {
 // TestAuditRefcounts_EmptyShare returns an error rather than walking
 // every share. Defends against handler bugs that pass through "".
 func TestAuditRefcounts_EmptyShare(t *testing.T) {
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	_, err := AuditRefcounts(context.Background(), "", store, "")
 	if err == nil {
 		t.Fatal("expected error on empty share, got nil")

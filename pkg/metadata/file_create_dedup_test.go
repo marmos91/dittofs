@@ -6,20 +6,23 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
-// countingStore wraps the memory store and counts GetFile calls, keyed by the
-// requested handle. It embeds *memory.MemoryMetadataStore so it satisfies the
-// full metadata.Store interface while overriding only GetFile — the Service
-// holds it via the Store interface (RegisterStoreForShare), so the override is
-// actually dispatched. Note: it observes store.GetFile only; parent reads that
-// went through tx.GetFile inside a transaction would not be counted here. The
-// create path deliberately does not read the parent inode inside its
-// transaction (#1573), so every parent read is a store.GetFile and is caught.
+// countingStore wraps a Badger store and counts parent-inode reads, keyed by
+// the requested handle. It embeds *badger.BadgerMetadataStore so it satisfies
+// the full metadata.Store interface while overriding only the two reads the
+// create path can take for the parent — GetFileForCreate when the store offers
+// the create cache (Badger does), GetFile otherwise. The Service holds it via
+// the Store interface (RegisterStoreForShare), so the overrides are actually
+// dispatched. Reads through tx.GetFile inside a transaction are not counted;
+// the create path deliberately does not read the parent inode inside its
+// transaction (#1573).
 type countingStore struct {
-	*memory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	total  atomic.Int64
 	perKey map[string]int64 // guarded by seq: create path is single-goroutine
 }
@@ -27,7 +30,13 @@ type countingStore struct {
 func (c *countingStore) GetFile(ctx context.Context, h metadata.FileHandle) (*metadata.File, error) {
 	c.total.Add(1)
 	c.perKey[string(h)]++
-	return c.MemoryMetadataStore.GetFile(ctx, h)
+	return c.BadgerMetadataStore.GetFile(ctx, h)
+}
+
+func (c *countingStore) GetFileForCreate(ctx context.Context, h metadata.FileHandle) (*metadata.File, error) {
+	c.total.Add(1)
+	c.perKey[string(h)]++
+	return c.BadgerMetadataStore.GetFileForCreate(ctx, h)
 }
 
 // TestCreateFile_ParentGetFileDedup pins the parent-inode read dedup (#1737):
@@ -35,7 +44,7 @@ func (c *countingStore) GetFile(ctx context.Context, h metadata.FileHandle) (*me
 func TestCreateFile_ParentGetFileDedup(t *testing.T) {
 	t.Parallel()
 
-	inner := memory.NewMemoryMetadataStoreWithDefaults()
+	inner := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	shareName := "/test"
 
@@ -49,7 +58,7 @@ func TestCreateFile_ParentGetFileDedup(t *testing.T) {
 	rootHandle, err := metadata.EncodeShareHandle(shareName, rootFile.ID)
 	require.NoError(t, err)
 
-	cs := &countingStore{MemoryMetadataStore: inner, perKey: make(map[string]int64)}
+	cs := &countingStore{BadgerMetadataStore: inner, perKey: make(map[string]int64)}
 	svc := metadata.New()
 	require.NoError(t, svc.RegisterStoreForShare(shareName, cs))
 
@@ -90,7 +99,7 @@ func TestCreateFile_ParentGetFileDedup(t *testing.T) {
 // BenchmarkCreateFile creates children in one directory via the fixture,
 // reporting ns/op and allocs/op as a secondary before/after signal.
 func BenchmarkCreateFile(b *testing.B) {
-	inner := memory.NewMemoryMetadataStoreWithDefaults()
+	inner := badgertest.NewInMemory(b)
 	ctx := context.Background()
 	shareName := "/test"
 

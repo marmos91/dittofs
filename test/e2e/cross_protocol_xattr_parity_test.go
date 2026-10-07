@@ -34,7 +34,7 @@ func TestCrossProtocolXattrParity(t *testing.T) {
 	blockStore := helpers.UniqueTestName("xpxpayload")
 	const shareName = "/export"
 
-	_, err := cli.CreateMetadataStore(metaStore, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err, "create metadata store")
 	_, err = cli.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err, "create block store")

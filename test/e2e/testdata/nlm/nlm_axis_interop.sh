@@ -91,7 +91,7 @@ export XDG_CONFIG_HOME="$WORK/cfg"; mkdir -p "$XDG_CONFIG_HOME"
 $NS env XDG_CONFIG_HOME="$XDG_CONFIG_HOME" $DFSCTL login --server "http://127.0.0.1:$API" --username admin --password "$PW" || { log "login FAIL"; exit 1; }
 dctl() { $NS env XDG_CONFIG_HOME="$XDG_CONFIG_HOME" $DFSCTL "$@"; }
 
-dctl store metadata add --name meta --type memory || { log "meta store FAIL"; exit 1; }
+dctl store metadata add --name meta --type badger --in-memory || { log "meta store FAIL"; exit 1; }
 dctl store block add --name blk --type memory || { log "block store FAIL"; exit 1; }
 dctl share create --name /export --metadata meta --block-store blk --default-permission read-write || { log "share FAIL"; exit 1; }
 dctl share nfs-config set /export --squash root_to_admin 2>/dev/null || dctl share nfs-config set /export --squash root_to_admin || true

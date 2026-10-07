@@ -22,7 +22,9 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // txCountingMetaStore delegates every operation to a real memory metadata
@@ -31,7 +33,7 @@ import (
 // memory store does not implement metadata.RelaxedTransactor, so without this
 // wrapper the relaxed path silently collapses onto WithTransaction.
 type txCountingMetaStore struct {
-	*metamemory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	durable atomic.Int64
 	relaxed atomic.Int64
 }
@@ -40,12 +42,12 @@ var _ metadata.RelaxedTransactor = (*txCountingMetaStore)(nil)
 
 func (s *txCountingMetaStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	s.durable.Add(1)
-	return s.MemoryMetadataStore.WithTransaction(ctx, fn)
+	return s.BadgerMetadataStore.WithTransaction(ctx, fn)
 }
 
 func (s *txCountingMetaStore) WithTransactionRelaxed(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	s.relaxed.Add(1)
-	return s.MemoryMetadataStore.WithTransaction(ctx, fn)
+	return s.BadgerMetadataStore.WithTransaction(ctx, fn)
 }
 
 // countWriteCommits issues one WRITE with the given Flags over a connection
@@ -55,7 +57,7 @@ func (s *txCountingMetaStore) WithTransactionRelaxed(ctx context.Context, fn fun
 func countWriteCommits(t *testing.T, flags uint32, dialect types.Dialect) (status types.Status, durable, relaxed int64) {
 	t.Helper()
 
-	store := &txCountingMetaStore{MemoryMetadataStore: metamemory.NewMemoryMetadataStoreWithDefaults()}
+	store := &txCountingMetaStore{BadgerMetadataStore: badgertest.NewInMemory(t)}
 	h, smbCtx, _, fileID := setupWriteTestShare(t, store)
 	if dialect != 0 {
 		smbCtx.ConnCryptoState = &mockCryptoState{dialect: dialect}
@@ -128,7 +130,7 @@ func TestWrite_WriteThrough_CommitsMetadataDurably(t *testing.T) {
 // resolves chunks through. The write-through WRITE no longer carves inline, so
 // the assertion sits after a drain, which is where the carve now happens.
 func TestWrite_WriteThrough_PopulatesTheManifestOnDrain(t *testing.T) {
-	store := &txCountingMetaStore{MemoryMetadataStore: metamemory.NewMemoryMetadataStoreWithDefaults()}
+	store := &txCountingMetaStore{BadgerMetadataStore: badgertest.NewInMemory(t)}
 	h, smbCtx, fileHandle, fileID := setupWriteTestShare(t, store)
 
 	data := []byte("write-through-payload")

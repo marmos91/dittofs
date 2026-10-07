@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupTimestampTest creates a memory-backed runtime + handler + a single
@@ -21,7 +22,7 @@ func setupTimestampTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -461,7 +462,7 @@ func TestSetFileInfo_DelayedWriteVsSetbasic(t *testing.T) {
 // directory timestamps via SET_INFO(-1) survives a child file creation.
 func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -609,7 +610,7 @@ func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
 // restoreParentDirFrozenTimestamps can find and restore frozen timestamps.
 func TestDirFreezeTimestamps_ChildCreate_WalkPath(t *testing.T) {
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -766,7 +767,7 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rt, bsID := newTestShareRuntime(t)
-			memStore := memory.NewMemoryMetadataStoreWithDefaults()
+			memStore := badgertest.NewInMemory(t)
 			if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
 				t.Fatalf("RegisterMetadataStore: %v", err)
 			}
@@ -870,7 +871,7 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 // frozen but Mtime is not.
 func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *testing.T) {
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

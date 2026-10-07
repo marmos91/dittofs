@@ -48,7 +48,7 @@ func TestSMBFileOperations(t *testing.T) {
 	metaStoreName := helpers.UniqueTestName("meta")
 	blockStoreName := helpers.UniqueTestName("block")
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")

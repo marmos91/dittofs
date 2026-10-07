@@ -6,39 +6,42 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/stretchr/testify/require"
 )
 
-// windowStore is a sqlite store that runs beforeTx once, immediately before the
-// next transaction it opens. Service.Move reads the source inode outside any
+// windowStore is a store that runs beforeTx once, immediately before the next
+// transaction it opens. Service.Move reads the source inode outside any
 // transaction and then opens one to stamp it; the hook lands exactly in that
 // gap, which is the window an in-transaction re-read exists to cover.
 //
-// Only WithTransaction is overridden. sqlite does not implement
-// RelaxedTransactor, so Move's withRelaxedTransaction falls through to this
-// method; if sqlite ever gains WithTransactionRelaxed the promoted method would
-// bypass the hook, and the test then fails on "hook did not fire" rather than
-// passing vacuously.
-//
-// The hook fires once per WithTransaction CALL, before any attempt. A backend
-// that retries by re-running the closure inside one call — badger does — could
-// not re-fire it, and would take the relaxed path in any case, which is why this
-// is sqlite-bound. Nothing here touches production code: it works only because
+// Both transaction entry points are overridden, so the relaxed path Move takes
+// cannot bypass the hook. The hook fires once per call, before any attempt; a
+// conflict retry re-runs the closure inside the same call without re-firing
+// it. Nothing here touches production code: it works only because
 // RegisterStoreForShare accepts the metadata.Store interface.
 type windowStore struct {
-	*sqlite.SQLiteMetadataStore
+	*badger.BadgerMetadataStore
 	beforeTx func()
 }
 
-func (w *windowStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
-	// Cleared before it runs: the hook itself commits through this store, and
-	// that inner transaction must not re-enter it.
+// fire runs and clears the hook. Cleared before it runs: the hook itself
+// commits through this store, and that inner transaction must not re-enter it.
+func (w *windowStore) fire() {
 	if hook := w.beforeTx; hook != nil {
 		w.beforeTx = nil
 		hook()
 	}
-	return w.SQLiteMetadataStore.WithTransaction(ctx, fn)
+}
+
+func (w *windowStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
+	w.fire()
+	return w.BadgerMetadataStore.WithTransaction(ctx, fn)
+}
+
+func (w *windowStore) WithTransactionRelaxed(ctx context.Context, fn func(tx metadata.Transaction) error) error {
+	w.fire()
+	return w.BadgerMetadataStore.WithTransactionRelaxed(ctx, fn)
 }
 
 // TestRenameCtime_AdvanceInsideMoveWindowIsNotErased pins that SourcePreCtime is
@@ -53,12 +56,11 @@ func (w *windowStore) WithTransaction(ctx context.Context, fn func(tx metadata.T
 // the advance committed in the window is erased and the ChangeTime lands back at
 // the pre-advance value.
 //
-// What this does NOT pin: anything about postgres. What closes this window on
-// sqlite, badger and memory is the store's isolation, not anything about how
-// Move is written, and postgres closes it differently — it refuses the update
-// at REPEATABLE READ and retries — which this sqlite-backed hook cannot drive.
+// What closes this window on badger is the store's isolation (a conflicting
+// commit aborts and retries the transaction), not anything about how Move is
+// written.
 func TestRenameCtime_AdvanceInsideMoveWindowIsNotErased(t *testing.T) {
-	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	ws := &windowStore{BadgerMetadataStore: newRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
 	root := rootAuth()
 
@@ -111,7 +113,7 @@ func TestRenameCtime_AdvanceInsideMoveWindowIsNotErased(t *testing.T) {
 // to move ChangeTime, so ChangeTime cannot show whether the rest of the row came
 // from the stale copy.
 func TestRenameCtime_SizeCommittedInMoveWindowSurvives(t *testing.T) {
-	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	ws := &windowStore{BadgerMetadataStore: newRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
 	root := rootAuth()
 

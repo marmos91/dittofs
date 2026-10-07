@@ -46,7 +46,7 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 		defer func() { _ = rs.Close() }()
 
 		rec := newGCMSReconciler()
-		st := rec.addShare("share-a")
+		st := rec.addShare(t, "share-a")
 
 		h := hashFromString("dedup-race-before")
 		seedRemoteChunk(t, st, rs, h) // synced, backdated past grace, no manifest row
@@ -81,7 +81,7 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 		defer func() { _ = rs.Close() }()
 
 		rec := newGCMSReconciler()
-		st := rec.addShare("share-a")
+		st := rec.addShare(t, "share-a")
 
 		h := hashFromString("dedup-race-during")
 		seedRemoteChunk(t, st, rs, h)

@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupPreserveCtimeFile wires a service over a memory store with one share and
@@ -16,7 +17,7 @@ import (
 func setupPreserveCtimeFile(t *testing.T) (*metadata.Service, *metadata.AuthContext, metadata.FileHandle, metadata.FileHandle) {
 	t.Helper()
 	const share = "/pc"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	rootFile, err := store.CreateRootDirectory(context.Background(), share, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o777,
 	})

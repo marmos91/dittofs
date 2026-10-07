@@ -1,6 +1,6 @@
 // Package storetest provides a conformance test suite for metadata store implementations.
 //
-// All metadata store backends (memory, badger, postgres) should pass these tests.
+// The metadata store (badger, persistent and in-memory) should pass these tests.
 // The suite verifies that every store implementation satisfies the MetadataStore
 // behavioral contract, catching regressions when store code changes.
 //
@@ -8,7 +8,7 @@
 //
 //	func TestConformance(t *testing.T) {
 //	    storetest.RunConformanceSuite(t, func(t *testing.T) metadata.Store {
-//	        return memory.NewMemoryMetadataStoreWithDefaults()
+//	        return badgertest.NewInMemory(t)
 //	    })
 //	}
 //

@@ -117,8 +117,8 @@ dfsctl store metadata add --name default --type badger
 dfsctl store block add --name s3-remote --type s3
 ```
 
-> **Want zero dependencies for a quick test?** Use `--type memory` for both the metadata
-> store and the block store instead. Everything is then in-RAM and ephemeral — perfect
+> **Want zero dependencies for a quick test?** Create the metadata store with
+> `--in-memory` and the block store with `--type memory`. Everything is then in-RAM and ephemeral — perfect
 > for a smoke test, useless for real data.
 
 ## 6. Create a share and grant access

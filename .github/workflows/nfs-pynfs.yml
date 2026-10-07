@@ -8,9 +8,9 @@
 # to shared code (a metadata store, the runtime) can break the protocol from
 # underneath, so this runs on all non-docs PRs. Path filters skip docs only.
 #
-#   presubmit (pull_request): memory + postgres-s3 x 2 minor versions = 4 jobs
+#   presubmit (pull_request): memory + badger-s3 x 2 minor versions = 4 jobs
 #   postsubmit (push develop/main) + nightly:
-#     memory, badger, postgres, postgres-s3 x 2 minor versions = 8 jobs
+#     memory, badger, badger-s3 x 2 minor versions = 6 jobs
 #
 # Graded against KNOWN_FAILURES_V40.md / KNOWN_FAILURES_V41.md the same way the
 # POSIX and SMB suites are graded: red only on a failure that is not on the list.
@@ -119,22 +119,6 @@ jobs:
     # An empty image means the service is not started; the matrix profile
     # decides which services this cell gets.
     services:
-      postgres:
-        image: ${{ startsWith(matrix.profile, 'postgres') && 'postgres:16-alpine' || '' }}
-        env:
-          POSTGRES_USER: dittofs
-          POSTGRES_PASSWORD: dittofs
-          POSTGRES_DB: dittofs_test
-          POSTGRES_INITDB_ARGS: "--data-checksums"
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --shm-size=256mb
-
       localstack:
         image: ${{ endsWith(matrix.profile, '-s3') && 'localstack/localstack:4.13.1' || '' }}
         env:
@@ -179,14 +163,6 @@ jobs:
         run: |
           PYNFS=$(nix build .#pynfs --no-link --print-out-paths)
           echo "${PYNFS}/bin" >> "$GITHUB_PATH"
-
-      - name: Tune PostgreSQL for testing
-        if: startsWith(matrix.profile, 'postgres')
-        run: |
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET synchronous_commit = 'off';"
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET checkpoint_timeout = '30min';"
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET work_mem = '64MB';"
-          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "SELECT pg_reload_conf();"
 
       # run-pynfs.sh provisions the server through setup-posix.sh --no-mount,
       # which builds both binaries from the checkout; no prebuilt artifact is
