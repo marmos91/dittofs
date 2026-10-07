@@ -13,9 +13,11 @@ import (
 //
 //   - engine.ErrStoreClosed (the share was removed or hot-reloaded
 //     mid-transfer) wraps as the stale-handle row.
+//   - journal.ErrLocalStoreFull (the local store is full and the write's
+//     backpressure wait ran out) wraps as the no-space row.
 //   - every other failure — CAS integrity sentinels, an unavailable remote
-//     tier, local-store backpressure, durability-not-yet, an opaque engine
-//     fault, a canceled context — wraps as the generic I/O row.
+//     tier, durability-not-yet, an opaque engine fault, a canceled context —
+//     wraps as the generic I/O row.
 //
 // The original error is preserved as Cause (multi-%w), so errors.Is and
 // errors.As still traverse to the block sentinel for logging and tests.
