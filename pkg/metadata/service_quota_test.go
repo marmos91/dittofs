@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +21,7 @@ import (
 type quotaFixture struct {
 	t          *testing.T
 	service    *metadata.Service
-	store      *memory.MemoryMetadataStore
+	store      *badger.BadgerMetadataStore
 	shareName  string
 	rootHandle metadata.FileHandle
 }
@@ -27,7 +29,7 @@ type quotaFixture struct {
 func newQuotaFixture(t *testing.T) *quotaFixture {
 	t.Helper()
 
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	shareName := "/test"
 

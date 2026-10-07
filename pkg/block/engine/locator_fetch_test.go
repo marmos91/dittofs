@@ -11,15 +11,17 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newLocatorFetchSyncer builds a RemoteSync over an in-memory local store, remote
 // store, and synced-hash store — the minimal wiring dispatchRemoteFetch needs to
 // resolve a chunk locator and route the read.
-func newLocatorFetchSyncer(t *testing.T) (*RemoteSync, *remotememory.Store, *metadatamemory.MemoryMetadataStore) {
+func newLocatorFetchSyncer(t *testing.T) (*RemoteSync, *remotememory.Store, *badger.BadgerMetadataStore) {
 	t.Helper()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = ms.Close() })
 	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024})
 	if err != nil {

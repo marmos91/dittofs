@@ -191,10 +191,8 @@ NFSv3 defines 22 procedures (0-21):
 - Persistent across server restarts for production stores
 - Maximum 64 bytes per RFC 1813
 
-DittoFS encodes share and file information in handles. The format varies by metadata store:
-- **Memory store**: In-memory IDs (ephemeral)
-- **BadgerDB**: Path-based handles (persistent)
-- **PostgreSQL**: Share name + UUID (distributed)
+DittoFS encodes share and file information in handles. The BadgerDB metadata store
+issues path-based handles, persistent on disk and ephemeral in in-memory mode.
 
 When a handle becomes invalid (file deleted, server restarted with ephemeral storage), the server returns `NFS3ERR_STALE`. Clients should discard cached information and re-lookup the file.
 

@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,7 +19,7 @@ import (
 func newShareOnStore(
 	t *testing.T,
 	svc *metadata.Service,
-	store *memory.MemoryMetadataStore,
+	store *badger.BadgerMetadataStore,
 	share string,
 ) metadata.FileHandle {
 	t.Helper()
@@ -41,7 +43,7 @@ func newShareOnStore(
 func TestCreateHardLink_RejectsCrossShareTarget(t *testing.T) {
 	t.Parallel()
 
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	svc := metadata.New()
 	dirRoot := newShareOnStore(t, svc, store, "/link-a")
 	targetRoot := newShareOnStore(t, svc, store, "/link-b")
@@ -77,7 +79,7 @@ func TestCreateHardLink_RejectsCrossShareTarget(t *testing.T) {
 func TestMove_RejectsCrossShareDestination(t *testing.T) {
 	t.Parallel()
 
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	svc := metadata.New()
 	srcRoot := newShareOnStore(t, svc, store, "/move-a")
 	dstRoot := newShareOnStore(t, svc, store, "/move-b")

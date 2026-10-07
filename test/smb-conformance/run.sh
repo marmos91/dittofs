@@ -25,7 +25,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=compose-env.sh
 source "${SCRIPT_DIR}/compose-env.sh"
 
-VALID_PROFILES=("memory" "badger" "badger-s3" "postgres-s3")
+VALID_PROFILES=("memory" "badger" "badger-s3")
 
 # --------------------------------------------------------------------------
 # Colors
@@ -151,10 +151,9 @@ Options:
   --help              Show this help
 
 Profiles:
-  memory        Memory metadata + memory payload (fastest)
-  badger        BadgerDB metadata + memory payload
-  badger-s3     BadgerDB metadata + S3 payload (requires Localstack)
-  postgres-s3   PostgreSQL metadata + S3 payload (requires Localstack + PostgreSQL)
+  memory        In-memory BadgerDB metadata + memory payload (fastest)
+  badger        On-disk BadgerDB metadata + memory payload
+  badger-s3     On-disk BadgerDB metadata + S3 payload (requires Localstack)
 
 Examples:
   $(basename "$0")                              # Quick BVT test with memory
@@ -302,9 +301,6 @@ if $DRY_RUN; then
     case "$PROFILE" in
         *-s3)       active_profiles+=("s3") ;;
     esac
-    case "$PROFILE" in
-        postgres-*) active_profiles+=("postgres") ;;
-    esac
     echo "  Compose profiles: ${active_profiles[*]}"
     echo ""
     echo "  ptfconfig templates:"
@@ -327,8 +323,8 @@ require_exclusive_stack
 # half: mkdir either creates the claim or does not.
 claim_exclusive_stack
 
-# Claimed here, before the first path that can bring the stack up — the s3 and
-# postgres profiles start their own containers before dittofs, so claiming at
+# Claimed here, before the first path that can bring the stack up — the s3
+# profiles start their own containers before dittofs, so claiming at
 # the dittofs start left those runs with the flag false and the EXIT trap
 # skipping `down -v`, which the next run is then refused for.
 #
@@ -392,9 +388,6 @@ run_compose() {
     case "$PROFILE" in
         *-s3)       profiles+=("--profile" "s3") ;;
     esac
-    case "$PROFILE" in
-        postgres-*) profiles+=("--profile" "postgres") ;;
-    esac
 
     # Build and start infrastructure
     log_step "Building DittoFS Docker image..."
@@ -413,12 +406,6 @@ run_compose() {
             log_step "Creating S3 bucket dittofs-test in Localstack..."
             docker compose exec -T localstack \
                 awslocal s3api create-bucket --bucket dittofs-test >/dev/null 2>&1 || true
-            ;;
-    esac
-    case "$PROFILE" in
-        postgres-*)
-            PROFILE="$PROFILE" docker compose "${profiles[@]}" up -d postgres
-            wait_until "docker compose exec postgres pg_isready -U dittofs -d dittofs_test" 30 "PostgreSQL"
             ;;
     esac
 

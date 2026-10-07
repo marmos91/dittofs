@@ -53,7 +53,7 @@ func TestCrossProtocolLocking(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("xplockpayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
@@ -485,7 +485,7 @@ func TestCrossProtocolLockingByteRange(t *testing.T) {
 	blockStoreName := helpers.UniqueTestName("xprangepayload")
 	shareName := "/export"
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err)
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")

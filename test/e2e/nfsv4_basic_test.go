@@ -33,7 +33,7 @@ func setupNFSv4TestServer(t *testing.T) (*helpers.ServerProcess, *helpers.CLIRun
 	metaStore := helpers.UniqueTestName("meta")
 	blockStore := helpers.UniqueTestName("block")
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
@@ -478,7 +478,7 @@ func TestNFSv4PseudoFSBrowsing(t *testing.T) {
 	metaStore := helpers.UniqueTestName("meta")
 	blockStore := helpers.UniqueTestName("block")
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
@@ -522,7 +522,7 @@ func TestNFSv4PseudoFSBrowsing(t *testing.T) {
 	metaStore2 := helpers.UniqueTestName("meta2")
 	blockStore2 := helpers.UniqueTestName("block2")
 
-	_, err = runner.CreateMetadataStore(metaStore2, "memory")
+	_, err = runner.CreateInMemoryMetadataStore(metaStore2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore2) })
 
@@ -632,7 +632,7 @@ func TestNFSv4GoldenPathSmoke(t *testing.T) {
 	metaStore := helpers.UniqueTestName("smoke-meta")
 	blockStore := helpers.UniqueTestName("smoke-payload")
 
-	_, err = runner.CreateMetadataStore(metaStore, "memory")
+	_, err = runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
@@ -693,7 +693,7 @@ func TestNFSv4StaleHandle(t *testing.T) {
 	metaStore := helpers.UniqueTestName("stale-meta")
 	blockStore := helpers.UniqueTestName("stale-payload")
 
-	_, err := runner1.CreateMetadataStore(metaStore, "memory")
+	_, err := runner1.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 
 	_, err = runner1.CreateBlockStore(blockStore, "memory")
@@ -732,7 +732,7 @@ func TestNFSv4StaleHandle(t *testing.T) {
 	metaStore2 := helpers.UniqueTestName("stale-meta2")
 	blockStore2 := helpers.UniqueTestName("stale-payload2")
 
-	_, err = runner2.CreateMetadataStore(metaStore2, "memory")
+	_, err = runner2.CreateInMemoryMetadataStore(metaStore2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
 
@@ -779,7 +779,7 @@ func TestBackwardCompatNFSv3Full(t *testing.T) {
 	metaStore := helpers.UniqueTestName("compat-meta")
 	blockStore := helpers.UniqueTestName("compat-payload")
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 

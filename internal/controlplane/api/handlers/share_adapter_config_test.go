@@ -34,7 +34,7 @@ func setupShareNFSConfigTest(t *testing.T) (*store.GORMStore, *ShareNFSConfigHan
 	}
 	ctx := context.Background()
 
-	metaStore := &models.MetadataStoreConfig{ID: uuid.New().String(), Name: "m", Type: "memory"}
+	metaStore := &models.MetadataStoreConfig{ID: uuid.New().String(), Name: "m", Type: "badger", Config: `{"in_memory":true}`}
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -321,7 +321,7 @@ func setupShareNFSConfigTestWithKerberos(t *testing.T, kerberos bool) (*runtime.
 	}
 	ctx := context.Background()
 
-	metaStore := &models.MetadataStoreConfig{ID: uuid.New().String(), Name: "m", Type: "memory"}
+	metaStore := &models.MetadataStoreConfig{ID: uuid.New().String(), Name: "m", Type: "badger", Config: `{"in_memory":true}`}
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}

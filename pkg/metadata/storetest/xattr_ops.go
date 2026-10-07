@@ -437,14 +437,10 @@ func equalNames(got, want []string) bool {
 //
 // Asserting on "returned nil implies readable" rather than "all names present"
 // keeps the case mechanism-independent: a backend is free to refuse a colliding
-// write (sqlite's BUSY, a serialization failure), and the caller can retry that.
+// write (a serialization failure), and the caller can retry that.
 // What no backend may do is claim success and lose the value.
 //
-// The case discriminates on the persistent backends, which lose 13-15 of the 16
-// writes when the pair is not atomic. It does not discriminate on the in-memory
-// store: its critical sections are short enough that sixteen writers queued on
-// one mutex serialise by timing rather than by design, so it survives the
-// non-atomic form by luck. The contract is the same for all of them.
+// A non-atomic pair loses 13-15 of the 16 writes, so the case discriminates.
 func testXattrConcurrentDistinctNames(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()

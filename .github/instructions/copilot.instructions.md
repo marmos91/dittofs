@@ -7,7 +7,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 **Architecture Overview:**
 - **Protocol Adapters** (NFS, SMB): Handle protocol-specific operations
 - **Store Registry**: Manages named, reusable metadata and block stores
-- **Metadata Stores**: Manage file structure, attributes, permissions (memory, BadgerDB, PostgreSQL)
+- **Metadata Stores**: Manage file structure, attributes, permissions (BadgerDB, on disk or in memory)
 - **Block Stores**: Manage file data via local (memory) and remote (S3) backends
 - **Cache Layer**: Unified read/write caching per share
 
@@ -56,7 +56,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ NFS auxiliary protocols (NLM, NSM, Portmap) in internal/protocol/{nlm,nsm,portmap}/
 
 **Store Layer (pkg/metadata/, pkg/blockstore/):**
-- ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/store/{memory,badger,postgres}/)
+- ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/store/badger/)
 - ✅ Block stores handle: file data read/write operations via local + remote backends (pkg/blockstore/)
 - ✅ Verify two-phase write pattern: PrepareWrite → BlockStore.WriteAt → CommitWrite
 - ✅ Check thread safety (mutexes, atomic operations)

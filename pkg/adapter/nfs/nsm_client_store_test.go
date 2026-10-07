@@ -8,7 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +24,7 @@ func TestNSMClientStore_ResolvedForShareAddedAfterStartup(t *testing.T) {
 
 	ctx := context.Background()
 	rt, bsID := newTestShareRuntime(t)
-	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	require.NoError(t, rt.RegisterMetadataStore("test-meta", metaStore))
 
 	s := &NFSAdapter{BaseAdapter: &adapter.BaseAdapter{Registry: rt}}

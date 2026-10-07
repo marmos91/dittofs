@@ -11,7 +11,8 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // manifestBackend names one of the two shapes the covering walk can take: the
@@ -25,7 +26,7 @@ type manifestBackend struct {
 func manifestBackends() []manifestBackend {
 	return []manifestBackend{
 		{"ListFileChunksFallback", func(t *testing.T) (block.EngineFileChunkStore, metadata.SyncedHashStore) {
-			return newStubFileChunkStore(), metadatamemory.NewMemoryMetadataStoreWithDefaults()
+			return newStubFileChunkStore(), badgertest.NewInMemory(t)
 		}},
 		{"OffsetIndexed", func(t *testing.T) (block.EngineFileChunkStore, metadata.SyncedHashStore) {
 			ms, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())

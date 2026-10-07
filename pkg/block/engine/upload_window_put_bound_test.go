@@ -13,7 +13,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // putProbe counts concurrent PutBlock calls reaching the remote.
@@ -57,7 +58,7 @@ func newUploadWindowFixture(t *testing.T, blockSize int64, blockCount int) (*Rem
 	ctx := context.Background()
 
 	probe := &putProbe{Store: remotememory.New()}
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	local, err := journal.Open(t.TempDir(), journal.Config{CarveBlockSize: blockSize})
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)
@@ -170,7 +171,7 @@ func newManyFileFixture(t *testing.T, blockSize int64, shardCount, fileCount int
 	// Wide fan-out means a wide spread in worker start times; hold each PUT
 	// open well past that spread so the peak reflects the bound, not the jitter.
 	probe := &putProbe{Store: remotememory.New(), delay: 250 * time.Millisecond}
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	local, err := journal.Open(t.TempDir(), journal.Config{
 		CarveBlockSize: blockSize,
 		ShardCount:     shardCount,

@@ -14,7 +14,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // setupACLToggleTest wires a runtime + memory metadata store with a single
@@ -25,7 +26,7 @@ func setupACLToggleTest(t *testing.T, shareName string, canonicalize bool) (*Han
 	t.Helper()
 
 	rt, bsID := newTestShareRuntime(t)
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("acl-toggle-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // fixedStoreProvider returns one specific metadata store for every lookup. Two
@@ -36,8 +37,8 @@ func TestAddShare_ConcurrentSameName_NoMetadataMismatch(t *testing.T) {
 
 		// Each contender gets its own distinct metadata store so a mismatch is
 		// observable by pointer identity.
-		storeA := metamem.NewMemoryMetadataStoreWithDefaults()
-		storeB := metamem.NewMemoryMetadataStoreWithDefaults()
+		storeA := badgertest.NewInMemory(t)
+		storeB := badgertest.NewInMemory(t)
 
 		svc := New()
 		metaSvc := metadata.New()
@@ -99,7 +100,7 @@ func TestAddShare_ConcurrentSameName_SecondCallerRejected(t *testing.T) {
 	const name = "/once"
 	ctx := context.Background()
 
-	store := metamem.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = store.Close() })
 
 	svc := New()

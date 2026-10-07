@@ -16,16 +16,9 @@ type txContextKey struct{}
 // The per-share metadataCoordinator
 // (pkg/controlplane/runtime/shares/coordinator.go)
 // reads this on every IncrementRefCount / DecrementRefCount call so the
-// underlying SQL/Badger UPDATE shares the caller's txn — without it
-// every increment commits on a fresh pool connection and survives the
+// underlying Badger write shares the caller's txn — without it every
+// increment commits in a transaction of its own and survives the
 // caller's rollback (silent leak).
-//
-// Memory and Badger backends are tolerant of the context-carried tx:
-// memory's WithTransaction holds a single mutex (so the public-store
-// methods would deadlock without this routing), badger uses
-// db.Update which takes the same approach. Postgres is the only
-// backend whose pool semantics make the difference observable in
-// production data.
 //
 // The Transaction's lifetime is bounded by the surrounding
 // WithTransaction call. Callers MUST NOT propagate the returned
@@ -41,12 +34,12 @@ func WithTx(ctx context.Context, tx Transaction) context.Context {
 
 // TxFromContext returns the Transaction bound to ctx via WithTx, or
 // nil if none is present. Backend implementations and engine-coordinator
-// shims call this to route per-call SQL/KV operations through the
-// active transaction instead of opening a fresh connection.
+// shims call this to route per-call KV operations through the
+// active transaction instead of opening a fresh one.
 //
 // Returning nil is the documented "no active txn" signal — callers
 // should fall back to the public MetadataStore surface (which routes
-// through the connection pool / global mutex / db.Update).
+// through a transaction of its own).
 func TxFromContext(ctx context.Context) Transaction {
 	if ctx == nil {
 		return nil

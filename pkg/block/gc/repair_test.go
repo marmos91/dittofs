@@ -11,17 +11,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// repairBackends runs a repair scenario on every metadata backend the check
-// suite covers, so a repair proved on the in-memory store is also proved on a
-// store that has to serialise the transaction.
-var repairBackends = []string{"memory", "sqlite"}
-
-// sqlOnlyBackends is for scenarios built around an unplaceable row. The
-// in-memory store drops a row whose ID suffix is not numeric before returning
-// it from ListFileChunks, so no caller there can see one — the same reason the
-// scan's own unplaceable-row test is SQL-only.
-var sqlOnlyBackends = []string{"sqlite"}
-
 // resolveAt answers the question a read asks of the manifest: which row covers
 // this offset? It is the read path's own resolver, so a test asserting on it
 // asserts on what a reader would get rather than on a re-derived opinion.
@@ -89,56 +78,52 @@ func runRepair(t *testing.T, store metadata.Store, share string, opts ManifestCh
 // claim naming exactly its hash and length. Before the repair the read path
 // refuses the whole payload; after it, the row resolves.
 func TestRepairReplacesUnplaceableRow(t *testing.T) {
-	for _, backend := range sqlOnlyBackends {
-		t.Run(backend, func(t *testing.T) {
-			share := "/repair"
-			store, root := newCheckStore(t, backend, share)
-			payloadID := seedCheckFile(t, store, share, root, "moved", 4096,
-				[]seedRow{{suffix: "not-an-offset", size: 4096, hash: 1}},
-				[]seedRef{{off: 0, size: 4096, hash: 1}},
-			)
+	share := "/repair"
+	store, root := newCheckStore(t, share)
+	payloadID := seedCheckFile(t, store, share, root, "moved", 4096,
+		[]seedRow{{suffix: "not-an-offset", size: 4096, hash: 1}},
+		[]seedRef{{off: 0, size: 4096, hash: 1}},
+	)
 
-			if _, err := resolveAt(t, store, payloadID, 0); !errors.Is(err, block.ErrManifestInconsistent) {
-				t.Fatalf("read path should refuse before the repair, got %v", err)
-			}
-			before := manifestSnapshot(t, store, payloadID)
+	if _, err := resolveAt(t, store, payloadID, 0); !errors.Is(err, block.ErrManifestInconsistent) {
+		t.Fatalf("read path should refuse before the repair, got %v", err)
+	}
+	before := manifestSnapshot(t, store, payloadID)
 
-			plan := runRepair(t, store, share, ManifestCheckOptions{PlanRepairs: true})
-			if plan.RepairsPlanned != 1 || len(plan.Repairs) != 1 {
-				t.Fatalf("want 1 planned repair, got %d: %+v", plan.RepairsPlanned, plan.Repairs)
-			}
-			if got := plan.Repairs[0].Kind; got != RepairReplaceRow {
-				t.Fatalf("want %s, got %s", RepairReplaceRow, got)
-			}
-			if snap := manifestSnapshot(t, store, payloadID); len(snap) != len(before) {
-				t.Fatalf("planning wrote to the store: %d rows before, %d after", len(before), len(snap))
-			}
+	plan := runRepair(t, store, share, ManifestCheckOptions{PlanRepairs: true})
+	if plan.RepairsPlanned != 1 || len(plan.Repairs) != 1 {
+		t.Fatalf("want 1 planned repair, got %d: %+v", plan.RepairsPlanned, plan.Repairs)
+	}
+	if got := plan.Repairs[0].Kind; got != RepairReplaceRow {
+		t.Fatalf("want %s, got %s", RepairReplaceRow, got)
+	}
+	if snap := manifestSnapshot(t, store, payloadID); len(snap) != len(before) {
+		t.Fatalf("planning wrote to the store: %d rows before, %d after", len(before), len(snap))
+	}
 
-			applied := runRepair(t, store, share, ManifestCheckOptions{ApplyRepairs: true, PlanRepairs: true})
-			if applied.RepairsApplied != 1 || applied.RepairsSkipped != 0 {
-				t.Fatalf("want 1 applied 0 skipped, got %d/%d", applied.RepairsApplied, applied.RepairsSkipped)
-			}
+	applied := runRepair(t, store, share, ManifestCheckOptions{ApplyRepairs: true, PlanRepairs: true})
+	if applied.RepairsApplied != 1 || applied.RepairsSkipped != 0 {
+		t.Fatalf("want 1 applied 0 skipped, got %d/%d", applied.RepairsApplied, applied.RepairsSkipped)
+	}
 
-			row, err := resolveAt(t, store, payloadID, 0)
-			if err != nil {
-				t.Fatalf("read path still refuses after the repair: %v", err)
-			}
-			if row == nil {
-				t.Fatal("no row covers offset 0 after the repair")
-			}
-			if row.ID != payloadID+"/0" {
-				t.Fatalf("row ID = %q, want %q", row.ID, payloadID+"/0")
-			}
-			if row.Hash != seedHash(1) || row.DataSize != 4096 {
-				t.Fatalf("repaired row carries hash %s size %d, want the claim's", row.Hash, row.DataSize)
-			}
-			assertNoBytesLost(t, before, manifestSnapshot(t, store, payloadID))
+	row, err := resolveAt(t, store, payloadID, 0)
+	if err != nil {
+		t.Fatalf("read path still refuses after the repair: %v", err)
+	}
+	if row == nil {
+		t.Fatal("no row covers offset 0 after the repair")
+	}
+	if row.ID != payloadID+"/0" {
+		t.Fatalf("row ID = %q, want %q", row.ID, payloadID+"/0")
+	}
+	if row.Hash != seedHash(1) || row.DataSize != 4096 {
+		t.Fatalf("repaired row carries hash %s size %d, want the claim's", row.Hash, row.DataSize)
+	}
+	assertNoBytesLost(t, before, manifestSnapshot(t, store, payloadID))
 
-			after := runRepair(t, store, share, ManifestCheckOptions{})
-			if after.Damaged() {
-				t.Fatalf("payload still reports damage after the repair: %+v", after)
-			}
-		})
+	after := runRepair(t, store, share, ManifestCheckOptions{})
+	if after.Damaged() {
+		t.Fatalf("payload still reports damage after the repair: %+v", after)
 	}
 }
 
@@ -146,51 +131,47 @@ func TestRepairReplacesUnplaceableRow(t *testing.T) {
 // without any surviving row: the file claims a range, no row covers it, and the
 // synced-hash store resolves the claim's hash, so the remote holds the bytes.
 func TestRepairRecreatesRowForSyncedClaim(t *testing.T) {
-	for _, backend := range repairBackends {
-		t.Run(backend, func(t *testing.T) {
-			ctx := t.Context()
-			share := "/repair"
-			store, root := newCheckStore(t, backend, share)
-			payloadID := seedCheckFile(t, store, share, root, "dropped", 8192,
-				[]seedRow{{suffix: "4096", size: 4096, hash: 2}},
-				[]seedRef{{off: 0, size: 4096, hash: 1}, {off: 4096, size: 4096, hash: 2}},
-			)
-			if err := store.MarkSynced(ctx, seedHash(1), block.ChunkLocator{}); err != nil {
-				t.Fatalf("MarkSynced: %v", err)
-			}
-			if err := store.MarkSynced(ctx, seedHash(2), block.ChunkLocator{}); err != nil {
-				t.Fatalf("MarkSynced: %v", err)
-			}
+	ctx := t.Context()
+	share := "/repair"
+	store, root := newCheckStore(t, share)
+	payloadID := seedCheckFile(t, store, share, root, "dropped", 8192,
+		[]seedRow{{suffix: "4096", size: 4096, hash: 2}},
+		[]seedRef{{off: 0, size: 4096, hash: 1}, {off: 4096, size: 4096, hash: 2}},
+	)
+	if err := store.MarkSynced(ctx, seedHash(1), block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+	if err := store.MarkSynced(ctx, seedHash(2), block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
 
-			if row, err := resolveAt(t, store, payloadID, 0); err != nil || row != nil {
-				t.Fatalf("offset 0 should read as a hole before the repair, got row=%v err=%v", row, err)
-			}
-			before := manifestSnapshot(t, store, payloadID)
+	if row, err := resolveAt(t, store, payloadID, 0); err != nil || row != nil {
+		t.Fatalf("offset 0 should read as a hole before the repair, got row=%v err=%v", row, err)
+	}
+	before := manifestSnapshot(t, store, payloadID)
 
-			applied := runRepair(t, store, share, ManifestCheckOptions{
-				CheckSynced: true, PlanRepairs: true, ApplyRepairs: true,
-			})
-			if applied.RepairsApplied != 1 {
-				t.Fatalf("want 1 applied repair, got %d: %+v", applied.RepairsApplied, applied.Repairs)
-			}
-			if got := applied.Repairs[0].Kind; got != RepairRecreateRow {
-				t.Fatalf("want %s, got %s", RepairRecreateRow, got)
-			}
+	applied := runRepair(t, store, share, ManifestCheckOptions{
+		CheckSynced: true, PlanRepairs: true, ApplyRepairs: true,
+	})
+	if applied.RepairsApplied != 1 {
+		t.Fatalf("want 1 applied repair, got %d: %+v", applied.RepairsApplied, applied.Repairs)
+	}
+	if got := applied.Repairs[0].Kind; got != RepairRecreateRow {
+		t.Fatalf("want %s, got %s", RepairRecreateRow, got)
+	}
 
-			row, err := resolveAt(t, store, payloadID, 0)
-			if err != nil || row == nil {
-				t.Fatalf("offset 0 unresolved after the repair: row=%v err=%v", row, err)
-			}
-			if row.Hash != seedHash(1) || row.DataSize != 4096 {
-				t.Fatalf("recreated row carries hash %s size %d, want the claim's", row.Hash, row.DataSize)
-			}
-			assertNoBytesLost(t, before, manifestSnapshot(t, store, payloadID))
+	row, err := resolveAt(t, store, payloadID, 0)
+	if err != nil || row == nil {
+		t.Fatalf("offset 0 unresolved after the repair: row=%v err=%v", row, err)
+	}
+	if row.Hash != seedHash(1) || row.DataSize != 4096 {
+		t.Fatalf("recreated row carries hash %s size %d, want the claim's", row.Hash, row.DataSize)
+	}
+	assertNoBytesLost(t, before, manifestSnapshot(t, store, payloadID))
 
-			after := runRepair(t, store, share, ManifestCheckOptions{CheckSynced: true})
-			if after.Damaged() {
-				t.Fatalf("payload still reports damage after the repair: %+v", after)
-			}
-		})
+	after := runRepair(t, store, share, ManifestCheckOptions{CheckSynced: true})
+	if after.Damaged() {
+		t.Fatalf("payload still reports damage after the repair: %+v", after)
 	}
 }
 
@@ -205,8 +186,6 @@ func TestRepairLeavesUnprovableCasesAlone(t *testing.T) {
 		refs []seedRef
 		// synced names the hash seeds the synced-hash store knows.
 		synced []byte
-		// backends narrows the case to the stores that can host it.
-		backends []string
 	}{{
 		// The claim's hash is not on the remote and no row carries it, so
 		// nothing can serve those bytes. A row here would turn an uncovered
@@ -216,11 +195,10 @@ func TestRepairLeavesUnprovableCasesAlone(t *testing.T) {
 		refs: []seedRef{{off: 0, size: 4096, hash: 1}},
 	}, {
 		// The row's bytes exist but nothing says where they belong.
-		name:     "unplaceable row matching no claim",
-		size:     4096,
-		rows:     []seedRow{{suffix: "not-an-offset", size: 4096, hash: 9}},
-		refs:     []seedRef{{off: 0, size: 4096, hash: 1}},
-		backends: sqlOnlyBackends,
+		name: "unplaceable row matching no claim",
+		size: 4096,
+		rows: []seedRow{{suffix: "not-an-offset", size: 4096, hash: 9}},
+		refs: []seedRef{{off: 0, size: 4096, hash: 1}},
 	}, {
 		// Two rows and two claims share a hash and length, so no pairing is
 		// better founded than any other and neither hash is on the remote.
@@ -230,8 +208,7 @@ func TestRepairLeavesUnprovableCasesAlone(t *testing.T) {
 			{suffix: "not-an-offset-a", size: 4096, hash: 1},
 			{suffix: "not-an-offset-b", size: 4096, hash: 1},
 		},
-		refs:     []seedRef{{off: 0, size: 4096, hash: 1}, {off: 4096, size: 4096, hash: 1}},
-		backends: sqlOnlyBackends,
+		refs: []seedRef{{off: 0, size: 4096, hash: 1}, {off: 4096, size: 4096, hash: 1}},
 	}, {
 		// A pending row already owns the offset. Writing there would drop the
 		// bytes the rollup that created it is about to commit.
@@ -252,48 +229,42 @@ func TestRepairLeavesUnprovableCasesAlone(t *testing.T) {
 	}}
 
 	for _, tc := range cases {
-		backends := tc.backends
-		if backends == nil {
-			backends = repairBackends
-		}
-		for _, backend := range backends {
-			t.Run(tc.name+"/"+backend, func(t *testing.T) {
-				ctx := t.Context()
-				share := "/repair"
-				store, root := newCheckStore(t, backend, share)
-				payloadID := seedCheckFile(t, store, share, root, "f", tc.size, tc.rows, tc.refs)
-				for _, h := range tc.synced {
-					if err := store.MarkSynced(ctx, seedHash(h), block.ChunkLocator{}); err != nil {
-						t.Fatalf("MarkSynced: %v", err)
-					}
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			share := "/repair"
+			store, root := newCheckStore(t, share)
+			payloadID := seedCheckFile(t, store, share, root, "f", tc.size, tc.rows, tc.refs)
+			for _, h := range tc.synced {
+				if err := store.MarkSynced(ctx, seedHash(h), block.ChunkLocator{}); err != nil {
+					t.Fatalf("MarkSynced: %v", err)
 				}
-				before := manifestSnapshot(t, store, payloadID)
+			}
+			before := manifestSnapshot(t, store, payloadID)
 
-				res := runRepair(t, store, share, ManifestCheckOptions{
-					CheckSynced: true, PlanRepairs: true, ApplyRepairs: true,
-				})
-				if res.RepairsPlanned != 0 || len(res.Repairs) != 0 {
-					t.Fatalf("planned %d repair(s) with no evidence: %+v", res.RepairsPlanned, res.Repairs)
-				}
-				if !res.Damaged() {
-					t.Fatal("scan stopped reporting damage it cannot repair")
-				}
-
-				after := manifestSnapshot(t, store, payloadID)
-				if len(after) != len(before) {
-					t.Fatalf("manifest changed: %d rows before, %d after", len(before), len(after))
-				}
-				for id, row := range before {
-					got, ok := after[id]
-					if !ok {
-						t.Fatalf("row %s was removed", id)
-					}
-					if got.Hash != row.Hash || got.DataSize != row.DataSize {
-						t.Fatalf("row %s was rewritten: %+v -> %+v", id, row, got)
-					}
-				}
+			res := runRepair(t, store, share, ManifestCheckOptions{
+				CheckSynced: true, PlanRepairs: true, ApplyRepairs: true,
 			})
-		}
+			if res.RepairsPlanned != 0 || len(res.Repairs) != 0 {
+				t.Fatalf("planned %d repair(s) with no evidence: %+v", res.RepairsPlanned, res.Repairs)
+			}
+			if !res.Damaged() {
+				t.Fatal("scan stopped reporting damage it cannot repair")
+			}
+
+			after := manifestSnapshot(t, store, payloadID)
+			if len(after) != len(before) {
+				t.Fatalf("manifest changed: %d rows before, %d after", len(before), len(after))
+			}
+			for id, row := range before {
+				got, ok := after[id]
+				if !ok {
+					t.Fatalf("row %s was removed", id)
+				}
+				if got.Hash != row.Hash || got.DataSize != row.DataSize {
+					t.Fatalf("row %s was rewritten: %+v -> %+v", id, row, got)
+				}
+			}
+		})
 	}
 }
 
@@ -410,7 +381,7 @@ func TestRepairSkipsWhenEvidenceMoved(t *testing.T) {
 				action.FromRowID = payloadID + "/x"
 			}
 
-			store, _ := newCheckStore(t, "memory", "/repair")
+			store, _ := newCheckStore(t, "/repair")
 			if tc.synced {
 				if err := store.MarkSynced(t.Context(), hash, block.ChunkLocator{}); err != nil {
 					t.Fatalf("MarkSynced: %v", err)
@@ -450,7 +421,7 @@ func TestRepairSkipsWhenEvidenceMoved(t *testing.T) {
 // repair.
 func TestRepairToleratesAVanishedFile(t *testing.T) {
 	share := "/repair"
-	store, _ := newCheckStore(t, "memory", share)
+	store, _ := newCheckStore(t, share)
 
 	gone := &metadata.File{
 		ID:        uuid.New(),
@@ -487,35 +458,29 @@ func TestRepairToleratesAVanishedFile(t *testing.T) {
 // transaction are checked against each other's writes. Two block-list entries
 // claiming the same range would otherwise both target one manifest key, and the
 // second put would silently replace the first.
-//
-// Only the in-memory store can host it: the SQL backends key a file's block
-// list by offset, so the duplicate entry never survives the write that seeds it.
-func TestRepairDoesNotOverwriteItsOwnWrite(t *testing.T) {
-	for _, backend := range []string{"memory"} {
-		t.Run(backend, func(t *testing.T) {
-			ctx := t.Context()
-			share := "/repair"
-			store, root := newCheckStore(t, backend, share)
-			payloadID := seedCheckFile(t, store, share, root, "twice", 4096, nil,
-				[]seedRef{{off: 0, size: 4096, hash: 1}, {off: 0, size: 4096, hash: 2}},
-			)
-			for _, h := range []byte{1, 2} {
-				if err := store.MarkSynced(ctx, seedHash(h), block.ChunkLocator{}); err != nil {
-					t.Fatalf("MarkSynced: %v", err)
-				}
-			}
 
-			res := runRepair(t, store, share, ManifestCheckOptions{
-				CheckSynced: true, PlanRepairs: true, ApplyRepairs: true,
-			})
-			if res.RepairsApplied != 1 || res.RepairsSkipped != 1 {
-				t.Fatalf("want 1 applied 1 skipped, got %d/%d: %+v",
-					res.RepairsApplied, res.RepairsSkipped, res.Repairs)
-			}
-			if rows := manifestSnapshot(t, store, payloadID); len(rows) != 1 {
-				t.Fatalf("want a single row at the offset, got %d", len(rows))
-			}
-		})
+func TestRepairDoesNotOverwriteItsOwnWrite(t *testing.T) {
+	ctx := t.Context()
+	share := "/repair"
+	store, root := newCheckStore(t, share)
+	payloadID := seedCheckFile(t, store, share, root, "twice", 4096, nil,
+		[]seedRef{{off: 0, size: 4096, hash: 1}, {off: 0, size: 4096, hash: 2}},
+	)
+	for _, h := range []byte{1, 2} {
+		if err := store.MarkSynced(ctx, seedHash(h), block.ChunkLocator{}); err != nil {
+			t.Fatalf("MarkSynced: %v", err)
+		}
+	}
+
+	res := runRepair(t, store, share, ManifestCheckOptions{
+		CheckSynced: true, PlanRepairs: true, ApplyRepairs: true,
+	})
+	if res.RepairsApplied != 1 || res.RepairsSkipped != 1 {
+		t.Fatalf("want 1 applied 1 skipped, got %d/%d: %+v",
+			res.RepairsApplied, res.RepairsSkipped, res.Repairs)
+	}
+	if rows := manifestSnapshot(t, store, payloadID); len(rows) != 1 {
+		t.Fatalf("want a single row at the offset, got %d", len(rows))
 	}
 }
 
@@ -525,7 +490,7 @@ func TestRepairDoesNotOverwriteItsOwnWrite(t *testing.T) {
 func TestRepairPlanHonoursTheReportCap(t *testing.T) {
 	ctx := t.Context()
 	share := "/repair"
-	store, root := newCheckStore(t, "memory", share)
+	store, root := newCheckStore(t, share)
 
 	// One payload whose claims outnumber the report cap on their own.
 	const claims = maxManifestCheckFindings + 5

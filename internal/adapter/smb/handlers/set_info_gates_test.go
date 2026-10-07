@@ -11,7 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // Handler-level coverage for the SET_INFO / READ / WRITE access-gate and
@@ -62,10 +63,10 @@ func setupSetInfoGateTest(t *testing.T, grantedAccess uint32) (*Handler, [16]byt
 	}
 	rt := newTestRuntime(t, cps)
 
-	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "gatemeta", Type: "memory"}); err != nil {
+	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "gatemeta", Type: "badger", Config: `{"in_memory":true}`}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	if err := rt.RegisterMetadataStore("gatemeta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("gatemeta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 

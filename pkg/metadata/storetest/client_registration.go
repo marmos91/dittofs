@@ -17,7 +17,7 @@ type ClientRegistrationStoreProvider interface {
 }
 
 // registrationTimeTolerance bounds RegisteredAt round-trip drift, the way the
-// recovery suite does: postgres keeps TIMESTAMPTZ at microsecond resolution.
+// recovery suite does.
 const registrationTimeTolerance = time.Millisecond
 
 func testRegistration(clientID, monName string, priv byte) *lock.PersistedClientRegistration {

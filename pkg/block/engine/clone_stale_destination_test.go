@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // refsOf is manifestRefs without the rows a copy cannot hand on: a zero-hash
@@ -85,7 +86,7 @@ func serverSideCopyRefs(t *testing.T, ctx context.Context, bs *engine.Store, ms 
 // would pass this test on the destination alone.
 func TestCopy_DestinationServesTheCopiedContent(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	bs, _ := openOfflineEngine(t, t.TempDir(), ms, mem)
 	t.Cleanup(func() { _ = bs.Close() })
@@ -146,7 +147,7 @@ func TestCopy_DestinationServesTheCopiedContent(t *testing.T) {
 // there is nothing on the remote to hydrate it from.
 func TestCopy_DestinationSparseRangeReadsAsZeros(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	bs, _ := openOfflineEngine(t, t.TempDir(), ms, mem)
 	t.Cleanup(func() { _ = bs.Close() })
@@ -224,7 +225,7 @@ func setSize(t *testing.T, ctx context.Context, ms metadata.Store, payloadID str
 // is a row the reap would delete out from under a live file.
 func TestCopy_SelfCopyKeepsItsOwnRows(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	bs, _ := openOfflineEngine(t, t.TempDir(), ms, mem)
 	t.Cleanup(func() { _ = bs.Close() })
@@ -263,7 +264,7 @@ func TestCopy_SelfCopyKeepsItsOwnRows(t *testing.T) {
 // hold the content the copy replaced.
 func TestCopy_SparseSourceLeavesNothingOfTheDestination(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	bs, _ := openOfflineEngine(t, t.TempDir(), ms, mem)
 	t.Cleanup(func() { _ = bs.Close() })

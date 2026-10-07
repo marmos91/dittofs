@@ -70,7 +70,7 @@ needs either.
 
 ```
 --profile PROFILE        Storage profile (default: memory)
-                         Valid: memory badger postgres postgres-s3
+                         Valid: memory badger badger-s3
 --minor-version VERSION  NFSv4 minor version (default: 4.0). Valid: 4.0, 4.1
 --server HOST:PORT       Server to test (default: localhost:12049)
 --export PATH            Export path on the server (default: /export)

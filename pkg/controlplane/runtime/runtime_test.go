@@ -8,7 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 func TestNew(t *testing.T) {
@@ -58,7 +59,7 @@ func TestSetShutdownTimeout(t *testing.T) {
 func TestRegisterMetadataStore(t *testing.T) {
 	rt := New(nil)
 	setJournalRoot(t, rt)
-	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 
 	t.Run("register valid store", func(t *testing.T) {
 		err := rt.RegisterMetadataStore("test-store", metaStore)
@@ -92,7 +93,7 @@ func TestRegisterMetadataStore(t *testing.T) {
 func TestGetMetadataStore(t *testing.T) {
 	rt := New(nil)
 	setJournalRoot(t, rt)
-	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-store", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore failed: %v", err)
 	}
@@ -127,10 +128,10 @@ func TestListMetadataStores(t *testing.T) {
 	})
 
 	t.Run("with registered stores", func(t *testing.T) {
-		if err := rt.RegisterMetadataStore("store1", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+		if err := rt.RegisterMetadataStore("store1", badgertest.NewInMemory(t)); err != nil {
 			t.Fatalf("RegisterMetadataStore failed: %v", err)
 		}
-		if err := rt.RegisterMetadataStore("store2", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+		if err := rt.RegisterMetadataStore("store2", badgertest.NewInMemory(t)); err != nil {
 			t.Fatalf("RegisterMetadataStore failed: %v", err)
 		}
 
@@ -149,7 +150,7 @@ func TestCountMetadataStores(t *testing.T) {
 		t.Errorf("expected 0, got %d", rt.CountMetadataStores())
 	}
 
-	if err := rt.RegisterMetadataStore("store1", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("store1", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore failed: %v", err)
 	}
 	if rt.CountMetadataStores() != 1 {
@@ -258,7 +259,7 @@ func TestListMountsIsolation(t *testing.T) {
 func TestShareOperations(t *testing.T) {
 	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
-	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore failed: %v", err)
 	}
@@ -519,7 +520,7 @@ func TestApplyIdentityMapping(t *testing.T) {
 func TestGetMetadataStoreForShare(t *testing.T) {
 	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
-	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore failed: %v", err)
 	}
@@ -568,7 +569,7 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 	ctx := context.Background()
 
 	// Register a metadata store and create a share so we can get a valid handle.
-	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore failed: %v", err)
 	}
@@ -656,7 +657,7 @@ func TestCloseMetadataStores(t *testing.T) {
 	setJournalRoot(t, rt)
 
 	// Register a memory store (which implements io.Closer via its Close method if any)
-	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-store", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore failed: %v", err)
 	}

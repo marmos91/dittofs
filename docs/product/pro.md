@@ -24,7 +24,7 @@ Manage your entire DittoFS deployment from the browser.
     <td width="50%"><img src="../assets/pro/block-stores.png" alt="Block stores" /><br /><sub><b>Block stores</b> — S3 or memory, one per share, fronted by an on-disk journal.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="../assets/pro/metadata-stores.png" alt="Metadata stores" /><br /><sub><b>Metadata stores</b> — Badger, SQLite, PostgreSQL, or Memory.</sub></td>
+    <td width="50%"><img src="../assets/pro/metadata-stores.png" alt="Metadata stores" /><br /><sub><b>Metadata stores</b> — Badger, on disk or in memory.</sub></td>
     <td width="50%"><img src="../assets/pro/share-mount.png" alt="Mount instructions" /><br /><sub><b>Mount instructions</b> — per-share CLI and native NFS/SMB commands.</sub></td>
   </tr>
   <tr>

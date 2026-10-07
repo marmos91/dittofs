@@ -7,7 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newDrainResetFixture builds a full engine.Store over an fs local
@@ -18,7 +19,7 @@ import (
 // taken before the async rollup catches up.
 func newDrainResetFixture(t *testing.T) (*Store, *journal.Store) {
 	t.Helper()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024,
 		MaxLogBytes: 128 * 1024 * 1024,
 	})

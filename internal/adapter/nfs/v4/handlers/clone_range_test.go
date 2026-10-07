@@ -11,7 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // Use the runtime's engine so CLONE exercises the manifest coordinator and
@@ -19,7 +20,7 @@ import (
 func newCloneRangeFixture(t *testing.T) *ioTestFixture {
 	t.Helper()
 	rt, bsID := newTestShareRuntime(t)
-	store := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("clone-meta", store); err != nil {
 		t.Fatal(err)
 	}

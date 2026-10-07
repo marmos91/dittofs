@@ -15,10 +15,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
-	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
-	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
 
 // InitializeFromStore creates a runtime and loads metadata stores from the database.
@@ -52,6 +48,16 @@ func loadMetadataStores(ctx context.Context, rt *Runtime, s store.Store) error {
 	return nil
 }
 
+// ValidateMetadataStoreType rejects every metadata store type but badger, the
+// only backend. A row still naming a removed type (memory, sqlite, postgres)
+// must fail loudly rather than start its shares on some other backend.
+func ValidateMetadataStoreType(storeType string) error {
+	if storeType != "badger" {
+		return fmt.Errorf("unsupported metadata store type %q: badger is the only metadata store type", storeType)
+	}
+	return nil
+}
+
 // CreateMetadataStoreFromConfig creates a metadata store instance from type and config.
 func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg interface {
 	GetConfig() (map[string]any, error)
@@ -61,147 +67,45 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
 
-	switch storeType {
-	case "memory":
-		return memory.NewMemoryMetadataStoreWithDefaults(), nil
-
-	case "badger":
-		dbPath, ok := config["path"].(string)
-		if !ok || dbPath == "" {
-			dbPath, ok = config["db_path"].(string) // accept legacy key
-			if !ok || dbPath == "" {
-				return nil, errors.New("badger metadata store requires path as string")
-			}
-		}
-		dbPath, err = pathutil.ExpandPath(dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to expand path %q: %w", dbPath, err)
-		}
-		// Optional per-store Badger cache overrides (#1245 Bug D). The docs
-		// define 0 = unset (fall through to global config then RAM-relative
-		// auto-sizing) and positive = explicit size in MiB. A negative value is
-		// a config error — reject it here rather than letting it silently fall
-		// through to auto-sizing as if it were unset.
-		blockCacheMB := configInt64(config, "block_cache_mb")
-		if blockCacheMB < 0 {
-			return nil, fmt.Errorf("badger metadata store block_cache_mb must be >= 0 (0 = auto), got %d", blockCacheMB)
-		}
-		indexCacheMB := configInt64(config, "index_cache_mb")
-		if indexCacheMB < 0 {
-			return nil, fmt.Errorf("badger metadata store index_cache_mb must be >= 0 (0 = auto), got %d", indexCacheMB)
-		}
-		// Relaxed durability defers namespace-op fsyncs for higher single-thread
-		// throughput; data-paired writes stay synchronous (#1573 Wall 1).
-		// Shipped default: enabled. Operators restore strict per-txn fsync with
-		// relaxed_durability: false.
-		relaxedDurability := configBoolDefault(config, "relaxed_durability", true)
-		return badger.NewBadgerMetadataStoreWithDefaultsAndCaches(ctx, dbPath, blockCacheMB, indexCacheMB, relaxedDurability)
-
-	case "postgres":
-		pgCfg := &postgres.PostgresMetadataStoreConfig{}
-		// See badger branch: relaxed by default, opt out with relaxed_durability: false.
-		pgCfg.RelaxedDurability = configBoolDefault(config, "relaxed_durability", true)
-
-		if host, ok := config["host"].(string); ok {
-			pgCfg.Host = host
-		} else {
-			return nil, errors.New("postgres metadata store requires host")
-		}
-		if port, ok := config["port"].(float64); ok {
-			pgCfg.Port = int(port)
-		} else if portInt, ok := config["port"].(int); ok {
-			pgCfg.Port = portInt
-		} else {
-			pgCfg.Port = 5432 // default
-		}
-		if database, ok := config["database"].(string); ok {
-			pgCfg.Database = database
-		} else if dbname, ok := config["dbname"].(string); ok {
-			pgCfg.Database = dbname
-		} else {
-			return nil, errors.New("postgres metadata store requires database")
-		}
-		if user, ok := config["user"].(string); ok {
-			pgCfg.User = user
-		} else {
-			return nil, errors.New("postgres metadata store requires user")
-		}
-		if password, ok := config["password"].(string); ok {
-			pgCfg.Password = password
-		} else {
-			return nil, errors.New("postgres metadata store requires password")
-		}
-		if sslmode, ok := config["sslmode"].(string); ok {
-			pgCfg.SSLMode = sslmode
-		} else {
-			pgCfg.SSLMode = "disable" // default for local dev
-		}
-
-		if maxConns, ok := config["max_conns"].(float64); ok {
-			pgCfg.MaxConns = int32(maxConns)
-		}
-		if minConns, ok := config["min_conns"].(float64); ok {
-			pgCfg.MinConns = int32(minConns)
-		}
-		// Prepared statements stay on unless the operator turns them off, so the
-		// zero value is the shipped behaviour and a store built without this key
-		// keeps the cache.
-		pgCfg.DisablePreparedStatements = configBoolDefault(config, "disable_prepared_statements", false)
-
-		pgCfg.AutoMigrate = true
-
-		return postgres.NewPostgresMetadataStore(ctx, pgCfg, sqlCapabilities())
-
-	case "sqlite":
-		dbPath, ok := config["path"].(string)
-		if !ok || dbPath == "" {
-			dbPath, ok = config["db_path"].(string) // accept legacy key
-			if !ok || dbPath == "" {
-				return nil, errors.New("sqlite metadata store requires path as string")
-			}
-		}
-		dbPath, err = pathutil.ExpandPath(dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to expand path %q: %w", dbPath, err)
-		}
-
-		sqliteCfg := &sqlite.SQLiteMetadataStoreConfig{
-			Path:        dbPath,
-			AutoMigrate: true,
-		}
-
-		return sqlite.NewSQLiteMetadataStore(ctx, sqliteCfg, sqlCapabilities())
-
-	default:
-		return nil, fmt.Errorf("unsupported metadata store type: %s", storeType)
+	if err := ValidateMetadataStoreType(storeType); err != nil {
+		return nil, err
 	}
-}
 
-// sqlCapabilities returns the filesystem capabilities both SQL-backed metadata
-// stores advertise. They share a schema and a row codec, so anything a client
-// is told about one is true of the other.
-//
-// These are advertised to clients, not enforced here: the transfer sizes are
-// the shipped defaults rather than a backend limit, and ACLs are reported off
-// because neither store persists them yet.
-func sqlCapabilities() metadata.FilesystemCapabilities {
-	return metadata.FilesystemCapabilities{
-		MaxReadSize:           1024 * 1024,
-		PreferredReadSize:     64 * 1024,
-		MaxWriteSize:          1024 * 1024,
-		PreferredWriteSize:    64 * 1024,
-		MaxFileSize:           1024 * 1024 * 1024 * 100, // 100 GB
-		MaxFilenameLen:        255,
-		MaxPathLen:            4096,
-		MaxHardLinkCount:      32767,
-		SupportsHardLinks:     true,
-		SupportsSymlinks:      true,
-		CaseSensitive:         true,
-		CasePreserving:        true,
-		SupportsACLs:          false,
-		SupportsExtendedAttrs: true, // EAs persist in the inodes.eas column.
-		TimestampResolution:   storesql.TimestampResolution,
+	if configBoolDefault(config, "in_memory", false) {
+		// Nothing survives a restart: for tests and throwaway servers only.
+		return badger.NewInMemoryBadgerMetadataStore(ctx)
 	}
+
+	dbPath, ok := config["path"].(string)
+	if !ok || dbPath == "" {
+		dbPath, ok = config["db_path"].(string) // accept legacy key
+		if !ok || dbPath == "" {
+			return nil, errors.New("badger metadata store requires path as string (or in_memory: true)")
+		}
+	}
+	dbPath, err = pathutil.ExpandPath(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand path %q: %w", dbPath, err)
+	}
+	// Optional per-store Badger cache overrides (#1245 Bug D). The docs
+	// define 0 = unset (fall through to global config then RAM-relative
+	// auto-sizing) and positive = explicit size in MiB. A negative value is
+	// a config error — reject it here rather than letting it silently fall
+	// through to auto-sizing as if it were unset.
+	blockCacheMB := configInt64(config, "block_cache_mb")
+	if blockCacheMB < 0 {
+		return nil, fmt.Errorf("badger metadata store block_cache_mb must be >= 0 (0 = auto), got %d", blockCacheMB)
+	}
+	indexCacheMB := configInt64(config, "index_cache_mb")
+	if indexCacheMB < 0 {
+		return nil, fmt.Errorf("badger metadata store index_cache_mb must be >= 0 (0 = auto), got %d", indexCacheMB)
+	}
+	// Relaxed durability defers namespace-op fsyncs for higher single-thread
+	// throughput; data-paired writes stay synchronous (#1573 Wall 1).
+	// Shipped default: enabled. Operators restore strict per-txn fsync with
+	// relaxed_durability: false.
+	relaxedDurability := configBoolDefault(config, "relaxed_durability", true)
+	return badger.NewBadgerMetadataStoreWithDefaultsAndCaches(ctx, dbPath, blockCacheMB, indexCacheMB, relaxedDurability)
 }
 
 // configInt64 extracts an integer value from a type-specific config map under

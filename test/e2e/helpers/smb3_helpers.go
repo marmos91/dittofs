@@ -49,7 +49,7 @@ func SetupSMB3TestEnv(t *testing.T) *SMB3TestEnv {
 	metaStoreName := UniqueTestName("smb3meta")
 	blockStoreName := UniqueTestName("smb3block")
 
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")

@@ -39,10 +39,9 @@ func runFileOpsTests(t *testing.T, factory StoreFactory) {
 // testTimestampPrecision verifies file timestamps round-trip with full
 // nanosecond (sub-microsecond) fidelity through UpdateAttrs/GetFile on every
 // backend. SMB FILETIME carries 100ns granularity; a backend that truncates to
-// microseconds (the postgres TIMESTAMPTZ default) returns a different FILETIME
-// on QUERY than was set, failing WPTS BVT_SMB2Basic_QueryAndSet_FileInfo
-// while memory/badger pass (#882). This is the deterministic CI replacement for
-// that WPTS assertion's precision class (#869).
+// microseconds returns a different FILETIME on QUERY than was set, failing
+// WPTS BVT_SMB2Basic_QueryAndSet_FileInfo. This is the deterministic CI
+// replacement for that WPTS assertion's precision class.
 func testTimestampPrecision(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	rootHandle := createTestShare(t, store, "/test")
@@ -93,7 +92,7 @@ func testTimestampPrecision(t *testing.T, factory StoreFactory) {
 // SMB adapter stores DOS attributes (e.g. modeDOSExplicit = 0x10000) in high
 // mode bits; a backend that range-checks mode to <= 0o7777 rejects a SET_INFO
 // FILE_BASIC_INFORMATION with attributes as STATUS_INVALID_PARAMETER, failing
-// the WPTS BVT ChangeNotify tests on postgres while memory/badger pass (#882).
+// the WPTS BVT ChangeNotify tests.
 func testHighModeBits(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	rootHandle := createTestShare(t, store, "/test")
@@ -268,10 +267,9 @@ func testCreateHardLink(t *testing.T, factory StoreFactory) {
 
 // testHardLinkRenameKeepsOtherName is the core regression #1166 enables:
 // renaming one name of a hard-linked inode must not break, stale, or detach the
-// inode's other names. This was the postgres-only failure class (the single
-// canonical files.path went dead when the matching name was renamed away). With
-// File.Path derived from the namespace on every backend, the survivor stays
-// fully reachable.
+// inode's other names: a single stored canonical path would go dead when the
+// matching name was renamed away. With File.Path derived from the namespace,
+// the survivor stays fully reachable.
 //
 // Steps: create A, hard-link it as B, rename A->C; assert (a) B still resolves
 // to the same inode, (b) GetFile on the inode succeeds with a valid derived
@@ -766,9 +764,8 @@ func testHardLinkTxListChildrenShowsNlinkGT1(t *testing.T, factory StoreFactory)
 
 // testHardLinkGetParentIsValid verifies that GetParent on a multi-linked inode
 // (names in two different directories) returns a VALID parent handle — one of
-// the two real parents — never an error or a zero/garbage handle. Postgres
-// resolves this via LIMIT 1 over parent_child_map, so the contract is "one of
-// the real parents", not a single deterministic answer.
+// the two real parents — never an error or a zero/garbage handle. The contract
+// is "one of the real parents", not a single deterministic answer.
 func testHardLinkGetParentIsValid(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	rootHandle := createTestShare(t, store, "/test")

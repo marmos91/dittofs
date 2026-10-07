@@ -8,7 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // Handler-level regression coverage for the MS-FSA §2.1.5.1.1 ("Creation of a New File") delete-on-close
@@ -28,7 +29,7 @@ func setupDocTest(t *testing.T) (*Handler, *runtime.Runtime, *SMBHandlerContext,
 
 	rt, bsID := newTestShareRuntime(t)
 
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

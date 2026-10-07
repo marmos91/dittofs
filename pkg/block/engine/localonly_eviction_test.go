@@ -8,7 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // localOnlyPair is newLocalOnlyEngine but hands back the local store too, so the
@@ -52,7 +53,7 @@ func localOnlyPair(t *testing.T, ms metadata.Store) (*engine.Store, *journal.Sto
 // CanEvict(), which also requires the carve path to be wired to a remote.
 func TestLocalOnlyShareNeverEvictsItsOnlyCopy(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, localStore := localOnlyPair(t, ms)
 
 	const payloadID = "p2314"

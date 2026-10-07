@@ -11,14 +11,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newLocalOnlyTestEngine builds a journal-backed engine with no remote, so
 // CloneWholeFile takes materializeLocalClone rather than the manifest-only
 // reflink. The engine's own tests cover the remote-backed path; this fixture is
 // the only way to reach the local-only one.
-func newLocalOnlyTestEngine(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *journal.Store) {
+func newLocalOnlyTestEngine(t *testing.T, coord *fakeCoordinator, ms *badger.BadgerMetadataStore) (*engine.Store, *journal.Store) {
 	t.Helper()
 	localStore, err := journal.Open(t.TempDir(), journal.Config{MaxLocalBytes: 100 * 1024 * 1024})
 	if err != nil {
@@ -67,7 +69,7 @@ func writeAndSeal(t *testing.T, ctx context.Context, bs *engine.Store, payloadID
 // and leaves both the local content and manifest intact.
 func TestMaterializeLocalClone_RejectsLongerDestination(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, _ := newLocalOnlyTestEngine(t, &fakeCoordinator{}, ms)
 
 	const srcSize, dstSize = 4096, 8192
@@ -125,7 +127,7 @@ func TestMaterializeLocalClone_RejectsLongerDestination(t *testing.T) {
 // it grows the destination, and every copied byte must survive.
 func TestMaterializeLocalClone_GrowsWithoutClipping(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, _ := newLocalOnlyTestEngine(t, &fakeCoordinator{}, ms)
 
 	const srcSize, dstSize = 8192, 4096
@@ -149,7 +151,7 @@ func TestMaterializeLocalClone_GrowsWithoutClipping(t *testing.T) {
 	}
 }
 
-func mustListChunks(t *testing.T, ctx context.Context, ms *metadatamemory.MemoryMetadataStore, payloadID string) []*block.FileChunk {
+func mustListChunks(t *testing.T, ctx context.Context, ms *badger.BadgerMetadataStore, payloadID string) []*block.FileChunk {
 	t.Helper()
 	rows, err := ms.ListFileChunks(ctx, payloadID)
 	if err != nil {

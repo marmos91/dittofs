@@ -130,9 +130,7 @@ type PersistedDurableHandle struct {
 	// continuous-availability share. Persisted so a reconnect re-echoes the
 	// PERSISTENT flag in the DH2Q response (the open remains persistent across
 	// the disconnect). Pre-existing rows decode false, which the reconnect
-	// handler treats as a plain durable handle. The memory backend round-trips
-	// this via struct copy and badger via JSON; postgres needs an explicit
-	// column.
+	// handler treats as a plain durable handle.
 	IsPersistent    bool
 	Username        string
 	SessionKeyHash  [32]byte // SHA-256 hash, not raw key
@@ -206,7 +204,7 @@ func (h *PersistedDurableHandle) LockOpenID() string {
 }
 
 // DurableHandleStore provides persistence for SMB3 durable handle state.
-// Implementations exist in memory, badger, and postgres stores.
+// The badger metadata store implements it.
 //
 // Reconnection flow:
 //  1. On disconnect: persist open file state via PutDurableHandle

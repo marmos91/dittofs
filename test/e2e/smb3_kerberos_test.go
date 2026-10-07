@@ -675,7 +675,7 @@ func setupSMB3KerberosShare(t *testing.T, runner *helpers.CLIRunner, shareName s
 	metaStore := fmt.Sprintf("smb3meta-%s", strings.TrimPrefix(shareName, "/"))
 	blockStore := fmt.Sprintf("smb3local-%s", strings.TrimPrefix(shareName, "/"))
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 	_, err = runner.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err)

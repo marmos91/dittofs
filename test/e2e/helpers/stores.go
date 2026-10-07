@@ -24,7 +24,7 @@ type MetadataStoreOption func(*metadataStoreOptions)
 type metadataStoreOptions struct {
 	// BadgerDB specific
 	dbPath string
-	// PostgreSQL specific (for raw config)
+	// Raw JSON config, passed verbatim to --config
 	rawConfig string
 }
 
@@ -35,8 +35,7 @@ func WithMetaDBPath(path string) MetadataStoreOption {
 	}
 }
 
-// WithMetaRawConfig sets the raw JSON config for the store.
-// Use this for complex configurations like PostgreSQL.
+// WithMetaRawConfig sets the raw JSON config for the store, e.g. {"in_memory":true}.
 func WithMetaRawConfig(config string) MetadataStoreOption {
 	return func(o *metadataStoreOptions) {
 		o.rawConfig = config
@@ -48,7 +47,7 @@ func WithMetaRawConfig(config string) MetadataStoreOption {
 // =============================================================================
 
 // CreateMetadataStore creates a new metadata store via the CLI.
-// storeType should be "memory", "badger", or "postgres".
+// storeType should be "badger", the only metadata store type the server accepts.
 func (r *CLIRunner) CreateMetadataStore(name, storeType string, opts ...MetadataStoreOption) (*MetadataStore, error) {
 	options := &metadataStoreOptions{}
 	for _, opt := range opts {
@@ -76,6 +75,12 @@ func (r *CLIRunner) CreateMetadataStore(name, storeType string, opts ...Metadata
 	}
 
 	return &store, nil
+}
+
+// CreateInMemoryMetadataStore creates a badger metadata store held entirely in
+// RAM; its contents are lost when the server stops.
+func (r *CLIRunner) CreateInMemoryMetadataStore(name string) (*MetadataStore, error) {
+	return r.CreateMetadataStore(name, "badger", WithMetaRawConfig(`{"in_memory":true}`))
 }
 
 // ListMetadataStores lists all metadata stores via the CLI.

@@ -1,2 +1,0 @@
-DROP INDEX IF EXISTS idx_files_has_acl;
-ALTER TABLE files DROP COLUMN IF EXISTS acl;

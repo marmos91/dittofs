@@ -13,12 +13,11 @@ import "time"
 // stamped over a ChangeTime the client had asked to hold.
 //
 // This is deliberately not a field on PersistedDurableHandle. That struct is
-// persisted by every backend — memory by struct copy, badger through JSON,
-// postgres through explicit columns — so carrying the freeze there would write
-// it to disk and let it survive a server restart. A freeze is per-open-handle
+// persisted by the metadata store, so carrying the freeze there would write it
+// to disk and let it survive a server restart. A freeze is per-open-handle
 // state (MS-FSA 2.1.5.15.2) and must not: a reconnect to the same live server
 // keeps it, a restart drops it. A process-local side table is the shape that
-// says exactly that, and it needs no migration on any backend.
+// says exactly that, and it needs no store migration.
 //
 // Entries are keyed by the durable handle's ID, which is stable across the
 // disconnect — buildPersistedDurableHandle mints it and validateAndRestore

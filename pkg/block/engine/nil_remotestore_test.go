@@ -7,14 +7,15 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newNilRemoteStoreEnv creates a test environment with nil remoteStore (local-only mode).
 func newNilRemoteStoreEnv(t *testing.T) (*RemoteSync, local.LocalStore, func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bc, err := journal.Open(tmpDir, journal.Config{})
 	if err != nil {
 		t.Fatalf("journal.Open() error = %v", err)

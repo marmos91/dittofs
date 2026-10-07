@@ -17,7 +17,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
@@ -34,7 +36,7 @@ type lifecycleFixture struct {
 	shareName     string
 	localStoreDir string
 	remote        *remotememory.Store
-	metaStore     *metadatamemory.MemoryMetadataStore
+	metaStore     *badger.BadgerMetadataStore
 	snapID        string
 
 	// Distinct first byte per hash → distinct block IDs; aids readability
@@ -70,7 +72,7 @@ func setupSnapshotLifecycle(t *testing.T) *lifecycleFixture {
 	rt := New(cp)
 	setJournalRoot(t, rt)
 
-	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("memory", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -335,7 +337,7 @@ func blockIDFor(h block.ContentHash) string {
 // marker carrying the block locator. This mirrors what the carver's
 // DefaultCommitBlock produces, minus the codec framing the GC reclaim path
 // never inspects.
-func mustSeedPackedRemote(t *testing.T, st *metadatamemory.MemoryMetadataStore, rs *remotememory.Store, h block.ContentHash, data []byte) {
+func mustSeedPackedRemote(t *testing.T, st *badger.BadgerMetadataStore, rs *remotememory.Store, h block.ContentHash, data []byte) {
 	t.Helper()
 	ctx := context.Background()
 	blockID := blockIDFor(h)
@@ -382,7 +384,7 @@ func mustNotHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h bl
 // just the HashSet for assertion. Surfaces the same call path the production
 // snapshot creator uses without coupling the test to manifest contents derived
 // from live metadata.
-func snapshotAndDiscard(ctx context.Context, st *metadatamemory.MemoryMetadataStore) (*block.HashSet, error) {
+func snapshotAndDiscard(ctx context.Context, st *badger.BadgerMetadataStore) (*block.HashSet, error) {
 	var buf bytes.Buffer
 	return st.WriteSnapshot(ctx, &buf)
 }

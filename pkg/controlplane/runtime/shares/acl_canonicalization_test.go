@@ -6,7 +6,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // testBlockStoreID is the block store every test share in this package
@@ -64,7 +65,7 @@ func TestAddShare_AclFlagInheritedCanonicalization_Propagates(t *testing.T) {
 		{"false_propagates_samba_opt_out", "/acl-off", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mds := metamem.NewMemoryMetadataStoreWithDefaults()
+			mds := badgertest.NewInMemory(t)
 			t.Cleanup(func() { _ = mds.Close() })
 
 			svc := New()

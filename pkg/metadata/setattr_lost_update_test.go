@@ -36,11 +36,11 @@ func windowPeer(t *testing.T, ws *windowStore, peer func()) func() {
 	}
 }
 
-// lostUpdateFixture builds a sqlite-backed Service whose transaction entry is
+// lostUpdateFixture builds a Service whose transaction entry is
 // hooked, plus one regular file created with mode.
 func lostUpdateFixture(t *testing.T, name string, mode uint32) (*metadata.Service, *windowStore, metadata.FileHandle) {
 	t.Helper()
-	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	ws := &windowStore{BadgerMetadataStore: newRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
 	created, _, err := svc.CreateFile(rootAuth(), rootHandle, name,
 		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode})
@@ -133,9 +133,8 @@ func TestSetFileAttributes_TimestampEqualToPreReadIsStillWritten(t *testing.T) {
 			svc, ws, handle := lostUpdateFixture(t, "t.bin", 0o644)
 			root := rootAuth()
 
-			// Read back rather than use a wall clock: sqlite keeps timestamps
-			// as FILETIME ticks, so only a value that has been through the
-			// store can be asked for again unchanged.
+			// Read back rather than use a wall clock, so the value asked for
+			// again is exactly one the store holds.
 			before, err := svc.GetFile(root.Context, handle)
 			require.NoError(t, err)
 			stored := tc.field(&before.FileAttr)

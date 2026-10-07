@@ -27,7 +27,7 @@ STACK_OWNED=false
 # shellcheck source=../compose-env.sh
 source "${CONFORMANCE_DIR}/compose-env.sh"
 
-VALID_PROFILES=("memory" "badger" "sqlite" "postgres" "memory-kerberos")
+VALID_PROFILES=("memory" "badger" "memory-kerberos")
 
 # Name given to every one-off smbtorture container so it stays addressable (see
 # run_smbtorture). Scoped to this harness process so a container leaked by an
@@ -103,8 +103,8 @@ Options:
   --help              Show this help
 
 Profiles:
-  memory           Memory metadata + memory payload (fastest)
-  badger           BadgerDB metadata + memory payload
+  memory           In-memory BadgerDB metadata + memory payload (fastest)
+  badger           On-disk BadgerDB metadata + memory payload
   memory-kerberos  Memory profile with Kerberos auth enabled (auto-selected by --kerberos)
 
 Examples:
@@ -244,7 +244,7 @@ require_exclusive_stack
 claim_exclusive_stack
 
 # Claimed here, before the first path that can bring the stack up — the Kerberos
-# branch, the postgres one, and the plain dittofs start all follow. Claiming
+# branch and the plain dittofs start both follow. Claiming
 # inside one branch left every other run with the flag false, so the EXIT trap
 # skipped `down -v` and the next run was refused by the check above: a guard
 # turning the harness off rather than protecting it.
@@ -330,18 +330,6 @@ if $KERBEROS; then
     # klist parses the full keytab; only succeeds once kadmin has finished
     # writing and flushing the file, avoiding a partial-read race.
     wait_until "docker compose exec kdc klist -k /keytabs/dittofs.keytab > /dev/null 2>&1" 60 "KDC keytab"
-fi
-
-# Postgres profile: activate the "postgres" compose profile and start the
-# PostgreSQL service first, waiting until it is healthy — DittoFS's metadata
-# store connects to it during bootstrap. Same COMPOSE_PROFILES-via-env reason
-# as the Kerberos block above. (Kerberos and postgres profiles are disjoint.)
-if [[ "$PROFILE" == postgres* ]]; then
-    export COMPOSE_PROFILES="postgres"
-
-    log_step "Starting PostgreSQL..."
-    docker compose up -d postgres
-    wait_until "docker compose exec postgres pg_isready -U dittofs -d dittofs_test > /dev/null 2>&1" 60 "PostgreSQL"
 fi
 
 # Build and start DittoFS

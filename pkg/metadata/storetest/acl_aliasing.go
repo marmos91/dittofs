@@ -11,11 +11,9 @@ import (
 // store-from-caller (UpdateAttrs) and return-to-caller (GetFile) paths, so neither
 // side can corrupt the other's view by mutating an ACE in place.
 //
-// This pins the cross-backend parity gap the area-6 audit found: the memory
-// backend used to copy only FileAttr.Blocks and left FileAttr.ACL (a *acl.ACL
-// holding an []ACE) shared by pointer, while Badger/Postgres round-trip through
-// JSON and never alias. Identical inputs, divergent aliasing — an in-place ACE
-// edit silently corrupted stored permissions on memory only.
+// FileAttr.ACL is a *acl.ACL holding an []ACE, so a store that kept or handed
+// back the pointer instead of a copy would let an in-place ACE edit silently
+// corrupt stored permissions.
 func runACLAliasingTests(t *testing.T, factory StoreFactory) {
 	t.Run("PutDoesNotAliasCallerACL", func(t *testing.T) { testPutDoesNotAliasCallerACL(t, factory) })
 	t.Run("GetDoesNotAliasStoredACL", func(t *testing.T) { testGetDoesNotAliasStoredACL(t, factory) })

@@ -14,7 +14,8 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newEngineWithRemote mirrors newEngineOverStore but wires a real (memory)
@@ -65,7 +66,7 @@ func newEngineWithRemote(t *testing.T, ms metadata.Store, mem *remotememory.Stor
 // so demand reads run concurrently with prefetch workers. Run under -race.
 func TestWarmReadIntegrity_AfterDrainUploads(t *testing.T) {
 	t.Run("memory", func(t *testing.T) {
-		runWarmReadIntegrity(t, metadatamemory.NewMemoryMetadataStoreWithDefaults())
+		runWarmReadIntegrity(t, badgertest.NewInMemory(t))
 	})
 	t.Run("badger", func(t *testing.T) {
 		ms, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())

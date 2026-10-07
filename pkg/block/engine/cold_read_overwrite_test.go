@@ -9,7 +9,8 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // These tests reproduce the #953 silent cold-read corruption re-opened by the
@@ -126,11 +127,11 @@ func assertManifestTiles(t *testing.T, ms metadata.Store, pid string, fileSize i
 }
 
 func TestMemoryColdRead_ShrinkToZeros(t *testing.T) {
-	runShrinkToZeros(t, metadatamemory.NewMemoryMetadataStoreWithDefaults())
+	runShrinkToZeros(t, badgertest.NewInMemory(t))
 }
 
 func TestMemoryColdRead_BoundaryShiftStale(t *testing.T) {
-	runBoundaryShiftStale(t, metadatamemory.NewMemoryMetadataStoreWithDefaults())
+	runBoundaryShiftStale(t, badgertest.NewInMemory(t))
 }
 
 func TestBadgerColdRead_ShrinkToZeros(t *testing.T) {

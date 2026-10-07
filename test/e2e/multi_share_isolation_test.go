@@ -39,11 +39,11 @@ func TestMultiShareIsolation(t *testing.T) {
 	// Create 2 metadata stores (memory)
 	meta1 := helpers.UniqueTestName("iso-meta1")
 	meta2 := helpers.UniqueTestName("iso-meta2")
-	_, err := runner.CreateMetadataStore(meta1, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(meta1)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(meta1) })
 
-	_, err = runner.CreateMetadataStore(meta2, "memory")
+	_, err = runner.CreateInMemoryMetadataStore(meta2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(meta2) })
 
@@ -123,7 +123,7 @@ func TestMultiShareIsolation(t *testing.T) {
 		meta3 := helpers.UniqueTestName("iso-meta3")
 		block3 := helpers.UniqueTestName("iso-block3")
 
-		_, err := runner.CreateMetadataStore(meta3, "memory")
+		_, err := runner.CreateInMemoryMetadataStore(meta3)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(meta3) })
 
@@ -271,11 +271,11 @@ func TestMultiShareIsolation(t *testing.T) {
 		blockCA := helpers.UniqueTestName("iso-block-ca")
 		blockCB := helpers.UniqueTestName("iso-block-cb")
 
-		_, err := runner.CreateMetadataStore(metaCA, "memory")
+		_, err := runner.CreateInMemoryMetadataStore(metaCA)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaCA) })
 
-		_, err = runner.CreateMetadataStore(metaCB, "memory")
+		_, err = runner.CreateInMemoryMetadataStore(metaCB)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaCB) })
 
@@ -394,11 +394,11 @@ func TestMultiShareIsolation(t *testing.T) {
 		metaSR1 := helpers.UniqueTestName("iso-meta-sr1")
 		metaSR2 := helpers.UniqueTestName("iso-meta-sr2")
 
-		_, err = runner.CreateMetadataStore(metaSR1, "memory")
+		_, err = runner.CreateInMemoryMetadataStore(metaSR1)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaSR1) })
 
-		_, err = runner.CreateMetadataStore(metaSR2, "memory")
+		_, err = runner.CreateInMemoryMetadataStore(metaSR2)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaSR2) })
 

@@ -18,7 +18,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
@@ -142,7 +144,7 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 
 	// Restore the dump into a brand-new store. This reconstructs exactly
 	// the point-in-time metadata image the snapshot captured.
-	restored := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	restored := badgertest.NewInMemory(t)
 	if err := restored.RestoreSnapshot(context.Background(), dumpFile); err != nil {
 		t.Fatalf("snapshot %d: restore dump into fresh store: %v", n, err)
 	}
@@ -244,7 +246,7 @@ type realBackupFixture struct {
 	t             *testing.T
 	rt            *Runtime
 	store         cpstore.Store
-	mem           *metadatamemory.MemoryMetadataStore
+	mem           *badger.BadgerMetadataStore
 	localStoreDir string
 	shareName     string
 
@@ -266,13 +268,13 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 	rt := New(cp)
 	setJournalRoot(t, rt)
 
-	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("memory", mem); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	if _, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
 		Name: "memory",
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -398,7 +400,7 @@ func (f *realBackupFixture) tryPutMultiChunkFile(ctx context.Context, name strin
 		},
 	}
 	file.ID = id
-	if err := f.mem.UpdateAttrs(ctx, file); err != nil {
+	if err := f.mem.SetManifest(ctx, file); err != nil {
 		return fmt.Errorf("put file: %w", err)
 	}
 	if isNew {

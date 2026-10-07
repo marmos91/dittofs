@@ -16,7 +16,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // revalidateUserStore serves a single user record and a canned share-permission
@@ -112,7 +113,7 @@ func newRevalidateHandler(t *testing.T, user *models.User, store *revalidateUser
 	t.Helper()
 
 	rt, blockStoreID := newTestShareRuntime(t)
-	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

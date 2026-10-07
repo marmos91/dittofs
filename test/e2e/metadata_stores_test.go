@@ -3,24 +3,15 @@
 package e2e
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/marmos91/dittofs/test/e2e/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// envOr returns the value of env var key, or fallback when unset/empty.
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
 
 // TestMetadataStoresCRUD tests comprehensive metadata store management via CLI.
 // Uses a shared server process for all subtests.
@@ -47,13 +38,12 @@ func TestMetadataStoresCRUD(t *testing.T) {
 			_ = cli.DeleteMetadataStore(storeName)
 		})
 
-		// Create memory store (no config needed)
-		store, err := cli.CreateMetadataStore(storeName, "memory")
-		require.NoError(t, err, "Should create memory metadata store")
+		store, err := cli.CreateInMemoryMetadataStore(storeName)
+		require.NoError(t, err, "Should create in-memory metadata store")
 
-		// Verify fields
+		// Verify fields: in-memory is a badger mode, not a store type
 		assert.Equal(t, storeName, store.Name)
-		assert.Equal(t, "memory", store.Type)
+		assert.Equal(t, "badger", store.Type)
 	})
 
 	t.Run("create badger store", func(t *testing.T) {
@@ -77,40 +67,25 @@ func TestMetadataStoresCRUD(t *testing.T) {
 		assert.Equal(t, "badger", store.Type)
 	})
 
-	t.Run("create postgres store", func(t *testing.T) {
+	t.Run("removed store types are rejected", func(t *testing.T) {
 		t.Parallel()
 
-		storeName := helpers.UniqueTestName("meta_pg")
-
-		t.Cleanup(func() {
-			_ = cli.DeleteMetadataStore(storeName)
-		})
-
-		// Create postgres store with raw JSON config. In CI the postgres service
-		// container is reachable with these env-provided credentials, so the store
-		// is created; locally (no postgres) it fails with a connection error. The
-		// hardcoded postgres/test creds previously used neither matched the CI
-		// container (dittofs/dittofs/dittofs_test) nor any local default.
-		pgConfig := fmt.Sprintf(
-			`{"host":"%s","port":%s,"dbname":"%s","user":"%s","password":"%s","sslmode":"disable"}`,
-			envOr("POSTGRES_HOST", "localhost"),
-			envOr("POSTGRES_PORT", "5432"),
-			envOr("POSTGRES_DATABASE", "dittofs_test"),
-			envOr("POSTGRES_USER", "dittofs"),
-			envOr("POSTGRES_PASSWORD", "dittofs"),
-		)
-		_, err := cli.CreateMetadataStore(storeName, "postgres",
-			helpers.WithMetaRawConfig(pgConfig),
-		)
-
-		// Without postgres running, expect a connection error (proves config was parsed)
-		// If postgres IS running, this test will pass and create the store
-		if err != nil {
-			// Verify it's a connection error, not a config parsing error
-			assert.Contains(t, err.Error(), "connection refused",
-				"Expected connection refused error (not config parse error): %v", err)
+		// dfsctl refuses a non-badger type before sending anything, so go
+		// through the API client to pin the server's own rejection.
+		client := helpers.GetAPIClient(t, serverURL)
+		for _, storeType := range []string{"memory", "sqlite", "postgres"} {
+			storeName := helpers.UniqueTestName("meta_" + storeType)
+			_, err := client.CreateMetadataStore(&apiclient.CreateStoreRequest{
+				Name:   storeName,
+				Type:   storeType,
+				Config: map[string]any{},
+			})
+			if err == nil {
+				_ = client.RemoveMetadataStore(storeName)
+			}
+			require.Error(t, err, "type %q must be rejected", storeType)
+			assert.Contains(t, err.Error(), "badger is the only metadata store type")
 		}
-		// If no error, postgres is running and store was created - that's also valid
 	})
 
 	t.Run("list stores", func(t *testing.T) {
@@ -125,10 +100,10 @@ func TestMetadataStoresCRUD(t *testing.T) {
 		})
 
 		// Create two stores
-		_, err := cli.CreateMetadataStore(storeName1, "memory")
+		_, err := cli.CreateInMemoryMetadataStore(storeName1)
 		require.NoError(t, err)
 
-		_, err = cli.CreateMetadataStore(storeName2, "memory")
+		_, err = cli.CreateInMemoryMetadataStore(storeName2)
 		require.NoError(t, err)
 
 		// List all stores
@@ -160,7 +135,7 @@ func TestMetadataStoresCRUD(t *testing.T) {
 		})
 
 		// Create store
-		created, err := cli.CreateMetadataStore(storeName, "memory")
+		created, err := cli.CreateInMemoryMetadataStore(storeName)
 		require.NoError(t, err)
 
 		// Get store by name
@@ -208,7 +183,7 @@ func TestMetadataStoresCRUD(t *testing.T) {
 		storeName := helpers.UniqueTestName("meta_del")
 
 		// Create store
-		_, err := cli.CreateMetadataStore(storeName, "memory")
+		_, err := cli.CreateInMemoryMetadataStore(storeName)
 		require.NoError(t, err)
 
 		// Delete store
@@ -231,11 +206,11 @@ func TestMetadataStoresCRUD(t *testing.T) {
 		})
 
 		// Create store
-		_, err := cli.CreateMetadataStore(storeName, "memory")
+		_, err := cli.CreateInMemoryMetadataStore(storeName)
 		require.NoError(t, err)
 
 		// Try to create again with same name
-		_, err = cli.CreateMetadataStore(storeName, "memory")
+		_, err = cli.CreateInMemoryMetadataStore(storeName)
 		require.Error(t, err, "Should reject duplicate store name")
 
 		// Error should indicate conflict/already exists
@@ -251,7 +226,7 @@ func TestMetadataStoresCRUD(t *testing.T) {
 	t.Run("cannot delete store in use", func(t *testing.T) {
 		// Create metadata store
 		metaStoreName := helpers.UniqueTestName("meta_inuse")
-		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+		_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 		require.NoError(t, err, "Should create metadata store")
 
 		// Create block store (needed for share)

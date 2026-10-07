@@ -7,7 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestReconcileINV02_DuplicateHashRowsVisible pins finding I-1: reconcileINV02
@@ -24,7 +25,7 @@ import (
 //
 // After the fix, the per-ID walk counts both rows: totalRefCount == 6.
 func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 
 	const shareName = "inv02-dup-hash"
@@ -136,7 +137,7 @@ type nonProviderStore struct {
 // form skips cleanly.
 func TestDurableHandleStore_NonImplementingStoreSkips(t *testing.T) {
 	factory := func(t *testing.T) metadata.Store {
-		return &nonProviderStore{Store: memory.NewMemoryMetadataStoreWithDefaults()}
+		return &nonProviderStore{Store: badgertest.NewInMemory(t)}
 	}
 
 	// Public entry: must not panic; it skips at the top-level guard.
@@ -151,7 +152,7 @@ func TestDurableHandleStore_NonImplementingStoreSkips(t *testing.T) {
 // reached.
 func TestGetDurableStore_NonImplementingStoreSkips(t *testing.T) {
 	factory := func(t *testing.T) metadata.Store {
-		return &nonProviderStore{Store: memory.NewMemoryMetadataStoreWithDefaults()}
+		return &nonProviderStore{Store: badgertest.NewInMemory(t)}
 	}
 
 	store := getDurableStore(t, factory)

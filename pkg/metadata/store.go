@@ -17,10 +17,7 @@ import (
 // This interface is embedded by MetadataStore for direct (non-transactional) calls,
 // and is also part of the Transaction interface for atomic operations.
 //
-// Implementations vary by store:
-//   - Memory store: Uses mutex locking
-//   - BadgerDB: Uses native Badger transactions
-//   - PostgreSQL: Uses SQL transactions
+// The Badger store backs it with native Badger transactions.
 //
 // Thread Safety:
 // Files objects from WithTransaction are NOT safe for concurrent use.
@@ -41,8 +38,8 @@ type Files interface {
 	//
 	// This is the attr-only write behind chmod/utimes/close/rename/xattr and
 	// every other mutation that does not change file.Blocks. Skipping the
-	// manifest rewrite is what keeps those writes cheap on the SQL backends,
-	// where the manifest lives in a separate file_block_refs table.
+	// manifest rewrite is what keeps those writes cheap, since the manifest
+	// is stored under its own key apart from the attrs.
 	UpdateAttrs(ctx context.Context, file *File) error
 
 	// SetManifest stores or updates file metadata AND replaces the stored
@@ -50,11 +47,9 @@ type Files interface {
 	// block list may use it: carve/rollup commit, truncate, punch-hole,
 	// clone, copy-payload and manifest reprojection.
 	//
-	// Where the manifest is stored separately from the attrs — the SQL
-	// backends' file_block_refs table, badger's fm:<uuid> key — this is the
-	// only method that rewrites it, scoped by File.ManifestDirtyOffsets when
-	// that is non-nil. The memory backend keeps the block list inline on the
-	// stored FileAttr and so treats it exactly as UpdateAttrs.
+	// The manifest is stored separately from the attrs (badger's fm:<uuid>
+	// key); this is the only method that rewrites it, scoped by
+	// File.ManifestDirtyOffsets when that is non-nil.
 	SetManifest(ctx context.Context, file *File) error
 
 	// DeleteFile removes file metadata by handle.
@@ -80,12 +75,6 @@ type Files interface {
 	// a name that is not in the directory is not an error, and the call
 	// returns nil. A caller that needs to distinguish "was there" from "was
 	// not" must read the entry first.
-	//
-	// Idempotence is the only contract the backends can all keep. In the SQL
-	// backends the parent edge carries ON DELETE CASCADE, so deleting the
-	// inode takes the edge with it and a later DeleteChild for the same name
-	// legitimately finds nothing; reporting that as ErrNotFound would make
-	// the error depend on the order two statements happened to run in.
 	DeleteChild(ctx context.Context, dirHandle FileHandle, name string) error
 
 	// ListChildren returns directory entries with pagination support.
@@ -294,16 +283,14 @@ type Transaction interface {
 
 	// ListFileChunks returns every FileChunk row for payloadID, read-your-writes
 	// within the tx. Needed so a carve/reap can re-project File.Blocks from the
-	// authoritative manifest in the same txn (ProjectManifestToBlocks). All four
-	// backend transactions already implement it.
+	// authoritative manifest in the same txn (ProjectManifestToBlocks).
 	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
 
 	// GetFileChunk returns the FileChunk row stored under id, read-your-writes
 	// within the tx, or ErrFileChunkNotFound when there is none. Needed so a
 	// carve commit can see what a fresh row's key is about to take over before
 	// the upsert removes it — the whole row, not a projection of it, because what
-	// survives the takeover keeps the original's hash, state and refcount. All
-	// four backend transactions already implement it.
+	// survives the takeover keeps the original's hash, state and refcount.
 	GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error)
 
 	// PutSyncedLocators records the synced marker and remote locator of every
@@ -365,23 +352,6 @@ type Transactor interface {
 	// within fn will either fail or start an independent transaction
 	// (implementation-dependent).
 	WithTransaction(ctx context.Context, fn func(tx Transaction) error) error
-}
-
-// FileRowLocker is implemented by a Transaction that needs an explicit row lock
-// for a read-modify-write of one file's attribute record to serialise against
-// another writer.
-//
-// A backend whose transaction already serialises such a pair does not implement
-// it: sqlite and badger both refuse the second writer (SQLITE_BUSY, an SSI
-// conflict) and their retry loop re-runs the whole body, so the retried attempt
-// re-reads. Postgres refuses it too, at REPEATABLE READ, but only when the
-// update is reached — so it takes the lock first, which moves the refusal to
-// the top of the transaction instead of after the caller's own work.
-type FileRowLocker interface {
-	// LockFileRow blocks until this transaction holds the file's row, and
-	// reports nil when the handle names no row: the caller's own read is what
-	// turns that into ErrNotFound.
-	LockFileRow(ctx context.Context, handle FileHandle) error
 }
 
 // RelaxedTransactor is an OPTIONAL store capability (#1573 Wall 1): running a
@@ -483,14 +453,9 @@ type Store interface {
 	// carries the canonical ChunkRef list of the matching file
 	// (per-metadata-store scope, NOT per-share).
 	//
-	// All three backends maintain a secondary index from ObjectID to
-	// file row:
-	//   - Postgres: partial unique index files_object_id_idx ON
-	//     files(object_id) WHERE object_id IS NOT NULL.
-	//   - Badger: secondary key obj:{hex} -> file_id, maintained inside
-	//     each Put/Delete write batch.
-	//   - Memory: map[ContentHash]string (handle key) guarded by the
-	//     store mutex.
+	// Badger maintains a secondary index from ObjectID to file row:
+	// the key obj:{hex} -> file_id, maintained inside each Put/Delete
+	// write batch.
 	//
 	// Zero-valued ObjectID (legacy / pre-quiesce) MUST NOT match any
 	// row — implementations short-circuit and return (nil, nil) on zero
@@ -504,12 +469,11 @@ type Store interface {
 	// live inode through fn (deduped, order-independent). "Live" means nlink>0:
 	// nlink=0 (unlinked) inodes are EXCLUDED (#1433) — the file is dead, so its
 	// payload must be reclaimable, not pinned forever. Unlike EnumeratePayloads
-	// — which reads file_blocks and therefore also yields payloads whose owning
+	// — which reads the FileChunk rows and therefore also yields payloads whose owning
 	// file is already gone (stranded rows) — this reads the namespace, so the
 	// set difference (EnumeratePayloads − EnumerateLivePayloadIDs) is exactly the
 	// stranded payloads the GC reconcile must reap. Use the authoritative link
-	// count (SQL inodes.nlink, badger l: key, memory linkCounts), not the
-	// embedded File.Nlink.
+	// count (badger's l: key), not the embedded File.Nlink.
 	//
 	// Open-but-unlinked caveat: excluding nlink=0 here is safe because the
 	// runtime layers an open-handle GC hold on top (#1448): files that are
@@ -579,8 +543,7 @@ type Store interface {
 	//
 	// Like GetUsedBytesForShare it is O(1) and on the write path: backends
 	// maintain keyed counters updated transactionally alongside the size delta,
-	// seeded at startup from an aggregate scan (badger/postgres) or naturally
-	// accumulated (memory).
+	// seeded at startup from an aggregate scan.
 	GetQuotaUsage(shareName string, scope QuotaScope, id uint32) (UsageStat, error)
 
 	// RecomputeUsage rebuilds the usage counters from the durable file rows,

@@ -70,17 +70,13 @@ send() {
 log "provisioning profile: $PROFILE"
 
 case "$PROFILE" in
-default | s3-backend)
-    metadata_store='{"name":"default","type":"badger","config":"{\"db_path\":\"/data/metadata\"}"}'
-    ;;
-postgres-backend)
-    metadata_store='{"name":"default","type":"postgres","config":"{\"host\":\"postgres\",\"port\":5432,\"user\":\"dittofs\",\"password\":\"dittofs\",\"database\":\"dittofs\",\"sslmode\":\"disable\"}"}'
-    ;;
+default | s3-backend) ;;
 *)
-    log "unknown profile \"$PROFILE\" — expected default, s3-backend or postgres-backend"
+    log "unknown profile \"$PROFILE\" — expected default or s3-backend"
     exit 1
     ;;
 esac
+metadata_store='{"name":"default","type":"badger","config":"{\"db_path\":\"/data/metadata\"}"}'
 
 if [ "$PROFILE" = s3-backend ]; then
     # Localstack holds its buckets for the life of its container, so the bucket

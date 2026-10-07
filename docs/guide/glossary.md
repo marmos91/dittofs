@@ -70,7 +70,7 @@ also live in [NFS.md](nfs.md#glossary) and [SMB.md](smb.md#glossary).
 | **Block store** | The durable home for a share's file content ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory). Every share has exactly one; it has no *kind*. |
 | **Journal** | The on-disk, append-only tier in front of a share's block store. It absorbs writes, is provisioned automatically under `blockstore.journal.path`, and is offloaded to the block store by an async syncer. |
 | **Commit acknowledgement** | Per-share setting (`commit_ack`) for what an NFS COMMIT / SMB Flush waits for: `journal` (survives host crash) or `block-store` (survives device loss). |
-| **Metadata store** | The pluggable backend that holds the directory tree, file attributes, and ACLs — memory, [BadgerDB](https://github.com/dgraph-io/badger), or [PostgreSQL](https://www.postgresql.org/docs/), chosen per share. |
+| **Metadata store** | The pluggable backend that holds the directory tree, file attributes, and ACLs — [BadgerDB](https://github.com/dgraph-io/badger), on disk or in memory, one per share. |
 
 ## Implementation and tooling
 
@@ -80,8 +80,8 @@ own documentation for readers who want to go deeper.
 | Term | What it is |
 |------|------------|
 | **S3 API** | The HTTP object-storage API used for the durable remote block tier; works against Amazon S3 and S3-compatible stores (MinIO, Ceph, …). [S3 API reference](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) |
-| **BadgerDB** | An embedded key/value store (pure Go) — one of the metadata-store backends. [Badger](https://github.com/dgraph-io/badger) |
-| **PostgreSQL** | A relational database — the production-grade metadata-store backend. [PostgreSQL docs](https://www.postgresql.org/docs/) |
+| **BadgerDB** | An embedded key/value store (pure Go) — the metadata-store backend. [Badger](https://github.com/dgraph-io/badger) |
+| **PostgreSQL** | A relational database — the optional control-plane database for multi-replica servers. [PostgreSQL docs](https://www.postgresql.org/docs/) |
 | **SQLite** | The embedded SQL database used for the control-plane store by default. [SQLite](https://www.sqlite.org/docs.html) |
 | **Cobra** | The Go library that builds the `dfs`/`dfsctl` command trees (subcommands, flags, help). [Cobra](https://github.com/spf13/cobra) |
 | **Viper** | The configuration library that layers the config file, environment variables, and flags. [Viper](https://github.com/spf13/viper) |

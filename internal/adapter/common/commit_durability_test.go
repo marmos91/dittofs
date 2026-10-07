@@ -10,7 +10,8 @@ import (
 	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newMemoryEngine builds an engine with an in-memory local store (NOT durable)
@@ -19,7 +20,7 @@ import (
 // and report Finalized=true after a write+flush.
 func newMemoryEngine(t *testing.T, remote *remotememory.Store, durableLocalOverride *bool) *engine.Store {
 	t.Helper()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	localStore := localmemory.New()
 	if durableLocalOverride != nil {
 		localStore.SetDurable(*durableLocalOverride)

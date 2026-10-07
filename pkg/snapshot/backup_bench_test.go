@@ -12,7 +12,7 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
@@ -167,7 +167,7 @@ func RunReadManifest(manifest []byte) (int, error) {
 
 // Engine selects which metadata backend a workload seeds and backs up.
 const (
-	EngineMemory = "memory"
+	EngineMemory = "memory" // Badger in in-memory mode
 	EngineBadger = "badger"
 )
 
@@ -229,8 +229,11 @@ func NewStore(ctx context.Context, opts SeedOpts) (metadata.Store, int, func(), 
 func newEngine(ctx context.Context, opts SeedOpts) (metadata.Store, func(), error) {
 	switch opts.Engine {
 	case "", EngineMemory:
-		s := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-		return s, func() {}, nil
+		s, err := metadatabadger.NewInMemoryBadgerMetadataStore(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("snapshots bench: open in-memory badger: %w", err)
+		}
+		return s, func() { _ = s.Close() }, nil
 	case EngineBadger:
 		if opts.DBPath == "" {
 			return nil, nil, fmt.Errorf("snapshots bench: badger engine needs a DBPath")

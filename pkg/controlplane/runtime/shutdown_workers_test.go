@@ -9,7 +9,8 @@ import (
 
 	blockgc "github.com/marmos91/dittofs/pkg/block/gc"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // blockingAPIServer fails on demand. Start holds until the test releases it and
@@ -64,7 +65,7 @@ func TestServerShutdownStopsBackgroundWorkers(t *testing.T) {
 	// than only that it was reached. "Stopped by the time Serve returns" is a
 	// weaker claim than "stopped before the stores it writes through closed",
 	// and the failed-start drain satisfies the weaker one on every path.
-	meta := &closeWatchingStore{Store: metamem.NewMemoryMetadataStoreWithDefaults()}
+	meta := &closeWatchingStore{Store: badgertest.NewInMemory(t)}
 	if err := rt.RegisterMetadataStore("meta", meta); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

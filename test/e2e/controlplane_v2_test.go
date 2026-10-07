@@ -55,8 +55,9 @@ func TestControlPlaneV2_FullLifecycle(t *testing.T) {
 	metaStore := helpers.UniqueTestName("meta")
 	blockStore := helpers.UniqueTestName("block")
 	_, err := client.CreateMetadataStore(&apiclient.CreateStoreRequest{
-		Name: metaStore,
-		Type: "memory",
+		Name:   metaStore,
+		Type:   "badger",
+		Config: map[string]any{"in_memory": true},
 	})
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
@@ -305,8 +306,9 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 	metaStore := helpers.UniqueTestName("meta")
 	blockStore := helpers.UniqueTestName("block")
 	_, err := client.CreateMetadataStore(&apiclient.CreateStoreRequest{
-		Name: metaStore,
-		Type: "memory",
+		Name:   metaStore,
+		Type:   "badger",
+		Config: map[string]any{"in_memory": true},
 	})
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
@@ -370,8 +372,9 @@ func TestControlPlaneV2_ShareSecurityPolicy(t *testing.T) {
 	metaStore := helpers.UniqueTestName("meta")
 	blockStore := helpers.UniqueTestName("block")
 	_, err := client.CreateMetadataStore(&apiclient.CreateStoreRequest{
-		Name: metaStore,
-		Type: "memory",
+		Name:   metaStore,
+		Type:   "badger",
+		Config: map[string]any{"in_memory": true},
 	})
 	require.NoError(t, err, "Should create metadata store")
 	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })

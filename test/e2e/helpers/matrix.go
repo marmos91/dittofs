@@ -4,7 +4,6 @@ package helpers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -24,7 +23,7 @@ type MatrixStoreSetup struct {
 
 // MatrixSetupConfig describes a store combination for setup.
 type MatrixSetupConfig struct {
-	MetadataType string // "memory", "badger", "postgres"
+	MetadataType string // "memory" (badger in RAM) or "badger" (badger on disk)
 	BlockType    string // "memory", "s3"
 }
 
@@ -90,7 +89,6 @@ func SetupStoreMatrix(
 	runner *CLIRunner,
 	shareName string,
 	sc MatrixSetupConfig,
-	pgHelper *framework.PostgresHelper,
 	lsHelper *framework.LocalstackHelper,
 ) *MatrixStoreSetup {
 	t.Helper()
@@ -104,24 +102,16 @@ func SetupStoreMatrix(
 	// Create metadata store
 	var metaOpts []MetadataStoreOption
 	switch sc.MetadataType {
+	case "memory":
+		metaOpts = append(metaOpts, WithMetaRawConfig(`{"in_memory":true}`))
 	case "badger":
 		badgerPath := filepath.Join(t.TempDir(), "badger")
 		metaOpts = append(metaOpts, WithMetaDBPath(badgerPath))
-	case "postgres":
-		require.NotNil(t, pgHelper, "PostgreSQL helper not available")
-		pgConfig := pgHelper.GetConfig()
-		configJSON, err := json.Marshal(map[string]interface{}{
-			"host":     pgConfig.Host,
-			"port":     pgConfig.Port,
-			"database": pgConfig.Database,
-			"user":     pgConfig.User,
-			"password": pgConfig.Password,
-		})
-		require.NoError(t, err, "Failed to marshal postgres config")
-		metaOpts = append(metaOpts, WithMetaRawConfig(string(configJSON)))
+	default:
+		t.Fatalf("unknown matrix metadata type %q", sc.MetadataType)
 	}
 
-	_, err := runner.CreateMetadataStore(setup.MetaStoreName, sc.MetadataType, metaOpts...)
+	_, err := runner.CreateMetadataStore(setup.MetaStoreName, "badger", metaOpts...)
 	require.NoError(t, err, "Should create metadata store (%s)", sc.MetadataType)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(setup.MetaStoreName) })
 

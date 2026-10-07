@@ -12,17 +12,17 @@ var Cmd = &cobra.Command{
 	Long: `Manage metadata stores on the DittoFS server.
 
 Metadata stores hold file system structure, attributes, and permissions.
-Supported types: memory, badger, sqlite, postgres
+The only store type is badger (BadgerDB, on disk or in memory).
 
 Examples:
   # List metadata stores
   dfsctl store metadata list
 
-  # Add a memory store
-  dfsctl store metadata add --name fast-meta --type memory
-
   # Add a BadgerDB store
-  dfsctl store metadata add --name persistent-meta --type badger --config '{"path":"/data/meta"}'`,
+  dfsctl store metadata add --name persistent-meta --db-path /data/meta
+
+  # Add an in-memory store
+  dfsctl store metadata add --name scratch-meta --in-memory`,
 }
 
 func init() {

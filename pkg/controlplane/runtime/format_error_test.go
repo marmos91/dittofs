@@ -11,15 +11,17 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	sharesvc "github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // futureFormatStore bubbles a caller-supplied sentinel from
 // CreateRootDirectory, the metadata call AddShare's prepareShare invokes
 // first — the wrapper pattern the snapshot fixtures use (embedded
-// MemoryMetadataStore, one method overridden).
+// BadgerMetadataStore, one method overridden).
 type futureFormatStore struct {
-	*metadatamemory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	sentinel error
 }
 
@@ -54,12 +56,12 @@ func TestLoadSharesFromStore_FormatErrorStops(t *testing.T) {
 			metaName := "format-meta-" + tc.name
 			if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
 				Name: metaName,
-				Type: "memory",
+				Type: "badger", Config: `{"in_memory":true}`,
 			}); err != nil {
 				t.Fatalf("CreateMetadataStore: %v", err)
 			}
 			if err := rt.RegisterMetadataStore(metaName, &futureFormatStore{
-				MemoryMetadataStore: metadatamemory.NewMemoryMetadataStoreWithDefaults(),
+				BadgerMetadataStore: badgertest.NewInMemory(t),
 				sentinel:            tc.sentinel,
 			}); err != nil {
 				t.Fatalf("RegisterMetadataStore: %v", err)
@@ -104,12 +106,12 @@ func TestLoadSharesFromStore_FormatErrorWinsOverUnresolvableBlockStore(t *testin
 	const metaName = "format-meta-both"
 	if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
 		Name: metaName,
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
 	if err := rt.RegisterMetadataStore(metaName, &futureFormatStore{
-		MemoryMetadataStore: metadatamemory.NewMemoryMetadataStoreWithDefaults(),
+		BadgerMetadataStore: badgertest.NewInMemory(t),
 		sentinel:            sharesvc.ErrLegacyLocalFormat,
 	}); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
@@ -141,12 +143,12 @@ func TestLoadSharesFromStore_UnrelatedFailureKeepsItsReason(t *testing.T) {
 	boom := errors.New("metadata store is wedged")
 	if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
 		Name: metaName,
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
 	if err := rt.RegisterMetadataStore(metaName, &futureFormatStore{
-		MemoryMetadataStore: metadatamemory.NewMemoryMetadataStoreWithDefaults(),
+		BadgerMetadataStore: badgertest.NewInMemory(t),
 		sentinel:            boom,
 	}); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)

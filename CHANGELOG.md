@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never triggered; one field store reached 245 GiB of log against 0.15 GiB of
   live data.
 
+### Removed
+
+- **The SQL and in-memory metadata stores are gone: BadgerDB is the only
+  metadata store.** The `postgres`, `sqlite` and `memory` metadata store types
+  have been removed. A server whose configuration still names one refuses to
+  start, with `unsupported metadata store type`, and changes nothing. There is no
+  conversion tool: a share on a SQL store moves by copying its files to a share on
+  a new instance, and a `memory` store is removed before the upgrade and recreated
+  with `dfsctl store metadata add --in-memory`. See the
+  [metadata store migration guide](docs/guide/metadata-store-migration.md) before
+  upgrading. The control-plane database (`database:`, SQLite or PostgreSQL) is not
+  affected.
+
 ### Fixed
 
 - **Local-tier eviction and backpressure counters report real values.**

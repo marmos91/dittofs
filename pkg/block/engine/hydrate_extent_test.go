@@ -12,7 +12,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // A hydrate writes a fetched chunk back into the local tier at the chunk's file
@@ -25,7 +26,7 @@ import (
 // remote, and hands back the local tier so a test can force eviction.
 func hydrateFixture(t *testing.T, share, name string) (*engine.Store, *journal.Store, metadata.Store, string) {
 	t.Helper()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 	root := createShare(t, ms, share)
 	pid, _ := createRealFile(t, ms, share, name, root)

@@ -20,7 +20,7 @@
 //
 // Procedure (mirrors the documented #1245 trigger):
 //
-//  1. Boot one server, one Postgres metadata store, one S3 bucket, one S3
+//  1. Boot one server, one on-disk badger metadata store, one S3 bucket, one S3
 //     block store, one share (copied from
 //     dedup_cross_share_test.go's S3 setup).
 //  2. Mount the share over NFSv4.1.
@@ -34,7 +34,7 @@
 //     byte-identical to the source payload.
 //
 // Tier: nightly only (DITTOFS_E2E_NIGHTLY=1) — also requires sudo + kernel NFS
-// client + Localstack + Postgres, mirroring dedup_cross_share_test.go.
+// client + Localstack, mirroring dedup_cross_share_test.go.
 //
 // Run:
 //
@@ -49,6 +49,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -86,35 +87,23 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	if !framework.CheckLocalstackAvailable(t) {
 		t.Skip("Skipping: Localstack (S3) not available — run via run-e2e.sh --s3")
 	}
-	if !framework.CheckPostgresAvailable(t) {
-		t.Skip("Skipping: Postgres not available — run via run-e2e.sh with Postgres")
-	}
 
 	lsHelper := framework.NewLocalstackHelper(t)
 	require.NotNil(t, lsHelper, "Localstack helper must be available")
-	pgHelper := framework.NewPostgresHelper(t)
-	require.NotNil(t, pgHelper, "Postgres helper must be available")
-
-	// Clean slate: a stale Postgres schema from a prior nightly would leak
-	// ObjectID rows that pre-claim our payload's chunks before the donor write,
-	// masking the Pending-donor window we are trying to reproduce.
-	require.NoError(t, pgHelper.TruncateTables(), "Truncate Postgres tables for isolation")
 
 	sp := helpers.StartServerProcess(t, "")
 	t.Cleanup(sp.ForceKill)
 
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// ---- One Postgres metadata store ----
+	// ---- One on-disk badger metadata store ----
+	// A fresh directory per run is the clean slate: no ObjectID rows from a
+	// prior run can pre-claim the payload's chunks before the donor write and
+	// mask the Pending-donor window this test reproduces.
 	metaName := helpers.UniqueTestName("dedup-nfsv4-meta")
-	pgConfig := pgHelper.GetConfig()
-	pgConfigJSON := fmt.Sprintf(
-		`{"host":"%s","port":%d,"database":"%s","user":"%s","password":"%s"}`,
-		pgConfig.Host, pgConfig.Port, pgConfig.Database, pgConfig.User, pgConfig.Password,
-	)
-	_, err := cli.CreateMetadataStore(metaName, "postgres",
-		helpers.WithMetaRawConfig(pgConfigJSON))
-	require.NoError(t, err, "create Postgres metadata store")
+	_, err := cli.CreateMetadataStore(metaName, "badger",
+		helpers.WithMetaDBPath(filepath.Join(t.TempDir(), "badger")))
+	require.NoError(t, err, "create badger metadata store")
 	t.Cleanup(func() { _ = cli.DeleteMetadataStore(metaName) })
 
 	// ---- One S3 bucket + block store ----

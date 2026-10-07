@@ -84,10 +84,7 @@ type FileAttr struct {
 	// bytes (may be empty but non-nil to distinguish a zero-length EA from an
 	// absent one). nil means no EAs are set.
 	//
-	// Storage:
-	//   - Postgres: eas JSONB column on files.
-	//   - Badger: rides the JSON-encoded FileAttr blob.
-	//   - Memory: typed map held directly (deep-copied on Put/Get).
+	// Storage: rides the encoded FileAttr record.
 	EAs map[string][]byte `json:"eas,omitempty"`
 
 	// IdempotencyToken for detecting duplicate creation requests.
@@ -99,15 +96,13 @@ type FileAttr struct {
 	// legacy files that predate empty list triggers the
 	// dual-read shim.
 	//
-	// Storage:
-	// Postgres: separate file_block_refs join table.
-	// Badger: rides existing JSON-encoded FileAttr blob.
-	// Memory: typed slice held directly.
+	// Storage: kept under the file's own manifest keys (fm:), apart from
+	// the attrs record.
 	Blocks []block.ChunkRef `json:"blocks,omitempty"`
 
 	// ManifestDirtyOffsets narrows a SetManifest write to the offsets that can
-	// possibly differ from what the SQL backends already store, so their
-	// manifest diff costs the changed range rather than the whole file.
+	// possibly differ from what the store already holds, so a manifest diff
+	// can cost the changed range rather than the whole file.
 	// Transient, request-scoped and never persisted; UpdateAttrs ignores it.
 	//
 	// nil means "unknown": the backend must diff the entire stored manifest.
@@ -150,12 +145,8 @@ type FileAttr struct {
 	// files (some blocks Pending), and freshly-mutated files awaiting
 	// next quiesce. migration backfills.
 	//
-	// Storage:
-	//   - Postgres: object_id BYTEA column on files + partial unique
-	// index WHERE object_id IS NOT NULL.
-	//   - Badger: rides existing JSON FileAttr blob; secondary key
-	//     obj/{hex} -> file_id maintained on Put/Delete.
-	//   - Memory: typed field; map[ContentHash]uuid index in store.
+	// Storage: rides the encoded FileAttr record; secondary key
+	// obj/{hex} -> file_id maintained on Put/Delete.
 	ObjectID block.ObjectID `json:"object_id,omitempty"`
 
 	// DeletedAt is set when this node was recycled (moved into #recycle).
@@ -366,15 +357,10 @@ func (a *FileAttr) ApplyEAMutations(muts []EAMutation) error {
 // of many tiny EAs is almost entirely framing, and a value-bytes-only bound would
 // not see it at all.
 //
-// It is the exact stored size on the backend the bound exists for: badger marshals
-// this same map with encoding/json into the attribute record, and sqlite stores
-// the marshalled text in a column. Postgres does not — its column is JSONB, so it
-// re-encodes the text into its own binary form, which costs two 4-byte entry
-// headers per attribute and so runs a little larger for a set of many small ones.
-// That backend has no large-value threshold for the bound to keep the record
-// under, which is why the difference is left unaccounted rather than measured per
-// backend; a backend that both re-encodes AND has such a threshold needs its own
-// bound rather than this one.
+// It is the exact stored size: badger marshals this same map with encoding/json
+// into the attribute record. A backend that re-encodes the set into another form
+// AND keeps records under a large-value threshold would need its own bound
+// rather than this one.
 //
 // decision: the marshal error is dropped and a failure measures 0, which admits
 // the set. A map[string][]byte holds nothing encoding/json rejects — no channel,

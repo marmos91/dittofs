@@ -78,16 +78,14 @@ func TestMain(m *testing.M) {
 
 // GetTestEnv returns the global test environment for use in tests.
 // Tests should call env.NewScope(t) to get per-test isolation with
-// unique Postgres schemas and S3 prefixes.
+// unique S3 prefixes.
 //
 // Example usage:
 //
 //	func TestSomething(t *testing.T) {
 //	    env := GetTestEnv()
 //	    scope := env.NewScope(t)
-//	    // scope.SchemaName() - unique Postgres schema
 //	    // scope.S3Prefix() - unique S3 prefix
-//	    // scope.DB() - scoped database connection
 //	}
 func GetTestEnv() *helpers.TestEnvironment {
 	return testEnv

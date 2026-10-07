@@ -14,7 +14,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // buildSelfHealEngine wires a journal-backed engine with per-read integrity
@@ -116,7 +117,7 @@ func corruptSegmentByte(t *testing.T, journalDir string) {
 // bytes, not the corrupt ones.
 func TestWarmReadSelfHeal_RemoteHeals(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	bs, dir := buildSelfHealEngine(t, ms, mem)
 
@@ -165,7 +166,7 @@ func TestWarmReadSelfHeal_RemoteHeals(t *testing.T) {
 // There is no remote to heal from, so detection-only is the correct outcome.
 func TestWarmReadSelfHeal_LocalOnlyFailsClosed(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, dir := buildSelfHealEngine(t, ms, nil) // local-only: no remote
 
 	rootHandle := createShare(t, ms, "heal")

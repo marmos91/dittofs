@@ -1,6 +1,6 @@
 // Package backup provides the shared binary envelope format for DittoFS
-// metadata backup streams. Engine-specific drivers (badger, memory,
-// postgres) wrap their opaque payload inside this envelope, which
+// metadata backup streams. Engine-specific drivers (badger) wrap their
+// opaque payload inside this envelope, which
 // provides magic-byte identification, versioning, engine tag routing,
 // and trailing CRC32 integrity checking.
 //
@@ -9,7 +9,7 @@
 //	magic        [4]byte   "DFBK"
 //	version      uint32 LE (1 = current)
 //	engine_len   uint16 LE
-//	engine_tag   [engine_len]byte  (e.g. "badger", "memory", "postgres")
+//	engine_tag   [engine_len]byte  (e.g. "badger")
 //	payload      [...]byte         (engine-specific, variable length)
 //	crc32c       uint32 LE         (Castagnoli, over everything before this field)
 //

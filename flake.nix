@@ -225,7 +225,7 @@
               echo "  Password: dittofs"
               echo "  Database: dittofs_test"
               echo ""
-              echo "Start DittoFS with: ./dfs start --config test/posix/configs/config-postgres.yaml"
+              echo "Control-plane store tests: DITTOFS_TEST_POSTGRES_DSN=postgres://dittofs:dittofs@localhost:5432/dittofs_test?sslmode=disable"
               exit 0
             fi
             sleep 1
@@ -495,7 +495,7 @@
 
               # Auto-updated by .github/workflows/nix-update-hash.yml on go.mod/go.sum changes.
               # Manual: go run scripts/update-nix-hash.go
-              vendorHash = "sha256-mQ3Mos2ufyefGPUBt7zDFMnGgUDU/KgIG7E/EkjDFsw=";
+              vendorHash = "sha256-39yNHerq40GtLjhaG1EQc+LglYkGxBQLBhdyrm4WhAQ=";
 
               ldflags = [
                 "-s"

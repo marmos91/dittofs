@@ -12,8 +12,8 @@ How to size the machine that runs `dfs`. For picking *which* stores to run, see
 ## Single-node, not a cluster
 
 Size **one box**, not a fleet. Block stores are per-share and each share's journal
-directory is **always isolated** — even with a shared PostgreSQL metadata store (which is
-multi-writer), you cannot run active-active `dfs` replicas against the same data. So
+directory is **always isolated**, and the only metadata store (`badger`) is embedded in one
+process, so you cannot run active-active `dfs` replicas against the same data. So
 "sizing" means sizing a single server, plus:
 
 - an **S3 backend** you size and scale separately (Cubbit DS3, MinIO, Ceph RGW, …), and

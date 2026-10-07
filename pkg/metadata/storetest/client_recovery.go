@@ -15,9 +15,8 @@ type ClientRecoveryStoreProvider interface {
 	ClientRecoveryStore() lock.ClientRecoveryStore
 }
 
-// recoveryTimeTolerance bounds ConfirmedAt round-trip drift. Postgres stores
-// TIMESTAMPTZ at microsecond resolution, so values must be chosen at that
-// granularity; the tolerance absorbs any residual rounding.
+// recoveryTimeTolerance bounds ConfirmedAt round-trip drift, absorbing any
+// rounding a backend's time encoding applies.
 const recoveryTimeTolerance = time.Millisecond
 
 // RunClientRecoveryStoreTests runs the cross-backend conformance suite for

@@ -21,8 +21,8 @@ Common questions about DittoFS and their answers.
 
 DittoFS is a modular virtual filesystem written entirely in Go that decouples file access protocols
 from storage backends. It supports NFSv3, NFSv4/v4.1, and SMB2 with pluggable metadata and block
-stores, making it easy to serve files over multiple protocols from various backends (memory,
-BadgerDB, SQLite or PostgreSQL for metadata; memory or S3 for blocks).
+stores, making it easy to serve files over multiple protocols from various backends (BadgerDB,
+on disk or in memory, for metadata; memory or S3 for blocks).
 
 ### Why not use FUSE?
 
@@ -144,11 +144,16 @@ for a sizing table keyed to object/metadata count. Aim for a hit-ratio above
 
 ### Does metadata persist across server restarts?
 
-It depends on the metadata store:
+It depends on how the `badger` metadata store is configured:
 
-- **Memory backend** (`type: memory`): No, all data is lost on restart
-- **BadgerDB backend** (`type: badger`): Yes, all metadata persists
-- **PostgreSQL backend** (`type: postgres`): Yes, all metadata persists across restarts and supports distributed deployments
+- **On disk** (`path`): Yes, all metadata persists
+- **In memory** (`in_memory: true`): No, all data is lost on restart
+
+`badger` is the only metadata store type. A store row still naming `memory`,
+`sqlite` or `postgres` fails with `unsupported metadata store type "<x>": badger is
+the only metadata store type`; recreate it as `badger`. A distributed transactional
+key-value store (TiKV preferred) is the planned backend for multi-node deployments;
+it is not implemented yet.
 
 Configure your metadata store accordingly:
 
@@ -404,7 +409,7 @@ Yes! This is a core feature. Create stores and shares via CLI:
 
 ```bash
 # Create metadata stores
-./dfsctl store metadata add --name fast-memory --type memory
+./dfsctl store metadata add --name fast-memory --in-memory
 ./dfsctl store metadata add --name persistent-db --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
 
@@ -519,7 +524,7 @@ See [TROUBLESHOOTING.md](troubleshooting.md) for solutions.
 |---------|----------------|---------|
 | Permission Requirements | Kernel-level | Userspace only |
 | Storage Backend | Filesystem only | Pluggable |
-| Metadata Backend | Filesystem only | Pluggable (Memory/BadgerDB/PostgreSQL) |
+| Metadata Backend | Filesystem only | BadgerDB (on disk or in memory) |
 | Language | C/C++ | Pure Go |
 | Deployment | Complex (kernel modules) | Single binary |
 | Multi-protocol | Separate servers | Unified (NFS + SMB) |
@@ -768,7 +773,7 @@ macOS restricts SMB mount access to the mount owner regardless of Unix permissio
 
 #### Hard Links
 
-All backends (Memory, BadgerDB, PostgreSQL) fully support hard links via the NFS LINK procedure.
+The BadgerDB metadata store fully supports hard links via the NFS LINK procedure.
 
 #### Special Files
 
@@ -798,7 +803,7 @@ DittoFS is experimental and has not been security audited. See [SECURITY.md](sec
 
 DittoFS achieves **99.99% pass rate** on [pjdfstest](https://github.com/saidsay-so/pjdfstest) POSIX compliance tests (8789 tests, 1 expected failure).
 
-This pass rate applies to **all metadata backends** (Memory, BadgerDB, PostgreSQL).
+This pass rate is measured on the BadgerDB metadata store.
 
 | Metric | Value |
 |--------|-------|

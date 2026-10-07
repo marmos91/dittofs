@@ -9,9 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// LockStoreFactory creates a fresh lock.LockStore for each test. Every metadata
-// backend implements lock.LockStore (memory, badger, postgres), so the factory
-// can simply return the backend's *MetadataStore. The factory receives
+// LockStoreFactory creates a fresh lock.LockStore for each test. The metadata
+// store implements lock.LockStore, so the factory can simply return it. The factory receives
 // *testing.T so filesystem-backed stores can use t.TempDir()/t.Cleanup().
 type LockStoreFactory func(t *testing.T) lock.LockStore
 
@@ -79,7 +78,7 @@ func RunLockPersistenceSuite(t *testing.T, factory LockStoreFactory) {
 // every backend (area-4 H7). The marker drives the grace-entry decision on
 // boot, so a backend that fails to round-trip it would either never enter grace
 // after a crash (lock-steal window) or always enter grace (90s wedge on every
-// restart). The contract this suite enforces on all three backends:
+// restart). The contract this suite enforces:
 //
 //   - SetCleanShutdown(false) then GetCleanShutdown reports false (the boot path
 //     clears the marker for the running session immediately after reading it;
@@ -87,8 +86,8 @@ func RunLockPersistenceSuite(t *testing.T, factory LockStoreFactory) {
 //   - SetCleanShutdown(true) then GetCleanShutdown reports true (graceful Close).
 //   - Toggling back to false reads false again.
 //   - The marker is INDEPENDENT of the server epoch: bumping the epoch must not
-//     flip it (a real divergence risk on backends — like postgres — that store
-//     both on one singleton row).
+//     flip it (a real divergence risk on a backend that stores both in one
+//     record).
 //
 // The "absent marker defaults to false" property is asserted by the per-backend
 // unit tests rather than here, because some backend conformance factories open,
@@ -136,8 +135,8 @@ func testLock_CleanShutdownMarker(t *testing.T, factory LockStoreFactory) {
 		t.Fatalf("after SetCleanShutdown(false) #2, GetCleanShutdown = true; toggle-to-false not persisted (grace-period wedge class)")
 	}
 
-	// Marker must be independent of the server epoch on backends that share a
-	// singleton row (postgres): bumping the epoch must not flip the marker.
+	// Marker must be independent of the server epoch: bumping the epoch must
+	// not flip the marker.
 	if err := store.SetCleanShutdown(ctx, true); err != nil {
 		t.Fatalf("SetCleanShutdown(true) pre-epoch: %v", err)
 	}
@@ -155,7 +154,7 @@ func testLock_CleanShutdownMarker(t *testing.T, factory LockStoreFactory) {
 
 // testLock_MaxUint64OffsetLength pins R3-4: NFSv4 expresses an unbounded range
 // as Offset/Length = 0xFFFFFFFFFFFFFFFF and SMB allows high-bit offsets. A
-// backend storing these in a signed 64-bit column (postgres BIGINT) rejects any
+// backend storing these as a signed 64-bit integer rejects any
 // uint64 > MaxInt64 at PutLock, silently dropping the lock so it is never
 // persisted nor recovered. The store must round-trip the full uint64 range.
 func testLock_MaxUint64OffsetLength(t *testing.T, factory LockStoreFactory) {
@@ -706,9 +705,9 @@ func testLock_ZeroByteVsEOFSemantics(t *testing.T, factory LockStoreFactory) {
 // Helpers
 // ============================================================================
 
-// acquiredAtTolerance bounds AcquiredAt drift across a round-trip. Postgres
-// timestamptz is microsecond-resolution and may not preserve monotonic-clock
-// or sub-microsecond components; everything coarser must match exactly.
+// acquiredAtTolerance bounds AcquiredAt drift across a round-trip: a time
+// encoding need not preserve monotonic-clock or sub-microsecond components;
+// everything coarser must match exactly.
 const acquiredAtTolerance = time.Millisecond
 
 // assertLockEqual asserts every PersistedLock field matches, comparing

@@ -42,7 +42,7 @@ log_info "Logging in..."
 run_dfsctl login --username admin --password "$ADMIN_PASSWORD"
 
 log_info "Creating metadata store..."
-run_dfsctl store metadata add --name meta-mem --type memory 2>/dev/null || true
+run_dfsctl store metadata add --name meta-mem --type badger --in-memory 2>/dev/null || true
 
 log_info "Creating block store..."
 run_dfsctl store block add --name local-mem --type memory 2>/dev/null || true

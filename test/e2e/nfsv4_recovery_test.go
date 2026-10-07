@@ -194,7 +194,7 @@ func TestStaleNFSHandle(t *testing.T) {
 			metaStore := helpers.UniqueTestName("stale-meta")
 			blockStore := helpers.UniqueTestName("stale-payload")
 
-			_, err := runner1.CreateMetadataStore(metaStore, "memory")
+			_, err := runner1.CreateInMemoryMetadataStore(metaStore)
 			require.NoError(t, err)
 
 			_, err = runner1.CreateBlockStore(blockStore, "memory")
@@ -237,7 +237,7 @@ func TestStaleNFSHandle(t *testing.T) {
 			metaStore2 := helpers.UniqueTestName("stale-meta2")
 			blockStore2 := helpers.UniqueTestName("stale-payload2")
 
-			_, err = runner2.CreateMetadataStore(metaStore2, "memory")
+			_, err = runner2.CreateInMemoryMetadataStore(metaStore2)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
 
@@ -306,7 +306,7 @@ func TestSquashBehavior(t *testing.T) {
 	metaStore := helpers.UniqueTestName("squash-meta")
 	blockStore := helpers.UniqueTestName("squash-payload")
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
@@ -383,7 +383,7 @@ func TestClientReconnection(t *testing.T) {
 	metaStore := helpers.UniqueTestName("recon-meta")
 	blockStore := helpers.UniqueTestName("recon-payload")
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 

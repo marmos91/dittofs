@@ -19,7 +19,7 @@ import (
 // first-committer-wins resolution. Backends that do not
 // implement the capability skip the scenario via type-assertion failure.
 //
-// Memory, Badger, and Postgres all satisfy this.
+// Badger satisfies this.
 type ObjectIDIndexAccessor interface {
 	// CountObjectIDIndexRows returns the number of files indexed under
 	// the given objectID. Test-only; never call from production code.
@@ -32,7 +32,7 @@ type ObjectIDIndexAccessor interface {
 // runObjectIDOpsTests dispatches the ObjectID conformance scenarios
 // Each backend wires RunConformanceSuite into its
 // *_conformance_test.go, so adding scenarios here automatically runs them
-// against Memory, Badger, and Postgres.
+// against it.
 //
 // Scenarios fall into two files for readability:
 //   - objectid_roundtrip.go: round-trip + lifecycle (this file).
@@ -257,11 +257,9 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// concurrentRaceErrIsConflict accepts both Memory/Badger ErrConflict
-// (first-committer-wins; surfaced via mderrors.NewConflictError) and
-// Postgres ErrAlreadyExists (the partial UNIQUE index 23505 maps to
-// ErrAlreadyExists in mapPgErrorCode). Either is the documented loser
-// signal across backends.
+// concurrentRaceErrIsConflict accepts ErrConflict (first-committer-wins;
+// surfaced via mderrors.NewConflictError) and ErrAlreadyExists as the
+// loser signal.
 func concurrentRaceErrIsConflict(err error) bool {
 	if err == nil {
 		return false

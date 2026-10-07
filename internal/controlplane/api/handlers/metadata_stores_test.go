@@ -6,9 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,7 +18,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
-	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 func setupMetadataStoreHealthTest(t *testing.T) (store.Store, *MetadataStoreHandler, *runtime.Runtime) {
@@ -52,13 +53,13 @@ func TestMetadataStoreHandler_HealthCheck_Loaded(t *testing.T) {
 
 	// Create store config in DB
 	cfg := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "test-meta", Type: "memory",
+		ID: uuid.New().String(), Name: "test-meta", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateMetadataStore(ctx, cfg)
 
 	// Register a running store in the runtime
-	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestMetadataStoreHandler_HealthCheck_NoRuntime(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "no-rt-meta", Type: "memory",
+		ID: uuid.New().String(), Name: "no-rt-meta", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateMetadataStore(ctx, cfg)
@@ -176,11 +177,11 @@ func TestMetadataStoreHandler_Status_OK(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "m-ok", Type: "memory",
+		ID: uuid.New().String(), Name: "m-ok", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	cpStore.CreateMetadataStore(ctx, cfg)
-	if err := rt.RegisterMetadataStore("m-ok", memoryMeta.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("m-ok", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
@@ -219,10 +220,10 @@ func TestMetadataStoreHandler_List_IncludesStatus(t *testing.T) {
 	ctx := context.Background()
 
 	cpStore.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "m-list", Type: "memory",
+		ID: uuid.New().String(), Name: "m-list", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	})
-	_ = rt.RegisterMetadataStore("m-list", memoryMeta.NewMemoryMetadataStoreWithDefaults())
+	_ = rt.RegisterMetadataStore("m-list", badgertest.NewInMemory(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/metadata", nil)
 	w := httptest.NewRecorder()
@@ -247,10 +248,10 @@ func TestMetadataStoreHandler_Get_IncludesStatus(t *testing.T) {
 	ctx := context.Background()
 
 	cpStore.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
-		ID: uuid.New().String(), Name: "m-get", Type: "memory",
+		ID: uuid.New().String(), Name: "m-get", Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	})
-	_ = rt.RegisterMetadataStore("m-get", memoryMeta.NewMemoryMetadataStoreWithDefaults())
+	_ = rt.RegisterMetadataStore("m-get", badgertest.NewInMemory(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/metadata/m-get", nil)
 	req = withMetadataStoreName(req, "m-get")
@@ -270,7 +271,7 @@ func TestMetadataStoreHandler_Get_IncludesStatus(t *testing.T) {
 
 // --- duplicate-name tests ---
 
-func createMetadataStoreReq(t *testing.T, handler *MetadataStoreHandler, name, storeType string, config map[string]string) *httptest.ResponseRecorder {
+func createMetadataStoreReq(t *testing.T, handler *MetadataStoreHandler, name, storeType string, config map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 
 	cfgJSON, err := json.Marshal(config)
@@ -292,21 +293,20 @@ func createMetadataStoreReq(t *testing.T, handler *MetadataStoreHandler, name, s
 // A second create under a name already in use is a conflict whatever the
 // backend does with its data directory. Badger takes an exclusive lock on that
 // directory, so instantiating the store a second time fails before the name is
-// ever compared unless the name check runs first; backends holding no such
-// handle reach the duplicate-name arm on their own and must keep answering 409
-// too.
+// ever compared unless the name check runs first; an in-memory store holds no
+// such handle, reaches the duplicate-name arm on its own and must keep
+// answering 409 too.
 func TestMetadataStoreHandler_Create_DuplicateNameIsConflict(t *testing.T) {
 	tests := []struct {
 		storeType string
-		config    map[string]string
+		config    map[string]any
 	}{
-		{storeType: "badger", config: map[string]string{"path": t.TempDir()}},
-		{storeType: "memory"},
-		{storeType: "sqlite", config: map[string]string{"path": filepath.Join(t.TempDir(), "meta.db")}},
+		{storeType: "badger", config: map[string]any{"path": t.TempDir()}},
+		{storeType: "badger", config: map[string]any{"in_memory": true}},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.storeType, func(t *testing.T) {
+		t.Run(fmt.Sprint(tt.config), func(t *testing.T) {
 			_, handler, _ := setupMetadataStoreHealthTest(t)
 
 			if w := createMetadataStoreReq(t, handler, "dup", tt.storeType, tt.config); w.Code != http.StatusCreated {
@@ -324,8 +324,9 @@ func TestMetadataStoreHandler_Create_DuplicateNameIsConflict(t *testing.T) {
 // a collision.
 func TestMetadataStoreHandler_Create_NameSpellingAnotherStoreIDIsNotAConflict(t *testing.T) {
 	_, handler, _ := setupMetadataStoreHealthTest(t)
+	inMemory := map[string]any{"in_memory": true}
 
-	w := createMetadataStoreReq(t, handler, "first", "memory", nil)
+	w := createMetadataStoreReq(t, handler, "first", "badger", inMemory)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("first create = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
 	}
@@ -334,7 +335,7 @@ func TestMetadataStoreHandler_Create_NameSpellingAnotherStoreIDIsNotAConflict(t 
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	w = createMetadataStoreReq(t, handler, first.ID, "memory", nil)
+	w = createMetadataStoreReq(t, handler, first.ID, "badger", inMemory)
 	if w.Code != http.StatusCreated {
 		t.Errorf("create named after another store's ID = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
 	}

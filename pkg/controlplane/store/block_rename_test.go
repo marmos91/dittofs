@@ -15,7 +15,7 @@ func TestRenameBlockStore(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	metaID, err := store.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "rn-meta", Type: "memory"})
+	metaID, err := store.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "rn-meta", Type: "badger", Config: `{"in_memory":true}`})
 	if err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
