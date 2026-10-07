@@ -169,8 +169,9 @@ measurements **MUST** be recorded there:
 2. **The dedup ratio** on a real customer corpus.
 3. **The journal-shape benchmark** on three workloads: many small files, each
    closed by a COMMIT; one large sequential stream; random in-place overwrites
-   inside a large file behind one long-lived handle. The acceptable gap between
-   the shapes compared is stated before the run, not after it.
+   inside a large file behind one long-lived handle. The simpler shape is adopted
+   only within 5% of the other on COMMIT latency and small-file throughput, at
+   the median and p99, on every workload ([RFC 1 §4.6](rfc-1-journal.md#4.6%20Segments%20or%20staging%20files%2C%20chosen%20by%20benchmark)).
 
 **A regression blocks until explained.** A row more than 10% worse on a measured
 path, against the last recorded result on the reference box, blocks the change
