@@ -514,7 +514,7 @@ fenced by its epoch, moved with it, and recovered through grace
 3. **The NFS write verifier MUST change whenever the node serving a shard as
    primary changes or the journal loses unstable writes, and SHOULD NOT change
    otherwise.** It is derived from the primary's node, node epoch, process
-   instance and the journal's loss generation ([RFC 8 §4.1](rfc-8-engine.md#4.1%20Write)), not from the
+   instance and the journal's loss generation ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), not from the
    shard epoch, so the raise before a move does not make every client resend its
    unstable writes.
 4. **Client state is not a shard record.** It has its own semantics, grace and
