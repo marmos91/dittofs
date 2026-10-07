@@ -122,8 +122,9 @@ address that belongs to the cluster and is held, for now, by P1.
   **[primary](rfc-0-data-lifecycle.md#Glossary)**: a set of files, a share by
   default, and the one storage node that accepts its writes at a time
   ([§3](#3.%20One%20primary%20per%20shard)).
-- **[Epoch](rfc-0-data-lifecycle.md#Glossary)**: a number raised whenever a
-  shard's primary changes; a call carrying an older one is refused.
+- **[Epoch](rfc-0-data-lifecycle.md#Glossary)**: a number raised on every change
+  to a shard's record — a new primary, a replica change, the start of a move;
+  a call carrying an older one is refused.
 - **Route envelope**: what every forwarded call carries: request ID, shard and
   epoch, hop count ([§4.3](#4.3%20The%20route%20envelope)).
 - **Floating address**: a client-facing address owned by the cluster, taken

@@ -210,38 +210,260 @@ and [§10](#10.%20Failure%20model) the failure model. On a first read, skip
 
 ## Glossary
 
-The words the whole set shares, one line each. The linked section is the
-definition; every other RFC uses the word in this sense and does not redefine it.
+The words the whole set shares, one or two sentences each. The linked section is
+the definition; every other RFC uses the word in this sense and does not redefine
+it. Where a word is overloaded across RFCs, its row names every sense.
+
+### Units at a glance
+
+Two families of unit. The **bytes** units say where content is; the
+**ownership** units say who serves it. Sizes are defaults or examples, not limits.
+
+| Unit | What it is | Groups what | Typical size or count | Where it lives | Owned by |
+| --- | --- | --- | --- | --- | --- |
+| **Bytes, local** | | | | | |
+| write | what a client sends: bytes at an offset of one file | nothing; it is the input | a few KiB to 1 MiB; 64 KiB in the examples | memory, until the journal holds it | [RFC 17](rfc-17-vfs.md), [RFC 8](rfc-8-engine.md) |
+| journal record | one write, or one piece of a write split at a segment's end, framed with a header and checksum | the bytes of one write | the write's size | local disk | [RFC 1](rfc-1-journal.md) |
+| extent | an `(offset, length)` region of one file's bytes; a value, never a stored thing | nothing; it names bytes | any | nowhere; components keep state *against* one | this RFC |
+| segment | an append-only local file of records, sealed when full | records of many files, in arrival order | 256 MiB in the examples; fixed, not a setting | local disk | [RFC 1](rfc-1-journal.md) |
+| **Bytes, remote** | | | | | |
+| chunk | a run of one file's bytes cut at a content-defined boundary, named by the hash of its content | bytes | about 256 KiB; boundaries between 64 KiB and 1 MiB | bytes in a block in the bucket; its record in the metadata store | [RFC 2](rfc-2-carver.md) (identity), [RFC 6](rfc-6-block-metadata.md) (record) |
+| block | one object in the bucket, written by one put | whole chunks of many files of one share | about 4 MiB target, at most 1,024 chunks; may pass the target by one chunk | bucket; its record in the metadata store | [RFC 2](rfc-2-carver.md), [RFC 4](rfc-4-remote-tier.md) |
+| namespace | one prefix (a folder) in a bucket; chunks are counted within it | blocks of one or more shares | one per share by default | bucket | [RFC 12](rfc-12-snapshots.md) |
+| **Ownership** | | | | | |
+| file | a namespace object with an identity, attributes and an ordered list of refs | refs | any size; one 30 GB file in the examples | metadata store | [RFC 7](rfc-7-namespace-metadata.md) |
+| share | one exported file tree with its own settings | files | two in the examples | metadata store | [RFC 16](rfc-16-metadata-store.md) |
+| shard | a set of files with one primary at a time | files of one share | one per share by default; one per child of a marked directory | metadata store (its shard record) | [RFC 11](rfc-11-ownership.md) |
+| slot | one of a fixed number of buckets a per-child shard's ID hashes into | per-child shards | 4,096, fixed when the installation is created | metadata store (the slot table) | [RFC 11](rfc-11-ownership.md) |
+| node | one DittoFS server process | the shards it is primary or replica of | one, or several in a cluster | a host | [RFC 15](rfc-15-topology.md) |
+| installation | every node that shares one metadata store and control plane | nodes, shares, namespaces | one | all of the above | [RFC 13](rfc-13-configuration.md) |
+
+```text
+ BYTES axis: where content is            OWNERSHIP axis: who serves it
+
+ client write (64 KiB at 4 GiB)          file profiles/alice/ODFC_alice.vhdx
+   │ appended as one                       │ belongs to exactly one
+   ▼                                       ▼
+ record ── in a segment (256 MiB)        shard A (profiles/alice/)
+   │       of the journal, local NVMe      │ its shard record names
+   │ offload: carve                        ▼
+   ▼                                     primary S1, replicas S2 and S3
+ chunks (~256 KiB, named by hash)
+   │ pack, whole chunks only             per-child shard ──► one of 4096 slots
+   ▼                                     slot table: slot ──► ordered nodes
+ block (~4 MiB) ── put into a namespace
+                   (a prefix) in bucket dfs-data
+
+ The axes are independent:
+ - moving shard A from S1 to S2 moves no bytes in the bucket;
+ - one block packs chunks of many files; one segment, records of many files;
+ - a file's bytes may sit in any number of segments and blocks.
+```
+
+**Do not confuse**
+
+- **chunk** vs **block**: a chunk is content, named by its hash and counted; a
+  block is the object that carries whole chunks to the bucket, named afresh for
+  each put. Refs name chunks, never blocks.
+- **segment** vs **block**: a segment is a local file of records; a block is a
+  remote object of chunks. They group bytes differently and neither can be
+  derived from the other ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
+- **shard** vs **share**: a share is what a client mounts; a shard is part or all
+  of one share, the unit one primary serves. A share is one shard by default.
+- **namespace** vs **share**: a namespace is a folder in the bucket where blocks
+  live and chunks are counted; a share is a file tree. Each share gets its own
+  namespace by default; a clone or restore joins its source's.
+- **record** vs **ref**: a journal record holds the bytes of one write on local
+  disk; a ref is a metadata record saying which chunk holds a file's bytes at an
+  offset. In [RFC 16](rfc-16-metadata-store.md) "record" alone means one key and
+  its value in the metadata store.
+- **node epoch** vs **epoch**: a node epoch numbers one node's leases; an epoch
+  (shard epoch) numbers one shard record's changes. The write verifier follows
+  the first, fencing the second.
+
+### Data units
 
 | Term | Means | Defined in |
 | --- | --- | --- |
+| **write** | what a client sends: bytes at an offset of one file. The journal stages it and the client is acknowledged; nothing is chunked, hashed or uploaded on that path | [§5.1](#5.1%20Write) |
+| **record** (journal) | one framed run of bytes within a segment — one write, or one piece of a write that crossed a segment's end — with a header carrying its identity, length and checksum | [§2.1](#2.1%20Entities), [RFC 1 §4.3](rfc-1-journal.md#4.3%20Records) |
+| **segment** | a local append-only file of records, capped at a fixed size and sealed when full; its space returns only when the whole segment is deleted | [§2.1](#2.1%20Entities), [RFC 1 §4.2](rfc-1-journal.md#4.2%20Segments) |
+| **extent** | a contiguous `(offset, length)` region of one file's bytes, and the only term for it. A value, not a stored thing | [§2.1](#2.1%20Entities) |
+| **held extent** | an extent the journal holds, with its content version and offloaded bit | [RFC 1 §2](rfc-1-journal.md#2.%20The%20model%20it%20presents) |
+| **version** | the number ordering every write and removal of one file; where two cover the same byte, the higher wins, whatever order they arrived in | [§2.1](#2.1%20Entities), [RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions) |
+| **chunk** | a run of one file's bytes, about 256 KiB, cut at a content-defined boundary and named by the hash of its content; shared by every file that holds it. An all-zero chunk is never stored: the file records a hole instead | [§2.1](#2.1%20Entities) |
+| **Target**, **Min**, **Max** | the one chunking setting, default 256 KiB, and the boundary bounds derived from it, Target ÷ 4 and 4 × Target | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) |
+| **stretch** | one unbroken run of a file's bytes handed to the carver in one call; an end the offer imposed, not a hole or the file's end, leaves its tail uncut for the next offer | [RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) |
+| **block** | the object the remote tier stores: a whole number of chunks, written by one put. It targets a configured size (4 MiB by default) and passes it by at most one chunk, because a chunk never spans two blocks | [§2.1](#2.1%20Entities) |
+| **block plan** | the assembler's list of the chunk hashes for one block and where their bytes sit, from which the block is streamed | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) |
+| **block name** | a block's 32-byte identity, minted afresh for each put attempt and never reused, so one name is always one byte sequence | [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) |
+
+### Places
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **journal** | the local tier: one per device on a storage node, holding recent writes until they are offloaded | [RFC 1](rfc-1-journal.md) |
+| **remote tier** / **remote store** | the durable object storage behind the journals / one configured backend of it | [RFC 4](rfc-4-remote-tier.md) |
+| **remote block store** | one backend's adapter: it maps block names to object keys and makes one attempt per call | [RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line) |
+| **bucket** | the object-store container a remote store points at; it holds one or more namespaces, each under its own prefix | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) |
+| **namespace** | one prefix, like a folder, inside a bucket of the remote tier; chunks are counted (and, once deduplication is added, deduplicated) within one namespace, never across two | [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) |
+| **control object** | a small object of a fixed role beside the blocks, such as a namespace's claim; never listed as a block | [RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects) |
+| **metadata store** | the transactional store holding every fact about files, content, identity and configuration | [RFC 16](rfc-16-metadata-store.md) |
+| **KV** | the small interface a metadata backend implements: run a transaction, read, scan, set, delete, guard | [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend) |
+| **control plane** | the records in the metadata store that hold every setting; the one source of configuration | [RFC 13 §2.1](rfc-13-configuration.md#2.1%20The%20control%20plane%20is%20the%20source) |
+
+### Ownership and cluster
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **installation** | all the nodes that share one metadata store and control plane; the widest scope a setting has | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
 | **node** | one DittoFS server process, with one or both roles; only a `storage` node can be a primary or a replica | [RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment) |
 | **role** | what a node runs: `protocol` (adapters and the filesystem service, no state of its own) or `storage` (the metadata store's view, open state, the content subsystem and journals) | [RFC 15 §2](rfc-15-topology.md#2.%20Roles) |
-| **installation** | all the nodes that share one metadata store and control plane; the widest scope a setting has | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
-| **share** | one exported file tree, with its own settings, snapshots and journal limits | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
-| **namespace** | one prefix, like a folder, inside a bucket of the remote tier; chunks are counted (and, once deduplication is added, deduplicated) within one namespace, never across two | [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) |
-| **remote tier** / **remote store** | the durable object storage behind the journals / one configured backend of it | [RFC 4](rfc-4-remote-tier.md) |
-| **journal** | the local tier: one per device on a storage node, holding recent writes until they are offloaded | [RFC 1](rfc-1-journal.md) |
-| **offload** | the pass that copies a journal's dirty extents to the remote tier and records them in metadata | [§5.2](#5.2%20Offload) |
-| **shard** | a set of files with one primary at a time; a share is one shard by default | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) |
+| **front-end** | the node a client's call arrives at; when it is not the primary, it forwards the call there | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary) |
+| **route envelope** | what every forwarded call carries: request ID, shard and epoch, hop count | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) |
+| **floating address** / **SMB Witness** | a client-facing address the cluster owns and a surviving protocol node takes over / the SMB protocol that tells a client an address moved or a node is draining | [RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing) |
+| **shard** | a set of files with one primary at a time; a share is one shard by default, and a subtree or each child of a marked directory can be its own. A file is never split across shards | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) |
+| **slot** / **slot table** | one of a fixed number (4,096 by default) of buckets a per-child shard's ID hashes into / the record assigning each slot an ordered list of storage nodes, the first as primary, in proportion to capacity | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) |
 | **primary** | the one storage node that orders and accepts a shard's writes, as its shard record names — as (node, node epoch), with the journal it holds the shard in | [RFC 11 §3](rfc-11-ownership.md#3.%20The%20primary) |
 | **replica** | a storage node other than the primary whose journal holds a copy of every write to the shard | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
 | **learner** | a replica that has not yet been given the shard's older content: it counts for new writes but cannot take over, and a takeover drops it | [RFC 10 §7.3](rfc-10-journal-replication.md#7.3%20Joining) |
 | **replica set** | a shard's primary and its replicas; an acknowledged write is in all of their journals until offloaded | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
-| **shard record** | the metadata-store record naming a shard's primary as (node, node epoch, journal identity, incarnation), replicas, epoch, replica count and floor; it changes only by compare-and-swap | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
-| **node lease** | the one lease each storage node renews in the metadata store; a node whose lease has lapsed serves nothing, and a takeover marks its node record lapsed, which every commit of its shards guards | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
-| **epoch** | a number in the shard record, raised by every change to it; a message carrying an older one is refused, and a commit is refused unless the file's fence records hold exactly its (shard, epoch) and its primary's node record is not marked lapsed | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **shard record** | the metadata-store record naming a shard's primary as (node, node epoch, journal identity, incarnation), its replicas, its epoch and its replica count and floor; it changes only by compare-and-swap | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
+| **node lease** | the one lease each storage node renews in the metadata store; a node whose lease lapsed serves nothing, a takeover marks its node record lapsed, and every commit on its shards guards that mark. Not a client lease, nor an SMB lease | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **node epoch** | the number of one node's lease; a node whose lease lapsed takes a new one at a higher node epoch and is primary of nothing until it takes a shard over. The write verifier is derived from it, not from the shard epoch | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **epoch** (shard epoch) | a number in the shard record, raised by every change to it; a message carrying an older one is refused, and a commit is refused unless the file's fence records hold exactly its (shard, epoch) and the primary's node record is not marked lapsed | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **fence records** | two records per file, each holding the (shard, epoch) the file's commits must carry | [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency) |
 | **committed point** | per shard, the newest version at or below which the whole replica set holds every operation | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
-| **file** | a namespace entry with an identity, attributes and an ordered list of chunk refs | [§2.1](#2.1%20Entities) |
-| **chunk** | a run of bytes named by the hash of its content, shared by every file that holds it | [§2.1](#2.1%20Entities) |
-| **block** | the object the remote tier stores: a whole number of chunks, written by one put | [§2.1](#2.1%20Entities) |
-| **ref** | one file's use of one chunk at one offset; a chunk's refcount is the number of its refs | [§2.1](#2.1%20Entities), [RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs) |
+| **takeover** / **handover** | a replica becoming primary after the primary's lease lapsed, followed by grace / a planned change of primary, with no lease wait and no grace | [RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover), [RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover) |
+| **move** (files) | changing the shard some files belong to, in batches; between batches every file is in exactly one shard. Not a namespace move | [RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) |
+
+### Metadata records
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **entity** | a plain value a metadata read returns, such as a File, an Entry or a Share; one entity is not one stored record | [RFC 16 §2.1](rfc-16-metadata-store.md#2.1%20The%20entity%20map) |
+| **record** (metadata) | one key and its value in the KV. Not a journal record | [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed) |
+| **guard** | a transaction's claim on a key it does not write; it conflicts with a concurrent write of that key, never with another guard | [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend) |
+| **file** | a namespace entry with an identity, attributes and an ordered list of chunk refs. Its identity is a random ID, never reused, that survives rename | [§2.1](#2.1%20Entities), [RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File) |
+| **FileAttr** | a file's size, owner and group, mode, timestamps and identifiers | [§2.1](#2.1%20Entities) |
+| **FileData** | the fields of a file that only the write path sets — size, the newest version whose existence is recorded, write-time timestamps — named as a group; not a record of its own | [RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes) |
+| **entry** | one name in one directory, pointing at a file; a file with two hard links has two entries | [RFC 7 §2.2](rfc-7-namespace-metadata.md#2.2%20Entry) |
+| **nlink** | the number of entries naming a file, kept exact in the transaction of every entry change | [RFC 7 §4.1](rfc-7-namespace-metadata.md#4.1%20%60nlink%60%20is%20exactly%20its%20entries) |
+| **handle** | what a client holds to name a file: the share and the file's ID, never a path; stable across restart | [RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) |
+| **ref** | one file's use of one chunk at one offset, with the versions it came from; it names the chunk by hash, never the block | [§2.1](#2.1%20Entities), [RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef) |
+| **refcount** | how many refs name a chunk, live and history alike; the reverse ref index is the authority it is checked against | [RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs) |
+| **chunk record** | one per chunk hash per namespace: which block holds the chunk, where in it, and the chunk's refcount | [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk) |
+| **block record** | one per block: how many of its chunks are still referenced, and its state — `live`, `retired` or `deleted`. It exists only once the block is durable | [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block) |
+| **reverse ref index** | one key per ref, ordered by chunk hash; the deleter reads it before every delete, and the counts are a cache of it | [RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority) |
+| **existence** | a file's size, holes, overwrite set and modification time: that a write happened, recorded apart from its content. Committed at a stability point, group-committed across files; until then the journal is its authority | [§5.1](#5.1%20Write), [RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence) |
+| **hole** | a range of a file below its size that was never written, or was deallocated; it reads as zeros with no fetch. Recorded as its own record, never inferred from gaps between refs | [RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents) |
+| **hole** / **uncarved** / **carved** | metadata's three answers for an offset below the size: never written; written but with no current chunk; covered by a current chunk | [RFC 6 §3.2](rfc-6-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) |
+| **overwrite set** | per file, the ranges overwritten since content there was last offloaded, each with its overwriting version; it makes an offset whose chunk is older uncarved, so a lost overwrite reads as Lost, never as the old chunk | [RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents) |
+| **removal** | a truncate, deallocate, release or clone target: recorded in one small transaction, then applied to refs in bounded batches, masking the refs it has not yet dropped | [§7](#7.%20Mutation%20and%20removal), [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation) |
+| **pending release** | a record saying a file has lost its last name and its content is still to be released; it keeps nothing alive | [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) |
+| **put intent** | a record written before every put, naming the block name and the shard or GC partition and epoch it runs under; the commit that records the block deletes it, so an upload that never commits is found without listing the bucket | [§5.2](#5.2%20Offload), [RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents) |
+
+### Lifecycle
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **residency** | where an extent's bytes are, computed on every read from the journal's answer and metadata's, and never stored: one of the five classes below | [§4.2](#4.2%20The%20residency%20function) |
+| **Absent** | metadata says hole (or past the end of the file) and the journal holds nothing: reads as zeros, with no fetch | [§4.2](#4.2%20The%20residency%20function) |
+| **Dirty** | the journal holds the bytes and no current chunk covers them: served locally, and never evicted | [§4.2](#4.2%20The%20residency%20function) |
+| **Resident** | a current chunk covers the bytes and the journal still holds them: served locally, evictable | [§4.2](#4.2%20The%20residency%20function) |
+| **Remote** | a current chunk covers the bytes and the journal does not hold them: fetched, verified and served | [§4.2](#4.2%20The%20residency%20function) |
+| **Lost** | the bytes were written, no current chunk covers them and the journal does not hold them, or their block can no longer be decoded: the read fails, never returns zeros | [§4.2](#4.2%20The%20residency%20function) |
+| **durable** | held by the remote tier, as a report from whoever observed the put says; never inferred from a transfer ending or time passing | [§4.3](#4.3%20Reporting) |
+| **stability point** | a client's flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`, a stable write, or a close where the protocol needs one): the journal syncs and the file's existence is committed. It does not involve the bucket | [§5.1](#5.1%20Write), [RFC 8 §5](rfc-8-engine.md#5.%20Commit%3A%20the%20stability%20point) |
+| **offload** | the pass that copies a journal's dirty extents to the remote tier and records them in metadata | [§5.2](#5.2%20Offload) |
+| **offer** / **report** | the frozen view of dirty bytes the journal hands to an offload / the statement of which extents became durable, the only way the journal learns it | [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload) |
+| **offloaded bit** | the journal's per-extent mark that it was told the bytes are durable; set by a report or a fill, and needed before release | [RFC 1 §2](rfc-1-journal.md#2.%20The%20model%20it%20presents) |
+| **carve** | cut a stretch of bytes into chunks at content-defined boundaries and hash each one; the chunker says where a chunk ends, the carver runs it | [RFC 2 §1.2](rfc-2-carver.md#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) |
+| **put** / **get** / **put attempt** | make durable in the remote tier / retrieve from it / one decision to store one block plan under a name minted for it, which every retry reuses | [§2.3](#2.3%20Operations), [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) |
+| **fill** | place bytes fetched from the remote tier into the journal; never over bytes the journal holds | [§6.2](#6.2%20Fill) |
+| **evict** | drop a local copy that is durable remotely, Resident to Remote. Writes nothing to metadata and never touches the remote tier | [§8.1](#8.1%20Evict) |
+| **release** | (journal) the mechanism of eviction: stop holding extents whose offloaded bit is set / (file) drop a file's refs, its journal content and its records once it has no name and no open | [RFC 1 §3.5](rfc-1-journal.md#3.5%20Release), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees) |
+| **reclaim** | (journal) recover local space without changing what content exists. Not a client reclaiming open state in grace | [§8.2](#8.2%20Reclaim) |
+| **repack** | copy live records out of a sparse segment and delete the segment; one mechanism of reclaim | [RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack) |
+| **sweep** | delete a remote block that nothing references; the only operation that destroys a last copy, carried out by retirement and the deleter. [RFC 12](rfc-12-snapshots.md) also uses it for deleting unlisted blocks at a backup's block folder | [§8.3](#8.3%20Sweep) |
+| **retire** / **resurrect** | move a block record to `retired` in the transaction that leaves its count of referenced chunks at zero / bring it back to `live` when a clone, copy or restore references one of its chunks again | [RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses) |
+| **trash** | the wait between a block's retirement and its deletion, 48 hours by default; it postpones a delete the refs already allow and never allows one | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) |
+| **delete** | (file) remove its last entry; its refs go at release, and nothing leaves the remote tier / (block) `retired` to `deleted`, done only by the deleter after checking the reverse ref index, then the object is deleted | [§7](#7.%20Mutation%20and%20removal), [RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes) |
+| **loss event** | an extent the journal stopped holding without being asked, dropped as corrupt or stale | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
+
+### Clients and protocols
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **share** | one exported file tree, with its own settings, snapshots and journal limits | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
+| **export policy** | a share's admission and identity-mapping rule: authentication flavours, client rules, squashing. Applied by the filesystem service on every call; file permission checks never see it | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
+| **share grant** | one principal's access to one share (none, read, read-write, admin), evaluated on every call before the file's mode or ACL. Not export policy | [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved) |
+| **admission** | the per-share checks every call passes before the permission check: the share's state, its flavours, its client rules, then squashing | [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) |
+| **pseudo-filesystem** | the read-only tree of directories through which an NFSv4 client reaches each share's root, built the same on every node from the share list | [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) |
+| **adapter** | the code for one wire protocol: framing, compounds, replay caches, error codes, and nothing else | [RFC 17 §4.2](rfc-17-vfs.md#4.2%20Translation%20stays%20in%20adapters) |
+| **chokepoint** | the one function in the metadata store that decides file permissions; the filesystem service is its only caller | [RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint) |
+| **client ID** | one client instance as its protocol names it; a client that reboots is a new one, which is how its stale state is recognised and released | [RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client) |
+| **client lease** | how long the server keeps a silent client's state. Not a node lease, nor an SMB lease | [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease) |
+| **open** / **anonymous open** | one open of one file, with the access it was granted and the access it denies / what an NFSv3 read or write runs against instead: the caller's identity, no state | [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open), [RFC 17 §4.1](rfc-17-vfs.md#4.1%20The%20operation%20set%20is%20the%20union%2C%20not%20the%20intersection) |
+| **open state** | who holds a file open, locked or cached; the only thing besides a name that keeps a file alive | [RFC 7 §4.2](rfc-7-namespace-metadata.md#4.2%20Open%20state%20is%20the%20second%20holder) |
+| **deny mode** | the access an open denies to later opens, checked once, when an open is granted | [RFC 14 §6](rfc-14-open-state.md#6.%20A%20deny%20mode%20is%20checked%20at%20open) |
+| **byte-range lock** | a lock on a range of a file, held by a lock owner; SMB locks are mandatory, NFS locks advisory | [RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock) |
+| **caching grant** | the server's promise that nobody else is using a file — an NFS delegation, an SMB oplock or SMB lease — taken back by a recall within a bounded time | [RFC 14 §5](rfc-14-open-state.md#5.%20Caching%20grants) |
+| **durable** / **persistent open** | an SMB open kept across a disconnect for its timeout / one that also survives a failover, because it is written down | [RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens) |
+| **delete pending** | SMB's delete on close: the name stays until the last open closes, and new opens are refused meanwhile | [RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close) |
+| **grace period** | after a primary loses open state, at least one lease period in which only former holders may take state, by reclaiming it. GC's trash is not a grace period | [RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe) |
+| **write verifier** | the NFS value returned by a write and a commit; it changes when the node serving the shard, its node epoch or process, or the journal's loss generation changes, and a change makes the client resend unflushed writes. Not derived from the shard epoch | [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier) |
+| **loss generation** | a per-journal counter raised on every loss event and every failed sync resolved by failing its window; folded into the write verifier | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
+
+### Snapshots and backups
+
+| Term | Means | Defined in |
+| --- | --- | --- |
 | **cut** / **snapshot** | a number marking one instant of a share / the share as it was at one cut, read-only | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
-| **catalog backup** | an export of one snapshot's metadata to a backup location; its content stays in the namespace, held by a use record on the snapshot | [RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata) |
+| **cut number** | a per-share counter raised by one at each snapshot; snapshot *k* is the share as of the instant it became *k* | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
+| **born**, **died** | the cut number a version was committed under, and the one its replacement was; snapshot *k* sees a version when born < *k* ≤ died | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
+| **history** / **history ref** | versions a live snapshot can still see after the share replaced them / a ref among them, counted like a live one; the chunk's count does not change when a ref moves into history | [§7](#7.%20Mutation%20and%20removal), [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref) |
+| **snapshot hold** | the journal keeping a flushed but not yet offloaded version that a cut sees, until it is offloaded | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) |
+| **use record** | a durable mark on a snapshot while a clone, restore, backup or move reads it; the snapshot cannot be deleted meanwhile | [RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot) |
+| **clone** | (share) a new writable share made from a complete snapshot, in the snapshot's namespace / (file) a copy of a file's range made by copying refs, not bytes; a server-side copy works the same way | [RFC 12 §2.6](rfc-12-snapshots.md#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace), [RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy) |
+| **catalog backup** | an export of one snapshot's metadata to a backup location; the content stays in the namespace, held by a use record on the snapshot | [RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata) |
 | **copying backup** | a catalog backup that also copies, byte for byte, every block its snapshot names into a block folder at the location, so it survives losing the namespace's bucket | [RFC 12 §3.4](rfc-12-snapshots.md#3.4%20Copying%20backups) |
+| **claim** | the control object in a namespace's folder naming the one installation that may write and collect there | [RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) |
+| **move** (namespace) | handing a namespace, with its shares' metadata, from one installation to another on the same bucket; the blocks stay where they are. Not a move of files between shards | [RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step) |
 | **re-home** | moving one share out of a shared namespace into a new one of its own by copying its content, while the share serves | [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) |
-| **metadata store** | the transactional store holding every fact about files, content, identity and configuration | [RFC 16](rfc-16-metadata-store.md) |
-| **front-end** | the node a client's call arrives at; when it is not the primary, it forwards the call there | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary) |
+
+### Components and mechanisms
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **filesystem service** | the one protocol-neutral interface every adapter calls; it orders each client operation and routes it to the primary that serves it | [§1.3](#1.3%20The%20layers), [RFC 17](rfc-17-vfs.md) |
+| **engine** | the content path at a node: it drives the journal, carver, syncer and block metadata, and decides their policy; one per node, with a share context per share | [RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context) |
+| **policy component** | a small decision function in the engine — when to offload, whether to fill, what to evict; the mechanism it picks is safe on its own | [RFC 8 §3](rfc-8-engine.md#3.%20Policy) |
+| **carver** / **chunker** | the component that cuts a stretch into chunks and hashes each / the boundary function it runs | [RFC 2 §1.2](rfc-2-carver.md#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) |
+| **block assembler** | the part of the carver that packs whole chunks into block plans | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) |
+| **syncer** / **uploader** / **fetcher** | the component that moves blocks to and from the remote tier / its half that puts whole blocks / its half that gets chunks or whole blocks | [RFC 3 §1.2](rfc-3-syncer.md#1.2%20Two%20halves%2C%20one%20component) |
+| **flow** | a handle bound to one store and one queue in the syncer's scheduler; the engine opens one per share, GC one to relocate blocks | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) |
+| **worker pool** | per syncer half, the only limit on transfers in flight, and so the memory bound | [RFC 3 §2.1](rfc-3-syncer.md#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) |
+| **demand** / **background** / **speculation** | the syncer's three classes of transfer, served in that order: a get a reader is blocked on; uploads and relocation's reads; a prefetch no reader has asked for yet (read-ahead or pre-warm) | [RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows), [§2.3](#2.3%20Operations) |
+| **health** | kept per remote store and per direction, from probes and recent failures; an unhealthy direction refuses calls at once | [RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work) |
+| **block codec** | the code above the store that encodes blocks, decodes them and verifies every chunk it returns | [RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec) |
+| **capability check** | the test against the real service, run every time a remote store opens | [RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) |
+| **transform** / **chain** | an invertible step over one chunk's bytes, which may decline a chunk it cannot help / the configured transforms, at most one per stage, in the fixed order compress, encrypt, redundancy | [RFC 5 §2.1](rfc-5-transforms.md#2.1%20A%20transform%20acts%20on%20one%20chunk), [RFC 5 §2.3](rfc-5-transforms.md#2.3%20The%20chain%20order%20is%20fixed) |
+| **envelope** | the few bytes at the head of each stored chunk body listing which transforms were applied | [RFC 5 §2.4](rfc-5-transforms.md#2.4%20Every%20body%20records%20what%20was%20applied) |
+| **material** / **chain ID** / **census** | what a transform needs from outside the body, such as a key / a hash of everything in the chain that decides a body's bytes, part of every block name / the per-block record of which transforms and material its bodies used | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material), [RFC 5 §2.8](rfc-5-transforms.md#2.8%20The%20chain%20ID), [RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) |
+| **GC** (garbage collection) | the component that retires, holds in trash and deletes blocks nothing references, and compacts mostly-dead ones | [RFC 9](rfc-9-gc.md) |
+| **deleter** / **compactor** | GC's part that deletes a due retired block after checking the reverse ref index / GC's part that rewrites the live chunks of mostly-dead or small blocks into new blocks, deleting nothing itself | [RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes), [RFC 9 §4](rfc-9-gc.md#4.%20Compactor) |
+
+### Configuration
+
+| Term | Means | Defined in |
+| --- | --- | --- |
+| **bootstrap** | the few facts a host must hold to reach the control plane, and nothing else | [RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap) |
+| **scope** | what a setting must be the same across: the installation, a node, a namespace, a remote store or a share | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
+| **fixed** | a quantity that is not a setting, because no operator can name a workload its value is wrong for | [RFC 13 §4.1](rfc-13-configuration.md#4.1%20Fixed%20by%20default) |
+| **binding class** | what a setting's change does: live, restart, next write, or bound (refused while content exists) | [RFC 13 §5](rfc-13-configuration.md#5.%20Binding%20classes) |
+| **secret reference** | the name of a secret sealed under the wrapping key of the role that uses it; configuration never holds the value | [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets) |
+| **provisioning file** | an optional file of records, applied through the API, which then refuses to edit what it declares | [RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) |
 
 **Owner** in these RFCs means only a file's owner — a user — never a server. The
 server that writes a shard is its primary.
