@@ -5,7 +5,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRegistry covers the registry surface end to end: registration rejects
@@ -13,7 +14,7 @@ import (
 // listing/counting reflect what was registered.
 func TestRegistry(t *testing.T) {
 	svc := stores.New()
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	if err := svc.RegisterMetadataStore("", store); err == nil {
 		t.Fatal("empty name must be rejected")
@@ -24,7 +25,7 @@ func TestRegistry(t *testing.T) {
 	if err := svc.RegisterMetadataStore("a", store); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if err := svc.RegisterMetadataStore("a", memory.NewMemoryMetadataStoreWithDefaults()); err == nil {
+	if err := svc.RegisterMetadataStore("a", badgertest.NewInMemory(t)); err == nil {
 		t.Fatal("duplicate name must be rejected")
 	}
 

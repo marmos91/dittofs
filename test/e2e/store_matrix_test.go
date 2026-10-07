@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStoreMatrixOperations validates that all 6 combinations of the store
-// matrix (3 metadata x 2 block) work correctly with file operations via NFSv3.
+// TestStoreMatrixOperations validates that all 4 combinations of the store
+// matrix (2 metadata x 2 block) work correctly with file operations via NFSv3.
 //
 // In short mode, only representative combos run.
 // With DITTOFS_E2E_LOCAL_ONLY=1, only combos without an S3 block store run.
@@ -27,15 +27,9 @@ func TestStoreMatrixOperations(t *testing.T) {
 		t.Skip("Skipping store matrix tests in short mode")
 	}
 
-	postgresAvailable := framework.CheckPostgresAvailable(t)
 	localstackAvailable := framework.CheckLocalstackAvailable(t)
 
-	var postgresHelper *framework.PostgresHelper
 	var localstackHelper *framework.LocalstackHelper
-
-	if postgresAvailable {
-		postgresHelper = framework.NewPostgresHelper(t)
-	}
 
 	if localstackAvailable {
 		localstackHelper = framework.NewLocalstackHelper(t)
@@ -45,21 +39,17 @@ func TestStoreMatrixOperations(t *testing.T) {
 
 	for _, sc := range matrix {
 		t.Run(sc.testName(), func(t *testing.T) {
-			if sc.needsPostgres() && !postgresAvailable {
-				t.Skip("Skipping: PostgreSQL container not available")
-			}
-
 			if sc.needsS3() && !localstackAvailable {
 				t.Skip("Skipping: Localstack (S3) container not available")
 			}
 
-			runStoreMatrixTest(t, sc, postgresHelper, localstackHelper)
+			runStoreMatrixTest(t, sc, localstackHelper)
 		})
 	}
 }
 
 // runStoreMatrixTest executes file operation tests for a specific store combination.
-func runStoreMatrixTest(t *testing.T, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
+func runStoreMatrixTest(t *testing.T, sc matrixStoreConfig, lsHelper *framework.LocalstackHelper) {
 	t.Helper()
 
 	sp := helpers.StartServerProcess(t, "")
@@ -72,7 +62,7 @@ func runStoreMatrixTest(t *testing.T, sc matrixStoreConfig, pgHelper *framework.
 	helpers.SetupStoreMatrix(t, runner, shareName, helpers.MatrixSetupConfig{
 		MetadataType: sc.metadataType,
 		BlockType:    sc.blockType,
-	}, pgHelper, lsHelper)
+	}, lsHelper)
 
 	nfsPort := helpers.FindFreePort(t)
 	_, err := runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))

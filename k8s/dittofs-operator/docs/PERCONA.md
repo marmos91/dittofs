@@ -1,6 +1,6 @@
 # Percona PostgreSQL Integration
 
-This guide explains how to use the Percona PostgreSQL Operator for a production-grade metadata store with DittoFS.
+This guide explains how to use the Percona PostgreSQL Operator for a production-grade control-plane database with DittoFS.
 
 ## Overview
 

@@ -4,7 +4,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,7 +15,7 @@ import (
 // across add/remove churn.
 func TestRemoveStoreForShare_DeregistersAllMaps(t *testing.T) {
 	const shareName = "/churn"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	svc := metadata.New()
 	require.NoError(t, svc.RegisterStoreForShare(shareName, store))
@@ -60,14 +61,14 @@ func TestRemoveStoreForShare_ReAddGetsFreshLockManager(t *testing.T) {
 
 	svc := metadata.New()
 
-	store1 := memory.NewMemoryMetadataStoreWithDefaults()
+	store1 := badgertest.NewInMemory(t)
 	require.NoError(t, svc.RegisterStoreForShare(shareName, store1))
 	lm1 := svc.GetLockManagerForShare(shareName)
 	require.NotNil(t, lm1)
 
 	svc.RemoveStoreForShare(shareName)
 
-	store2 := memory.NewMemoryMetadataStoreWithDefaults()
+	store2 := badgertest.NewInMemory(t)
 	require.NoError(t, svc.RegisterStoreForShare(shareName, store2))
 	lm2 := svc.GetLockManagerForShare(shareName)
 	require.NotNil(t, lm2)
@@ -92,7 +93,7 @@ func TestRemoveStoreForShare_Idempotent(t *testing.T) {
 
 	// Registered then removed twice.
 	const shareName = "/twice"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	require.NoError(t, svc.RegisterStoreForShare(shareName, store))
 	require.NotPanics(t, func() { svc.RemoveStoreForShare(shareName) })
 	require.NotPanics(t, func() { svc.RemoveStoreForShare(shareName) })

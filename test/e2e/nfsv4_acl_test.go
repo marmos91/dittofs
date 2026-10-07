@@ -356,7 +356,7 @@ func TestNFSv4ACLCrossProtocol(t *testing.T) {
 	metaStore := helpers.UniqueTestName("acl-xp-meta")
 	blockStore := helpers.UniqueTestName("acl-xp-payload")
 
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 

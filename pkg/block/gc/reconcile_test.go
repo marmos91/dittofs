@@ -8,7 +8,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // putBareBlock writes a remote object with no backing block record, stamping its
@@ -28,7 +30,7 @@ func putBareBlock(t *testing.T, rbs *remotememory.Store, blockID string, modTime
 // object is preserved, and the scan mutates nothing.
 func TestReconcile_ClassifiesEachOrphanClass(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -111,7 +113,7 @@ func TestReconcile_ClassifiesEachOrphanClass(t *testing.T) {
 // reported.
 func TestReconcile_GraceWindowBoundary(t *testing.T) {
 	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	st := badgertest.NewInMemory(t)
 	rbs := remotememory.New()
 	defer func() { _ = rbs.Close() }()
 
@@ -139,7 +141,7 @@ type reconcileState struct {
 	syncedHashes map[string]struct{}
 }
 
-func captureState(t *testing.T, st *metadatamemory.MemoryMetadataStore, rbs *remotememory.Store) reconcileState {
+func captureState(t *testing.T, st *badger.BadgerMetadataStore, rbs *remotememory.Store) reconcileState {
 	t.Helper()
 	ctx := context.Background()
 	s := reconcileState{

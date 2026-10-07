@@ -210,6 +210,10 @@ type BadgerMetadataStoreConfig struct {
 	// BadgerDB creates multiple files in this directory (value log, LSM tree, etc.)
 	DBPath string `mapstructure:"db_path"`
 
+	// InMemory keeps the whole database in RAM: nothing is written to disk and
+	// everything is lost on Close. DBPath must be empty. Used by tests.
+	InMemory bool `mapstructure:"in_memory"`
+
 	// Capabilities defines static filesystem capabilities and limits
 	Capabilities metadata.FilesystemCapabilities `mapstructure:"capabilities"`
 
@@ -764,8 +768,8 @@ func (s *BadgerMetadataStore) GetQuotaUsage(shareName string, scope metadata.Quo
 // NewBadgerMetadataStoreWithDefaults creates a new BadgerDB metadata store with sensible defaults.
 //
 // This is a convenience constructor that sets up the store with standard capabilities
-// and limits suitable for most use cases. See NewMemoryMetadataStoreWithDefaults in
-// memory/store.go for the specific default values.
+// and limits suitable for most use cases (basestore.DefaultCapabilities, no size
+// or file-count limit).
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeouts
@@ -776,6 +780,18 @@ func (s *BadgerMetadataStore) GetQuotaUsage(shareName string, scope metadata.Quo
 //   - error: Error if database initialization fails
 func NewBadgerMetadataStoreWithDefaults(ctx context.Context, dbPath string) (*BadgerMetadataStore, error) {
 	return NewBadgerMetadataStore(ctx, defaultStoreConfig(dbPath))
+}
+
+// NewInMemoryBadgerMetadataStore opens a Badger metadata store with the default
+// capabilities that lives entirely in RAM. Its contents vanish on Close.
+func NewInMemoryBadgerMetadataStore(ctx context.Context) (*BadgerMetadataStore, error) {
+	cfg := defaultStoreConfig("")
+	cfg.InMemory = true
+	// Explicit small caches: the RAM-relative auto-size is meant for one
+	// long-lived store per share, not for hundreds of short-lived ones.
+	cfg.BlockCacheSizeMB = 8
+	cfg.IndexCacheSizeMB = 4
+	return NewBadgerMetadataStore(ctx, cfg)
 }
 
 // NewBadgerMetadataStoreWithDefaultsAndCaches is NewBadgerMetadataStoreWithDefaults

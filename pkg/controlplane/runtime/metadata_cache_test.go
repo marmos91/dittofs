@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
@@ -102,3 +103,29 @@ func TestCreateMetadataStoreFromConfig_BadgerNegativeCacheRejected(t *testing.T)
 type fakeStoreConfig struct{ cfg map[string]any }
 
 func (f *fakeStoreConfig) GetConfig() (map[string]any, error) { return f.cfg, nil }
+
+// TestCreateMetadataStoreFromConfig_RemovedTypesRejected pins that a store row
+// naming a removed backend fails loudly instead of opening some other store.
+func TestCreateMetadataStoreFromConfig_RemovedTypesRejected(t *testing.T) {
+	for _, typ := range []string{"memory", "sqlite", "postgres", ""} {
+		cfg := &fakeStoreConfig{cfg: map[string]any{"path": t.TempDir()}}
+		if s, err := CreateMetadataStoreFromConfig(t.Context(), typ, cfg); err == nil {
+			_ = s.Close()
+			t.Errorf("type %q: want an error, got a store", typ)
+		}
+	}
+}
+
+// TestCreateMetadataStoreFromConfig_InMemory pins that in_memory opens a
+// working store without a path.
+func TestCreateMetadataStoreFromConfig_InMemory(t *testing.T) {
+	cfg := &fakeStoreConfig{cfg: map[string]any{"in_memory": true}}
+	s, err := CreateMetadataStoreFromConfig(t.Context(), "badger", cfg)
+	if err != nil {
+		t.Fatalf("CreateMetadataStoreFromConfig: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.CreateRootDirectory(t.Context(), "/m", &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755}); err != nil {
+		t.Fatalf("CreateRootDirectory: %v", err)
+	}
+}

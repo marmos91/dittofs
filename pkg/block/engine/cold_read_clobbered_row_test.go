@@ -10,7 +10,8 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // overwrite is one [from, to) range to rewrite, chosen from the manifest as it
@@ -133,12 +134,12 @@ func runInteriorStartColdRead(t *testing.T, ms metadata.Store) {
 	})
 }
 
-func TestMemoryColdRead_ClobberedRow(t *testing.T) { runClobberedRowColdRead(t, memStore()) }
+func TestMemoryColdRead_ClobberedRow(t *testing.T) { runClobberedRowColdRead(t, memStore(t)) }
 func TestMemoryColdRead_ClobberedRemnant(t *testing.T) {
-	runClobberedRemnantColdRead(t, memStore())
+	runClobberedRemnantColdRead(t, memStore(t))
 }
-func TestMemoryColdRead_LongRun(t *testing.T)       { runLongRunColdRead(t, memStore()) }
-func TestMemoryColdRead_InteriorStart(t *testing.T) { runInteriorStartColdRead(t, memStore()) }
+func TestMemoryColdRead_LongRun(t *testing.T)       { runLongRunColdRead(t, memStore(t)) }
+func TestMemoryColdRead_InteriorStart(t *testing.T) { runInteriorStartColdRead(t, memStore(t)) }
 
 func TestBadgerColdRead_ClobberedRow(t *testing.T) { runClobberedRowColdRead(t, badgerStore(t)) }
 func TestBadgerColdRead_ClobberedRemnant(t *testing.T) {
@@ -149,7 +150,7 @@ func TestBadgerColdRead_InteriorStart(t *testing.T) {
 	runInteriorStartColdRead(t, badgerStore(t))
 }
 
-func memStore() metadata.Store { return metadatamemory.NewMemoryMetadataStoreWithDefaults() }
+func memStore(t testing.TB) metadata.Store { return badgertest.NewInMemory(t) }
 
 func badgerStore(t *testing.T) metadata.Store {
 	t.Helper()

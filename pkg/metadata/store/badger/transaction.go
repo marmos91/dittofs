@@ -137,7 +137,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 	}
 
 	// Backpressure budget for retrying a conflict, in place of a fixed attempt
-	// count — the same contract the SQL backends run under. Started at the first
+	// count (see txretry). Started at the first
 	// conflict, not here: an attempt is not bounded by anything, and one taken
 	// while a realign or a payload-index backfill holds quotaRealign exclusively
 	// can outlast the whole budget on its own, which would leave the first
@@ -279,7 +279,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 	// All retries exhausted. Classify the raw badgerdb.ErrConflict SSI abort as a
 	// StoreError{Code: ErrConflict} so codebase-wide conflict detection
 	// (errors.As(*StoreError) / IsConflictError, the runtime coordinator's
-	// mapObjectIDConflict) recognizes it uniformly with the SQL backends. The raw sentinel stays reachable via
+	// mapObjectIDConflict) recognizes it. The raw sentinel stays reachable via
 	// Cause/Unwrap for diagnostics and errors.Is.
 	if goerrors.Is(lastErr, badgerdb.ErrConflict) {
 		return mapBadgerError(lastErr, "badger WithTransaction", "")
@@ -357,8 +357,8 @@ func (tx *badgerTransaction) getFile(ctx context.Context, handle metadata.FileHa
 // (p:<child> -> parent) up to the share root (#1166), resolving each level's
 // name via the O(1) cn:<parent>:<child> reverse edge (see childName). For an
 // inode hard-linked under multiple names it yields one valid reachable path
-// (the recorded edge name, which for a cross-directory hard link may differ
-// from postgres' lexicographic choice — both are POSIX-acceptable). An inode
+// (the recorded edge name, not necessarily the lexicographically smallest —
+// POSIX accepts any). An inode
 // with no parent edge (share root or orphaned/unlinked-but-open) resolves to
 // "/". The depth guard bounds a corrupt parent cycle (no filesystem op can
 // create one) into a finite result.
@@ -409,9 +409,8 @@ func (tx *badgerTransaction) derivePath(fileID uuid.UUID) string {
 // SetChild/DeleteChild for the name.
 //
 // For an inode hard-linked under N names in the same directory the reverse edge
-// records one live name (not necessarily the lexicographically smallest, unlike
-// postgres' ORDER BY child_name); the derived path is still a valid reachable
-// name, which is all POSIX requires (cross-backend tests accept either).
+// records one live name (not necessarily the lexicographically smallest); the
+// derived path is still a valid reachable name, which is all POSIX requires.
 func (tx *badgerTransaction) childName(parentID, child uuid.UUID) string {
 	if item, err := tx.txn.Get(keyChildName(parentID, child)); err == nil {
 		if name, vErr := item.ValueCopy(nil); vErr == nil {

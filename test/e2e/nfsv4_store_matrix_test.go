@@ -23,8 +23,8 @@ import (
 // Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 18 backends)
 // =============================================================================
 
-// TestStoreMatrixV4 validates that all 6 combinations of the store matrix
-// (3 metadata x 2 block) work correctly with file operations across NFSv3,
+// TestStoreMatrixV4 validates that all 4 combinations of the store matrix
+// (2 metadata x 2 block) work correctly with file operations across NFSv3,
 // NFSv4.0, and NFSv4.1 mounts.
 //
 // In short mode, only representative combos run.
@@ -35,16 +35,10 @@ func TestStoreMatrixV4(t *testing.T) {
 	}
 
 	// Check container availability once at the start
-	postgresAvailable := framework.CheckPostgresAvailable(t)
 	localstackAvailable := framework.CheckLocalstackAvailable(t)
 
-	// Initialize helpers for containers (if available)
-	var postgresHelper *framework.PostgresHelper
+	// Initialize the Localstack helper (if available)
 	var localstackHelper *framework.LocalstackHelper
-
-	if postgresAvailable {
-		postgresHelper = framework.NewPostgresHelper(t)
-	}
 
 	if localstackAvailable {
 		localstackHelper = framework.NewLocalstackHelper(t)
@@ -60,17 +54,12 @@ func TestStoreMatrixV4(t *testing.T) {
 			t.Run(testName, func(t *testing.T) {
 				framework.SkipIfNFSVersionUnsupported(t, ver)
 
-				// Skip postgres combinations if container unavailable
-				if sc.needsPostgres() && !postgresAvailable {
-					t.Skip("Skipping: PostgreSQL container not available")
-				}
-
 				// Skip s3 combinations if container unavailable
 				if sc.needsS3() && !localstackAvailable {
 					t.Skip("Skipping: Localstack (S3) container not available")
 				}
 
-				runStoreMatrixVersionTest(t, ver, sc, postgresHelper, localstackHelper)
+				runStoreMatrixVersionTest(t, ver, sc, localstackHelper)
 			})
 		}
 	}
@@ -78,7 +67,7 @@ func TestStoreMatrixV4(t *testing.T) {
 
 // runStoreMatrixVersionTest executes file operation tests for a specific
 // version x store combination.
-func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
+func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfig, lsHelper *framework.LocalstackHelper) {
 	t.Helper()
 
 	// Start server process
@@ -94,7 +83,7 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfi
 	helpers.SetupStoreMatrix(t, runner, shareName, helpers.MatrixSetupConfig{
 		MetadataType: sc.metadataType,
 		BlockType:    sc.blockType,
-	}, pgHelper, lsHelper)
+	}, lsHelper)
 
 	// Enable NFS adapter
 	nfsPort := helpers.FindFreePort(t)
@@ -265,7 +254,7 @@ func TestMultiShareConcurrent(t *testing.T) {
 	// Create stores for share alpha
 	metaAlpha := helpers.UniqueTestName("meta-alpha")
 	blockAlpha := helpers.UniqueTestName("block-alpha")
-	_, err := runner.CreateMetadataStore(metaAlpha, "memory")
+	_, err := runner.CreateInMemoryMetadataStore(metaAlpha)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaAlpha) })
 
@@ -276,7 +265,7 @@ func TestMultiShareConcurrent(t *testing.T) {
 	// Create stores for share beta
 	metaBeta := helpers.UniqueTestName("meta-beta")
 	blockBeta := helpers.UniqueTestName("block-beta")
-	_, err = runner.CreateMetadataStore(metaBeta, "memory")
+	_, err = runner.CreateInMemoryMetadataStore(metaBeta)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaBeta) })
 

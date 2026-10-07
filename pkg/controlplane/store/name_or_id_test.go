@@ -19,7 +19,7 @@ func TestStoreAndShareNameOrIDResolution(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	metaID, err := store.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "memory"})
+	metaID, err := store.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "badger", Config: `{"in_memory":true}`})
 	if err != nil {
 		t.Fatalf("create metadata store: %v", err)
 	}

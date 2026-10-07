@@ -80,9 +80,9 @@ func seedMetaAndBlock(t *testing.T, cpStore store.Store) (string, string) {
 	ctx := context.Background()
 
 	meta := &models.MetadataStoreConfig{
-		ID:        uuid.New().String(),
-		Name:      "meta-aclcanon",
-		Type:      "memory",
+		ID:   uuid.New().String(),
+		Name: "meta-aclcanon",
+		Type: "badger", Config: `{"in_memory":true}`,
 		CreatedAt: time.Now(),
 	}
 	if _, err := cpStore.CreateMetadataStore(ctx, meta); err != nil {

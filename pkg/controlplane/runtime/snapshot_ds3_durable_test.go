@@ -11,7 +11,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // ds3RemoteConfig builds a remote s3 BlockStoreConfig from the DS3_* env
@@ -70,7 +71,7 @@ func TestSnapshotByteVerify_DS3Durable(t *testing.T) {
 		t.Run(fmt.Sprintf("iter-%d", i), func(t *testing.T) {
 			prefix := fmt.Sprintf("bvtest/%s/iter-%d/", t.Name(), i)
 			remoteCfg := ds3RemoteConfig(t, prefix)
-			meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+			meta := badgertest.NewInMemory(t)
 			fx := newByteVerifyFixtureOpts(t, meta, "memory", remoteCfg)
 			defer fx.close()
 			runDS3DurableCycle(t, fx)

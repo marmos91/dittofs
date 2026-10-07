@@ -26,7 +26,7 @@ import (
 // No isolation level closes this one: the stale copy is already in hand before
 // the transaction opens, so on every backend the fix has to be the re-read.
 func TestSetFileAttributes_SizeCommittedInWindowSurvivesChmod(t *testing.T) {
-	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	ws := &windowStore{BadgerMetadataStore: newRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
 	root := rootAuth()
 
@@ -68,7 +68,7 @@ func TestSetFileAttributes_SizeCommittedInWindowSurvivesChmod(t *testing.T) {
 // to revert in practice: the NFS client sends SETATTR(mode) to clear SUID right
 // before a WRITE, and the WRITE's mtime is what gets rolled back.
 func TestSetFileAttributes_MtimeCommittedInWindowSurvivesChown(t *testing.T) {
-	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	ws := &windowStore{BadgerMetadataStore: newRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
 	root := rootAuth()
 
@@ -111,7 +111,7 @@ func TestSetFileAttributes_MtimeCommittedInWindowSurvivesChown(t *testing.T) {
 // committed in the window disappears — and when the chmod's own read saw no
 // ACL at all, it is replaced with nothing.
 func TestSetFileAttributes_ACLCommittedInWindowSurvivesChmod(t *testing.T) {
-	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	ws := &windowStore{BadgerMetadataStore: newRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
 	root := rootAuth()
 
@@ -175,7 +175,7 @@ func TestSetFileAttributes_ACLCommittedInWindowSurvivesChmod(t *testing.T) {
 // the transaction opens, so the transaction's own snapshot already contains the
 // write and the update conflicts with nothing.
 func TestMove_SizeCommittedInWindowSurvivesOverwritingRename(t *testing.T) {
-	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	ws := &windowStore{BadgerMetadataStore: newRenameStore(t)}
 	svc, rootHandle, share := registerRenameStore(t, ws)
 	root := rootAuth()
 

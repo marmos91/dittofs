@@ -8,7 +8,8 @@ import (
 	"time"
 
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // gatedPutRemote holds every PutBlock open until release is closed, and
@@ -63,7 +64,7 @@ func (r *gatedPutRemote) PutBlock(ctx context.Context, blockID string, body io.R
 // makes the in-flight assertion fail on its own line.
 func TestBlockStatsReportsUploadsInFlight(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := newGatedPutRemote()
 	bs := newEngineWithGatedRemote(t, ms, mem)
 	t.Cleanup(mem.letGo)

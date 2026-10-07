@@ -52,7 +52,7 @@ func TestDeleteNetgroup_NoFalsePositiveOnUUIDSubstring(t *testing.T) {
 		t.Fatalf("GetNetgroup: %v", err)
 	}
 
-	meta := &models.MetadataStoreConfig{Name: "ng-test-meta", Type: "memory"}
+	meta := &models.MetadataStoreConfig{Name: "ng-test-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, _ := s.CreateMetadataStore(ctx, meta)
 	local := &models.BlockStoreConfig{Name: "ng-test-local", Type: "fs"}
 	localID, _ := s.CreateBlockStore(ctx, local)
@@ -95,7 +95,7 @@ func TestDeleteNetgroup_BlockedWhenActuallyReferenced(t *testing.T) {
 	}
 	ng, _ = s.GetNetgroup(ctx, "ng-inuse-test")
 
-	meta := &models.MetadataStoreConfig{Name: "ng-inuse-meta", Type: "memory"}
+	meta := &models.MetadataStoreConfig{Name: "ng-inuse-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, _ := s.CreateMetadataStore(ctx, meta)
 	local := &models.BlockStoreConfig{Name: "ng-inuse-local", Type: "fs"}
 	localID, _ := s.CreateBlockStore(ctx, local)
@@ -141,7 +141,7 @@ func TestGetSharesByNetgroup_NoFalsePositiveOnUUIDSubstring(t *testing.T) {
 	}
 	ng, _ = s.GetNetgroup(ctx, "ng-query-test")
 
-	meta := &models.MetadataStoreConfig{Name: "ng-query-meta", Type: "memory"}
+	meta := &models.MetadataStoreConfig{Name: "ng-query-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, _ := s.CreateMetadataStore(ctx, meta)
 	local := &models.BlockStoreConfig{Name: "ng-query-local", Type: "fs"}
 	localID, _ := s.CreateBlockStore(ctx, local)

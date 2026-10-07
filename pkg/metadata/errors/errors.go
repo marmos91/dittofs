@@ -93,13 +93,10 @@ const (
 	// ErrConnectionLimitReached indicates connection limit has been reached.
 	ErrConnectionLimitReached
 
-	// ErrConflict indicates a concurrent-write conflict.
-	// Used by ObjectID secondary-index maintenance on Memory and Badger
-	// backends when two writers attempt to claim the same Merkle-root
-	// ObjectID concurrently. Postgres surfaces the same condition through
-	// the underlying SQLSTATE 23505 (unique_violation) on
-	// files_object_id_idx; runtime coordinator wraps both into
-	// engine.ErrObjectIDConflict.
+	// ErrConflict indicates a concurrent-write conflict: a Badger SSI abort,
+	// including two writers claiming the same Merkle-root ObjectID
+	// concurrently. The runtime coordinator wraps it into
+	// engine.ErrObjectIDConflict on the manifest write.
 	ErrConflict
 
 	// ErrCrossShare indicates a two-handle operation named handles from two
@@ -192,9 +189,9 @@ type StoreError struct {
 	ConflictOwnerID string
 
 	// Cause is the underlying error that produced this StoreError. It is set
-	// for retryable database errors (e.g. Postgres SQLSTATE 40001/40P01) so
-	// that errors.As can find the raw driver error (such as *pgconn.PgError)
-	// through the unwrap chain and the transaction layer can decide to retry.
+	// for errors mapped from the storage engine (e.g. a Badger SSI conflict)
+	// so that errors.Is/errors.As can find the raw engine error through the
+	// unwrap chain and the transaction layer can decide to retry.
 	Cause error
 }
 
@@ -207,7 +204,7 @@ func (e *StoreError) Error() string {
 }
 
 // Unwrap returns the underlying cause so errors.As/errors.Is can traverse the
-// chain to the original driver error (e.g. *pgconn.PgError). Returns nil when
+// chain to the original storage-engine error. Returns nil when
 // no cause was set, which is the common case.
 func (e *StoreError) Unwrap() error { return e.Cause }
 

@@ -12,7 +12,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // cancelOnceStore cancels the request context from inside the first GetFile it
@@ -21,7 +23,7 @@ import (
 // than before it starts, which is the only way past a handler's own entry
 // check.
 type cancelOnceStore struct {
-	*metadatamemory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 
 	armed  atomic.Bool
 	fired  atomic.Bool
@@ -34,7 +36,7 @@ func (s *cancelOnceStore) GetFile(ctx context.Context, h metadata.FileHandle) (*
 		s.cancel()
 		return nil, context.Canceled
 	}
-	return s.MemoryMetadataStore.GetFile(ctx, h)
+	return s.BadgerMetadataStore.GetFile(ctx, h)
 }
 
 // removeCall builds the RPC call and XDR payload for REMOVE(dir, name).
@@ -90,7 +92,7 @@ func TestV3DRC_CancelledRequestDoesNotPoisonItsRetransmit(t *testing.T) {
 	rt, bsID := newTestShareRuntime(t)
 	reqCtx, cancel := context.WithCancel(context.Background())
 	store := &cancelOnceStore{
-		MemoryMetadataStore: metadatamemory.NewMemoryMetadataStoreWithDefaults(),
+		BadgerMetadataStore: badgertest.NewInMemory(t),
 		cancel:              cancel,
 	}
 	if err := rt.RegisterMetadataStore("test-meta", store); err != nil {

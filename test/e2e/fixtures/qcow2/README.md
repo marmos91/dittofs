@@ -44,4 +44,4 @@ across runs and CI nodes but distinct from one another. See
 
 This fixture runs only when `DITTOFS_E2E_NIGHTLY=1` is set, alongside
 the existing nightly gates that require sudo + kernel NFS client +
-Localstack + Postgres. It is NOT exercised in PR CI.
+Localstack. It is NOT exercised in PR CI.

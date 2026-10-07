@@ -1,20 +1,17 @@
-// Package txretry holds the transient-conflict backoff shared by the metadata
-// backends (sqlite, postgres, badger).
+// Package txretry holds the transient-conflict backoff for the metadata store's
+// transaction retry loops.
 //
-// Every backend must backpressure under write contention — block-and-retry
-// until a real time budget elapses — rather than surfacing EIO to the caller
-// after a fixed handful of attempts (#1769). Every competitor (rclone/juicefs)
-// goes slow under the same pressure but never errors; a fixed 3-attempt budget
-// was routinely exceeded on hot rows (usedBytes counter, parent-dir mtime,
-// quota) under concurrent writers, turning contention into NFS3ErrIO. Only the
-// backend's already-classified transient conflicts (sqlite BUSY/LOCKED,
-// postgres 40001/40P01, badger ErrConflict) are retried; that classification
-// stays backend-local.
+// The store must backpressure under write contention — block-and-retry until a
+// real time budget elapses — rather than surfacing EIO to the caller after a
+// fixed handful of attempts. Every competitor (rclone/juicefs) goes slow under
+// the same pressure but never errors; a fixed 3-attempt budget was routinely
+// exceeded on hot rows (usedBytes counter, parent-dir mtime, quota) under
+// concurrent writers, turning contention into NFS3ErrIO. Only the store's
+// already-classified transient conflicts (badger ErrConflict) are retried; that
+// classification stays in the store.
 //
-// The deadline computation and the jittered exponential backoff between
-// attempts are identical across the backends, so they live here once. Badger's
-// two loops keep an attempt ceiling on top of the deadline, but the deadline is
-// what normally ends the retrying there too.
+// Badger's two loops keep an attempt ceiling on top of the deadline, but the
+// deadline is what normally ends the retrying there too.
 package txretry
 
 import (
@@ -25,9 +22,8 @@ import (
 
 const (
 	// Budget bounds how long a caller backpressures on a transient conflict
-	// before giving up and returning the mapped error. Kept in line with the
-	// sqlite busy_timeout (config default 5s) so a genuinely stuck conflict
-	// still eventually surfaces — after a real budget, not 60ms.
+	// before giving up and returning the mapped error, so a genuinely stuck
+	// conflict still eventually surfaces — after a real budget, not 60ms.
 	Budget = 5 * time.Second
 	// baseBackoff / maxBackoff bound the jittered exponential backoff between
 	// attempts.

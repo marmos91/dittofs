@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,20 +18,20 @@ import (
 // withRelaxedTransaction would otherwise fall back to WithTransaction and hide
 // the split; the spy implements both to make the choice observable (#1757).
 type transactorSpy struct {
-	*memory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 	durable int
 	relaxed int
 }
 
 func (s *transactorSpy) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	s.durable++
-	return s.MemoryMetadataStore.WithTransaction(ctx, fn)
+	return s.BadgerMetadataStore.WithTransaction(ctx, fn)
 }
 
 func (s *transactorSpy) WithTransactionRelaxed(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	s.relaxed++
 	// Memory has no separate relaxed commit; delegate the actual write durably.
-	return s.MemoryMetadataStore.WithTransaction(ctx, fn)
+	return s.BadgerMetadataStore.WithTransaction(ctx, fn)
 }
 
 func (s *transactorSpy) reset() { s.durable, s.relaxed = 0, 0 }
@@ -38,7 +40,7 @@ func (s *transactorSpy) reset() { s.durable, s.relaxed = 0, 0 }
 func newWritebackFixture(t *testing.T) (*metadata.Service, *transactorSpy, metadata.FileHandle, *metadata.AuthContext) {
 	t.Helper()
 
-	spy := &transactorSpy{MemoryMetadataStore: memory.NewMemoryMetadataStoreWithDefaults()}
+	spy := &transactorSpy{BadgerMetadataStore: badgertest.NewInMemory(t)}
 	ctx := context.Background()
 	const shareName = "/wb"
 

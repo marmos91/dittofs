@@ -14,7 +14,7 @@ const (
 )
 
 // String renders the scope for storage and logging. The values must stay
-// stable: they are persisted by the postgres/badger backends and used as the
+// stable: they are persisted by the badger store and used as the
 // REST/CLI scope identifier.
 func (s QuotaScope) String() string {
 	switch s {

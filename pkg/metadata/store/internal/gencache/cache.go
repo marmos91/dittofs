@@ -1,5 +1,5 @@
 // Package gencache provides the generation-guarded, populate-after-commit cache
-// the metadata backends share for their read hot paths.
+// the metadata store uses for its read hot paths.
 package gencache
 
 import (
@@ -12,8 +12,8 @@ import (
 //
 // The correctness discipline (the server is a single instance, so the process
 // that caches is the process that writes — single-node badger is single-writer,
-// which makes this tractable; cf. #1173, which deferred a cache for the
-// multi-replica postgres case):
+// which makes this tractable; a store shared by several writing processes would
+// need cross-process invalidation this cache does not have):
 //   - Invalidate runs AFTER a write commits and both deletes the entry and
 //     advances gen. A reader that observed the pre-commit value cannot leave it
 //     cached because its Store is generation-guarded (below).

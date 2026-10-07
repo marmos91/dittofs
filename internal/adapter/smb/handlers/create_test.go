@@ -13,7 +13,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // =============================================================================
@@ -405,7 +406,7 @@ func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.
 	rt, bsID := newTestShareRuntime(t)
 
 	// Create memory metadata store and register it
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}

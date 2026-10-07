@@ -194,7 +194,7 @@ func setupSMBByteRangeLockTest(t *testing.T) (mount1, mount2 *framework.Mount) {
 
 	metaStoreName := helpers.UniqueTestName("meta")
 	blockStoreName := helpers.UniqueTestName("block")
-	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+	_, err := cli.CreateInMemoryMetadataStore(metaStoreName)
 	require.NoError(t, err, "Should create metadata store")
 	_, err = cli.CreateBlockStore(blockStoreName, "memory")
 	require.NoError(t, err, "Should create block store")

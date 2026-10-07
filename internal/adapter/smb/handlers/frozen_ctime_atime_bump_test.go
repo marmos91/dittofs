@@ -21,7 +21,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // freezeCtimeOnSeededFile hands the fixture's file to the session's user, pins
@@ -399,10 +400,10 @@ func setupCopyChunkFrozenFixture(t *testing.T) (*Handler, *SMBHandlerContext, *O
 		t.Fatalf("cpstore.New: %v", err)
 	}
 	rt := newTestRuntime(t, cps)
-	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "ccfmeta", Type: "memory"}); err != nil {
+	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "ccfmeta", Type: "badger", Config: `{"in_memory":true}`}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	if err := rt.RegisterMetadataStore("ccfmeta", metamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("ccfmeta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	bsID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "ccfbs", Type: "memory"})

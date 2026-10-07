@@ -7,7 +7,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestNewWithShareStore_AddsAShare exercises the one contract every caller of
@@ -26,7 +27,7 @@ import (
 func TestNewWithShareStore_AddsAShare(t *testing.T) {
 	rt, bsID := NewWithShareStore(t)
 
-	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{

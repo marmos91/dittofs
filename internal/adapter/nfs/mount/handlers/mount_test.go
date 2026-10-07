@@ -15,7 +15,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newTestMountHandler constructs a Mount handler backed by a runtime with a
@@ -27,7 +28,7 @@ func newTestMountHandler(t *testing.T, shareName string, enabled bool) (*Handler
 	ctx := context.Background()
 	rt, bsID := newTestShareRuntime(t)
 
-	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

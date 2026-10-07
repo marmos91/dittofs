@@ -92,19 +92,11 @@ create_metadata_store() {
 
     case "$PROFILE" in
         memory|memory-kerberos)
-            $DFSCTL store metadata add --name default --type memory
+            $DFSCTL store metadata add --name default --type badger --in-memory
             ;;
         badger*)
             $DFSCTL store metadata add --name default --type badger \
                 --config '{"db_path":"/data/metadata"}'
-            ;;
-        sqlite*)
-            $DFSCTL store metadata add --name default --type sqlite \
-                --config '{"path":"/data/metadata.db"}'
-            ;;
-        postgres*)
-            $DFSCTL store metadata add --name default --type postgres \
-                --config '{"host":"postgres","port":5432,"user":"dittofs","password":"dittofs","database":"dittofs_test","sslmode":"disable"}'
             ;;
         *)
             log_error "Unknown profile: ${PROFILE}"
@@ -118,9 +110,9 @@ create_block_stores() {
     log_info "Creating block stores for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory|memory-kerberos|badger|sqlite|postgres)
-            # Metadata-store profiles: each pairs its metadata engine with the
-            # memory block store (no S3) so the suite stays self-contained.
+        memory|memory-kerberos|badger)
+            # Profiles without S3 pair their metadata store with the memory
+            # block store so the suite stays self-contained.
             $DFSCTL store block add --name default --type memory
             ;;
         *-s3)

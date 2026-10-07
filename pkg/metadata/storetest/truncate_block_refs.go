@@ -8,8 +8,7 @@ import (
 )
 
 // runTruncateChunkRefTests dispatches the truncate-down block-ref pruning
-// scenario against the provided factory. It runs against Memory, Badger, and
-// Postgres via RunConformanceSuite, so every backend is held to the same
+// scenario against the provided factory, holding the store to the
 // "no stale-tail refs past EOF" contract.
 func runTruncateChunkRefTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
@@ -23,22 +22,10 @@ func runTruncateChunkRefTests(t *testing.T, factory StoreFactory) {
 	})
 }
 
-// manifestWriteCounter is an optional, test-only capability the SQL backends
-// implement to expose how many times UpdateAttrs actually persisted the
-// file_block_refs manifest (i.e. came in through SetManifest). It is what
-// lets ChmodDoesNotRewriteRefs prove ZERO manifest writes — a row-count check
-// alone cannot, because a DELETE+INSERT of the same M rows leaves the same
-// count. Memory/Badger do not implement it (they hold Blocks inline and have
-// no separate manifest table to rewrite), so the count assertions are skipped
-// for those backends and only the row-count invariants are checked.
-type manifestWriteCounter interface {
-	PutFileChunkRefsCallCount() int64
-}
-
-// testChunkRef_ChmodDoesNotRewriteRefs is the write-amplification proof for
-// #1715 #8: an attr-only SetFileAttributes (mode change, no size change) on an
-// M-chunk file must NOT rewrite the block manifest — zero file_block_refs
-// writes — while a subsequent truncate on the same file still prunes the rows.
+// testChunkRef_ChmodDoesNotRewriteRefs pins that an attr-only
+// SetFileAttributes (mode change, no size change) on an M-chunk file leaves
+// the block manifest intact, while a subsequent truncate on the same file
+// still prunes the rows.
 func testChunkRef_ChmodDoesNotRewriteRefs(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
@@ -66,14 +53,6 @@ func testChunkRef_ChmodDoesNotRewriteRefs(t *testing.T, factory StoreFactory) {
 	file.ObjectID = block.ComputeObjectID(file.Blocks)
 	if err := store.SetManifest(ctx, file); err != nil {
 		t.Fatalf("UpdateAttrs() seeding %d blocks failed: %v", nBlocks, err)
-	}
-
-	// Baseline the manifest-write counter AFTER seeding, so we measure only
-	// what the chmod does. nil counter => backend does not gate (Memory/Badger).
-	counter, hasCounter := store.(manifestWriteCounter)
-	var baseline int64
-	if hasCounter {
-		baseline = counter.PutFileChunkRefsCallCount()
 	}
 
 	// chmod through the service's SetFileAttributes path: Mode only, no Size.
@@ -104,16 +83,9 @@ func testChunkRef_ChmodDoesNotRewriteRefs(t *testing.T, factory StoreFactory) {
 	if len(got.Blocks) != nBlocks {
 		t.Fatalf("len(Blocks) = %d, want %d — chmod must not drop refs", len(got.Blocks), nBlocks)
 	}
-	// The real proof: ZERO manifest writes occurred for the chmod. Row-count
-	// alone cannot show this (a DELETE+INSERT of the same 4 rows is invisible).
-	if hasCounter {
-		if delta := counter.PutFileChunkRefsCallCount() - baseline; delta != 0 {
-			t.Errorf("chmod performed %d manifest write(s), want 0", delta)
-		}
-	}
 
 	// A real manifest-changing op still works: truncate to 1 MiB prunes to one
-	// block AND performs exactly one manifest write.
+	// block.
 	newSize := mib
 	if _, err := svc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Size: &newSize}); err != nil {
 		t.Fatalf("SetFileAttributes(size=1MiB) failed: %v", err)
@@ -124,11 +96,6 @@ func testChunkRef_ChmodDoesNotRewriteRefs(t *testing.T, factory StoreFactory) {
 	}
 	if len(got.Blocks) != 1 {
 		t.Fatalf("len(Blocks) = %d, want 1 after truncate to 1 MiB", len(got.Blocks))
-	}
-	if hasCounter {
-		if delta := counter.PutFileChunkRefsCallCount() - baseline; delta != 1 {
-			t.Errorf("after chmod+truncate, manifest writes = %d, want exactly 1 (the truncate)", delta)
-		}
 	}
 }
 
@@ -141,7 +108,7 @@ func testChunkRef_ChmodDoesNotRewriteRefs(t *testing.T, factory StoreFactory) {
 //
 // The scenario drives the real SetFileAttributes truncate path through
 // MetadataService over the backend store, so it validates pruning on every
-// backend's FileAttr.Blocks / file_block_refs representation.
+// backend's FileAttr.Blocks representation.
 func testTruncateDownPrunesChunkRefs(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
@@ -173,8 +140,8 @@ func testTruncateDownPrunesChunkRefs(t *testing.T, factory StoreFactory) {
 	// Quiesce the file: a non-zero ObjectID (Merkle root over Blocks) means the
 	// truncate must keep it consistent with the trimmed list, not leave it stale.
 	file.ObjectID = block.ComputeObjectID(file.Blocks)
-	// Seeding the manifest is a manifest-changing write — the SQL backends
-	// gate file_block_refs persistence on the SetManifest entry point.
+	// Seeding the manifest is a manifest-changing write, so it goes through
+	// SetManifest.
 	if err := store.SetManifest(ctx, file); err != nil {
 		t.Fatalf("UpdateAttrs() with 4 MiB block list failed: %v", err)
 	}

@@ -127,7 +127,7 @@ func testSnapshot_UsageCountersAfterRestore(t *testing.T, factory SnapshotableSt
 
 // testSnapshot_LiveSetSupersetOfSnapshot pins the GC-vs-snapshot invariant fixed in
 // this change: the GC mark live set (EnumerateFileChunks) MUST be a SUPERSET of
-// the snapshot Snapshot HashSet (built from File.Blocks / file_block_refs). Before
+// the snapshot Snapshot HashSet (built from File.Blocks). Before
 // EnumerateFileChunks unioned the manifest, a hash present only in the manifest
 // (the common case — populateTestData writes hashes via UpdateAttrs, never to the
 // CAS index) was MISSED by the mark phase and the sweep would reap the still-
@@ -172,7 +172,7 @@ func testSnapshot_LiveSetSupersetOfSnapshot(t *testing.T, factory SnapshotableSt
 
 // testSnapshot_LiveSetUnionsManifestNegativeControl is the demonstrable negative
 // control mandated by the plan: write a hash to File.Blocks (the manifest) WITHOUT
-// a corresponding CAS index (file_blocks) row, then prove the union picks it up.
+// a corresponding CAS index (FileChunk) row, then prove the union picks it up.
 // Before the union the hash would be absent from EnumerateFileChunks (the CAS
 // index has no row for it); after, it is present. This is exactly the gap that
 // let GC reap a live block.
@@ -190,7 +190,7 @@ func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Sna
 		t.Fatalf("GetFile: %v", err)
 	}
 	// Manifest carries the hash; NO FileChunkStore.Put is issued, so the CAS
-	// index (file_blocks / fb: / fileChunkData.blocks) has no row for it.
+	// index (badger's fb: keys) has no row for it.
 	f.Blocks = []block.ChunkRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.SetManifest(ctx, f); err != nil {

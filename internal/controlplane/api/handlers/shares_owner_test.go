@@ -27,7 +27,7 @@ func TestShareHandler_Create_PersistsOwner(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	metaStore := &models.MetadataStoreConfig{Name: "m-owner", Type: "memory"}
+	metaStore := &models.MetadataStoreConfig{Name: "m-owner", Type: "badger", Config: `{"in_memory":true}`}
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestShareHandler_Create_UnknownOwnerRejectedBeforePersist(t *testing.T) {
 	cpStore, _, handler := setupShareTestWithRuntime(t)
 	ctx := context.Background()
 
-	metaStore := &models.MetadataStoreConfig{Name: "m-noowner", Type: "memory"}
+	metaStore := &models.MetadataStoreConfig{Name: "m-noowner", Type: "badger", Config: `{"in_memory":true}`}
 	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}

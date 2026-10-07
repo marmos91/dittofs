@@ -9,7 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // Handler-level coverage for the #529 DACL enforcement gate on CREATE.
@@ -33,7 +34,7 @@ func setupDaclTest(t *testing.T) (*Handler, *runtime.Runtime, *SMBHandlerContext
 
 	rt, bsID := newTestShareRuntime(t)
 
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

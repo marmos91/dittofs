@@ -1,13 +1,11 @@
-// Package basestore holds the pieces every metadata store backend shares:
-// per-identity usage accounting, the statfs assembly used by the SQL
-// backends, the default filesystem capabilities, and file-handle minting.
+// Package basestore holds backend-agnostic pieces of the metadata store:
+// per-identity usage accounting, the default filesystem capabilities, and
+// file-handle minting.
 //
-// It deliberately holds no retry policy. The SQL family retries on
-// busy/serialization errors through internal/txretry; the KV family retries
-// on Badger's SSI conflicts inside its own loop. Those budgets must never be
-// shared.
+// It deliberately holds no retry policy; the store retries on Badger's SSI
+// conflicts inside its own loop.
 //
-// Quota accounting: each backend keeps a QuotaCache of per-share and
+// Quota accounting: the store keeps a QuotaCache of per-share and
 // per-share-per-user/group byte and file counts (for statfs and quota
 // enforcement) and accumulates changes
 // made inside a transaction in a QuotaDelta, folding the delta into the cache
@@ -159,17 +157,6 @@ func (c *QuotaCache) Share(share string) metadata.UsageStat {
 		return *u
 	}
 	return metadata.UsageStat{}
-}
-
-// DropShare forgets every bucket belonging to a share. Called when the share is
-// deleted, so its usage cannot outlive it.
-func (c *QuotaCache) DropShare(share string) {
-	for k := range c.byIdentity {
-		if k.Share == share {
-			delete(c.byIdentity, k)
-		}
-	}
-	delete(c.byShare, share)
 }
 
 // Apply folds a usage delta into the cache. Buckets that drop to zero or below

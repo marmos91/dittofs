@@ -1145,7 +1145,14 @@ was matching on the old name.
 ### 7. Metadata Configuration
 
 Metadata store instances are created through `dfsctl`; the server config file
-contains the global BadgerDB cache settings below. Filesystem capabilities and
+contains the global BadgerDB cache settings below. `badger` is the only metadata
+store type: on disk for single-node deployments, or fully in memory for tests. A
+distributed transactional key-value store — TiKV is the preferred one — is the
+planned backend for multi-node deployments; it is not implemented yet.
+
+A store row naming `memory`, `sqlite` or `postgres` (types earlier releases
+accepted) fails with `unsupported metadata store type "<x>": badger is the only
+metadata store type`; recreate it as `badger`. Filesystem capabilities and
 limits are supplied by the metadata store and protocol implementation, not by a
 config-file capabilities block.
 
@@ -1214,15 +1221,12 @@ store can be overridden via its config-map keys when it is created (see below):
 
 #### `relaxed_durability`
 
-Applies to the `badger` and `postgres` metadata stores. **Defaults to `true`.**
+Applies to on-disk `badger` metadata stores. **Defaults to `true`.**
 
 Namespace operations (`create`, `unlink`, `rename`, `mkdir`, `rmdir`,
-attribute-only `setattr`) commit without an inline flush. On `badger` a
-background syncer makes them durable within ~100 ms; on `postgres` the
-transaction runs with `synchronous_commit = off`, so the window is whatever the
-server's `wal_writer_delay` allows (PostgreSQL default 200 ms). Writes paired
-with file data commit synchronously either way, so this is bounded loss, never
-corruption.
+attribute-only `setattr`) commit without an inline flush; a background syncer
+makes them durable within ~100 ms. Writes paired with file data commit
+synchronously either way, so this is bounded loss, never corruption.
 
 ```bash
 # Strict: fsync every namespace commit (roughly a third of the create throughput)
@@ -1241,8 +1245,8 @@ in the kernel page cache. See
 Metadata stores are managed at runtime via `dfsctl` and persisted in the control plane database:
 
 ```bash
-# In-memory metadata for fast temporary workloads
-./dfsctl store metadata add --name memory-fast --type memory
+# In-memory BadgerDB for tests and throwaway servers (no path; lost on restart)
+./dfsctl store metadata add --name memory-fast --in-memory
 
 # BadgerDB for persistent metadata
 ./dfsctl store metadata add --name badger-main --type badger \
@@ -1257,18 +1261,6 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
 ./dfsctl store metadata add --name badger-isolated --type badger \
   --config '{"path":"/tmp/dittofs-metadata-isolated"}'
 
-# SQLite for a persistent single-binary / edge appliance (pure-Go, no cgo).
-# Same implementation as PostgreSQL over a different dialect: one schema
-# (parent_child_map hard links, nlink, recursive-CTE path reconstruction,
-# object_id dedup index) and one set of operation bodies.
-./dfsctl store metadata add --name sqlite-edge --type sqlite \
-  --config '{"path":"/var/lib/dittofs/metadata.db"}'
-
-# PostgreSQL for distributed, horizontally-scalable metadata
-# Set POSTGRES_PASSWORD in your environment
-./dfsctl store metadata add --name postgres-production --type postgres \
-  --config "{\"host\":\"localhost\",\"port\":5432,\"database\":\"dfs\",\"user\":\"dfs\",\"password\":\"$POSTGRES_PASSWORD\",\"sslmode\":\"require\",\"max_conns\":15}"
-
 # List all metadata stores
 ./dfsctl store metadata list
 
@@ -1276,11 +1268,10 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
 ./dfsctl store metadata remove memory-fast
 ```
 
-> **Persistence Options**:
-> - **Memory**: Fast but ephemeral - all data lost on restart. Ideal for caching and temporary workloads.
-> - **BadgerDB**: Persistent embedded database - single-node deployments. File handles and metadata survive restarts.
-> - **SQLite**: Persistent embedded database - single-node deployments, pure-Go with no cgo. Shares its implementation with PostgreSQL, so the two behave alike apart from concurrency.
-> - **PostgreSQL**: Persistent distributed database - multi-node deployments with horizontal scaling. Survives restarts and supports multiple DittoFS instances sharing the same metadata.
+> **Persistence Options** (`badger` config keys: `path`, `in_memory`,
+> `block_cache_mb`, `index_cache_mb`, `relaxed_durability`):
+> - **On disk** (`path`): persistent embedded database for single-node deployments. File handles and metadata survive restarts.
+> - **In memory** (`in_memory: true`, no `path`): everything is lost on restart. For tests and throwaway servers.
 
 ### 8. Shares (Exports)
 
@@ -1349,7 +1340,7 @@ DittoFS supports two complementary quota layers, both enforced by NFS *and* SMB:
 ```
 
 Per-identity quota usage is tracked incrementally by every metadata backend
-(memory / badger / postgres), keyed by owner uid and gid, and is reconstructed
+(badger, on disk or in memory), keyed by owner uid and gid, and is reconstructed
 from the file rows on startup. A `chown` that changes a file's owner moves its
 bytes and inode count between identities. Limits live in the control-plane DB
 and are also manageable via the REST API
@@ -2332,7 +2323,7 @@ logging:
 Then create stores, shares, and enable adapters via CLI:
 
 ```bash
-./dfsctl store metadata add --name default --type memory
+./dfsctl store metadata add --name default --in-memory
 ./dfsctl store block add --name default-blocks --type memory
 ./dfsctl share create --name /export --metadata default --block-store default-blocks
 ./dfsctl adapter enable nfs
@@ -2349,7 +2340,7 @@ logging:
 ```
 
 ```bash
-./dfsctl store metadata add --name dev-memory --type memory
+./dfsctl store metadata add --name dev-memory --in-memory
 ./dfsctl store block add --name dev-blocks --type memory
 ./dfsctl share create --name /export --metadata dev-memory --block-store dev-blocks
 ./dfsctl adapter enable nfs --port 12049
@@ -2396,7 +2387,7 @@ Different shares using different storage backends:
 
 ```bash
 # Create metadata stores
-./dfsctl store metadata add --name fast-memory --type memory
+./dfsctl store metadata add --name fast-memory --in-memory
 ./dfsctl store metadata add --name persistent-badger --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
 

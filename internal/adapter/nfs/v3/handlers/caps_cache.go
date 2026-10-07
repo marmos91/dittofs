@@ -16,8 +16,8 @@ import "sync/atomic"
 // must not clamp, since clamping to zero would truncate every request.
 //
 // INVARIANT (process-global is safe): both are server-wide values, not
-// per-share ones. GetFilesystemCapabilities ignores the file handle and every
-// metadata backend (memory/badger/postgres) returns the same hardcoded
+// per-share ones. GetFilesystemCapabilities ignores the file handle and the
+// metadata store returns the same hardcoded
 // MaxWriteSize/MaxReadSize (1 MiB), and FSINFO advertises those same values to
 // every client on every share, so a single global cannot diverge from what any
 // one client was told. If a future change makes them per-share (a per-share

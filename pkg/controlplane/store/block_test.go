@@ -202,7 +202,7 @@ func TestShareBlockStore(t *testing.T) {
 	ctx := context.Background()
 
 	// Create prerequisite stores
-	meta := &models.MetadataStoreConfig{Name: "share-meta", Type: "memory"}
+	meta := &models.MetadataStoreConfig{Name: "share-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, _ := store.CreateMetadataStore(ctx, meta)
 
 	blockStore := &models.BlockStoreConfig{Name: "share-blocks", Type: "s3"}
@@ -262,7 +262,7 @@ func TestDeleteBlockStoreNameBoundShare(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	meta := &models.MetadataStoreConfig{Name: "legacy-meta", Type: "memory"}
+	meta := &models.MetadataStoreConfig{Name: "legacy-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, err := store.CreateMetadataStore(ctx, meta)
 	if err != nil {
 		t.Fatalf("create metadata store: %v", err)

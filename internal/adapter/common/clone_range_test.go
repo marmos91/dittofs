@@ -8,7 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 type cloneRangeStore struct {
@@ -50,7 +51,7 @@ func TestCloneRangeRevalidatesTransactionSizes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+			ms := badgertest.NewInMemory(t)
 			coord := &fakeCoordinator{}
 			bs := newCloneTestEngineWithMS(t, coord, ms)
 			refs := []block.ChunkRef{{Hash: block.ContentHash{1}, Size: 4096}}
@@ -80,7 +81,7 @@ func TestCloneRangeRevalidatesTransactionSizes(t *testing.T) {
 
 func TestLocalCloneRangePreservesGrowthDuringCopy(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, _ := newLocalOnlyTestEngine(t, &fakeCoordinator{}, ms)
 	src := putTestFile(t, ms, "/src", "range-src", nil, 4096)
 	dst := putTestFile(t, ms, "/dst", "range-dst", nil, 4096)
@@ -135,7 +136,7 @@ func TestLocalCloneRangePreservesGrowthDuringCopy(t *testing.T) {
 
 func TestLocalCloneRangeRejectsLongerDestination(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, _ := newLocalOnlyTestEngine(t, &fakeCoordinator{}, ms)
 	src := putTestFile(t, ms, "/src", "range-src", nil, 4096)
 	dst := putTestFile(t, ms, "/dst", "range-dst", nil, 8192)

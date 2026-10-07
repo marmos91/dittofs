@@ -8,7 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestRuntimeTrash_RecycleListEmpty_EndToEnd exercises the full T7b wiring
@@ -26,7 +27,7 @@ func TestRuntimeTrash_RecycleListEmpty_EndToEnd(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	fx := newByteVerifyFixture(t, metadatamemory.NewMemoryMetadataStoreWithDefaults(), "memory")
+	fx := newByteVerifyFixture(t, badgertest.NewInMemory(t), "memory")
 	t.Cleanup(fx.close)
 
 	// Enable trash on the share (runtime-only; the recycle decision reads the

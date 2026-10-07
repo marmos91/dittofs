@@ -85,12 +85,10 @@ func rootTrashContext() *metadata.AuthContext {
 	}
 }
 
-// runTrashConformanceTests exercises the recycle behavior (T2–T4) against every
-// metadata backend the suite runs over (memory, badger, postgres-in-CI). It is
-// the cross-backend parity gate for the trash feature: a backend that drops
-// DeletedAt/OriginalPath, mishandles the in-bin permanent-delete escape hatch,
-// or overwrites collisions will fail here even when the in-package unit tests
-// (memory-only) pass.
+// runTrashConformanceTests exercises the recycle behavior (T2–T4) against the
+// metadata store. It is the store-level gate for the trash feature: a backend
+// that drops DeletedAt/OriginalPath, mishandles the in-bin permanent-delete
+// escape hatch, or overwrites collisions will fail here.
 func runTrashConformanceTests(t *testing.T, factory StoreFactory) {
 	t.Run("UnlinkRecyclesIntoBin", func(t *testing.T) { testUnlinkRecyclesIntoBin(t, factory) })
 	t.Run("DeleteInsideBinIsPermanent", func(t *testing.T) { testDeleteInsideBinIsPermanent(t, factory) })

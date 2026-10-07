@@ -7,14 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestSharedStoreQuotaBleed pins that a per-share quota is enforced against the
 // share's own usage, not the totals of every share co-located in the same
 // metadata store instance.
 func TestSharedStoreQuotaBleed(t *testing.T) {
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	svc := metadata.New()
 	svc.SetDeferredCommit(false)

@@ -8,7 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestCloneWholeFile_O1 asserts the reflink is a pure metadata operation: the
@@ -17,7 +18,7 @@ import (
 // `cp --reflink` case.
 func TestCloneWholeFile_O1(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	coord := &fakeCoordinator{}
 	bs := newCloneTestEngineWithMS(t, coord, ms)
 
@@ -70,7 +71,7 @@ func TestCloneWholeFile_O1(t *testing.T) {
 // invalidation. This is the defense-in-depth guard for the shared primitive.
 func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	coord := &fakeCoordinator{}
 	bs := newCloneTestEngineWithMS(t, coord, ms)
 
@@ -94,7 +95,7 @@ func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
 // RefCount bumps, and skips the POST-txn cache invalidation.
 func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	coord := &fakeCoordinator{
 		failOnNthIncrTrip: 2, // fail the 2nd unique-hash increment
 		failOnNthIncrErr:  errors.New("synthetic increment failure"),
@@ -133,7 +134,7 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 // index, so an unseeded destination is invisible to all of it.
 func TestCloneWholeFile_SeedsDestinationRanges(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, local := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	srcBlocks := []block.ChunkRef{
@@ -177,7 +178,7 @@ func TestCloneWholeFile_SeedsDestinationRanges(t *testing.T) {
 // them would describe the source's own bytes as remote-only.
 func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, local := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	srcBlocks := []block.ChunkRef{{Hash: block.ContentHash{0x44}, Offset: 0, Size: 4096}}
@@ -220,7 +221,7 @@ func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 // broken enough to fail every read would look like a pass.
 func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, _ := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	srcBlocks := []block.ChunkRef{
@@ -274,7 +275,7 @@ func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
 // nothing replaced.
 func TestCloneWholeFile_SelfCloneKeepsItsLocalRanges(t *testing.T) {
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, local := newCloneTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	const size = 4096

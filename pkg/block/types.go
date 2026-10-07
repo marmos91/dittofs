@@ -96,7 +96,7 @@ func (s BlockState) String() string {
 //
 // It exists to drive ChunkRef JSON serialization: without it,
 // encoding/json would serialize the [32]byte array as a JSON number
-// array — readable diffs in Postgres/Badger payloads would be impossible.
+// array — readable diffs in the encoded metadata payloads would be impossible.
 func (h ContentHash) MarshalJSON() ([]byte, error) {
 	out := make([]byte, 0, 1+len("blake3:")+HashSize*2+1)
 	out = append(out, '"')

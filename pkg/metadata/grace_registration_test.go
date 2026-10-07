@@ -7,14 +7,16 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
 // persistNLMLock writes a single NLM/unified byte-range lock into the store so a
 // subsequent RegisterStoreForShare recovers it and treats its client as an
 // expected reclaimer.
-func persistNLMLock(t *testing.T, store *memory.MemoryMetadataStore, shareName, clientID string) {
+func persistNLMLock(t *testing.T, store *badger.BadgerMetadataStore, shareName, clientID string) {
 	t.Helper()
 	require.NoError(t, store.PutLock(context.Background(), &lock.PersistedLock{
 		ID:        "nlm-lock-1",
@@ -33,7 +35,7 @@ func persistNLMLock(t *testing.T, store *memory.MemoryMetadataStore, shareName, 
 // grace period with the persisted clients as the expected reclaim roster.
 func TestRegisterStoreForShare_EntersGraceWhenPersistedLocksExist(t *testing.T) {
 	const shareName = "/graced"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	// Simulate a previous run that left an NLM lock for client-1 persisted.
 	persistNLMLock(t, store, shareName, "client-1")
@@ -56,7 +58,7 @@ func TestRegisterStoreForShare_EntersGraceWhenPersistedLocksExist(t *testing.T) 
 // only path that skips grace under the H7 predicate (unclean OR locks>0).
 func TestRegisterStoreForShare_NoGraceAfterCleanDrain(t *testing.T) {
 	const shareName = "/fresh"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	// Simulate a previous graceful Close(): the clean-shutdown marker is set.
 	require.NoError(t, store.SetCleanShutdown(context.Background(), true))
@@ -92,7 +94,7 @@ func TestRegisterStoreForShare_NoGraceAfterCleanDrain(t *testing.T) {
 // must enter grace with an empty expected-reclaim roster.
 func TestRegisterStoreForShare_EntersGraceOnUncleanRestartEmptyLockSet(t *testing.T) {
 	const shareName = "/crashed"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	// Fresh store: clean-shutdown marker is absent -> reported false (unclean).
 	// No locks persisted -> empty recovered set.
@@ -117,7 +119,7 @@ func TestRegisterStoreForShare_EntersGraceOnUncleanRestartEmptyLockSet(t *testin
 // grace never wedges new-state creation (design §7 regression guard).
 func TestRegisterStoreForShare_GraceLiftsAfterTimeoutBackstop(t *testing.T) {
 	const shareName = "/crashed-backstop"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	svc := metadata.New()
 	// Tiny grace window so the backstop is observable without a slow test.
@@ -172,7 +174,7 @@ func (c *graceSpyCoordinator) OnLockGraceEnd() {
 // active once registration completes.
 func TestGracePeriod_BothMachinesEnterTogether(t *testing.T) {
 	const shareName = "/coord"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	persistNLMLock(t, store, shareName, "client-1")
 
 	// A stand-in for the NFSv4 grace machine, flipped on by the coordinator.
@@ -213,7 +215,7 @@ func TestGracePeriod_BothMachinesEnterTogether(t *testing.T) {
 // construction.
 func TestGracePeriod_EndNotifiesCoordinatorInstalledAfterRegistration(t *testing.T) {
 	const shareName = "/coord-late"
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	persistNLMLock(t, store, shareName, "client-1")
 
 	// Register the store FIRST — no coordinator installed yet (startup order).

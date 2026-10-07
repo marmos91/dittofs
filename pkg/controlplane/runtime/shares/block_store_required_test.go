@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestAddShare_RequiresBlockStore pins the durability invariant: a share's
@@ -16,7 +16,7 @@ import (
 func TestAddShare_RequiresBlockStore(t *testing.T) {
 	ctx := context.Background()
 
-	mds := metamem.NewMemoryMetadataStoreWithDefaults()
+	mds := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = mds.Close() })
 
 	svc := New()

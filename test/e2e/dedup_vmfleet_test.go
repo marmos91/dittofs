@@ -29,8 +29,7 @@
 // per patch site).
 //
 // Tier: nightly only (DITTOFS_E2E_NIGHTLY=1) — also requires sudo +
-// kernel NFS client + Localstack + Postgres, mirroring
-// dedup_cross_share_test.go.
+// kernel NFS client + Localstack, mirroring dedup_cross_share_test.go.
 //
 // Run:
 //
@@ -86,19 +85,9 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 	if !framework.CheckLocalstackAvailable(t) {
 		t.Skip("Skipping: Localstack (S3) not available — run via run-e2e.sh --s3")
 	}
-	if !framework.CheckPostgresAvailable(t) {
-		t.Skip("Skipping: Postgres not available — run via run-e2e.sh with Postgres")
-	}
 
 	lsHelper := framework.NewLocalstackHelper(t)
 	require.NotNil(t, lsHelper, "Localstack helper must be available")
-	pgHelper := framework.NewPostgresHelper(t)
-	require.NotNil(t, pgHelper, "Postgres helper must be available")
-
-	// Clean slate: a stale Postgres schema from a prior nightly would
-	// leak ObjectID rows that pre-claim our payload's chunks before
-	// we even write the first clone (false-negative regime).
-	require.NoError(t, pgHelper.TruncateTables(), "Truncate Postgres tables for isolation")
 
 	// ---- Fixture: pinned qcow2 base + N synthesized clones ----
 	base := framework.DownloadQcow2Base(t)
@@ -106,21 +95,19 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 	clones := framework.SynthesizeClones(t, base, cloneDir, vmFleetCloneCount)
 	require.Len(t, clones, vmFleetCloneCount, "expected exactly %d clones", vmFleetCloneCount)
 
-	// ---- Server + share + Postgres + S3 backend ----
+	// ---- Server + share + badger + S3 backend ----
 	sp := helpers.StartServerProcess(t, "")
 	t.Cleanup(sp.ForceKill)
 
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
+	// A fresh on-disk directory per run is the clean slate: no ObjectID rows
+	// from a prior run can pre-claim the payload's chunks before the first
+	// clone is written (false-negative regime).
 	metaName := helpers.UniqueTestName("vmfleet-meta")
-	pgConfig := pgHelper.GetConfig()
-	pgConfigJSON := fmt.Sprintf(
-		`{"host":"%s","port":%d,"database":"%s","user":"%s","password":"%s"}`,
-		pgConfig.Host, pgConfig.Port, pgConfig.Database, pgConfig.User, pgConfig.Password,
-	)
-	_, err := cli.CreateMetadataStore(metaName, "postgres",
-		helpers.WithMetaRawConfig(pgConfigJSON))
-	require.NoError(t, err, "create Postgres metadata store")
+	_, err := cli.CreateMetadataStore(metaName, "badger",
+		helpers.WithMetaDBPath(filepath.Join(t.TempDir(), "badger")))
+	require.NoError(t, err, "create badger metadata store")
 	t.Cleanup(func() { _ = cli.DeleteMetadataStore(metaName) })
 
 	bucketName := strings.ReplaceAll(

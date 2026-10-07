@@ -9,7 +9,7 @@ import (
 type MetadataStoreConfig struct {
 	ID        string    `gorm:"primaryKey;size:36" json:"id"`
 	Name      string    `gorm:"uniqueIndex;not null;size:255" json:"name"`
-	Type      string    `gorm:"not null;size:50" json:"type"` // memory, badger, postgres
+	Type      string    `gorm:"not null;size:50" json:"type"` // badger
 	Config    string    `gorm:"type:text" json:"-"`           // JSON blob for type-specific config
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 

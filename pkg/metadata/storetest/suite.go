@@ -9,8 +9,8 @@ import (
 // childFullPath derives the full share-relative path for a child entry,
 // joining the parent directory's stored Path with the child name. Root
 // children become "/name"; nested entries become "/parent/.../name". This
-// mirrors production (file_create.go) so path-keyed backends (Postgres) see
-// a unique, non-empty path per entry instead of all-"" collisions.
+// mirrors production (file_create.go) so each entry gets a unique, non-empty
+// path instead of all-"" collisions.
 func childFullPath(t *testing.T, store metadata.Store, parentHandle metadata.FileHandle, name string) string {
 	t.Helper()
 
@@ -85,8 +85,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 
 	// ACLAliasing asserts both directions of FileAttr.ACL deep-copy
 	// discipline: UpdateAttrs must not alias the caller's ACE slice, and
-	// GetFile must not hand back the store's backing slice. Pins the
-	// cross-backend parity gap the area-6 audit found in the memory backend.
+	// GetFile must not hand back the store's backing slice.
 	t.Run("ACLAliasing", func(t *testing.T) {
 		runACLAliasingTests(t, factory)
 	})
@@ -117,16 +116,13 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	})
 
 	// ChunkRefOps conformance for FileAttr.Blocks []ChunkRef
-	// round-trip across UpdateAttrs/GetFile, replace semantics, and the
-	// Postgres-only FK-cascade behavior. Memory and Badger skip the
-	// cascade scenario via FileChunkRefsAccessor type-assertion
-	// failure.
+	// round-trip across UpdateAttrs/GetFile and replace semantics.
 	t.Run("ChunkRefOps", func(t *testing.T) {
 		runChunkRefOpsTests(t, factory)
 	})
 
 	// TruncateChunkRefOps asserts that a size-down SetAttr prunes
-	// FileAttr.Blocks / file_block_refs past the new EOF, so the snapshot
+	// FileAttr.Blocks past the new EOF, so the snapshot
 	// manifest never over-references content past the current size (#817).
 	t.Run("TruncateChunkRefOps", func(t *testing.T) {
 		runTruncateChunkRefTests(t, factory)
@@ -134,8 +130,8 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 
 	// ObjectIDOps conformance for FileAttr.ObjectID round-trip,
 	// FindByObjectID lookup, mutation lifecycle, and the first-
-	// committer-wins concurrent-quiesce race. All
-	// three backends implement ObjectIDIndexAccessor so the race
+	// committer-wins concurrent-quiesce race. The store implements
+	// ObjectIDIndexAccessor so the race
 	// scenario asserts index-row counts directly rather than skipping.
 	t.Run("ObjectIDOps", func(t *testing.T) {
 		runObjectIDOpsTests(t, factory)
@@ -152,23 +148,16 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 
 	// INV02Fuzz property-based fuzzer for the global
 	// invariant ∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks). Runs
-	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix)
-	// against every backend. The leak-injection scenario uses an
-	// optional RefCountLeakInjector capability — backends that don't
-	// implement it (Badger / Postgres today) skip cleanly.
+	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix).
 	t.Run("INV02Fuzz", func(t *testing.T) {
 		t.Run("PropertyFuzz", func(t *testing.T) {
 			testINV02_PropertyFuzz(t, factory)
-		})
-		t.Run("LeakInjection", func(t *testing.T) {
-			testINV02_LeakInjection(t, factory)
 		})
 	})
 
 	// Trash exercises the recycle behavior (unlink-into-bin, in-bin permanent
 	// delete, exclude-pattern bypass, collision uniquing, subtree-as-one-entry,
-	// and overwrite-victim recycling) against every backend. The in-package
-	// unit tests cover memory only; this is the cross-backend parity gate that
+	// and overwrite-victim recycling). This is the store-level gate that
 	// catches a backend dropping DeletedAt/OriginalPath or overwriting on a
 	// name collision.
 	t.Run("Trash", func(t *testing.T) {
@@ -281,8 +270,7 @@ func createTestFile(t *testing.T, store metadata.Store, shareName string, dirHan
 	ctx := t.Context()
 
 	// Derive the full path from the parent directory, mirroring production
-	// (file_create.go), so path-keyed backends (Postgres) get a unique,
-	// non-empty path per entry. Root children are "/name"; nested entries
+	// (file_create.go), so each entry gets a unique, non-empty path. Root children are "/name"; nested entries
 	// join the parent's path.
 	fullPath := childFullPath(t, store, dirHandle, name)
 
@@ -340,8 +328,8 @@ func createTestDir(t *testing.T, store metadata.Store, shareName string, parentH
 
 	ctx := t.Context()
 
-	// Derive the full path from the parent directory so path-keyed backends
-	// (Postgres) get a unique, non-empty path per entry.
+	// Derive the full path from the parent directory so each entry gets a
+	// unique, non-empty path.
 	fullPath := childFullPath(t, store, parentHandle, name)
 
 	// Generate handle

@@ -19,7 +19,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // This file stress-tests the in-flight snapshot registry + its fences (issue
@@ -79,14 +80,14 @@ func newConcRuntime(t *testing.T) (*Runtime, *controlledSnapshotable) {
 	rt := New(cp)
 	setJournalRoot(t, rt)
 
-	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	backup := &controlledSnapshotable{MemoryMetadataStore: mem}
+	mem := badgertest.NewInMemory(t)
+	backup := &controlledSnapshotable{BadgerMetadataStore: mem}
 	if err := rt.RegisterMetadataStore("memory", backup); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 	if _, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
 		Name: "memory",
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -101,7 +102,7 @@ func addConcShare(t *testing.T, rt *Runtime, backup *controlledSnapshotable, sha
 	localStore := bsmemory.New()
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
-	mem := backup.MemoryMetadataStore
+	mem := backup.BadgerMetadataStore
 	syncer := engine.NewRemoteSync(localStore, innerRemote, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})

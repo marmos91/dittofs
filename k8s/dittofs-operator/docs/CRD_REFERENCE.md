@@ -78,7 +78,7 @@ The storage section configures PVCs for the DittoFS server pod's internal use.
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
 | `storage.controlPlaneSize` | string | `1Gi` | No | Size for the control-plane PVC (mounted at `/data/controlplane`). Holds the control-plane SQLite DB — the metadata-store registry and share definitions. Small by nature. |
-| `storage.metadataSize` | string | - | **Yes** | Size for metadata store PVC (mounted at `/data/store/metadata`). Used by BadgerDB or other metadata backends. |
+| `storage.metadataSize` | string | - | **Yes** | Size for metadata store PVC (mounted at `/data/store/metadata`). Used by the BadgerDB metadata store. |
 | `storage.contentSize` | string | - | No, but **strongly recommended** | Size for the block/content store PVC (mounted at `/data/store/block`), which the operator renders as `blockstore.journal.path`. Holds every share's journal: the append log that absorbs writes, plus the chunks carved from it that have not yet been evicted. Needed by every share, S3-backed ones included — the journal is the only copy of a byte until the block store has it. Omitting it puts the journal on ephemeral pod storage, losing unflushed writes when the pod is rescheduled; admission emits a warning. |
 | `storage.storageClassName` | string | - | No | StorageClass for the server's PVCs. If not specified, uses the cluster's default StorageClass. |
 
@@ -385,7 +385,7 @@ SDK-level credential chains (AWS env vars, IMDS, IRSA) are intentionally not sup
 
 ### Percona PostgreSQL Configuration (`percona`)
 
-Configures auto-creation of PerconaPGCluster for PostgreSQL metadata store. Requires Percona Operator to be installed in the cluster.
+Configures auto-creation of PerconaPGCluster for the PostgreSQL control-plane database. Requires Percona Operator to be installed in the cluster.
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|

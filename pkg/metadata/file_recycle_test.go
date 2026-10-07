@@ -7,7 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ func (p stubTrashPolicy) TrashConfigForShare(string) (metadata.TrashConfig, bool
 // only calls CreateRootDirectory and leaves the shares map empty.
 func newRecycleFixture(t *testing.T) *testFixture {
 	t.Helper()
-	store := memory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 	ctx := context.Background()
 	shareName := "/test"
 

@@ -296,7 +296,7 @@ ls: cannot access 'file.txt': Stale file handle
 ```
 
 **Causes:**
-- Server was restarted with in-memory metadata (handles lost)
+- Server was restarted with an in-memory metadata store (handles lost)
 - File was deleted while client held a handle
 - Metadata backend was changed
 
@@ -347,9 +347,9 @@ tail -f ~/.local/state/dittofs/dittofs.log | grep -i "slow\|timeout"
          max_write_size: 1048576  # 1MB
    ```
 
-2. **Use a memory metadata store for development:**
+2. **Use an in-memory metadata store for development:**
    ```bash
-   ./dfsctl store metadata add --name fast --type memory
+   ./dfsctl store metadata add --name fast --in-memory
    ```
 
 3. **For S3, verify configuration:**
@@ -628,7 +628,7 @@ dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos fal
 **Solution:** Ensure stores exist before creating the share:
 ```bash
 # Create the stores first — a share needs both
-./dfsctl store metadata add --name my-store --type memory
+./dfsctl store metadata add --name my-store --in-memory
 ./dfsctl store block add --name my-blocks --type memory
 
 # Then create the share referencing them

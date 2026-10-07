@@ -174,7 +174,7 @@ func TestNFSv4ControlPlaneNetgroup(t *testing.T) {
 			metaStore := helpers.UniqueTestName("meta")
 			blockStore := helpers.UniqueTestName("block")
 
-			_, err := runner.CreateMetadataStore(metaStore, "memory")
+			_, err := runner.CreateInMemoryMetadataStore(metaStore)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 

@@ -7,7 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	memorystore "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
@@ -30,7 +31,7 @@ func fbHash(seed byte) block.ContentHash {
 // shape.
 func newMemStore(t *testing.T) metadata.Store {
 	t.Helper()
-	return memorystore.NewMemoryMetadataStoreWithDefaults()
+	return badgertest.NewInMemory(t)
 }
 
 // putBlock inserts a single FileChunk with the given id and hash into

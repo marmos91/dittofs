@@ -33,7 +33,7 @@ func TestColdReadThenDeleteReclaimsLocal(t *testing.T) {
 
 	rt := New(cp)
 	setJournalRoot(t, rt)
-	metaStore := registerSQLiteMeta(t, rt, cp, "sqlite-meta")
+	metaStore := registerMeta(t, rt, cp, "disk-meta")
 	setJournalRoot(t, rt)
 
 	remoteCfg := &models.BlockStoreConfig{Name: "mem-remote", Type: "memory"}
@@ -45,7 +45,7 @@ func TestColdReadThenDeleteReclaimsLocal(t *testing.T) {
 	shareName := "/coldread-reclaim"
 	if err := rt.AddShare(ctx, &ShareConfig{
 		Name:          shareName,
-		MetadataStore: "sqlite-meta",
+		MetadataStore: "disk-meta",
 		BlockStoreID:  remoteID,
 		Enabled:       true,
 	}); err != nil {

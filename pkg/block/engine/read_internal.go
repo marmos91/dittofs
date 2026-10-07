@@ -236,8 +236,8 @@ func (r *chunkWindowResolver) coveringRow(ctx context.Context, off uint64) (*blo
 // its parsed absolute start offset, or (nil, 0, nil) for a hole. When the store
 // implements chunkAtOffsetResolver (badger) it uses the indexed single-chunk
 // lookup that avoids enumerating the whole per-payload manifest; otherwise it
-// falls back to ListFileChunks + block.FindRowCoveringOffset (memory/sqlite/postgres —
-// not the profiled hot path). Callers walking a whole window should hold a
+// falls back to ListFileChunks + block.FindRowCoveringOffset (a store without
+// the index — not the profiled hot path). Callers walking a whole window should hold a
 // chunkWindowResolver instead so the fallback scan is paid once.
 func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (*block.FileChunk, uint64, error) {
 	if store == nil {

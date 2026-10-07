@@ -92,10 +92,9 @@ make dry-run
 
 | Profile | Metadata Store | Block Store | Extra Services |
 |---------|---------------|---------------|----------------|
-| `memory` | Memory | Memory | None |
-| `badger` | BadgerDB | Memory | None |
-| `badger-s3` | BadgerDB | S3 | Localstack |
-| `postgres-s3` | PostgreSQL | S3 | Localstack + PostgreSQL |
+| `memory` | BadgerDB (in memory) | Memory | None |
+| `badger` | BadgerDB (on disk) | Memory | None |
+| `badger-s3` | BadgerDB (on disk) | S3 | Localstack |
 
 ### Flags Reference
 
@@ -166,7 +165,7 @@ cd smbtorture
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `sqlite`, `postgres`) |
+| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `memory-kerberos`) |
 | `--filter FILTER` | (all) | Run specific sub-test by name |
 | `--timeout SECONDS` | `1200` | Kill smbtorture after SECONDS |
 | `--keep` | off | Leave containers running |
@@ -406,14 +405,14 @@ test/smb-conformance/
 ├── KNOWN_FAILURES.md         # WPTS expected test failures (machine-readable)
 ├── Makefile                  # Convenience targets
 ├── README.md                 # This file
-├── docker-compose.yml        # Service definitions (DittoFS, WPTS, Localstack, PostgreSQL)
+├── docker-compose.yml        # Service definitions (DittoFS, WPTS, Localstack, KDC)
 ├── Dockerfile.dittofs        # DittoFS image with dfs + dfsctl
 ├── bootstrap.sh              # DittoFS provisioning (stores, shares, users, SMB adapter)
 ├── configs/                  # DittoFS config files per profile
 │   ├── memory.yaml
 │   ├── badger.yaml
 │   ├── badger-s3.yaml
-│   └── postgres-s3.yaml
+│   └── memory-kerberos.yaml
 ├── ptfconfig/                # WPTS configuration templates
 │   ├── CommonTestSuite.deployment.ptfconfig.template
 │   └── MS-SMB2_ServerTestSuite.deployment.ptfconfig.template

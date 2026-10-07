@@ -151,7 +151,7 @@ while IFS='|' read -r test_name outcome; do
             printf "  ${GREEN}%-78s PASS${NC}\n" "$local_display"
             PASS_COUNT=$((PASS_COUNT + 1))
             ;;
-        Failed|Error)
+        Failed|Error|Timeout|Aborted)
             if [[ -n "${KNOWN_FAILURES[$test_name]+_}" ]]; then
                 if [[ "$VERBOSE" == "true" ]]; then
                     printf "  ${YELLOW}%-78s KNOWN (%s)${NC}\n" "$local_display" "${KNOWN_REASONS[$test_name]}"
@@ -195,7 +195,7 @@ if [[ "$NEW_FAILURES" -gt 0 ]]; then
     while IFS='|' read -r test_name outcome; do
         [[ -z "$test_name" ]] && continue
         case "$outcome" in
-            Failed|Error)
+            Failed|Error|Timeout|Aborted)
                 if [[ -z "${KNOWN_FAILURES[$test_name]+_}" ]]; then
                     echo "  - ${test_name}"
                 fi

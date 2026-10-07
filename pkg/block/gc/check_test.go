@@ -7,8 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	metadatasqlite "github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // seedRow describes one FileChunk row to plant: the suffix appended after
@@ -38,37 +38,12 @@ func seedHash(b byte) block.ContentHash {
 	return h
 }
 
-// newCheckStore builds an empty share on the named backend and returns the
-// store plus its root handle.
-func newCheckStore(t *testing.T, backend, share string) (metadata.Store, metadata.FileHandle) {
+// newCheckStore builds an empty share on an in-memory Badger store and
+// returns the store plus its root handle.
+func newCheckStore(t *testing.T, share string) (metadata.Store, metadata.FileHandle) {
 	t.Helper()
 	ctx := t.Context()
-
-	var store metadata.Store
-	switch backend {
-	case "memory":
-		store = metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	case "sqlite":
-		s, err := metadatasqlite.NewSQLiteMetadataStore(ctx, &metadatasqlite.SQLiteMetadataStoreConfig{
-			Path:        t.TempDir() + "/m.db",
-			AutoMigrate: true,
-		}, metadata.FilesystemCapabilities{
-			MaxFileSize:         1 << 40,
-			MaxFilenameLen:      255,
-			MaxPathLen:          4096,
-			MaxHardLinkCount:    32767,
-			CaseSensitive:       true,
-			CasePreserving:      true,
-			TimestampResolution: 1,
-		})
-		if err != nil {
-			t.Fatalf("NewSQLiteMetadataStore: %v", err)
-		}
-		t.Cleanup(func() { _ = s.Close() })
-		store = s
-	default:
-		t.Fatalf("unknown backend %q", backend)
-	}
+	store := badgertest.NewInMemory(t)
 
 	if _, err := store.CreateRootDirectory(ctx, share, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o755,
@@ -166,100 +141,96 @@ func findingFor(t *testing.T, res *ManifestCheckResult, payloadID string) *Paylo
 }
 
 // TestCheckManifests_HolesAndUnknownHashes exercises the three reportable
-// conditions that every metadata backend surfaces identically: a range no row
+// conditions the scan reports: a range no row
 // covers that the file's own block list claims (damage), a range nothing
 // claims (indistinguishable from sparseness), and a row whose hash the
 // synced-hash store does not know. A healthy file must produce no finding at
 // all — a scan that reports nothing everywhere proves nothing.
 func TestCheckManifests_HolesAndUnknownHashes(t *testing.T) {
-	for _, backend := range []string{"memory", "sqlite"} {
-		t.Run(backend, func(t *testing.T) {
-			ctx := t.Context()
-			const share = "checkshare"
-			store, root := newCheckStore(t, backend, share)
+	ctx := t.Context()
+	const share = "checkshare"
+	store, root := newCheckStore(t, share)
 
-			// Healthy: two rows covering [0,8192), both claimed and both synced.
-			healthy := seedCheckFile(t, store, share, root, "healthy", 8192,
-				[]seedRow{{"0", 4096, 1}, {"4096", 4096, 2}},
-				[]seedRef{{0, 4096, 1}, {4096, 4096, 2}})
+	// Healthy: two rows covering [0,8192), both claimed and both synced.
+	healthy := seedCheckFile(t, store, share, root, "healthy", 8192,
+		[]seedRow{{"0", 4096, 1}, {"4096", 4096, 2}},
+		[]seedRef{{0, 4096, 1}, {4096, 4096, 2}})
 
-			// Damaged: the file claims data at [0,4096) but only the second
-			// row survives, so nothing covers the leading page — the #1879
-			// shape.
-			damaged := seedCheckFile(t, store, share, root, "damaged", 8192,
-				[]seedRow{{"4096", 4096, 3}},
-				[]seedRef{{0, 4096, 4}, {4096, 4096, 3}})
+	// Damaged: the file claims data at [0,4096) but only the second
+	// row survives, so nothing covers the leading page — the #1879
+	// shape.
+	damaged := seedCheckFile(t, store, share, root, "damaged", 8192,
+		[]seedRow{{"4096", 4096, 3}},
+		[]seedRef{{0, 4096, 4}, {4096, 4096, 3}})
 
-			// Sparse: a real hole at [0,4096) that the file does not claim.
-			sparse := seedCheckFile(t, store, share, root, "sparse", 8192,
-				[]seedRow{{"4096", 4096, 5}},
-				[]seedRef{{4096, 4096, 5}})
+	// Sparse: a real hole at [0,4096) that the file does not claim.
+	sparse := seedCheckFile(t, store, share, root, "sparse", 8192,
+		[]seedRow{{"4096", 4096, 5}},
+		[]seedRef{{4096, 4096, 5}})
 
-			// Every hash above is marked synced except hash 2, which stays
-			// unknown to the synced-hash store.
-			for _, h := range []byte{1, 3, 5} {
-				if err := store.MarkSynced(ctx, seedHash(h), block.ChunkLocator{}); err != nil {
-					t.Fatalf("MarkSynced(%d): %v", h, err)
-				}
-			}
+	// Every hash above is marked synced except hash 2, which stays
+	// unknown to the synced-hash store.
+	for _, h := range []byte{1, 3, 5} {
+		if err := store.MarkSynced(ctx, seedHash(h), block.ChunkLocator{}); err != nil {
+			t.Fatalf("MarkSynced(%d): %v", h, err)
+		}
+	}
 
-			res, err := CheckManifests(ctx, share, store, ManifestCheckOptions{CheckSynced: true})
-			if err != nil {
-				t.Fatalf("CheckManifests: %v", err)
-			}
-			if res.FilesScanned != 3 {
-				t.Fatalf("FilesScanned = %d, want 3", res.FilesScanned)
-			}
-			if !res.Damaged() {
-				t.Fatal("Damaged() = false, want true")
-			}
+	res, err := CheckManifests(ctx, share, store, ManifestCheckOptions{CheckSynced: true})
+	if err != nil {
+		t.Fatalf("CheckManifests: %v", err)
+	}
+	if res.FilesScanned != 3 {
+		t.Fatalf("FilesScanned = %d, want 3", res.FilesScanned)
+	}
+	if !res.Damaged() {
+		t.Fatal("Damaged() = false, want true")
+	}
 
-			// The healthy file's only finding is its unknown hash; it has no
-			// uncovered range.
-			hf := findingFor(t, res, healthy)
-			if hf == nil {
-				t.Fatal("healthy payload: want a finding for the unknown hash")
-			}
-			if len(hf.Uncovered) != 0 {
-				t.Fatalf("healthy payload: Uncovered = %v, want none", hf.Uncovered)
-			}
-			if want := []string{healthy + "/4096"}; len(hf.UnknownHashRows) != 1 || hf.UnknownHashRows[0] != want[0] {
-				t.Fatalf("healthy payload: UnknownHashRows = %v, want %v", hf.UnknownHashRows, want)
-			}
+	// The healthy file's only finding is its unknown hash; it has no
+	// uncovered range.
+	hf := findingFor(t, res, healthy)
+	if hf == nil {
+		t.Fatal("healthy payload: want a finding for the unknown hash")
+	}
+	if len(hf.Uncovered) != 0 {
+		t.Fatalf("healthy payload: Uncovered = %v, want none", hf.Uncovered)
+	}
+	if want := []string{healthy + "/4096"}; len(hf.UnknownHashRows) != 1 || hf.UnknownHashRows[0] != want[0] {
+		t.Fatalf("healthy payload: UnknownHashRows = %v, want %v", hf.UnknownHashRows, want)
+	}
 
-			df := findingFor(t, res, damaged)
-			if df == nil {
-				t.Fatal("damaged payload: no finding")
-			}
-			if len(df.Uncovered) != 1 || df.Uncovered[0] != (ByteRange{Start: 0, End: 4096, Claimed: true}) {
-				t.Fatalf("damaged payload: Uncovered = %v, want one claimed [0,4096)", df.Uncovered)
-			}
-			if !df.Damaged {
-				t.Fatal("damaged payload: Damaged() = false")
-			}
+	df := findingFor(t, res, damaged)
+	if df == nil {
+		t.Fatal("damaged payload: no finding")
+	}
+	if len(df.Uncovered) != 1 || df.Uncovered[0] != (ByteRange{Start: 0, End: 4096, Claimed: true}) {
+		t.Fatalf("damaged payload: Uncovered = %v, want one claimed [0,4096)", df.Uncovered)
+	}
+	if !df.Damaged {
+		t.Fatal("damaged payload: Damaged() = false")
+	}
 
-			sf := findingFor(t, res, sparse)
-			if sf == nil {
-				t.Fatal("sparse payload: no finding")
-			}
-			if len(sf.Uncovered) != 1 || sf.Uncovered[0] != (ByteRange{Start: 0, End: 4096, Claimed: false}) {
-				t.Fatalf("sparse payload: Uncovered = %v, want one unclaimed [0,4096)", sf.Uncovered)
-			}
-			if sf.Damaged {
-				t.Fatal("sparse payload: Damaged() = true, want false — an unclaimed hole is not damage")
-			}
+	sf := findingFor(t, res, sparse)
+	if sf == nil {
+		t.Fatal("sparse payload: no finding")
+	}
+	if len(sf.Uncovered) != 1 || sf.Uncovered[0] != (ByteRange{Start: 0, End: 4096, Claimed: false}) {
+		t.Fatalf("sparse payload: Uncovered = %v, want one unclaimed [0,4096)", sf.Uncovered)
+	}
+	if sf.Damaged {
+		t.Fatal("sparse payload: Damaged() = true, want false — an unclaimed hole is not damage")
+	}
 
-			if res.ClaimedUncoveredBytes != 4096 || res.UncoveredBytes != 8192 {
-				t.Fatalf("ClaimedUncoveredBytes=%d UncoveredBytes=%d, want 4096 and 8192",
-					res.ClaimedUncoveredBytes, res.UncoveredBytes)
-			}
-			if res.UnknownHashRows != 1 {
-				t.Fatalf("UnknownHashRows = %d, want 1", res.UnknownHashRows)
-			}
-			if res.DamagedPayloads != 2 {
-				t.Fatalf("DamagedPayloads = %d, want 2 (damaged + the unknown-hash file)", res.DamagedPayloads)
-			}
-		})
+	if res.ClaimedUncoveredBytes != 4096 || res.UncoveredBytes != 8192 {
+		t.Fatalf("ClaimedUncoveredBytes=%d UncoveredBytes=%d, want 4096 and 8192",
+			res.ClaimedUncoveredBytes, res.UncoveredBytes)
+	}
+	if res.UnknownHashRows != 1 {
+		t.Fatalf("UnknownHashRows = %d, want 1", res.UnknownHashRows)
+	}
+	if res.DamagedPayloads != 2 {
+		t.Fatalf("DamagedPayloads = %d, want 2 (damaged + the unknown-hash file)", res.DamagedPayloads)
 	}
 }
 
@@ -269,7 +240,7 @@ func TestCheckManifests_HolesAndUnknownHashes(t *testing.T) {
 func TestCheckManifests_LocalOnlySkipsSyncedCheck(t *testing.T) {
 	ctx := t.Context()
 	const share = "localonly"
-	store, root := newCheckStore(t, "memory", share)
+	store, root := newCheckStore(t, share)
 	seedCheckFile(t, store, share, root, "f", 4096,
 		[]seedRow{{"0", 4096, 1}}, []seedRef{{0, 4096, 1}})
 
@@ -293,23 +264,14 @@ func TestCheckManifests_LocalOnlySkipsSyncedCheck(t *testing.T) {
 // chunk offset — the row class that read paths refuse with
 // ErrManifestInconsistent and that cold seeding cannot place at all.
 //
-// It runs on every backend the check harness can build: the row belongs to the
-// payload and is merely damaged, so ListFileChunks must hand it to the scan
+// The row belongs to the payload and is merely damaged, so ListFileChunks must hand it to the scan
 // rather than filter it out. A backend that dropped it would make this damage
 // class invisible to the scan, which is the whole thing the scan exists to
 // report.
 func TestCheckManifests_UnplaceableRow(t *testing.T) {
-	for _, backend := range []string{"memory", "sqlite"} {
-		t.Run(backend, func(t *testing.T) {
-			checkManifestsUnplaceableRow(t, backend)
-		})
-	}
-}
-
-func checkManifestsUnplaceableRow(t *testing.T, backend string) {
 	ctx := t.Context()
 	const share = "unplaceable"
-	store, root := newCheckStore(t, backend, share)
+	store, root := newCheckStore(t, share)
 
 	payloadID := seedCheckFile(t, store, share, root, "f", 8192,
 		[]seedRow{{"block-0", 4096, 1}, {"4096", 4096, 2}},
@@ -359,7 +321,7 @@ func checkManifestsUnplaceableRow(t *testing.T, backend string) {
 func TestCheckManifests_PendingRowHoldsNoBytes(t *testing.T) {
 	ctx := t.Context()
 	const share = "pending"
-	store, root := newCheckStore(t, "memory", share)
+	store, root := newCheckStore(t, share)
 	payloadID := seedCheckFile(t, store, share, root, "f", 4096,
 		[]seedRow{{"0", 4096, 0}}, nil)
 
@@ -418,7 +380,7 @@ func TestUncoveredRanges(t *testing.T) {
 func TestCheckManifests_CapDoesNotHideDamage(t *testing.T) {
 	ctx := t.Context()
 	const share = "fragmented"
-	store, root := newCheckStore(t, "memory", share)
+	store, root := newCheckStore(t, share)
 
 	// Alternate covered and uncovered 4 KiB pages so the file opens with
 	// more unclaimed holes than the per-payload list can hold, then claim a

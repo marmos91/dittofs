@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newDurabilityTestShare brings up one share on the journal tier, which is
@@ -13,7 +13,7 @@ func newDurabilityTestShare(t *testing.T) (*Service, string) {
 	t.Helper()
 	ctx := context.Background()
 
-	mds := metamem.NewMemoryMetadataStoreWithDefaults()
+	mds := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = mds.Close() })
 
 	svc := New()

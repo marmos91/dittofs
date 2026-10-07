@@ -8,7 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -185,7 +186,7 @@ func (t *faultyTx) GetChild(ctx context.Context, dir metadata.FileHandle, name s
 // injected into the transaction body. Callers arm the fault just before the
 // operation under test so setup writes run unimpeded.
 type faultyFixture struct {
-	store  *memory.MemoryMetadataStore
+	store  *badger.BadgerMetadataStore
 	faulty *faultyStore
 	svc    *metadata.Service
 	root   metadata.FileHandle

@@ -12,7 +12,6 @@
 #   docker compose --profile test up               # Start DittoFS + WPTS
 #   docker compose --profile smbtorture up         # Start DittoFS + smbtorture
 #   docker compose --profile s3 up -d              # Start with Localstack for S3 profiles
-#   docker compose --profile postgres up           # Start with PostgreSQL
 #   docker compose --profile kerberos up -d kdc    # Start the self-contained KDC
 #
 # Environment variables:
@@ -145,20 +144,6 @@ services:
       retries: 10
     profiles:
       - s3
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: dittofs
-      POSTGRES_PASSWORD: dittofs
-      POSTGRES_DB: dittofs_test
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dittofs -d dittofs_test"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    profiles:
-      - postgres
 
   # Self-contained MIT Kerberos KDC for Kerberos conformance testing.
   # Creates the DITTOFS.TEST realm, the cifs/dittofs service principal, and

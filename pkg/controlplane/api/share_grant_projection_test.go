@@ -13,7 +13,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newRootACLTestRouter builds a router over a FULLY WIRED runtime: an in-memory
@@ -54,12 +55,12 @@ func newRootACLTestRouter(t *testing.T, shareNames ...string) (http.Handler, str
 		}
 	})
 
-	metaCfg := &models.MetadataStoreConfig{Name: "test-meta", Type: "memory"}
+	metaCfg := &models.MetadataStoreConfig{Name: "test-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, err := cpStore.CreateMetadataStore(ctx, metaCfg)
 	if err != nil {
 		t.Fatalf("create metadata store config: %v", err)
 	}
-	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("register metadata store: %v", err)
 	}
 	blockID, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "test-block", Type: "memory"})

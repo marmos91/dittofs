@@ -8,11 +8,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // refCounts returns each of a payload's rows' RefCount, keyed by row ID.
-func refCounts(t *testing.T, ctx context.Context, ms *metadatamemory.MemoryMetadataStore, payloadID string) map[string]uint32 {
+func refCounts(t *testing.T, ctx context.Context, ms *badger.BadgerMetadataStore, payloadID string) map[string]uint32 {
 	t.Helper()
 	rows, err := ms.ListFileChunks(ctx, payloadID)
 	if err != nil {
@@ -30,10 +32,10 @@ func refCounts(t *testing.T, ctx context.Context, ms *metadatamemory.MemoryMetad
 
 // copyFixture writes and carves one source, and returns the engine, the store,
 // the two payload IDs and the ChunkRef list a copy would hand the destination.
-func copyFixture(t *testing.T) (*engine.Store, *metadatamemory.MemoryMetadataStore, string, string, []block.ChunkRef) {
+func copyFixture(t *testing.T) (*engine.Store, *badger.BadgerMetadataStore, string, string, []block.ChunkRef) {
 	t.Helper()
 	ctx := context.Background()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	bs, _ := openOfflineEngine(t, t.TempDir(), ms, remotememory.New())
 	t.Cleanup(func() { _ = bs.Close() })
 

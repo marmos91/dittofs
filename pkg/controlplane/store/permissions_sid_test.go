@@ -17,7 +17,7 @@ func setupShareForSIDPerms(t *testing.T) (*GORMStore, string, string) {
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 
-	metaID, err := st.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "m", Type: "memory"})
+	metaID, err := st.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "m", Type: "badger", Config: `{"in_memory":true}`})
 	if err != nil {
 		t.Fatalf("create metadata store: %v", err)
 	}

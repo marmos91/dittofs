@@ -137,8 +137,8 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 			shareName, models.ErrSnapshotBackupFailed)
 	}
 
-	// (2b) Resolve the metadata-store engine type ("memory" | "badger" |
-	// "sqlite" | "postgres") so Snapshot.MetadataEngine can be populated on the
+	// (2b) Resolve the metadata-store engine type ("badger") so
+	// Snapshot.MetadataEngine can be populated on the
 	// fresh-create row. The retry path inherits MetadataEngine from the
 	// existing failed row, so it does not need to look this up. Restore
 	// consumes MetadataEngine to dispatch the per-engine Restoreable

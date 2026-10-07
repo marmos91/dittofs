@@ -179,16 +179,8 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 			}
 		}
 
-		// Increment target's link count BEFORE inserting the directory entry.
-		// Both statements lock the target inode — the entry through the
-		// parent_child_map foreign key, which takes FOR KEY SHARE, and the
-		// count through a plain UPDATE, which takes FOR UPDATE. Taking the
-		// weaker lock first and upgrading leaves a remove that takes the
-		// stronger one directly to deadlock against this, which postgres
-		// resolves only after a full deadlock_timeout. Same order as RemoveFile
-		// means neither waits on the other's escalation. Move still takes them
-		// the other way round, so a link racing a rename of one inode is not
-		// covered by this.
+		// Increment target's link count BEFORE inserting the directory entry,
+		// the same order RemoveFile uses.
 		//
 		// A failed read must abort: writing an nlink below the number of
 		// directory entries pointing at the file lets a later unlink free
@@ -446,9 +438,9 @@ func (s *Service) createEntry(
 	}
 
 	// The exact-attrs marker is a create-path instruction, not file state: it is
-	// cleared before the File is stored so a backend that persists the whole
-	// FileAttr (the memory store) does not hand it back through GetFile and let a
-	// later caller take the exact-create path by accident.
+	// cleared before the File is stored so no stored copy of the FileAttr can
+	// hand it back through GetFile and let a later caller take the exact-create
+	// path by accident.
 	newAttr.ExactAttrs = false
 
 	// Set device numbers for block/char devices

@@ -8,7 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestMetadataCoordinator_RoutesThroughContextTx pins the CR-01 contract:
@@ -23,7 +24,7 @@ import (
 // path is NOT used inside WithTx.
 func TestMetadataCoordinator_RoutesThroughContextTx(t *testing.T) {
 	ctx := context.Background()
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	// Seed a finalized FileChunk so GetByHash returns a real row.
 	hash := block.ContentHash{0xAB}
@@ -78,7 +79,7 @@ func TestMetadataCoordinator_RoutesThroughContextTx(t *testing.T) {
 // refcount audit reconciles drift).
 func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 	ctx := context.Background()
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	hash := block.ContentHash{0xCD}
 	fb := &block.FileChunk{
@@ -135,7 +136,7 @@ func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 // behavior on Postgres is a transitive consequence.
 func TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure(t *testing.T) {
 	ctx := context.Background()
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store := badgertest.NewInMemory(t)
 
 	// Seed three finalized FileChunks with RefCount=1 each.
 	hashes := []block.ContentHash{{0x10}, {0x20}, {0x30}}

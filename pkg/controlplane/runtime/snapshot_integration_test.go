@@ -19,7 +19,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestCreateSnapshot_Integration drives the end-to-end snapshot orchestration
@@ -456,8 +458,8 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	rt := New(cp)
 	setJournalRoot(t, rt)
 
-	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	backup := &controlledSnapshotable{MemoryMetadataStore: mem}
+	mem := badgertest.NewInMemory(t)
+	backup := &controlledSnapshotable{BadgerMetadataStore: mem}
 	if err := rt.RegisterMetadataStore("memory", backup); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -465,7 +467,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	// resolve the engine Type ("memory") for Snapshot.MetadataEngine.
 	if _, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
 		Name: "memory",
-		Type: "memory",
+		Type: "badger", Config: `{"in_memory":true}`,
 	}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
@@ -568,7 +570,7 @@ func (f *orchestrationFixture) seedRemoteSubset(hashes []block.ContentHash) {
 
 // ----- controlledSnapshotable -----
 
-// controlledSnapshotable wraps a real MemoryMetadataStore so it still
+// controlledSnapshotable wraps a real BadgerMetadataStore so it still
 // satisfies the full metadata.Store interface (via embedded
 // pointer method promotion) but overrides Backup so the test can:
 //   - return a deterministic HashSet without seeding files through the
@@ -579,7 +581,7 @@ func (f *orchestrationFixture) seedRemoteSubset(hashes []block.ContentHash) {
 // The wrapper writes a few bytes to w so the resulting metadata.dump
 // file is non-empty (a SC-2 assertion).
 type controlledSnapshotable struct {
-	*metadatamemory.MemoryMetadataStore
+	*badger.BadgerMetadataStore
 
 	mu     sync.Mutex
 	hashes []block.ContentHash

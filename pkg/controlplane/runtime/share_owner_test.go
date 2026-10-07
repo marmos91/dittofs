@@ -5,7 +5,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // A share created with an owner (RootAttr UID/GID) stamps that ownership onto
@@ -15,7 +16,7 @@ import (
 func TestAddShare_StampsRootOwner(t *testing.T) {
 	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
-	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
@@ -52,7 +53,7 @@ func TestAddShare_StampsRootOwner(t *testing.T) {
 func TestAddShare_DefaultRootOwnerIsRoot(t *testing.T) {
 	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
-	if err := rt.RegisterMetadataStore("test-meta", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 

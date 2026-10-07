@@ -324,32 +324,6 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 
 	var resultFile *File
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
-		// Fast path: a single narrow UPDATE (grow size, stamp times, clear suid)
-		// instead of GetFile (aggregate block-refs read) + UpdateAttrs (full-row
-		// rewrite), for backends that implement it. Post-op attrs are synthesized
-		// from the pre-write attrs plus the authoritative final size — the same
-		// no-read-back trick the deferred-commit path uses.
-		if applier, ok := tx.(DataWriteApplier); ok {
-			finalSize, err := applier.ApplyDataWrite(ctx.Context, intent.Handle, intent.NewSize, now, clearSUID)
-			if err != nil {
-				return err
-			}
-			attr := *intent.PreWriteAttr
-			attr.Size = finalSize
-			attr.Mtime = now
-			attr.Ctime = now
-			if clearSUID {
-				attr.Mode &= ^uint32(0o6000)
-			}
-			shareName, id, decErr := DecodeFileHandle(intent.Handle)
-			if decErr != nil {
-				return decErr
-			}
-			resultFile = &File{ID: id, ShareName: shareName, FileAttr: attr}
-			return nil
-		}
-
-		// Fallback: full read-modify-write for backends without a narrow path.
 		file, err := tx.GetFile(ctx.Context, intent.Handle)
 		if err != nil {
 			return err
@@ -491,16 +465,6 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 	}
 
 	commit := func(tx Transaction) error {
-		// The narrow applier performs exactly this update — grow-only size,
-		// stamped mtime/ctime, optional setuid/setgid clear — in a single
-		// statement. It always stamps the timestamps, so a state carrying no
-		// recorded mtime (SetCachedFile with a size but no write time) still
-		// takes the read-modify-write path below rather than stamping zero.
-		if applier, ok := tx.(DataWriteApplier); ok && !state.LastMtime.IsZero() {
-			_, err := applier.ApplyDataWrite(ctx.Context, handle, size, state.LastMtime, state.ClearSetuidSetgid)
-			return err
-		}
-
 		file, err := tx.GetFile(ctx.Context, handle)
 		if err != nil {
 			return err

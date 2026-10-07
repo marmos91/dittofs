@@ -49,7 +49,7 @@ type PersistedClientRegistration struct {
 }
 
 // ClientRegistrationStore provides persistence for NSM client registrations.
-// Implementations exist in memory, badger, and postgres stores.
+// The badger metadata store implements it.
 //
 // This interface enables crash recovery:
 // 1. On server startup, load all registrations from previous run

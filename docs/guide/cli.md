@@ -5383,7 +5383,7 @@ These operations require admin privileges.
 dfsctl store metadata list
 
 # Add a new metadata store
-dfsctl store metadata add --name new-meta --type memory
+dfsctl store metadata add --name new-meta --db-path /data/meta
 
 # List block stores
 dfsctl store block list
@@ -6231,7 +6231,7 @@ Manage metadata stores
 Manage metadata stores on the DittoFS server.
 
 Metadata stores hold file system structure, attributes, and permissions.
-Supported types: memory, badger, sqlite, postgres
+The only store type is badger (BadgerDB, on disk or in memory).
 
 **Examples:**
 
@@ -6239,11 +6239,11 @@ Supported types: memory, badger, sqlite, postgres
 # List metadata stores
 dfsctl store metadata list
 
-# Add a memory store
-dfsctl store metadata add --name fast-meta --type memory
-
 # Add a BadgerDB store
-dfsctl store metadata add --name persistent-meta --type badger --config '{"path":"/data/meta"}'
+dfsctl store metadata add --name persistent-meta --db-path /data/meta
+
+# Add an in-memory store
+dfsctl store metadata add --name scratch-meta --in-memory
 ```
 
 Global flags:
@@ -6266,26 +6266,12 @@ Add a metadata store
 
 Add a new metadata store to the DittoFS server.
 
-Supported types:
+The only metadata store type is badger (BadgerDB, embedded):
 
 ```
-- memory: In-memory store (fast, ephemeral)
-- badger: BadgerDB store (persistent, embedded)
-- sqlite: SQLite store (persistent, embedded)
-- postgres: PostgreSQL store (persistent, distributed)
-```
-
-Type-specific options:
-
-```
-badger:
-  --db-path: Path to BadgerDB directory (or prompted interactively)
-
-sqlite:
-  --db-path: Path to the SQLite database file (or prompted interactively)
-
-postgres:
-  --config: JSON with connection settings, or omit for interactive prompts
+--db-path:   Path to the BadgerDB directory (or prompted interactively)
+--in-memory: Keep the whole store in RAM instead; its contents are lost
+             when the server stops. Meant for tests and throwaway servers.
 ```
 
 ```
@@ -6295,32 +6281,24 @@ dfsctl store metadata add [flags]
 **Examples:**
 
 ```bash
-# Add a memory store
-dfsctl store metadata add --name fast-meta --type memory
-
 # Add a BadgerDB store with flags
-dfsctl store metadata add --name persistent-meta --type badger --db-path /data/meta
+dfsctl store metadata add --name persistent-meta --db-path /data/meta
 
 # Add a BadgerDB store interactively
-dfsctl store metadata add --name persistent-meta --type badger
+dfsctl store metadata add --name persistent-meta
 
-# Add a SQLite store with flags
-dfsctl store metadata add --name persistent-meta --type sqlite --db-path /data/meta.db
-
-# Add a PostgreSQL store with JSON config
-dfsctl store metadata add --name pg-meta --type postgres --config '{"host":"localhost","dbname":"dittofs"}'
-
-# Add a PostgreSQL store interactively
-dfsctl store metadata add --name pg-meta --type postgres
+# Add an in-memory store
+dfsctl store metadata add --name scratch-meta --in-memory
 ```
 
 Flags:
 
 ```
       --config string    Store configuration as JSON (for advanced config)
-      --db-path string   Database path (required for badger and sqlite)
+      --db-path string   BadgerDB directory path
+      --in-memory        Keep the store in RAM only (contents lost on restart)
       --name string      Store name (required)
-      --type string      Store type: memory, badger, sqlite, postgres (required)
+      --type string      Store type (only badger is supported) (default "badger")
 ```
 
 Global flags:
@@ -6359,9 +6337,6 @@ dfsctl store metadata edit default
 # Update config with JSON
 dfsctl store metadata edit default --config '{"path":"/new/path"}'
 
-# Update type
-dfsctl store metadata edit default --type badger
-
 # Update BadgerDB path
 dfsctl store metadata edit default --db-path /new/path
 ```
@@ -6370,8 +6345,7 @@ Flags:
 
 ```
       --config string    Store configuration as JSON
-      --db-path string   Database path (for badger and sqlite)
-      --type string      Store type: memory, badger, sqlite, postgres
+      --db-path string   BadgerDB directory path
 ```
 
 Global flags:

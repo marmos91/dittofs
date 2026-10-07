@@ -16,7 +16,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // keepOpenRemote hands the engine a remote it will not tear down, so the same
@@ -121,7 +122,7 @@ func TestOfflineReadiness_LostIntervalIsNotSafe(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			dir := t.TempDir()
-			ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+			ms := badgertest.NewInMemory(t)
 			mem := remotememory.New()
 
 			bs, local := openOfflineEngine(t, dir, ms, mem)
@@ -259,7 +260,7 @@ func TestOfflineReadiness_LostIntervalIsNotSafe(t *testing.T) {
 func TestOfflineReadiness_CloneIsRemoteOnly(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	ms := badgertest.NewInMemory(t)
 	mem := remotememory.New()
 	bs, local := openOfflineEngine(t, dir, ms, mem)
 

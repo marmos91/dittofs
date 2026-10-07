@@ -10,7 +10,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestAddShare_RejectsColonInName guards the handle-encoding invariant: file
@@ -23,7 +24,7 @@ func TestAddShare_RejectsColonInName(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("rejects colon-bearing name", func(t *testing.T) {
-		mds := metamem.NewMemoryMetadataStoreWithDefaults()
+		mds := badgertest.NewInMemory(t)
 		t.Cleanup(func() { _ = mds.Close() })
 
 		svc := New()
@@ -58,7 +59,7 @@ func TestAddShare_RejectsColonInName(t *testing.T) {
 	})
 
 	t.Run("accepts normal name and handle round-trips", func(t *testing.T) {
-		mds := metamem.NewMemoryMetadataStoreWithDefaults()
+		mds := badgertest.NewInMemory(t)
 		t.Cleanup(func() { _ = mds.Close() })
 
 		svc := New()
@@ -114,7 +115,7 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 	tooLong := longest + "a"
 
 	t.Run("rejects over-long name", func(t *testing.T) {
-		mds := metamem.NewMemoryMetadataStoreWithDefaults()
+		mds := badgertest.NewInMemory(t)
 		t.Cleanup(func() { _ = mds.Close() })
 
 		svc := New()
@@ -147,7 +148,7 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 	})
 
 	t.Run("accepts the longest encodable name", func(t *testing.T) {
-		mds := metamem.NewMemoryMetadataStoreWithDefaults()
+		mds := badgertest.NewInMemory(t)
 		t.Cleanup(func() { _ = mds.Close() })
 
 		svc := New()
@@ -174,7 +175,7 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 func newAddShareFixture(t *testing.T) (*Service, *LocalStoreDefaults, func(name string) error) {
 	t.Helper()
 
-	mds := metamem.NewMemoryMetadataStoreWithDefaults()
+	mds := badgertest.NewInMemory(t)
 	t.Cleanup(func() { _ = mds.Close() })
 
 	svc := New()

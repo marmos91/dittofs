@@ -172,7 +172,7 @@ go test ./internal/metadata/persistence/
 
 ## Areas Needing Contribution
 
-- **Backend Implementations**: S3, PostgreSQL, Redis repositories
+- **Backend Implementations**: a distributed metadata store for multi-node deployments (TiKV preferred)
 - **Protocol Extensions**: NFSv4 support, SMB/CIFS
 - **Operational Tools**: Metrics, tracing, health checks
 - **Documentation**: Tutorials, architecture guides

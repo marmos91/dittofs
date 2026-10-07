@@ -23,8 +23,8 @@ import (
 // lane agrees with every other lane and with the expected decision — including
 // DENY ACEs and SID-only grants (the bug class).
 //
-// Run it from each backend's conformance test (memory / badger / postgres) so
-// the matrix is (memory|badger|postgres) x (NFSv3|NFSv4.0|NFSv4.1|SMB).
+// Run it from the store's conformance test so the matrix is
+// store x (NFSv3|NFSv4.0|NFSv4.1|SMB).
 func RunCrossProtocolPermissionMatrix(t *testing.T, factory StoreFactory) {
 	t.Helper()
 
@@ -270,7 +270,7 @@ func (f *crossProtocolFixture) createFile(t *testing.T, name string, attr *metad
 		t.Fatalf("EncodeFileHandle(%q): %v", name, err)
 	}
 	// Re-read through the service so the file carries whatever the backend
-	// actually persisted (postgres/badger round-trip the ACL).
+	// actually persisted (the store round-trips the ACL).
 	stored, err := f.svc.GetFile(context.Background(), handle)
 	if err != nil {
 		t.Fatalf("GetFile(%q): %v", name, err)

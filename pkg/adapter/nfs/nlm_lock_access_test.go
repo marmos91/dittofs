@@ -11,7 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,7 +26,7 @@ func lockGateFixture(t *testing.T, mode uint32) (*routingNLMService, []byte) {
 	const shareName = "/lockgate"
 
 	rt, bsID := newTestShareRuntime(t)
-	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	metaStore := badgertest.NewInMemory(t)
 	require.NoError(t, rt.RegisterMetadataStore("test-meta", metaStore))
 	require.NoError(t, rt.AddShare(ctx, &runtime.ShareConfig{
 		Name:              shareName,

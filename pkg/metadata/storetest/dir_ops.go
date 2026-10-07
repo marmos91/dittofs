@@ -121,8 +121,7 @@ func testListDirectory(t *testing.T, factory StoreFactory) {
 // testListDirectoryHydratesACL verifies that ListChildren populates
 // DirEntry.Attr.ACL so callers (notably SMB access-based enumeration, refs
 // PR #536) can make ACL-aware decisions without a follow-up GetFile per
-// entry. All non-trivial backends (Memory, Badger, Postgres) must satisfy
-// this contract.
+// entry.
 func testListDirectoryHydratesACL(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	rootHandle := createTestShare(t, store, "/test")

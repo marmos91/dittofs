@@ -83,7 +83,7 @@ jobs:
           ./dfsctl login --server http://localhost:8080 --username admin --password "$DITTOFS_ADMIN_INITIAL_PASSWORD"
 
           # Create stores
-          ./dfsctl store metadata add --name mem-meta --type memory
+          ./dfsctl store metadata add --name mem-meta --in-memory
           ./dfsctl store block add --name mem-payload --type memory
 
           # Create share
@@ -213,7 +213,7 @@ jobs:
           # Login as admin with the env-configured password (no forced change).
           ./dfsctl login --server http://localhost:8080 --username admin --password "$DITTOFS_ADMIN_INITIAL_PASSWORD"
 
-          ./dfsctl store metadata add --name mem-meta --type memory
+          ./dfsctl store metadata add --name mem-meta --in-memory
           ./dfsctl store block add --name mem-payload --type memory
           ./dfsctl share create --name /smbbasic --metadata mem-meta --block-store mem-payload
           ./dfsctl user create --username test --password 'testpass123'
@@ -422,7 +422,7 @@ jobs:
           # Login as admin with the env-configured password (no forced change).
           .\dfsctl.exe login --server http://localhost:8080 --username admin --password $env:DITTOFS_ADMIN_INITIAL_PASSWORD
 
-          .\dfsctl.exe store metadata add --name mem-meta --type memory
+          .\dfsctl.exe store metadata add --name mem-meta --in-memory
           .\dfsctl.exe store block add --name mem-payload --type memory
           .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --block-store mem-payload
           .\dfsctl.exe user create --username test --password 'testpass123'

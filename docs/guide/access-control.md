@@ -104,7 +104,7 @@ graph TB
 
     ACL --> IDENTITY
 
-    IDENTITY --> STORAGE["<b>Metadata Storage</b><br/>Memory / BadgerDB / PostgreSQL<br/><br/>FileAttr.ACL → JSON"]
+    IDENTITY --> STORAGE["<b>Metadata Storage</b><br/>BadgerDB<br/><br/>FileAttr.ACL → JSON"]
 ```
 
 ## Setting and reading ACLs

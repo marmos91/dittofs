@@ -10,7 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // Coverage for the ADS base-file lookup error surface on CREATE: when the
@@ -48,7 +49,7 @@ func (s *adsLookupFailStore) ListChildren(ctx context.Context, dirHandle metadat
 func TestCreate_ADSLookupErrorSurfacesAsStatus(t *testing.T) {
 	rt, bsID := newTestShareRuntime(t)
 
-	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	memStore := badgertest.NewInMemory(t)
 	failStore := &adsLookupFailStore{Store: memStore, parent: nil}
 	if err := rt.RegisterMetadataStore("test-meta", failStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
