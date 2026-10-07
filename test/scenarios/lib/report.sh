@@ -19,7 +19,8 @@
 #   - its first slow pass is a message, and the pass back at normal speed replies in its thread;
 #   - a run of several scenarios (setup.sh all) posts one message instead, puts all of the above in
 #     its thread, and ends with a summary there that shows in the channel too.
-# SCENARIO_HOST names the machine in messages (default: the short hostname).
+# SCENARIO_HOST names the machine in messages (default: the short hostname, or uname -n where there
+# is no hostname command).
 
 SLACK_DIR="${SLACK_DIR:-$HOME/.config/dittofs-scenarios}"
 TIMES="$CACHE/times"
@@ -129,7 +130,7 @@ report() {
     FAIL_TS="$(cat "$FAILDIR/slack-ts" 2>/dev/null || true)"
     FAIL_AT="$(cat "$FAILDIR/where" 2>/dev/null || true)"
     SLOW_TS="$(cat "$SLOWDIR/slack-ts" 2>/dev/null || true)"
-    CONTEXT="${SCENARIO_HOST:-$(hostname -s)} · commit \`$COMMIT\` · $(date '+%F %T')"
+    CONTEXT="${SCENARIO_HOST:-$(hostname -s 2>/dev/null || uname -n)} · commit \`$COMMIT\` · $(date '+%F %T')"
     # In a run of several scenarios, every message goes to the run's thread (T).
     if test "${#SCENARIOS[@]}" -gt 1; then
         test -n "$RUN_TS" || RUN_TS="$(slack ":arrow_forward: *Scenario run: ${#SCENARIOS[@]} scenarios*

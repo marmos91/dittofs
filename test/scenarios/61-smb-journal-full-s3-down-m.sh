@@ -4,19 +4,20 @@
 # Deleting and truncating must still work while it is full, because records without bytes are
 # never refused (RFC 1 §7). Once S3 is back the backlog must drain by itself, without a dfsctl
 # step (RFC 0 §10.2), and every accepted file must read back cold.
-# Fails today: ten files fit and the 11th is refused after 60 s with NT_STATUS_IO_TIMEOUT, not
-# NT_STATUS_DISK_FULL. The server logs "journal: local store full" as an IOError. 24 MiB of the
-# refused file stay written. The rest holds: while full, the delete (15 s) and the truncate
-# succeed, and once S3 is back the backlog drains by itself within seconds and the files read back
-# cold. It takes about 2 min.
+# Ten files fit; the 11th is refused at the 30 s request deadline. Until the refusal is classified
+# as no space (#2961) it reaches the client as an I/O error, and until a delete stops waiting for
+# a stalled upload (#2965) the delete outlasts smbclient. With both, every check passes: the delete
+# and the truncate are immediate, and once S3 is back the backlog drains by itself within seconds
+# and the files read back cold. It takes about 1.5 min.
 rclone mkdir s3:small
 dfsctl store block add --name s3-small --type s3 --config "$(jq -c '.bucket = "small"' /etc/dittofs-s3.json)"
 dfsctl share create --name /small --metadata md --block-store s3-small --default-permission none --journal-size 1GiB
 dfsctl share permission grant /small --user tester --level read-write
 s3 stop
 
-# 100 MiB files, each new random data, until one is refused (at most 15, each within 5 min)
-for i in $(seq 1 15); do head -c 100M /dev/urandom >"/tmp/f$i.bin"; timeout 300 smbclient //127.0.0.1/small -c "lcd /tmp; put f$i.bin" >"/tmp/put$i.out" 2>&1 || { echo "$i exit $?" >/tmp/refused; break; }; done
+# 100 MiB files, each new random data, until one is refused (at most 15, each within 5 min). smbclient
+# waits 45 s for a reply (-t 45): the server may hold a write for its 30 s deadline, past smbclient's 20 s
+for i in $(seq 1 15); do head -c 100M /dev/urandom >"/tmp/f$i.bin"; timeout 300 smbclient -t 45 //127.0.0.1/small -c "lcd /tmp; put f$i.bin" >"/tmp/put$i.out" 2>&1 || { echo "$i exit $?" >/tmp/refused; break; }; done
 dfsctl store block stats --share /small -o json | jq -c '.totals | {local_disk_used, local_disk_max, unsynced_bytes}' | tee /tmp/full.json
 
 # Full: a delete and a truncate must succeed

@@ -3,12 +3,12 @@
 # metadata store md, gets all the data: six small files and a large one. Each file is deleted and GC'd
 # in its own round, and each round's GC must shrink /extra's bucket. The single-store control is
 # 42-smb-1share-small-large-gc-xs.sh, which passes; 56-smb-extra-share-gc-minimal-xs.sh is the smallest reproduction.
-# Fails today (A-08): `dfsctl store block gc /extra` runs GC on every remote, not only /extra's. With
-# one metadata store the synced-hash index is shared, so when /test's remote happens to run first, its
-# reclaimer deletes the dead block from bucket dittofs (where it is not), drops the block record and
-# the synced marker, and counts it as swept; /extra's object is never deleted. Which remote runs first
-# follows map iteration order, so a single round can pick the right one and pass by luck; one round per
-# file makes a lucky pass of every round unlikely.
+# Guards A-08: `dfsctl store block gc /extra` runs GC on every remote, not only /extra's. With one
+# metadata store the synced-hash index is shared, so when /test's remote ran first, its reclaimer
+# deleted the dead block from bucket dittofs (where it is not), dropped the block record and the synced
+# marker, and counted it as swept; /extra's object was never deleted. Which remote runs first follows
+# map iteration order, so a single round can pick the right one and pass by luck; one round per file
+# makes a lucky pass of every round unlikely.
 
 rclone mkdir s3:extra
 dfsctl store block add --name s3-extra --type s3 --config "$(jq -c '.bucket = "extra"' /etc/dittofs-s3.json)"

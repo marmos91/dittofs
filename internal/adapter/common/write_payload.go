@@ -61,6 +61,8 @@ func WriteToBlockStore(
 	// Pass nil currentBlocks so the engine runs the legacy/dual-read
 	// path; discard the returned []ChunkRef. Caller-snapshot []ChunkRef
 	// threading lands in a later refactor.
+	ctx, cancel := WithRequestDeadline(ctx)
+	defer cancel()
 	_, err := blockStore.WriteAt(ctx, string(payloadID), nil, data, offset)
 	if err != nil {
 		return normalizeBlockStoreError(err)
@@ -110,6 +112,8 @@ func CommitBlockStore(
 	blockStore *engine.Store,
 	payloadID metadata.PayloadID,
 ) error {
+	ctx, cancel := WithRequestDeadline(ctx)
+	defer cancel()
 	res, err := blockStore.Flush(ctx, string(payloadID))
 	if err != nil {
 		// Hard error: unchanged behavior, normalized so the wire mappers see

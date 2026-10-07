@@ -47,7 +47,9 @@ A new scenario takes the next free number in its group, and the size its first r
 
 Each scenario runs in its own throwaway rootless podman container (clean `ubuntu:26.04`),
 which builds DittoFS from this checkout and starts SeaweedFS as the S3 store and the DittoFS
-server. With several scenarios, `setup.sh` prints one PASS, FAIL or SLOW line per scenario.
+server. With several scenarios, `setup.sh` prints one PASS, FAIL or SLOW line per scenario; one
+scenario that passes prints nothing. The first run takes minutes (image pulls, apt, the Go build)
+and is silent too: `tail -F /var/tmp/dittofs-scenarios/run/run.log` follows a run, across scenarios.
 
 With no scenario, it does the same setup and then opens a bash shell in that container, as
 `tester` for `smbclient`, with the server logs in `/logs` (kept in
@@ -87,12 +89,40 @@ them. Copy `00-smb-nfs-roundtrip-gc-xs.sh` to add one, and name it as above.
 
 ## Host side
 
-Needs a Linux host with rootless podman, bash 5, `flock` (util-linux), `timeout` (coreutils) and,
-for Slack, `curl`; nothing is installed on it. It uses your normal podman storage, so
-`podman images` lists the three images it pulls (`ubuntu:26.04`, `golang:1.26`,
-`seaweedfs:4.48`) and `podman ps` shows a running container, named `dittofs-<scenario>`. Its Go
+Needs a Linux host with rootless podman 5.6 or later (it pulls with `pull --policy`), bash 5,
+`flock` (util-linux), `timeout` (coreutils) and, for Slack, `curl`; nothing is installed on it. It
+uses your normal podman storage, so `podman images` lists the three images it pulls
+(`ubuntu:26.04`, `golang:1.26`, `seaweedfs:4.48`) and `podman ps` shows a running container, named
+`dittofs-<scenario>`. Its Go
 caches, downloads (apt packages, the libnfs source), inputs and kept logs are in the cache,
 `/var/tmp/dittofs-scenarios`.
+
+On a laptop where Docker runs in a Linux VM (Docker Desktop, Colima), as on macOS, the host can be a
+container: run `setup.sh` in `quay.io/podman/stable`, as its user `podman`. Run this from the
+checkout's root, which it mounts as `$PWD`:
+
+```bash
+docker run --rm -it --privileged -e CONTAINERS_CONF=/etc/containers/containers.conf \
+  -v "$PWD":/src/dittofs -w /src/dittofs/test/scenarios --user podman \
+  -v dittofs-podman-store:/home/podman/.local/share/containers \
+  -v dittofs-scenarios-cache:/var/tmp/dittofs-scenarios \
+  quay.io/podman/stable ./setup.sh 00-smb-nfs-roundtrip-gc-xs.sh
+```
+
+- `--privileged` lets the podman inside make user namespaces, mounts and its network. It gives up
+  what running rootless on the host keeps, so it belongs only inside such a VM, never on a shared
+  host; a server runs `setup.sh` on its own rootless podman.
+- `CONTAINERS_CONF` loads only the image's system config. The image also has one for `podman` that
+  mounts the outer `/proc` into every container, so a scenario sees the outer container's processes
+  and `pkill` signals PIDs that are not its own: `s3 pause` and `s3 stop` fail.
+- The two volumes keep the pulled images and the cache between runs. Docker makes them owned by root,
+  so before the first run: `docker run --rm -v dittofs-podman-store:/a -v dittofs-scenarios-cache:/b
+  quay.io/podman/stable chown -R podman:podman /a /b`.
+- A glob such as `[0-8]?-*.sh` must expand inside the container: `bash -c './setup.sh [0-8]?-*.sh'`.
+- To follow a run from another terminal: `docker exec -it $(docker ps -q --filter
+  ancestor=quay.io/podman/stable) tail -F /var/tmp/dittofs-scenarios/run/run.log`.
+- Times there are not comparable with a host's: two container layers and a VM slow builds and I/O,
+  and Apple silicon runs arm64. They stay in the volume's own `times/`, apart from any host's.
 
 Times (`lib/report.sh`): every run adds its times to `times/<scenario>.tsv` in the cache, which
 its first run creates: one row for the scenario and one for each of its lines that ran, with the

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The smallest reproduction of A-08: a second block store on md (/extra, own bucket) beside setup.sh's
-# /test. Each round deletes one file and runs GC on /extra; its bucket must shrink. Fails today whenever
-# GC visits /test's remote first. 55-smb-extra-share-gc-xs.sh is the same setup with the full checks.
+# The smallest check for A-08: a second block store on md (/extra, own bucket) beside setup.sh's
+# /test. Each round deletes one file and runs GC on /extra; its bucket must shrink. A-08 failed it
+# whenever GC visited /test's remote first. 55-smb-extra-share-gc-xs.sh is the same setup with the full checks.
 rclone mkdir s3:extra
 dfsctl store block add --name s3-extra --type s3 --config "$(jq -c '.bucket = "extra"' /etc/dittofs-s3.json)"
 dfsctl share create --name /extra --metadata md --block-store s3-extra --default-permission none

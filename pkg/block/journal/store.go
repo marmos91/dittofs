@@ -283,6 +283,11 @@ type Store struct {
 	// underneath it.
 	bgCancel context.CancelFunc
 	bgWG     sync.WaitGroup
+	// bgAddMu orders the reclaims Delete hands off (scheduleReclaim) against
+	// Close: one is counted on bgWG under it only while the store is open, and
+	// Close passes through it after setting closed, so none is added once
+	// Close has started waiting on bgWG.
+	bgAddMu sync.Mutex
 
 	// failTombstone/failTruncate are test seams: when either equals the FileID
 	// of a Delete or Truncate, the corresponding marker append returns an error
@@ -393,6 +398,8 @@ func (s *Store) Close() error {
 	if s.bgCancel != nil {
 		s.bgCancel()
 	}
+	s.bgAddMu.Lock()
+	s.bgAddMu.Unlock() //nolint:staticcheck // SA2001: the empty section is a barrier; no reclaim is counted on bgWG past it
 	s.bgWG.Wait()
 	firstErr := s.closeCold()
 	for _, sh := range s.shards {
@@ -949,10 +956,12 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 	// A tombstone can leave a segment holding no live bytes — most visibly the
 	// active segment after a cold read hydrated the just-removed file's bytes
 	// locally. Reclaim those now-dead segments so the unlink frees the local tier
-	// immediately instead of stranding it until the next rotation or force-evict.
-	// Best-effort: a reclaim failure never wedges the delete (the file is already
-	// tombstoned and the recovery sweep reclaims any orphan).
-	_ = s.reclaimEmptied(sh)
+	// instead of stranding it until the next rotation or force-evict. The reclaim
+	// needs flushMu, which a flush pass holds across its upload, so the delete
+	// never waits for it (reclaimAfterDelete). Best-effort: a reclaim failure
+	// never wedges the delete (the file is already tombstoned and the recovery
+	// sweep reclaims any orphan).
+	s.reclaimAfterDelete(sh)
 	return nil
 }
 

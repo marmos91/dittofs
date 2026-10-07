@@ -118,6 +118,55 @@ func (s *Store) pinned(seg *segmentMeta) bool {
 	return mv != 0 && mv <= pv
 }
 
+// reclaimAfterDelete runs reclaimEmptied for the shard a Delete just
+// tombstoned, without making the Delete wait for flushMu. A flush pass holds
+// flushMu across its upload, so with the remote slow or down a Delete that
+// waited for it would wait as long as the upload does — and the protocol
+// request behind it (an SMB CLOSE, an NFS REMOVE) with it. When flushMu is free
+// the reclaim runs inline, as before; when a pass holds it, scheduleReclaim
+// hands the reclaim to a goroutine that runs it once the pass releases flushMu.
+// The reclaim only drops segments that are fully synced and back no live data,
+// so running it later frees the same bytes.
+func (s *Store) reclaimAfterDelete(sh *shard) {
+	if sh.flushMu.TryLock() {
+		_ = s.reclaimEmptied(sh)
+		sh.flushMu.Unlock()
+		return
+	}
+	s.scheduleReclaim(sh)
+}
+
+// scheduleReclaim queues one background reclaim for sh. Deletes that land while
+// one is queued share it: reclaimQueued clears only once the reclaim holds
+// flushMu, before it scans the index, so every tombstone written before the
+// scan is covered and a later one queues the next reclaim. At most one reclaim
+// per shard waits for flushMu, however many deletes arrive during a long pass.
+// The goroutine is counted on bgWG, so Close waits for it before closing
+// segment files; none is started once Close has begun.
+func (s *Store) scheduleReclaim(sh *shard) {
+	if !sh.reclaimQueued.CompareAndSwap(false, true) {
+		return
+	}
+	s.bgAddMu.Lock()
+	if s.closed.Load() {
+		s.bgAddMu.Unlock()
+		sh.reclaimQueued.Store(false)
+		return
+	}
+	s.bgWG.Add(1)
+	s.bgAddMu.Unlock()
+	go func() {
+		defer s.bgWG.Done()
+		sh.flushMu.Lock()
+		defer sh.flushMu.Unlock()
+		sh.reclaimQueued.Store(false)
+		if s.closed.Load() {
+			return
+		}
+		_ = s.reclaimEmptied(sh)
+	}()
+}
+
 // reclaimEmptied retires every segment in sh that now holds no live (non-cold)
 // interval and has every record synced — the state a just-completed tombstone
 // leaves behind when the removed file was a segment's only occupant. The most
@@ -131,14 +180,12 @@ func (s *Store) pinned(seg *segmentMeta) bool {
 // segment (a live snapshot's watermark) is left for the snapshot to release. A
 // fully-dead, fully-synced active segment is sealed first — the same force-seal
 // primitive the explicit evict path uses — so the reclaim tail can drop it.
-// flushMu is held so a concurrent carve can't flip synced bits on a segment
-// mid-retire; sealed victims are claimed via busy so eviction/GC never race the
-// same retire. Best-effort: a retire failure is returned (and its disk stays
-// counted, reclaimed later by the recovery sweep) but never wedges the unlink.
+// The caller holds flushMu so a concurrent carve can't flip synced bits on a
+// segment mid-retire; sealed victims are claimed via busy so eviction/GC never
+// race the same retire. Best-effort: a retire failure is returned (and its disk
+// stays counted, reclaimed later by the recovery sweep) but never wedges the
+// unlink. reclaimAfterDelete is its only caller.
 func (s *Store) reclaimEmptied(sh *shard) error {
-	sh.flushMu.Lock()
-	defer sh.flushMu.Unlock()
-
 	sh.mu.Lock()
 	// Segments still backing at least one live (non-cold) interval must survive.
 	liveSegs := make(map[uint64]struct{})

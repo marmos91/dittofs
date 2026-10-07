@@ -2,7 +2,8 @@
 # Two shares on two buckets (/export on s3-export, /cubbit on s3-cubbit), each with its
 # own small and large file (the same content on both is A-07). Share by share: delete the small one, GC,
 # delete the large one, GC; checked: GC's numbers, the share's bucket, the other bucket never changing.
-# Fails today at the first GC's bucket check (A-08: GC reports objects swept but deletes nothing).
+# Guards A-08 (GC reports objects swept but deletes nothing), which failed it at the first GC's bucket
+# check.
 
 rclone mkdir s3:export
 dfsctl store block add --name s3-export --type s3 --config "$(jq -c '.bucket = "export"' /etc/dittofs-s3.json)"
