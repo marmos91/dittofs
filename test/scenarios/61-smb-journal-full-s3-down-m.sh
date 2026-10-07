@@ -4,11 +4,11 @@
 # Deleting and truncating must still work while it is full, because records without bytes are
 # never refused (RFC 1 §7). Once S3 is back the backlog must drain by itself, without a dfsctl
 # step (RFC 0 §10.2), and every accepted file must read back cold.
-# Fails today: ten files fit and the 11th is refused after 60 s with NT_STATUS_IO_TIMEOUT, not
-# NT_STATUS_DISK_FULL. The server logs "journal: local store full" as an IOError. 24 MiB of the
-# refused file stay written. The rest holds: while full, the delete (15 s) and the truncate
-# succeed, and once S3 is back the backlog drains by itself within seconds and the files read back
-# cold. It takes about 2 min.
+# Ten files fit; the 11th is refused at the 30 s request deadline. Until the refusal is classified
+# as no space (#2961) it reaches the client as an I/O error, and until a delete stops waiting for
+# a stalled upload (#2965) the delete outlasts smbclient. With both, every check passes: the delete
+# and the truncate are immediate, and once S3 is back the backlog drains by itself within seconds
+# and the files read back cold. It takes about 1.5 min.
 rclone mkdir s3:small
 dfsctl store block add --name s3-small --type s3 --config "$(jq -c '.bucket = "small"' /etc/dittofs-s3.json)"
 dfsctl share create --name /small --metadata md --block-store s3-small --default-permission none --journal-size 1GiB

@@ -83,7 +83,9 @@ func newDeadlineTestEngine(t *testing.T, cfg journal.Config, rs remote.RemoteSto
 // deadline the choke point gives it, and its refusal must still be for space,
 // so a protocol answers "no space" and not a generic failure.
 func TestWriteToBlockStore_CapacityWaitEndsAtRequestDeadline(t *testing.T) {
-	shortRequestDeadline(t, 300*time.Millisecond)
+	// Long enough that the writes below the cap never meet it under -race on a
+	// loaded machine, short against the store's own hour-long budget.
+	shortRequestDeadline(t, 2*time.Second)
 	bs := newDeadlineTestEngine(t, journal.Config{
 		MaxLocalBytes: 2 << 20,
 		SegmentSize:   1 << 20,
@@ -127,7 +129,6 @@ func TestWriteToBlockStore_CapacityWaitEndsAtRequestDeadline(t *testing.T) {
 // must fail at the request deadline the choke point gives it, not at the
 // longer demand-fetch budget.
 func TestReadFromBlockStore_ColdReadEndsAtRequestDeadline(t *testing.T) {
-	shortRequestDeadline(t, 300*time.Millisecond)
 	rs := &stallingRemote{Store: remotememory.New()}
 	bs := newDeadlineTestEngine(t, journal.Config{}, rs)
 	// Cancelled at cleanup, before the engine's Close, for the same reason as
@@ -146,6 +147,8 @@ func TestReadFromBlockStore_ColdReadEndsAtRequestDeadline(t *testing.T) {
 		t.Fatalf("DrainLocalSynced: %v", err)
 	}
 	rs.stall.Store(true)
+	// Shortened only now, so the setup above never runs into it.
+	shortRequestDeadline(t, 300*time.Millisecond)
 
 	done := make(chan error, 1)
 	go func() {
@@ -159,5 +162,28 @@ func TestReadFromBlockStore_ColdReadEndsAtRequestDeadline(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("a cold read from a remote that does not answer did not end at the request deadline")
+	}
+}
+
+// TestWithRequestDeadline_KeepsAnExistingDeadline pins what lets a handler that
+// calls the choke points in a loop give the whole loop one budget: a context
+// that already has a deadline comes back unchanged, so the choke points below
+// it never start a new one.
+func TestWithRequestDeadline_KeepsAnExistingDeadline(t *testing.T) {
+	outer, cancel := WithRequestDeadline(context.Background())
+	defer cancel()
+	want, ok := outer.Deadline()
+	if !ok {
+		t.Fatal("a context without a deadline got none")
+	}
+	if left := time.Until(want); left <= 0 || left > requestDeadline {
+		t.Fatalf("the default deadline is %v away, want within %v", left, requestDeadline)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	inner, cancelInner := WithRequestDeadline(outer)
+	defer cancelInner()
+	if got, _ := inner.Deadline(); !got.Equal(want) {
+		t.Fatalf("a nested call moved the deadline from %v to %v: each call in a loop would start a new budget", want, got)
 	}
 }

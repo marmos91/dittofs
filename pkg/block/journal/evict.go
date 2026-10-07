@@ -474,6 +474,17 @@ func (s *Store) carryMarkersForward(sh *shard, seg *segmentMeta) error {
 	return sh.groupCommit()
 }
 
+// spaceRefusal names an error that ended a wait for space. When it is the
+// caller's deadline, the write was still refused for space, so it wraps
+// ErrLocalStoreFull and a protocol answers "no space" rather than a generic
+// failure. A cancel, or any other error, is returned as it is.
+func spaceRefusal(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrLocalStoreFull) {
+		return fmt.Errorf("%w: %w", ErrLocalStoreFull, err)
+	}
+	return err
+}
+
 // ensureSpace is the write-path capacity gate. With MaxLocalBytes set, it evicts
 // cold synced segments to fit the incoming write; when nothing is evictable
 // because every segment is dirty-pinned, it backpressures the writer up to
@@ -532,7 +543,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		// leaves without waiting for anything, and a zero-length observation is
 		// still an observation.
 		if err := ctx.Err(); err != nil {
-			return err
+			return spaceRefusal(err)
 		}
 		if stallStart.IsZero() {
 			stallStart = time.Now()
@@ -548,7 +559,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		// backpressures.
 		res, err := s.evict(ctx, overage, true)
 		if err != nil {
-			return err
+			return spaceRefusal(err)
 		}
 		if res.SegmentsEvicted > 0 {
 			deadline = time.Now().Add(s.cfg.EvictMaxWait) // reclaimed: extend the budget
@@ -587,13 +598,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		}
 		select {
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				// The caller's deadline ended a wait for space: the refusal is
-				// still for space, so it says so, and a protocol answers "no
-				// space" rather than a generic failure. A cancel stays a cancel.
-				return fmt.Errorf("%w: %w", ErrLocalStoreFull, ctx.Err())
-			}
-			return ctx.Err()
+			return spaceRefusal(ctx.Err())
 		case <-time.After(evictBackoff):
 		}
 	}

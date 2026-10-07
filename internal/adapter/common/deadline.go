@@ -14,10 +14,22 @@ import (
 // fixed rather than a setting; it is a variable only so tests can shorten it.
 var requestDeadline = 30 * time.Second
 
-// withRequestDeadline returns ctx unchanged when it already carries a deadline,
+// WithRequestDeadline returns ctx unchanged when it already carries a deadline,
 // and otherwise a context that ends requestDeadline from now. The caller must
 // call the returned cancel.
-func withRequestDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+//
+// decision: the default is installed where an operation reaches the block
+// store, not when the request arrives at the protocol dispatcher, so the budget
+// does not count the metadata work before it. Dispatch would be the earlier
+// point, but SMB operations that go asynchronous — change notify, blocking
+// byte-range locks, a request parked on a lease break — outlive their request
+// under their own deadlines, and a dispatch-wide 30 s would cut them off. A
+// handler that calls the choke points in a loop (QUERY_ALLOCATED_RANGES,
+// SET_ZERO_DATA, READ_PLUS) takes one deadline up front with this function
+// and passes it down, so the loop shares one budget instead of starting a new
+// one per call. Revisit if a service layer with its own per-operation entry
+// point appears between the adapters and the block store.
+func WithRequestDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
 	}
