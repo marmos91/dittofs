@@ -44,6 +44,9 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
   conflict check and the I/O it gates run at that primary, in one step.
 - It is the one enforcer of quotas, the one emitter of quota and access-audit
   events, and the one place operation latency is measured.
+- Every call is admitted to its share — state, flavour, client rules, squash —
+  whatever path its handle arrived by. Mounts, tree connects and sessions are
+  never stored; the NFSv4 pseudo-filesystem is a pure function of the share list.
 - It never blocks a worker on a client: a conflict that needs a recall returns
   `ErrDelay`, and the client retries.
 
@@ -89,13 +92,15 @@ The service **MUST NOT**:
 
 - encode or decode a wire format, run a compound, keep a replay cache or build
   the NFSv4 pseudo-filesystem — those are the adapters' ([§4.2](#4.2%20Translation%20stays%20in%20adapters));
-- evaluate a permission itself — it asks the one chokepoint ([§4.6](#4.6%20One%20chokepoint));
+- evaluate a file permission itself — it asks the one chokepoint ([§4.6](#4.6%20One%20chokepoint));
 - hold a copy of metadata, open state or content that outlives the call that
   read it;
 - persist anything of its own. Every durable fact is recorded by the component
   that owns it;
 - import an adapter. Calls upward go through interfaces adapters implement
-  ([§3.2](#3.2%20Callbacks)).
+  ([§3.2](#3.2%20Callbacks));
+- answer DFS referrals or NFSv4 referrals to another installation. A share is
+  served only by the installation that holds it.
 
 ## 2. Name
 
@@ -109,6 +114,13 @@ holds one value of it. Call sites read `svc.Open(…)`, never `vfs.VFS`.
 
 Signatures are indicative; the obligations are normative. `Service` embeds the
 groups, so an adapter holds one value and a test can fake one group.
+
+`Identity` below is what the adapter authenticated — the protocol, the
+authentication flavour and Kerberos level, the principal or numeric IDs the
+credential carried, and the client's address — not yet mapped through any
+share's policy. The service resolves it per share (§4.9). An `OpenRef` carries
+the `Identity` of the call that presents it, so calls that name only an open
+are admitted like every other.
 
 ### 3.1 Operations
 
@@ -305,11 +317,13 @@ Adapters own, and the service never sees:
 
 The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrStale`,
 `ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`,
-`ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrNotYours`, `ErrBadLayout`, and the content errors of
+`ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrNotYours`, `ErrBadLayout`, `ErrWrongSecurity`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2).
 `ErrGrace` means the file's shard is in grace and the request needs, or
-conflicts with, state that may still be reclaimed (§5.1). A routing refusal — wrong primary, stale epoch — **MUST NOT** reach an
+conflicts with, state that may still be reclaimed (§5.1). `ErrWrongSecurity`
+means the share's policy does not admit the call's flavour (§4.9); NFSv4 maps it
+to `NFS4ERR_WRONGSEC`, NFSv3 and SMB to an access error. A routing refusal — wrong primary, stale epoch — **MUST NOT** reach an
 adapter: the service re-routes and retries within the caller's deadline ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)).
 
 An operation that arrives with no deadline is given one of 30 s from its
@@ -380,6 +394,76 @@ I/O. The service does no cross-primary orchestration for a single-file
 operation; the only operations that touch two primaries are those RFC 15 names
 (a rename across shards, a `Copy` between files of two shards), and it orders them.
 
+### 4.9 Shares, mounts and trees
+
+**Admission runs on every call.** Before it authorises, the service admits the
+call to the share of the handle or open it names, in this order:
+
+1. the share's state ([RFC 16 §2.3.1](rfc-16-metadata-store.md#2.3.1%20Share%20names%2C%20paths%20and%20state)) — `ErrDelay` while quiesced,
+   `ErrStale` once being removed;
+2. the share's `ExportPolicy` flavour rule — `ErrWrongSecurity`;
+3. its client rules, against the call's address and the netgroups it is in —
+   `ErrAccess`, or a narrowing to read-only;
+4. squashing, which turns the `Identity` into the principal the call acts as on
+   this share.
+
+Then `Authorize` evaluates the grant and the file (§4.6). **There is no call
+that skips admission**: lock, unlock, test-lock, layout, watch, grant return and
+the calls that name only an open are admitted like a read. Admission is a
+property of the share a call reaches, not of how it reached it, so an NFSv4
+compound that `PUTFH`s a handle and one that walks the pseudo-filesystem into the
+share meet the same four checks. A compound crossing from one share into another
+is re-admitted, and re-squashed, at the crossing. The admission result may be
+cached per (share, identity) only with `ExportPolicy.Version`, the netgroups'
+versions and `ShareList.Version` in the key.
+
+**Mount and tree connect are `Root`.** NFSv3 `MNT`, an NFSv4 `LOOKUP` into a
+share's path and SMB `TREE_CONNECT` all resolve a name or path to a `ShareID`
+through RFC 16's indexes and call `Root`, which admits and authorises. They are
+where a client fails *early*; they are not where it is gated, since every later
+call is admitted again.
+
+**Neither is stored.** No record of a mount, a tree connect or an SMB session
+exists in the metadata store:
+
+- the NFSv3 MOUNT table is not kept. `DUMP` returns an empty list and `UMNT`
+  and `UMNTALL` succeed and change nothing, which every client tolerates; a
+  table kept per node would be wrong after any failover anyway;
+- SMB sessions, tree connects and their IDs live in the protocol node's memory.
+  A client that reconnects — after a restart, or an address takeover
+  ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)) — sets up its session and tree connects again, then
+  reclaims durable or persistent opens ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)). A reclaim is refused
+  unless the reclaiming tree connect's `ShareID` is the open's;
+- `ClientID` is the only client state that is stored, and it is RFC 14's.
+
+**The NFSv4 pseudo-filesystem is a function of the share list.** Every
+`protocol` node builds it from the share path index
+([RFC 16](rfc-16-metadata-store.md)), and must build the same one, because a client moved between
+nodes by an address takeover or `fs_locations` presents the handles it already
+holds:
+
+- a pseudo directory's handle is minted by the handle codec as its own kind
+  ([RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)), from a digest of the installation's identity and the
+  directory's path, and nothing else; so is its numeric file id. Every node and every restart mints
+  the same. A pseudo handle whose path no longer leads to a share is `ErrStale`;
+- its `fsid` is one reserved value per installation, never a share's; its
+  change attribute is `ShareList.Version`, so adding, removing, renaming or
+  re-pathing a share is seen by every client's cache;
+- a share's root reports the share's own `fsid`, and `mounted_on_fileid` the
+  numeric id of the pseudo directory it sits in, so a client sees a mount
+  crossing there;
+- a pseudo directory lists only the components that lead to a share the caller
+  would be admitted to. `SECINFO` on a pseudo directory answers every flavour some share
+  admits; on a share's path, the share's `Flavors`.
+
+**SMB share enumeration** (`NetShareEnum` over `IPC$`) lists the shares whose
+policy is not hidden and to which the caller would be admitted. `IPC$` is the
+adapter's, not a share, and reaches no file.
+
+> decision: the MOUNT table is not kept, so `showmount -a` lists nothing. It is
+> advisory in the protocol and no client depends on it; keep one only if an
+> operator workflow is shown to need it, and then per node and labelled as such.
+
 ## 5. Orchestration
 
 The service is the only code that orders a client operation across components.
@@ -387,7 +471,8 @@ Each order below is normative.
 
 ### 5.1 Write
 
-1. resolve the handle; refuse a stale one; route to the primary (§4.7, §4.8);
+1. resolve the handle; refuse a stale one; admit the call to its share (§4.9);
+   route to the primary (§4.7, §4.8);
 2. authorise against the file ([§4.6](#4.6%20One%20chokepoint)), or evaluate the open's stored grant;
    for an anonymous open, check deny modes held by others;
 3. if the shard is in grace, refuse with `ErrGrace` a write that overlaps a lock,
@@ -504,6 +589,9 @@ or restarts, and not when only the shard epoch is raised, which is what makes a 
 | V9 | The share grant is evaluated on every call. |
 | V10 | Quota is enforced only by the service, and overshoot stays within the bound of §5.6. |
 | V11 | A forwarded mutation retried after a lost reply returns its original result and applies once. |
+| V12 | Every call that names a handle or an open is admitted to its share — state, flavour, client rules, squash — whatever path the handle arrived by. |
+| V13 | No mount, tree connect or session is stored; a reconnecting client is admitted afresh. |
+| V14 | Every node builds the same pseudo-filesystem from the same share list: the same handles, numeric ids, `fsid` and change attribute. |
 
 ## 7. Observability
 
@@ -544,7 +632,19 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
   - writers through `k` primaries overshoot a hard limit by no more than §5.6's
     bound, counted per run;
   - an event sink that blocks does not slow an operation, and its drops are
-    counted.
+    counted;
+  - for each of lock, unlock, test-lock, layout-get and watch, reached both by
+    a handle presented directly and by a walk from the pseudo-filesystem: a
+    quiesced share returns `ErrDelay`, a share whose policy refuses the flavour
+    returns `ErrWrongSecurity`, and a client outside its client rules returns
+    `ErrAccess` (V12);
+  - a compound crossing from a share squashing root into one that does not acts
+    as root only in the second;
+  - a renamed share keeps serving held handles and established tree connects,
+    and a new tree connect needs the new name;
+  - two services built from the same share list return byte-identical pseudo
+    handles, numeric ids and change attributes, and a share added on one is
+    seen on the other with a raised change attribute (V14).
 - **Import test:** no adapter package imports the metadata store, open state or
   the engine; the service imports no adapter (V1, V5).
 - **Split run:** stated once in [RFC 15](rfc-15-topology.md), gated on the first remote view
