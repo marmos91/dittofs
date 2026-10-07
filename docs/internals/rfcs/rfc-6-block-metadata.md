@@ -174,7 +174,7 @@ Block metadata **MUST NOT**:
 
 - record where bytes sit on local disk, or whether they are local at all — that
   is the journal's question, and residency is computed, not stored
-  ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)). It knows which content has a durable remote copy (a carved
+  ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)). It knows which content has a remote-durable copy (a carved
   offset, [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)); it **MUST NOT** try to know whether that content is also local;
 - observe durability — it records reports ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting), [RFC 3 §2.7](rfc-3-syncer.md#2.7%20It%20reports%3B%20it%20does%20not%20persist));
 - own names, directories, attributes, handles, permissions or locks — those are
@@ -331,7 +331,7 @@ ref is a `ChunkRef` with `Died` set.
 | Snapshots ([§6.5](#6.5%20Who%20owns%20a%20ref)) | **Cut** | `ShareID` | latest cut number `k`, newest live cut `klatest`, latest cut time, the cut a running deletion removes | which cut does a commit fall after, and must a superseded ref move to history? |
 | | **LiveCut** | `(ShareID, k)` | — | which cuts do live snapshots hold? |
 | | **Died index** | `(ShareID, died, FileID, suffix)` | — | which history must a snapshot deletion visit? One key per history record, ref or namespace ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
-| Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | domain, domain ID and epoch of the attempt | which minted names may still be put and committed? |
+| Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | domain, domain ID and epoch of the attempt, and the writer's node epoch for a shard | which minted names may still be put and committed? |
 | | **GC index keys** | `(namespace, block name)`, the retired one by `not_before` first, the compaction one by dead-ratio bucket first | — | which blocks are in the trash, await their delete, or are compaction candidates ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation))? Derived from the block records and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 
 Who writes each record:
@@ -416,7 +416,7 @@ alone is not enough:
    may drop version 2. The next read fetches version 1: an acknowledged write is
    gone, and nothing reports it.
 
-With the versions, `MarkDurable(f, [0, 4M), 1, 1)` leaves `[0, 1M)` unmarked,
+With the versions, `MarkOffloaded(f, [0, 4M), 1, 1)` leaves `[0, 1M)` unmarked,
 because the journal holds version 2 there.
 
 **A ref is its own record.** An implementation **MUST NOT** store a file's refs as
@@ -949,7 +949,7 @@ verification on a read is corrupt ([§2.2](#2.2%20Chunk)), whichever file's writ
 name is never minted twice ([§7.6](#7.6%20Put%20intents)), so a commit never finds its block record
 already present; one that does has met a corrupt store and **MUST** fail as
 `ErrInconsistent`. There is no "recorded, skip the put" path: deduplication,
-once added, is by chunk, through `Durable(hash)` ([§8.2](#8.2%20Deduplication%20lookup)), never by block name.
+once added, is by chunk, through `Offloaded(hash)` ([§8.2](#8.2%20Deduplication%20lookup)), never by block name.
 
 **The commit checks, per file and inside its transaction:**
 
@@ -1000,7 +1000,7 @@ succeeded, so an offloaded bit is never set for content that metadata does not
 hold ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)).
 
 **After a restart, a file is reseeded before its first offer.** A crash can land
-between a commit and the journal's durable record of its report: the refs are
+between a commit and the journal's offloaded record of its report: the refs are
 committed, and the journal still holds those extents as not offloaded. Before the
 engine offers any extent of a file after a restart, it **MUST** check the file's
 extents against its refs ([§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)): an extent a ref covers whose
@@ -1756,9 +1756,10 @@ A retry within the attempt reuses its name and plan and writes the same bytes; n
 other put of the name is ever issued.
 
 **Before any put** — an offload's or a relocation's — the writer durably records a
-**put intent** for the name, naming the domain whose epoch it runs under:
+**put intent** for the name, naming the domain whose epoch it runs under and, for
+a shard, the node epoch of the primary that wrote it:
 
-    Intent(name) = { domain, id, epoch }   // domain: a shard or a GC partition
+    Intent(name) = { domain, id, epoch, nodeEpoch }   // domain: a shard or a GC partition; nodeEpoch: shard intents only
 
 One transaction **MAY** record every intent of a pass.
 
@@ -1776,8 +1777,11 @@ crash — can reach no committed block.
 
 **Abandoning an intent.** An intent is superseded when its domain's durable epoch
 — the shard record's **(cluster)** ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), or the GC partition lease's — is
-greater than the intent's, or the domain no longer exists; the abandoning
-transaction guards that epoch record. **On a single node** the node is the only
+greater than the intent's; when, for a shard intent, the shard record no longer
+names the node epoch the intent was written under **(cluster)**, which is what
+supersedes the intents of a primary that restarted and re-claimed its shard
+without an epoch rise ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)); or when the domain no longer exists. The abandoning
+transaction guards the record it read. **On a single node** the node is the only
 writer of its shards, and a restart need not raise a shard's epoch: there the
 node **MUST**, on every start and before its first offload, abandon every
 put intent whose domain is one of its own shards. No writer of the previous run
@@ -1846,7 +1850,7 @@ never as the older ref the cut can also see.
 
 ### 8.2 Deduplication lookup
 
-    Durable(hash) → chunk | none
+    Offloaded(hash) → chunk | none
 
 **Not in the first release; this is the design for re-adding deduplication**
 ([RFC 0 §3.1](rfc-0-data-lifecycle.md#3.1%20Deduplication)). In the first release nothing calls it: an offload carries
@@ -1920,7 +1924,7 @@ supersedes, so an offload commit writes up to two more records per ref.
 | M13 | Content records are counted in one keyspace partition per remote key namespace; no two partitions that can name one remote key keep separate counts, and the absence of a record is never evidence that an object is unreferenced. |
 | M14 | Refs name hashes, never blocks. |
 | M15 | A restore or clone is an adoption, and never copies a count or a location. |
-| M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent, which names its domain and epoch. An object is deleted only when no block record not yet `deleted` and no intent names it. On a single node, every start abandons the intents of the node's own shards before its first offload. |
+| M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent, which names its domain, its epoch and, for a shard, its node epoch. An object is deleted only when no block record not yet `deleted` and no intent names it. On a single node, every start abandons the intents of the node's own shards before its first offload. |
 | M17 | No zero chunk is stored or counted. |
 | M18 | A removal drops only refs whose `newest` is below its version, masks what it has not yet dropped, and `applied` never moves backwards. |
 | M19 | Every read that gates a commit conflicts with every concurrent write that would change it; no gate depends on a range scan or on an in-process guard. |

@@ -1219,8 +1219,9 @@ two files report one id.
   snapshot's **ordinal**, then the 48-bit `Number`; the ordinal is the smallest
   value below 2¹⁵ that no other live snapshot of the share holds, assigned with
   the cut, so a share holds at most 2¹⁵ snapshots at once. Each snapshot of a file
-  therefore reports its own id, over SMB too, where every snapshot keeps the
-  share's volume serial. The high half of its 128-bit id is a keyed digest of the
+  therefore reports its own id, and over SMB each snapshot also reports its own
+  volume serial, derived from the share and the snapshot's ordinal, never the
+  share's. The high half of its 128-bit id is a keyed digest of the
   `ShareID` and the cut under the same secret.
 
 `Number` is not an index: nothing resolves a number to a file.

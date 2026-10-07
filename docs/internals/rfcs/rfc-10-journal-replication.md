@@ -17,7 +17,7 @@ tags:
 ---
 # RFC 10 — journal replication
 
-**Status:** draft. [§16](#16.%20Open%20questions) lists what is known to be undecided.
+**Status:** deferred. [§16](#16.%20Open%20questions) lists what is known to be undecided.
 **Audience:** anyone designing or changing how an acknowledged write survives the
 loss of the node that accepted it.
 
@@ -515,7 +515,7 @@ durable. Replicas never offload.
 
 **Replicas release by being told.** After an offload commit lands, the primary
 sends each replica the extents it covered with the commit's `oldest` and
-`newest`. The replica calls `MarkDurable` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and evicts under its own
+`newest`. The replica calls `MarkOffloaded` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and evicts under its own
 capacity policy. The notice also raises the replica's committed point to at least
 `newest`, since the primary offloaded nothing above its own point: a replica that
 evicted content therefore never reports a point below it ([§9.2](#9.2%20Takeover)). A replica
@@ -996,7 +996,7 @@ acknowledged, held by C only.
 
 | t | primary | replicas | metadata store | client-visible |
 | --- | --- | --- | --- | --- |
-| 0 | A offloads `v(5,110)` at `X`, sends `MarkDurable(newest = v(5,110))` | B raises its `cp` to `v(5,110)`, evicts `X`; C's notice is lost, `cp 100` | `X` refs `v(5,110)` | `X` acknowledged |
+| 0 | A offloads `v(5,110)` at `X`, sends `MarkOffloaded(newest = v(5,110))` | B raises its `cp` to `v(5,110)`, evicts `X`; C's notice is lost, `cp 100` | `X` refs `v(5,110)` | `X` acknowledged |
 | 1 | A sends `v(5,130)` at `Y`, then crashes | only C receives it | — | `Y` not acknowledged |
 | 2 | — | B claims; B reports 110, C reports 100 | CAS: U e6, B; C | — |
 | 3 | baseline 110 = max; `X` is not above it, so nothing is re-issued there | B sends C nothing for `X` it no longer holds | `X` still refs `v(5,110)` | `X` intact |
@@ -1059,7 +1059,7 @@ Shard U at epoch 7, primary B, replicas C and D, and N, a learner joined at
 
 | t | primary | replicas | metadata store | client-visible |
 | --- | --- | --- | --- | --- |
-| 0 | B offloads `X` up to `v(7,40)`, sends `MarkDurable` | N and D raise `cp` to 40; C's notice is lost, `cp 30` | — | — |
+| 0 | B offloads `X` up to `v(7,40)`, sends `MarkOffloaded` | N and D raise `cp` to 40; C's notice is lost, `cp 30` | — | — |
 | 1 | B crashes | — | — | writes to U stall |
 | 2 | — | C and D gather; N's point is not asked for. D reports 40 and claims | one txn: B's node record marked lapsed; U e8, primary D; C | — |
 | 3 | — | N installs e8, is not listed, discards its entries of U's files | — | — |
@@ -1090,7 +1090,7 @@ type Replicated interface {
 type Peer interface {
 	Apply(ctx context.Context, s ShardID, e Epoch, ops []Op, committed Version) error // §4
 	Copy(ctx context.Context, s ShardID, e Epoch, ops []Op) error                     // §7.3: a learner's tail; refused once it is no longer a learner
-	MarkDurable(ctx context.Context, s ShardID, e Epoch, file FileID, ext []Extent, oldest, newest Version) error // §5
+	MarkOffloaded(ctx context.Context, s ShardID, e Epoch, file FileID, ext []Extent, oldest, newest Version) error // §5
 	Install(ctx context.Context, s ShardID, e Epoch) (committed Version, err error) // §6
 	Above(ctx context.Context, s ShardID, e Epoch, v Version) iter.Seq2[Op, error]   // §9.2
 	Newest(ctx context.Context, s ShardID, e Epoch, file FileID, r Range) (vs []ExtentVersion, epoch Epoch, leaseExpires time.Time, err error) // §8: one version per sub-range

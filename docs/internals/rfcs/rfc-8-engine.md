@@ -297,7 +297,7 @@ interface:
 
 | Declared by | Component | What the engine calls |
 | --- | --- | --- |
-| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal, through a share's handle | `WriteAt`, `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `Since`, `Settle`, `MarkDurable`, `Unmark`, `Repack`, `Hold`, `Stamp`, `Files`, `DirtyFiles`, `Stats`, and the journal's `Share`, passed the share's version floor ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
+| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal, through a share's handle | `WriteAt`, `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `Repack`, `Hold`, `Stamp`, `Files`, `DirtyFiles`, `Stats`, and the journal's `Share`, passed the share's version floor ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 | [RFC 2 §2](rfc-2-carver.md#2.%20What%20one%20call%20covers), [§5](rfc-2-carver.md#5.%20The%20block%20assembler) | the carver and the block assembler | the carver's `Cut`; the assembler's fold |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Upload`, `Fetch`, `Prefetch`, `Healthy` |
 | [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views | every method of both, except `Durable` while deduplication is deferred |
@@ -399,7 +399,7 @@ and **MUST** report a change to them as a migration rather than apply it
    journal holds with an extent whose offloaded bit is unset.
 5. **Start background work**: the work queue's consumer, eviction and the
    **reseed**. The reseed reads each held file's refs ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) and marks,
-   through `MarkDurable` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)), every held extent a committed ref covers, at
+   through `MarkOffloaded` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)), every held extent a committed ref covers, at
    the ref's versions. **A file is offered and evicted only once the reseed has
    run for it.** Offered earlier, an extent whose durable record a crash lost
    unsynced is uploaded again and its block swept; evicted earlier, a bit no ref
@@ -407,7 +407,7 @@ and **MUST** report a change to them as a migration rather than apply it
    eviction asks for, so a journal full at restart frees space at the reseed's
    pace. A bit no ref justifies — metadata lost a commit the journal was told
    of — is reported as a ledger mismatch and cleared with `Unmark` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)), so
-   the extent is offered again; `MarkDurable` only ever sets bits.
+   the extent is offered again; `MarkOffloaded` only ever sets bits.
 6. **Serve.** No file is served before step 2 has run for it.
 
 **A share attached at run time starts above its floor.** Before a journal serves
@@ -434,8 +434,8 @@ offloaded bit is offered again:
   leaked space, not lost content**, which collection reclaims from its intent
   ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)). On a single node the restarted node abandons, before
   serving, every put intent its own shards hold, since it is their only writer
-  ([single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile), [RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)); in a cluster an intent is abandoned once its epoch is
-  superseded.
+  ([single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile), [RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)); in a cluster an intent is abandoned once its shard's
+  epoch or the node epoch it was written under is superseded.
 
 **A new primary settles before serving.** When a shard changes primary — takeover or
 handover ([RFC 11](rfc-11-ownership.md)) — the new primary settles each file to the sealed or drained
@@ -575,7 +575,7 @@ inputs:
   raise of the shard epoch that does not move the shard makes no client resend;
 - a **process instance ID**, drawn at random when the process starts;
 - the shard's **incarnation**: a number its shard record holds, raised each time
-  a journal begins serving the shard ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), so a shard handed away and back to
+  a node or journal begins serving the shard as primary ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), so a shard handed away and back to
   the same process changes the verifier though neither the node nor the process
   did;
 - the **loss generation** of the journal holding the file ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), which the
@@ -1009,7 +1009,7 @@ type DedupOracle interface {
 }
 ```
 
-It is built over block metadata's `Durable(hash)` ([RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup)) in the
+It is built over block metadata's `Offloaded(hash)` ([RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup)) in the
 namespace's partition, and nothing else. The scope is the share's write
 namespace, the one the asking attempt fixed ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)).
 
@@ -1070,7 +1070,7 @@ against the production oracle and block metadata, and asserts the read.
   switches the write namespace ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the primary joins every attempt
   started under the old one before it acknowledges the switch.
 - Before the put, it durably records a **put intent** for the name, carrying the
-  primary epoch ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)). Nothing else precedes the put.
+  primary epoch and the node epoch it runs under ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)). Nothing else precedes the put.
 - The commit that creates the block record deletes the intent in the same
   transaction, and fails if it is absent — the intent was abandoned — and the
   pipeline then re-offers the content.
@@ -1089,7 +1089,7 @@ against the production oracle and block metadata, and asserts the read.
 >    `N1 = H(domain ‖ ns-7 ‖ n1 ‖ C ‖ h1 ‖ h2 ‖ h4)`, where `C` is the chain ID,
 >    and `n1` is written into the block header so a whole-block read recomputes
 >    and checks `N1`.
-> 2. **Intent.** Record `Intent(N1) = {shard U, epoch 41}`.
+> 2. **Intent.** Record `Intent(N1) = {shard U, epoch 41, node epoch 9}`.
 > 3. **Put.** The response is lost. The retry puts `N1` again, from the same plan
 >    and the same bytes, so however many copies land, they are one object.
 > 4. **Commit.** One transaction deletes `Intent(N1)`, creates block `N1`, the
@@ -1099,7 +1099,7 @@ against the production oracle and block metadata, and asserts the read.
 > `Intent(N1)`; the next pass draws `n2` and puts `N2 ≠ N1`, though the chunks are
 > the same. Had the process crashed after step 3, the restarted primary mints `N3`.
 > On a single node it abandons `Intent(N1)` before serving, as the shard's only
-> writer; in a cluster `Intent(N1)` is under an epoch of *U* that has moved on.
+> writer; in a cluster `Intent(N1)` is under an epoch of *U*, or a node epoch, that has moved on.
 > Either way collection deletes `N1` through it ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)). In no case is `N1` put by
 > anyone but its one attempt, so a delete of `N1` that lands late can never reach
 > a committed block.
@@ -1862,6 +1862,14 @@ and re-routed; the new primary holds the handed-over table and answers it from
 there. Keyed by request ID and epoch, the table would miss every retry that
 crossed a handover, and apply it again.
 
+The table also survives a takeover **(cluster)**, which hands nothing over: the
+request ID and result are persisted with the operation itself — in the journal
+operation's record ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)) and, for a namespace mutation, in a
+request record written in the mutation's own transaction with an expiry of the
+retry window ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A new primary rebuilds the table from both before
+it serves ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)), so a retry after a takeover is answered from the
+operation's durable record, never applied a second time.
+
 A replica's `Apply` recognises a repetition by its version instead
 ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)); that is the journal's retry rule, not the facade's.
 
@@ -1881,7 +1889,7 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E5 | Every share has a remote block store; a share without one is refused at composition. |
 | E6 | The offload guard is held only to capture an offer and to commit; removals hold it across their journal step and first metadata transaction, and a clone holds its source's until done; every commit carries the primary epoch. |
 | E7 | In the first release offload carries every chunk it cuts and adopts none. Once deduplication is added, the dedup oracle answers only from committed chunk records in the share's namespace; a chunk repeated across blocks in flight is carried in each; an error never adopts. |
-| E8 | A block's name is minted once per put attempt from domain, namespace scope, a fresh nonce, chain ID and ordered chunk hashes; no other put ever uses it, and a durable intent carrying the primary epoch precedes the put. |
+| E8 | A block's name is minted once per put attempt from domain, namespace scope, a fresh nonce, chain ID and ordered chunk hashes; no other put ever uses it, and a durable intent carrying the primary epoch and node epoch precedes the put. |
 | E9 | A read returns zeros only for a hole or a zero ref, never fetches a ref an overwrite committed over, and fails distinguishably for **Lost**, corruption and an unreachable remote. |
 | E10 | A read's reply never depends on the fill, and never contains a byte of a chunk that has not verified. |
 | E11 | Only durability decides whether an extent may be evicted. |
