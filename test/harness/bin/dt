@@ -75,12 +75,14 @@ else
 fi
 
 # --- service definitions (mirroring CI) --------------------------------------
+# Images by full name: Docker reads a short name as Docker Hub's, but Podman
+# resolves short names only through registries.conf and refuses them without it.
 LOCALSTACK_NAME=dittofs-localstack          # the name run-e2e.sh reuses
-LOCALSTACK_IMAGE=localstack/localstack:4.13.1
+LOCALSTACK_IMAGE=docker.io/localstack/localstack:4.13.1
 PG_NAME=dittofs-postgres-test               # conformance/posix profiles: dittofs/dittofs@5432
-PG_IMAGE=postgres:16-alpine
+PG_IMAGE=docker.io/library/postgres:16-alpine
 PGIT_NAME=dittofs-harness-pg-it             # integration tests: postgres/postgres@15432
-PGIT_IMAGE=postgres:16
+PGIT_IMAGE=docker.io/library/postgres:16
 PGIT_PORT=15432
 KMIP_NAME=dittofs-pykmip
 IT_DSN="host=localhost port=${PGIT_PORT} dbname=dittofs_test user=postgres password=postgres sslmode=disable"
@@ -207,10 +209,9 @@ dockerhost_port_busy() {
 }
 owner_of() { stat -f %Su "$1" 2>/dev/null || stat -c %U "$1" 2>/dev/null; }  # BSD, then GNU
 
-# Stop a host dfs provisioned by setup-posix.sh --no-mount, without root.
-# run-pynfs.sh's own non-root fallback calls `dfs stop --force`, which reads the
-# default PID file, while setup-posix.sh records the PID in /tmp/dittofs-server.pid,
-# so on a machine without passwordless sudo that fallback leaves the server running.
+# After a suite that ran a host dfs through setup-posix.sh --no-mount, without root:
+# keep the server's log, stop the server if a killed run left it (by the PID file
+# setup-posix.sh writes, never by name), and clear the /tmp state it leaves.
 host_teardown() {
     local pidf=/tmp/dittofs-server.pid pid
     if [[ -f "$pidf" ]]; then
@@ -291,10 +292,25 @@ wait_for() { # wait_for DESC TRIES CMD...
     die "$desc did not become ready"
 }
 
+# docker_pull IMAGE: pull with retries, unless the image is already here. A
+# transient registry error would otherwise fail the run before any test starts;
+# CI's integration job retried its Postgres pull by hand for that reason.
+docker_pull() {
+    docker image inspect "$1" >/dev/null 2>&1 && return 0
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        docker pull -q "$1" >/dev/null && return 0
+        warn "docker pull $1 failed (attempt $attempt), retrying"
+        sleep $((attempt * 5))
+    done
+    die "docker pull $1 failed after 5 attempts"
+}
+
 svc_localstack_up() {
     if container_running "$LOCALSTACK_NAME"; then info "localstack already running"; return; fi
     docker rm -f "$LOCALSTACK_NAME" >/dev/null 2>&1 || true
     svc_port_taken 4566 && die "port 4566 is taken by something else"
+    docker_pull "$LOCALSTACK_IMAGE"
     docker run -d --name "$LOCALSTACK_NAME" -p 127.0.0.1:4566:4566 \
         -e SERVICES=s3 -e EAGER_SERVICE_LOADING=1 -e GATEWAY_LISTEN=0.0.0.0:4566 \
         -e DISABLE_CORS_CHECKS=1 -e DISABLE_CUSTOM_CORS_S3=1 -e DEBUG=0 -e LOCALSTACK_HOST=localhost:4566 \
@@ -307,6 +323,7 @@ svc_pg_up() {
     if container_running "$PG_NAME"; then info "postgres (conformance) already running"; return; fi
     docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
     svc_port_taken 5432 && die "port 5432 is taken by something else"
+    docker_pull "$PG_IMAGE"
     docker run -d --name "$PG_NAME" -p 127.0.0.1:5432:5432 --shm-size=256mb \
         -e POSTGRES_USER=dittofs -e POSTGRES_PASSWORD=dittofs -e POSTGRES_DB=dittofs_test \
         -e POSTGRES_INITDB_ARGS=--data-checksums "$PG_IMAGE" >/dev/null
@@ -323,6 +340,7 @@ svc_pgit_up() {
     if container_running "$PGIT_NAME"; then info "postgres (integration) already running"; return; fi
     docker rm -f "$PGIT_NAME" >/dev/null 2>&1 || true
     svc_port_taken "$PGIT_PORT" && die "port $PGIT_PORT is taken by something else"
+    docker_pull "$PGIT_IMAGE"
     docker run -d --name "$PGIT_NAME" -p "127.0.0.1:${PGIT_PORT}:5432" \
         -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=dittofs_test \
         "$PGIT_IMAGE" >/dev/null
@@ -340,12 +358,14 @@ svc_kmip_up() {
     svc_port_taken 5696 && ! container_running "$KMIP_NAME" && die "port 5696 is taken by something else"
     local kdir="$REPO/test/kmip" image version certs
     image="$(sed -n 's/^IMAGE=//p' "$kdir/start-pykmip.sh")"
+    # The script names a Docker Hub image by its short name; see LOCALSTACK_IMAGE.
+    case "$image" in */*/*|*.*/*|*:*/*) ;; */*) image="docker.io/$image" ;; *) image="docker.io/library/$image" ;; esac
     version="$(sed -n 's/^PYKMIP_VERSION=//p' "$kdir/start-pykmip.sh")"
     [[ -n "$image" && -n "$version" ]] || die "could not read IMAGE/PYKMIP_VERSION from $kdir/start-pykmip.sh"
     certs="$("$kdir/gen-certs.sh" "$STATE/kmip-certs")"
     certs="$(cd "$certs" && pwd)"
     docker rm -f "$KMIP_NAME" >/dev/null 2>&1 || true
-    docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
+    docker_pull "$image"
     docker run -d --name "$KMIP_NAME" -p 127.0.0.1:5696:5696 \
         -v "$certs:/certs:ro" -v "$kdir:/work:ro" "$image" \
         sh -c "pip install --no-cache-dir pykmip==$version && mkdir -p /etc/pykmip/policies && exec pykmip-server -f /work/server.conf" \
@@ -420,21 +440,17 @@ changed_pkgs() {
         done
 }
 
-# Import paths whose test set changes under -tags=integration (the CI derivation).
-integration_pkgs() {
-    in_repo
-    comm -13 \
-        <(go list -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort) \
-        <(go list -tags=integration -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort) |
-        awk '{print $1}' | sort -u
-}
+# Import paths whose test set changes under -tags=integration: the repo's own
+# derivation, which CI's integration job runs too.
+integration_pkgs() { "$REPO/test/integration/packages.sh"; }
 
 # --- test tiers ----------------------------------------------------------------------
 cmd_unit() {
-    local short=-short cover=() pkgs=() fresh=()
+    local short=-short cover=() pkgs=() fresh=() verbose=()
     while (($#)); do
         case "$1" in
             --full) short=""; shift ;;
+            -v|--verbose) verbose=(-v); shift ;;
             --fresh) fresh=(-count=1); shift ;;
             --cover) cover=(-coverprofile="$LOGS/unit-coverage.txt" -covermode=atomic); shift ;;
             --changed) mapfile -t pkgs < <(changed_pkgs); shift
@@ -445,13 +461,13 @@ cmd_unit() {
     ((${#pkgs[@]})) || pkgs=(./pkg/... ./internal/... ./cmd/...)
     in_repo
     # shellcheck disable=SC2086  # $short is intentionally empty or one flag
-    run_logged unit go test -race $short "${fresh[@]}" -timeout=25m "${cover[@]}" "${pkgs[@]}"
+    run_logged unit go test "${verbose[@]}" -race $short "${fresh[@]}" -timeout=25m "${cover[@]}" "${pkgs[@]}"
 }
 
 cmd_integration() {
-    local changed=false pkgs=()
+    local changed=false pkgs=() verbose=()
     while (($#)); do
-        case "$1" in --changed) changed=true; shift ;; *) pkgs+=("$1"); shift ;; esac
+        case "$1" in --changed) changed=true; shift ;; -v|--verbose) verbose=(-v); shift ;; *) pkgs+=("$1"); shift ;; esac
     done
     local want=""
     if $changed; then
@@ -459,8 +475,9 @@ cmd_integration() {
         [[ -n "$want" ]] || { info "no changed Go packages"; return 0; }
     fi
     if ((${#pkgs[@]} == 0)); then
-        mapfile -t pkgs < <(integration_pkgs)
-        ((${#pkgs[@]})) || die "derived no integration-tagged packages (the CI job treats this as an error)"
+        local list
+        list="$(integration_pkgs)" || die "could not derive the integration-tagged packages (test/integration/packages.sh)"
+        mapfile -t pkgs <<<"$list"
         if $changed; then
             local mod sel=()
             mod="$(cd "$REPO" && go list -m)"
@@ -481,11 +498,14 @@ cmd_integration() {
     # takes its host/port/db from these (postgres_conformance_test.go).
     export DITTOFS_TEST_PG_HOST=localhost DITTOFS_TEST_PG_PORT="$PGIT_PORT" DITTOFS_TEST_PG_DBNAME=dittofs_test
     local rc=0
-    run_logged integration go test -tags=integration -count=1 -timeout=20m -p 1 "${pkgs[@]}" || rc=$?
+    # -p 1 serializes the package test binaries: several packages (the metadata
+    # store conformance, the block store engine drain) share the one dittofs_test
+    # database, and the conformance suite truncates it between subtests.
+    run_logged integration go test "${verbose[@]}" -tags=integration -count=1 -timeout=20m -p 1 "${pkgs[@]}" || rc=$?
     # Harness extra, not in CI: the KMIP interop tests carry no integration tag, so
     # CI's derived package list never includes them and they skip in the unit job.
     if ! $changed || grep -q 'pkg/block/middleware/encryption/keyprovider' <<<"$want"; then
-        run_logged kmip-interop go test -count=1 -run 'KMIP|Kmip' ./pkg/block/middleware/encryption/keyprovider/ || rc=$?
+        run_logged kmip-interop go test "${verbose[@]}" -count=1 -run 'KMIP|Kmip' ./pkg/block/middleware/encryption/keyprovider/ || rc=$?
     fi
     return "$rc"
 }
@@ -548,18 +568,12 @@ cmd_smb() {
     require_host_ports_free docker  # the conformance compose publishes 12445 and 8080
     [[ "$(uname -m)" == arm64 || "$(uname -m)" == aarch64 ]] && warn "arm64: the SMB conformance images are amd64 and run emulated; timing-sensitive cases may flake"
     in_repo
-    smb_stack_down  # a stack left by an earlier run would make run.sh refuse to start
-    local rc=0
-    run_logged "smb-$suite-$profile" test/conformance/run.sh --suite "$suite" --profile "$profile" || rc=$?
-    smb_stack_down
-    return "$rc"
+    run_logged "smb-$suite-$profile" test/conformance/run.sh --suite "$suite" --profile "$profile"
 }
 
-# The SMB conformance cleanup runs `docker compose down -v` without the profiles the
-# run started with. Compose ignores services in inactive profiles, so after an *-s3
-# (or postgres) run the profile's container survives, and every later run is refused
-# with "another instance of this stack is live". CI never sees it: each job gets a
-# fresh machine. Tear down this checkout's stack with every profile active.
+# A stack a killed SMB conformance run left behind (its own cleanup tears down every
+# profile, but a SIGKILL skips it), which would make every later run refuse with
+# "another instance of this stack is live". For dt cleanup: every profile active.
 smb_stack_down() {
     local dir="$REPO/test/smb-conformance" proj
     proj="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
@@ -658,10 +672,8 @@ e2e_list() {
     done
 }
 
-# e2e, run the way CI's e2e-tests.yml runs it, not through test/e2e/run-e2e.sh:
-#   - from the repo root: the suite's package path is ./test/e2e/..., and
-#     run-e2e.sh never cds (the documented `cd test/e2e && ./run-e2e.sh` fails with
-#     "lstat ./test/e2e/: no such file or directory");
+# e2e, run the way CI's e2e-tests.yml runs it (CI calls this command):
+#   - from the repo root: the suite's package path is ./test/e2e/...;
 #   - inside .github/scripts/run-e2e.sh, which writes output to a file, never a pipe
 #     (a process the suite leaks can hold a pipe open and hang the caller), bounds
 #     the run with a wall clock, and grades exit status plus log;
@@ -730,8 +742,14 @@ cmd_e2e() {
     # password entry beside a NOPASSWD one makes it ask a locked account for a
     # password it does not have.
     if ((${#sudo_cmd[@]})); then sudo -n true 2>/dev/null || sudo -v || die "sudo authentication failed"; fi
+    # Root runs offline from your module cache (GOPROXY=off below), so fill it
+    # first, as you. On a machine that never built the e2e packages, the modules
+    # only they import (testcontainers, go-smb2, the Kerberos libraries) are
+    # missing, and every package fails with "module lookup disabled by GOPROXY=off".
+    step "go mod download (the suite reads your module cache offline)"
+    go mod download || die "go mod download failed"
     local log
-    log="$LOGS/e2e-$(ts).log"
+    log="${E2E_LOG:-$LOGS/e2e-$(ts).log}"
     # Root's t.TempDir() directories are 0700 and root-owned. Docker Desktop's file
     # sharing runs as you, so it cannot see into them, and a bind mount of one fails
     # with "bind source path does not exist" (the Kerberos tests' KDC keytab dir).
@@ -825,7 +843,7 @@ e2e_container() {
     mkdir -p "$e2e_tmp"
     rpcbind -w 2>/dev/null || rpcbind 2>/dev/null || pgrep -x rpcbind >/dev/null ||
         warn "rpcbind did not start; the NLM cases will skip"
-    log="$LOGS/e2e-$(ts).log"
+    log="${E2E_LOG:-$LOGS/e2e-$(ts).log}"
     step "log: $log (written at the end; the suite's output goes to a file, as in CI)"
     step "[$WHERE] go test -tags=e2e -count=1 -v -timeout 30m ${goargs[*]} ${pkgs[*]}"
     local tc=(); $HOSTNET || tc=(TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal)
@@ -904,6 +922,9 @@ cmd_e2e_linux() {
     # Your module cache, read-only and offline, when this host has Go; else a volume.
     local modcache=(-v dt-e2e-linux-gomod:/go/pkg/mod) goenv=()
     if command -v go >/dev/null 2>&1; then
+        # Filled first, as you: the container reads it offline (see cmd_e2e).
+        step "go mod download (the container reads your module cache offline)"
+        go mod download || die "go mod download failed"
         modcache=(-v "$(go env GOMODCACHE):/go/pkg/mod:ro"); goenv=(-e GOFLAGS=-mod=readonly -e GOPROXY=off)
     fi
     local owner=(); mapfile -t owner < <(owner_env)

@@ -44,60 +44,6 @@ jobs:
         uses: actions/checkout@v7
 
       # PostgreSQL for the metadata-store integration + conformance suites.
-      # Started as a step-managed container (not a `services:` block) so the
-      # image pull can be retried — GitHub Actions cannot retry a service
-      # container's pull, and a transient Docker Hub hiccup there fails the
-      # whole job before any step runs. The test factory connects to
-      # localhost:5432, database dittofs_test, postgres/postgres.
-      - name: Start PostgreSQL (with pull retry)
-        run: |
-          pulled=false
-          for attempt in 1 2 3 4 5; do
-            if docker pull postgres:16; then
-              pulled=true
-              break
-            fi
-            echo "docker pull postgres:16 failed (attempt $attempt), retrying..."
-            sleep $((attempt * 5))
-          done
-          if [ "$pulled" != "true" ]; then
-            echo "docker pull postgres:16 failed after 5 attempts"
-            exit 1
-          fi
-          docker run -d --name dittofs-postgres \
-            -e POSTGRES_USER=postgres \
-            -e POSTGRES_PASSWORD=postgres \
-            -e POSTGRES_DB=dittofs_test \
-            -p 5432:5432 \
-            --health-cmd "pg_isready -U postgres" \
-            --health-interval 5s \
-            --health-timeout 5s \
-            --health-retries 10 \
-            postgres:16
-          # Wait for the container to report healthy before running tests.
-          for i in $(seq 1 30); do
-            status=$(docker inspect -f '{{.State.Health.Status}}' dittofs-postgres 2>/dev/null || echo starting)
-            if [ "$status" = "healthy" ]; then
-              echo "PostgreSQL is healthy"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "PostgreSQL did not become healthy in time"
-              docker logs dittofs-postgres
-              exit 1
-            fi
-            sleep 2
-          done
-
-      # PyKMIP for the KMIP key-provider interop tests. Without it the
-      # gated tests in pkg/block/middleware/encryption/keyprovider skip and the only
-      # KMIP coverage is our own canned TTLV answering our own client.
-      # The script generates certificates, provisions one key per state
-      # the provider reacts to, and exports the DITTOFS_TEST_KMIP_* vars
-      # those tests read.
-      - name: Start PyKMIP
-        run: ./test/kmip/start-pykmip.sh "${{ runner.temp }}/kmip-certs" "$GITHUB_ENV"
-
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -107,55 +53,20 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      # Which packages the integration tag actually changes, derived here and
-      # never written down. A hand-maintained list goes stale silently the
-      # first time someone adds a tagged file to a package not on it — the
-      # suite stays green and simply stops running the new tests.
-      #
-      # The comparison is on each package's test-file LIST rather than its
-      # count, so a tag that swaps one file for another is caught as well as
-      # one that adds.
-      - name: Resolve the integration-tagged packages
-        id: pkgs
-        run: |
-          set -euo pipefail
-          # Materialised to files rather than compared through process
-          # substitution: a `go list` failure inside <(...) is invisible, and
-          # an empty list would then read as "no packages to test" and pass.
-          go list -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort > /tmp/pkgs-plain.txt
-          go list -tags=integration -f '{{.ImportPath}} {{.TestGoFiles}} {{.XTestGoFiles}}' ./... | sort > /tmp/pkgs-tagged.txt
-          comm -13 /tmp/pkgs-plain.txt /tmp/pkgs-tagged.txt | awk '{print $1}' | sort -u > /tmp/integration-pkgs.txt
-
-          count=$(wc -l < /tmp/integration-pkgs.txt)
-          echo "the integration tag changes the test set of ${count} package(s):"
-          cat /tmp/integration-pkgs.txt
-          if [ "${count}" -eq 0 ]; then
-            echo "::error::derived no integration-tagged packages. Either the tag is gone from the tree or this derivation is broken; running nothing and reporting success is the one outcome this job must never produce."
-            exit 1
-          fi
-          echo "count=${count}" >> "$GITHUB_OUTPUT"
-
-      # decision: this runs the tagged packages only, not ./... . The tag
-      # changes nothing about the rest, so compiling and running them here was
-      # duplicated work — but it also means this job is no longer a second,
-      # unshortened run of the whole suite. The unit job passes -short on a
-      # pull request, so a short-guarded test keeps its full-strength PR run
-      # only where the tagged set happens to cover its package — true for the
-      # runtime and badger stores, not for the chunker, engine, compression,
-      # metadata or snapshot packages, whose guards now run unshortened on the
-      # push to develop alone. Widen this back to ./... if a defect ever
-      # reaches develop that the full PR-time run would have caught.
-      #
-      # -p 1 serializes package test binaries: several packages (metadata
-      # store conformance, blockstore engine drain) share the single
-      # dittofs_test database, and the conformance suite truncates it
-      # between subtests — running their binaries concurrently would race.
+      # The local harness's command (test/harness/bin/dt integration), so a run on
+      # a laptop is this run. It starts what the tests need as plain containers,
+      # retrying each image pull (Actions cannot retry a `services:` pull, and a
+      # transient Docker Hub error there failed the job before any step ran):
+      #   - Postgres 16 on 127.0.0.1:15432, postgres/postgres, db dittofs_test,
+      #     with DITTOFS_TEST_POSTGRES_DSN and DITTOFS_TEST_PG_* pointing at it;
+      #   - PyKMIP on 127.0.0.1:5696, with certificates, one key per state the
+      #     provider reacts to, and the DITTOFS_TEST_KMIP_* variables.
+      # It runs the packages test/integration/packages.sh derives (see its
+      # header for why derived, and why only those) with -tags=integration -p 1,
+      # then the KMIP interop tests in pkg/block/middleware/encryption/keyprovider,
+      # which carry no integration tag and so are on no derived list.
       - name: Run the integration tests
-        env:
-          DITTOFS_TEST_POSTGRES_DSN: "host=localhost port=5432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"
-        run: |
-          set -euo pipefail
-          xargs go test -tags=integration -v -timeout=20m -p 1 < /tmp/integration-pkgs.txt
+        run: test/harness/bin/dt integration -v
 
       - name: Install and start rpcbind
         env:
@@ -186,5 +97,6 @@ jobs:
           name: integration-test-logs-${{ matrix.go-version }}
           path: |
             /tmp/dittofs-*
+            test/harness/logs/
           retention-days: 3
           if-no-files-found: ignore

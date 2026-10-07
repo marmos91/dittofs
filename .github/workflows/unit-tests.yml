@@ -65,18 +65,17 @@ jobs:
       # narrows with the suite, so a pull request measures a short run against a
       # full-run baseline; that comparison is only meaningful once both sides
       # run the same set.
+      #
+      # The command is the local harness's (test/harness/bin/dt unit), so a run on
+      # a laptop is this run: -race, -short on a pull request, -timeout=25m, and
+      # ./pkg/... ./internal/... ./cmd/... with an atomic coverage profile.
       - name: Run unit tests
-        run: |
-          go test -v -race ${{ github.event_name == 'pull_request' && '-short' || '' }} \
-            -timeout=25m -coverprofile=coverage.txt -covermode=atomic \
-            ./pkg/... \
-            ./internal/... \
-            ./cmd/...
+        run: test/harness/bin/dt unit ${{ github.event_name == 'pull_request' && '' || '--full' }} --cover -v
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
-          files: ./coverage.txt
+          files: ./test/harness/logs/unit-coverage.txt
           flags: unittests
           name: codecov-unit-tests
         continue-on-error: true

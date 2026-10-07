@@ -3,8 +3,10 @@
 `dt` runs every DittoFS test tier from one place, with CI's commands, service images and
 settings: unit, integration, pynfs, pjdfstest, SMB conformance (WPTS, smbtorture), e2e,
 a Compose stack for hands-on work, and git hooks. It drives the repo's own scripts
-(`test/conformance/run.sh`, `test/posix/setup-posix.sh`, `test/kmip/start-pykmip.sh`, ...)
-rather than reimplementing them.
+(`test/conformance/run.sh`, `test/posix/setup-posix.sh`, `test/integration/packages.sh`,
+`.github/scripts/run-e2e.sh`, ...) rather than reimplementing them, and CI's unit,
+integration and e2e jobs call `dt unit`, `dt integration` and `dt e2e` themselves, so a
+local run of those tiers is the CI run.
 
 It runs on macOS and Linux, on amd64 and arm64, in two ways:
 - **In a Linux dev container, `dtc`.** The host needs only Docker and git: Docker
@@ -108,9 +110,9 @@ How it is wired:
   - On SELinux hosts the container runs with `--security-opt label=disable`, so the
     checkout is not relabeled.
 - **Host-side dfs inside the container.** pynfs, pjdfstest and e2e start their `dfs` in
-  the container's network and PID namespaces. So `setup-posix.sh`'s
-  `pkill -f "dfs start"` cannot kill a `dfs` running on the host, and a leaked `dfs` dies
-  with the container (`--rm`).
+  the container's network and PID namespaces, so a leaked `dfs` dies with the container
+  (`--rm`). The suites stop only the server they started, by its own PID file, so a
+  host's own DittoFS service survives a native run too.
 - **Caches in volumes.** Go modules, the build cache and the lint cache live in the
   `dtc-gomod`, `dtc-gobuild` and `dtc-lint` volumes, not in `~/go`.
 - **Host timezone and uid are passed in.** Log names use local time, and the stack's SMB
@@ -174,20 +176,21 @@ keeps Go's test cache so pre-push stays fast. Use `--fresh` for a baseline.
 
 ### Integration: `dt integration`
 
-The same derivation as `integration-tests.yml`: the packages whose test set changes
-under `-tags=integration`, run with `-tags=integration -count=1 -timeout=20m -p 1`
-against Postgres and PyKMIP. `--changed` narrows the run to changed packages.
+What `integration-tests.yml` runs (the job calls `dt integration -v`): the packages
+`test/integration/packages.sh` derives, those whose test set changes under
+`-tags=integration`, run with `-tags=integration -count=1 -timeout=20m -p 1` against
+Postgres and PyKMIP. `--changed` narrows the run to changed packages.
 
-Two things it does that CI's YAML does not show:
+Two things it does beyond the tagged packages:
 - **Postgres host and port.** `DITTOFS_TEST_POSTGRES_DSN` is only an on/off gate for the
   Postgres metadata-store suite, which takes its host, port and database from
   `DITTOFS_TEST_PG_HOST/PORT/DBNAME` (default `localhost:5432`). The harness sets both,
   because its integration Postgres is on 15432. Without them the suite reaches the
   other Postgres and fails authentication.
-- **KMIP interop.** CI starts PyKMIP for `pkg/block/middleware/encryption/keyprovider`.
-  But that package has no `integration`-tagged file, so it is not in CI's derived list,
-  and the unit job has no KMIP environment. The interop tests therefore never run in CI.
-  `dt integration` runs them as a separate `kmip-interop` step.
+- **KMIP interop.** `pkg/block/middleware/encryption/keyprovider` has no
+  `integration`-tagged file, so it is on no derived list, and the unit job has no KMIP
+  environment. `dt integration` runs its interop tests as a separate `kmip-interop`
+  step, in CI too.
 
 `test/integration/portmap` (`-tags=portmap_system`) needs a system rpcbind and is not
 run.
@@ -224,11 +227,10 @@ instead, so the callback is dialable:
 dt pynfs --minor 4.0 --lan --tests "delegations writedelegations"   # ungraded
 ```
 
-**Server cleanup.** Without root and without passwordless sudo, `run-pynfs.sh` falls back
-to `dfs stop --force`. That reads the default PID file, while `setup-posix.sh` wrote the
-PID to `/tmp/dittofs-server.pid`, so the server keeps running and holds 8080, 12049 and
-12445. `dt pynfs` always finishes with `dt teardown`, which stops it through the right
-PID file. Run `dt teardown` by hand after a direct `run-pynfs.sh`.
+**Server cleanup.** Without root and without passwordless sudo, `run-pynfs.sh` stops its
+server through `/tmp/dittofs-server.pid`, the PID file `setup-posix.sh` writes. `dt pynfs`
+then runs `dt teardown`, which keeps the server's log in `logs/` and clears the
+`/tmp/dittofs-*` state.
 
 ### POSIX (pjdfstest): `dt posix`
 
@@ -251,9 +253,10 @@ dt posix --nfs 4.1 --profile postgres-s3
 dt posix chmod                           # one test directory
 ```
 
-pjdfstest is built at the `flake.lock` revision. The repo's
-`test/posix/Dockerfile.pjdfstest` clones HEAD unpinned. Two image details would fail
-silently or look like DittoFS bugs:
+pjdfstest is built at the `flake.lock` revision, as in the repo's
+`test/posix/Dockerfile.pjdfstest`. The harness's own image also mounts the export, so
+it needs one more package. Two image details would fail silently or look like DittoFS
+bugs:
 - **`netbase`.** `mount.nfs` resolves `tcp` through `/etc/protocols`. Without it an
   NFSv3 mount fails with `Protocol not supported`, while NFSv4.1 still mounts.
 - **`openssl`.** pjdfstest's `misc.sh` generates file names with `openssl rand`. Without
@@ -275,19 +278,19 @@ dt smb wpts --profile memory           # profiles: memory badger badger-s3 postg
 ```
 
 The Compose file publishes 8080 and 12445, so those ports must be free (no `dt stack`,
-no host `dfs`). The repo's cleanup runs `docker compose down -v` without the profiles
-the run started with, so after an `*-s3` or `postgres` run the profile's container
-survives. Every later run then refuses with "another instance of this stack is live".
-`dt smb` tears the stack down with every profile active, before and after each run.
+no host `dfs`). The suites' own cleanup tears the stack down with every profile active.
+A run killed before its cleanup leaves the stack, and every later run then refuses with
+"another instance of this stack is live": `dt cleanup` removes it.
 
 ### e2e: `dt e2e`
 
 `dt e2e` runs the suite the way `e2e-tests.yml` does:
 `go test -tags=e2e -count=1 -v -timeout 30m ./test/e2e/...`, from the repo root, inside
 `.github/scripts/run-e2e.sh`.
-- **From the repo root.** The invocation in `README.md` and the e2e test headers,
-  `cd test/e2e && sudo ./run-e2e.sh`, fails every time. `run-e2e.sh` does not change
-  directory, and hands `go test` the path `./test/e2e/...`.
+- **The CI job's own command.** `e2e-tests.yml` runs `dt e2e --require-nlm` in the Nix
+  CI shell. The documented `cd test/e2e && sudo ./run-e2e.sh` runs from the repo root
+  and through the same `.github/scripts/run-e2e.sh`, with its own options (`--s3`,
+  `--coverage`, `--stress`, ...).
 - **Output to a file, not a pipe.** A process the suite leaves behind can hold a pipe's
   write end open and hang the reader. The wrapper also caps the run at `E2E_WALL`
   (default 45m). The log appears in `logs/e2e-<ts>.log` at the end.
@@ -312,7 +315,10 @@ In dtc the suite runs as root in the container, and `dt e2e-linux` is the same c
 Natively the suite needs root. Run `dt` as yourself in your own terminal: it asks for
 the sudo password once, and only the test command runs as root. From a root shell on
 Linux (a CI VM, say) it runs directly. Root gets a separate build cache, an offline
-read-only module cache, and `TMPDIR=/tmp/dte`.
+read-only module cache, and `TMPDIR=/tmp/dte`. `dt e2e` fills that module cache first,
+as you (`go mod download`): the modules only the e2e packages import are otherwise
+missing on a machine that never built them, and every package fails with "module
+lookup disabled by GOPROXY=off".
 - **On macOS** you own `/tmp/dte`, with an inheritable ACL entry, because Docker
   Desktop's file sharing runs as you and cannot see root's `0700` temp dirs. Only the
   NFSv3 and SMB cases run: `framework/helpers.go` skips NFSv4 on darwin, and the
@@ -625,12 +631,8 @@ need exclusive ports; run them on demand.
 | MinIO image `minio/minio:RELEASE.2024-09-13T20-26-02Z` can no longer be pulled | `run-e2e.sh --minio` and the MinIO fixture fail without a cached image | `--minio` refused |
 | e2e falls back to Localstack 3.0; CI and Compose use 4.13.1 | two S3 emulator versions | `dt e2e` provides 4.13.1 |
 | `test/kmip/start-pykmip.sh` publishes 5696 on all interfaces | a test key server on the local network | bound to 127.0.0.1 |
-| KMIP interop tests are not in CI's derived integration list | they never run in CI | `kmip-interop` step |
+| KMIP interop tests are on no derived integration list | they ran in no CI job | `kmip-interop` step, which CI now runs through `dt integration` |
 | Repo pre-push `-timeout=60s` | pushes touching several heavy packages time out | CI's 25 min |
-| pynfs non-root cleanup reads the wrong PID file | leaks a `dfs` holding 8080/12049/12445 | `dt teardown` after every pynfs run |
-| `setup-posix.sh` runs `pkill -f "dfs start"` | kills any `dfs` on the machine, including your own | in dtc it only sees the container |
-| SMB conformance cleanup omits the run's profiles | the next run refuses to start | full-profile teardown |
-| `test/posix/Dockerfile.pjdfstest` is unpinned and lacks `netbase`/`openssl` | results not comparable to CI | pinned image with both |
 | Debian 12's `mawk` has no regex intervals | the pynfs grader's `/^\*{50}$/` never matches, and every run is graded "no results block" | the image installs gawk |
 | The four e2e tests using `mountNFSExport` never unmount | on Linux, NFS hard mounts to stopped servers are left behind (9 per full run), and a later `stat` under TMPDIR blocks | `dtc e2e` force-unmounts them |
 | `TestBlocksFlipLifecycle_*` does not drop the NFS client's page cache before a "cold" read | the fail-closed step can be served from the client cache, so it is intermittent | `repro/cold-read-tamper.sh` remounts |

@@ -58,47 +58,10 @@ jobs:
     # stays silent.
     timeout-minutes: 75
 
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: dittofs
-          POSTGRES_PASSWORD: dittofs
-          POSTGRES_DB: dittofs_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      localstack:
-        image: localstack/localstack:4.13.1
-        env:
-          SERVICES: s3
-          EAGER_SERVICE_LOADING: "1"
-          GATEWAY_LISTEN: "0.0.0.0:4566"
-          DISABLE_CORS_CHECKS: "1"
-          DISABLE_CUSTOM_CORS_S3: "1"
-          DEBUG: "0"
-          LOCALSTACK_HOST: localhost:4566
-        ports:
-          - 4566:4566
-        options: >-
-          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      # Tell tests to use pre-existing services instead of starting containers
-      POSTGRES_HOST: localhost
-      POSTGRES_PORT: 5432
-      POSTGRES_DATABASE: dittofs_test
-      POSTGRES_USER: dittofs
-      POSTGRES_PASSWORD: dittofs
-      LOCALSTACK_ENDPOINT: http://localhost:4566
+    # No `services:` block: the test step's command (test/harness/bin/dt e2e)
+    # starts Postgres 16 (dittofs/dittofs, db dittofs_test) on 127.0.0.1:5432 and
+    # Localstack 4.13.1 (S3) on 127.0.0.1:4566 itself, retrying their pulls, and
+    # hands the suite POSTGRES_* and LOCALSTACK_ENDPOINT, as it does on a laptop.
 
     steps:
       - name: Checkout
@@ -137,20 +100,21 @@ jobs:
           # it run out the job.
           E2E_WALL: 45m
         run: |
-          # sudo resolves commands via secure_path (which omits the Nix
-          # profile), so `nix` was "command not found" under sudo and go test
-          # never ran. Pass the caller's PATH through so `nix` resolves; keep -E
-          # for the external-service env vars the suite reads.
-          # DITTOFS_E2E_REQUIRE_NLM=1: the real-NLM lock-interop test hard-fails
-          # (instead of skipping) if its prerequisites are missing, so a
-          # misconfigured runner can't silently drop that coverage.
+          # The local harness's command, inside the Nix CI shell, so a run on a
+          # laptop is this run. dt e2e runs as the runner user and sudo covers
+          # only the test command, given the caller's PATH (sudo's secure_path
+          # omits the Nix profile, so go would not resolve under it) and a
+          # module cache it fills first and root reads offline.
+          # --require-nlm (DITTOFS_E2E_REQUIRE_NLM=1): the real-NLM lock-interop
+          # test hard-fails (instead of skipping) if its prerequisites are
+          # missing, so a misconfigured runner can't silently drop that coverage.
           # Full mode: all configurations including Docker-based stores.
           #
-          # The harness owns redirection and grading — see the header of
-          # run-e2e.sh for why the output must not go through a pipe.
-          .github/scripts/run-e2e.sh \
-            sudo -E env "PATH=$PATH" "DITTOFS_E2E_REQUIRE_NLM=1" nix develop .#ci --command \
-            go test -tags=e2e -v -timeout 30m ./test/e2e/...
+          # dt runs the suite through .github/scripts/run-e2e.sh, which owns
+          # redirection and grading (see its header for why the output must not
+          # go through a pipe), writes $E2E_LOG and fails a run in which no test
+          # ran. Mounts the suite leaves behind are force-unmounted afterwards.
+          nix develop .#ci --command test/harness/bin/dt e2e --require-nlm
 
       - name: Generate summary
         if: always()
