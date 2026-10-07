@@ -65,7 +65,8 @@ document names that something and fixes where it stands:
    ┌───────────────── vfs.Service ─────────────────┐
    │ open, close, read, write, commit, lookup,     │     the one API
    │ readdir, getattr, setattr, create, link,      │     adapters see
-   │ remove, rename, lock, grants, watches, statfs │
+   │ remove, rename, lock, grants, watches, statfs,│
+   │ mount, tree connect, pseudo-fs, share list    │
    └───┬────────────┬─────────────┬────────────┬───┘
    metadata      content        open state    routing
    (RFC 16)      (RFC 8)        (RFC 14)      (RFC 15)
@@ -90,8 +91,8 @@ things:
 
 The service **MUST NOT**:
 
-- encode or decode a wire format, run a compound, keep a replay cache or build
-  the NFSv4 pseudo-filesystem — those are the adapters' ([§4.2](#4.2%20Translation%20stays%20in%20adapters));
+- encode or decode a wire format, run a compound or keep a replay cache —
+  those are the adapters' ([§4.2](#4.2%20Translation%20stays%20in%20adapters));
 - evaluate a file permission itself — it asks the one chokepoint ([§4.6](#4.6%20One%20chokepoint));
 - hold a copy of metadata, open state or content that outlives the call that
   read it;
@@ -134,6 +135,7 @@ type Service interface {
 	Data
 	Locking
 	Volumes
+	Shares
 }
 
 // Clients: who is talking to us, and how to call them back (RFC 14).
@@ -145,9 +147,10 @@ type Clients interface {
 
 }
 
-// Names: the namespace, by handle.
+// Names: the namespace, by handle. Every method also takes a handle of the
+// NFSv4 pseudo-filesystem (§4.9) and answers for it; an adapter never tells
+// the two kinds apart.
 type Names interface {
-	Root(ctx context.Context, id Identity, share metadata.ShareID) (Handle, error) // authorised against the share grant
 	Lookup(ctx context.Context, id Identity, dir Handle, name []byte) (Handle, metadata.File, error)
 	ReadDir(ctx context.Context, id Identity, dir Handle, after Cursor, plus bool) iter.Seq2[DirEntry, error]
 	Create(ctx context.Context, id Identity, dir Handle, name []byte, k CreateKind, a metadata.Attrs) (Handle, metadata.File, error) // mkdir, symlink, mknod, NFSv3 CREATE
@@ -197,6 +200,16 @@ type Locking interface {
 	LayoutGet(ctx context.Context, o OpenRef, r metadata.ByteRange, write, reclaim bool) (metadata.Layout, error) // pNFS
 	LayoutCommit(ctx context.Context, c metadata.ClientID, l metadata.LayoutID, end int64, mtime time.Time) error // ErrBadLayout on a stale epoch
 	LayoutReturn(ctx context.Context, c metadata.ClientID, l metadata.LayoutID) error
+}
+
+// Shares: how a client reaches a share, and which shares it may see (§4.9).
+// An adapter passes the name or path the client sent and never holds a ShareID.
+type Shares interface {
+	Mount(ctx context.Context, id Identity, path string) (Handle, []AuthFlavor, error)     // NFSv3 MNT
+	PseudoRoot(ctx context.Context, id Identity) (Handle, error)                             // NFSv4 PUTROOTFH, PUTPUBFH
+	TreeConnect(ctx context.Context, id Identity, name string) (Handle, ShareInfo, error)    // SMB TREE_CONNECT
+	SecInfo(ctx context.Context, id Identity, dir Handle, name []byte) ([]AuthFlavor, error) // SECINFO, SECINFO_NO_NAME (empty name)
+	ListShares(ctx context.Context, id Identity) iter.Seq2[ShareInfo, error]                 // NetShareEnum, showmount -e
 }
 
 // Volumes: what statfs, FSSTAT and SMB volume queries ask.
@@ -307,7 +320,9 @@ Adapters own, and the service never sees:
 - wire encoding and framing (XDR, SMB2), NFSv4 `COMPOUND` and SMB compounding,
   which run as sequences of service calls;
 - stateid and FileId encodings, sequence and replay caches;
-- the NFSv4 pseudo-filesystem, built from the share list;
+- turning `MNT`, `PUTROOTFH`, `TREE_CONNECT`, `SECINFO` and share enumeration
+  into the `Shares` calls of §4.9, and nothing more: no share resolution,
+  admission or pseudo-filesystem logic lives in an adapter;
 - security descriptors ↔ `metadata.ACL`, applying RFC 19's mapping;
 - mapping the service's errors to protocol status codes;
 - a protocol's own numeric file IDs, derived from `FileID`
@@ -355,7 +370,7 @@ with the open; the service evaluates it on the operations it gates.
   cache of authorisation results **MUST** include the grant in its key. A
   client removed from a share loses access on its next call, cached handles or
   not.
-- `Root` takes the caller's identity and is refused when no grant admits it.
+- `Mount`, `TreeConnect` and a `Lookup` into a share take the caller's identity and are refused when no grant admits it.
   Holding a handle grants nothing: a handle names a file, and every call on it
   is authorised afresh.
 - **Deny modes.** A granted open's deny mode is evaluated once, at open
@@ -417,11 +432,22 @@ is re-admitted, and re-squashed, at the crossing. The admission result may be
 cached per (share, identity) only with `ExportPolicy.Version`, the netgroups'
 versions and `ShareList.Version` in the key.
 
-**Mount and tree connect are `Root`.** NFSv3 `MNT`, an NFSv4 `LOOKUP` into a
-share's path and SMB `TREE_CONNECT` all resolve a name or path to a `ShareID`
-through RFC 16's indexes and call `Root`, which admits and authorises. They are
-where a client fails *early*; they are not where it is gated, since every later
-call is admitted again.
+**The service owns every step of reaching a share; the adapter only
+translates.** What the three protocols share — resolving a name or path through
+RFC 16's indexes, admission, the pseudo-filesystem, what `SECINFO` answers and
+which shares a client may list — is written once, here, behind the `Shares`
+group and the pseudo handles `Names` accepts. NFSv3 `MNT` is `Mount`; NFSv4
+`PUTROOTFH` is `PseudoRoot` followed by `Lookup`s; SMB `TREE_CONNECT` is
+`TreeConnect`. Each resolves, admits and authorises, and returns the share's
+root handle. They are where a client fails *early*; they are not where it is
+gated, since every later call is admitted again. An adapter holds no share list,
+and a change to the share list reaches every protocol at once.
+
+> decision: share resolution and the pseudo-filesystem live in the service, not
+> the adapters, because the rules for reaching a share drifted when each
+> adapter had its own copy: a check present on one entry path was missing on
+> the other. Move a piece back to an adapter only if a protocol needs a rule the
+> others must not share, and then state it in that protocol's RFC.
 
 **Neither is stored.** No record of a mount, a tree connect or an SMB session
 exists in the metadata store:
@@ -436,8 +462,8 @@ exists in the metadata store:
   unless the reclaiming tree connect's `ShareID` is the open's;
 - `ClientID` is the only client state that is stored, and it is RFC 14's.
 
-**The NFSv4 pseudo-filesystem is a function of the share list.** Every
-`protocol` node builds it from the share path index
+**The NFSv4 pseudo-filesystem is a function of the share list.** The service
+on every `protocol` node builds it from the share path index
 ([RFC 16](rfc-16-metadata-store.md)), and must build the same one, because a client moved between
 nodes by an address takeover or `fs_locations` presents the handles it already
 holds:
@@ -456,9 +482,10 @@ holds:
   would be admitted to. `SECINFO` on a pseudo directory answers every flavour some share
   admits; on a share's path, the share's `Flavors`.
 
-**SMB share enumeration** (`NetShareEnum` over `IPC$`) lists the shares whose
-policy is not hidden and to which the caller would be admitted. `IPC$` is the
-adapter's, not a share, and reaches no file.
+**Share enumeration** — SMB `NetShareEnum` over `IPC$`, NFS `showmount -e` —
+is `ListShares`: the shares whose policy is not hidden and to which the caller
+would be admitted. `IPC$` is the SMB adapter's RPC endpoint, not a share, and
+reaches no file.
 
 > decision: the MOUNT table is not kept, so `showmount -a` lists nothing. It is
 > advisory in the protocol and no client depends on it; keep one only if an
@@ -596,6 +623,7 @@ verifier is constant.
 | V12 | Every call that names a handle or an open is admitted to its share — state, flavour, client rules, squash — whatever path the handle arrived by. |
 | V13 | No mount, tree connect or session is stored; a reconnecting client is admitted afresh. |
 | V14 | Every node builds the same pseudo-filesystem from the same share list: the same handles, numeric ids, `fsid` and change attribute. |
+| V15 | No adapter resolves a share name or path, admits a call, or builds or interprets any part of the pseudo-filesystem; all of it is behind `Shares` and `Names`. |
 
 ## 7. Observability
 
@@ -655,7 +683,10 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
     handles, numeric ids and change attributes, and a share added on one is
     seen on the other with a raised change attribute (V14).
 - **Import test:** no adapter package imports the metadata store, open state or
-  the engine; the service imports no adapter (V1, V5).
+  the engine; the service imports no adapter (V1, V5). The `Shares` calls and
+  pseudo handles are driven in the service suite with no adapter at all, and
+  every case above runs once per entry call (`Mount`, `PseudoRoot` + `Lookup`,
+  `TreeConnect`) (V15).
 - **Split run:** stated once in [RFC 15](rfc-15-topology.md), gated on the first remote view
   shipping.
 - **Benchmarks:** each operation through the service, collocated and split, so a
