@@ -350,7 +350,10 @@ cleanup() {
     if [[ "$MODE" == "compose" ]] && ! $KEEP && $STACK_OWNED; then
         log_step "Cleaning up containers..."
         cd "$SCRIPT_DIR"
-        docker compose down -v 2>/dev/null || true
+        # Every profile: compose ignores services in inactive profiles, so a plain
+        # `down -v` left an *-s3 or postgres run's container behind, and the next
+        # run was refused as "another instance of this stack is live".
+        docker compose --profile '*' down -v 2>/dev/null || true
     elif [[ "$MODE" == "local" ]]; then
         # Stop local DittoFS process
         if [[ -n "${DITTOFS_PID:-}" ]] && kill -0 "$DITTOFS_PID" 2>/dev/null; then
@@ -364,7 +367,7 @@ cleanup() {
     fi
 
     if $KEEP; then
-        log_warn "Containers left running (--keep). Clean up with: cd ${SCRIPT_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
+        log_warn "Containers left running (--keep). Clean up with: cd ${SCRIPT_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} --profile '*' down -v"
     fi
 
     # Released last. A retry that acquires the claim while this teardown is

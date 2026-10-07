@@ -269,10 +269,13 @@ cleanup() {
         log_step "Cleaning up containers..."
         cd "$CONFORMANCE_DIR"
         if $STACK_OWNED; then
-            docker compose down -v 2>/dev/null || true
+            # Every profile: compose ignores services in inactive profiles, so a plain
+            # `down -v` left an *-s3 or postgres run's container behind, and the next
+            # run was refused as "another instance of this stack is live".
+            docker compose --profile '*' down -v 2>/dev/null || true
         fi
     else
-        log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} down -v"
+        log_warn "Containers left running (--keep). Clean up with: cd ${CONFORMANCE_DIR} && docker compose -p ${COMPOSE_PROJECT_NAME} --profile '*' down -v"
     fi
 
     # A run that never reached parse-results.sh leaves no verdict, and the

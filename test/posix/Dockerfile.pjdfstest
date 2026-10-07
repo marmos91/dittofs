@@ -20,9 +20,12 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Build pjdfstest from source (original Perl/C version)
-RUN git clone --depth 1 https://github.com/pjd/pjdfstest.git /tmp/pjdfstest && \
+# Build pjdfstest from source (original Perl/C version), at the revision
+# flake.lock pins and CI builds: results from HEAD are not comparable to CI's.
+ARG PJDFSTEST_REV=03eb25706d8dbf3611c3f820b45b7a5e09a36c06
+RUN git clone https://github.com/pjd/pjdfstest.git /tmp/pjdfstest && \
     cd /tmp/pjdfstest && \
+    git checkout "$PJDFSTEST_REV" && \
     autoreconf -ifs && \
     ./configure && \
     make pjdfstest
@@ -30,9 +33,12 @@ RUN git clone --depth 1 https://github.com/pjd/pjdfstest.git /tmp/pjdfstest && \
 # Runtime image
 FROM debian:bookworm-slim
 
-# Install runtime dependencies (Perl and TAP::Harness for prove)
+# Install runtime dependencies (Perl and TAP::Harness for prove). openssl:
+# misc.sh generates file names with `openssl rand`, so without it every test
+# prints "openssl: not found".
 RUN apt-get update && apt-get install -y \
     acl \
+    openssl \
     perl \
     libtap-harness-archive-perl \
     && rm -rf /var/lib/apt/lists/*

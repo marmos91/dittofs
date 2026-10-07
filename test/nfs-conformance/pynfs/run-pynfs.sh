@@ -207,7 +207,9 @@ cleanup() {
     elif sudo -n true 2>/dev/null; then
         sudo "$TEARDOWN_SCRIPT" >/dev/null 2>&1 && return 0
     fi
-    "${REPO_ROOT}/dfs" stop --force >/dev/null 2>&1 || true
+    # setup-posix.sh records its server in /tmp/dittofs-server.pid; the default
+    # PID file is another server's, if any.
+    "${REPO_ROOT}/dfs" stop --force --pid-file /tmp/dittofs-server.pid >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

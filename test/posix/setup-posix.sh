@@ -180,10 +180,13 @@ cleanup_existing() {
         umount -f "$MOUNT_POINT" 2>/dev/null || true
     fi
 
-    # Stop existing server
-    if pgrep -f "dfs start" >/dev/null 2>&1; then
-        log_info "Stopping existing DittoFS server"
-        "$DITTOFS_BIN" stop --force 2>/dev/null || pkill -f "dfs start" || true
+    # Stop the server an earlier run of this script left, by its own PID file.
+    # Never by name or by the default PID file: `pkill -f "dfs start"` and a bare
+    # `dfs stop` also stop any other DittoFS on the machine, and as root the
+    # default PID file is the one a host's own DittoFS service writes.
+    if [[ -f /tmp/dittofs-server.pid ]]; then
+        log_info "Stopping the DittoFS server an earlier run left"
+        "$DITTOFS_BIN" stop --force --pid-file /tmp/dittofs-server.pid 2>/dev/null || true
         sleep 2
     fi
 
