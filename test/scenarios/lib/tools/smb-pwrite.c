@@ -1,8 +1,9 @@
-// smb-pwrite URL LOCAL <PLAN: writes in place over SMB through one open handle, the way Windows keeps
-// a mounted VHDX open for a whole desktop session. Each PLAN line "OFFSET LENGTH" copies LENGTH bytes
-// of LOCAL at OFFSET to the remote file at the same OFFSET; an offset past the end grows the file.
-// Logs in as tester.
-//   smb-pwrite smb://127.0.0.1/test/f /tmp/f </tmp/plan
+// smb-pwrite URL LOCAL [SIZE] <PLAN: writes in place over SMB through one open handle, the way Windows
+// keeps a mounted VHDX open for a whole desktop session. Each PLAN line "OFFSET LENGTH" copies LENGTH
+// bytes of LOCAL at OFFSET to the remote file at the same OFFSET; an offset past the end grows the
+// file. With SIZE, the same handle then sets the file's size to SIZE (SET_INFO end-of-file) before it
+// closes. Logs in as tester.
+//   smb-pwrite smb://127.0.0.1/test/f /tmp/f 24000000000 </tmp/plan
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,8 +14,8 @@
 #include <smb2/libsmb2.h>
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "usage: smb-pwrite URL LOCAL <PLAN\n");
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "usage: smb-pwrite URL LOCAL [SIZE] <PLAN\n");
         return 2;
     }
     int local = open(argv[2], O_RDONLY);
@@ -55,6 +56,14 @@ int main(int argc, char **argv) {
             done += ret;
         }
         writes++;
+    }
+    if (argc == 4) {
+        uint64_t size = strtoull(argv[3], NULL, 10);
+        if (smb2_ftruncate(smb2, fh, size) != 0) {
+            fprintf(stderr, "smb-pwrite: set size %llu: %s\n", (unsigned long long)size, smb2_get_error(smb2));
+            return 1;
+        }
+        printf("smb-pwrite: size set to %llu through the same handle\n", (unsigned long long)size);
     }
     if (smb2_close(smb2, fh) != 0) {
         fprintf(stderr, "smb-pwrite: close: %s\n", smb2_get_error(smb2));
