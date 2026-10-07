@@ -15,8 +15,9 @@ dfsctl share create --name /small --metadata md --block-store s3-small --default
 dfsctl share permission grant /small --user tester --level read-write
 s3 stop
 
-# 100 MiB files, each new random data, until one is refused (at most 15, each within 5 min)
-for i in $(seq 1 15); do head -c 100M /dev/urandom >"/tmp/f$i.bin"; timeout 300 smbclient //127.0.0.1/small -c "lcd /tmp; put f$i.bin" >"/tmp/put$i.out" 2>&1 || { echo "$i exit $?" >/tmp/refused; break; }; done
+# 100 MiB files, each new random data, until one is refused (at most 15, each within 5 min). smbclient
+# waits 45 s for a reply (-t 45): the server may hold a write for its 30 s deadline, past smbclient's 20 s
+for i in $(seq 1 15); do head -c 100M /dev/urandom >"/tmp/f$i.bin"; timeout 300 smbclient -t 45 //127.0.0.1/small -c "lcd /tmp; put f$i.bin" >"/tmp/put$i.out" 2>&1 || { echo "$i exit $?" >/tmp/refused; break; }; done
 dfsctl store block stats --share /small -o json | jq -c '.totals | {local_disk_used, local_disk_max, unsynced_bytes}' | tee /tmp/full.json
 
 # Full: a delete and a truncate must succeed

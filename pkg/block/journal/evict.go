@@ -587,6 +587,12 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		}
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				// The caller's deadline ended a wait for space: the refusal is
+				// still for space, so it says so, and a protocol answers "no
+				// space" rather than a generic failure. A cancel stays a cancel.
+				return fmt.Errorf("%w: %w", ErrLocalStoreFull, ctx.Err())
+			}
 			return ctx.Err()
 		case <-time.After(evictBackoff):
 		}

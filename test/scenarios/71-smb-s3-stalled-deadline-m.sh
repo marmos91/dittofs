@@ -4,9 +4,9 @@
 # §4.3, RFC 0 §10.3). Checked with 15 s of margin, each call timed: a cold read over SMB and over
 # NFS, a small write, listings from both protocols and a dfsctl stats call. Both cold reads must
 # fail, as S3 holds the only copy, with no wrong bytes; once S3 resumes, the file reads again.
-# Fails today: both cold reads end after 60 s, the bound set by DefaultDemandFetchTimeout
-# (pkg/block/engine/types.go), past the 30 s. They fail cleanly with no wrong bytes. The write, the
-# listings and dfsctl answer at once. It takes about 2.5 min.
+# Both cold reads end at the 30 s deadline a request without one gets where it reaches the block
+# store (internal/adapter/common/deadline.go), before the engine's 60 s demand-fetch bound. They fail
+# cleanly with no wrong bytes. The write, the listings and dfsctl answer at once. About 2 min.
 NFS='nfs://127.0.0.1/test'
 OPT='?version=4&uid=1000&gid=1000'
 
