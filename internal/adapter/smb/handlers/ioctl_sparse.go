@@ -288,6 +288,9 @@ func (h *Handler) scanAllocatedRanges(authCtx *metadata.AuthContext, openFile *O
 	if err != nil {
 		return nil, err
 	}
+	// One deadline for every probe read of the scan, not one per cluster.
+	readCtx, cancel := common.WithRequestDeadline(authCtx.Context)
+	defer cancel()
 
 	// Align scan to cluster boundaries so cluster-allocated reporting is
 	// stable regardless of where the request window starts. We probe each
@@ -326,7 +329,7 @@ func (h *Handler) scanAllocatedRanges(authCtx *metadata.AuthContext, openFile *O
 		if clusterEnd > file.Size {
 			probeLen = uint32(file.Size - clusterStart)
 		}
-		result, readErr := common.ReadFromBlockStore(authCtx.Context, blockStore, file.PayloadID, clusterStart, probeLen)
+		result, readErr := common.ReadFromBlockStore(readCtx, blockStore, file.PayloadID, clusterStart, probeLen)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -582,6 +585,11 @@ func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFil
 
 	chunkLen := min(uint64(zeroFillChunkSize), end-start)
 	zeros := make([]byte, chunkLen)
+	// One deadline for every chunk the range is written in, not one per chunk.
+	// The cancel check below stays on the request's own context, so a client
+	// cancel is still told apart from the deadline ending a write.
+	writeCtx, cancel := common.WithRequestDeadline(authCtx.Context)
+	defer cancel()
 
 	committed := false
 	for offset := start; offset < end; {
@@ -597,7 +605,7 @@ func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFil
 		if err != nil {
 			return committed, err
 		}
-		if err := common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, zeros[:remaining], offset); err != nil {
+		if err := common.WriteToBlockStore(writeCtx, blockStore, writeOp.PayloadID, zeros[:remaining], offset); err != nil {
 			return committed, err
 		}
 		if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
