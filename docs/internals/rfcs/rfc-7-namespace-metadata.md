@@ -163,6 +163,15 @@ type File struct {
 	// from the parent at create. Zero: none.
 	Project ProjectID
 
+	// Number is the file's 64-bit numeric id within its share (§6.5): set at
+	// create, never changed, never reused in the share. Never zero.
+	Number uint64
+
+	// CreateVerifier is the verifier of the exclusive create that made the
+	// file (§2.10); nil when it was not made exclusively, and cleared by the
+	// first SetAttrs.
+	CreateVerifier []byte
+
 	// Type-specific fields: each is set for its type only and empty otherwise.
 	Target   []byte   // Type Symlink: the target, stored as given, never resolved here
 	Device   DeviceID // Type BlockDevice, CharDevice: major and minor
@@ -287,6 +296,8 @@ path does not.
 | `Change`, `Version` on attribute change | chmod, chown, link, unlink, rename | its own operation |
 | `Nlink` | link, unlink, rename over an existing entry | the entry change that caused it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)) |
 | a directory's `Modify`, `Change`, `Version` | create, unlink, rename in it | the entry change, as a delta ([§9.2](#9.2%20Timestamps)) |
+| `Number` | create only; never changed ([§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem)) | the create |
+| `CreateVerifier` | set by an exclusive create; cleared by the first `SetAttrs` ([§2.10](#2.10%20Exclusive%20create)) | the create; the `SetAttrs` |
 
 The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 Offloading changes where content is, not what it is, and a File it could write
@@ -407,8 +418,8 @@ entry: the share names it, and its `Parent` is itself, so `..` at the root
 stays at the root. Each share reports its own filesystem identity — NFS's
 `fsid`, SMB's volume serial — derived from its `ShareID`. SMB's several shares
 are several tree connects, one share each. NFSv4's pseudo-filesystem, the
-synthetic tree joining every export, is **not stored**: the adapter builds it
-from the share list ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a `LOOKUP` that crosses from it into a share lands on
+synthetic tree joining every export, is **not stored**: the filesystem service
+builds it from the share list ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a `LOOKUP` that crosses from it into a share lands on
 that share's root. Shares are disjoint trees; one share is never an entry in
 another, and no share's path is an ancestor of another's
 ([RFC 16 §2.3.1](rfc-16-metadata-store.md#2.3.1%20Share%20names%2C%20paths%20and%20state)).
@@ -522,6 +533,24 @@ Permission evaluation is deliberately not a method: it needs the principal's
 groups and the share's grant, so it happens behind the one chokepoint ([§7.1](#7.1%20One%20chokepoint)).
 No entity has `Save`, `Reload` or a pointer to the store.
 
+### 2.10 Exclusive create
+
+NFS's exclusive create (NFSv3 `EXCLUSIVE`, NFSv4 `EXCLUSIVE4` and
+`EXCLUSIVE4_1`) carries an 8-byte verifier so that a retry of a create whose
+reply was lost can be told from a second client's create of the same name. The
+create stores the verifier in the File's `CreateVerifier`, in its own
+transaction. An exclusive create that finds the name taken **MUST** succeed,
+returning that file, when the file's `CreateVerifier` equals the request's,
+and **MUST** fail with "exists" otherwise. The first `SetAttrs` that writes the
+File record clears it, in its own transaction: a client follows an exclusive
+create with that set-attribute, after which a retry is rightly an error.
+
+The verifier **MUST NOT** be stored in a time attribute, as some servers do: the
+time would read back as the verifier until the set-attribute, and a write's
+`Modify` would erase the verifier before the client stopped retrying. A retried
+create that crosses a failover relies on it, because the primary's dedup table
+is lost ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)).
+
 ## 3. Names
 
 ### 3.1 Lookup resolves a name to a file, and that is all it does
@@ -634,6 +663,19 @@ on every backend, and one backend validates no reads at all ([RFC 6 §5.4](rfc-6
 it, a removal that only scanned for entries commits beside a create that only
 wrote one, and leaves an entry, and a file with `Nlink` 1, under a deleted
 directory.
+
+### 3.7 No short names
+
+A file has the names its entries hold and no other. No 8.3 short name is
+generated, stored or resolved: a lookup of one finds nothing, and SMB's
+alternate-name query (`FileAlternateNameInformation`) is answered not
+supported.
+
+> decision: short names are not generated. Each would be a second entry per
+> name, kept unique per directory and moved by every rename — a cost on every
+> create and rename, for a need current Windows clients no longer have.
+> Generate them, as a second entry kind, if an application in the target
+> workload is shown to need one.
 
 ## 4. What keeps a file alive
 
@@ -812,7 +854,7 @@ a handle that breaks on an operation that was supposed to be invisible to it.
 pseudo-filesystem ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) is not a `File`: it has no `FileID`, no
 share and no existence apart from its path, so its path *is* its identity and
 the rule above does not reach it. Its handle is a distinct kind carrying a
-digest of the installation's identity and the path, minted and resolved here
+digest of the installation's identity ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)) and the path, minted and resolved here
 like any other; it resolves by finding a share path under that path, and is
 stale when none remains. No handle of this kind names a file, so routing never
 looks for a share in it.
@@ -862,17 +904,37 @@ how large the directories above it are, for the whole time it is open.
 ### 6.5 A protocol's numeric file id is derived, and collisions are its problem
 
 Some protocols report a fixed-width integer identifying a file, narrower than
-the handle. Where one is derived by truncating or hashing the handle, the
-derivation **MUST** be one of:
+the handle. It is never derived from the handle or the `FileID`: a truncated
+hash of either is a silent aliasing of two files. Clients that treat the id as
+identity — hard-link detection, `find -samefile`, backup tools deciding two
+paths are one file — then conclude that two unrelated files are one, and back
+up or restore only one of them.
 
-- injective over the files of a share — a counter or a stored column; or
-- accompanied by a collision check that refuses or re-derives.
+**It is a stored number.** Every file carries `Number` ([§2.1](#2.1%20File)), a 64-bit
+integer allocated at create from the share's allocator ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), which
+each shard's primary reserves from in ranges so that creates do not contend on
+it. A number is **never reused** within its share: a range a failed primary
+had not used up is abandoned, not handed out again. Being a field, it is the
+same across restart, failover and a move between shards, and a restore into a
+new share may keep it, since it is unique only within a share.
 
-A truncated hash with neither is a silent aliasing of two files. Clients that
-treat the id as identity — hard-link detection, `find -samefile`, backup tools
-deciding two paths are one file — then conclude that two unrelated files are
-one, and back up or restore only one of them. A named stream reports its base
-file's id ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)).
+- NFS's `fileid` is `Number`.
+- SMB's 64-bit file id is `Number`; its 128-bit file id is a 64-bit value
+  derived from the `ShareID`, as the share's volume serial is
+  ([§2.8](#2.8%20A%20share%20is%20one%20filesystem)), followed by `Number`, so it is unique across the installation.
+- A named stream reports its base file's id ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)).
+- A file seen through a snapshot reports ids that differ from the live file's
+  ([RFC 12 §2.5](rfc-12-snapshots.md#2.5%20Browsing%20a%20snapshot)): the allocator issues numbers below 2⁶³, and a snapshot's
+  64-bit ids are `Number` with the top bit set; the high half of its 128-bit id
+  is derived from the `ShareID` and the cut.
+
+`Number` is not an index: nothing resolves a number to a file.
+
+> decision: opening by file id (SMB's `FILE_OPEN_BY_FILE_ID`) is refused as not
+> supported. It needs an index from number to `FileID`, one more record per
+> create, and it turns a guessable number into a way to reach a file without
+> traversing to it ([§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)). Add the index, checked against the traversal rules,
+> if a workload's clients are shown to open by id.
 
 ## 7. Permissions
 
@@ -934,7 +996,8 @@ of this store naming a principal's access to a share, and `Authorize` **MUST**
 evaluate it on every call, not only at mount or tree connect, before the file's
 mode or ACL. A client removed from a grant is then refused on its next call,
 whatever handles it has cached. `Root` takes the identity, and is authorised
-against the grant like every other call.
+against the grant like every other call; the filesystem service calls it when
+a client mounts or tree-connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
 
 An identity **MUST** carry every field any check reads — including the ones a
 particular backend's checks do not read — because the component that builds it
@@ -987,6 +1050,14 @@ ask open state anything: it writes the pending release when a file loses its las
 entry ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)), and the filesystem service consults open state before running
 the release ([RFC 14 §9](rfc-14-open-state.md#9.%20Open%20state%20and%20the%20life%20of%20a%20file)).
 
+### 8.2 A delete on close is an ordinary unlink, later
+
+SMB's delete on close and delete pending are open state
+([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)): they refuse new opens while the name stays, and are not
+a third holder ([§4.4](#4.4%20There%20is%20no%20third%20holder)). When the last open closes, the filesystem service
+unlinks the recorded entry through `Unlink`, exactly as a client would; this
+component sees nothing else of it.
+
 ## 9. Attributes and what is not one
 
 ### 9.1 Attributes are answers, not caches
@@ -1015,6 +1086,25 @@ transaction guards it instead, and guards do not conflict with each other
 ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)). The store folds deltas into the directory, and reading the directory
 applies any not yet folded ([RFC 16](rfc-16-metadata-store.md)). The change is never coalesced out of its
 transaction.
+
+**A directory's change info is not atomic.** NFSv4 reports, for every create,
+remove, rename, link and creating open, the directory's change attribute before
+and after the operation and whether the two bracket that operation alone. The
+transaction that writes the delta never reads the directory's `Version`, and a
+concurrent create in the same directory commits its own delta beside it, so no
+exact pair exists to report. `before` and `after` **MUST** be the directory's
+`Version` read just before and just after the transaction, and `atomic`
+**MUST** be false. A client given `atomic` false revalidates the directory
+rather than patching its cache, which is correct under any interleaving; a
+pair reported atomic that another create fell between would leave that entry
+out of the client's cache.
+
+> decision: change info is reported non-atomic, always. Exact values need the
+> directory's version at commit, which only reading the directory record — the
+> contention the delta removed — or a version the primary assigns could give.
+> Have the directory's primary assign each delta's version in memory, in its
+> serialised order, and report `atomic` from it, if NFS clients' directory
+> revalidation shows up in a profile.
 
 `Access` **MAY** be omitted, or updated on a coarse schedule. An implementation
 that updates it on every read has made every read a write, on a record shared by
@@ -1056,6 +1146,10 @@ existence ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%
 | N15 | `Mode` and the ACL agree after every transaction; `chmod` merges into the ACL as [RFC 8881 §6.4.1.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.4.1.1) specifies and never replaces it. |
 | N16 | A principal's usage is the sum of its files' `Charged`: each file's logical bytes, holes excluded, in full whether shared or not, unchanged by deduplication, compression or GC. |
 | N17 | On a case-insensitive share an entry is keyed by its folded name under the share's recorded fold rule, and stores the name as given. |
+| N18 | A file's numeric id is its stored `Number`: allocated at create, never changed, never reused in its share; every protocol's numeric id is derived from it and nothing resolves a number to a file. |
+| N19 | An exclusive create stores its verifier in `CreateVerifier`, never in a time; a retry with the same verifier succeeds until the first `SetAttrs` clears it. |
+| N20 | A file has only the names its entries hold: no short name is generated. |
+| N21 | A directory's change info is reported with `atomic` false. |
 
 ## 11. API surface and observability
 
@@ -1192,7 +1286,10 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§7.4](#7.4%20The%20identity%20arrives%20resolved) share grant | Remove a principal's grant while it holds cached handles and a cached authorisation. Assert its next call on each handle is refused. |
 | [§3.3](#3.3%20Case) case | On a case-insensitive share, create `README`, then `readme`. Assert the second conflicts, a lookup of `ReadMe` reads one key, and a listing returns `README` as given. |
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie | Delete an entry before the cursor mid-listing. Assert no untouched entry is skipped or repeated. Then evict every cached cookie and assert the listing resumes rather than restarting. |
-| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) file id | Generate ids for a large share. Assert no two live files share one, or that the derivation refuses on collision. |
+| [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20derived%2C%20and%20collisions%20are%20its%20problem) file id | Create and release 10⁶ files across two shards, failing one primary over mid-range and restarting. Assert no number was issued twice, released ones included, and that a surviving file reports the same NFS and SMB ids after the restart, the failover and a move to another shard. A derivation from the `FileID` or the handle fails the first assertion; a counter held in memory fails the second. |
+| [§2.10](#2.10%20Exclusive%20create) exclusive create | Create exclusively, drop the reply, retry with the same verifier: assert success and the same file. Retry with another verifier: assert "exists". `SETATTR`, retry with the first: assert "exists". Assert no time attribute ever read back as the verifier. Repeat the first retry across a failover. |
+| [§3.7](#3.7%20No%20short%20names) short names | Create a long name over SMB; query its alternate name and open its 8.3 form. Assert not supported, and not found. |
+| [§9.2](#9.2%20Timestamps) change info | 64 clients create in one directory. Assert every reply's change info has `atomic` false and `after` greater than `before`. |
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop, sequential | Rename a directory under its own child with no concurrency at all. Assert refusal. This is the one check that fails a build with no loop check on every backend, independent of how the backend detects conflicts. |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) one spelling | For each handle, derive every other byte form the decoder's underlying parser accepts. Assert each is refused, or resolves to the same file and compares equal, and that rename and locking through the alias behave as through the original. |
 | [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) name freed | Unlink a name and create it again as soon as the unlink is acknowledged, on every backend including a slow remote one. Assert the create never sees the name as taken and the parent's `Version` moved. |
