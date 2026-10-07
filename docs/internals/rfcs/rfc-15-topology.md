@@ -22,6 +22,18 @@ tags:
 **Audience:** anyone deploying more than one node, adding a component that must
 run on a particular kind of node, or deciding where a call is served.
 
+> [!note] Built after the single-node release
+> This design is not shelved. The first release is a single node scaled
+> vertically; horizontal scaling is the phase after it, needed for large
+> contracts, for large shares spread over several nodes and, later, for
+> NFSv4.2 and pNFS. Until then only its hooks are implemented, so that adding
+> nodes later is not a format migration:
+>
+> - the 128-bit content version, with its epoch half held at zero
+>   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions));
+> - the node epoch carried in the NFS write verifier ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), rule 3);
+> - one binary, with roles chosen by configuration ([§2.1](#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
+
 Conventions, RFC 2119 keywords and test tiers are set once in the
 [index](rfc-index.md).
 

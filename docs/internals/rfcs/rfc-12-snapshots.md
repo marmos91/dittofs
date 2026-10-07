@@ -875,8 +875,16 @@ A **catalog backup** is a copy of one snapshot's metadata outside the metadata
 store: the tree and the refs, and where the blocks they name are. It holds no
 data. It survives the loss of the metadata store, and nothing else: it does not
 survive the loss of the bucket or of the namespace's folder, the destruction of
-key material, or a bucket-level attack. Pair it with the bucket's own versioning
-or object lock, or use a copying backup ([§3.4](#3.4%20Copying%20backups)), which also copies the blocks.
+key material, or a bucket-level attack. Use a copying backup ([§3.4](#3.4%20Copying%20backups)), which also
+copies the blocks, against those losses.
+
+Versioning and object lock are recommended for a **backup location**, and never
+enforced. A block store refuses both; a backup location is the one exception
+([RFC 4 §8](rfc-4-remote-tier.md#8.%20Decisions%20and%20open%20questions), item 4): its bucket holds no namespace's blocks, what it holds
+expires by the bucket's lifecycle rule, and the credential used there cannot
+delete. [§3.4.4](#3.4.4%20Expiry%20and%20the%20sweep) says how expiry and the sweep behave at such a location.
+Turning either setting on for the namespace's own bucket is refused, so it
+cannot stand in for a backup.
 
 ### 3.1 A backup is an export of one snapshot's metadata
 
@@ -1198,6 +1206,33 @@ writer is the claim holder, so no other installation puts into the folder.
 > ([§5.2](#5.2%20Import%20is%20staged%20and%20published%20atomically)). Expiry is the operator's retention choice, and the rule above
 > never takes the last good backup. Add a restore mark that the sweep honours if
 > retention ever races restores in practice.
+
+**At an immutable location** — versioned or object-locked, expired by a
+lifecycle rule ([§3](#3.%20Catalog%20backups)) — DittoFS deletes nothing:
+
+- **Expiry** still marks the state object `expired` (a new version of it) and
+  then deletes the use record, as [§3.2](#3.2%20A%20backup%20holds%20its%20snapshot) orders, so an expired backup is still
+  never restored. Removing the export, its progress objects and its blocks is
+  the lifecycle rule's.
+- **The sweep** marks and settles and skips step 2: it lists nothing and deletes
+  nothing. The folder's census is still recomputed from the mark set, so
+  material leaves it as backups expire, whether or not the lifecycle rule has
+  removed their blocks yet.
+- **A copy takes no base**: every copy is full. An incremental copy reuses blocks
+  an older copy put, and a lifecycle rule expires by an object's age, not by
+  which manifests list it, so it would remove a block a newer backup still
+  needs.
+- **The lifecycle rule's age MUST be at least the longest retention of any
+  policy writing to the location**, so no export expires under DittoFS before
+  its backup does. It is the operator's statement, recorded in the policy, and
+  checked at open wherever the credential can read the bucket's lifecycle
+  configuration. The rule expires by age alone, so it can remove a share's
+  newest complete backup, which the retention rule above never does; the
+  operator keeps backups running often enough that a newer one exists first.
+
+> ponytail: every copy to an immutable location is a full copy. Upgrade to
+> reusing a base block whose age leaves it at least the new backup's retention
+> before the rule expires it, when full copies show in the location's cost.
 
 > ponytail: copies and sweeps of one folder run one at a time, so the backups of
 > a namespace's shares to one location are copied one after another. Upgrade to
@@ -1899,7 +1934,7 @@ shares:
 | S21 | Quota charges live logical bytes only; history bytes are reported per share and per snapshot. |
 | S22 | A subtree cut closes only its covered shards' gates and draws its number from the share's sequence. A version moves to history exactly when a live cut covering its shard sees it. A subtree snapshot shows only files of its covered shards, reached through covered directories, and no file moves into or out of a covered shard while the cut lives. |
 | S23 | Every chunk a copying backup's export names lies in a folder block its manifest lists, and that block is byte for byte the namespace's block of that name. A copy reuses only its base's folder blocks, and never one whose census names material being retired. |
-| S24 | A folder block is deleted only by a sweep that runs alone at its folder, from the namespace's claim holder, and finds the block in no manifest of a `complete` or `damaged` backup and in no progress of a `writing` one. Any unreadable export stops the sweep. Material named by a folder's census is never removed. |
+| S24 | At an immutable location no folder block is deleted by DittoFS, and no copy reuses a base block ([§3.4.4](#3.4.4%20Expiry%20and%20the%20sweep)). Elsewhere, a folder block is deleted only by a sweep that runs alone at its folder, from the namespace's claim holder, and finds the block in no manifest of a `complete` or `damaged` backup and in no progress of a `writing` one. Any unreadable export stops the sweep. Material named by a folder's census is never removed. |
 | S25 | A copying backup releases its snapshot only once `complete`. Retention never expires a share's newest complete copying backup at a location. A restore from one re-encodes into a new namespace, checks every chunk against its plaintext hash, and publishes all or nothing. |
 | S26 | During a re-home every ref of the share names the namespace its chunk is counted in. A switch adopts in the new namespace and drops from the old in one transaction, keeping `born` and `died`, so no snapshot's or live read's bytes change. The re-home finishes only when no ref names the old namespace. |
 
@@ -2113,6 +2148,15 @@ files log at `Warn`.
    the holder can sweep; it needs replication across installations or a byte copy.
 2. **Handles across a recovery import.** It assigns new FileIDs, so clients remount;
    keeping them would need proof that no other restore of the namespace used them.
+3. **Immutability at the filesystem layer.** Backups can be made immutable at
+   the location's bucket ([§3](#3.%20Catalog%20backups)). Whether regulated data needs immutability
+   inside the filesystem — a file, snapshot or share that cannot be changed or
+   deleted before a retention date, enforced by DittoFS — is being looked at
+   ([RFC 4 §8](rfc-4-remote-tier.md#8.%20Decisions%20and%20open%20questions), item 8).
+4. **Does a restore need resurrection?** Resurrection of a retired block is
+   deferred with dedup; whether a restore can reference a block retired after
+   its backup was taken, and so keeps resurrection for that path alone, is open
+   ([RFC 9 §12](rfc-9-gc.md#12.%20Open%20questions), item 7).
 
 ---
 

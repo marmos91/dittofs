@@ -97,7 +97,7 @@ against content. Every record in this document is one of two kinds:
 
 | | Per-file | Content-addressed |
 | --- | --- | --- |
-| Records | FileData, Hole, Removal, ChunkRef (live and history), fences | Chunk, Block, put intent, GC index keys |
+| Records | FileData, Hole, Overwrite, Removal, ChunkRef (live and history), fences | Chunk, Block, put intent, GC index keys |
 | Keyed by | `FileID` | chunk hash or block name |
 | Written by | the write path, removals, and the offload commit for the refs it adds | the offload commit, relocation and GC |
 | Reached by a client operation | yes | never directly |
@@ -119,14 +119,14 @@ is [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-sha
 ## 2. The records
 
 Block metadata holds three things — a file's **existence**, its **content map**,
-and the **blocks** the content lives in — in six kinds of content record, plus
+and the **blocks** the content lives in — in seven kinds of content record, plus
 the records shard placement, snapshots and sweep need. Each record is keyed by exactly
 one thing, answers exactly one question, and none holds a list that grows with
 its file.
 
 Callers see three **entities** from this document, in the `metadata` package
 ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)): `ChunkRef`, `Chunk` and `Block`. The rest — FileData (fields of
-RFC 7's `File`), Hole, Removal, the fences, Cut and LiveCut, put intents,
+RFC 7's `File`), Hole, Overwrite, Removal, the fences, Cut and LiveCut, put intents,
 the reverse ref index, the GC index keys and the chunk change stamp — are **bookkeeping
 records**: they exist for this document's guarantees, stay behind its
 interfaces ([§10.1](#10.1%20Interface)), and are not entities. Holes reach a caller only as the answer
@@ -194,6 +194,7 @@ ref is a `ChunkRef` with `Died` set.
 | --- | --- | --- | --- | --- |
 | Existence ([§3](#3.%20Existence)) | **FileData** | `FileID` — fields of RFC 7's `File` value | size, `applied` version, `Version`, `Charged`, write-time `Modify` and `Change` | how long is the file, when was it written, what is it charged, and up to which journal version is that recorded? |
 | | **Hole** | `(FileID, start)` | end | was this range never written? |
+| | **Overwrite** | `(FileID, start)` | end, overwriting version, `born` | was this range overwritten after content here was carved, and by which version? ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) |
 | | **Removal** | `(FileID, version)` | removed range, kind, cursor, done | what did a truncate, deallocate, release or clone remove, at which version, and how far has dropping its refs got? |
 | Content map ([§2.1](#2.1%20ChunkRef)) | **ChunkRef** | `(FileID, offset)` | chunk hash, skip, length, content versions, `born` | which bytes of which chunk are these? |
 | | **History** | `(FileID, died, offset)` | a `ChunkRef` as it was, with `Died` set to its successor's `born` | which bytes did a snapshot see here? |
@@ -209,9 +210,10 @@ ref is a `ChunkRef` with `Died` set.
 
 Who writes each record:
 
-| | FileData, Hole | Removal | ChunkRef, History | Chunk | Block | `F_x` | `F_o` | Cut, LiveCut | Put intent | GC index keys |
+| | FileData, Hole, Overwrite | Removal | ChunkRef, History | Chunk | Block | `F_x` | `F_o` | Cut, LiveCut | Put intent | GC index keys |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Existence commit | writes | — | — | — | — | reads | — | — | — | — |
+| Overwrite pruning ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) | deletes Overwrite | — | reads | — | — | reads | — | — | — | — |
 | Writer before a put ([§7.6](#7.6%20Put%20intents)) | — | — | — | — | — | — | — | — | creates | — |
 | Offload commit | — | reads | writes | creates, counts | creates, counts | — | reads | reads `Cut` | deletes | writes |
 | Removal, phase 1 ([§6.2](#6.2%20Truncation%20and%20deallocation)) | writes | writes | — | — | — | writes | writes | — | — | — |
@@ -377,6 +379,7 @@ tiering, or moving between buckets — `Block` gains a `Store` field then.
 
     FileData(file)         = { size, applied, Version, Charged, Modify, Change }   // fields of RFC 7's File value
     Hole(file, start)      = { end }
+    Overwrite(file, start) = { end, version }
     Removal(file, version) = { start, end, kind, cursor, done }
 
 **FileData is not a record of its own.** It names the fields of the one `File`
@@ -389,6 +392,13 @@ they sit. Every rule below that says "FileData" means those fields.
 A hole record is one extent `[start, end)` below `size` that was never written,
 or was deallocated. A file's holes never overlap or touch — adjacent holes merge
 — and a dense file has none. A hole is its own record for the reason a ref is.
+
+An overwrite record is one extent `[start, end)` whose existing content a
+committed write replaced, and `version`, the journal version of the newest write
+that did. The file's overwrite records are its **overwrite set**; they never
+overlap one another, and a dense file that is only appended to has none. An
+offset in the overwrite set whose covering ref's `newest` is below the record's
+`version` is uncarved, whatever that ref says ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)).
 
 `Modify` and `Change` are the times of the last write, set here so that a write
 touches one record ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)).
@@ -441,8 +451,8 @@ one its chunk is counted in, and a read, an adoption or a drop of the ref
 resolves the chunk in that namespace only. The
 namespace ID is the key scope that key derivation mixes in ([RFC 8](rfc-8-engine.md)), so two
 namespaces can never name one object, and no chunk record, count, adoption or
-GC pass spans two namespaces. A deduplication lookup ([§8.2](#8.2%20Deduplication%20lookup)) reads only its
-own namespace's partition.
+GC pass spans two namespaces. A deduplication lookup, once deduplication is
+added ([§8.2](#8.2%20Deduplication%20lookup)), reads only its own namespace's partition.
 
 Two partitions that can name one key, each keeping its own count, are forbidden.
 
@@ -493,8 +503,17 @@ and found none, and found `Intent(K1)` present. The journal marks both extents
 durable; they are **Resident** and evictable.
 
 **t4 — overwrite 1 MiB at 1M, v3, and `COMMIT`.** FileData's `applied` becomes 3 and
-`size` is unchanged. No ref changes. The journal holds v3 at `[1M, 2M)`, newer
-than the ref's `newest`, so that extent is **Dirty** again.
+`size` is unchanged. No ref changes. The write replaced content that existed
+before this commit, so the commit records it:
+
+| Record | Value |
+| --- | --- |
+| Overwrite(f, 1M) | end 2M, version **3** |
+
+The journal holds v3 at `[1M, 2M)`, newer than the ref's `newest`, so that extent
+is **Dirty** again. `Ref(f, 0)` still covers it with `newest` 2, below the
+overwrite's 3, so metadata calls it **uncarved**: if the journal now loses v3, a
+read fails as **Lost** instead of fetching A's old bytes.
 
 **t5 — offload the overwrite.** The carver cuts chunk C into block K2, minted and
 intended like K1, and the commit splits the ref around it:
@@ -511,6 +530,9 @@ intended like K1, and the commit splits the ref around it:
 | Block(K2) | live 1 |
 
 A was not rewritten. Its middle MiB is dead weight in K1 that no ref uses.
+`Ref(f, 1M)` has `newest` 3, not below the overwrite's version, so `[1M, 2M)` is
+carved again from this commit on; the offload commit wrote nothing for that, and
+the primary's next pruning deletes `Overwrite(f, 1M)`.
 
 **t6 — truncate to 3 MiB, v4.** The journal truncates and assigns v4; then the
 removal runs in two phases ([§6.2](#6.2%20Truncation%20and%20deallocation)). Phase 1, one transaction, touches no ref:
@@ -542,8 +564,10 @@ offered below v4 is in flight, the primary prunes the removal.
 kind release; phase 2 drops the three refs and their reverse keys. K1's and K2's
 `live` reach 0, and the sub-transaction that takes each to zero retires it:
 Block(K1) moves to `retired` with `not_before` 48 h ahead, and Chunk(A) and
-Chunk(B) stay, still naming K1, so a write of the same content within 48 h
-resurrects K1 instead of uploading. After `not_before` the deleter finds no
+Chunk(B) stay, still naming K1, so a clone or restore that names A or B within
+48 h resurrects K1. An offload of the same content does not: it carries the
+bytes, and its commit repoints Chunk(A) and Chunk(B) to its own block
+([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)). After `not_before` the deleter finds no
 reverse key under A or B, moves K1 to `deleted`, deletes the object, and prunes
 Block(K1) with Chunk(A) and Chunk(B) ([§7.1](#7.1%20Conditional%20retirement)). No intent names K1 and no record can again,
 so the delete needs no fence ([§7.6](#7.6%20Put%20intents)). With phase 2 done and no pass in
@@ -567,11 +591,16 @@ disjoint and exhaustive. These are [RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20T
 | Class | Meaning | Residency with journal present | Residency with journal absent |
 | --- | --- | --- | --- |
 | **hole** | in the hole set | — | **Absent** |
-| **uncarved** | not a hole, no ref covers it | **Dirty** | **Lost** |
-| **carved** | a ref covers it | **Resident** | **Remote** |
+| **uncarved** | not a hole, and either no ref covers it, or an overwrite record covers it whose `version` is above the covering ref's `newest` | **Dirty** | **Lost** |
+| **carved** | a ref covers it, and no overwrite record above that ref's `newest` does | **Resident** | **Remote** |
 
 An offset at or beyond `size` is past end of file. A zero ref is carved and reads
-as zeros without a fetch.
+as zeros without a fetch, unless an overwrite record makes the offset uncarved.
+
+A ref covering an offset in the overwrite set at a lower version describes
+content the file no longer holds there. The offset **MUST** be classed uncarved,
+so that with no journal copy it resolves as **Lost**, never as **Remote**: a
+fetch would return the older bytes as though they were current.
 
 ![A file drawn as a strip below its size: a hole from a write beyond EOF, a carved run of refs, an uncarved run written since the last offload, and the three questions metadata answers for each](img/rfc4-offset-classes.svg)
 
@@ -587,6 +616,56 @@ set however it was written. Holes are still routine: clients send one file's
 writes as many concurrent requests that arrive in any order, so a sequential copy
 creates and fills holes continuously, and the per-write cost bound of [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)
 applies to them.
+
+**Holes alone cannot tell a stale ref.** An overwrite of content that was
+already offloaded changes only `size`, if anything, and leaves the old ref in
+place until the next offload replaces it. If the journal loses the newer bytes
+in between, the offset is still covered by a ref, the journal holds nothing, and
+[RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function) would resolve it as **Remote** and serve the old chunk with no
+error. Existence therefore also records the **overwrite set**
+([§2.4](#2.4%20FileData%20and%20holes)):
+
+- **An existence commit writes an overwrite record for every run of a write it
+  covers that overlaps content whose existence was committed before it** —
+  below the earlier `size` and outside the hole set — with `version` the
+  newest version covering that run. It writes none for a first write into a
+  hole or past `size`, so appends and first writes write nothing new. Where the
+  run overlaps an existing overwrite record, the overlapped part takes the new
+  version and the record is split around it; records of different versions are
+  never merged, since a merged record would hold back a range already carved
+  past its own version.
+- **The test is existence, not refs.** The commit does not read refs: content
+  whose existence is committed may be under an offer in flight
+  ([§3.4](#3.4%20Ordering%20against%20the%20journal)), whose commit can land after this one with an older ref,
+  so "no ref covers it yet" does not mean "no ref will". Existence is already
+  in the commit's read set, so the decision costs no extra read.
+- **An offset leaves the overwrite set by version, not by deletion.** It is
+  carved again the moment a ref whose `newest` is at or above the record's
+  `version` commits over it ([§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)); the offload commit that writes that ref
+  touches no overwrite record ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)).
+- **The file's primary prunes superseded records.** Once every ref over a
+  record's range has `newest` at or above its `version`, or the range lies in a
+  hole or past `size`, the primary deletes the record in a transaction of the
+  existence path, guarded by `F_x` ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)), moving it to history as a hole
+  moves when a live cut still sees it ([§6.5](#6.5%20Who%20owns%20a%20ref)). Refs over the range only ever
+  gain versions ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) or leave with a removal that already dropped the
+  record, so the prune's read of them needs no conflict tracking. Pruning is
+  housekeeping: a record never pruned costs lookup work, never a wrong answer.
+- **A removal's phase 1 drops or narrows the overwrite records in its range**,
+  as it does holes ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+
+The cost is one record per overwritten run per commit, bounded as holes are
+([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A read adds no lookup: the covering lookup already reads the file's
+per-file range, and the overwrite records sit in it beside the holes
+([§8.1](#8.1%20Covering%20lookup)).
+
+> ponytail: an overwrite record is written for any overwrite of committed
+> content, carved or not, because existence cannot see an offer in flight. A
+> workload that rewrites the same uncarved range at every stability point pays
+> one record write per stability point it would otherwise not. Narrow it to
+> "carved, or under an offer in flight" — which needs the engine to pass its
+> in-flight offer ranges into the existence commit — when that write shows in
+> the existence-commit profile.
 
 ### 3.4 Ordering against the journal
 
@@ -618,7 +697,8 @@ The rules:
   which is what existence is recorded for.
 - A write acknowledged but not yet stable whose journal copy is lost disappears
   without trace. That is what an unstable write permits; the server's write
-  verifier changes on restart, so clients resend.
+  verifier changes on restart and on every journal loss
+  ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), so clients resend.
 - **Truncate, deallocate, release and clone are synchronous in their first
   phase**: each commits the file's pending existence and its own existence change
   in one transaction before it returns; dropping its refs follows in batches
@@ -642,9 +722,10 @@ The rules:
 | Operation | Effect on existence |
 | --- | --- |
 | Write starting past `size` | `size` grows; `[old size, write offset)` becomes a hole |
+| Write over committed content | an overwrite record covers the overwritten runs ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) |
 | Truncate up | `size` grows; `[old size, new size)` becomes a hole |
-| Truncate down | `size` shrinks; holes past it are dropped; a removal is recorded |
-| Deallocate | the range becomes a hole; refs over it are dropped or narrowed ([§6](#6.%20Reference%20counting)); a removal is recorded |
+| Truncate down | `size` shrinks; holes and overwrite records past it are dropped; a removal is recorded |
+| Deallocate | the range becomes a hole and loses its overwrite records; refs over it are dropped or narrowed ([§6](#6.%20Reference%20counting)); a removal is recorded |
 | Allocate | none — see below |
 
 **Allocate MUST NOT remove a hole** unless the zeros it promises are staged in
@@ -674,7 +755,7 @@ An offload pass ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)) ends in o
 - the refs for the extents the pass carved, replacing what they overlap, and the
   history moves that replacement requires ([§6.5](#6.5%20Who%20owns%20a%20ref));
 - the refcount and `live` changes those refs imply ([§6](#6.%20Reference%20counting)), including for chunks
-  the pass adopted from earlier blocks.
+  whose record an earlier block already holds.
 
 Partial application **MUST NOT** be observable: a ref without its chunk, a
 refcount without its ref, or a chunk without its block each turns a later read or
@@ -687,13 +768,15 @@ counted in its `live`. A block all of whose chunks were adopted, or whose refs
 were all dropped, commits with `live` at zero; its creating commit **MUST**
 retire it ([§7.1](#7.1%20Conditional%20retirement)), since no later refcount change can reach it. A commit
 that carries a chunk whose record names a `retired` or `deleted` block repoints
-the record to itself ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)).
+the record to itself ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)). Counting on a record the commit's own block also
+carries is not deduplication: the bytes were put, and no lookup decided
+anything, so it stays in the first release ([RFC 0 §3.1](rfc-0-data-lifecycle.md#3.1%20Deduplication)).
 
 **A block record is created once.** The intent is consumed by the commit, and a
 name is never minted twice ([§7.6](#7.6%20Put%20intents)), so a commit never finds its block record
 already present; one that does has met a corrupt store and **MUST** fail as
-`ErrInconsistent`. There is no "recorded, skip the put" path: deduplication is
-by chunk, through `Durable(hash)` ([§8.2](#8.2%20Deduplication%20lookup)), never by block name.
+`ErrInconsistent`. There is no "recorded, skip the put" path: deduplication,
+once added, is by chunk, through `Durable(hash)` ([§8.2](#8.2%20Deduplication%20lookup)), never by block name.
 
 **The commit checks, per file and inside its transaction:**
 
@@ -713,7 +796,9 @@ by chunk, through `Durable(hash)` ([§8.2](#8.2%20Deduplication%20lookup)), neve
 A dropped ref leaves the rest of the commit to apply. The block is durable either
 way; a chunk it carries only for dropped refs is dead weight.
 
-**An adoption that fails SHOULD NOT fail the whole commit.** If a chunk the pass
+**An adoption that fails SHOULD NOT fail the whole commit.** This applies once
+deduplication is added; in the first release an offload commit adopts nothing
+it did not carry. If a chunk the pass
 adopted is gone — its block `deleted` ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)) — the commit **SHOULD** apply the block record, the
 chunks it carries and their refs, and fail only the adopting refs, which are
 re-offered; failing the whole commit leaves the put block with no record and
@@ -781,12 +866,21 @@ commit of either path also writes is the shared key this section forbids
 ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)). `size` and `mtime` belong to the write path; the offload commit
 **MUST NOT** touch them.
 
+The overwrite set is the write path's too. An offload commit that carves an
+overwritten range again **MUST NOT** delete or rewrite its overwrite record:
+the record leaves the set by version comparison ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)), and the primary's
+pruning deletes it later on the existence path. A commit that cleared it would
+share a key with every stability point of a client rewriting that range — a
+database page, a log rewritten in place — which is this section's livelock.
+
 ### 5.2 Cost per commit is bounded by what changed
 
 An offload commit **MUST** write O(refs replaced + chunks committed + blocks
 committed) records, and **MUST** read no more than O(log *n*) records per ref it
 replaces, where *n* is the number of refs in the file. An existence commit
-**MUST** write O(holes changed) records per file it covers. No per-commit cost may
+**MUST** write O(holes changed + overwritten runs) records per file it covers:
+one overwrite record per run of a write that replaced committed content, plus
+at most two for the existing records it splits ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)). No per-commit cost may
 grow with the size of the file: a commit that is O(file) makes a file of *N*
 chunks O(*N*²) to write. A record that packs many refs into one value counts as
 the refs it holds: loading and re-encoding a file's whole ref list to change its
@@ -818,8 +912,10 @@ configured. A sub-transaction's cost is O(K), whatever the file's size.
   usage. Refcounts are not usage and stay transactional: a chunk's count moves
   in the same transaction as the refs that change it ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)).
 
-Contention on the first **MUST** be measured under a deduplicating workload
-before shipping; it is a release gate, not an open item. If it shows, one
+Contention on the first **MUST** be measured before shipping, under many files
+carrying the same content and many clones of one file — a popular chunk still
+has one record without deduplication ([§4.1](#4.1%20What%20one%20commit%20records)) — and again under a deduplicating
+workload before deduplication is added; it is a release gate, not an open item. If it shows, one
 remedy is to decline adoption above a refcount ceiling and write a fresh chunk.
 With one record per hash ([§2.2](#2.2%20Chunk)) a fresh copy still counts on the same record,
 so the remedy needs a way to key it apart; that is open ([§12](#12.%20Open%20questions)).
@@ -942,7 +1038,8 @@ change then runs in two phases.
 **Phase 1 — one transaction, O(1) plus holes changed, writes no ref:**
 
 - commits the file's pending existence ([§3.4](#3.4%20Ordering%20against%20the%20journal));
-- updates existence ([§3.5](#3.5%20Operations%20that%20make%20holes)) and sets `applied = max(applied, v)`;
+- updates existence ([§3.5](#3.5%20Operations%20that%20make%20holes)), dropping or narrowing the holes and overwrite
+  records inside the range, and sets `applied = max(applied, v)`;
 - writes `Removal(file, v)` with its range and kind, `cursor` at the range's
   start, `done` false;
 - reads and writes `F_x(file)` and `F_o(file)` at the current epoch ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)).
@@ -1102,7 +1199,8 @@ and writes nothing per file when it is taken:
   ([M10](#9.%20Invariants) governs live refs) — or dropped, when no live cut is left in its
   range ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
 - **Namespace records are versioned the same way.** `File` (FileData
-  included), `Entry`, `ACL`, `Xattr`, stream links and holes carry `born`. A
+  included), `Entry`, `ACL`, `Xattr`, stream links, holes and overwrite records
+  carry `born`. A
   transaction that supersedes or deletes one a live cut can see
   (some live *c* with `born < c ≤ died`) moves its old value, in the same
   transaction, to history under `F‖id‖H‖died‖…` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), `died` being
@@ -1259,15 +1357,24 @@ record in its carried list that still names it.
 
 ### 7.2 Adoption is conditional on existence
 
-An offload commit, clone or restore that references a chunk it did not carry
-reads the chunk record and the block it names, and acts on that block's state:
+A clone or restore that references a chunk it did not carry — and, once
+deduplication is added, an offload commit that does — reads the chunk record and
+the block it names, and acts on that block's state:
 
 - `live`: counts as usual;
 - `retired`: counts, and **resurrects** the block in the same transaction — its
   `live` 0 → 1, state `live`, retired index key deleted, `not_before` cleared;
 - `deleted`, or no chunk record: the adopting ref **MUST** fail, and the
-  transaction **MUST NOT** recreate the record; the pass re-offers the chunk
-  carrying its bytes.
+  transaction **MUST NOT** recreate the record; a clone or restore fails its
+  batch ([§6.6](#6.6%20Clone%20and%20server-side%20copy), [§7.4](#7.4%20Restore)), and a pass re-offers the chunk carrying its bytes.
+
+**In the first release offload adopts nothing** ([RFC 0 §3.1](rfc-0-data-lifecycle.md#3.1%20Deduplication)): an offload
+commit references only chunks its own block carries, so it takes the carrying
+path below and never resurrects a block. A block whose count has reached zero is
+then raised again only by a clone or a restore, both of which take their chunks
+from refs that already exist; the race below is theirs alone until
+deduplication is added, and the rules stay as written so that adding it needs no
+new protocol.
 
 A commit that **carries** a chunk whose record names a `retired` or `deleted`
 block repoints the record to its own block, as a first writer does, and leaves
@@ -1409,9 +1516,15 @@ retry ([RFC 5](rfc-5-transforms.md)).
     Covering(file, offset, n) → the refs, holes and uncarved runs over [offset, offset + n), in order
 
 This is the read path's question, asked per extent the journal does not hold
-([RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resolution)). It **MUST** cost O(log *n* + results) in the number of refs and
-holes of that file, and **MUST** be a method on the declared interface
-([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+([RFC 0 §6.1](rfc-0-data-lifecycle.md#6.1%20Resolution)). It **MUST** cost O(log *n* + results) in the number of refs,
+holes and overwrite records of that file, and **MUST** be a method on the
+declared interface ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+
+It applies the file's overwrite set ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)): where an overwrite record's
+`version` is above the `newest` of the ref covering an offset, that part of the
+ref is not returned, and the offset is returned as uncarved. The records are
+read from the same per-file range as the refs and holes, so this adds results,
+not a lookup.
 
 It applies the file's removals that are not done ([§6.2](#6.2%20Truncation%20and%20deallocation)): a ref inside such a
 removal's range whose `newest` is below its version is absent, a straddler is
@@ -1419,11 +1532,23 @@ clipped at the range's edge, and the offset resolves by existence. A file has at
 most a handful of removals not done, so the mask adds O(removals) to the lookup.
 
 A snapshot's covering lookup at cut *k* reads live refs with `born` < *k* and
-history refs with `born` < *k* ≤ `died` ([§6.5](#6.5%20Who%20owns%20a%20ref)).
+history refs with `born` < *k* ≤ `died` ([§6.5](#6.5%20Who%20owns%20a%20ref)), and applies the overwrite
+records visible at *k* by the same rule against them. Content whose overwrite
+committed before the cut and is held for it in the journal
+([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) therefore resolves as **Lost** at *k* if the journal loses it,
+never as the older ref the cut can also see.
 
 ### 8.2 Deduplication lookup
 
     Durable(hash) → chunk | none
+
+**Not in the first release; this is the design for re-adding deduplication**
+([RFC 0 §3.1](rfc-0-data-lifecycle.md#3.1%20Deduplication)). In the first release nothing calls it: an offload carries
+every chunk it cuts, and its commit finds an existing record for a carried hash
+inside its own transaction ([§4.1](#4.1%20What%20one%20commit%20records)), never by asking first. A backend
+**MAY** leave it unimplemented until deduplication is added; the key layout it
+needs — one chunk record per hash per namespace ([§2.2](#2.2%20Chunk)) — is already the
+first release's.
 
 Returns the chunk record for `hash`, if any. By [§4.2](#4.2%20Only%20after%20durability) a record implies a durable
 block, so this is the complete answer to "may this chunk be referenced rather than
@@ -1466,7 +1591,7 @@ supersedes, so an offload commit writes up to two more records per ref.
 | M4 | A chunk's refcount equals its reverse ref keys, which equal the live and history refs naming it, and `live` equals the referenced chunk records naming the block, at every commit point. A masked ref stays counted until the transaction that deletes it. |
 | M5 | A count that would go negative fails the transaction and schedules a targeted recount; it never clamps and never wedges. |
 | M6 | A block is `retired` exactly when its `live` is zero, by the transaction that took it there, and is resurrected by any transaction that raises it while `retired`. It moves to `deleted` only in a transaction that finds no reverse ref key for any chunk whose record names it, and its object is deleted only once the record is `deleted`. |
-| M7 | Adoption of a chunk resurrects its block if `retired`, fails if its record is gone or its block `deleted`, and never recreates a record. |
+| M7 | Adoption of a chunk resurrects its block if `retired`, fails if its record is gone or its block `deleted`, and never recreates a record. In the first release an offload commit adopts no chunk it did not carry, so only a clone or restore can resurrect a block. |
 | M8 | No record is written by both an existence commit and an offload commit. |
 | M9 | A transaction's cost is bounded by what it changed, not by the file: an operation over many refs runs as an O(1) intent and batches of at most K refs. |
 | M10 | A commit never replaces a ref with strictly older content, never applies a ref below an overlapping removal's version, and never applies under a stale primary epoch read from its path's fence record. |
@@ -1479,6 +1604,7 @@ supersedes, so an offload commit writes up to two more records per ref.
 | M17 | No zero chunk is stored or counted. |
 | M18 | A removal drops only refs whose `newest` is below its version, masks what it has not yet dropped, and `applied` never moves backwards. |
 | M19 | Every read that gates a commit conflicts with every concurrent write that would change it; no gate depends on a range scan or on an in-process guard. |
+| M20 | A ref never makes an offset carved while an overwrite record of higher version than the ref's `newest` covers it; every write over content whose existence was committed records one at its stability point, and no offload commit writes one. |
 
 ## 10. API surface and observability
 
@@ -1519,6 +1645,9 @@ type Existence interface {
     Remove(ctx context.Context, file FileID, epoch uint64, r Removal, pending PendingExistence) error
     Allocation(ctx context.Context, file FileID, off int64) (Span, error) // SEEK_DATA / SEEK_HOLE
     Applied(ctx context.Context, file FileID) (JournalVersion, error)             // §3.4 recovery
+    // PruneOverwrites deletes the file's overwrite records that refs at or above
+    // their version now cover (§3.3); housekeeping, never needed for a right answer.
+    PruneOverwrites(ctx context.Context, file FileID, epoch uint64) error
 }
 
 type Content interface {
@@ -1530,7 +1659,7 @@ type Content interface {
     PruneRemovals(ctx context.Context, file FileID, atOrBelow JournalVersion) error      // §6.2
     Covering(ctx context.Context, file FileID, off, n int64) iter.Seq2[Span, error] // §8.1
     SnapshotCovering(ctx context.Context, file FileID, cut SnapshotCut, off, n int64) iter.Seq2[Span, error] // §6.5
-    Durable(ctx context.Context, hash ChunkHash) (ChunkAt, bool, error)                // §8.2
+    Durable(ctx context.Context, hash ChunkHash) (ChunkAt, bool, error)                // §8.2; deferred with deduplication
     Clone(ctx context.Context, src, dst FileID, epoch uint64, srcOff, dstOff, n int64, v JournalVersion) error // §6.6
     Cut(ctx context.Context, share ShareID) (SnapshotCut, error)                    // §6.5, behind the cut gate
     DropCut(ctx context.Context, share ShareID, k SnapshotCut) error                // §6.5, batched
@@ -1612,6 +1741,8 @@ the tiers and under the rules of the [index](rfc-index.md).
 | Requirement | Check |
 | --- | --- |
 | [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) hole vs uncarved | Write past EOF, commit existence, do not offload, drop the journal's extent. Assert the gap reads zeros and the written range **fails**. A rig that only checks the zeros passes the build that serves zeros for both. |
+| [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite of carved content | Write `[0, 4M)`, commit, offload; overwrite `[1M, 2M)`, commit existence, do not offload, then drop the journal's extent. Assert `[1M, 2M)` **fails** as **Lost** and the rest reads the first write. A design that records only holes passes every other row and serves the old chunk here. Repeat with an offload of the first write in flight across the overwrite's commit, landing after it: assert the same. Then offload the overwrite; assert the range reads the new bytes with the journal's copy dropped, and that the offload commit wrote no overwrite record. |
+| [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite under a snapshot | Snapshot after the overwrite's existence commit and before its offload; drop the held journal copy. Assert the snapshot's read of the range fails as **Lost**, not the older ref it also sees. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal) recovery replay | Write, crash before the stability point. Assert recovery re-applies existence from the journal and the write reads back. Then commit, crash, drop the journal extent. Assert the read fails as **Lost**. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal) group commit | Write to 64 files, then `COMMIT` one. Assert one transaction covered every file with pending existence. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate a range with nothing staged. Assert it reads zeros, not a failure. |
@@ -1619,7 +1750,8 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order) commit order | Commit B, then A over the same offsets with a lower `newest`. Assert B's refs survive. Commit again with a `newest` inside B's range. Assert nothing changes and the extent is reported durable. |
 | [§4.1](#4.1%20What%20one%20commit%20records) two writers, one chunk list | Through the real carver, put the same chunks from two files in two attempts. Assert two names, the second block born with `live` zero and `retired`, due at once, and both files' refs applied. |
 | [§4.1](#4.1%20What%20one%20commit%20records) primary epoch | Commit with an epoch below `F_o`, and with `F_o`'s epoch under another shard. Assert `ErrStaleEpoch` and no record changed; repeat for an existence commit against `F_x` and a removal against both. |
-| [§4.1](#4.1%20What%20one%20commit%20records) partial adoption failure | Delete an adopted chunk's block before the commit. Assert the carried chunks and their refs apply and only the adopting refs fail. |
+| [§4.1](#4.1%20What%20one%20commit%20records) partial adoption failure | Once deduplication is added: delete an adopted chunk's block before the commit. Assert the carried chunks and their refs apply and only the adopting refs fail. |
+| [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) offload never resurrects | Commit chunk A in K1, release its file so K1 retires, then offload another file carrying A. Assert K1 stays `retired`, Chunk(A) names the new block, and `MarkDeleted` on K1 then succeeds. A build that lets offload adopt instead resurrects K1 and uploads nothing for A. |
 | [§5.4](#5.4%20Reads%20that%20gate%20a%20commit) gating reads | For each row of §5.4's table, run the gated commit and the conflicting write concurrently on each backend. Assert one fails or retries. Then replace the gating read with a range scan or a plain snapshot read. Assert the check fails, so the rig sees the defect. |
 | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount | Over random interleavings of commit, truncate, deallocate, clone, snapshot, snapshot deletion and delete, with phase 2 batches interleaved, assert after every transaction that each refcount equals its reverse keys and its live plus history refs, and that a block is `retired` exactly when its `live` is zero. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation) versioned removal | Offer at versions ≤ 3, truncate at 4, commit. Assert refs past the new size are dropped, others apply, and no ref lies past `size`. Then offer, deallocate a range the pass did not carve, commit. Assert every ref applies. |
@@ -1647,12 +1779,13 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) amplification | Write a file of *N* chunks for several *N*. Assert records **written** per commit are constant in *N*. A correctness assertion on the refs passes a quadratic implementation. |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) read side | Same files, appended sequentially so every commit extends the tail. Assert records **read and decoded** per commit grow at most logarithmically in *N*, counting a record that packs many refs as the refs it decodes. A commit that loads the file's whole ref list writes one record and passes the check above. |
 | [§3.3](#3.3%20Holes%2C%20not%20written%20extents) out-of-order writes | Write a file of *N* MiB as shuffled 1 MiB writes, for several *N*. Assert no hole records remain and records written per write are constant in *N*. |
+| [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite records | Append *N* MiB with a stability point per MiB; assert no overwrite record is written. Overwrite one 1 MiB run per stability point at random offsets; assert each existence commit writes at most three overwrite records, and that after offload and pruning none remains. Stream overwrites of one range while its offload commits; assert no offload commit retries because of the writer. |
 | [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) write sets | Stream appends to one file while its offload commits. Assert no commit retries because of the writer. A single-writer rig cannot fail this. |
 | [§8.1](#8.1%20Covering%20lookup) lookup | Assert records **read** per covering lookup grow at most logarithmically in *N*, counting index iterator steps as well as row loads. |
 | [§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor) floor index | Assert `VersionFloor` reads O(1) records per share, and that no commit writes a per-share record. |
 | [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) | Store a file's refs across a range of sizes. Assert no stored value reaches the storage engine's inline threshold at the refs' worst-case encoding, not a fixture's. |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) K | Truncate, release, clone and delete a snapshot of files of 10³ to 10⁷ refs. Assert every transaction stays within the backend's limits and touches at most K refs, and K is not a configuration key. |
-| [§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file) hot refcount | Adopt one chunk from many writers at once. Report commit latency and conflict retries; the release gate reads this. |
+| [§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file) hot refcount | Commit one chunk from many writers at once, each carrying it, and clone one file many times at once. Report commit latency and conflict retries; the release gate reads this. |
 
 ### 11.3 Benchmarks and targets
 
@@ -1699,6 +1832,7 @@ One line per requirement.
 | [§7.6](#7.6%20Put%20intents) minted names and intents | block names are random but carry no nonce in the header, and no intent is recorded before a put |
 | [§2.6](#2.6%20The%20scope%20of%20a%20count) scope of a count | shares on one remote config share an unnamespaced key space |
 | [§3](#3.%20Existence) existence | not recorded: size grown from the journal at startup, holes derived from gaps |
+| [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite set | none; a covering chunk is served whatever the journal lost above it |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) zero chunks | stored and counted like any chunk |
 | [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) disjoint write sets | every offload commit rewrites the per-file record |
 | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount is its refs | never incremented; decrements in separate transactions; `live` set once |
@@ -1740,6 +1874,7 @@ within a namespace they spread evenly and no key is sequential.
 | --- | --- | --- |
 | **FileData** (fields of `File`) | `size` u64 · `applied` version (u128) · `Version` u64 · `Charged` u64 · `Modify`, `Change` (i64 ns) · the `File`'s `born` u64 | existence commit, removal phase 1 |
 | **Hole** | `end` u64 | existence commit, removal phase 1 and 2 |
+| **Overwrite** | `end` u64 · `version` (u128) · `born` u64 | existence commit creates and splits; removal phase 1 drops or narrows; the primary's pruning deletes |
 | **Removal** | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cursor` u64 · `done` bool | removal phase 1 creates; phase 2 advances; primary prunes |
 | **ChunkRef** (live) | `hash` (32 B, or zero ref) · `skip`, `length` u64 · `oldest`, `newest` versions · `born` u64 (`SnapshotCut`) | offload commit, removal phase 2, clone |
 | **ChunkRef** (history) | the ref's fields as they were, `died` set | a transaction superseding a ref a live snapshot sees |
@@ -1758,6 +1893,7 @@ within a namespace they spread evenly and no key is sequential.
 ```mermaid
 erDiagram
     FILE ||--o{ HOLE : "has"
+    FILE ||--o{ OVERWRITE : "has"
     FILE ||--o{ REMOVAL : "has"
     FILE ||--o{ CHUNKREF_LIVE : "has"
     FILE ||--o{ CHUNKREF_HISTORY : "keeps for snapshots"

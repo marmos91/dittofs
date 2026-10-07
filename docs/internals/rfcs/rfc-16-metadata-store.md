@@ -622,6 +622,34 @@ content-addressed ones ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%2
 Two backends with identical semantics differ only here, and one conformance
 suite over `KV` plus one over the entity layer covers both.
 
+> [!question] Open — the isolation level a backend must provide
+> No isolation level is required of a backend today, yet `Update` retries on
+> serialisation conflict, and some counters and compare-and-set rules (§4.4)
+> depend on one. What is the floor?
+>
+> Proposal on the table:
+>
+> - A backend **MUST** provide snapshot isolation or stronger, and **MUST**
+>   detect write-write conflicts on point keys; each conflict is retried under
+>   I8 ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)).
+> - Snapshot isolation allows write skew: two transactions each read what the
+>   other writes, neither writes what the other read, and both commit. So every
+>   cross-key invariant **MUST** follow RFC 0 §9.2 — a point record written by
+>   both sides, or a `Guard` on the key the other side writes. The two cases to
+>   check first are "the count is zero, so delete" and "the directory is empty,
+>   so remove".
+> - The KV conformance suite (§6.1) adds a write-skew test beside RFC 0 §9.2's
+>   shared-key test: two transactions that each read the key the other writes
+>   and gate on it through the rule above; at most one commits. A backend that
+>   fails it is unsupported.
+>
+> Backend notes (non-normative): the embedded single-node store meets this with
+> its conflict detection turned on. The replicated store provides snapshot
+> isolation, not strict serializability, so it is acceptable only under the
+> point-record rule above. A strictly serializable store would remove the rule's
+> burden but adds a cgo dependency, and is worth it only for an invariant that
+> cannot be expressed as point records.
+
 ### 4.2 Keys: per-file, per-share, content-addressed
 
 Every key starts with a kind byte. The layout encodes the boundary
@@ -636,8 +664,9 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `F‖id‖e‖key` | Entry, under its **parent** directory. `key` is the name folded by the share's fold rule (§4.6), the identity on a case-sensitive share; the name's original bytes are in the value ([RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case)) |
 | | `F‖id‖t‖unique` | directory time delta, carrying the cut it was written after (§4.4) |
 | | `F‖id‖h‖start`, `F‖id‖rm‖version` | Hole, Removal |
+| | `F‖id‖ow‖start` | Overwrite: a committed range newer than the ref covering it, read as uncarved until a ref at its version commits ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)) |
 | | `F‖id‖r‖offset` | ChunkRef, live; its value carries the generation of the share's namespace its chunk is counted in ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
-| | `F‖id‖H‖died‖suffix` | **history** of a versioned per-file record: the value it had, under its live key's suffix — `r‖offset` (ChunkRef), empty (File), `acl`, `x‖name`, `s‖streamID`, `e‖key`, `h‖start` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) |
+| | `F‖id‖H‖died‖suffix` | **history** of a versioned per-file record: the value it had, under its live key's suffix — `r‖offset` (ChunkRef), empty (File), `acl`, `x‖name`, `s‖streamID`, `e‖key`, `h‖start`, `ow‖start` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) |
 | | `F‖id‖fx`, `F‖id‖fo` | fences: the (shard, epoch) the file's commits must carry ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit), [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). Per-file and range shards, and their records, are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)) |
 | | `F‖id‖rel` | pending release: written by the final unlink, deleted only by the release transaction; holds no holder list, the holders are the `o‖` records ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
 | | `F‖id‖o‖openID` | durable Open (only the cases RFC 14 makes durable: keeps an unlinked file alive, SMB persistent handle) |
@@ -875,7 +904,8 @@ A FileID is never minted near its parent's to place a create on one region:
 handles are not MACed, so an ID that can be guessed from its parent's is a
 handle a client could forge ([RFC 7 §6](rfc-7-namespace-metadata.md#6.%20Handles)).
 
-Still open, for measurement on the replicated store:
+Still open: the isolation level a backend must provide (the open question at
+the end of §4.1). Still open, for measurement on the replicated store:
 
 - the fold's sustained throughput per share (§4.4's ponytail);
 - whether `EntriesPlus` batching closes enough of the `READDIRPLUS` gap.
@@ -956,7 +986,7 @@ A fault-injecting `KV` wrapper fails, delays or reorders at every call:
 | --- | --- | --- |
 | **KV** | Go benchmarks over `KV` | per-call latency and throughput, conflict rate under contention, on each backend |
 | **Entity** | Go benchmarks over §3 | per-operation latency, keys read and written, allocations, for: create, lookup, getattr, readdir and readdirplus (10, 10⁴, 10⁶ entries), rename, unlink, set-ACL, commit of an offload, removal of a large file |
-| **Protocol** | standard metadata workloads over NFS and SMB mounts | `mdtest` (create, stat, remove, per directory and shared directory), a small-file build tree (untar, compile, `rm -rf`), `ls -l` of a large directory |
+| **Protocol** | standard metadata workloads over NFS and SMB mounts | `mdtest` (create, stat, remove, per directory and shared directory), a small-file build tree (untar, compile, `rm -rf`), `ls -l` of a large directory, and a profile-container sign-in storm over SMB: many users at once each opening one large container file with a durable handle and lease and reading then releasing a small metadata file ([Reference workloads](rfc-index.md#Reference%20workloads)) |
 | **Scale** | a synthetic namespace | 10⁸ files, 10⁴ shares, 10⁵ principals: operation latency must not grow with total size, only with what each operation touches |
 
 Every benchmark states its backend, machine, and whether the KV was local or
@@ -969,9 +999,9 @@ per multi-region transaction; each is measured on its own.
 Targets are relative first: a create or stat through DittoFS against the same
 operation on a local filesystem and on a reference NAS on the same machine.
 Absolute targets follow from the first measured baseline, and are agreed per
-backend. Per pull request, the entity benchmarks run and a regression past a
-stated threshold is reported, not blocking; nightly, the protocol and scale
-benchmarks run and are tracked over time.
+backend. The entity benchmarks run after each merge and the protocol and scale
+benchmarks daily, on the reference box; a row more than 10% worse on a measured
+path blocks until explained, as [Test tiers](rfc-index.md#Test%20tiers) sets out.
 
 ### 7.3 Profiling
 

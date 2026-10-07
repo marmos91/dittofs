@@ -676,7 +676,7 @@ S3-compatible object storage, the primary backend, is profiled in
 | R9 | Every failure wraps one error of the closed set. |
 | R10 | A store holds no state across calls and makes one attempt per call. |
 | R11 | A store's client limits are derived from the worker pools. |
-| R12 | A store does not open against a service missing a required feature. |
+| R12 | A store does not open against a service missing a required feature. A block store does not open on a versioned or object-locked bucket, or under an expiring lifecycle rule; only a backup location's block folder may, and then with no delete ([§8](#8.%20Decisions%20and%20open%20questions), item 4). |
 | R13 | Within one store namespace, a name is put only by the attempt that minted it, always with the same bytes, so a recorded position never goes stale. In a backup's block folder, a name is put only by copies of the one block its source namespace stored under it. |
 | R14 | An encrypted namespace's blocks carry no plaintext chunk hash. |
 | R15 | No block is written in a format version a reader of its namespace does not support. |
@@ -801,9 +801,27 @@ Settled in this revision, with the evidence in [Appendix B](#Appendix%20B%20%E2%
    comparable to the existence check. Get health is a probe get of the same
    object, so a store that turns read-only stays readable.
 4. **Versioning, object lock and expiring lifecycle rules are refused, not
-   supported** ([Appendix C.1](#C.1%20Required%20service%20features)). Each stops sweep from freeing space or deletes
+   supported, for a block store** ([Appendix C.1](#C.1%20Required%20service%20features)). Each stops sweep from freeing space or deletes
    durable blocks behind the store's back. They are re-read at the start of
-   every GC pass, not only at open ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+   every GC pass, not only at open ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). **The one exception is a backup
+   location.** A catalog or copying backup ([RFC 12 §3](rfc-12-snapshots.md#3.%20Catalog%20backups)) **MAY** be written to
+   a location whose bucket is versioned or object-locked, under three
+   conditions:
+   - the location is in a bucket of its own: no namespace's block store has its
+     prefix in a bucket where the setting is on, so a block store keeps its
+     refusal unchanged;
+   - what is written there expires by the bucket's lifecycle rule, never by a
+     sweep: nothing at the location is deleted by DittoFS
+     ([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep));
+   - the credential used there cannot delete objects, so a compromised
+     installation cannot remove a backup either.
+
+   The store opened over such a location's block folder **MUST** require the
+   setting instead of refusing it, has no delete, and **MUST** refuse to open
+   when its capability check shows the credential can delete; how that is
+   provoked is the backend profile's ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). Versioning and object lock stay optional:
+   the documentation recommends them for a backup location, and nothing
+   enforces them.
 
 Settled with them:
 
@@ -824,7 +842,13 @@ Settled with them:
    class's failure domain at open and through health, and a deployment that
    configures such a class accepts what it promises.
 
-Nothing is left open.
+Open:
+
+8. **Immutability at the filesystem layer.** Item 4 places immutability in the
+   backup location's bucket, outside the filesystem. Whether regulated data
+   needs it inside — files or shares that cannot be changed or deleted until a
+   retention date, enforced by DittoFS itself — is being looked at. Nothing in
+   this document depends on the answer.
 
 ---
 

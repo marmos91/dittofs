@@ -23,6 +23,18 @@ tags:
 **Status:** draft. [§15](#15.%20Open%20questions) lists what is known to be undecided.
 **Audience:** anyone designing how several nodes serve one share.
 
+> [!note] Built after the single-node release
+> This design is not shelved. The first release is a single node scaled
+> vertically; horizontal scaling is the phase after it, needed for large
+> contracts, for large shares spread over several nodes and, later, for
+> NFSv4.2 and pNFS. Until then only its hooks are implemented, so that adding
+> nodes later is not a format migration:
+>
+> - the 128-bit content version, with its epoch half held at zero
+>   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions));
+> - the node epoch carried in the NFS write verifier ([§7](#7.%20Protocol%20state), rule 3);
+> - one binary, with roles chosen by configuration ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
+
 ---
 
 ## 1. Purpose
@@ -954,6 +966,15 @@ rate limit;
    proposals, to be tuned from measured workloads.
 2. **Read grants** ([§6](#6.%20Reads%20on%20other%20nodes)): a shared grant per range, revoked before a write is
    accepted over it, if the per-read round trip shows in measurement.
+3. **A per-share balancer as an interim step.** Before shards move between
+   nodes, a balancer in front of several single-node installations could place
+   whole shares on nodes — shape B of [§1.1](#1.1%20What%20scaling%20is%20being%20designed%20for) without shard moves. It needs a
+   cap on share size (50 GB has been proposed) so that no share outgrows its
+   node. That cap does not fit per-user profile containers
+   ([Reference workloads](rfc-index.md#Reference%20workloads)): every user's container on one share passes
+   50 GB at two to five users. It fits only if profile shares are split per user
+   group, which would make that split a deployment requirement. Whether to build
+   the balancer, and with which cap, is open.
 
 ---
 
