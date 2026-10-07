@@ -181,6 +181,7 @@ suites:
   e2e:
     kind: go
     cmd: .github/scripts/run-e2e.sh go test -tags=e2e -timeout=30m ./test/e2e/...
+    env: { nightly: { DITTOFS_E2E_NIGHTLY: "1" } }   # the dedup tests no workflow runs today
     needs: [linux, root, nfs-client, smb-client, service:localstack]
 
   # Conformance: profiles, variants, steps and known-failure lists stay in suites.json, which
@@ -195,7 +196,7 @@ suites:
     kind: scenarios
     cmd: test/scenarios/setup.sh {test}
     tests: test/scenarios/[0-9][0-9]-*.sh
-    select: { pr: "0?-*-xs.sh", full: "[0-8]?-*.sh" } # 0x is the smoke group; nightly runs all
+    select: { full: "[0-8]?-*.sh" }     # nightly runs all; the 0x smoke group joins pr once timed
     known: test/scenarios/KNOWN_FAILURES.md
     needs: [linux, podman]
     timeout: 15m
@@ -208,16 +209,43 @@ suites:
     needs: [linux, root, nfs-client, smb-client]
 
   bench-smoke: { kind: dfsbench, cmd: go run ./cmd/bench run --smoke --local, tier: nightly, gate: false }
+
+  # Suites that have workflows of their own today.
+  ad-dc:                { kind: go, cmd: test/integration/ad-dc/run.sh, needs: [linux, docker] }
+  kerberos-integration: { kind: go, cmd: test/integration/kerberos/run.sh, tier: nightly, needs: [linux, docker] }  # run by no CI job today
+  smbtorture-kerberos:
+    cmd: test/smb-conformance/smbtorture/run.sh --kerberos --filter {test}
+    tests: [smb2.session, smb2.read, smb2.lock]
+    needs: [linux, docker]
+  smb-client-linux:   { cmd: test/smb-client-compat/linux.sh, tier: nightly, needs: [linux, root, smb-client] }
+  smb-client-macos:   { cmd: test/smb-client-compat/macos.sh, tier: nightly, needs: [macos] }
+  smb-client-windows: { cmd: pwsh -File test/smb-client-compat/windows.ps1, tier: nightly, needs: ["windows", "port:445"] }
+  combined-tree-selftest: { cmd: .github/scripts/combined-tree.sh selftest, tier: pr }
+
+  # Baselines record what a reference implementation does; they never fail a run.
+  smbtorture-baseline:  { cmd: test/smb-conformance/smbtorture/refresh-baseline.sh, tier: nightly, gate: false, needs: [linux, docker] }
+  pynfs-knfsd-baseline: { cmd: test/nfs-conformance/pynfs/baseline-knfsd.sh, tier: nightly, gate: false, needs: [linux, root, knfsd] }
+
+  # Rigs that need special hardware or infrastructure: listed, run by hand, refused elsewhere with the reason.
+  crash-device-loss:   { cmd: "sudo test/crash/device-loss.sh {bin}/dfs {bin}/dfsctl", tier: manual, needs: [linux, root, dm-flakey, smb-client] }
+  crash-cold-loss:     { cmd: "sudo test/crash/invalidate-cold-loss.sh {bin}/dfs {bin}/dfsctl", tier: manual, needs: [linux, root, smb-client] }
+  edge:                { cmd: test/edge/edge-test.sh all, tier: manual, needs: ["cloud:scaleway"] }
+  repro:
+    cmd: test/harness/repro/{test}
+    tests: test/harness/repro/*-*.sh
+    tier: manual
+    needs: [docker]
 ```
 
 | Field | Meaning | Default |
 |---|---|---|
-| `cmd` | Shell command, run from the repository root. `{test}` is one matched file, `{args}` the tier's `args`, `{base}` the ref a change is compared against (the PR's base in CI, `origin/develop` locally) | required, unless the kind provides one |
+| `cmd` | Shell command, run with bash from the repository root (Git Bash on Windows). `{test}` is one test's file name or list entry, `{args}` the tier's `args`, `{base}` the ref a change is compared against (the PR's base in CI, `origin/develop` locally), `{bin}` a directory with `dfs` and `dfsctl` built from the checkout | required, unless the kind provides one |
 | `kind` | How results are read: `cmd`, `go`, `conformance`, `scenarios`, `fio`, `dfsbench` (§4.5) | `cmd` |
 | `tier` | The smallest tier that runs the suite (§4.2) | `full` |
 | `timeout` | A duration, for the suite, or for each test when `tests` is set | `30m` |
 | `needs` | What the machine must offer (§4.4) | none |
-| `tests` | A glob; one test per matching file | none: the suite is one test, or finds its own |
+| `tests` | A glob, one test per matching file; or a list of names | none: the suite is one test, or finds its own |
+| `env` | Environment variables, for every tier or per tier | none |
 | `select` | A narrower glob per tier, for tiers below the suite's widest | every match |
 | `args` | Text per tier, put where `{args}` appears | empty |
 | `known` | A known-failure list, in the Markdown format `test/common/known-failures.sh` reads | none; conformance suites use `suites.json` |
@@ -295,8 +323,10 @@ differently, which is the main defence against another flood.
 ### 4.4 Where a suite runs
 
 `needs` names what a suite requires: `linux`, `windows`, `macos`, `root` (passwordless sudo),
-`docker`, `podman`, `rpcbind`, `nfs-client`, `smb-client`, `kerberos`, `dm-flakey`, `disk:<GB>`,
-and `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
+`docker`, `podman`, `rpcbind`, `knfsd`, `nfs-client`, `smb-client`, `kerberos`, `dm-flakey`,
+`disk:<GB>`, `port:<n>` (free to bind), `cloud:<provider>` (credentials and provisioned
+infrastructure), and `service:<name>` for the services `dt services` starts (`localstack`,
+`postgres`, `kmip`).
 `dt doctor` reports which are met. For an unmet need, `dt run` either moves to the `dtc` container
 (when it provides it and `--in` allows), or reports the suite as not runnable with the reason. It is
 never reported as passed. In CI, `dt plan` gives each cell its runner from the same list:
@@ -415,9 +445,18 @@ One workflow, `tests.yml`, runs every registered suite:
 two weeks. A single gate that always runs also avoids GitHub's path-filter trap: a required check
 from a workflow skipped by a path filter stays pending and blocks the merge.
 
-Suites with special hosts or schedules keep their own workflows for now: Kerberos, AD-DC, SMB
-client compatibility on macOS and Windows, and the baseline refreshes. They move once the main
-workflow is stable.
+Every suite is in the registry, including those with special hosts or schedules: AD-DC, the
+Kerberos suites, SMB client compatibility on Linux, macOS and Windows, the baseline refreshes, and
+the manual rigs. Their workflows move into `tests.yml` after the main ones (§8 step 4); until
+then they keep running as they are. The client-compatibility jobs (601 lines across three jobs)
+and the smbtorture baseline refresh first move their inline steps into scripts. The nightly job
+that refreshes the smbtorture baseline still commits the refreshed file, as today.
+
+Three things stay outside the registry, because they aren't test suites:
+- **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
+- **combined-tree,** which picks open PRs to merge and build together (see Merging below); its
+  self-test is a suite;
+- **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit.
 
 **Develop goes red.** This extends `ci-health.yml` and watches `tests.yml`, plus any workflow still
 outside it.
@@ -441,9 +480,12 @@ only when the failing set changes.
 **Merging.** GitHub's merge queue is "available in any public repository owned by an organization".
 This repository is owned by a user account, so it can't be enabled here. Since 2026-10-07 develop
 requires PR branches to be up to date and the required checks to pass. Every merge to develop
-therefore makes open PRs re-run, which a fast `pr` tier keeps cheap. If the repository moves to an
-organization: enable the queue, add `merge_group` to `tests.yml`'s triggers, and drop the
-up-to-date rule.
+therefore makes open PRs re-run, which a fast `pr` tier keeps cheap. `combined-tree.yml` already
+covers part of what a queue would: every three hours from 07:20 to 19:20 UTC, it merges
+combinations of open same-repository PRs and builds, vets and tests them, catching two green PRs
+that break each other. If the
+repository moves to an organization: enable the queue, add `merge_group` to `tests.yml`'s
+triggers, and drop the up-to-date rule.
 
 ### 4.8 Adding things
 
@@ -475,7 +517,8 @@ use the same result format, so runs compare over time.
 - **The required check names.** Go Checks, Repo Checks and ShellCheck keep their names and their
   steps, which run through `dt` from scripts instead of inline YAML. The security scans, gitleaks
   and CodeQL (Analyze (go)), stay GitHub actions as they are.
-- **The workflows with special hosts.** As listed in §4.7, until the main workflow is stable.
+- **The workflows with special hosts, for a while.** Their suites are registered at once, but their
+  workflows keep running until §8's step 4 moves them.
 
 ## 6. Alternatives considered
 
@@ -527,14 +570,17 @@ Each step ships on its own and has an exit criterion.
    *Exit:* CI's unit, integration and e2e jobs call `dt`, and stay green for a week.
 2. **Registry and runner.** `test/suites.yaml`, and `dt list`, `plan` and `run` in Go, for the
    `go`, `conformance` and `cmd` kinds. `lint.yml`'s inline steps move into `test/lint/`, run by
-   the `lint-go`, `lint-repo` and `shellcheck` suites. Today's commands become aliases.
+   the `lint-go`, `lint-repo` and `shellcheck` suites. Every other suite is registered too,
+   the manual rigs included, so `dt list` shows everything there is. Today's commands become
+   aliases.
    *Exit:* `dt plan --tier pr --json` yields the same cells as today's PR matrix.
 3. **Results.** `summary.json`, JUnit and `dt report`. The graders write `results.tsv`, and `run.sh`
    passes the known-failure path on. One report step replaces the inline summaries.
    *Exit:* every CI test job publishes through `dt report`.
 4. **One workflow and a gate.** `tests.yml` with plan, run and gate. Move `nfs-pynfs.yml` first,
    as the smallest, then `conformance.yml`, then the unit, Windows, integration, operator and lint
-   jobs, the lint jobs keeping their names. Make the gate required.
+   jobs, the lint jobs keeping their names. Then AD-DC, the Kerberos suites, client compatibility
+   (its steps moved into scripts first) and the baselines. Make the gate required.
    *Exit:* PR p90 ≤ 20 min over a week, and the gate required.
 5. **Scenarios and fio.** The scenarios kind, its known-failure list, and the podman-in-container
    path on runners. Groups 0x–8x run in the full tier, sharded over runners; the 9x long runs run
@@ -556,6 +602,12 @@ fio (R8).
 - The operator, Windows, unit and integration jobs only run on PRs that touch their paths today.
   With no selection by layer they run on every PR, adding about 3 min of operator and 17 min of
   Windows runner time per PR, in parallel. Keep them in `pr`, or move them to `full`?
+- SMB client compatibility runs weekly today, plus on pushes that touch the SMB adapter. Is
+  nightly right, given that it takes a macOS and a Windows runner?
+- `kerberos-integration` and the e2e nightly tier have never run in CI, so their state is unknown.
+  The harness README records the e2e nightly tests failing at setup. They start in `nightly` with
+  whatever known-failure rows the first runs call for. Is that acceptable, or should they be
+  fixed first?
 - Who runs the dedicated host, and holds its issue-writing token?
 - When does the gate become required: after two green weeks, or on a flake-rate figure?
 - Does history stay in artifacts, or move to a data branch once benchmarks need longer than 90
@@ -574,6 +626,8 @@ Where the assumption was wrong, the design follows what was found.
 | One command runs everything | None does. The closest, `dt-batch container`, runs 8 protocol and e2e runs (about 72 min) without unit, integration or lint, and exits 0 whatever they did | branch `dt-batch:79-94`, README reference results |
 | `dt-batch matrix` is 28 runs | 28 with the branch's profiles; 20 on develop, where #2914 removed `postgres`, `postgres-s3` and `sqlite`. `dt-batch container`'s `postgres-s3` run no longer has a profile | `suites.json` on each |
 | KMIP interop runs only in the harness | Since #2955 CI's integration list includes it, so `dt`'s separate step would run it twice | `e33edad6` |
+| Every test in the repository runs somewhere | Not all: `test/integration/kerberos` uses its own `kerberos` build tag, which the integration job doesn't select, and no workflow sets `DITTOFS_E2E_NIGHTLY` for the e2e dedup tests | `kerberos_integration_test.go:1`, `dedup_race_nfsv4_test.go:80` |
+| The client-compatibility checks can be run locally | Only by hand: they are 601 lines of inline steps across three jobs, not scripts | `smb-client-compat.yml` |
 | `dt` grades conformance results | No: `run.sh` and the per-suite graders do; `dt` calls them | `run.sh:18-20`, `test/common/known-failures.sh` |
 | `suites.json` covers 5 suites, with per-event tiers | True for 5 suites. Only `pull_request` is ever narrowed, and smbtorture's PR set is both its profiles | `suites.json:31-33, 39, 56` |
 | A suite entry is about 10 lines | No: 15 to 38 lines | `suites.json:36-148` |
