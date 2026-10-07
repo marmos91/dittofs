@@ -2,7 +2,7 @@
 rfc: 15
 title: "RFC 15 — topology and roles"
 component: topology
-status: draft
+status: deferred
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-8-engine]]"
@@ -26,13 +26,19 @@ run on a particular kind of node, or deciding where a call is served.
 > This design is not shelved. The first release is a single node scaled
 > vertically; horizontal scaling is the phase after it, needed for large
 > contracts, for large shares spread over several nodes and, later, for
-> NFSv4.2 and pNFS. Until then only its hooks are implemented, so that adding
-> nodes later is not a format migration:
+> NFSv4.2 and pNFS. Every rule here is a cluster rule; which of them bind the
+> first release, and what replaces the rest on one node, is
+> [RFC 0's single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile).
+> Until the cluster is built only these hooks are implemented:
 >
 > - the 128-bit content version, with its epoch half held at zero
 >   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions));
-> - the node epoch carried in the NFS write verifier ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), rule 3);
+> - the node epoch and the shard incarnation carried in the NFS write verifier
+>   ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), rule 3);
 > - one binary, with roles chosen by configuration ([§2.1](#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
+>
+> Adding nodes migrates each journal's format one way, behind a gate
+> ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)).
 
 Conventions, RFC 2119 keywords and test tiers are set once in the
 [index](rfc-index.md).
@@ -75,7 +81,9 @@ address that belongs to the cluster and is held, for now, by P1.
    Applying the retry would overwrite it; S1 instead answers from its table of
    recent results, keyed by request ID.
 3. **P1 dies.** Without help, alice-pc would wait for its connection to time
-   out, long after the window in which it could reclaim its opens. Instead P2
+   out, long after the window in which it could reclaim its opens. Instead,
+   once P1's node lease has lapsed and every storage node has fenced P1, so no
+   call P1 still has in flight can land, P2
    takes over `10.0.0.50`, announces it on the network, and sends alice-pc a
    TCP acknowledgement that makes it reset and reconnect at once. On a share
    offering continuous availability, the SMB Witness protocol also tells
@@ -126,11 +134,13 @@ The whole cluster, with every role and what it shares:
   **[primary](rfc-0-data-lifecycle.md#Glossary)**: a set of files, a share by
   default, and the one storage node that accepts its writes at a time
   ([§3](#3.%20One%20primary%20per%20shard)).
-- **[Epoch](rfc-0-data-lifecycle.md#Glossary)**: a number raised on every change
-  to a shard's record — a new primary, a replica change, the start of a move;
-  a call carrying an older one is refused.
+- **[Epoch](rfc-0-data-lifecycle.md#Glossary)**: a number in a shard's record,
+  raised by every change that must fence a sender — a new primary, a replica
+  change, the start of a move — but not by a lone node's re-claim of its own
+  shard ([RFC 10 §10](rfc-10-journal-replication.md#10.%20A%20single%20node)); a call carrying an older one is
+  refused.
 - **Route envelope**: what every forwarded call carries: request ID, shard and
-  epoch, hop count ([§4.3](#4.3%20The%20route%20envelope)).
+  epoch, sending node and node epoch, hop count ([§4.3](#4.3%20The%20route%20envelope)).
 - **Floating address**: a client-facing address owned by the cluster, taken
   over by a surviving protocol node ([§5.3](#5.3%20Client%20addressing)).
 - **SMB Witness**: the SMB protocol by which a cluster tells a client that an
@@ -331,12 +341,13 @@ Every call a node forwards to a primary carries one envelope:
 
 | Field | Means |
 | --- | --- |
-| request ID | unique across the cluster — the originating node's ID and a number that node never reuses; a retry reuses the original's |
+| request ID | unique across the cluster, and the same on every retry of one client request. Where the client-facing protocol names a retry itself, the ID is derived from that name, so a retry the client sends through another front-end carries the same ID: NFSv4.1 and later, the client ID, session ID, slot and sequence ID; SMB 3.x, the session's client GUID, the session ID and the message ID of a request flagged as a replay, and for a create the create GUID. Where it names none — NFSv3, NFSv4.0 — the originating node's ID and a number that node never reuses, and a retry through the same node reuses the original's |
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
+| node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the front-end; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)) |
 
 - The primary **MUST** refuse a call whose epoch is not its current one for the
-  shard ([§6](#6.%20Learning%20primaries)).
+  shard ([§6](#6.%20Learning%20primaries)), and one whose sending node epoch it has fenced.
 - The primary **MUST** keep a dedup table of recent mutations keyed by the
   request ID alone — not by shard or epoch, so a retry that straddles an epoch
   raise, or is re-routed to the shard its file moved to, is still recognised —
@@ -346,17 +357,41 @@ Every call a node forwards to a primary carries one envelope:
   batch move ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). A
   write whose reply was lost, retried after another write landed on the same
   extent, then returns its first result instead of overwriting the second.
-- A journal operation carries its request ID into the journal and to every
-  replica ([RFC 10 §4](rfc-10-journal-replication.md#4.%20The%20write%20path)), so a new primary answers a retry of an operation it holds
-  from its journal, not by applying it again.
+- **The table survives a takeover (cluster).** A journal operation carries its
+  request ID into the journal and to every replica, and its record keeps the
+  request ID and result ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)); a namespace mutation writes a
+  request record with its result in its own transaction
+  ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)). A new primary rebuilds the table from both before it
+  serves, so a retry after a failover is answered, not applied again.
 
-> ponytail: the dedup table is memory at the primary, so a namespace mutation
-> whose reply was lost across a failover is applied again on retry, and a
-> non-idempotent one answers as it would after any server restart. An exclusive
-> create is the exception that matters, and is made safe by its stored verifier
-> ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)), not by this table; an SMB create or lock replayed on a persistent open by
-> the open's stored create GUID and lock sequences ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). Upgrade by recording the request ID in the
-> mutation's transaction when that outcome shows up in client-visible errors.
+> ponytail: a request ID derived from a client's own session survives a change of
+> front-end, but NFSv3 and NFSv4.0 name no retry, so their retries through a
+> different front-end after an address takeover get a new ID and are applied as
+> new requests — as after any server restart, which those clients already
+> tolerate; an exclusive create stays safe by its stored verifier
+> ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)). Upgrade by keying those protocols' entries on
+> (client address, transaction ID) as a duplicate-request cache does, if
+> retried non-idempotent calls across a takeover show up in client-visible errors.
+
+### 4.4 Node channels
+
+Every message between nodes — a forwarded call, a replication message
+([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)), a prepare of a cross-shard operation — travels on a
+**node channel**:
+
+- **Mutually authenticated.** Each node holds a credential the installation
+  issues it, bound to its node ID, and kept as a sealed secret
+  ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)). Both ends present theirs, and each **MUST** refuse a
+  peer whose credential the installation did not issue, or whose node record is
+  decommissioned.
+- **Encrypted**, with integrity, so nothing on the network reads or alters a
+  forwarded write or a durability notice.
+- **Bound to the sender.** A receiver **MUST** refuse a message that names a
+  node other than the channel's authenticated peer. Without that, any node — or
+  anything that reaches the network — can forge a durability notice that makes a
+  replica release dirty content, or a forwarded write under another node's name.
+
+Collocated, a node channel is a function call and none of this applies.
 
 ## 5. Clients
 
@@ -414,11 +449,25 @@ any grace period has ended.
 are enabled ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)); it is off by default. A continuously available share
 advertises it to clients and serves the Witness protocol; other shares offer
 durable handles, which a client reconnecting after an address takeover
-reclaims.
+reclaims as long as the primary holding them did not change. A durable handle
+does not survive the loss or restart of its primary; only a persistent one does
+([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
 
 A lost `protocol` node loses no open state: the primaries hold it. A lost primary is
 a failover, and its clients reclaim their state in its shards
 ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); with both roles on one node, both happen at once.
+
+**A node is fenced before its addresses move.** A `protocol` node holds a node
+lease like a `storage` node ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)), and every call it forwards carries
+its node epoch ([§4.3](#4.3%20The%20route%20envelope)). A surviving node **MUST NOT** take over a lost
+node's addresses until, first, the lost node's lease has lapsed plus the drift
+bound in store time and its node record is marked lapsed, and second, every
+`storage` node has acknowledged that mark — from then on refusing any call that
+carries the fenced node epoch — or has itself lost its lease. Without it, a
+write the lost node forwarded before a partition can arrive after the client has
+reconnected through the new address and written again, and land over the newer,
+acknowledged write. A drain needs none of this: the draining node stops
+forwarding before it releases its addresses.
 
 ## 6. Learning primaries
 
@@ -429,8 +478,9 @@ A `protocol` node routes by a cache of shard records read from the metadata stor
   refusal, never a wrong write.
 - **Freshness** is a watch on the metadata store that pushes a shard's move, so
   refusals do not arrive in storms after a failover.
-- A shard is **never encoded in a `FileID`** or a handle: a file can change shards
-  ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). It **MAY** be carried as a hint.
+- A shard is **never encoded in a `FileID`** or a handle, not even as a hint: a
+  file can change shards ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)), and the route is looked up from the
+  file's recorded shard.
 
 ## 7. High availability needs no split
 
@@ -456,12 +506,14 @@ store gives no high availability, whatever the roles.
 | --- | --- |
 | T1 | Every node runs one binary; its roles decide what it composes, one composition root builds it, and it holds no credentials a role of its does not need. |
 | T2 | Each shard has one primary fenced by one epoch; no operation on one shard crosses between two primaries. |
-| T3 | Every routed call carries a cluster-unique request ID and the shard and epoch it expects; a call under a stale epoch is refused, and a retried mutation returns its first result from a dedup table keyed by request ID alone. |
+| T3 | Every routed call carries a cluster-unique request ID, the shard and epoch it expects, and its sender's node epoch; a call under a stale epoch or a fenced node epoch is refused, and a retried mutation returns its first result from a dedup table keyed by request ID alone. |
 | T4 | Every interface call is value-only and cursor-resumable, collocated or routed. |
 | T5 | A stale route costs a refusal and a retry, never a wrong result. |
 | T6 | A pNFS layout names one data server, the primary of the file's shard, is bound to its (shard, epoch), and is recalled when the shard changes primary or the file moves; `LAYOUTCOMMIT` on a stale layout fails with `NFS4ERR_BADLAYOUT`. |
-| T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost. |
+| T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost, and only after that node's lease has lapsed and every `storage` node refuses its node epoch. |
 | T8 | A coordinator that is not the primary of a file it leaves without entries writes its pending release; only the file's primary releases it. |
+| T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
+| T10 | A retried request carries the request ID its client-facing session names where the protocol names one, and is answered from a durable record of its first result across a takeover. |
 
 ## 9. Conformance and benchmarks
 
@@ -476,6 +528,18 @@ store gives no high availability, whatever the roles.
   survives until the open closes (T8).
 - **Address takeover:** kill a `protocol` node under NFSv3, NFSv4 and SMB load.
   Assert each client resumes within a bound far below its transport timeout (T7).
+- **Late forwarded write:** partition a `protocol` node with a write in flight to
+  a primary, let the client reconnect through the taken-over address and write
+  the same extent again, then heal the partition. Assert the late write is
+  refused by node epoch and the second write's bytes survive (T7). A takeover
+  that does not fence first fails this.
+- **Node channels:** send a replication message and a forwarded call from a peer
+  without an issued credential, and from an authenticated peer naming another
+  node. Assert both refused (T9).
+- **Retry through another front-end:** over NFSv4.1 and SMB 3.x, drop the reply
+  of a non-idempotent call, move the client's address, let it retry on its
+  session; then fail the primary over and retry again. Assert one application
+  and the first result each time (T10).
 
 **Split-mode tests are stated here once**, and run from the first release that
 ships a remote view; until then there is nothing remote to test:
@@ -514,10 +578,9 @@ table.
 2. **Striping one file across data servers** waits on per-file and range shards
    ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
 3. **The node-to-node wire format.** [§4.3](#4.3%20The%20route%20envelope) fixes what a forwarded call carries —
-   the route envelope — but not how it travels: the encoding and transport of
-   forwarded calls and of replication traffic ([RFC 10](rfc-10-journal-replication.md)) are unspecified,
-   and so are their versioning across a rolling upgrade and how they are
-   authenticated between nodes.
+   the route envelope — and [§4.4](#4.4%20Node%20channels) how a channel is secured, but not the
+   encoding of forwarded calls and of replication traffic ([RFC 10](rfc-10-journal-replication.md)), nor
+   their versioning across a rolling upgrade.
 
 ## Appendix A — prior art
 

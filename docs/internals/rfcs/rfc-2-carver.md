@@ -45,8 +45,9 @@ upload path, offers the dirty bytes of many files in one pass.
    one chunk. The 40 MiB archive is cut where its content says — a rolling
    fingerprint over the last 64 bytes picks each boundary — into about 160
    chunks between 64 KiB and 1 MiB, 256 KiB on average.
-2. **Name.** Each chunk is named by its BLAKE3 hash, a 32-byte cryptographic
-   hash of its bytes and nothing else.
+2. **Name.** Each chunk is named by its **chunk ID**: a 32-byte BLAKE3 hash of
+   its bytes, keyed with the `builds` namespace's chunk-ID key, so someone who
+   reads the bucket cannot hash a file of their own and look for it.
 3. **Pack.** The assembler takes the chunks file after file and closes a block
    each time it reaches the 4 MiB block target. About 100 MB becomes about 25
    blocks, so 25 uploads rather than 2,001 objects; object stores are slow on
@@ -70,7 +71,7 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
    a.c 30K │ b.h 28K │ ... │ libfoo.a 40 MiB
         │
         ▼  chunker: where does each chunk end?   (chosen by content)
-        ▼  carver:  hash each chunk, BLAKE3      (pure: no I/O, no state)
+        ▼  carver:  hash each chunk, keyed BLAKE3 (pure: no I/O, no state)
  chunks: [a.c] [b.h] ... [lib 1: 250K] [lib 2: 310K] ... [lib 160]
         │
         ▼  block assembler: whole chunks, 4 MiB target, ≤ 1,024 chunks
@@ -82,15 +83,16 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
 
 ### The words you need
 
-- **chunk** — a run of one file's bytes named by the hash of its content
-  ([RFC 0 Glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **chunk**, **chunk ID** — a run of one file's bytes, and its name: a hash of
+  its content keyed per namespace ([RFC 0 Glossary](rfc-0-data-lifecycle.md#Glossary), [§4.1](#4.1%20A%20chunk)).
 - **chunker**, **carver** — the chunker says where a chunk ends; the carver runs
   it over a stretch and hashes each chunk ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver)).
 - **stretch** — one unbroken run of a file's bytes handed to one call. Its end is
   *real* (a hole, the file's end) or *artificial* (the offer stopped there); an
   artificial end leaves its tail uncut for the next offer ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
-- **Target**, **Min**, **Max** — the one chunking setting, default 256 KiB, and
-  the bounds derived from it, Target ÷ 4 and 4 × Target ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)).
+- **Target**, **Min**, **Max** — the one chunking setting, chosen per namespace,
+  default 256 KiB, and the bounds derived from it, Target ÷ 4 and 4 × Target
+  ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)).
 - **block**, **block plan** — the remote object, a whole number of chunks
   ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)); and the assembler's list of chunk hashes and where their
   bytes sit, from which the block is streamed ([§5](#5.%20The%20block%20assembler)).
@@ -110,8 +112,12 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
   most one chunk.
 - A block name is minted once, for one put attempt, and put by no other.
 - A failed cut hands over no shortened chunk, and a retry produces the same
-  chunks. Boundaries are public unless the namespace encrypts, and even then
-  hidden only from someone who can read the bucket but not write to it.
+  chunks.
+- A chunk ID is keyed per namespace, so a bucket reader cannot confirm a file
+  by hashing it. Chunk lengths stay visible to anyone who can read the bucket.
+  An encrypting namespace also keys where boundaries fall, which hides a known
+  file's boundaries only from a reader who cannot get content of their choosing
+  into the namespace ([§6](#6.%20Boundaries%20are%20public)).
 
 ### How the rest is organised
 
@@ -129,9 +135,9 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
   unbroken stretch of a file and hashes each chunk. Neither keeps state or calls
   out, so both are tested with a byte slice and a closure.
 - Boundaries are chosen by content, so an edit re-cuts only the chunks around it.
-- A chunk's name is the hash of its bytes; a block's name is derived from its
-  chunks' hashes and a nonce drawn once per put attempt ([§4](#4.%20Identity)). A name is
-  never minted twice.
+- A chunk's ID is the hash of its bytes keyed with its namespace's chunk-ID key;
+  a block's name is derived from its chunks' IDs and a nonce drawn once per put
+  attempt ([§4](#4.%20Identity)). A name is never minted twice.
 - A stretch that ends at a limit rather than at a hole or the end of the file
   leaves its tail uncut, so the next offer starts on a real boundary ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
 - Blocks are packed by the block assembler, a pure fold over the carver's
@@ -139,7 +145,8 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
 - The settings are public, so this layer does not hide which files you have
   ([§6](#6.%20Boundaries%20are%20public)).
 - Dedup is off in the first release; the key-scope matching rules of [§4.3](#4.3%20Key%20scope)
-  are kept as the design for re-adding it.
+  are kept as the design for re-adding it. Chunk IDs are keyed from the first
+  release, so re-adding it changes no stored ID.
 
 ## Background
 
@@ -149,8 +156,8 @@ pattern. A boundary depends only on nearby bytes, so inserting a byte moves only
 the boundaries near it. FastCDC [1] uses a *gear* fingerprint (shift left one bit,
 add a table entry per byte), skips a minimum length before testing, and tests more
 strictly below the target size than above it ("normalisation"), so sizes cluster
-near the target. BLAKE3 [2] names each chunk; it must be cryptographic, because a
-name collision would serve the wrong bytes.
+near the target. BLAKE3 [2], in its keyed mode, names each chunk; it must be
+cryptographic, because a name collision would serve the wrong bytes.
 
 ---
 
@@ -398,14 +405,15 @@ Shift resistance (B4) is what the whole content-addressed model rests on. Withou
 it, an edit re-hashes every chunk after it and nothing downstream dedups at all.
 Local dependence (B5) is what makes the function cheap to run.
 
-FastCDC [1] with gear hashing is the chosen instantiation, and BLAKE3-256 [2] the
-chunk hash ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities), [§3](rfc-0-data-lifecycle.md#3.%20Identity)). A replacement **MUST** have all five properties. Any
+FastCDC [1] with gear hashing is the chosen instantiation, and BLAKE3-256 [2] in
+keyed mode the chunk ID ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities), [§3](rfc-0-data-lifecycle.md#3.%20Identity)). A replacement **MUST** have all five properties. Any
 replacement re-cuts every file ever written, so it is a migration ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 ### 3.2 One setting, and the bounds derived from it
 
-A share configures one thing, `Target`, a power of two. The two bounds follow
-from it and are not configured:
+A namespace configures one thing, `Target`, a power of two, when it is created,
+and every share of the namespace cuts under it. The two bounds follow from it and
+are not configured:
 
 | Quantity | Value | What it **MUST** mean |
 | --- | --- | --- |
@@ -426,8 +434,11 @@ whole-file re-chunking re-stores about four times less after small edits than at
 measurement plan. On random input the average is `Target`, so 4,096 chunk records
 per GiB — about 8.6×10⁹ at 2 PB. Blocks pack chunks to their own target
 ([§5](#5.%20The%20block%20assembler)), so the number and size of remote objects do not depend on `Target`. A
-share **MAY** choose another `Target`; the choice is fixed for its content
-([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
+namespace **MAY** choose another `Target`; the choice is fixed for its content
+([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)). The setting is per namespace, not per share: chunks are compared, keyed
+and reference-counted within a namespace ([§4.3](#4.3%20Key%20scope)), and two shares cutting one
+namespace's content differently would cut identical files into different
+chunks.
 
 **The ceiling under random overwrite.** Every chunk is at least `Min` except one
 ending at a real stretch end ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). So a file whose edits are re-cut with
@@ -462,6 +473,27 @@ search's own expected length near `Target − Min`, not `Target`. A mask sized t
 `Target` alone lands the average too high by up to `Min`, less what normalisation
 takes back: the 256 KiB row of [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target) averaged about 285 KiB, partly for
 that reason.
+
+**The derivation, exactly.** For a `Target` of 2^*t* bytes, every part of the
+boundary function is fixed by this text; the golden vectors of [§10.1](#10.1%20Kinds%20of%20test) check an
+implementation against it, and a vector that disagrees with it is a defect, not
+a definition:
+
+- **Fingerprint.** Gear: for each byte *b*, `fp ← (fp << 1) + G[b]`, modulo 2⁶⁴.
+- **Test.** A position is a boundary when the top *m* bits of `fp` are zero:
+  `fp >> (64 − m) == 0`. *m* is *t* + 1 while the chunk is shorter than
+  `Target`, and *t* − 3 from `Target` on: normalisation level 2 around *t* − 1
+  bits. The top bits are the ones every byte of the 64-byte window reaches
+  ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)). No position below `Min` is tested; a chunk that reaches `Max` ends
+  there. On input with no structure the mean, skip included, works out at about
+  0.96 × `Target`; computed, not measured, and checked by [§10.4](#10.4%20What%20CI%20checks%20instead%20of%20timing)'s average.
+- **Unkeyed table.** `G` is 256 little-endian 64-bit words: the first 2,048
+  bytes of BLAKE3's extendable output in key-derivation mode, context
+  `dittofs gear table v1`, over the empty input.
+- **Keyed table** ([§6](#6.%20Boundaries%20are%20public)). The same 2,048 bytes, from BLAKE3's keyed mode under
+  the namespace's chunking key, over the ASCII input `dittofs chunking key v1`.
+- **Chunk ID** ([§4.1](#4.1%20A%20chunk)). BLAKE3's keyed mode under the namespace's chunk-ID key,
+  32 bytes of output, over the chunk's bytes.
 
 ### 3.3 Why a large minimum smothers the search
 
@@ -520,16 +552,26 @@ namespace's chunking key, when the namespace encrypts, is part of the settings
 
 ### 3.6 Changing any of this is a migration
 
-Settings are chosen per share, at write time. Reading never re-cuts anything: a
+Settings are chosen per namespace, when it is created. Reading never re-cuts anything: a
 file's chunk list freezes its boundaries ([RFC 0 §2.2](rfc-0-data-lifecycle.md#2.2%20How%20a%20file%20relates%20to%20its%20chunks)), so content written under
 one set of settings reads fine under any other.
 
-Changing a share's settings — or the boundary function, or anything derived from
-it — **MUST NOT** therefore be treated as a configuration change. New writes
-cut in different places, hash to different chunks, and dedup against nothing
-already stored. An implementation **MUST** record which settings produced a
-share's existing content, and **MUST** report a change as a migration instead of
-quietly applying it.
+Changing a namespace's settings — or the boundary function, or anything derived
+from it — **MUST NOT** therefore be treated as a configuration change. New
+writes cut in different places, hash to different chunks, and dedup against
+nothing already stored. An implementation **MUST** record which settings
+produced a namespace's existing content, and **MUST** report a change as a
+migration instead of quietly applying it.
+
+**Content cut elsewhere keeps its cut, within this namespace's `Max`.** A path
+that brings chunks cut under other settings into a namespace — a re-home, a
+restore, or an import of another namespace's content
+([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) — keeps their boundaries as stored, and **MUST** re-cut under
+the destination's settings, or refuse, any chunk longer than the destination's
+`Max`. It **MUST NOT** admit a longer one. Every buffer sized by `Max` — the
+carver's, the syncer's per worker ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), a cold read's — then holds every
+chunk the namespace serves, and the read bound is a property of the namespace,
+not of each chunk's history.
 
 ### 3.7 Bad settings must be refused, not replaced
 
@@ -542,7 +584,7 @@ the floor where chunking stops being worthwhile (64 KiB `Target`, so a 16 KiB
 `Target`). Nothing else can be invalid, because nothing else is configured.
 
 Falling back to a default looks like robustness and is really a data-shape bug. A
-share asked for 64 KiB chunks and quietly given 1 MiB ones produces content that
+namespace asked for 64 KiB chunks and quietly given 1 MiB ones produces content that
 is valid, readable and correctly hashed — and that dedups against nothing the
 operator expected, at sixteen times the read amplification they planned for, with
 nothing anywhere reporting a problem ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
@@ -565,21 +607,24 @@ so every chunk is exactly `Max`; for a longer period, or under a keyed table
 ([§6](#6.%20Boundaries%20are%20public)), one of the `p` values may match, and then boundaries fall at a fixed
 multiple of the period.
 
-Measured over 64 MiB under the former profile (4 MiB `Target`, 16 MiB `Max`); at
-any `Target` the degenerate rows cut every chunk at `Max`:
+What the argument predicts over 64 MiB at the default profile (256 KiB
+`Target`, 1 MiB `Max`), under the unkeyed table and the derived test of
+[§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it). These are predictions, not measurements: the one earlier measurement
+ran under masks that encoded a different target ([Appendix A.1](#A.1%20The%20masks%20encode%20a%20different%20target%20than%20the%20profile%20declares)), and K3 and the
+repetitive-input check of [§9](#9.%20Conformance) are what measure them now.
 
 | Input | Chunks | Average size | Boundaries found |
 | --- | --- | --- | --- |
-| random bytes | 62 | 1.03 MiB | normally |
-| all zeros | 4 | **16 MiB — every chunk hit `Max`** | none, ever |
-| 64-byte repeating pattern | 4 | **16 MiB — every chunk hit `Max`** | none, ever |
-| repeated ASCII text (44-byte period) | 4 | **16 MiB — every chunk hit `Max`** | none, ever |
-| 4 KiB repeating pattern | 64 | 1.00 MiB | yes, at a fixed period |
+| random bytes | about 270 | about 0.96 × `Target` | normally |
+| all zeros | 64 | **1 MiB — every chunk hits `Max`** | none, ever ([§9](#9.%20Conformance) asserts it) |
+| 64-byte repeating pattern | 64, unless one of its 64 fingerprints passes | **1 MiB** | none, or at a fixed multiple of 64 bytes |
+| repeated ASCII text (44-byte period) | as for the 64-byte pattern | **1 MiB** | none, or at a fixed multiple of 44 bytes |
+| 4 KiB repeating pattern | depends on its 4,096 fingerprints | a fixed multiple of 4 KiB, at least `Min` | at a fixed period, or none |
 
 Three consequences, and an implementation **MUST NOT** treat any as incidental:
 
-- **`Max` is load-bearing.** On three of these five inputs it is the only reason
-  chunking terminates at all. Removing it, or setting it very high, turns
+- **`Max` is load-bearing.** On up to four of these five inputs it is the only
+  reason chunking terminates at all. Removing it, or setting it very high, turns
   repetitive files into single enormous chunks.
 - **Repetitive data does not dedup well, and cannot.** Whole-file-sized chunks
   only match other whole-file-sized chunks. This is inherent to any CDC scheme
@@ -587,9 +632,8 @@ Three consequences, and an implementation **MUST NOT** treat any as incidental:
   costs nothing: an all-zero chunk is recorded as a hole and never stored
   ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). The carver emits it like any other chunk; the engine decides.
 - **Where the period is longer than the window, chunking becomes fixed-size at a
-  multiple of that period.** The 4 KiB pattern cut at exactly 8 KiB every time
-  under a 4 KiB minimum. Sizes on structured data are set by the data's period,
-  not by `Target`.
+  multiple of that period**, never below `Min`. Sizes on structured data are set
+  by the data's period, not by `Target`.
 
 ## 4. Identity
 
@@ -600,9 +644,21 @@ holds state to do either.*
 
 ### 4.1 A chunk
 
-A chunk's identity is the BLAKE3-256 [2] hash of its bytes, and nothing else. An
+A chunk's identity, its **chunk ID**, is the BLAKE3-256 [2] keyed hash of its
+bytes under its namespace's **chunk-ID key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), and of nothing else. An
 implementation **MUST NOT** feed an offset, a file identity, a length, a settings
 profile or a version number into the hash.
+
+**The key exists from the first release, for every namespace.** It is material of
+kind `chunk-id-key`, 32 bytes, drawn when the namespace is created, whether or not
+the namespace encrypts, held by the material provider like every key
+([RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) and named, like all material, by ID and fingerprint. It never
+rotates: a chunk ID is a name, and rotating the key renames every chunk. Keyed
+mode costs what the plain hash costs. An unkeyed hash of plaintext would let
+anyone who reads a chunk record, a block header or an export confirm that a
+namespace holds a known file by hashing it, and changing the chunk ID after the
+first release would migrate every chunk record, header and export already
+written; so the choice is made now, while it costs nothing.
 
 The hash covers exactly the bytes handed to `emit` — the same bytes a later read
 has to reproduce. It **MUST** be computed over the chunk as cut, never over a
@@ -616,8 +672,8 @@ nonce drawn for one put attempt:
     name = BLAKE3-derive-key(context, len(scope) ‖ scope ‖ nonce ‖ len(chain) ‖ chain ‖ h₁ ‖ … ‖ hₙ)
 
 - `context` is the fixed ASCII string `content-defined block name v2`. The
-  key-derivation mode of BLAKE3 [2] separates this domain from a chunk's plain
-  hash ([§4.1](#4.1%20A%20chunk)) by construction.
+  key-derivation mode of BLAKE3 [2] separates this domain from a chunk's ID
+  ([§4.1](#4.1%20A%20chunk)) by construction.
 - `len(scope) ‖ scope` is the scope's **canonical encoding**: one byte giving
   the length (0–255), then the scope's bytes exactly as configured, with no
   normalisation. `scope` is the key scope of [§4.3](#4.3%20Key%20scope): the namespace ID.
@@ -628,11 +684,10 @@ nonce drawn for one put attempt:
   **chain ID** ([RFC 5](rfc-5-transforms.md)): it covers everything that decides an encoded body's
   length — the transforms, their versions, their length-affecting settings, and
   the IDs of the material in use.
-- `h₁ … hₙ` are the 32-byte chunk hashes as the block header records them, in
-  block order: the plaintext hashes ([§4.1](#4.1%20A%20chunk)), or their sealed form when the
-  namespace encrypts ([RFC 5](rfc-5-transforms.md)). A name over plaintext hashes would let anyone
-  holding a candidate file and the header's nonce confirm the file from the key
-  alone, which is what sealing exists to prevent.
+- `h₁ … hₙ` are the 32-byte chunk IDs as the block header records them, in
+  block order: the chunk IDs ([§4.1](#4.1%20A%20chunk)), or their sealed form when the namespace
+  encrypts ([RFC 5](rfc-5-transforms.md)). Neither is a value a bucket reader can compute from a
+  candidate file, so the name confirms nothing about one.
 
 A **put attempt** is one decision to store one planned block: its chunks, their
 order and its encoding plan. A name **MUST NOT** be minted twice. Every retry
@@ -706,13 +761,9 @@ orphans every existing object at once ([§4.2](#4.2%20A%20block)).
 > is written into every name from the first block, so a block still cannot
 > verify under another namespace's name, and adding dedup later changes no name.
 >
-> When dedup returns, consider keying chunk IDs per namespace — a keyed hash
-> such as an HMAC under a namespace key — rather than the unkeyed hash of
-> [§4.1](#4.1%20A%20chunk). An unkeyed hash of plaintext lets anyone who can read the
-> bucket and the dedup index confirm that a namespace holds a known file by
-> hashing that file, which is what sealing the header hashes was meant to
-> prevent ([§6](#6.%20Boundaries%20are%20public)). Changing the chunk ID is a migration ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), so it is decided
-> before dedup is re-enabled, not after.
+> Chunk IDs are not deferred: they are keyed per namespace from the first
+> release ([§4.1](#4.1%20A%20chunk)), so a dedup index built later holds values no bucket reader
+> can compute from a candidate file, and re-adding dedup renames nothing.
 
 ## 5. The block assembler
 
@@ -759,11 +810,21 @@ passes, and **MUST NOT** survive its pass. A lookup error carries the chunk
 | # | Rule |
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
-| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. The last block of a pass **MAY** fall short, within [§5.4](#5.4%20The%20short%20last%20block)'s bound. |
+| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. A block falls short of the target only when P4's cap closed it or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
 | P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a hole, and no block carries it ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). |
 | P4 | A block holds at most `N` chunks, where `N` is a constant of the block format version: 1,024 in this one. It bounds the header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), which short chunks next to holes would otherwise grow without limit. |
 | P5 | The target counts **carried** bytes. Adopted chunks and zero refs contribute nothing, or a mostly-deduplicated file yields blocks of a few kilobytes. |
 | P6 | A chunk repeated within one pending block is carried once and referenced each time: its refs and its bytes commit in one transaction. A chunk repeated across blocks is carried in each ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)). |
+
+**The block target.** The block target is set with the namespace's remote store
+([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)): **default 4 MiB, allowed from 1 MiB to 64 MiB**. A value outside that
+range **MUST** be refused at startup, like a bad chunking setting ([§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)), never
+clamped. Below 1 MiB, puts per byte stored multiply on object stores that are
+slow on small objects; above 64 MiB, a block outgrows what P4's cap holds of
+`Min`-sized chunks at the default `Target`, and every put and whole-block fetch
+holds a worker for longer. Unlike `Target`, it changes no chunk and no stored
+name, so it applies to the next block assembled and needs no migration
+([§5.6](#5.6%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration)). The 4 MiB that sizes the syncer's pool ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) is this default.
 
 P1 is [RFC 0 §2.2](rfc-0-data-lifecycle.md#2.2%20How%20a%20file%20relates%20to%20its%20chunks). A chunk split across two blocks would have one hash naming
 content in two places, so the hash would stop being a locator and a refcount would
@@ -850,6 +911,7 @@ adopted later with no migration.
 | A4 | A plan holds hashes and positions, never chunk bytes. |
 | A5 | A file's chunks within a block are contiguous and in offset order. |
 | A6 | A chunk is reused without a lookup only within one block. |
+| A7 | A block short of its target was closed by the count cap or is the last of its pass. |
 
 Each check is a pure function of a chunk stream, a stub lookup and settings.
 
@@ -863,6 +925,8 @@ Each check is a pure function of a chunk stream, a stub lookup and settings.
 | [§5.4](#5.4%20The%20short%20last%20block) short last block | Finish a pass short of the target with its oldest chunk young, then old. Assert it is held, then put. |
 | [§5.5](#5.5%20A%20pending%20block%20is%20a%20plan%2C%20not%20a%20buffer) no bytes | Fold 1 GiB of chunks. Assert the assembler's memory is independent of chunk size, and the slices `emit` handed over are not retained. |
 | lookup error | Make the lookup fail. Assert every chunk is carried. |
+| P2 no short block mid-pass | Fold a pass of many files whose chunks end between blocks at every possible point, with no count-cap closure; assert every block but the last reaches the target. An assembler that closes a block at a file's end puts short blocks mid-pass. |
+| block target range | Configure a block target of 512 KiB, of 128 MiB, and of exactly 1 MiB and 64 MiB; assert the first two are refused at startup and nothing is assembled, and the last two are accepted. |
 
 ## 6. Boundaries are public
 
@@ -879,18 +943,21 @@ answer about their content.
 **How much this gives away: everything, for any file of more than a few chunks.**
 A chunk's length alone carries about as many bits as the spread of chunk sizes —
 some eighteen at a 256 KiB `Target` — so a run of three or four lengths already
-singles a file out. And lengths are not the widest channel: an unencrypted
-block's header lists its chunks' plaintext hashes, offsets and lengths
-([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), so a bucket reader holding a candidate file chunks it and looks the
-hashes up ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)).
+singles a file out. **Lengths are visible to every bucket reader, encrypted or
+not**: a block's header indexes each chunk body's offset and encoded length
+([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), and encoding changes a length by a fixed or bounded amount, so the
+plaintext lengths can be read off to within it ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). The
+header also lists chunk IDs, but those are keyed ([§4.1](#4.1%20A%20chunk)): a bucket reader holding
+a candidate file cannot compute its IDs and look them up.
 
 **Without encryption, boundaries stay public**, and an implementation **MUST NOT**
 claim otherwise.
 
 **With encryption, boundaries are keyed.** When a namespace encrypts, its header
-hashes are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
-derived from a **chunking key**, so an observer without it can neither look a
-candidate file's hashes up nor predict where its boundaries fall:
+IDs are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
+derived from a **chunking key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so an observer without it cannot predict where
+a candidate file's boundaries fall, and so cannot match the lengths it reads to
+the file. It still reads every length:
 
 - **Scope.** Keyed boundaries follow the namespace's encryption setting at
   creation: a namespace created encrypting derives a chunking key then, and one
@@ -908,15 +975,19 @@ candidate file's hashes up nor predict where its boundaries fall:
   ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)); rotating data keys ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) re-encrypts and cuts nothing;
 - it costs no deduplication: chunks are compared within one namespace only
   ([§4.3](#4.3%20Key%20scope)), and every share of the namespace cuts under the same key;
-- with sealed hashes, the channel left is block sizes, chunk lengths within a
-  body and repetition.
+- what it leaves visible is block sizes, every chunk's length, and repetition.
+  Keying hides which file the lengths belong to; it does not hide the lengths.
 
 **What the key protects against: passive observers only.** Recent work [5]
 recovers the keys of deployed keyed-chunking schemes, gear-table ones included,
-from the chunk lengths of content the attacker chose. So the claim is scoped to
-an observer who can read the bucket but cannot write to the namespace. It **MUST
-NOT** be described as hiding which files a namespace holds from someone who can
-also write to it.
+from the chunk lengths of content the attacker chose — and this design hands
+those lengths to every bucket reader. So anyone who can both read the bucket and
+get content of their choosing cut in the namespace can map the table: not only a
+writer of the namespace, but anyone who can cause a write into it, such as a
+sender whose mail lands in a profile container. The claim is scoped to an
+observer who can read the bucket and can cause no write into the namespace. It
+**MUST NOT** be described, here or in any summary of this document, as hiding
+which files a namespace holds from anyone else.
 
 > ponytail: a keyed gear table keeps the boundary search at K1's rate but falls to
 > chosen-content attacks [5]. Upgrade to a keyed PRF evaluated at each candidate
@@ -949,7 +1020,7 @@ produces the same chunks. A failed pass costs work and never correctness.
 
 | # | Invariant |
 | --- | --- |
-| C1 | A chunk's hash depends on its bytes and nothing else. |
+| C1 | A chunk's ID depends on its bytes and its namespace's chunk-ID key, and nothing else. |
 | C2 | The same bytes and settings give the same boundaries, in any process or version. |
 | C3 | The average chunk size is the configured `Target`. |
 | C4 | Every chunk is between `Min` and `Max`, except the last one before a real stretch end. |
@@ -957,6 +1028,7 @@ produces the same chunks. A failed pass costs work and never correctness.
 | C6 | *Moved: [§5.7](#5.7%20Invariants%20and%20checks)'s A2.* |
 | C7 | On an artificial stretch end, no byte after the last content-chosen boundary is emitted. |
 | C8 | A block name is minted once, for one put attempt, and never put by another. |
+| C9 | No chunk a namespace serves is longer than that namespace's `Max`, wherever it was cut. |
 
 
 Two properties are missing because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them unbreakable: a
@@ -982,6 +1054,9 @@ rows need no reader and no hash at all.
 | chunker | [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) repetitive input still terminates | Chunk 64 MiB of zeros under the unkeyed table at every supported `Target`; assert every chunk is exactly `Max`. Chunk a 64-byte repeating pattern, keyed and unkeyed; assert the pass ends and no chunk exceeds `Max`. Without `Max` the search can fail forever and the whole file becomes one chunk. |
 | chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
 | carver | [§4](#4.%20Identity) hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
+| carver | [§4.1](#4.1%20A%20chunk) chunk IDs are keyed | Cut the same input under two chunk-ID keys; assert the boundaries are the same and every ID differs, and that no ID equals the unkeyed BLAKE3 hash of its bytes. A design with plaintext IDs gives equal IDs under both keys. |
+| chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) derivation golden | Derive the unkeyed table, a keyed table under a fixed key, and one chunk ID; assert each against committed bytes computed from [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)'s text by an independent implementation, and that the test uses *t* + 1 and *t* − 3 top bits. |
+| consumer | [§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration) adopted chunks within `Max` | Re-home content cut at a 1 MiB `Target` into a namespace with a 256 KiB `Target` ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); assert every chunk longer than 1 MiB is re-cut or the move refused, and none is admitted. A path that adopts chunks as stored admits 4 MiB chunks into a namespace whose readers hold 1 MiB. |
 | carver | [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) artificial end | Cut random input as one stretch with a real end, and again as a series of offers ending at arbitrary limits, each re-offered from the previous `consumed`; assert both emit identical chunks, and no call emits a byte past its last content-chosen boundary. |
 | name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, the nonce or the chain ID; assert each gives a different name. Encode the scope with a different length byte; assert the name changes. |
 | carver | [§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) borrowed bytes | Hold on to the slice passed to `emit` and assert it is seen to change. The check exists to prove the contract is real, so a caller that copies is not doing it out of superstition. |
@@ -1100,7 +1175,8 @@ into two chunks ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20ca
 **Settings**
 
 - every profile the implementation supports;
-- each limit of [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) exactly at the floor or ceiling, and one past it.
+- each limit of [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) exactly at the floor or ceiling, and one past it;
+- the block target at 1 MiB and 64 MiB, and one past each ([§5.2](#5.2%20Packing%20rules)).
 
 ### 10.3 Faults and determinism
 
@@ -1168,15 +1244,24 @@ the same box differs by more across those than across commits.
 
 ## 11. Open questions
 
-One, deferred with dedup: whether chunk IDs are keyed per namespace when dedup
-is re-added ([§4.3](#4.3%20Key%20scope)). The three this document carried before are settled:
+One is open:
+
+- **The default `Target`.** 256 KiB is chosen from whole-file measurements; it is
+  frozen only once [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target)'s measurement plan has run through the real offload
+  path, before the first release writes content under it. A different default
+  is adopted if it beats 256 KiB on that path by more than the whole-file
+  baseline's margins.
+
+Settled:
 
 1. **Which way out of Appendix A.1:** the masks are computed from `Target` ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)),
    default 256 KiB. Measured in [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target).
 2. **Whether `Min` survives:** as a derived bound, `Target / 4`, not a setting.
-3. **How much [§6](#6.%20Boundaries%20are%20public) gives away:** everything, and mostly through the headers;
-   an encrypting namespace seals its header hashes and keys its boundaries,
-   against passive observers only.
+3. **How much [§6](#6.%20Boundaries%20are%20public) gives away:** every chunk's length, to any bucket reader; an
+   encrypting namespace keys its boundaries, which hides which file the lengths
+   belong to from passive observers only.
+4. **Chunk IDs** are keyed per namespace from the first release ([§4.1](#4.1%20A%20chunk)).
+5. **The block target:** default 4 MiB, from 1 MiB to 64 MiB ([§5.2](#5.2%20Packing%20rules)).
 
 ---
 
@@ -1190,6 +1275,8 @@ defect to fix or migrate, never a rule to build around.
 | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) mask from `Target` | fixed masks encode an 8 KiB target while the default profile declares 4 MiB, so every chunk lands just above `Min` (A.1) | a migration |
 | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) 64-byte warm-up | the fingerprint is warmed from the start of the chunk (A.2) | changes no output |
 | [§4.2](#4.2%20A%20block) derived name | a block's name is random and covers no chunk hash, so a whole-block read cannot recompute it; no put intent is recorded before a put | a migration; its cost elsewhere is in [RFC 3 §2.5](rfc-3-syncer.md#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) |
+| [§4.1](#4.1%20A%20chunk) keyed chunk ID | chunks are named by the unkeyed BLAKE3 hash of their bytes | a migration, made before the first release writes content |
+| [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) setting per namespace | `Target` is configured per share | a configuration change; content keeps its cut |
 | [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) no "not yet" | the chunker returns zero to ask for more bytes when it holds fewer than `Min` and `final` is unset | changes no output |
 | [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) artificial end | not verified against the code; to check before the refactor | — |
 | [§5](#5.%20The%20block%20assembler) the block assembler | assembly lives in the carver; chunks are copied through three buffers; adopted chunks count toward the target | a separate module driven by the engine's pipeline; changes no stored format |

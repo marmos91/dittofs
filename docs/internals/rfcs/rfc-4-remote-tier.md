@@ -6,7 +6,6 @@ status: reviewed
 depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-2-carver]]"
-  - "[[rfc-3-syncer]]"
 aliases:
   - RFC 4
 tags:
@@ -114,7 +113,9 @@ disk file), receives 64 KiB overwrites all day.
   life, because a name is never written with different bytes.
 - A store does not open on a service missing a feature it relies on, or on a
   bucket whose versioning or expiry rules would keep or delete blocks behind its
-  back; a setting that drifts later stops puts and deletes until it is fixed.
+  back; a setting that drifts later stops puts and deletes until it is fixed. The
+  one store that opens on a versioned, object-locked bucket is a backup location
+  configured `immutable`, which then requires those settings and never deletes.
 
 ### How the rest is organised
 
@@ -172,6 +173,18 @@ and the settings re-check, since its relocation reads and puts go through the sy
 interface never silently drops a guarantee. A backend implements the full
 interface of [§4.1](#4.1%20Interface) and satisfies every narrow one structurally.
 
+**Two components, one document.** The block codec ([§3](#3.%20The%20block%20format)) and the remote block
+store ([§4](#4.%20The%20store%20contract)) are separate components with no call between them: the codec
+never calls a store, and a store never parses a block. Each is implemented and
+tested alone ([§7.1](#7.1%20Conformance%20suite), [§7.3](#7.3%20Codec%20tests)). Nothing here depends on the syncer
+([RFC 3](rfc-3-syncer.md)); the syncer depends on this contract, and the references to it below
+say only who sits above the store.
+
+> decision: the codec and the store share one document because the layout of
+> [§3.2](#3.2%20Layout) and the store's guarantee that one name is one byte sequence
+> ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)) are read together by every implementer of either. Split §3 into its own
+> document when a second block format, or a second codec, needs specifying.
+
 ## 2. The dividing line
 
 > **A store performs one operation on one block and remembers nothing between
@@ -221,6 +234,7 @@ A block is a **header** followed by the **chunk bodies**, in order.
 | Header length | first bytes | a reader fetches the whole header in one ranged request, rarely two |
 | Block name, nonce, chain ID | header | a block served under the wrong key is detected instead of used. The name is the block's identity in block metadata too ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so it links the stored bytes back to their record; the nonce and chain ID are the name's inputs besides the hashes and the key scope, so a whole-block read can recompute it. |
 | Chunk index | header | at most `N` entries ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4), one per chunk: its hash, and the offset and length of its body. The hash is the plaintext hash, or its sealed form — keyed under a namespace secret — when the namespace encrypts ([RFC 5](rfc-5-transforms.md)). One chunk can then be read with one ranged request, without reading the others. |
+| Seal | header | `none`, or the ID of the header key that sealed the index's hashes ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). A reader checks the index under the key the block names, never under the namespace's current one, so a block stays checkable after the header key rotates |
 | Chunk bodies | after the header | each chunk's bytes, transformed if a chain is configured ([§3.3](#3.3%20Transforms)) |
 
 Five requirements on the layout:
@@ -243,11 +257,12 @@ Five requirements on the layout:
   the header. [RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) mints it from the attempt's nonce and the chunk
   hashes, which exist before any byte is encoded.
 
-When the namespace encrypts, no plaintext chunk hash appears anywhere in a block:
-the index holds the sealed hashes, and the name is derived from them
-([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). Block metadata still keys chunks by plaintext hash; only the stored
-header is sealed, so a bucket reader can no longer confirm a known file by
-looking its hashes up.
+A chunk's ID is a keyed hash of its plaintext under the namespace's chunk-ID key
+([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so no block of any namespace carries a hash a bucket
+reader can compute from a file it holds. When the namespace encrypts, the index
+holds the chunk IDs sealed once more under the header key the seal field names,
+and the name is derived from those ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). Block metadata keys
+chunks by chunk ID; only the stored header is sealed.
 
 The header comes first, so every body's length is known before the first byte is
 sent: from each transform's declared length, or from a measuring pass when the
@@ -265,9 +280,9 @@ encryption ([RFC 5](rfc-5-transforms.md)). Three rules hold for any chain:
 
 1. **Decode inverts encode exactly.** For every chunk,
    `decode(encode(plaintext)) == plaintext`, byte for byte.
-2. **Identity is over plaintext.** A chunk's hash and a block's name are
-   functions of plaintext ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk), [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)) — sealed under a namespace
-   secret when encrypting, never of transformed bytes. If they depended on
+2. **Identity is over plaintext.** A chunk's ID and a block's name are
+   functions of plaintext ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk), [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)) — keyed under the namespace's
+   chunk-ID key, and sealed once more when encrypting — never of transformed bytes. If they depended on
    transformed bytes, a compression level or key change would re-key the corpus
    and stop deduplication.
 3. **The chain travels with the block.** How a body was transformed **MUST** be
@@ -290,7 +305,9 @@ the chunk it decoded — the plaintext hash, sealed when the namespace encrypts 
 then recomputes the block's name from those entries, the header's nonce and
 chain ID, and the key scope ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), and checks it against the name it was
 fetched under. Comparing the header's name field alone would accept a header
-whose index was altered.
+whose index was altered. A sealed index is checked under the header key the
+block's seal names, which **MUST** be in the block record's census like any
+other material ([RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)); a seal naming a key outside it is malformed.
 
 The codec decodes each body with `Chain.Decode`, passing the block record's
 census ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces), [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)): a body naming material the census does not list
@@ -341,7 +358,20 @@ type Role uint8
 const (
 	RoleClaim  Role = iota + 1 // the namespace claim (RFC 12)
 	RoleHealth                 // the health probe's object (§4.7)
+	RoleRepair                 // the proof that a suspended store holds no old versions (§4.11)
 )
+
+// Mode is how a store treats versions and deletes (§4.14). Every namespace's
+// store is Mutable; a backup location's block folder is either.
+type Mode uint8
+
+const (
+	Mutable   Mode = iota + 1 // no versioning, no lock, deletes allowed
+	Immutable                 // versioning and compliance lock required, no delete
+)
+
+// Version names one stored version of a name in an immutable store (§4.14).
+type Version string
 
 // Checksum names the checksum a put carries up front, as the capability check
 // chose it (§4.11), or None when the store verifies the service's digest instead.
@@ -373,9 +403,19 @@ type Store interface {
 	// Checksum is not None. It returns nil only once the block is durable.
 	Put(ctx context.Context, name Name, body io.Reader, size int64, sum []byte) error
 
+	// PutVersion is Put on an immutable store, returning the version the
+	// service stored (§4.14). On a mutable store it is ErrInvalid.
+	PutVersion(ctx context.Context, name Name, body io.Reader, size int64, sum []byte) (Version, error)
+
 	// Get returns exactly the bytes of r, or of the whole block when r is the
 	// zero Range. The reader yields exactly that many bytes or fails.
 	Get(ctx context.Context, name Name, r Range) (io.ReadCloser, error)
+
+	// GetVersion is Get of one stored version, on an immutable store (§4.14).
+	GetVersion(ctx context.Context, name Name, v Version, r Range) (io.ReadCloser, error)
+
+	// ExtendRetention raises one version's retain-until, never lowers it (§4.14).
+	ExtendRetention(ctx context.Context, name Name, v Version, until time.Time) error
 
 	// Delete removes blocks, as many as the caller passes. It returns one
 	// error per name, in order; nil means that block is gone, as the reply
@@ -421,9 +461,11 @@ var (
 )
 ```
 
-A backend is opened by its own constructor, which takes its settings, the pool
-sizes ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) and a context, and runs the capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) before it
-returns.
+A backend is opened by its own constructor, which takes its settings, its mode
+([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)), the client it shares ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) and a context, and runs the
+capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) before it returns. On a mutable store, `Delete` and
+`DeleteVersions` do what [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) says; on an immutable one they return
+`ErrInvalid` for every name without sending a request.
 
 ### 4.2 Names in, locations kept inside
 
@@ -440,6 +482,13 @@ capability-check objects. Past the store's fixed namespace prefix, a location
 prefix would concentrate keys on one partition of the service.
 Two stores **MUST NOT** share a namespace, since each would list the other's
 blocks as its own ([RFC 9 §5.3](rfc-9-gc.md#5.3%20It%20runs%20only%20where%20the%20namespace%20is%20proven)).
+
+**A store serves exactly one namespace.** Its prefix is that namespace's folder
+([RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves)). A **store configuration** — endpoint, credential, bucket,
+chain and material provider ([RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration)) — is what several namespaces share: each
+namespace created on it opens its own store under its own prefix, and every
+store opened from one configuration shares that configuration's client
+([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)). "Store" in this set means the per-namespace store.
 
 ### 4.3 Put: a whole block, checksummed, durable on success
 
@@ -485,7 +534,9 @@ blocks as its own ([RFC 9 §5.3](rfc-9-gc.md#5.3%20It%20runs%20only%20where%20th
   one ([§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside)). A backup's block folder is a store namespace of its own, whose
   names are put only by copies of one block, byte for byte as its source
   namespace stored it ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)): one name is still one byte sequence
-  there, though no attempt minted it in that namespace.
+  there, though no attempt minted it in that namespace. At an immutable
+  location the guarantee readers rely on is narrower and holds against any
+  writer: a recorded version is one byte sequence ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)).
 
   > decision: a retry *intends* identical bytes, but bytes corrupted in transit
   > are caught before storage only by a service that checks the put's checksum.
@@ -498,12 +549,22 @@ blocks as its own ([RFC 9 §5.3](rfc-9-gc.md#5.3%20It%20runs%20only%20where%20th
   > exemption, by refusing digest-only services or making a service-checked put
   > mandatory, if a digest-only service is ever observed applying a stale put.
 
-A store **MUST NOT** require a conditional put (put-if-absent): services that
-claim the same protocol differ on it ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)). Doing without it rests on
-names minted once per attempt: no two attempts put one name, and GC deletes an
-object only once neither a block record nor a put intent names it — a final
-state, since the name is never minted again — so no put can re-create a block
-underneath its delete ([RFC 9](rfc-9-gc.md)).
+No rule of this contract depends on a conditional put (put-if-absent), and a
+store **MUST NOT** issue one: services that claim the same protocol differ on it
+([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)), and a store that relied on it would be correct only on some of them.
+Doing without it rests on names minted once per attempt: no two attempts put one
+name, and GC deletes an object only once neither a block record nor a put intent
+names it — a final state, since the name is never minted again — so no put can
+re-create a block underneath its delete ([RFC 9](rfc-9-gc.md)). The capability check still
+provokes it and reports whether the service honours it
+([§4.12](#4.12%20What%20a%20store%20makes%20observable), `conditional_put`), so a deployment knows which of its services could
+carry a rule that needs one.
+
+> decision: conditional put is measured and reported, never used. The one
+> object that would gain from it is the namespace claim, which stays a check
+> fenced by clocks ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). Add a conditional control put, used only
+> where the check proved it, if a deployment runs two installations on one bucket
+> whose clocks cannot be held within the drift bound.
 
 ![A put streams: body lengths come from each transform's declared length, or from a measuring pass that encodes and discards; the header goes first, then each chunk encoded as it is sent, in one request with the profile's integrity check](img/rfc4r-put-path.svg)
 
@@ -518,7 +579,13 @@ A get returns exactly the bytes asked for, or an error. There is no third outcom
 - a body shorter than the range the service says it sent, where that range
   matches the request, ended early in transit and **MUST** fail with
   `ErrTransient`;
-- an absent block **MUST** fail with `ErrNotFound`.
+- an absent block **MUST** fail with `ErrNotFound`;
+- a get issued after a put of that name returned `nil` **MUST** return the
+  block, from any client of the service, never `ErrNotFound`. The journal
+  releases its copy once the put is recorded, so the next read of that content
+  is a get; on a service whose reads lag its writes, that read would report a
+  durable chunk absent. Such a service is not admitted ([Appendix C.1](#C.1%20Required%20service%20features)).
+  Listings may lag ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); gets may not.
 
 The store cannot tell a caller's mistake from a record that outlived its block;
 the codec can, and reports a recorded range the store rejects as corrupt
@@ -594,11 +661,25 @@ most one page in memory.
 `Health` makes one bounded round trip, in one direction, that proves the store
 can still do that half of its job. The **put probe** proves the service is
 reachable, the credentials are accepted, and the namespace is writable; the
-**get probe** proves it is reachable and readable. A probe that only proves the
+**get probe** proves it is reachable and readable.
+
+**The get probe reads an object the store guarantees.** The health object is
+written by the capability check at every open ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), before the store
+returns, and by every put probe; it is never deleted, including by the check's
+cleanup. A get probe that finds it absent fails with `ErrNotFound`, which the
+syncer counts as a failed get probe: something removed an object the store
+owns. Neither probe depends on a block existing, so a store with no blocks, or
+one whose puts are covered by successful uploads instead of probes
+([§8](#8.%20Decisions%20and%20open%20questions), item 6), still probes both directions. An immutable store
+([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) sends no put probe: its health object was written once, when the
+location was configured, and the get probe reads that version. A probe that only proves the
 service answers can report healthy while every put fails. Each probe runs
 against the store's **own namespace** — its health control object ([§4.13](#4.13%20Control%20objects))
-under the store's own prefix — never against a shared or neighbouring one, so a
-permission that differs by prefix is seen. The backend profile names the calls
+under the store's own prefix — never against a location outside it. Which
+stores' probes the syncer actually sends is the syncer's choice: stores it
+registers under one `ProbeKey` share one probe per direction for detecting an
+outage, and a permission that differs by prefix is caught by its failure window
+instead ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)). The backend profile names the calls
 ([§5](#5.%20Backend%20profiles)).
 
 The store returns the probe's outcome and nothing else. It keeps no health
@@ -647,11 +728,19 @@ host for HTTP/1.1, streams per connection for HTTP/2, an SDK's in-flight cap. A
 request past that limit does not fail. It waits inside the client, where no
 caller can see it. So:
 
-- the limit **MUST** be derived at construction from the concurrency of
-  everything that calls the store: the syncer's `upload_workers + fetch_workers`
-  ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), GC's delete and list bound ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for the probe. A store
-  has no connection setting of its own. Set below its callers it is a hidden
-  second limit; set above them it is never reached;
+- **one client per store configuration.** Every store opened from one store
+  configuration ([§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside)) shares one client and its pool; a store is a prefix
+  over it, and its `Close` releases its reference. A pool per store would
+  multiply with namespaces — 10⁴ namespaces on one endpoint would open 10⁴ pools
+  sized for the whole installation each — while the workers that use them are
+  shared;
+- the limit **MUST** be derived when the client is built from the concurrency
+  of everything that calls stores on it: the syncer's
+  `upload_workers + fetch_workers` ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), GC's delete and list bound
+  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for the probe — once, not per store, since those pools are
+  shared across the stores they serve. A store has no connection setting of its
+  own. Set below its callers it is a hidden second limit; set above them it is
+  never reached;
 - any client-wide cap on connections **MUST** be at least the same value, or it
   silently lowers the per-host one;
 - idle connections kept for reuse **SHOULD** be sized the same way, so a
@@ -687,26 +776,58 @@ how to test them: they are specific to each backend and live in its profile
   open, while an absent one is reported as absent;
 - where a service's listings lag its writes, a check that lists what it just
   wrote **MAY** re-list a bounded number of times, over a bounded time the
-  profile states, before refusing to open.
+  profile states, before refusing to open;
+- every object the store puts is written in one storage class the profile pins
+  explicitly, never the service's default, and the check reads back the class
+  the service reports for what it wrote. A class or a tiering rule that can move
+  an object out of immediate reach — an archive class, or an automatic tier that
+  archives objects nobody reads for a while — **MUST** refuse the open: a get of
+  an archived block fails until a restore the store never requests, and blocks
+  that are rarely read are exactly the ones such a rule moves.
 
 The check runs whenever a store is opened, since an endpoint can be upgraded or
-repointed between runs. It cleans up what it wrote; a failed cleanup is logged,
-not fatal.
+repointed between runs. It cleans up what it wrote, except the health object
+([§4.7](#4.7%20Health%20is%20one%20probe%20call)); a failed cleanup is logged, not fatal. An immutable store writes
+nothing at open and cleans up nothing ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)).
 
-**Settings that drift are re-read.** Some service settings can change after
-open without the store noticing: versioning, object lock, lifecycle rules.
-`Recheck` re-reads exactly those, and the claim, and GC calls it on a short
-period of its own, independent of any other GC work
-([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). On drift it returns the drifted setting; GC issues no delete and
-prunes nothing, and the syncer stops puts and deletes for the store, until a
-later `Recheck` passes. Each profile names the settings its `Recheck` covers.
+**Settings that drift are re-read, on one cadence, with one effect.** Some
+service settings can change after open without the store noticing: versioning,
+object lock, lifecycle and tiering rules, the storage class. `Recheck` re-reads
+exactly those, and the claim. It has one caller and one period: GC calls it on
+its recheck period, independent of any other GC work
+([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); nothing else calls it, and a GC pass does not re-read settings
+of its own. On drift `Recheck` returns the drifted setting, and GC does two
+things before its next call to the store:
 
-**A suspended setting can be recovered.** Versioning, once turned on, can on some
-services only be suspended, never removed, and a suspended store still keeps the
-versions written while it was on. `Recheck` **MUST** accept a suspended store
-once a listing of stored versions under the prefix finds only current ones — the
-state GC's version repair produces ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) — so a store that drifted
-once is not refused for good.
+- it issues no delete and prunes nothing for the store;
+- it raises the store's **drift condition**, which the syncer reads as part of
+  the store's health ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)): while the condition stands, the put
+  direction is unhealthy and the syncer refuses puts to the store. Gets go on,
+  since drift endangers what is written and deleted, not what is read.
+
+A later `Recheck` that passes clears the condition. The store itself keeps
+neither the result nor the condition ([§4.9](#4.9%20No%20state%20across%20calls)). Each profile names the settings
+its `Recheck` covers.
+
+**A suspended setting can be recovered, and the proof is kept.** Versioning,
+once turned on, can on some services only be suspended, never removed, and a
+suspended store still keeps the versions written while it was on. After GC's
+version repair ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) a listing of stored versions under the prefix
+finds only current ones; GC then writes that proof as the control object of
+role `repair` ([§4.13](#4.13%20Control%20objects)): the time of the listing and the status it read.
+`Recheck` **MUST** accept a suspended store whose repair object exists and
+**MUST NOT** list versions again for it. It lists versions only when versioning
+reads suspended with no repair object, or with an empty one. A status read as
+enabled is drift; on it GC overwrites the repair object with an empty one, and
+writes a proof again only after its next repair.
+Without the proof, every `Recheck` of a store that drifted once would walk every
+version under its prefix, forever.
+
+> decision: a suspended store's proof is trusted until a `Recheck` sees
+> versioning enabled again. Versioning turned on and suspended again entirely
+> between two rechecks goes unseen, and deletes in that window leave old
+> versions that leak space; no block is lost, since a delete is the only write
+> that creates one. Re-list on a period if such a window is ever observed.
 
 ### 4.12 What a store makes observable
 
@@ -731,7 +852,9 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 | encode and decode time per block, by direction | `dittofs_codec_seconds` | histogram |
 
 `op` also takes `recheck`, `put_control` and `get_control`; a drifted `Recheck`
-sets the drifted setting's `dittofs_remote_capability` to 0.
+sets the drifted setting's `dittofs_remote_capability` to 0. The gauge also
+carries `conditional_put`, whether the service honoured one at the last check
+([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)); it is reported, and no rule reads it.
 
 Logs: a refused open, and a drifted `Recheck`, log every missing feature at
 `Error`, once. `ErrCorrupt`,
@@ -742,7 +865,8 @@ already logs what it does about it.
 ### 4.13 Control objects
 
 A few small objects are not blocks but belong to the store's namespace: the
-namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) and the health probe's object ([§4.7](#4.7%20Health%20is%20one%20probe%20call)). They
+namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), the health probe's object ([§4.7](#4.7%20Health%20is%20one%20probe%20call)) and the
+versioning repair proof ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). They
 go through `PutControl` and `GetControl`, by a fixed **role**:
 
 - a role maps to one fixed location in the profile, outside the block
@@ -759,6 +883,64 @@ Roles are a closed set in code. A new role is a new constant and a new location,
 not a caller-chosen key, so control objects cannot become a second, unlisted
 block store.
 
+### 4.14 A backup location opens in one of two modes
+
+Every namespace's own store is **mutable**: no versioning, no object lock, no
+expiring rule, and deletes allowed (the refusals of [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) and
+[Appendix C.1](#C.1%20Required%20service%20features)). A backup location's block folder ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)) is opened
+in the **mode** its location's configuration record states — `mutable` or
+`immutable` — together with the credential reference and the lifecycle age that
+record holds ([RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration)). The mode is never inferred from what the bucket
+happens to have: an immutable location whose bucket lacks a setting fails to
+open, and a mutable one whose bucket has one fails too.
+
+A mutable location's folder is a mutable store like any other. An **immutable**
+one:
+
+- **requires versioning and compliance-mode object lock**, with a default
+  retention at least the longest retention of any backup written there, as the
+  location record states. Versioning without the lock is refused: a credential
+  that can put could then supersede every object, and nothing would stop a
+  delete of the old versions. A governance-mode lock is refused for the same
+  reason: a credential with the bypass right removes it;
+- **requires a noncurrent-version expiry rule and accepts a current-version
+  expiry rule** under its prefix, and refuses a transition to an archive class.
+  The current-version rule's age **MUST** be at least the location record's
+  lifecycle age. Without the noncurrent rule, every state-object update and
+  every re-put of a name keeps one more locked version for good;
+- **has no delete.** `Delete` and `DeleteVersions` are `ErrInvalid` without a
+  request, and the credential **MUST NOT** be able to delete: the capability
+  check provokes a delete of the health object, and one of its recorded version,
+  and requires both refused. A
+  credential that can delete fails the open, naming it;
+- **reads and writes by version.** `PutVersion` returns the version the service
+  stored, which the caller records ([RFC 12 §3.4.2](rfc-12-snapshots.md#3.4.2%20What%20is%20copied)); `GetVersion` reads that
+  version and no other. A put by anyone, under any name, then only adds a
+  version: it cannot replace what a recorded version holds;
+- **extends instead of re-putting.** `ExtendRetention` raises one version's
+  retain-until; the service refuses to lower it in compliance mode, and the store
+  never asks it to. A copy that reuses a stored version extends it rather than
+  putting the name again;
+- **sends no put probe.** Each probe would add a locked version. Its put
+  direction's health comes from the copies' own puts
+  ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)), and its get probe reads the health object's recorded
+  version ([§4.7](#4.7%20Health%20is%20one%20probe%20call));
+- **runs its put-integrity check once.** Check objects it writes cannot be
+  deleted, so the integrity step of the capability check runs when the location
+  record is created and whenever its endpoint or credential changes, and its
+  outcome is stored in that record. Every open still reads the bucket's
+  settings and provokes the refused deletes, which write nothing.
+
+`Recheck` covers the same settings: versioning suspended, the lock's mode or
+default retention lowered, the noncurrent rule removed or the current rule's age
+lowered is drift ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+
+> decision: an immutable location defends against a stolen installation
+> credential and an installation that misbehaves, not against the bucket's owner,
+> who can still delete the bucket once its locks expire. A location whose bucket
+> owner is the threat needs a second account or provider holding the bucket; that
+> is the operator's choice of location, and this contract cannot tell.
+
 ## 5. Backend profiles
 
 Each backend has a profile: the service features it requires, how it maps the
@@ -771,23 +953,25 @@ S3-compatible object storage, the primary backend, is profiled in
 
 | # | Invariant |
 | --- | --- |
-| R1 | A block is interpretable from its own bytes: marker, version, name, nonce, chain ID and index are in its header, and its header and bodies are bounded before anything is allocated for them. |
+| R1 | A block's structure is readable from its own bytes: marker, version, name, nonce, chain ID, seal and index are in its header, and its header and bodies are bounded before anything is allocated for them. Its name can be recomputed from its header and the namespace's key scope, with no material; its content can be verified only with the namespace's material. |
 | R2 | Every chunk returned by the codec was verified against its plaintext hash. |
 | R3 | Decode inverts encode exactly; identity is over plaintext; the chain is recorded in the block. |
 | R4 | The store never parses a block, and nothing above the codec observes a transform. |
 | R5 | A put is whole, streamed at a length known before its first byte, checksummed, and `nil` only once durable. |
-| R6 | A get returns exactly the requested bytes or an error. |
+| R6 | A get returns exactly the requested bytes or an error, and a get after a successful put of the name returns the block. |
 | R7 | Delete is idempotent per name, and reports per name. |
 | R8 | A listing yields every block once, in order, resumably. |
 | R9 | Every failure wraps one error of the closed set. |
 | R10 | A store holds no state across calls and makes one attempt per call. |
-| R11 | A store's client limits are derived from the worker pools. |
-| R12 | A store does not open against a service missing a required feature. A block store does not open on a versioned or object-locked bucket, or under an expiring lifecycle rule; only a backup location's block folder may, and then with no delete ([§8](#8.%20Decisions%20and%20open%20questions), item 4). |
-| R13 | Within one store namespace, a name is put only by the attempt that minted it, always with the same bytes, so a recorded position never goes stale. In a backup's block folder, a name is put only by copies of the one block its source namespace stored under it. |
+| R11 | A client's limits are derived from the worker pools. |
+| R12 | A store does not open against a service missing a required feature, or with a storage class or tiering rule that can archive what it writes. A mutable store does not open on a versioned or object-locked bucket, or under an expiring lifecycle rule; an immutable store opens only with versioning, a compliance-mode lock, a noncurrent-version expiry rule and a credential that cannot delete ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). |
+| R13 | Within one store namespace, a name is put only by the attempt that minted it, always with the same bytes, so a recorded position never goes stale. In a backup's block folder, a name is put only by copies of the one block its source namespace stored under it; at an immutable location, every recorded version is one byte sequence whatever else is put under its name. |
 | R14 | An encrypted namespace's blocks carry no plaintext chunk hash. |
 | R15 | No block is written in a format version a reader of its namespace does not support. |
 | R16 | Control objects are reached by fixed role only and are never listed as blocks. |
-| R17 | A drifted service setting stops puts and deletes until a re-check passes. |
+| R17 | A drifted service setting, found by GC's one `Recheck` period, stops GC's deletes and makes the store's put direction unhealthy until a re-check passes. A suspended store with a repair proof is not listed again. |
+| R18 | An immutable store issues no delete and no put probe, reads by recorded version, and only ever raises a version's retain-until. |
+| R19 | Stores opened from one store configuration share one client, whose limits are derived once from the callers' total concurrency. |
 
 ## 7. Test plan and benchmarks
 
@@ -823,6 +1007,17 @@ in-memory store).
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Open, then turn on versioning or add a lifecycle rule whose filter could match the prefix: `Recheck` fails naming it; turn it off: `Recheck` passes. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | The put probe fails while the namespace is read-only, and succeeds on the next call once write access returns; the get probe succeeds throughout. Revoke access to the store's own prefix only: both probes of that direction fail although a neighbouring prefix stays accessible. | |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, and `errors.Is(err, ErrTransient)` holds. | |
+| [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that answers `404` to the first get after a successful put of the name: the get fails, and the capability check of a service that does so refuses the open. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599, with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A transport that reports an archive storage class for what the check wrote, or a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Turn versioning on after open: `Recheck` fails, GC issues no delete, and the syncer refuses puts while gets still succeed; turn it off: the next `Recheck` clears both. Count `Recheck` calls over an hour: exactly one per GC recheck period, none from a GC pass. | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A suspended store with an object version left behind: `Recheck` lists versions and fails; after the repair writes the proof, ten further `Recheck` calls list no versions and pass. Enable versioning again: the proof is emptied, and the next suspended `Recheck` lists again. | T |
+| [§4.7](#4.7%20Health%20is%20one%20probe%20call) | Delete the health object behind the store: the get probe fails with `ErrNotFound`; reopen the store: the check writes it again and the get probe passes. A store whose puts all succeed and whose put probes were skipped still passes the get probe. | T |
+| [§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers) | Open 1,000 stores from one store configuration: one client exists, its limit equals the callers' total concurrency, and connections opened under a steady load do not grow with the number of stores. | |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Open an immutable store against each of: no versioning, versioning without a lock, a governance-mode lock, a default retention below the location's, no noncurrent-version expiry rule, a current-version rule younger than the lifecycle age, and a credential that may delete either the current health object or its version: each fails naming the missing requirement. A bucket with all of them: open succeeds, and sends no put request after the location record's integrity check. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store, `Delete` returns `ErrInvalid` for every name and the transport sees no request; `PutVersion` twice under one name returns two versions, and `GetVersion` of the first returns the first bytes; `ExtendRetention` to an earlier time is refused without a request. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Open a mutable store on a bucket configured for an immutable location: open fails. Open an immutable store over a bucket with no versioning: open fails. | T |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | The capability check provokes a conditional put and reports `conditional_put`; no other call of the suite sends a conditional header. | T |
 
 The in-memory store **MUST NOT** be the only store these run against. It cannot
 lose an acknowledged write, half-complete or delay.
@@ -833,13 +1028,16 @@ A fault-injecting transport sits under a real store's client, at the request
 level, and can, per request: drop it, delay it, fail it with a
 chosen status and error code, truncate the response body, flip a byte in either
 direction, clamp a range, ignore a checksum header (at all sizes, or only above
-a threshold), hold new keys out of listings for a while, or pretend a bucket
-setting (versioning, lifecycle rules) is on — at open, or switched on later. Each failure the contract names can then be
+a threshold), hold new keys out of listings for a while, answer the first get after a put
+with `404`, report a storage class, or pretend a bucket setting (versioning,
+object lock and its mode and retention, lifecycle and tiering rules) is on or
+off — at open, or switched later — or that a delete is allowed or refused. Each failure the contract names can then be
 produced without a misbehaving service.
 
 It also emulates the service faults measured in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements): a service that
 ignores every put checksum, and one with versioning or an expiring lifecycle
-rule, **MUST** make the capability check refuse. No real service is available
+rule, **MUST** make a mutable store's capability check refuse, and one lacking
+any requirement of [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) **MUST** make an immutable store's refuse. No real service is available
 with those faults, so these profiles are the negative tests.
 
 ### 7.3 Codec tests
@@ -861,6 +1059,7 @@ with those faults, so these profiles are the negative tests.
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
+| [§3.2](#3.2%20Layout) | Write a block under header key H1, make H2 current, read the block: its index is checked under H1, as its seal names, and a recovery import resolves it. Plant a seal naming a key outside the block record's census: the read fails as malformed and the provider is not asked. |
 
 ### 7.4 Services
 
@@ -904,30 +1103,22 @@ Settled in this revision, with the evidence in [Appendix B](#Appendix%20B%20%E2%
    proved it at the maximum block size ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
 3. **Put health is a probe put**, not an existence check on the namespace
    ([§4.7](#4.7%20Health%20is%20one%20probe%20call)). It is the only one of the two that proves writability, at a cost
-   comparable to the existence check. Get health is a probe get of the same
-   object, so a store that turns read-only stays readable.
-4. **Versioning, object lock and expiring lifecycle rules are refused, not
-   supported, for a block store** ([Appendix C.1](#C.1%20Required%20service%20features)). Each stops sweep from freeing space or deletes
-   durable blocks behind the store's back. They are re-read at the start of
-   every GC pass, not only at open ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). **The one exception is a backup
-   location.** A catalog or copying backup ([RFC 12 §3](rfc-12-snapshots.md#3.%20Catalog%20backups)) **MAY** be written to
-   a location whose bucket is versioned or object-locked, under three
-   conditions:
-   - the location is in a bucket of its own: no namespace's block store has its
-     prefix in a bucket where the setting is on, so a block store keeps its
-     refusal unchanged;
-   - what is written there expires by the bucket's lifecycle rule, never by a
-     sweep: nothing at the location is deleted by DittoFS
-     ([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep));
-   - the credential used there cannot delete objects, so a compromised
-     installation cannot remove a backup either.
-
-   The store opened over such a location's block folder **MUST** require the
-   setting instead of refusing it, has no delete, and **MUST** refuse to open
-   when its capability check shows the credential can delete; how that is
-   provoked is the backend profile's ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). Versioning and object lock stay optional:
-   the documentation recommends them for a backup location, and nothing
-   enforces them.
+   comparable to the existence check. Get health is a probe get of the health
+   object, which every open writes, so the get probe never depends on a put probe
+   having run, and a store that turns read-only stays readable.
+4. **Versioning, object lock and expiring lifecycle rules are refused for a
+   mutable store, and required for an immutable one** ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). On a
+   namespace's own store each stops sweep from freeing space or deletes durable
+   blocks behind the store's back, so every namespace's store is mutable and
+   refuses them ([Appendix C.1](#C.1%20Required%20service%20features)). A backup location states its mode in its
+   configuration record ([RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration)). In `immutable` mode the location
+   needs versioning and a compliance-mode lock with retention at least the
+   backup's, a noncurrent-version expiry rule, and a credential that cannot
+   delete; it reads and writes by version, extends retention instead of
+   re-putting, and sends no put probe. Nothing in it can be removed by DittoFS
+   or by a holder of the installation's credentials before its retention ends.
+   Every setting either mode depends on is re-read by `Recheck`
+   ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
 
 Settled with them:
 
@@ -937,9 +1128,14 @@ Settled with them:
    property of the service.
 6. **Probe cost is removed where it would matter.** One put per store every 5 s
    is 17,280 puts a day; at 10⁴ stores that is 2,000 puts a second of pure
-   probing. A successful upload stands in for the probe, and stores sharing an
-   endpoint, credential and bucket share one ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)), so a busy installation
-   sends almost none and an idle one sends one per bucket.
+   probing. A successful transfer stands in for the probe of its direction,
+   and stores the syncer registers under one `ProbeKey` — the engine gives one
+   key to stores sharing an endpoint, credential and bucket — share one probe
+   per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)). So a busy installation sends almost none,
+   and an idle one sends one per bucket. A permission that differs by prefix is
+   not seen by the shared probe; the syncer's failure window catches it from the
+   store's own failing transfers. An immutable store sends no put probe at all
+   ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)).
 
 7. **What "durable" means is cited per service**, since no check can provoke a
    durability failure ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). [Appendix C.1](#C.1%20Required%20service%20features) records, per measured service, when a
@@ -950,8 +1146,8 @@ Settled with them:
 
 Open:
 
-8. **Immutability at the filesystem layer.** Item 4 places immutability in the
-   backup location's bucket, outside the filesystem. Whether regulated data
+8. **Immutability at the filesystem layer.** Item 4 places immutability in an
+   immutable backup location's bucket, outside the filesystem. Whether regulated data
    needs it inside — files or shares that cannot be changed or deleted until a
    retention date, enforced by DittoFS itself — is being looked at. Nothing in
    this document depends on the answer.
@@ -1027,6 +1223,12 @@ confirmed by the capability check before the service is supported:
 | Wasabi | bills a minimum storage duration per object, so a block deleted early is still paid for until it expires: sweep and relocation churn cost money there that they do not elsewhere |
 | Google Cloud Storage (XML API) | has no batch delete, so the store deletes one key per request ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) |
 | MinIO | not measured: it could not be pulled in the measurement environment |
+| AWS S3 | not measured |
+
+No service in this table is supported until it passes the nightly row of
+[§7.4](#7.4%20Services), whatever its documentation or compatibility claims say. The two most
+deployed, AWS S3 and MinIO, are the first to measure; until then a deployment on
+either runs on a service this set has not checked.
 
 ## Appendix C — the S3-compatible block store
 
@@ -1040,13 +1242,29 @@ its capability check.
 | --- | --- | --- | --- |
 | `PutObject`, single part | put, put probe | atomic replace; readers never see a partial object | from the service's documentation; it cannot be provoked |
 | Put integrity: an enforced `x-amz-checksum-crc32c` or `Content-MD5`, or else an ETag equal to the MD5 of the stored bytes | put | a corrupted body is rejected, or detected from the ETag — at the maximum encoded block size, not only on small objects | check step 1 |
+| `GetObject` after `PutObject` | get | strong read-after-write for a new key and an overwritten one: a get from any client after the put's `200` returns the new object ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2, by a get issued at once after the put; and from the service's documentation, since a lag that the check happens to miss cannot be provoked |
+| `x-amz-storage-class` on every put; the class each get reports | put, open | every object written in the class the profile names, never the service default; no archive class (one whose get needs a restore) | check step 2: the class reported for the check object |
+| `GetBucketIntelligentTieringConfiguration` (list) | open, `Recheck` | no configuration with an archive tier whose filter could match the prefix | check step 5 |
 | `GetObject` with `Range` | get | `206` with the bytes asked for; `416` when the range starts past the end. A clamped overlong range is tolerated: the store checks lengths itself ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2 |
 | `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5`, `Quiet` false | delete | every key, absent ones included, listed as deleted; per-key errors reported per key; a key missing from the reply is a failure ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) | check step 3 |
 | `ListObjectsV2` with `prefix`, `max-keys`, `start-after` | list | ascending key order, every key once across pages, `LastModified` present | check step 4 |
-| `GetBucketVersioning` | open, `Recheck` | versioning never enabled: no status in the reply. A `Suspended` bucket still keeps the versions written while it was on, and object lock requires versioning, so this one check covers both; `Recheck` accepts `Suspended` once `ListObjectVersions` under the prefix finds only current versions ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | check step 5 |
+| `GetBucketVersioning` | open, `Recheck` | versioning never enabled: no status in the reply. A `Suspended` bucket still keeps the versions written while it was on, and object lock requires versioning, so this one check covers both; `Recheck` accepts `Suspended` where the repair proof exists, and otherwise once `ListObjectVersions` under the prefix finds only current versions ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | check step 5 |
 | `DeleteObjects` with `VersionId`, `ListObjectVersions` | `DeleteVersions`, `Recheck` after drift | every version and delete marker of a name removed; listing reports every version under the prefix | only when versioning drifted; not checked at open |
 | `GetBucketLifecycleConfiguration` | open, `Recheck` | no rule that expires or transitions objects under the store's prefix: expiry deletes durable blocks, and a transition to an archive class makes gets fail. A rule counts as matching if its filter could match any object under the prefix — a shorter or empty prefix filter, or a tag or size filter the store's objects could meet | check step 5 |
 | `GetObject` / `PutObject` on the claim key | open | the claim is read ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); absent is reported as absent | check step 6 |
+| `PutObject` with `If-None-Match: *` | open | none: the outcome is reported as `conditional_put` and nothing uses it ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)) | check step 4 |
+
+**An immutable store** ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) replaces the versioning and lifecycle rows above with
+these, and drops `DeleteObjects`:
+
+| Feature | Required behaviour | Verified |
+| --- | --- | --- |
+| `GetBucketVersioning` | `Enabled` | check step 5 |
+| `GetObjectLockConfiguration` | object lock enabled, default retention mode `COMPLIANCE`, default period at least the location record's longest retention | check step 5 |
+| `GetBucketLifecycleConfiguration` | a `NoncurrentVersionExpiration` rule covering the prefix; any `Expiration` rule covering it no younger than the record's lifecycle age; no transition | check step 5 |
+| `PutObject` returning `x-amz-version-id`; `GetObject` with `versionId` | `PutVersion` and `GetVersion` | check step 1, once per location record |
+| `PutObjectRetention` | `ExtendRetention`, compliance mode only, never shortening | check step 1, once per location record |
+| `DeleteObject`, with and without `versionId`, on the health object | refused (`403`) both times | check step 7 |
 
 For the two bucket-setting calls, "no configuration" (`404` with the service's
 not-found code) passes, `501 NotImplemented` passes (a service without the
@@ -1089,15 +1307,16 @@ Several stores may share a bucket under different prefixes, never one prefix
 | --- | --- |
 | one attempt per call ([§4.9](#4.9%20No%20state%20across%20calls)) | SDK retries off (maximum attempts 1) |
 | client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. The capability check runs with this same configuration |
-| connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `http.Transport`: `MaxConnsPerHost`, `MaxIdleConnsPerHost` and `MaxIdleConns` all set to the derived limit |
+| connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit |
 | put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |
-| `ErrNotFound` | `404 NoSuchKey` |
+| `ErrNotFound` | `404 NoSuchKey`; `404 NoSuchVersion` on `GetVersion` |
 | `ErrInvalid` | `416`; a `Content-Range` that differs from the request (a clamp); `400` codes not listed elsewhere; `501` |
-| `ErrDenied` | `401`, `403`, `404 NoSuchBucket`, `400 ExpiredToken`, `400 InvalidToken` |
+| `ErrDenied` | `401`, `403`, `404 NoSuchBucket`, `400 ExpiredToken`, `400 InvalidToken`; any `3xx`, which on this service means the endpoint or region is wrong, never a block's state |
 | `ErrThrottled` | `429`, `503 SlowDown` |
-| `ErrTransient` | `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request |
-| `ErrCorrupt` | `400 BadDigest`, `400 InvalidDigest`, `400 XAmzContentSHA256Mismatch`; the exact status and code the check recorded for its chosen checksum, only on puts that carried that checksum; an ETag mismatch; a mismatching response checksum |
+| `ErrTransient` | `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request, a mismatching response checksum on a get ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)), a response body that does not parse |
+| `ErrCorrupt` | `400 BadDigest`, `400 InvalidDigest`, `400 XAmzContentSHA256Mismatch`; the exact status and code the check recorded for its chosen checksum, only on puts that carried that checksum; an ETag mismatch on a put |
+| everything else | the rest of its class: any other `4xx` (including `404` with another code) is `ErrInvalid`, any other `5xx` is `ErrTransient`, and a status outside `100`–`599`, or any other reply, is `ErrTransient`. The table is total: a reply this row does not catch cannot exist |
 
 `404 NoSuchBucket` is `ErrDenied`, not `ErrNotFound`: a missing bucket is the
 store's failure, and reading it as a missing block would make every read
@@ -1127,18 +1346,29 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
    — a correct put, and one with a wrong checksum or a known body whose ETag must
    match — since services change checksum, ETag and server-side encryption
    behaviour with size.
-2. Put a 10-byte object; get bytes 2–5 and expect exactly 4 bytes; get from
-   offset 20 and expect `416`.
+2. Put a 10-byte object in the profile's storage class; get it at once, and
+   expect it back, with that class reported; get bytes 2–5 and expect exactly 4
+   bytes; get from offset 20 and expect `416`.
 3. Batch-delete two keys that exist and one that was never written, and expect
    all three reported deleted and the two keys gone from a listing. A service that
    rejects the batch operation is recorded, and the store deletes one key per
    `DeleteObject` request instead.
 4. Put three keys and list with `max-keys=1` using `start-after`; expect each key
    once, in order, with `LastModified`. Where a listing lags, re-list up to 5
-   times over at most 30 s before refusing.
-5. Read the bucket's versioning status and lifecycle rules, as [Appendix C.1](#C.1%20Required%20service%20features) states.
+   times over at most 30 s before refusing. Put one of them again with
+   `If-None-Match: *`, and record whether the service refused it as
+   `conditional_put`.
+5. Read the bucket's versioning status, lifecycle rules and tiering
+   configuration, as [Appendix C.1](#C.1%20Required%20service%20features) states.
 6. Read the namespace claim at `<prefix>control/claim` and hand it to the opener.
-7. Delete what the check wrote.
+7. Put the health object at `<prefix>control/health`, then delete everything
+   else the check wrote. The health object stays.
+
+An immutable store runs step 1 and its version and retention rows only when its
+location record is created or its endpoint or credential changes, and records
+the outcome there; at every open it runs step 5 against its own rows, reads its
+recorded health object version, and replaces steps 2–4, 6 and 7 with the two
+refused deletes of the health object ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). It writes nothing at open.
 
 Against the services of [Appendix B](#Appendix%20B%20%E2%80%94%20measurements), step 1 chooses CRC32C on Scaleway and LocalStack
 4.13.1, `Content-MD5` on LocalStack 3.0, and the ETag on Cubbit DS3.
