@@ -144,7 +144,7 @@ file alive and how it is released; [§5](#5.%20Rename) is rename;
 [§8](#8.%20Open%20state%2C%20as%20the%20namespace%20sees%20it) and
 [§9](#9.%20Attributes%20and%20what%20is%20not%20one) cover open state and
 attributes as this component sees them; [§10](#10.%20Invariants) lists the
-invariants. On a first read, skip §2.8–§2.10, §3.5–§3.8, §6.5, §7.5–§7.7,
+invariants. On a first read, skip §2.8–§2.10, §3.5–§3.8, §5.5, §6.5, §7.5–§7.8,
 §9.4–§9.6 and §11 onward.
 
 ## 1. Purpose
@@ -408,11 +408,11 @@ path does not.
 
 | Attribute | Changed by | Written in the transaction of |
 | --- | --- | --- |
-| `Owner`, `Group` at create | the create: the caller's principal, and the credential's group or, under a setgid parent, the parent's group | the create |
-| `Mode`, `Owner`, `Group`, `Flags` | chmod, chown, set-flags, ACL change; setuid and setgid also cleared by another principal's write ([§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20another%20principal%20changes%20the%20file)) | its own operation |
+| `Owner`, `Group` at create | the create: the caller's principal, and the credential's group, the principal's primary group or, with neither, the caller's own principal; under a setgid parent, the parent's group | the create |
+| `Mode`, `Owner`, `Group`, `Flags` | chmod, chown, set-flags, ACL change; setuid and setgid also cleared by an unprivileged caller's write ([§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file)) | its own operation |
 | `Access` | read, and only if the policy records it ([§9.2](#9.2%20Timestamps)) | its own operation |
-| `Size`, `Charged`, `Applied`, `Modify`, and `Change` and `Version` on write, and an explicit set of size or `Modify` | a client write, truncate, deallocate, a set-attribute | **existence** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
-| `Change`, `Version` on attribute change | chmod, chown, link, unlink, rename | its own operation |
+| `Size`, `Charged`, `Applied`, `Modify`, and `Change` and `Version` on write, and an explicit set of size or `Modify` | a client write, truncate, deallocate, clone or copy into the file, a set-attribute | **existence** ([§2.5](#2.5%20Where%20%60size%60%20lives)) |
+| `Change`, `Version` on attribute change | chmod, chown, set-flags, ACL and xattr change, link, unlink, rename: each draws a `Version` and stores it in the File in its own transaction ([§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)) | its own operation |
 | `Nlink` | link, unlink, rename over an existing entry | the entry change that caused it ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)) |
 | a directory's `Modify`, `Change`, `Version` | create, unlink, rename in it | the entry change, as a delta ([§9.2](#9.2%20Timestamps)) |
 | `Number` | create only; never changed ([§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)) | the create |
@@ -424,11 +424,33 @@ directory's `Group` when the parent has the setgid bit, and otherwise to the
 credential's group: the group the request's credential names, where the
 protocol's credential carries one (NFS's primary gid, resolved to its principal),
 and the principal's primary group ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)) where it does not, as for SMB. A
+principal with neither — no group on the credential and no primary group — gets
+its own principal as `Group`, a group of one, so the file is shared with nobody
+the owner did not choose; the create is not refused. A
 directory created under a setgid parent is itself setgid, so the rule carries
 down the tree. The rule is the same for every protocol, applied to what each
 protocol's credential carries. A fixed default group **MUST NOT** be used: it
 hands every file to whoever else holds that group, and makes the same user's file
 differ by the protocol that created it.
+
+> decision: a creator with no group gets itself as the file's group rather than
+> a refused create, because SMB principals without a primary group are common
+> and refusing would make them unable to create anything. It grants nothing
+> beyond what the owner already has. Refuse instead if an identity source is
+> shown to report "no primary group" for principals that do have one, where the
+> fallback would hide a mapping fault.
+
+**A setgid bit is not inherited by a non-member.** When a non-directory is
+created with the set-group-ID bit in its requested mode, and the caller is
+neither a member of the `Group` the file gets nor privileged ([§7.4](#7.4%20The%20identity%20arrives%20resolved)), the create **MUST** clear the
+bit, as Linux does since CVE-2018-13405. Under a setgid parent the file takes the
+parent's group whatever the creator's memberships, so without this rule a user
+outside `finance` creating a file with mode 2755 in a mode-3777 `finance`
+directory makes a program that runs with `finance`'s rights. Likewise a `chmod`
+that sets the set-group-ID bit on a non-directory **MUST** clear it when the
+caller is neither a member of the file's `Group` nor privileged, as POSIX
+`chmod` permits. A directory keeps the bit in both cases: on a directory it
+names the group new entries take, and grants nothing to run.
 
 The offload commit appears nowhere in that table, and **MUST NOT** ([RFC 6 §5.1](rfc-6-block-metadata.md#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 Offloading changes where content is, not what it is, and a File it could write
@@ -482,7 +504,7 @@ Three rules, in order of how much they cost to get wrong:
 1. **`size` and the hole set move together.** A write past EOF grows `size` *and*
    adds a hole for the gap it skipped ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). Both **MUST** be written by
    the same existence commit. Written apart, the crash between them leaves a
-   `size` covering a range no hole records and no journal holds — content
+   `size` covering an extent no hole records and no journal holds — content
    claimed to exist that was never written, which resolves **Lost** and fails a
    read that should have returned zeros.
 2. **Only the write path writes `size`.** A `SetAttrs` that changes size is
@@ -554,6 +576,8 @@ type Xattr struct {
 ```
 
 Each xattr is its own record, never a list on the File ([§2.2](#2.2%20Entry)'s rule, again).
+A share setting bounds how many a file may have, as another bounds its streams,
+so the release that deletes them stays one bounded transaction ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
 
 A **named stream** (SMB's alternate data stream) has content, so it is a `File`
 with its own `FileID`, `Type` `Stream` and `StreamOf` set. Its bytes go through
@@ -877,18 +901,24 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   dot and anything, as `con.txt`. Over NFS such a create fails as an invalid
   name, so no client makes a name the share's Windows clients cannot open.
 
-**Names are not normalised; a folded key is.** A stored name is the bytes given
-([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the fold rule is Unicode normalisation to
-NFC followed by full case folding, at a Unicode version recorded with the rule,
-so a name one client sends decomposed and another composed is one entry, found
-with one read. On a case-sensitive share the key is the bytes, and the two
-spellings are two entries, as on a local POSIX filesystem.
+**Neither names nor keys are normalised.** A stored name is the bytes given
+([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the fold rule is Unicode **simple** case
+folding — each code point to exactly one code point, the `C` and `S` mappings of
+the Unicode case-folding table — with no normalisation, at a Unicode version
+recorded with the rule. That is how NTFS's upcase table and Samba compare names:
+one code point for one, never one for two. So `Straße.docx` and `STRASSE.docx`,
+two files on a Windows volume, stay two entries here, and a profile or project
+copied from Windows keeps every file. On a case-sensitive share the key is the
+bytes. On either, a name one client sends decomposed and another composed is two
+entries, as on NTFS and on a local POSIX filesystem.
 
-> decision: names are never normalised, and only a case-insensitive share's key
-> is. Normalising a stored name changes what a client wrote and what a listing
-> returns; leaving a case-sensitive key as bytes keeps POSIX semantics exact.
-> Normalise case-sensitive keys too if clients of mixed normalisation are shown
-> to create names on such a share that users take for one.
+> decision: no normalisation in a stored name or in a key. Full case folding or
+> NFC in the key would merge names Windows keeps apart (`ß` against `SS`) and
+> lose a file on every copy from a Windows volume; the cost of leaving them out
+> is that a decomposed and a composed spelling of one name are two entries,
+> which users may take for one. Add a normalising fold rule, as a second
+> recorded rule a share opts into ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)), if clients of mixed normalisation
+> are shown to create such pairs on a share.
 
 ## 4. What keeps a file alive
 
@@ -963,6 +993,17 @@ primary's recovery releases every recorded file that no open holds. An unlink
 acknowledged with nothing recorded, and then forgotten, would leak every chunk
 of the file with nothing left to find them by — which is why the record is
 written even when the release follows at once.
+
+**The engine reaches that transaction only through `Existence.Remove`** with a
+release removal ([RFC 6 §10.1](rfc-6-block-metadata.md#10.1%20Interface)), the one view it holds over these records, so that
+call carries this component's half of the release. It **MUST**, in its one
+transaction: run the holder re-check of [§4.5](#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction) and abort when it fails; delete
+the File record, its ACL, every xattr, its delete-pending record and its
+pending release; and write the pending release of each of its streams. The
+xattrs are a prefix of the file's own keys ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and a share setting
+bounds both them and the streams, so the transaction stays bounded. A
+`Remove` that dropped the content records and left any of these would leave a
+File no handle can reach and no release will find.
 
 A pending-release record is not a holder: it keeps nothing alive, it only
 remembers a release that has not yet run.
@@ -1085,6 +1126,20 @@ it in its own transaction:
 Without the write, a create that only guarded the replaced directory commits
 beside a rename that only scanned it, and leaves a file with `Nlink` 1 under a
 released directory.
+
+### 5.5 A recycle bin is a rename, and keeps three constraints
+
+A recycle bin turns an unlink into a rename into a bin directory, stamping a
+deletion time, an original path and a deleting user. Nothing below the namespace
+has to know a file is in one. Where a bin is offered, wherever it is built
+([§13](#13.%20Open%20questions)), three constraints hold:
+
+- a bin directory **MUST NOT** be owned by whichever user deletes into it first,
+  so one user's deletion never decides who may read another's;
+- a move into the bin that fails **MUST** surface the underlying refusal — an
+  access error, not an I/O error — so the client keeps the file and says why;
+- an option restricting the bin to administrators **MUST** be enforced by this
+  component's permission check ([§7.1](#7.1%20One%20chokepoint)), or not offered.
 
 ## 6. Handles
 
@@ -1305,6 +1360,15 @@ An identity **MUST** carry every field any check reads — including the ones a
 particular backend's checks do not read — because the component that builds it
 cannot know which check runs.
 
+**Privilege is a field of the identity.** A *privileged* caller is one the
+filesystem service marks so: an NFS caller whose root identity the export left
+unsquashed, or a principal the share grant names `admin` — POSIX's
+`CAP_FSETID` and `CAP_LINUX_IMMUTABLE`, as one flag. This component reads the
+flag and never derives it from a UID or a group name. It decides three things:
+whether setgid survives a create or `chmod` by a non-member ([§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them)), whether a
+write clears setuid and setgid ([§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file)), and who may set or clear the immutable and
+append-only flags ([§7.8](#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)). The authorisation cache key carries it ([§7.5](#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read)).
+
 ### 7.5 A cached decision is keyed by everything it read
 
 An implementation **MAY** cache a resolved identity or an authorisation result.
@@ -1363,6 +1427,31 @@ transactions, against the files they act on ([§7.3](#7.3%20The%20decision%20is%
 An adapter never pre-checks any of these with `Authorize` and passes the verdict
 in ([§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always)).
 
+### 7.8 Immutable and append-only flags are enforced at the chokepoint
+
+`Flags` holds immutable and append-only ([§2.1](#2.1%20File)), and a flag stored but enforced
+nowhere is a promise to the client that nothing keeps. This component enforces
+both, in `Authorize` and inside the transactions of [§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs), for every caller,
+privileged or not, and for every protocol, as Linux does for
+`FS_IMMUTABLE_FL` and `FS_APPEND_FL`:
+
+| Operation | Immutable file | Append-only file |
+| --- | --- | --- |
+| write at an offset below the size, truncate, deallocate, clone or copy into it | refused | refused |
+| write that only appends | refused | allowed |
+| unlink, rename of it or over it, link to it | refused | refused |
+| attribute, ACL or xattr change other than the two flags | refused | refused, except `Access` and `Modify` set by the write path |
+| create, link or rename into it (a directory) | refused | allowed |
+| unlink or rename out of it (a directory) | refused | refused |
+
+A refusal is a permission error (`EPERM`, `NFS4ERR_PERM`,
+`STATUS_ACCESS_DENIED`), never an I/O error. Only a privileged caller ([§7.4](#7.4%20The%20identity%20arrives%20resolved))
+**MAY** set or clear either flag, and clearing it is the one change an immutable
+file accepts. An open granted before a flag was set does not outlive it: the
+grant is evaluated against the file's current `Flags` on every write it gates
+([§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always)). SMB's read-only attribute is a different flag, which this table does
+not cover.
+
 ## 8. Open state, as the namespace sees it
 
 Opens, byte-range locks, deny modes, caching grants (delegations, oplocks,
@@ -1391,6 +1480,16 @@ causes it — a close by lease expiry, by revocation or at the end of grace. Run
 whoever closed last, the unlink would let any principal holding an open of the
 file decide whether another's deletion happens; run with no identity, it has
 nothing to authorise. This component sees nothing else of it.
+
+**A delete-pending directory takes no new entries.** While a directory is delete
+pending, the filesystem service, which holds the open state, **MUST** refuse a
+create, a link or a rename whose destination parent is that directory, as it
+refuses new opens of it: `STATUS_DELETE_PENDING` over SMB, an access error over
+NFS. Otherwise a client fills a directory the deleting client was told is going,
+and the close-time unlink fails as not empty. A create that passed the check
+before the mark was set and commits after it is caught by the removal's own
+emptiness proof ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)): the unlink fails as not empty, the directory stays, and
+the failure is reported to the closing open, never as a silent leak.
 
 ## 9. Attributes and what is not one
 
@@ -1449,9 +1548,14 @@ cache matches the `before` patches its cache instead of revalidating. The pair
 is exact only when nothing else changed the object between them, which, as above,
 nothing here can show for a directory. A directory's pre-operation attributes
 **MUST** therefore be omitted, which makes the client revalidate. A file's are
-returned only when the primary captured them under the file's commit
-serialisation, in the same step as the operation ([§2.5](#2.5%20Where%20%60size%60%20lives)); otherwise they are
-omitted too.
+returned only when the primary captured them and accepted the operation inside
+one hold of the file's **accept lock**: a per-file lock at the primary that every
+write, truncate, attribute change and clearing of [§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) takes before it draws its
+`Version` ([§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)). The commit serialisation of [§2.5](#2.5%20Where%20%60size%60%20lives) is not enough: it orders commits,
+and another client's write can be accepted between a capture and the operation
+without committing, so the pair would bracket two changes. Where the primary
+cannot take the accept lock — the operation is forwarded, or the lock is
+contended past a bound — the pre-operation attributes **MUST** be omitted too.
 
 `Access` **MAY** be omitted, or updated on a coarse schedule. An implementation
 that updates it on every read has made every read a write, on a record shared by
@@ -1483,25 +1587,44 @@ A client compares the change attribute — or, over NFSv3, `ctime` and `mtime`,
 and over SMB the change time — to decide whether its cache still holds. A value
 that moves backward, or repeats, keeps a stale cache alive.
 
-- **`Version` is drawn, not counted.** Every change to a file — an attribute or
-  link change, an accepted write, a directory delta — takes its `Version` from
-  the version counter of the journal at the file's primary, the counter that
-  orders content writes ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), when the primary accepts the change. The
-  counter only rises. Before a journal serves a share it did not serve when it
-  opened, it raises the counter above the share's version floor ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), and
-  that floor **MUST** cover every `Version` a File of the share records. A file's
-  `Version` therefore rises with every change across restarts, moves and
+- **`Version` is drawn, not counted.** Every change to a file — an attribute,
+  flag, ACL, xattr or link change, an accepted write, a directory delta — takes
+  its `Version` from the version counter of the journal at the file's primary,
+  the counter that orders content writes ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), when the primary accepts
+  the change. The counter only rises. Every time a journal opens, and before it
+  serves a share it did not serve when it opened, it raises the counter above the
+  share's version floor ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+- **Every stored `Version` is in the floor.** A change that draws a `Version`
+  **MUST** store it in the File in its own transaction — a `chmod` as much as an
+  existence commit — and that transaction **MUST** write the file's floor entry
+  at the new `Version`, deleting the entry it supersedes ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A
+  directory delta, which never rewrites the directory's record ([§9.2](#9.2%20Timestamps)), writes
+  its own floor entry at its version under its own unique key, and the fold that
+  absorbs the delta replaces it with the directory's. The floor is therefore one
+  entry per File at its `Version`, plus one per unfolded delta, and covers every
+  `Version` the share stores. Without this a `chmod` that draws 101 after a write
+  at 100 is stored where no floor sees it; after a crash the counter resumes at
+  101 and the next change repeats it, and an NFS client keeps a stale cache. A
+  file's `Version` therefore rises with every change across restarts, moves and
   failovers, because the versions it is drawn from do.
 - The stored `Version` is the highest drawn for the changes the File records: an
   existence commit sets it to the larger of the stored value and the newest
   version it covers, and a directory's deltas fold by maximum. The overlay
   reports the larger of the stored `Version` and the newest staged write's
   ([RFC 17 §5.7](rfc-17-vfs.md#5.7%20GetAttr)).
-- **`Change` and `Modify` are clamped.** The primary sets each to the later of its
-  clock and one microsecond past the value the file already has, so a primary
-  whose clock is behind its predecessor's never moves them backward. `Change`
-  advances with every change, content or attribute, through every protocol: no
-  open suspends it ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)).
+- **Only server-chosen times are clamped.** `Change` always, and `Modify` or
+  `Access` when the server chooses them — set by a write, or by a set-attribute
+  to server time — are set to the later of the primary's clock and one
+  microsecond past the value the file already has, so a primary whose clock is
+  behind its predecessor's never moves them backward. A time the client gives —
+  NFS `SET_TO_CLIENT_TIME`, `utimensat` with a time, SMB set-information with a
+  time — **MUST** be stored as given, earlier or later than the current value:
+  archive, copy and synchronisation tools restore past times, and a
+  synchronisation tool whose restored times read back as "now" re-copies every
+  file on every run.
+  `Change` advances with that set as with every change, content or attribute,
+  through every protocol: no open suspends it
+  ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)).
 
 The change attribute an adapter reports is `Version`; nothing reports a value
 derived from the clock alone.
@@ -1528,25 +1651,27 @@ the value, and recovery re-applies only writes above the file's `Applied`
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), all of which came later. The cost is one journal sync and one
 transaction per explicit set on a file with staged writes.
 
-### 9.6 setuid and setgid are cleared when another principal changes the file
+### 9.6 setuid and setgid are cleared when an unprivileged caller changes the file
 
-A setuid or setgid program that another principal can rewrite runs that
-principal's code with the program's privileges. As POSIX permits and common
-servers do:
+A setuid or setgid program whose bytes change keeps running with the program's
+privileges, whoever changed them. Linux clears the bits on every unprivileged
+change of content, the owner's included, and POSIX permits it; this component
+does the same:
 
-- a write, truncate or deallocate of a regular file by a principal other than its
-  owner **MUST** clear the set-user-ID bit, and the set-group-ID bit when group
-  execute is set (without group execute the bit marks mandatory locking, and
-  stays);
+- a write, truncate, deallocate, clone or copy into a regular file by a caller
+  that is not privileged ([§7.4](#7.4%20The%20identity%20arrives%20resolved)) — the file's owner included — **MUST** clear the
+  set-user-ID bit, and the set-group-ID bit when group execute is set (without
+  group execute the bit marks mandatory locking, and stays);
 - a change of a regular file's owner or group **MUST** clear the same bits, in the
-  transaction that makes it.
+  transaction that makes it, whoever makes it.
 
 The clearing is a mode change with its own `Version` ([§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)), and **MUST**
 commit before the write that causes it is staged: staged first, the rewritten
 program would stay executable with its privileges until the next existence
 commit. The filesystem service makes it at the file's primary before handing the
-write to the engine ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)): one transaction for the first such write, none
-after, since the bits are then clear. A write by the owner leaves the bits.
+write, clone or copy to the engine ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)): one transaction for the first such
+change, none after, since the bits are then clear. A privileged caller's write
+leaves the bits.
 
 ## 10. Invariants
 
@@ -1573,14 +1698,17 @@ after, since the bits are then clear. A write by the owner leaves the bits.
 | N19 | An exclusive create stores its verifier in `CreateVerifier`, never in a time; a retry with the same verifier succeeds until the first `SetAttrs` clears it. |
 | N20 | A file has only the names its entries hold: no short name is generated. |
 | N21 | A directory's change info is reported with `atomic` false. |
-| N22 | A create sets `Owner` to the caller's principal and `Group` to the credential's group, or to the parent's group when the parent is setgid; a directory created under a setgid parent is setgid; no fixed default group is ever assigned. |
-| N23 | `Version` is drawn from the counter of the journal at the file's primary and never moves backward across restarts, moves and failovers; `Change` and `Modify` never move backward; no open suspends `Change`. |
+| N22 | A create sets `Owner` to the caller's principal and `Group` to the credential's group, the principal's primary group or, with neither, the caller's own principal, or to the parent's group when the parent is setgid; a directory created under a setgid parent is setgid; a non-directory keeps setgid at create or `chmod` only when the caller is in its group or privileged; no fixed default group is ever assigned. |
+| N23 | `Version` is drawn from the counter of the journal at the file's primary, stored in its own transaction with a floor entry at that `Version` for every change, attribute-only ones included, and never moves backward or repeats across restarts, moves and failovers; `Change` and server-chosen times never move backward; a client-given time is stored as given; no open suspends `Change`. |
 | N24 | An explicit `Modify` or `Access` is applied in an existence commit after every write staged before it. |
-| N25 | A non-owner's write, truncate or deallocate of a regular file, and a change of its owner or group, clears setuid, and setgid with group execute, before the write is staged. |
+| N25 | An unprivileged caller's write, truncate, deallocate, clone or copy into a regular file — the owner's included — and any change of its owner or group, clears setuid, and setgid with group execute, before the change is staged. |
+| N33 | Immutable and append-only flags are enforced at the chokepoint for every caller and protocol, and only a privileged caller sets or clears them. |
+| N34 | A file's NFSv3 pre-operation attributes are reported only when captured under the file's accept lock in one hold with the operation. |
+| N35 | A delete-pending directory takes no create, link or rename into it. |
 | N26 | A rename replaces a directory only with a directory, and only an empty one, which it proves empty and writes in its own transaction; a non-directory replaces only a non-directory. |
 | N27 | Removing, renaming and linking are authorised inside their own transactions, against both directories and the file. |
 | N28 | A handle carries no shard; a `FileID` is on no wire outside a handle. |
-| N29 | A share's name rule is enforced for every protocol; a stored name is never normalised, and a case-insensitive key is normalised and folded. |
+| N29 | A share's name rule is enforced for every protocol; neither a stored name nor a key is normalised, and a case-insensitive key is folded by simple, one-to-one case folding. |
 | N30 | A restore that keeps numbers raises the allocator above every number it imports; a snapshot's 64-bit id carries its ordinal. |
 | N31 | A delete on close unlinks as the principal of the open that set the mark, authorised by that open's grant. |
 | N32 | Every attribute a client sees is the join of the File and the overlay read under the file's commit serialisation; a directory's NFSv3 pre-operation attributes are never reported. |
@@ -1732,15 +1860,22 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie resolves | List a directory of 10⁵ entries in pages, deleting between pages the entry each cookie came from, and sending each page's request to a different node. Assert every untouched entry is returned once, every cookie is at least 3 with its top bit clear, and no cookie state was stored. With a test hash key forcing a chain of three, assert no page ends inside it. |
 | [§5.4](#5.4%20Rename%20over%20an%20existing%20entry) rename over an entry | Rename a directory over an empty directory: assert success and the target released. Over a non-empty one, a directory over a file, a file over a directory: assert each refused. On the backend that validates no reads, race a create into the target with the rename; assert one fails and no entry survives under a released directory. Rename a file onto another link of itself: assert nothing changes. |
 | [§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs) removal rights | Over NFS and over SMB: remove a file with delete-a-child on its directory and no right on the file, and with delete on the file and no right on the directory; assert both allowed and refused with neither. In a sticky directory governed by mode, remove another's file in another's directory: assert refused. Move a directory to another parent without write on it: assert refused. A build that authorises removal with one `Authorize` on the directory fails the second case. |
-| [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.` over NFS: assert each refused as an invalid name. On a `posix` share assert each is created. On a case-insensitive share create `café` decomposed over NFS and look it up composed over SMB: assert one entry, found with one read, listed as given. |
+| [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.` over NFS: assert each refused as an invalid name. On a `posix` share assert each is created. On a case-insensitive share create `Straße.docx`, then `STRASSE.docx`: assert two entries; create `ǅ` and look up `ǆ`: assert one entry, found with one read, listed as given. Create `café` decomposed over NFS and composed over SMB: assert two entries. A build that folds fully or normalises the key fails the first assertion. |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) no shard, no `FileID` | Mint a file's handle, move the file to another shard, look it up again: assert the two handles are byte-identical. Read every identifier each protocol reports for the file; assert none contains its `FileID`. |
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused) restored and snapshot ids | Restore a share keeping numbers, then create a file: assert its number exceeds every restored one. Take two snapshots of one file: assert their 64-bit ids differ from each other and from the live file's, over NFS and SMB. |
 | [§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later) delete on close identity | alice opens a file with delete on close; bob, with no right to delete it, holds a second open and closes last. Assert the file is unlinked, as alice. Repeat with alice's lease expiring before bob closes: assert it is unlinked, as alice. A build that unlinks as the last closer fails bob's close-time unlink. |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) join reads one state | Commit a file's writes in a loop while 16 readers `GETATTR` it. Assert no reader sees a `Size` or `Version` lower than one it saw before. A join that reads the File and the overlay without the sequence check fails. `LOOKUP` a file with uncommitted writes past its end: assert the attributes returned carry the new size. |
 | [§9.2](#9.2%20Timestamps) NFSv3 pre-operation attributes | Create in a directory over NFSv3 while another client creates in it. Assert no reply carries the directory's pre-operation attributes. |
+| [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) attribute version survives a crash | Write and commit at version 100; `chmod` the file, reading its `Version`; kill the process before any further journal record; restart; `chmod` again. Assert the second `Version` exceeds the first. A floor that covers only refs and `Applied` returns the first value again. |
+| [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) client time kept | `SETATTR` `mtime` to 2001-01-01 with `SET_TO_CLIENT_TIME`, `touch -d` a past time, and SMB set-information with a past time, each on a file whose `Modify` is now. Assert `GETATTR` returns each given time and `Change` advanced. A build that clamps every time returns now. |
 | [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) change never moves back | Stage three writes, reading `Version` after each; commit; `chmod`; restart; write; fail the shard over to a node whose clock is an hour behind; write and `chmod` again. Assert `Version` rises strictly at each change and `Change` and `Modify` never fall. Remove the clamp: `Change` falls after the failover. Count `Version` per file instead of drawing it: a commit of three writes moves it below what the overlay reported. |
 | [§9.5](#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it) explicit time | Stage a write, `SETATTR` `mtime` to a past time over NFS, then `COMMIT`; repeat over SMB with set-information on a second handle. Assert `GETATTR` returns the set time after the commit and after a crash and recovery; write again, assert `Modify` advanced. A build that writes the set time to the File directly returns the staged write's time after the commit. |
-| [§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20another%20principal%20changes%20the%20file) setuid cleared | Make a file mode 6755 owned by alice; write to it as bob. Assert both bits are clear before the write's reply. Repeat with mode 2745: assert setgid kept. `chown` a 4755 file: assert setuid cleared. Write as alice: assert the bits kept. A build that clears in the existence commit shows the bits set between the reply and the commit. |
+| [§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) setuid cleared | Make a file mode 6755 owned by alice; write to it as bob. Assert both bits are clear before the write's reply. Repeat with mode 2745: assert setgid kept. `chown` a 4755 file: assert setuid cleared. Write as alice, the owner: assert both bits cleared. Truncate, deallocate, clone into and server-side copy into a 6755 file as alice: assert each clears them. Write as a privileged caller: assert the bits kept. A build that exempts the owner fails the alice write; one that clears in the existence commit shows the bits set between the reply and the commit. |
+| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) setgid for a non-member | In `/srv/drop`, mode 3777, group `finance`, create a file with mode 2755 as a user outside `finance`: assert the file's group is `finance` and setgid clear. Repeat as a member: assert setgid kept. Create a directory there as the non-member: assert it is setgid. `chmod 2755` a file of group `finance` as its non-member owner: assert setgid clear. A build that inherits the bit unchecked fails the first assertion. |
+| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) no group at all | Create a file over SMB as a principal with no primary group, and over NFS as one whose credential gid maps to no principal and who has no primary group. Assert both creates succeed and the file's `Group` is the creator's own principal. |
+| [§7.8](#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint) flags | Set immutable on a file as a privileged caller; as its owner, over NFS and SMB, write, truncate, `chmod`, rename, link and unlink it, and write through an open taken before the flag was set: assert each refused with a permission error. Set append-only: assert an append succeeds and an overwrite, a truncate and an unlink are refused. Clear either flag as the unprivileged owner: assert refused. A build that stores the flags without checking them fails every assertion. |
+| [§9.2](#9.2%20Timestamps) file pre-operation attributes | Two NFSv3 clients write one file in a loop at its primary. Assert every reply that carries pre-operation attributes has `before` equal to the attributes after the change immediately preceding it in the file's `Version` order. Capture under the commit serialisation only: the check fails. |
+| [§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later) delete-pending directory | Mark a directory delete on close over SMB; while the mark stands, create in it over SMB and over NFS, and rename a file into it. Assert each refused, and the directory removed at close. Race a create past the check: assert the close-time unlink fails as not empty and is reported. |
 | [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) name freed | Unlink a name and create it again as soon as the unlink is acknowledged, on every backend including a slow remote one. Assert the create never sees the name as taken and the parent's `Version` moved. |
 
 ### 12.2 Group B — cost
@@ -1794,17 +1929,10 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
    omitting it removes a write from the read path.
 3. ~~**Placing a new file near its parent.**~~ Closed: `FileID`s are unguessable
    ([§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)); placement near the parent returns only with MACed handles.
-4. **Where a recycle bin sits.** A recycle bin turns an unlink into a rename,
-   stamping a deletion time, an original path and a deleting user. Nothing below
-   the namespace has to know a file is in it, so it is not engine policy
-   ([RFC 8 §1.1](rfc-8-engine.md#1.2%20Non-goals)); whether it belongs here or above this component is open.
-   Wherever it sits, three constraints hold: a bin directory **MUST NOT** be
-   owned by whichever user deletes first, so one user's deletion never decides
-   who may read another's; a move into the bin that fails **MUST** surface the
-   underlying refusal (access denied, not an I/O error), so the client keeps
-   the file and says why; and an option restricting the bin to administrators
-   **MUST** be enforced by the namespace's permission check
-   ([§7.1](#7.1%20One%20chokepoint)), or not offered.
+4. **Where a recycle bin sits.** Nothing below the namespace has to know a
+   file is in a bin, so it is not engine policy
+   ([RFC 8 §1.2](rfc-8-engine.md#1.2%20Non-goals)); whether it is built here or above this component is
+   open. The constraints it keeps wherever it sits are [§5.5](#5.5%20A%20recycle%20bin%20is%20a%20rename%2C%20and%20keeps%20three%20constraints)'s.
 5. **A reverse-name index** — a file's names, for repair and auditing — is not
    written and no key is reserved for it; add one, at one write per create, link
    and rename, when a consumer needs it.
