@@ -11,6 +11,7 @@ depends_on:
   - "[[rfc-7-namespace-metadata]]"
   - "[[rfc-8-engine]]"
   - "[[rfc-12-snapshots]]"
+  - "[[rfc-27-namespace-migration]]"
   - "[[rfc-14-open-state]]"
   - "[[rfc-15-topology]]"
   - "[[rfc-16-metadata-store]]"
@@ -707,7 +708,7 @@ clients do not, so the adapter finishes the request itself:
   held pending until the freeze ends plus 35 s, and never longer than
   `migration.freeze_timeout` plus 35 s
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks),
-  [RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)),
+  [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)),
   then re-run. A freeze lasts up to 5 minutes, so a 60 s deadline would answer
   a write held by a two-minute freeze as a failure. If the share's namespace
   has moved when the freeze ends, the adapter drops the connection rather than
