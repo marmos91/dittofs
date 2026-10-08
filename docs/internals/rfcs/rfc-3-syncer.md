@@ -321,7 +321,7 @@ func (f *Flow) Upload(ctx context.Context, name BlockName, size int64, src func(
 func (f *Flow) Fetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
 func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
 // A raw transfer carries a block byte for byte between two stores, never
-// decoding it; a copying backup uses it (RFC 12 §3.4.2). FetchRaw writes the
+// decoding it; a copying backup uses it (RFC 26 §2.4.2). FetchRaw writes the
 // whole stored block into the caller's writer at its offsets, a retry resuming
 // at the first byte not yet written, and returns the checksum of the bytes
 // written; UploadRaw puts exactly size bytes under that checksum and returns
@@ -401,7 +401,7 @@ and puts get the same memory bound, retries and health refusal as any transfer,
 and run in the background class, behind every reader's demand and ahead of
 speculation ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows), [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)). GC's deletes do not go through
 the syncer ([§1.1](#1.1%20Non-goals)). A copying backup and a re-home open background flows
-the same way ([RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step), [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a copy on the namespace's
+the same way ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step), [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a copy on the namespace's
 store and on the backup's block folder, a re-home on the old and new
 namespaces' stores. Fairness per tenant, or a separate flow for pre-warm,
 would change which flows are opened and nothing here.
@@ -452,7 +452,7 @@ it was not handed, and never puts a name again after `Upload` returns.
 
 **A raw transfer copies a block without opening it.** A copying backup carries
 each block byte for byte from the namespace's store to the backup's block folder
-([RFC 12 §3.4.2](rfc-12-snapshots.md#3.4.2%20What%20is%20copied)): a copy that decoded and re-encoded would need the
+([RFC 26 §2.4.2](rfc-26-catalog-backups.md#2.4.2%20What%20is%20copied)): a copy that decoded and re-encoded would need the
 namespace's material and hold plaintext, which the copier must not. So
 `FetchRaw` and `UploadRaw` move **opaque bytes of an exact size**:
 
@@ -474,7 +474,7 @@ namespace's material and hold plaintext, which the copier must not. So
   damaged between the two fails the put rather than landing as a complete copy;
 - **`FetchVersion`** reads chunks of one recorded version, decoded and verified
   exactly as `Fetch` does; `Verify` and a restore from an immutable location use
-  it ([RFC 12 §3.4.5](rfc-12-snapshots.md#3.4.5%20Restore%20into%20a%20new%20namespace)).
+  it ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)).
 
 Each is a transfer like any other: background class, scheduled, retried within
 the bound, refused by an unhealthy direction, and charged at its size.

@@ -37,7 +37,9 @@ order: each part builds on the ones before it.
 | [RFC 11](rfc-11-ownership.md) | shards | deferred | shards (a share by default, subtree and automatic per-child shards; per-file and range shards deferred), the primary of each, node leases, handover, batched moves, cross-shard operations, failover, forwarding |
 | [RFC 15](rfc-15-topology.md) | topology and roles | deferred | one binary, two roles chosen at deployment (`protocol` and `storage`, both by default), the composition root: what each role composes, one primary per shard, the route envelope, routing calls to the primary that serves them, split and collocated deployments, pNFS metadata and data servers |
 | **Data management** | | | |
-| [RFC 12](rfc-12-snapshots.md) | snapshots, backups and share migration | draft | snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention), metadata backup, restore to a new share, moving a share between installations on one bucket |
+| [RFC 12](rfc-12-snapshots.md) | snapshots and clones | draft | snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention, subtree snapshots), the use records that hold a snapshot while it is read |
+| [RFC 26](rfc-26-catalog-backups.md) | catalog backups | draft | catalog and copying backups, backup locations, restore to a new share, recovery import, the export format and staged import |
+| [RFC 27](rfc-27-namespace-migration.md) | namespace migration | draft | the namespace claim, moving a namespace between installations on one bucket, GC across installations, re-homing a share into a namespace of its own |
 | **Configuration** | | | |
 | [RFC 13](rfc-13-configuration.md) | configuration | draft | what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | | |
@@ -51,6 +53,9 @@ order: each part builds on the ones before it.
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
 | RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
+
+RFC 26 and RFC 27 were split out of RFC 12. They sit with it under data management but are numbered after the
+planned RFC 18–25, whose numbers were already reserved, so the numbering is out of order there.
 
 [The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
@@ -67,7 +72,7 @@ graph LR
   R1["1 journal"]
   R2["2 carver"] --> R1
   R3["3 syncer"] --> R1 & R2 & R4 & R5
-  R4["4 remote tier"] --> R2 & R3 & R5 & R6 & R8 & R9 & R12 & R13
+  R4["4 remote tier"] --> R2 & R3 & R5 & R6 & R8 & R9 & R12 & R13 & R26 & R27
   R5["5 transforms"] --> R2 & R4
   R6["6 block metadata"] --> R2 & R3 & R4 & R5
   R7["7 namespace metadata"] --> R6 & R16
@@ -75,18 +80,20 @@ graph LR
   R9["9 GC"] --> R2 & R3 & R4 & R5 & R6 & R8
   R10["10 journal replication"] --> R1 & R6 & R8 & R11 & R16
   R11["11 shards"] --> R1 & R6 & R7 & R8 & R10 & R14 & R15 & R16
-  R12["12 snapshots"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R13 & R16
-  R13["13 configuration"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R15 & R16
+  R12["12 snapshots"] --> R1 & R2 & R4 & R6 & R7 & R8 & R9 & R10 & R11 & R13 & R16
+  R13["13 configuration"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R15 & R16 & R26 & R27
   R14["14 open state"] --> R7 & R11 & R15 & R16
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
+  R26["26 catalog backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27
+  R27["27 namespace migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26
   style R10 stroke-dasharray: 5 5
   style R11 stroke-dasharray: 5 5
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17.
+Cycles: RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
 
 ## Conventions
 
@@ -106,7 +113,7 @@ every RFC of this set are to be interpreted as in RFC 2119.
   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). An RFC is never marked `reviewed` or `frozen` while an RFC
   it builds on is `draft`: a reviewed rule resting on a moving one is not
   reviewed. The pairwise cycles under the graph join into one strongly
-  connected component, RFC 3 to RFC 17, with the deferred RFC 10, 11 and 15
+  connected component, RFC 3 to RFC 17 together with RFC 26 and RFC 27, with the deferred RFC 10, 11 and 15
   inside it, so that component is reviewed as one: none of its members is marked
   `reviewed` before all of its non-deferred members are. A deferred member holds
   the review back only through the rules a first-release RFC cites from it; one
@@ -208,7 +215,7 @@ failures. The model tests the set specifies:
 | [RFC 16 §6.2](rfc-16-metadata-store.md#6.2%20Model-based%20and%20property%20tests) | the metadata store | transactions, conflicts and the KV contract |
 | [RFC 10](rfc-10-journal-replication.md) **(cluster)** | replication | its invariants as properties of a cluster model |
 | [RFC 11 §14](rfc-11-ownership.md#14.%20Test%20plan%20and%20benchmarks) **(cluster)** | shards | handover, batched moves, cross-shard operations and failover, on RFC 10's simulator |
-| [RFC 12 §8](rfc-12-snapshots.md#8.%20Test%20plan%20and%20benchmarks) | snapshots, backups and moves | cuts, holds, clones, backups and moves with crashes between their steps |
+| [RFC 12 §5](rfc-12-snapshots.md#5.%20Test%20plan%20and%20benchmarks), [RFC 26 §6](rfc-26-catalog-backups.md#6.%20Test%20plan%20and%20benchmarks), [RFC 27 §5](rfc-27-namespace-migration.md#5.%20Test%20plan%20and%20benchmarks) | snapshots, backups and moves | cuts, holds, clones, backups and moves with crashes between their steps |
 
 An RFC that adds a batched or racing rule adds it to its model test, or names
 the counted check that stands in for it.
@@ -278,7 +285,8 @@ than a private one per RFC.
 3. **A seeded simulator, deferred.** The only seeded deterministic simulator is
    RFC 10's, deferred with it. When it is built it gains a single-node mode, so
    the cluster and the single node share one scenario format, and
-   [RFC 12 §8](rfc-12-snapshots.md#8.%20Test%20plan%20and%20benchmarks)'s scenarios move onto it. Until then the composed harness,
+   the scenarios of [RFC 12 §5](rfc-12-snapshots.md#5.%20Test%20plan%20and%20benchmarks), [RFC 26 §6](rfc-26-catalog-backups.md#6.%20Test%20plan%20and%20benchmarks) and
+   [RFC 27 §5](rfc-27-namespace-migration.md#5.%20Test%20plan%20and%20benchmarks) move onto it. Until then the composed harness,
    driven from seeds, stands in.
 4. **A tier for every protocol suite**, with the deployment it runs against.
    Each runs against one single node composed as in production, its remote tier

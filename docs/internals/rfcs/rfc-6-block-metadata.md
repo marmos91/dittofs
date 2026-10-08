@@ -402,7 +402,7 @@ A ref says: *these bytes of this file are that extent of that chunk.* It is
   its bytes are all zeros, and it reads as zeros without a fetch ([§3.5](#3.5%20Operations%20that%20make%20holes)).
 - `nsgen` is the generation of the share's namespace the chunk is counted in
   ([§2.6](#2.6%20The%20scope%20of%20a%20count)). A share has one generation outside a re-home and two during one
-  ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
+  ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 - `skip` and `length` select `[skip, skip + length)` of the chunk's bytes.
 - `oldest` and `newest` bound the journal content versions of what the ref
   describes (below).
@@ -513,7 +513,7 @@ The name is minted per put attempt from a fresh nonce ([RFC 2 §4.2](rfc-2-carve
 `encodings` lists the transform IDs and versions the block's bodies use, and the
 material each used as (material ID, fingerprint), as the store reported them at
 the put ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). The transform census and exports read it
-([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)); the read path never does.
+([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)); the read path never does.
 
 A block record has **no offloaded flag**: by [§4.2](#4.2%20Only%20after%20the%20block%20is%20stored) it exists only once its block
 is offloaded.
@@ -606,7 +606,7 @@ remote key namespace** ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). One d
 every namespace ([RFC 16](rfc-16-metadata-store.md)), so the partition is in the key: every
 content-addressed record — chunk, block, put intent, GC index key — is keyed by `(namespace, …)` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)),
 and a share's refs are counted only in the partition of its namespace. While a
-share is re-homed it has two ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): each ref's `nsgen` names the
+share is re-homed it has two ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): each ref's `nsgen` names the
 one its chunk is counted in, and a read, an adoption or a drop of the ref
 resolves the chunk in that namespace only. The
 namespace ID is the key scope that key derivation mixes in ([RFC 8](rfc-8-engine.md)), so two
@@ -1573,7 +1573,7 @@ and writes nothing per file when it is taken:
   The gate is held in memory by the primary of each of the share's shards
   ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)); it orders commits, it does not guard a count. A narrowed or
   split ref keeps its `born`. One ref writer is exempt: a re-home's switch
-  ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) rewrites a ref's `nsgen` with the same `born` and `died`,
+  ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) rewrites a ref's `nsgen` with the same `born` and `died`,
   which changes the namespace that counts the chunk and nothing a snapshot reads,
   so it passes no gate.
 - **A superseded ref a snapshot can see moves to history.** A ref's `died` is its
@@ -1763,7 +1763,7 @@ namespace the source ref's `nsgen` names, and the engine admits a clone only
 when the destination's share lists every namespace the source's share lists, so
 the cloned ref carries the generation it has there. Between namespaces a clone or
 copy is refused with `ErrCrossNamespace`, and the client copies the bytes itself
-([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
+([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
 A clone **MUST NOT** record the destination extent as existing unless its bytes
 are staged and synced, its refs are written by phase 2, or the source run there
@@ -1813,7 +1813,7 @@ record in its carried list that still names it.
 
 ### 7.2 Adoption is conditional on existence
 
-A clone, a restore or a re-home's switch ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) that references a
+A clone, a restore or a re-home's switch ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) that references a
 chunk it did not carry — and, once deduplication is added, an offload commit
 that does — reads the chunk record and the block it names, and acts on that
 block's state:
@@ -1896,7 +1896,7 @@ A restore larger than one transaction runs as the batched pattern of [§6.2](#6.
 staging: each batch writes counted refs, with `born` the `k` the restore's first
 transaction read ([§6.5](#6.5%20Who%20owns%20a%20ref)), so a staged ref holds its chunk like any
 other, and a restore that fails for good is undone by a batched removal of what
-it staged. Nothing is published until the last batch is done ([RFC 12 §5.2](rfc-12-snapshots.md#5.2%20Import%20is%20staged%20and%20published%20atomically)).
+it staged. Nothing is published until the last batch is done ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)).
 
 A restore from a counted snapshot cannot fail the first check, because the
 snapshot's live and history refs held its chunks.

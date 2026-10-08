@@ -365,7 +365,7 @@ is computed; in an encrypting namespace its **chunking key** (kind
 ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)), and its **header key** (kind `header-key`), which seals the
 chunk IDs and the chunk index in block headers ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)); and its
 **export key** (kind `export-key`), which seals and authenticates the
-namespace's exports and backup state objects ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)). Which kinds
+namespace's exports and backup state objects ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)). Which kinds
 exist in which namespace, and how each is held, is the key table of
 [Appendix B.2](#B.2%20Keys). Each carries a fingerprint like any material; an export carries
 each one as the table says, with its fingerprint, and the importer checks them.
@@ -654,7 +654,7 @@ configuration holds content; one that replaces the encryption transform by
 another of the same stage ([§5.4](#5.4%20Changing%20an%20algorithm%20is%20adding%20a%20transform)) is allowed. In an encrypting namespace the
 encrypt stage is implicitly in `require`, so a body without it is `ErrMalformed`
 and no plaintext body can be planted or survive there. A namespace that must
-start or stop encrypting is re-homed into a new one ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
+start or stop encrypting is re-homed into a new one ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
 **Compression and encryption together are an explicit choice.** A chain with an
 encrypt stage **MUST** be refused if it also has a compress stage whose settings
@@ -752,8 +752,8 @@ and material.
 - **Copying backups hold material too.** A copying backup copies sealed blocks,
   never re-sealed, into a block folder at its location, and each retained
   backup's manifest keeps the census of every folder block it lists
-  ([RFC 12 §3.4.2](rfc-12-snapshots.md#3.4.2%20What%20is%20copied)). The namespace's folder record keeps their union
-  ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)). So removal **MUST** also find the material in no folder
+  ([RFC 26 §2.4.2](rfc-26-catalog-backups.md#2.4.2%20What%20is%20copied)). The namespace's folder record keeps their union
+  ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)). So removal **MUST** also find the material in no folder
   record's census of the namespace. Retirement cannot relocate a folder block;
   a copy stops reusing one that carries retiring material, and the material
   leaves the folder as the backups that list such blocks expire.
@@ -1020,13 +1020,13 @@ derived under a label another derivation uses:
 | `dittofs header hash v1` | header key | sealing chunk hashes in block headers ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) |
 | `dittofs header index v1` | header key | the key sealing a block's chunk offsets and lengths ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) |
 | `dittofs chunking key v1` | chunking key | keyed boundaries, encrypting namespaces only ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) |
-| `dittofs export frame v1` | export key and the export's salt | the key sealing each frame of an export ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)) |
+| `dittofs export frame v1` | export key and the export's salt | the key sealing each frame of an export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) |
 | `dittofs export mac v1` | export key and the export's salt | the key authenticating an export's clear part, header, sections and trailer |
 | `dittofs export state v1` | export key and the backup's ID | the key authenticating each version of a backup's state object ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)) |
 | `dittofs export progress v1` | export key and the backup's ID | the key authenticating each version of a running copy's progress objects ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)) |
 | `dittofs key check v1` | any material | its fingerprint ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) |
 
-**Export cryptography.** An export ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)) is sealed with the same AEAD
+**Export cryptography.** An export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) is sealed with the same AEAD
 as a chunk, and every value below has a golden vector ([§8.1](#8.1%20Transform%20conformance)):
 
 ```
@@ -1137,14 +1137,14 @@ Keys are layered, as envelope encryption. **This table is the one authoritative
 statement of which keys exist, what holds each, what rotates and what must live
 off the host.** Every other RFC that names a key cites it and restates none of
 it: [RFC 0](rfc-0-data-lifecycle.md), [RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk) and [§6](rfc-2-carver.md#6.%20Boundaries%20are%20public),
-[RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material) and [§5.1](rfc-12-snapshots.md#5.1%20Layout), and [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets).
+[RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material) and [RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout), and [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets).
 
 | Kind | Exists in | Held as | An export carries it | Rotates | Must live off the host | Lost for good means |
 | --- | --- | --- | --- | --- | --- | --- |
 | `master-key` | a store configuration, one or more | in a key service, which never releases it; or in the key-file provider's memory, read from a key file | its ID only | yes, by re-wrapping; destroyed only once no key record and no retained export names it | **yes**, wherever any namespace of the configuration encrypts or takes catalog backups: a key service, or a key file whose off-host escrow was verified at setup (below) | every key it wraps is lost, and with it the rows below |
 | `data-key` | an encrypting namespace, one current at a time | wrapped under a master key | wrapped | yes, by relocation ([B.3](#B.3%20Rotation)) | through its master key | every chunk it sealed is **Lost** |
 | `header-key` | an encrypting namespace, one current at a time | wrapped under a master key | wrapped | yes, by relocation ([B.3](#B.3%20Rotation)) | through its master key | every block whose seal names it is unverifiable as a block; its chunks still read through their recorded ranges |
-| `chunking-key` | an encrypting namespace, for its life | wrapped under a master key | wrapped | never: changing it re-cuts every file | through its master key | the namespace can no longer cut new content as it cut the old; it is re-homed ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
+| `chunking-key` | an encrypting namespace, for its life | wrapped under a master key | wrapped | never: changing it re-cuts every file | through its master key | the namespace can no longer cut new content as it cut the old; it is re-homed ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | `chunk-id-key`, encrypting namespace | the namespace, for its life | wrapped under a master key | wrapped | never: changing it renames every chunk | through its master key | no chunk of the namespace can be checked against its ID: every remote-only chunk is **Lost** |
 | `chunk-id-key`, non-encrypting namespace | the namespace, for its life | **in the clear**: in its key record, and in the namespace's key control object beside its blocks ([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)) | in the clear | never | no: the bucket holds it | cannot be lost while the bucket survives |
 | `export-key` | every namespace, one current at a time | wrapped under a master key | the current and every retired one not yet destroyed, wrapped | yes, by issuing a new current key; a retired one is destroyed once no retained export or state object names it | through its master key | every export and state object it sealed is unreadable: those backups are lost |
@@ -1209,7 +1209,7 @@ non-encrypting namespace's chunk-ID key), and its state — `current`, `retired`
 `destroyed` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A key record is not a secret record: the wrapped
 bytes are useless without the master key, and the master key is never in the
 metadata store ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Every export carries the namespace's key records as the
-table says ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)), so an installation that holds the master key can
+table says ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)), so an installation that holds the master key can
 restore a namespace whose metadata store is gone.
 
 **A key record reaches the bucket before it is used.** Every new or rewritten
@@ -1219,7 +1219,7 @@ object ([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)) and to ev
 writes to ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), and becomes `current` only once every one of those
 puts has succeeded; a put that fails leaves the old key current and is retried.
 A recovery import loads key records from there as well as from the export
-([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)), taking the union of every version it finds, each checked by its
+([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), taking the union of every version it finds, each checked by its
 unwrap and its fingerprint. Without this, a key rotated after the last backup —
 under which relocation may since have re-encoded that backup's blocks — would
 be held only by the metadata store that was lost, and the whole namespace with
@@ -1227,7 +1227,7 @@ it, not only the day's writes.
 
 **A retained export pins its master keys.** Each export's clear part lists the
 IDs of every master key whose wrapping it carries, and so does its backup's
-state object ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)). Destroying a master key that a retained export
+state object ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)). Destroying a master key that a retained export
 names **MUST** be refused (`ErrMaterialInUse`), naming the backups. The check
 reads the state objects at every backup location a policy of the installation
 names, and the catalog backups beside the namespaces' blocks; a location that
@@ -1239,7 +1239,7 @@ immutable ones included.
 
 **The check is per installation, and a move pins as well.** An installation that
 imports a namespace re-wraps every imported key record under its own master key
-before it publishes ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)), so from then on the two installations
+before it publishes ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), so from then on the two installations
 share no master key in use. The exporting installation keeps a durable pin per
 move naming every master key the moved export carried, and refuses to destroy
 one (`ErrMaterialInUse`, naming the move) until an operator releases the pin.
@@ -1254,7 +1254,7 @@ ID its chunk IDs were computed under, and the intent step **MUST** refuse a plan
 keyed under another namespace ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)). A re-home captures the source
 namespace and its key IDs with each offer it reads, so a plan formed before the
 switch cannot commit IDs of the old namespace into the new one
-([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
+([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
 Encryption asks the store configuration's `Materials` for the namespace's
 current data key when it encodes and for the data key a body names when it
@@ -1306,7 +1306,7 @@ There are four rotations, and they cost different things:
 
 The chunk-ID key and the chunking key never rotate. Changing the chunk-ID key
 renames every chunk, and changing the chunking key re-cuts every file: either is
-a re-home into a new namespace ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), not a rotation.
+a re-home into a new namespace ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), not a rotation.
 
 ### B.4 Losing a key loses the data
 
@@ -1317,7 +1317,7 @@ recovery path, by design: a recovery path is a second key. That is why the
 master key of an encrypting or backed-up namespace must live off the host
 ([B.2](#B.2%20Keys)): it is the one dependency the system enforces rather than
 only reports. **No backup survives losing the master key that wraps its export
-key** ([RFC 12 §3](rfc-12-snapshots.md#3.%20Catalog%20backups)).
+key** ([RFC 26 §2](rfc-26-catalog-backups.md#2.%20Catalog%20backups)).
 
 | What happens | Result |
 | --- | --- |
