@@ -1204,7 +1204,7 @@ consistent snapshot of them from a `Stats` call on the syncer. It depends on no
 metrics library ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)); the engine exports the snapshot. Taking a snapshot **MUST NOT** take a lock a dispatch
 needs, and its cost **MUST NOT** grow with the number of transfers in flight.
 
-Every metric is labelled with `half` (`upload` or `fetch`) and `store`; the half
+Metric names are shown without the deployment's prefix. Every metric is labelled with `half` (`upload` or `fetch`) and `store`; the half
 is also the direction the health metrics describe. Queue metrics also carry
 `class` (`demand`, `background` or `speculation`, [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). Queue
 metrics are also reported per flow; the syncer knows a flow by its id, and the

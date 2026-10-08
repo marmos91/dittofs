@@ -1178,6 +1178,26 @@ replace would pass it, and a commit that meets more than it planned for applies
 the files that fit and leaves the rest unreported, to be offered again
 ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)).
 
+**Keys written per chunk are bounded.** Counting every put and every delete,
+from the offload commit that creates a chunk's record to the prune that deletes
+it, an implementation **MUST** write no more than:
+
+| Over a chunk's life | Keys written, at most | Which |
+| --- | --- | --- |
+| one ref, no snapshot sees it superseded | **10** | created: ref, reverse key, chunk record; dropped: ref, reverse key, chunk record, block record, compaction index key moved (2); pruned: chunk record |
+| each further ref or ref piece (adoption, clone, split) | **+6** | ref, reverse key, chunk record, when written and again when dropped |
+| each ref a snapshot sees superseded | **+7** | moved to history: ref, history record, died-index key, reverse key re-keyed (2), chunk record; the history record's drop then writes what the ref's would, plus its died-index key |
+
+A block adds at most 9 keys over its life, shared by the chunks it carries
+(about 16 at the 4 MiB default): its record created, retired, moved to
+`deleted` and pruned, its put intent deleted, and its GC index keys
+([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)). Per-commit and per-file records — `F_o`, FileData, overwrite and
+version-index records — are written per commit, not per chunk, and are bounded
+above. At 2 PB without snapshots that is about 9×10¹⁰ keys written per full
+turnover of the store's chunks. A path that writes a key per chunk not listed
+here — a second index, a per-ref version entry — breaks the bound and fails
+[§11.2](#11.2%20Group%20B%20%E2%80%94%20cost)'s check.
+
 ### 5.3 Hot records that are not per-file
 
 [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) removes the per-file hot record. Others remain:
@@ -1901,7 +1921,7 @@ section states only what it requires of block metadata:
 - **A lowering never trusts the reverse index alone.** Two walks of the index
   agree with each other when a ref was written without its key, and the lowered
   count would then retire a block that ref still reads. A lowering **MUST** also
-  require that a forward walk — refs to their keys, writing any key it finds
+  require that a **full** forward walk — every ref to its key, writing any key it finds
   missing — completed over every share of the namespace between the two walks
   ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)).
 - **Every record is covered within a stated period** ([RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage)).
@@ -2359,6 +2379,7 @@ these. Shrink every failing sequence to a minimal one and keep it.
 
 | Requirement | Check |
 | --- | --- |
+| [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) keys per chunk | Through the real carver, write files of 10³ chunks, once without dedup and once repeating content; offload, release, sweep and prune them; repeat with a snapshot taken between a full overwrite and the release, then deleted. Count keys written from the backend's own counter ([RFC 16 §8.1](rfc-16-metadata-store.md#8.1%20Metrics), `metadata_txn_keys{kind=written}`), not from the code's intent. Assert keys per chunk stay within the table's bound for each case, including the block's share. A redundant per-ref index write passes every correctness check and fails this one. |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) amplification | Write a file of *N* chunks for several *N*. Assert records **written** per commit are constant in *N*. A correctness assertion on the refs passes a quadratic implementation. |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) read side | Same files, appended sequentially so every commit extends the tail. Assert records **read and decoded** per commit grow at most logarithmically in *N*, counting a record that packs many refs as the refs it decodes. A commit that loads the file's whole ref list writes one record and passes the check above. |
 | [§3.3](#3.3%20Holes%2C%20not%20written%20extents) out-of-order writes | Write a file of *N* MiB as shuffled 1 MiB writes, for several *N*. Assert no hole records remain and records written per write are constant in *N*. |
