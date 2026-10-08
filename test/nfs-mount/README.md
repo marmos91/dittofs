@@ -24,9 +24,9 @@ runners.
 | Name | Options | Adds over its base |
 |---|---|---|
 | `v3` | `vers=3,tcp,mountproto=tcp,nolock` | — |
-| `v3-noac` | `v3` + `noac` | no attribute caching |
 | `v4.0` | `vers=4.0` | — |
 | `v4.1` | `vers=4.1` | — |
+| `v4.1-noac` | `v4.1` + `noac` | no attribute caching |
 | `v4.1-smallio` | `v4.1` + `rsize=32768,wsize=32768` | many small READ/WRITEs |
 
 The NFSv3 sets use `nolock`, because on a single host the client's own lockd takes over the NLM

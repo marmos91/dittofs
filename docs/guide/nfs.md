@@ -730,9 +730,9 @@ Connectathon (cthon04) and NetApp nfstest suites run under each of these option 
 | Set | Options |
 |---|---|
 | `v3` | `vers=3,tcp,nolock` (attribute caching on) |
-| `v3-noac` | `vers=3,tcp,nolock,noac` |
 | `v4.0` | `vers=4.0` |
 | `v4.1` | `vers=4.1` |
+| `v4.1-noac` | `vers=4.1,noac` |
 | `v4.1-smallio` | `vers=4.1,rsize=32768,wsize=32768` |
 
 Known gaps are listed in `test/nfs-mount/*/KNOWN_FAILURES_*.md`. NFSv3 locking is not covered by

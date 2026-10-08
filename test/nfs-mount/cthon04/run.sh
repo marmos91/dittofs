@@ -162,6 +162,10 @@ result() {
     echo "CTHON04-DONE $RESULTS"
 } 2>&1 | tee "$LOG"
 
+# The teardown step deletes the server log; keep it with the results, which
+# CI uploads.
+gzip -c /tmp/dittofs-posix-server.log >"$RESULTS_DIR/server.log.gz" 2>/dev/null || true
+
 # Not exec: the EXIT trap has to run to unmount.
 "$SCRIPT_DIR/parse-results.sh" "$LOG" "$KNOWN_FAILURES" "$RESULTS_DIR"
 exit $?

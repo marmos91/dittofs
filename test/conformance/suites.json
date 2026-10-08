@@ -153,13 +153,13 @@
       "profiles": ["memory", "badger", "badger-s3"],
       "variant": {
         "name": "mount-options",
-        "values": ["v3", "v3-noac", "v4.0", "v4.1", "v4.1-smallio"]
+        "values": ["v3", "v4.0", "v4.1", "v4.1-noac", "v4.1-smallio"]
       },
       "known_failures": {
         "v3": "nfs-mount/cthon04/KNOWN_FAILURES_V3.md",
-        "v3-noac": "nfs-mount/cthon04/KNOWN_FAILURES_V3.md",
         "v4.0": "nfs-mount/cthon04/KNOWN_FAILURES_V4.md",
         "v4.1": "nfs-mount/cthon04/KNOWN_FAILURES_V4.md",
+        "v4.1-noac": "nfs-mount/cthon04/KNOWN_FAILURES_V4.md",
         "v4.1-smallio": "nfs-mount/cthon04/KNOWN_FAILURES_V4.md"
       },
       "tiers": { "pull_request": ["memory"], "push": [] },
@@ -193,13 +193,13 @@
       "profiles": ["memory", "badger", "badger-s3"],
       "variant": {
         "name": "mount-options",
-        "values": ["v3", "v3-noac", "v4.0", "v4.1", "v4.1-smallio"]
+        "values": ["v3", "v4.0", "v4.1", "v4.1-noac", "v4.1-smallio"]
       },
       "known_failures": {
         "v3": "nfs-mount/nfstest/KNOWN_FAILURES_V3.md",
-        "v3-noac": "nfs-mount/nfstest/KNOWN_FAILURES_V3.md",
         "v4.0": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
         "v4.1": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
+        "v4.1-noac": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
         "v4.1-smallio": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md"
       },
       "tiers": { "pull_request": [], "push": [] },

@@ -405,8 +405,8 @@ in `test/conformance/suites.json`:
 | `pjdfstest` | NFS | `memory`, `badger`, `badger-s3` | `3`, `4`, `4.1` | `memory`, `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
 | `nfs-kerberos` | NFS | `memory-kerberos` | — | `memory-kerberos` | — |
 | `pynfs` | NFS | `memory`, `badger`, `badger-s3` | `4.0`, `4.1` | `memory`, `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
-| `cthon04` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v3-noac`, `v4.0`, `v4.1`, `v4.1-smallio` | `memory` | [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md) |
-| `nfstest` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v3-noac`, `v4.0`, `v4.1`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md) |
+| `cthon04` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `memory` | [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md) |
+| `nfstest` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md) |
 
 Tiering, profiles and blacklists come from
 [`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through
@@ -476,7 +476,7 @@ Runs in CI via `.github/workflows/nfs-pynfs.yml` on every non-docs PR. See
 
 The other NFS suites mount with client caching and locking off (`noac`, `nolock`,
 `actimeo=0`), or do not mount at all. These two mount the way a user would, through the
-kernel client. They run once per named option set (`v3`, `v3-noac`, `v4.0`, `v4.1`,
+kernel client. They run once per named option set (`v3`, `v4.0`, `v4.1`, `v4.1-noac`,
 `v4.1-smallio`), so a failure points at the option that caused it.
 
 - **Suites:** Connectathon (cthon04): basic, general, special, and lock on the v4 sets.

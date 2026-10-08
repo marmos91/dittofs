@@ -90,23 +90,62 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --tbsize sizes the kernel buffer of every packet capture. nfstest's default is
+# 192 MiB, and it does not stop every capture it starts: within one module the
+# survivors pile up, a dio run held over thirty of them at once, and the host
+# ran out of memory — mounts failed with ENOMEM and new captures came back
+# empty. At 8 MiB the leak costs little; cleanup() reaps the rest between
+# modules.
+
+# module_args MODULE — the arguments one module needs beyond the common ones.
+module_args() {
+    case "$1" in
+    delegation)
+        # The recall tests mount a second client, which takes its port from
+        # --client and otherwise tries 2049: every recall then waits out a
+        # refused mount and the module runs past its timeout.
+        echo "--client port=$NFS_PORT"
+        ;;
+    dio)
+        # dio checks every assertion against a packet capture it stops right
+        # before reading. The default two seconds for tcpdump to flush is not
+        # always enough on a busy runner, and an empty capture reads as a
+        # failed test.
+        echo "--trcdelay 5"
+        ;;
+    esac
+}
+
 COUNT=0
 {
     echo "nfstest $(git -C "$NFSTEST" rev-parse --short HEAD), option set $VARIANT: vers=$VERSION,$MTOPTS"
     IFS=',' read -ra mods <<<"$MODULES"
     for m in "${mods[@]}"; do
         echo "NFSTEST-MODULE nfstest_$m"
+        # A module against a server that has died waits out its whole timeout.
+        # Skip it instead: with no closing tally it grades as "did not finish",
+        # which is what it is, and the job ends long before its own timeout.
+        if ! nc -z -w 5 "$SERVER" "$NFS_PORT" 2>/dev/null; then
+            echo "skipped: nothing answers on $SERVER:$NFS_PORT any more"
+            COUNT=$((COUNT + 1))
+            continue
+        fi
+        # shellcheck disable=SC2046  # module_args is a word list on purpose
         (cd "$RESULTS_DIR" && PYTHONPATH="$NFSTEST" timeout --kill-after=30 "$MODULE_TIMEOUT" \
             python3 "$NFSTEST/test/nfstest_$m" \
             --server "$SERVER" --port "$NFS_PORT" --export /export \
             --nfsversion "$VERSION" --mtpoint "$MOUNT_POINT" \
-            --mtopts "$MTOPTS" --rmtraces --notty)
+            --mtopts "$MTOPTS" --tbsize 8k --rmtraces --notty $(module_args "$m"))
         echo "nfstest_$m exited $?"
         COUNT=$((COUNT + 1))
         cleanup
     done
     echo "NFSTEST-DONE $COUNT"
 } 2>&1 | tee "$LOG"
+
+# The teardown step deletes the server log; keep it with the results, which
+# CI uploads.
+gzip -c /tmp/dittofs-posix-server.log >"$RESULTS_DIR/server.log.gz" 2>/dev/null || true
 
 "$SCRIPT_DIR/parse-results.sh" "$LOG" "$KNOWN_FAILURES" "$RESULTS_DIR"
 exit $?

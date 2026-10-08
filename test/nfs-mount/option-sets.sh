@@ -23,7 +23,7 @@
 
 # option_set_names — every set, in the order the manifest lists them.
 option_set_names() {
-    printf '%s\n' v3 v3-noac v4.0 v4.1 v4.1-smallio
+    printf '%s\n' v3 v4.0 v4.1 v4.1-noac v4.1-smallio
 }
 
 # option_set_opts NAME — the mount options for NAME, without the port. Fails
@@ -31,9 +31,9 @@ option_set_names() {
 option_set_opts() {
     case "$1" in
     v3) echo "vers=3,tcp,mountproto=tcp,nolock" ;;
-    v3-noac) echo "vers=3,tcp,mountproto=tcp,nolock,noac" ;;
     v4.0) echo "vers=4.0" ;;
     v4.1) echo "vers=4.1" ;;
+    v4.1-noac) echo "vers=4.1,noac" ;;
     v4.1-smallio) echo "vers=4.1,rsize=32768,wsize=32768" ;;
     *) return 1 ;;
     esac
