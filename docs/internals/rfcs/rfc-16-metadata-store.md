@@ -1015,9 +1015,12 @@ are the prefix's. No separator byte is written.
   at the fixed lengths [RFC 6](rfc-6-block-metadata.md#2.%20The%20records) gives them.
 - **Byte string** — an entry's folded key, an xattr name, a user, group, share
   or netgroup name, a path, a setting key, a SID, a Kerberos principal, a
-  client owner: each `0x00` byte written as `0x00 0xFF`, then a terminating
-  `0x00`. A string therefore sorts before every longer string it begins, and no
-  string's encoding is a prefix of another's.
+  client owner: each `0x00` byte written as `0x00 0xFF`, then the two-byte
+  terminator `0x00 0x01`. Inside a string `0x00` is always followed by `0xFF`,
+  so the terminator cannot occur there: no string's encoding is a prefix of
+  another's, whatever component follows. A string sorts before every longer
+  string it begins, since `0x00 0x01` sorts below `0x00 0xFF` and below any
+  other byte that can follow.
 - **Tagged** component — `principal-or-project`, a setting's `scope`: one tag
   byte, then the encoding the tag names. `unique` in a delta key is the
   writer's NodeID, node epoch and sequence, 32 bytes.
