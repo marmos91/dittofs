@@ -31,8 +31,8 @@ works on the same `user.<n>.vhdx`.
 Why a mailbox is a hard case: an OST is a small database (B-trees, tables,
 allocation maps). One arriving email is modeled as a burst of about 30 small
 random I/Os spread across the file, mostly writes. That figure is an estimate,
-not an official measurement. spread across the file. Over SMB each of those
-waits on a network round trip and on the server's storage.
+not an official measurement. Over SMB each of those waits on a network round
+trip and on the server's storage.
 
 ## Modeling decisions
 
@@ -57,13 +57,13 @@ There are two kinds of scenario:
 
 | File | Simulates | I/O that reaches the share | Kind |
 |---|---|---|---|
-| `00-prepare.fio` | Setup, not a scenario | Sequential 1MiB writes that create `user.0.vhdx` to `user.N-1.vhdx` with real data | Run once |
-| `01-logon-outlook-start.fio` | Sign-in and Outlook start. With many users and `STORM_WINDOW`, a logon storm | Mostly reads (about 88%), 4K to 1MIb, concentrated in hot areas of the file, plus a few small writes | Fixed work |
+| `00-prepare.fio` | Setup, not a scenario | Sequential 1 MiB writes that create `user.0.vhdx` to `user.N-1.vhdx` with real data | Run once |
+| `01-logon-outlook-start.fio` | Sign-in and Outlook start. With many users and `STORM_WINDOW`, a logon storm | Mostly reads (about 88%), 4K to 1 MiB, concentrated in hot areas of the file, plus a few small writes | Fixed work |
 | `02-mail-flow.fio` | Receiving and sending mail | Bursts of small random I/O (4K to 64K, up to 256K on send), mostly writes, with a pause between bursts | Fixed time |
 | `03-folder-resort.fio` | Sorting a large folder by another column | Phase 1: small random reads over the folder's table. Phase 2: small random writes for the new index. Runs for one user only, `USERS` is ignored | Fixed work |
 | `04-search-reindex.fio` | Windows Search re-indexing the mailbox | Random reads (8K to 64K) over the whole file, plus paced 32K mixed I/O (40% reads) on the search catalog and paced sequential 64K writes to its log | Fixed time |
 | `05-ost-full-sync.fio` | Downloading a full mailbox into a new OST | Rate limited sequential 256K writes, plus small random metadata I/O | Fixed time |
-| `06-logoff-compaction.fio` | Sign-out with FSLogix VHDX compaction | 1MiB sequential reads from the tail of the file and 1M sequential writes toward the front, at the same time | Fixed work |
+| `06-logoff-compaction.fio` | Sign-out with FSLogix VHDX compaction | 1 MiB sequential reads from the tail of the file and 1 MiB sequential writes toward the front, at the same time | Fixed work |
 
 ## Running
 

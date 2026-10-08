@@ -7,7 +7,7 @@
 ; stonewalled phases, every user would wait for all others before starting
 ; Outlook, which would distort a storm.
 ; Metric: each job's runtime = I/O part of that user's logon time
-; (run.sh / run.ps1 print the runtime distribution).
+; (run.sh prints the runtime distribution).
 
 [global]
 ioengine=${IOENGINE}
