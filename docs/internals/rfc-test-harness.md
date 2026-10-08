@@ -3,7 +3,9 @@
 **Status:** proposed. Nothing here is implemented yet; §8 orders the work.
 **Revised:** 2026-10-08, after the first review. Fixtures replace the suites' setup scripts and
 the tools are called directly (§3, §4.2); results are CTRF, with JUnit generated from it (§4.6);
-pull requests get no retries (§4.7).
+pull requests get no retries (§4.7). Revised again the same day: `dt` is the only entry point,
+the 33 glue scripts go with no escape hatch for new ones, lint is command lists in the registry,
+and suites move in parallel once their results match (§3, §8).
 **Discussion:** the pull request that adds this file.
 **Builds on:** the `dt` harness on `dev/test-harness` (`1b9d49b9`), the conformance graders and
 their tests, the system scenarios in `test/scenarios/`, and `dfsbench` (`cmd/bench`).
@@ -12,8 +14,8 @@ their tests, the system scenarios in `test/scenarios/`, and `dfsbench` (`cmd/ben
 2026-10-08. §10 lists what was checked and what turned out different from what was assumed.
 
 Read this before adding a test suite, changing a test workflow, or touching `test/harness/`. It
-describes the harness we want to end up with, and how to get there from what exists, one suite at
-a time.
+describes the harness we want to end up with, and how to get there from what exists, suite by
+suite.
 
 ---
 
@@ -117,27 +119,48 @@ scenario host. Starting a DittoFS server on a store profile, adding its shares a
 mounting it move into Go as the fixture (§4.2). Today that setup is shell, copied into each
 suite's scripts, and it is where §1's silent passes come from.
 
+`dt` is the one entry point, and it calls each tool itself. No suite keeps a script between `dt`
+and its tool, and none gains one: a need the fixture can't express becomes a new fixture field in
+`dt`, with a test, not a setup script.
+
 What carries over:
 
-- `test/harness/bin/dt` stays the path; CI on `dev/test-harness` already calls it. It becomes a
-  short shim that builds `./test/harness/cmd/dt` once per source change and runs it.
-- Today's commands stay as aliases: `dt unit` is `dt run unit`, and
-  `dt pynfs --profile badger` is `dt run pynfs/badger`.
-- The grading rules: known-failure matching, smbtorture's connection-failure filter and
-  truncation handling, and pynfs's refusal to pass a scoped run that skipped the tests it named.
-  Each moves into Go, with the graders' existing test cases as its test data; until a kind is
-  ported, its script grader runs as it is.
-- The known-failure files, `setup.sh` for the scenarios, `dfsbench` and the integration package
-  list.
+- Today's commands, as aliases: `dt unit` is `dt run unit`, and `dt pynfs --profile badger` is
+  `dt run pynfs/badger`. `dt` is a Go binary (`go run ./test/harness/cmd/dt`, or installed with
+  `go install`); the bash `test/harness/bin/dt` stays only until the branch's workflows call the
+  binary.
+- The knowledge in the scripts. They hold fixes for real failures that are written down nowhere
+  else: pynfs's 4.1 tree tests NFSv4.2 unless `--minorversion` is given; pjdfstest needs NFSv4
+  delegations off and a wait for the server's settings watcher; e2e output goes to a file, because
+  a leftover process holding a pipe hangs its reader; a scoped pynfs run that skipped the tests it
+  named isn't a pass; smbtorture's connection failures on a starved runner are reclassified. Each
+  moves into `dt` with a test.
+- The grading rules (known-failure matching, smbtorture's connection-failure filter and truncation
+  handling) move into Go with the graders' test cases as test data. The shell self-tests
+  (`run_test.sh`, `run-e2e-selftest.sh`, the parser and grader tests) become Go tests of `dt`, case
+  by case.
+- The known-failure files, `setup.sh` for the scenarios (Radu's), and `dfsbench`.
 
-What goes, one suite at a time (§8):
+What goes: 33 of the 92 shell scripts under `test/` and `.github/scripts/`, about 8,650 lines.
 
-- `test/conformance/run.sh`, which dispatches cells: `dt` plans and runs them, and `suites.json`'s
-  profiles, PR subsets and known-failure paths move into the registry.
-- Each suite's setup scripts (`setup-posix.sh`, `teardown-posix.sh`, the two `bootstrap.sh`,
-  `compose-env.sh`) and the setup half of `smb-conformance/run.sh`, `smbtorture/run.sh` and
-  `run-pynfs.sh`. The fixture replaces them, and the tools are called directly.
-- The Makefile's `test-*` targets and `flake.nix`'s `dfs-posix`, which only call scripts.
+- `test/conformance/run.sh`, which dispatches cells, with `suites.json`, `check-docs.sh` and their
+  tests: `dt` plans the cells, and the registry holds the profiles, PR subsets and known-failure
+  paths.
+- Each suite's setup, run and grading scripts: `setup-posix.sh`, `run-posix.sh`,
+  `teardown-posix.sh`, the two `bootstrap.sh`, `compose-env.sh`, `smb-conformance/run.sh`,
+  `smbtorture/run.sh`, `run-pynfs.sh`, `baseline-knfsd.sh`, `nfs-conformance/run.sh`, the four
+  `parse-results.sh` and `common/known-failures.sh`, with their tests.
+- The runners around `go test`: both `run-e2e.sh` and its self-test, and the `run.sh` of ad-dc,
+  kerberos and portmap. The KMIP service's start and certificate scripts become `dt services`
+  code.
+- The Makefile's `test-*` targets, the two conformance Makefiles and `flake.nix`'s `dfs-posix`,
+  which only call scripts.
+
+What stays, because it isn't an entry point: the 42 scenarios, `setup.sh` and `lib/report.sh`;
+the tests and tools written in shell (the two crash rigs, `edge-test.sh`, `test-nfs-krb5.sh`, the
+NLM interop driver, `pcap-diff.sh`); the four entrypoints of the KDC and AD-DC service containers;
+the repository checks lint runs (`required-tests.sh`, `new-package-tests.sh`,
+`commit-type-matches-diff.sh`, `no-ai-attribution.sh`); and `combined-tree.sh`.
 
 ## 4. Design
 
@@ -185,10 +208,26 @@ suites:
   nfs-mount-smoke: { cmd: test/nfs/mount-smoke.sh, tier: pr, needs: [linux, root, nfs-client] }
 
   # Lint. `job` keeps the check names the develop ruleset requires; each job runs `dt run NAME`.
-  # The scripts hold what lint.yml runs inline today, so a laptop and CI run the same steps.
-  lint-go:    { cmd: test/lint/go-checks.sh, tier: pr, job: Go Checks }      # gofmt, vet, citations, required tests, golangci-lint
-  lint-repo:  { cmd: "test/lint/repo-checks.sh {base}", tier: pr, job: Repo Checks }
-  shellcheck: { cmd: test/lint/shellcheck.sh, tier: pr, job: ShellCheck }
+  # The commands are what lint.yml runs today, so a laptop and CI run the same steps.
+  lint-go:
+    job: Go Checks
+    tier: pr
+    cmd:
+      - test -z "$(gofmt -s -l .)"
+      - go vet ./...
+      - go run ./test/spec-citations
+      - test/required-tests.sh
+      - golangci-lint run --timeout=5m          # the version lint.yml pins
+  lint-repo:
+    job: Repo Checks
+    tier: pr
+    cmd:
+      - test/new-package-tests.sh {base}
+      - test/commit-type-matches-diff.sh {base}
+      - test/no-ai-attribution.sh {base}
+      - dt docs --check                         # was check-docs.sh
+      - go test ./test/harness/...              # dt's own tests, which absorb the shell self-tests
+  shellcheck: { job: ShellCheck, tier: pr, cmd: "git ls-files '*.sh' | xargs shellcheck --severity=warning" }
 
   unit:
     kind: go
@@ -202,7 +241,8 @@ suites:
     needs: [windows]                    # dt plan gives the cell a Windows runner
   integration:                          # includes the KMIP interop tests since #2955
     kind: go
-    cmd: test/integration/packages.sh | xargs go test -tags=integration -p 1 -timeout=20m
+    cmd: go test -tags=integration -p 1 -timeout=20m {packages}
+    packages: { tag: integration }      # the packages whose tests the tag changes, from `go list`
     tier: pr
     needs: [docker, service:postgres, service:kmip]
   integration-portmap:                  # the tests skip without rpcbind; `needs` makes that a refusal
@@ -215,7 +255,7 @@ suites:
     tier: pr
   e2e:
     kind: go
-    cmd: .github/scripts/run-e2e.sh go test -tags=e2e -timeout=30m ./test/e2e/...
+    cmd: go test -tags=e2e -timeout=30m ./test/e2e/...
     env: { nightly: { DITTOFS_E2E_NIGHTLY: "1" } }   # the dedup tests no workflow runs today
     needs: [linux, root, nfs-client, smb-client, service:localstack]
 
@@ -256,7 +296,8 @@ suites:
       profile: "{profile}"
       smb: true
       shares: test/smb-conformance/shares.yaml    # the 8 shares and their flags, as data
-      setup: test/smb-conformance/wpts-config.sh  # writes WPTS's own config files; see §9
+    templates: test/smb-conformance/ptfconfig/*.template   # WPTS's own config, filled in by dt
+    volumes: { "{out}/config": /data/fileserver }
     known: test/smb-conformance/KNOWN_FAILURES.md
     tier: pr
     needs: [linux, docker]
@@ -294,8 +335,8 @@ suites:
   bench-smoke: { kind: dfsbench, cmd: go run ./cmd/bench run --smoke --local, tier: nightly, gate: false }
 
   # Suites that have workflows of their own today.
-  ad-dc:                { kind: go, cmd: test/integration/ad-dc/run.sh, needs: [linux, docker] }
-  kerberos-integration: { kind: go, cmd: test/integration/kerberos/run.sh, tier: nightly, needs: [linux, docker] }  # run by no CI job today
+  ad-dc:                { kind: go, cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker] }
+  kerberos-integration: { kind: go, cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, tier: nightly, needs: [linux, docker] }  # run by no CI job today
   smbtorture-kerberos:
     kind: subunit
     image: quay.io/samba.org/samba-toolbox:v0.8
@@ -308,9 +349,16 @@ suites:
   smb-client-windows: { cmd: pwsh -File test/smb-client-compat/windows.ps1, tier: nightly, needs: ["windows", "port:445"] }
   combined-tree-selftest: { cmd: .github/scripts/combined-tree.sh selftest, tier: pr }
 
-  # Baselines record what a reference implementation does; they never fail a run.
-  smbtorture-baseline:  { cmd: test/smb-conformance/smbtorture/refresh-baseline.sh, tier: nightly, gate: false, needs: [linux, docker] }
-  pynfs-knfsd-baseline: { cmd: test/nfs-conformance/pynfs/baseline-knfsd.sh, tier: nightly, gate: false, needs: [linux, root, knfsd] }
+  # pynfs against the kernel's NFS server, for comparison; it never fails a run. (The smbtorture
+  # baseline isn't a suite: it's a snapshot of smbtorture/memory's nightly results, §4.8.)
+  pynfs-knfsd-baseline:
+    kind: pynfs
+    cmd: "pynfs-{minor} {server}/export --security sys --maketree --json {out}/pynfs.json all"
+    matrix: { minor: ["4.0", "4.1"] }
+    fixture: { server: knfsd, nfs: export }
+    tier: nightly
+    gate: false
+    needs: [linux, root, knfsd]
 
   # Rigs that need special hardware or infrastructure: listed, run by hand, refused elsewhere with the reason.
   crash-device-loss:   { cmd: "sudo test/crash/device-loss.sh {bin}/dfs {bin}/dfsctl", tier: manual, needs: [linux, root, dm-flakey, smb-client] }
@@ -325,7 +373,7 @@ suites:
 
 | Field | Meaning | Default |
 |---|---|---|
-| `cmd` | Shell command, run with bash from the repository root (Git Bash on Windows), or inside `image`. `{test}` is one test's file name or list entry, `{args}` the tier's `args`, `{base}` the ref a change is compared against (the PR's base in CI, `origin/develop` locally), `{bin}` a directory with `dfs` and `dfsctl` built from the checkout, `{tools}` the pinned test tools (pjdfstest, pynfs) from `flake.lock`, `{out}` the cell's results directory, and each `matrix` key its value. The fixture adds `{server}`, `{mount}`, `{user}`, `{password}` and `{realm}` (§4.2) | required, unless the kind or the image provides one |
+| `cmd` | A shell command, or a list of them run in order until one fails; run with bash from the repository root (Git Bash on Windows), or inside `image`. `{test}` is one test's file name or list entry, `{args}` the tier's `args`, `{base}` the ref a change is compared against (the PR's base in CI, `origin/develop` locally), `{bin}` a directory with `dfs` and `dfsctl` built from the checkout, `{tools}` the pinned test tools (pjdfstest, pynfs) from `flake.lock`, `{out}` the cell's results directory, `{packages}` the list `packages` gives, and each `matrix` key its value. The fixture adds `{server}`, `{mount}`, `{user}`, `{password}` and `{realm}` (§4.2) | required, unless the kind or the image provides one |
 | `kind` | How results are read: `cmd`, `go`, `tap`, `subunit`, `trx`, `pynfs`, `scenarios`, `fio`, `dfsbench` (§4.6) | `cmd` |
 | `tier` | The smallest tier that runs the suite (§4.3) | `full` |
 | `timeout` | A duration, for the suite, or for each test when `tests` is set | `30m` |
@@ -334,6 +382,9 @@ suites:
 | `matrix` | Axes and their values; `dt plan` makes one cell per combination | one cell |
 | `fixture` | The DittoFS server the tests run against (§4.2) | none: the suite starts what it needs itself |
 | `image` | A container image to run `cmd` in, on the fixture's network | none: the host, or `dtc` |
+| `volumes` | Mounts into `image`, host path to container path | none |
+| `templates` | Files filled in with the placeholders (Go `text/template`) into `{out}/config` before the first test: a tool's own configuration, such as WPTS's | none |
+| `packages` | `{ tag: T }`: the Go packages whose tests the build tag `T` changes, found with `go list` | none |
 | `env` | Environment variables, for every tier or per tier | none |
 | `select` | Per tier below the suite's widest: a narrower glob for `tests`, or the `matrix` values that tier runs | every match, every value |
 | `args` | Text per tier, put where `{args}` appears | empty |
@@ -344,8 +395,8 @@ suites:
 
 Rules `dt` enforces when it loads the file: names are `[a-z0-9-]+`; unknown fields are refused, so
 a misspelt field fails rather than being ignored; `version` newer than `dt` knows is refused; every
-`known`, `shares` and `setup` path exists; every `{test}` has a `tests`; every placeholder is one
-the suite defines.
+`known`, `shares` and `templates` path exists; every `{test}` has a `tests`; every placeholder is
+one the suite defines.
 
 **One file, or a file per test?** One registry of suites, and no per-test file. Merge conflicts in
 a central file come from adding tests, and tests are found from their own files. The registry only
@@ -355,8 +406,9 @@ a scenario's size is in its file name, a fio job's parameters in its job file.
 **YAML or JSON?** `suites.json` chose JSON so that Actions could `fromJSON()` it and scripts could
 read it with `jq`. Workflows never parse the file itself, though; they parse `run.sh --matrix`
 output. `dt plan --json` gives them the same, from YAML. `suites.json` goes with `run.sh`: its
-profiles become `matrix`, its PR lists `select.pr`, its known-failure paths `known`. The two other
-readers, `ci-health.yml` and `test/conformance/check-docs.sh`, read `dt list --json` instead.
+profiles become `matrix`, its PR lists `select.pr`, its known-failure paths `known`. Its two other
+readers change too: `ci-health.yml` reads `dt list --json`, and `test/conformance/check-docs.sh`
+becomes `dt docs --check`.
 
 ### 4.2 Fixtures: the DittoFS a suite runs against
 
@@ -367,6 +419,7 @@ carry a script that builds it.
 
 | Field | Meaning |
 |---|---|
+| `server` | `dfs` (the default), or `knfsd` for the pynfs comparison run |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`); `export` exports it without a mount, for pynfs |
 | `smb` | `true` enables the SMB adapter |
@@ -375,7 +428,9 @@ carry a script that builds it.
 | `squash`, `delegations`, `lease` | Export and adapter settings, set through `dfsctl` |
 | `kerberos` | `true` starts the KDC service, writes the keytabs and turns Kerberos on |
 | `reset` | `each`: recreate the shares before every test, as smbtorture's runner does today |
-| `setup` | A script run after the rest, for what the fields can't say; it gets the placeholders as environment variables |
+
+There is no field for a setup script. A suite that needs something these fields can't say gets a
+new field in `dt`, with a test, so the setup stays in one place that has tests.
 
 It gives the command `{server}` (the address the tools reach it at), `{mount}`, `{realm}`, and
 `{user}` and `{password}`: a test user whose password is generated per run, in place of the WPTS
@@ -420,6 +475,8 @@ dt report [RUN] [--format text|md|json]        show a run; CI appends --format m
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE                           remove known failures that now pass
+dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
+dt docs [--check]                              write the documentation's suite tables, or check them
 ```
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
@@ -603,11 +660,13 @@ two weeks. A single gate that always runs also avoids GitHub's path-filter trap:
 from a workflow skipped by a path filter stays pending and blocks the merge.
 
 Every suite is in the registry, including those with special hosts or schedules: AD-DC, the
-Kerberos suites, SMB client compatibility on Linux, macOS and Windows, the baseline refreshes, and
-the manual rigs. Their workflows move into `tests.yml` after the main ones (§8 step 4); until
-then they keep running as they are. The client-compatibility jobs (601 lines across three jobs)
-and the smbtorture baseline refresh first move their inline steps into scripts. The nightly job
-that refreshes the smbtorture baseline still commits the refreshed file, as today.
+Kerberos suites, SMB client compatibility on Linux, macOS and Windows, the pynfs comparison
+against knfsd, and the manual rigs. Their workflows move into `tests.yml` after the main ones (§8
+step 4); until then they keep running as they are. The client-compatibility jobs (601 lines across
+three jobs) first move their inline steps into test files: those steps are the tests, so they
+become files, not wrappers. The smbtorture baseline, `baseline-results.md`, is a snapshot of the
+nightly smbtorture/memory results, not a run of its own: the nightly job runs
+`dt known baseline smbtorture/memory` after the tier and commits the file, as it does today.
 
 Three things stay outside the registry, because they aren't test suites:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
@@ -673,8 +732,8 @@ use the same result format, so runs compare over time.
   grading rules. What changes is around them: their setup scripts give way to fixtures (§4.2).
 - **`setup.sh`.** The scenarios kind reads what it already writes.
 - **The required check names.** Go Checks, Repo Checks and ShellCheck keep their names and their
-  steps, which run through `dt` from scripts instead of inline YAML. The security scans, gitleaks
-  and CodeQL (Analyze (go)), stay GitHub actions as they are.
+  steps, which run through `dt` from the registry instead of inline YAML. The security scans,
+  gitleaks and CodeQL (Analyze (go)), stay GitHub actions as they are.
 - **The workflows with special hosts, for a while.** Their suites are registered at once, but their
   workflows keep running until §8's step 4 moves them.
 
@@ -707,19 +766,20 @@ use the same result format, so runs compare over time.
 
 ## 7. Risks
 
-- **One bug in `dt` breaks all of CI.** Workflows move one at a time (§8), each compared against
-  its old run for a week. `dt`'s own tests run in CI with the unit tests: `./test/...` is added to
-  the unit job, which today covers only `./pkg`, `./internal` and `./cmd`. That also brings in
-  `test/spec-citations`' tests, which no job runs today.
+- **One bug in `dt` breaks all of CI.** A workflow moves only once its `dt` cells match its old
+  job (§8), so the old job is there until then. `dt`'s own tests run in CI with the unit tests:
+  `./test/...` is added to the unit job, which today covers only `./pkg`, `./internal` and
+  `./cmd`. That also brings in `test/spec-citations`' tests, which no job runs today.
 - **The `pr` tier misses something.** The full tier runs after every merge, and the alert names
   the failing set. The cost is a red develop for one merge, not a lost regression.
 - **The known-failure lists rot.** Every row names an issue, unexpected passes are reported, and
   `dt known prune` removes them.
 - **Quarantine hides real bugs.** Entries expire, need an issue, and quarantined results are still
   recorded and shown in `dt history`.
-- **A fixture misses something a setup script did.** Each suite moves on its own (§8), and its old
-  job runs beside its `dt` cell for a week; the scripts are deleted only after the two agree. The
-  scripts' behaviours that have tests move with those tests.
+- **A fixture misses something a setup script did.** §3 lists what the scripts know that isn't
+  written down elsewhere; each of those moves into `dt` with a test. A suite's old job runs beside
+  its `dt` cells until their per-test results match on 5 consecutive runs, and only then are its
+  scripts deleted.
 - **CTRF changes under us.** It is at 0.1.0. `dt` writes one pinned version, and the JUnit files,
   which carry the same results, don't depend on it.
 
@@ -750,8 +810,9 @@ exit 0, when it can't load the NFS module.
    *Exit:* CI's unit, integration and e2e jobs call `dt`, and stay green for a week.
 2. **Registry and runner.** `test/suites.yaml`, and `dt list`, `plan` and `run` in Go, for the
    `go` and `cmd` kinds. `suites.json`'s profiles, PR lists and known-failure paths move into the
-   registry; `ci-health.yml` and `check-docs.sh` read `dt list --json`. `lint.yml`'s inline steps
-   move into `test/lint/`, run by the `lint-go`, `lint-repo` and `shellcheck` suites. Every other
+   registry; `ci-health.yml` reads `dt list --json`, and `dt docs --check` replaces
+   `check-docs.sh`. `lint.yml`'s steps move into the registry as the command lists of the
+   `lint-go`, `lint-repo` and `shellcheck` suites. Every other
    suite is registered too, the manual rigs included, so `dt list` shows everything there is.
    Today's commands become aliases.
    *Exit:* `dt plan --tier pr --json` yields the same cells as today's PR matrix.
@@ -763,11 +824,12 @@ exit 0, when it can't load the NFS module.
 4. **One workflow and a gate.** `tests.yml` with plan, run and gate. Move `nfs-pynfs.yml` first,
    as the smallest, then `conformance.yml`, then the unit, Windows, integration, operator and lint
    jobs, the lint jobs keeping their names. Then AD-DC, the Kerberos suites, client compatibility
-   (its steps moved into scripts first) and the baselines. Each conformance suite's old job runs
-   beside its `dt` cell for a week; the PR that removes the old job deletes the scripts the fixture
-   replaced. `run.sh`, `suites.json` and the Makefile's `test-*` targets go with the last of them.
-   Make the gate required.
-   *Exit:* PR p90 ≤ 20 min over a week, the gate required, and no conformance setup script left.
+   (its steps moved into test files first) and the knfsd comparison. The suites move in parallel,
+   not one after another: each old job runs beside its `dt` cells until their per-test results
+   match on 5 consecutive runs, and the PR that removes the old job deletes that suite's scripts.
+   `run.sh`, `suites.json`, the Makefile's `test-*` targets and the bash `dt` go with the last of
+   them. Make the gate required.
+   *Exit:* PR p90 ≤ 20 min over a week, the gate required, and none of §3's 33 scripts left.
 5. **Scenarios and fio.** The scenarios kind, its known-failure list, and the podman-in-container
    path on runners. Groups 0x–8x run in the full tier, sharded over runners; the 9x long runs run
    nightly on the dedicated host. Then `fio-verify`.
@@ -798,8 +860,10 @@ fio (R8).
 - When does the gate become required: after two green weeks, or on a flake-rate figure?
 - Does history stay in artifacts, or move to a data branch once benchmarks need longer than 90
   days?
-- Do the fixture's fields cover WPTS's setup (8 shares with their flags, and an encryption toggle
-  that restarts the adapter), or does WPTS keep a `setup:` script beside writing its own config?
+- WPTS's setup has 8 shares with their flags and an encryption toggle that restarts the adapter.
+  Which fixture fields does that need beyond `shares`, and should the toggle be a fixture setting
+  or a matrix axis?
+- Is 5 consecutive matching runs the right bar for deleting a suite's scripts?
 - CTRF is at 0.1.0. Is a pre-1.0 schema acceptable for `summary.json`, given that the JUnit files
   carry the same results, or should `summary.json` stay a schema of our own?
 
@@ -838,3 +902,5 @@ Where the assumption was wrong, the design follows what was found.
 | The suite scripts can be reused as they are (R9 as first written) | No. The server setup is written in at least five places. The Kerberos bootstrap calls `dfsctl adapter create` and `dfsctl adapter identity-map add`, which don't exist, with the errors discarded. The POSIX teardown kills every `dfs start` on the machine. Five workflow steps find results with `ls -td`. The WPTS password is written in six places | `nfs-conformance/bootstrap.sh:54, 63`, `teardown-posix.sh:64`, `conformance.yml:176, 244, 477, 530`, `nfs-pynfs.yml:182` |
 | Every grader uses the shared known-failure matcher | WPTS's doesn't call `kf_is_known`, so wildcard rows wouldn't apply to it; WPTS's list has none today | `smb-conformance/parse-results.sh`, `test/common/known-failures.sh:133` |
 | The Makefile's test targets are an entry point | They pass `$(ARGS)` to the scripts, and no workflow calls them | `Makefile:90-116` |
+| The shell scripts are entry points | 92 under `test/` and `.github/scripts/`. 33 are glue between a workflow and a tool (about 8,650 lines): dispatch, setup, invocation, parsing and grading, and their tests. The other 59 are tests (the 42 scenarios, the crash rigs, edge, the Kerberos and NLM drivers), tools, service-container entrypoints, the repository checks lint runs, and Radu's `setup.sh` and `report.sh` | `git ls-files '*.sh'` |
+| The smbtorture baseline records a reference implementation | No: it is DittoFS's own smbtorture results on `memory`, regenerated nightly into `baseline-results.md` by `parse-results.sh --emit-baseline` | `conformance.yml:521-538` |
