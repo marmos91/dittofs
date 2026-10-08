@@ -942,7 +942,7 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrNoReclaim` | `NFS4ERR_RECLAIM_BAD` in grace, `NFS4ERR_NO_GRACE` outside it | NLM: `NLM4_DENIED_GRACE_PERIOD` in grace, else `NLM4_DENIED` |
-| `ErrStaleClient` | `NFS4ERR_EXPIRED` for a stateid; `NFS4ERR_STALE_CLIENTID` for a client ID, and for an NFSv4.0 client a loss awaits (§5.4) | NLM: `NLM4_DENIED` |
+| `ErrStaleClient` | `NFS4ERR_EXPIRED` for a stateid of an expired lease, `NFS4ERR_STALE_STATEID` for one of a lost shard (§5.4); `NFS4ERR_STALE_CLIENTID` for a client ID, and for an NFSv4.0 client a loss awaits (§5.4) | NLM: `NLM4_DENIED` |
 | `ErrNotYours` | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR`, where only the principal is checked (§5.2); `NFS4ERR_BAD_STATEID` otherwise | — |
 | `ErrBadSeqID` | `NFS4ERR_BAD_SEQID` | — |
 | `ErrLocked` | `NFS4ERR_DENIED` for `LOCK` / `LOCKT`; `NFS4ERR_LOCKED` for I/O | `NFS3ERR_ACCES`; NLM: `NLM4_DENIED` |
