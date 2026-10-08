@@ -70,6 +70,10 @@ There are two kinds of scenario:
 All job files read their parameters from environment variables, so always run
 them through `run.sh`. Running `fio <file>` directly fails to parse.
 
+Use a share backed by an S3 block store. The memory block store keeps every
+block in RAM and is only meant for unit tests, so the server runs out of
+memory under these workloads.
+
 ```sh
 # 1. Create the per-user files once, with the largest user count you will test
 TARGET_DIR=/mnt/mail USERS=4 VHDX_SIZE=512m ./run.sh 00-prepare.fio
