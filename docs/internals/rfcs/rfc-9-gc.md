@@ -681,7 +681,7 @@ refcount without deleting its ref from file *f*.
 | --- | --- | --- | --- | --- |
 | 0 | *f* refers to *h* in *B*; the defective path decrements | 1 → 0 | `CR‖h‖f‖0‖0` | `live` 1 → 0, `retired` |
 | 48 h | the deleter reaches *B*: `C‖h` names *B*; `CR‖h‖` is not empty | 0 → 1 | unchanged | `retired` → `live` |
-| 48 h | refusal counted; `dittofs_gc_verify_refusals_total` +1; recount scheduled | 1 | — | `live` |
+| 48 h | refusal counted; `gc_verify_refusals_total` +1; recount scheduled | 1 | — | `live` |
 
 *f* reads back. Without the check, the count alone would have deleted *B* at
 48 h, and the audit — whichever day it covered *h* — would have found a ref with
@@ -1180,7 +1180,7 @@ without waiting for the audit.
 
 **Dropping a Lost ref never wedges.** A removal, release or snapshot deletion
 that drops a ref whose chunk record is absent drops the ref and its reverse key,
-changes no count, and counts the drop in `dittofs_gc_lost_dropped_total`
+changes no count, and counts the drop in `gc_lost_dropped_total`
 ([RFC 6 §6.3](rfc-6-block-metadata.md#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)). The file's content there was already lost; refusing to release it
 would only add a stuck removal.
 
@@ -1336,7 +1336,7 @@ file fences so a concurrent ref change serialises with it.
 
 Both rebuilds are exposed through the management API ([RFC 23](rfc-index.md)) and its
 client, each with a check mode. A mismatch found by either, or by the audit,
-increments `dittofs_gc_index_mismatches_total` and emits an event naming the key.
+increments `gc_index_mismatches_total` and emits an event naming the key.
 
 ### 7.5 Service settings are rechecked on their own period
 
@@ -1577,27 +1577,29 @@ are constants of the implementation, not settings.
 
 ## 10. Observability
 
+Metric names are shown without the deployment's prefix.
+
 Every metric is labelled by namespace. Per-block outcomes are metrics, not log
 lines.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| retirements, labelled `cause` = `drop`, `born_dead`, `compaction`, `audit`, `abandoned` or `listed` | `dittofs_gc_retirements_total` | counter |
-| resurrections, labelled `cause` = `adoption`, `audit` or `verify` | `dittofs_gc_resurrections_total` | counter |
-| verifications that found a ref; any nonzero value is an alert | `dittofs_gc_verify_refusals_total` | counter |
-| blocks and bytes in the trash | `dittofs_gc_trash_blocks`, `dittofs_gc_trash_bytes` | gauge |
-| blocks due or `deleted` and not yet pruned, and the age past `not_before` of the oldest | `dittofs_gc_pending_deletions`, `dittofs_gc_pending_deletion_oldest_seconds` | gauge |
-| delete results per name, labelled `result` = `ok` or the error of [RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set) | `dittofs_gc_deletes_total` | counter |
-| compactions, labelled `reason` = `space`, `small` or `retirement` and `result` = `moved`, `born_dead`, `corrupt` or `no_intent` | `dittofs_gc_compactions_total` | counter |
-| encoded bytes read and written by the compactor | `dittofs_gc_compacted_bytes_total` | counter |
-| space amplification: stored bytes of live blocks over their referenced bytes | `dittofs_gc_space_amplification_ratio` | gauge |
-| audit mismatches, labelled `check` (the rows of [§6.1](#6.1%20Coverage)) and `direction` = `high`, `low` or `lost`. Any `low` or `lost` is an alert | `dittofs_gc_audit_mismatches_total` | counter |
-| refs dropped whose chunk record was absent | `dittofs_gc_lost_dropped_total` | counter |
-| time since each hash range was last audited | `dittofs_gc_audit_coverage_age_seconds` | gauge |
-| index keys missing, extra or in the wrong state, labelled `source` = `audit` or `check` | `dittofs_gc_index_mismatches_total` | counter |
-| collection outcomes, labelled `source` = `intent` or `listing` and `result` = `retired` or `refused` | `dittofs_gc_collection_total` | counter |
-| put intents older than one pass interval; one that only grows means abandonment stopped | `dittofs_gc_intents_stale` | gauge |
-| pass duration, labelled `op` = `delete`, `compact`, `collect` or `audit` | `dittofs_gc_pass_seconds` | histogram |
+| retirements, labelled `cause` = `drop`, `born_dead`, `compaction`, `audit`, `abandoned` or `listed` | `gc_retirements_total` | counter |
+| resurrections, labelled `cause` = `adoption`, `audit` or `verify` | `gc_resurrections_total` | counter |
+| verifications that found a ref; any nonzero value is an alert | `gc_verify_refusals_total` | counter |
+| blocks and bytes in the trash | `gc_trash_blocks`, `gc_trash_bytes` | gauge |
+| blocks due or `deleted` and not yet pruned, and the age past `not_before` of the oldest | `gc_pending_deletions`, `gc_pending_deletion_oldest_seconds` | gauge |
+| delete results per name, labelled `result` = `ok` or the error of [RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set) | `gc_deletes_total` | counter |
+| compactions, labelled `reason` = `space`, `small` or `retirement` and `result` = `moved`, `born_dead`, `corrupt` or `no_intent` | `gc_compactions_total` | counter |
+| encoded bytes read and written by the compactor | `gc_compacted_bytes_total` | counter |
+| space amplification: stored bytes of live blocks over their referenced bytes | `gc_space_amplification_ratio` | gauge |
+| audit mismatches, labelled `check` (the rows of [§6.1](#6.1%20Coverage)) and `direction` = `high`, `low` or `lost`. Any `low` or `lost` is an alert | `gc_audit_mismatches_total` | counter |
+| refs dropped whose chunk record was absent | `gc_lost_dropped_total` | counter |
+| time since each hash range was last audited | `gc_audit_coverage_age_seconds` | gauge |
+| index keys missing, extra or in the wrong state, labelled `source` = `audit` or `check` | `gc_index_mismatches_total` | counter |
+| collection outcomes, labelled `source` = `intent` or `listing` and `result` = `retired` or `refused` | `gc_collection_total` | counter |
+| put intents older than one pass interval; one that only grows means abandonment stopped | `gc_intents_stale` | gauge |
+| pass duration, labelled `op` = `delete`, `compact`, `collect` or `audit` | `gc_pass_seconds` | histogram |
 
 Logs: a verification refusal, a low count or a Lost ref logs the block or file at
 `Error`. The hold, a deletion backlog that stops draining and a clock outside the

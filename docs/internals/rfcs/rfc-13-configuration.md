@@ -685,14 +685,16 @@ type SecretProvider interface {
 
 ## 8. Observability
 
+Metric names are shown without the deployment's prefix, which the exporter adds.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| the generation of each record a node runs, against the store's current one | `dittofs_config_generation` | gauge, labelled by record |
-| the version of each secret a node holds, against the current one | `dittofs_config_secret_version` | gauge, labelled by reference |
-| each format's active version, and the range each node registers | `dittofs_format_active_version`, `dittofs_format_supported_range` | gauges, labelled by format |
-| records refused, by component and reason | `dittofs_config_refused_total` | counter |
-| changes refused because a setting is bound | `dittofs_config_bound_refusals_total` | counter |
-| the provisioning file hash each node applied, and applies refused by reason | `dittofs_config_provisioning_applied`, `dittofs_config_provisioning_refused_total` | gauge, counter |
+| the generation of each record a node runs, against the store's current one | `config_generation` | gauge, labelled by record |
+| the version of each secret a node holds, against the current one | `config_secret_version` | gauge, labelled by reference |
+| each format's active version, and the range each node registers | `format_active_version`, `format_supported_range` | gauges, labelled by format |
+| records refused, by component and reason | `config_refused_total` | counter |
+| changes refused because a setting is bound | `config_bound_refusals_total` | counter |
+| the provisioning file hash each node applied, and applies refused by reason | `config_provisioning_applied`, `config_provisioning_refused_total` | gauge, counter |
 
 A node whose generation for a live record stays behind the store's for longer
 than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node, not
@@ -752,11 +754,8 @@ because the rule stands here alone, or marked not yet applied:
    so nothing there contradicts [§5.1](#5.1%20A%20bound%20setting%20refuses%20change), [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) and Appendix B, which carry
    the rule.
 4. **RFC 12 §6.2:** its example is the control-plane records it describes, with
-   the scopes of Appendix B. *Not yet applied:* the example declares
-   `snapshots.hold_bound` and `snapshots.directory`, which Appendix B scopes per
-   share, at the installation level. Either they move under a share, or the
-   example says a top-level value is the installation default a share
-   overrides, and Appendix B gives them that scope form.
+   the scopes of Appendix B: `snapshots.hold_bound` and `snapshots.directory`,
+   which Appendix B scopes per share, sit under the share. *Applied.*
 5. **RFC 7 §3.3:** case sensitivity is fixed at the share's creation. *Applied.*
 6. **RFC 9 §8:** GC's `Config` holds four namespace fields. *Applied.*
 7. **RFC 2 §5:** the block target is a remote-store setting, next write, 4 MiB,
@@ -871,7 +870,8 @@ default this document suggests where the owning RFC states none.
 | repair scheduler enabled **(cluster)** | [RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair) | installation | live | on |
 | open-state lease: NFSv4 lease period, SMB durable-handle timeout | [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease) | — | fixed | NFSv4 90 s; SMB per the protocol |
 | `smb_pending_cap`: longest an SMB request refused for a transient cause — capacity, a frozen or quiesced share — is held `STATUS_PENDING` before its refusal is answered, `STATUS_DISK_FULL` for capacity; longer than a move's freeze | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values), [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here) | installation | live | 10 min, above `migration.freeze_timeout` plus 35 s |
-| `clone_max_len`: longest `CLONE` or duplicate-extents request answered as one atomic clone; a longer one is `ErrInvalid` | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | installation | live | open in RFC 8 |
+| `clone_max_len`: longest `CLONE` or duplicate-extents request answered as one atomic clone; a longer one is `ErrInvalid` | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | installation | live | 1 GiB |
+| copy chunk: the length one atomic clone of a `COPY` or copychunk covers; the copy runs as a series of them and may answer a short count | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | — | fixed | 64 MiB |
 | default request deadline, for an operation that arrives with none | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) | — | fixed | 30 s |
 | single-node self-fence: time with a write transaction outstanding or failing and none committed before a node stops acknowledging writes | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 30 s, the default request deadline |
 | clock-rate bound ρ: how far one clock's rate may differ from another's over a wait | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 0.05 |

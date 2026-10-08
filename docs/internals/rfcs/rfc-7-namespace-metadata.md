@@ -328,9 +328,9 @@ create them.
 tell a handle to a released file from one to its successor. A `FileID` is a
 UUID that is never reissued, and every per-file key is scoped by its share
 ([RFC 16](rfc-16-metadata-store.md)), so a handle to a released file finds nothing and resolves stale
-([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)). A restore into a new share gets a new `ShareID` and so new keys, and
-cannot alias a handle to the original; an in-place rollback revives the same
-files, whose old handles rightly resolve again. What clients do need is a
+([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)). A restore makes a new share with a new `ShareID` and so new keys
+([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)), and cannot alias a handle to the original; nothing rolls a share
+back in place ([RFC 12 §1.1](rfc-12-snapshots.md#1.1%20Non-goals)), so a released file's handle never resolves again. What clients do need is a
 per-file change counter, and that is `Version`.
 
 A file **MUST NOT** carry its own name, its own path, or a list of the entries
@@ -471,8 +471,10 @@ restarts and primaries, is [§9.4](#9.4%20The%20change%20attribute%20and%20ctime
 ### 2.5 Where `size` lives
 
 **`size` is a field of `File`, stored once, and read with the rest of it.**
-`Files.Get` is one read of the file's record ([RFC 16](rfc-16-metadata-store.md)): nothing is joined
-and nothing is computed. It is the write path's field — only an existence commit
+`Files.Get` is one read of the file's record ([RFC 16](rfc-16-metadata-store.md)) and, for a directory, a scan of
+its deltas not yet folded, bounded by the fold backlog ([§9.2](#9.2%20Timestamps)): nothing else is
+joined and nothing is computed. This is the one statement of its cost; others
+cite it. It is the write path's field — only an existence commit
 sets `Size`, `Charged`, `Applied`, `Modify` and the `Change` a write causes, and
 advances `Version` with them ([RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence)) — and every other operation leaves
 the write fields alone.
@@ -593,7 +595,9 @@ it is a stream. Where identity shows, it follows the file it belongs to:
 - it has no owner, group, mode or ACL of its own: every check on it is a check
   on its base file;
 - the file id reported for it is its base file's;
-- releasing the base file releases its streams in the same release.
+- it has no entry and so `Nlink` zero, yet is never released by that: the base
+  file's release writes its pending release, and it is then released as a file
+  of its own ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
 
 ### 2.8 A share is one filesystem
 
@@ -949,7 +953,16 @@ names the file ([RFC 6 §6.3](rfc-6-block-metadata.md#6.3%20Underflow%20is%20cor
 
 Hard links to directories **MUST** be refused, which is what makes `Parent`
 exact and what makes the rename loop check terminate ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)). A directory's
-`Nlink` is therefore 1; the adapter reports whatever its protocol expects.
+other than a share's root therefore has `Nlink` 1; the adapter reports whatever
+its protocol expects.
+
+**Two kinds of file have no entry and are never released by `Nlink`.** A share's
+root ([§2.8](#2.8%20A%20share%20is%20one%20filesystem)) and a named stream ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)) both have `Nlink` zero from the moment
+they are created. Neither ever gets a pending-release record from an entry
+change: a root goes only with its share, and a stream only through its base
+file's release, which writes the stream's pending release ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)). The
+release predicate below is therefore stated over files that have a pending
+release, not over every file whose `Nlink` reads zero.
 
 ### 4.2 Open state is the second holder
 
@@ -961,7 +974,12 @@ last of them closes.
 Open state is therefore a holder of the file in exactly the sense `Nlink` is,
 and the release condition is both:
 
-> A file is released when `Nlink` is zero **and** no open state references it.
+> A file is released when it has a pending-release record ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)), `Nlink`
+> is zero, **and** no open state references it.
+
+Only the removal of a file's last entry, or its base file's release for a named
+stream, writes that record, so a share root and a stream whose base still lives
+are never released by this rule ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)).
 
 **Open state is recorded lazily**, and it is [RFC 14](rfc-14-open-state.md)'s: held in memory by the
 file's primary ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)), and made a durable open record only when it keeps
@@ -974,7 +992,8 @@ unlinked file; this component keeps no second list ([§4.3](#4.3%20Release%20is%
 
 Releasing a file drops its refs and decrements the chunks they name
 ([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)), drops the journal's copy of its content, and deletes
-its File, ACL, xattrs and named streams ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)). It is the engine's `Release`
+its File, ACL and xattrs, and writes the pending release of each of its named
+streams ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)). It is the engine's `Release`
 ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service)), called by the filesystem service at the file's primary; this component
 never calls it ([§1](#1.%20Purpose)) and never drops a ref itself. A release that drops the
 refs and leaves the journal holding the file is half a release. Block metadata is
@@ -987,12 +1006,15 @@ and holds nothing else: no holder list and no lease. If the file is open, the
 same transaction makes its opens durable ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)).
 
 When the entry's directory and the file are in different shards, the transaction
-runs at the directory's primary, which cannot see the file's opens: it writes the
-pending release all the same and leaves the decision to the file's primary
-([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)).
+runs at the directory's primary, which cannot see the file's opens: the file's
+primary makes them durable when it prepares the unlink, before the transaction
+commits, and keeps doing so for opens it admits until the outcome; the transaction
+writes the pending release all the same and leaves the decision to the file's
+primary ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)).
 
-**Only the release transaction deletes it.** The file's primary releases the file
-once no open references it: at once when none does, at the last close, or when
+**Only the release transaction deletes it.** The filesystem service at the file's
+primary runs the release ([RFC 17 §5.3](rfc-17-vfs.md#5.3%20Open%20and%20close)) once no open references the file: at once
+when none does, when open state reports the last close ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)), or when
 grace ends with no reclaimed open ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)). That transaction is the first transaction of the engine's `Release`
 ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)): it records the removal, deletes the namespace records and
 deletes the pending release `F‖id‖rel` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); the removal then masks
@@ -1047,7 +1069,9 @@ acted on the earlier observation would delete a file an open now holds.
   open record names the file or one of its streams, and **MUST** abort, releasing
   nothing, if any check fails. It deletes the File record, so it conflicts with
   every transaction that guards that record.
-- An open of a file whose `Nlink` is zero **MUST** guard the File record
+- An open of a file that has lost its last entry — `Nlink` zero, not a share
+  root; for a named stream, an open whose base file has lost its last entry,
+  guarding the base's File record — **MUST** guard the File record
   ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)) in the transaction that writes its durable open record, and **MUST**
   fail as stale when the File is gone. Either the open commits first and the
   release sees its record, or the release's delete conflicts with the open's guard
@@ -1535,7 +1559,21 @@ therefore written as a delta record under the directory, in the entry change's
 own transaction, without reading or rewriting the directory's record; the
 transaction guards it instead, and guards do not conflict with each other
 ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)). The store folds deltas into the directory, and reading the directory
-applies any not yet folded ([RFC 16](rfc-16-metadata-store.md)). The change is never coalesced out of its
+applies any not yet folded ([RFC 16](rfc-16-metadata-store.md)).
+
+**A fold does not race the creates it folds.** A fold rewrites the directory's
+record, and that record is what every create, link and rename-into guards, so a
+fold committing beside one would abort it. The directory's primary, where every
+structural change of the directory runs ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)), therefore **MUST** serialise a
+fold against them in memory: it starts a fold only when no such change of that
+directory is in flight, and admits none until the fold has committed. Only a
+removal of the directory, which writes the record itself, still conflicts with
+the guards.
+
+> decision: the fold pauses the directory's creates for one transaction; folds
+> are taken by backlog, not per create, so the pause is rare. Move the folded
+> times to a record of their own that nothing guards — at the cost of a second
+> read in every directory `GETATTR` — if that pause shows in a create benchmark. The change is never coalesced out of its
 transaction. Each delta carries the `Version` drawn for it ([§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)), and
 folding takes the maximum. Reading a directory's times therefore reads its record
 and the deltas not yet folded, a scan bounded by the fold backlog: the one-read
@@ -1701,17 +1739,17 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 | # | Invariant |
 | --- | --- |
 | N1 | A file's `Nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. |
-| N2 | A file is released when, and only when, `Nlink` is zero and no open state references it. Nothing else keeps a file alive. |
+| N2 | A file is released when, and only when, it has a pending-release record, `Nlink` is zero and no open state references it; only the removal of its last entry, or its base's release for a named stream, writes that record, so a share root and a live file's streams are never released. Nothing else keeps a file alive. |
 | N3 | The transaction that removes a file's last entry writes its pending release, always, holding no holder list; only the release transaction — the engine's `Release`, which drops the refs — deletes it, so a restart or a new primary resumes it. Holders of an unlinked file are its durable opens ([RFC 14](rfc-14-open-state.md)); open state of a linked file is never written. |
 | N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction and guards every ancestor it reads. Create, link and rename-into guard the parent; removing a directory writes it. |
 | N5 | A handle names a file and a share, is stable across restart, and resolves to stale — never to another file and never to "not found" — when its file is gone. A `FileID` is unguessable and never reissued; so is a principal's ID. |
 | N6 | No name, path or parent appears in a handle, a lock, a ref or a journal key. |
 | N7 | Every permission decision is made in this component, against the file the operation will act on, and a grant made at open is computed and evaluated here rather than in an adapter. |
 | N8 | A cached authorisation or identity is keyed by every field it was derived from, the share grant included; the grant is evaluated on every call. |
-| N9 | A release verifies inside its transaction that `Nlink` is zero, its pending release exists and no durable open names the file or a stream of it; an open of a file with no entry guards its File record; a file's streams are released with it, each as a file. |
+| N9 | A release verifies inside its transaction that `Nlink` is zero, its pending release exists and no durable open names the file or a stream of it; an open of a file that has lost its last entry (for a stream, whose base has) guards that File record; a file's streams are released with it, each as a file. |
 | N10 | Every wait in this component ends without operator action. |
 | N11 | A listing is ordered by a 63-bit keyed digest of each entry's key; its cookie is that digest, at least 3 with the top bit clear, and resolves with no stored state; no page ends inside a collision chain. |
-| N12 | `Size`, `Charged`, `Applied`, a file's `Modify` and its write `Change` are fields of the File, stored once, written only by an existence commit, which also advances `Version`; `GETATTR` is `Files.Get` with the engine's overlay applied by the filesystem service. This component calls no other component. |
+| N12 | `Size`, `Charged`, `Applied`, a file's `Modify` and its write `Change` are fields of the File, stored once, written only by an existence commit, which also advances `Version`; a directory's `Modify`, `Change` and `Version` advance instead by entry deltas folded into its record (§9.2); `GETATTR` is `Files.Get` with the engine's overlay applied by the filesystem service. This component calls no other component. |
 | N13 | An entry is its own record, and no operation's cost grows with the size of its directory beyond the results it returns. |
 | N14 | Residency is not an attribute. |
 | N15 | `Mode` and the ACL agree after every transaction; `chmod` merges into the ACL as [RFC 8881 §6.4.1.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.4.1.1) specifies and never replaces it. |
@@ -1740,8 +1778,12 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 
 ### 11.1 Interface
 
-Signatures are indicative; the obligations are normative. Every call takes the
-resolved identity ([§7.4](#7.4%20The%20identity%20arrives%20resolved)) and is authorised inside this component ([§7.1](#7.1%20One%20chokepoint)).
+Signatures are indicative; the obligations are normative. Every call made on a
+client's behalf about a file takes the resolved identity ([§7.4](#7.4%20The%20identity%20arrives%20resolved)) and is authorised
+inside this component ([§7.1](#7.1%20One%20chokepoint)). Four take none: `PendingReleases` (recovery) and
+`Resolve` (routing a handle to its file) act for no client, and `Info` and
+`Usage` report share-wide counts that the filesystem service returns only to a
+caller its share grant admits, checked on the call that asked for them.
 These are the filesystem service's views ([RFC 17](rfc-17-vfs.md)); adapters never hold them.
 How they are assembled into one store is [RFC 16](rfc-16-metadata-store.md)'s.
 
@@ -1765,7 +1807,7 @@ type Namespace interface {
 type Orphaned struct{ File FileID }
 
 type Files interface {
-	Get(ctx context.Context, id Identity, h Handle) (File, error) // GETATTR: one record read (§2.5)
+	Get(ctx context.Context, id Identity, h Handle) (File, error) // GETATTR: cost as §2.5 states
 	SetAttrs(ctx context.Context, id Identity, h Handle, a Attrs) (File, error)
 	ACL(ctx context.Context, id Identity, h Handle) (ACL, error) // synthesised from Mode if none stored (§2.6)
 	SetACL(ctx context.Context, id Identity, h Handle, acl ACL) (File, error)
@@ -1818,19 +1860,21 @@ that need content or open state are the filesystem service's ([§1](#1.%20Purpos
 
 ### 11.2 Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| handles resolved stale ([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)) | `dittofs_namespace_stale_handles_total` | counter |
-| `Nlink` underflows ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)); any nonzero value is an alert | `dittofs_namespace_nlink_underflow_total` | counter |
-| pending-release records held ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) | `dittofs_namespace_pending_releases` | gauge |
-| releases, labelled `result`; a failure is retried, not dropped | `dittofs_namespace_releases_total` | counter |
-| audit and quota events dropped by a slow sink ([§7.6](#7.6%20Decisions%20are%20observable)) | `dittofs_namespace_events_dropped_total` | counter |
-| conflicts retried, by `op` | `dittofs_namespace_conflict_retries_total` | counter |
+| handles resolved stale ([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)) | `namespace_stale_handles_total` | counter |
+| `Nlink` underflows ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)); any nonzero value is an alert | `namespace_nlink_underflow_total` | counter |
+| pending-release records held ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) | `namespace_pending_releases` | gauge |
+| releases, labelled `result`; a failure is retried, not dropped | `namespace_releases_total` | counter |
+| audit and quota events dropped by a slow sink ([§7.6](#7.6%20Decisions%20are%20observable)) | `namespace_events_dropped_total` | counter |
+| conflicts retried, by `op` | `namespace_conflict_retries_total` | counter |
 
 No metric carries a share or principal label: at 10⁴ shares a share label
 multiplies every series by 10⁴. Per-share figures are read through the
 management API ([RFC 16](rfc-16-metadata-store.md)). Operation counts and latency are the filesystem
-service's (`dittofs_vfs_op_seconds`), and quota refusals are counted where the
+service's (`vfs_op_seconds`), and quota refusals are counted where the
 quota is enforced, both in [RFC 17](rfc-17-vfs.md); this component does not count them again.
 
 An `Nlink` underflow logs the file at `Error`. A stale handle is routine for

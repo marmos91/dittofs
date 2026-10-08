@@ -796,16 +796,18 @@ A transform ID names an algorithm and its body format, not a library. So:
 
 ## 6. Observability
 
+Metric names are shown without the deployment's prefix.
+
 Each transform is labelled by its name. A custom transform gets these metrics
 without writing any: the chain exports them around each call.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| chunks encoded, labelled `applied` = `true` or `false` | `dittofs_transform_chunks_total` | counter |
-| bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `dittofs_transform_bytes_total` | counter |
-| time per call, by direction | `dittofs_transform_seconds` | histogram |
-| decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts | `dittofs_transform_decode_failures_total` | counter |
-| bodies written per transform ID, version and material ID, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | `dittofs_transform_census_blocks` | gauge |
+| chunks encoded, labelled `applied` = `true` or `false` | `transform_chunks_total` | counter |
+| bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `transform_bytes_total` | counter |
+| time per call, by direction | `transform_seconds` | histogram |
+| decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts | `transform_decode_failures_total` | counter |
+| bodies written per transform ID, version and material ID, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | `transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
 refuses the store ([§2.7](#2.7%20Failures)). A transform logs nothing per chunk: its outcomes
@@ -1419,9 +1421,9 @@ What a bucket reader can still see:
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| chunks encrypted, labelled by data key ID | `dittofs_encryption_chunks_total` | counter |
-| the data key ID new chunks use, per namespace | `dittofs_encryption_current_key` | gauge (1 on the current key's label) |
-| whether the provider can currently return each configured key with a matching fingerprint | `dittofs_encryption_key_available` | gauge (0/1) |
+| chunks encrypted, labelled by data key ID | `encryption_chunks_total` | counter |
+| the data key ID new chunks use, per namespace | `encryption_current_key` | gauge (1 on the current key's label) |
+| whether the provider can currently return each configured key with a matching fingerprint | `encryption_key_available` | gauge (0/1) |
 
 ## Appendix C — example, a parity transform
 
@@ -1450,7 +1452,7 @@ allowed.
 every transform ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)). A repaired body is still checked against the
 plaintext hash ([§2.6](#2.6%20The%20plaintext%20hash%20is%20the%20final%20check)).
 
-**Observability.** `dittofs_transform_parity_repaired_total`, bodies repaired
+**Observability.** `transform_parity_repaired_total`, bodies repaired
 on decode. A value that never moves on a store means the parity costs space for
 nothing.
 

@@ -348,6 +348,18 @@ coordinator is not primary of **MUST** always write the file's pending release i
 transaction ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), and the file's primary decides: it releases once no
 open holds the file, and after grace if it is in one.
 
+**The file's primary makes its opens durable at prepare.** The coordinator's
+transaction cannot write open records it cannot see, so the participant that is
+the file's primary does it: when it prepares a removal of the file's last entry,
+it **MUST** commit a durable open record for each of the file's opens before it
+answers yes, and while its hold stands it **MUST** write the durable open record
+of any open of that file it admits, in that open's own transaction. The
+coordinator's commit guards the hold record, so the unlink commits only while
+that rule is in force; once it has, the file has no entry and an open of it
+follows [RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction). If the outcome is an abort, the durable records written for a
+linked file are deleted at their close like any other; they keep nothing alive
+that its entry does not.
+
 ### 4.3 The route envelope
 
 Every call a node forwards to a primary carries one envelope:
@@ -620,15 +632,17 @@ apart; time from a `protocol` node's loss to clients resuming.
 
 ## 10. Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| calls forwarded, by view and result `ok` or `stale_route` | `dittofs_topology_forwarded_total{view, result}` | counter |
-| refusals by epoch | `dittofs_topology_epoch_refusals_total` | counter |
-| retries answered from the dedup table | `dittofs_topology_retries_deduplicated_total` | counter |
-| hop latency | `dittofs_topology_hop_seconds{view}` | histogram |
-| primary-map pushes applied | `dittofs_topology_primary_updates_total` | counter |
-| client addresses taken over | `dittofs_topology_address_takeovers_total` | counter |
-| roles of this node | `dittofs_topology_roles{role}` | gauge |
+| calls forwarded, by view and result `ok` or `stale_route` | `topology_forwarded_total{view, result}` | counter |
+| refusals by epoch | `topology_epoch_refusals_total` | counter |
+| retries answered from the dedup table | `topology_retries_deduplicated_total` | counter |
+| hop latency | `topology_hop_seconds{view}` | histogram |
+| primary-map pushes applied | `topology_primary_updates_total` | counter |
+| client addresses taken over | `topology_address_takeovers_total` | counter |
+| roles of this node | `topology_roles{role}` | gauge |
 
 Forwarding and epoch refusals are counted here only; other RFCs link to this
 table.

@@ -1218,46 +1218,46 @@ one. The syncer
 
 | Metric | Type | Answers |
 | --- | --- | --- |
-| `dittofs_syncer_workers` | gauge | the pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) |
-| `dittofs_syncer_workers_busy` | gauge | workers transferring. A full pool while throughput is low means the store is slow; a pool that is not full while writes back up means the limit is upstream ([§7.4](#7.4%20Benchmarks)) |
-| `dittofs_syncer_inflight_bytes` | gauge | bytes held by transfers in flight, against the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) |
-| `dittofs_syncer_queue_depth` | gauge | transfers waiting, per flow and in total ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
-| `dittofs_syncer_queue_wait_seconds` | histogram | time from call to dispatch; a flow whose wait exceeds one round is being starved (S18) |
-| `dittofs_syncer_refused_total` | counter | calls refused, labelled `reason` = `unhealthy`, `queue_full`, `waiters_full`, `displaced` (a queued transfer refused for a flow below its share of the waiter bound), `evicted` (speculation evicted for a demand) or `closed` |
-| `dittofs_syncer_detached_buffers` | gauge | chunk buffers held by detached callers, against the detached-buffer cap ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) |
-| `dittofs_syncer_waiters` | gauge | queued transfers plus joined callers, against the half's waiter bound ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
+| `syncer_workers` | gauge | the pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) |
+| `syncer_workers_busy` | gauge | workers transferring. A full pool while throughput is low means the store is slow; a pool that is not full while writes back up means the limit is upstream ([§7.4](#7.4%20Benchmarks)) |
+| `syncer_inflight_bytes` | gauge | bytes held by transfers in flight, against the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) |
+| `syncer_queue_depth` | gauge | transfers waiting, per flow and in total ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
+| `syncer_queue_wait_seconds` | histogram | time from call to dispatch; a flow whose wait exceeds one round is being starved (S18) |
+| `syncer_refused_total` | counter | calls refused, labelled `reason` = `unhealthy`, `queue_full`, `waiters_full`, `displaced` (a queued transfer refused for a flow below its share of the waiter bound), `evicted` (speculation evicted for a demand) or `closed` |
+| `syncer_detached_buffers` | gauge | chunk buffers held by detached callers, against the detached-buffer cap ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) |
+| `syncer_waiters` | gauge | queued transfers plus joined callers, against the half's waiter bound ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 
 **Transfers** — what moved, and how it ended?
 
 | Metric | Type | Answers |
 | --- | --- | --- |
-| `dittofs_syncer_transfers_total` | counter | transfers ended, labelled `outcome` = `ok`, `failed` or `unknown` ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) |
-| `dittofs_syncer_bytes_total` | counter | encoded bytes transferred |
-| `dittofs_syncer_transfer_duration_seconds` | histogram | time from dispatch to end |
-| `dittofs_syncer_first_byte_seconds` | histogram | time to the first byte; the tail that slow-tail retries and hedging aim at ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `dittofs_syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `floor`, `stalled` or `trickle` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `dittofs_syncer_retry_budget_exhausted_total` | counter | failed attempts reported rather than retried because the store's budget was empty ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `dittofs_syncer_throttle_limit` | gauge | the store's throttle limit per direction, against its cap ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `dittofs_syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, per flow; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `dittofs_syncer_store_throughput_bytes` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_transfers_total` | counter | transfers ended, labelled `outcome` = `ok`, `failed` or `unknown` ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) |
+| `syncer_bytes_total` | counter | encoded bytes transferred |
+| `syncer_transfer_duration_seconds` | histogram | time from dispatch to end |
+| `syncer_first_byte_seconds` | histogram | time to the first byte; the tail that slow-tail retries and hedging aim at ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `floor`, `stalled` or `trickle` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_retry_budget_exhausted_total` | counter | failed attempts reported rather than retried because the store's budget was empty ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_throttle_limit` | gauge | the store's throttle limit per direction, against its cap ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, per flow; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_store_throughput_bytes` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
 **Fetches** — are reads being shared?
 
 | Metric | Type | Answers |
 | --- | --- | --- |
-| `dittofs_syncer_fetch_joined_total` | counter | callers that joined a fetch already in flight ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
-| `dittofs_syncer_fetch_detached_total` | counter | joined callers detached, labelled `reason` = `behind` or `flow_closed` |
-| `dittofs_syncer_fetch_rehomed_total` | counter | undispatched fetches moved to a demanding flow ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
-| `dittofs_syncer_speculation_preempted_total` | counter | speculative fetches that yielded to demand ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)) |
+| `syncer_fetch_joined_total` | counter | callers that joined a fetch already in flight ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
+| `syncer_fetch_detached_total` | counter | joined callers detached, labelled `reason` = `behind` or `flow_closed` |
+| `syncer_fetch_rehomed_total` | counter | undispatched fetches moved to a demanding flow ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
+| `syncer_speculation_preempted_total` | counter | speculative fetches that yielded to demand ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)) |
 
 **Health** — is each store usable?
 
 | Metric | Type | Answers |
 | --- | --- | --- |
-| `dittofs_syncer_store_healthy` | gauge (0/1) | the direction's current state ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
-| `dittofs_syncer_store_unhealthy_seconds_total` | counter | time spent unhealthy |
-| `dittofs_syncer_store_transitions_total` | counter | changes of state; a high rate is flapping, which the hold-down damps ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
-| `dittofs_syncer_probe_duration_seconds` | histogram | time per probe |
+| `syncer_store_healthy` | gauge (0/1) | the direction's current state ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| `syncer_store_unhealthy_seconds_total` | counter | time spent unhealthy |
+| `syncer_store_transitions_total` | counter | changes of state; a high rate is flapping, which the hold-down damps ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| `syncer_probe_duration_seconds` | histogram | time per probe |
 
 `workers_busy` against throughput tells a slow store from a starved syncer,
 which the logs cannot ([§7.4](#7.4%20Benchmarks)).

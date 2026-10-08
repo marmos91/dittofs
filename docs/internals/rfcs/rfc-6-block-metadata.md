@@ -289,11 +289,25 @@ type Chunk struct {
 // Block: one remote object (§2.3).
 type Block struct {
 	Name       BlockName
+	State      BlockState // live, retired or deleted (§2.3, RFC 9 §3.1)
+	NotBefore  time.Time  // store time; earliest the deleter may delete it, set at retirement (§2.3)
 	Live       int64      // chunk records naming it with a nonzero refcount
+	Dead       int64      // bytes of carried chunks dead here (§2.3)
+	DeadAt     time.Time  // store time Dead last grew (§2.3)
+	Size       int64      // the block's encoded bytes (§2.3)
 	Carried    []Carried  // every chunk it carries, in order; written once (§2.3)
 	Generation uint8      // 0 from offload; one above its highest source from compaction
 	Encodings  []Encoding // how it was written (RFC 5 §5.3)
 }
+
+// BlockState: GC's state machine for one block (RFC 9 §3.1).
+type BlockState uint8
+
+const (
+	BlockLive BlockState = iota
+	BlockRetired
+	BlockDeleted
+)
 
 // Carried: one chunk a block carries, and its body's encoded length there.
 type Carried struct {
@@ -709,7 +723,7 @@ finds `Removal(f, 4)` and drops its refs that overlap `[3M, ∞)`. Once no pass
 offered below v4 is in flight, the primary prunes the removal.
 
 **t7 — delete.** The namespace releases the file through the engine's `Release`
-([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Phase 1 deletes the FileData record and writes `Removal(f, 5) = [0, ∞)`,
+([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Phase 1 deletes the File record, and with it the FileData fields, and writes `Removal(f, 5) = [0, ∞)`,
 kind release; phase 2 drops the three refs and their reverse keys. K1's and K2's
 `live` reach 0, and the sub-transaction that takes each to zero retires it:
 Block(K1) moves to `retired` with `not_before` 48 h ahead, and Chunk(A) and
@@ -893,9 +907,12 @@ The rules:
   A clone's phase 1 is applied only by the clone, or by recovery rebuilding it
   from its spec, since its copies must be staged first ([§6.6](#6.6%20Clone%20and%20server-side%20copy)); a group commit
   stops below it.
-  A phase 1 that finds `applied ≥ v` and `Removal(file, v)` present is a no-op, so
-  recovery, a group commit and the removal's own call can each reach it and only
-  the first has effect.
+  A phase 1 that finds `applied ≥ v` is a no-op, whether or not
+  `Removal(file, v)` is still present: by the rule above `applied` reaches *v*
+  only once that phase 1 is applied, and pruning may since have deleted the
+  record ([§6.2](#6.2%20Truncation%20and%20deallocation)), so a stale call never re-applies the removal. Recovery, a
+  group commit and the removal's own call can each reach it and only the first
+  has effect.
 - **Every drop is checked by version, never by position.** A removal drops only
   refs whose `newest` is below its version, so a re-run, a resumed phase 2 or a
   replay after a crash never removes content written after it.
@@ -1003,7 +1020,7 @@ once added, is by chunk, through `Offloaded(hash)` ([§8.2](#8.2%20Deduplication
   cluster: there only the epoch comparison is skipped, and the fences are still
   read and written ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit), [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile));
 - **the file's removals**: a ref overlapping a removal of higher version than the
-  ref's `newest` is dropped ([§6.2](#6.2%20Truncation%20and%20deallocation)); a file with no FileData record — released — has all
+  ref's `newest` is dropped ([§6.2](#6.2%20Truncation%20and%20deallocation)); a file with no File record — released — has all
   its refs dropped ([§6.4](#6.4%20Delete)). Because every removal writes `F_o`, an offload
   commit's read of `F_o` conflicts with any removal that lands during it, and
   the removals scan need not itself be conflict-tracked;
@@ -1066,9 +1083,13 @@ new ref's `newest` with the existing ref's version range:
 | --- | --- |
 | above the existing `newest` | replaces the ref |
 | inside the existing `[oldest, newest]` | treats the content as already committed: writes nothing for that ref and reports its extent offloaded |
-| below the existing `oldest` | refuses that ref, and applies the rest |
+| below the existing `oldest` | refuses that ref as live, and applies the rest — unless it is a held version a live cut sees, which is recorded into history instead ([§6.5](#6.5%20Who%20owns%20a%20ref)) |
 
-Only strictly older content is refused. This suffices: content at an offset that
+Only strictly older content is refused, and only as a live ref: the table
+governs live refs ([M10](#9.%20Invariants)). The one exception is a version the journal held for
+a snapshot that commits after a newer ref replaced its extent; it never
+displaces the newer ref, and goes straight to history with `died` the newer
+ref's `born`, or is dropped when no live cut sees it. This suffices: content at an offset that
 differs between two passes was written after the earlier pass was offered, so its
 version, and the later pass's `newest`, exceeds every version the earlier pass
 holds.
@@ -1169,8 +1190,13 @@ the files that fit and leaves the rest unreported, to be offered again
 - **Usage accounting.** A per-share, per-principal or per-project counter is
   shared by many files. It is not kept as one record read and rewritten per
   transaction: the write path writes a delta record, and the shard's primary folds
-  deltas into the totals ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)). The offload commit **MUST NOT** touch
-  usage. Refcounts are not usage and stay transactional: a chunk's count moves
+  deltas into the totals ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)). The offload commit **MUST NOT** change
+  charged usage — live bytes are charged by the existence commit and a
+  removal's phase 1, which set `Charged`. When it moves a ref to history, drops a history
+  ref, or replaces a ref still at a re-homed share's old generation, it writes
+  the change to `history_bytes` or `old_refs` in its own usage delta, as every
+  such transaction does ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)); a delta is a key unique to the
+  transaction, so this shares no key with the write path. Refcounts are not usage and stay transactional: a chunk's count moves
   in the same transaction as the refs that change it ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)).
 
 Contention on the first **MUST** be measured before shipping, under many files
@@ -1200,13 +1226,13 @@ chunk's is not.
 
 **A read whose result decides whether a commit may apply MUST conflict with
 every concurrent write that would change that result.** Such a read is a
-`Txn.Guard` ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), and a guard is **shared**: it conflicts with a
+**guard read**, a point read registered for conflict checking ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), and a guard is **shared**: it conflicts with a
 write of its key, never with another guard of it. So the many transactions that
 gate on one key — every create in one directory, every namespace transaction on
 one file — run concurrently, and only the write that changes the key serialises
 against them. A scan over a key range
-is not such a read: the backends this set targets detect conflicts on point keys
-at most, not on key ranges, and one of them validates no reads at all. A rule that
+is not such a read: the backends this set targets detect conflicts on point keys,
+not on key ranges. A rule that
 needs "nothing in this key range changed" **MUST** be restated as a point key that
 every writer of the key range also writes.
 
@@ -1293,8 +1319,9 @@ namespace ([§2.6](#2.6%20The%20scope%20of%20a%20count)).
 A chunk's refcount **MUST** equal the number of live refs naming it plus the
 number of history refs naming it ([§6.5](#6.5%20Who%20owns%20a%20ref)), at every commit point. It **MUST**
 change in the same transaction as the refs that change it — never in a second
-transaction a crash can separate from the first. Moving a ref to history does not
-change the count. A block's `live` **MUST** move in the same transaction as every
+transaction a crash can separate from the first. Moving a whole ref to history does
+not change the count; leaving one ref as a live part and a history part adds
+one ([§6.5](#6.5%20Who%20owns%20a%20ref)). A block's `live` **MUST** move in the same transaction as every
 refcount crossing between zero and nonzero, for a chunk whose record names that
 block; the transaction that leaves `live` at zero **MUST** retire the block, and
 one that moves it off zero from `retired` **MUST** resurrect it ([§7.1](#7.1%20Conditional%20retirement),
@@ -1466,11 +1493,11 @@ content was already lost; failing the drop would only wedge the removal.
 
 ### 6.4 Delete
 
-Releasing a file is a removal of `[0, ∞)` ([§6.2](#6.2%20Truncation%20and%20deallocation)). Phase 1 deletes its FileData and
+Releasing a file is a removal of `[0, ∞)` ([§6.2](#6.2%20Truncation%20and%20deallocation)). Phase 1 deletes its File record, FileData fields included, and
 writes `Removal(file, v) = [0, ∞)`, kind release, at the journal's delete
 version; phase 2 drops all its refs, decrementing their chunks or moving them to
 history ([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal)). It checks and writes both fences like any removal. An
-offload commit for a file with no FileData record drops that file's refs.
+offload commit for a file with no File record drops that file's refs.
 
 Phase 2 leaks rather than loses:
 
@@ -1537,17 +1564,27 @@ and writes nothing per file when it is taken:
   or replaces a live ref — an offload commit overwriting it, a removal's phase 2,
   a release — **MUST**, when some live cut *c* has `born < c ≤ died`, move it in
   the same transaction to `History(file, died, offset)`, and otherwise drop it.
-  The chunk's count does not change on a move: a history ref counts like a live
-  one ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)). A narrowed ref moves its removed part. A live cut here is
+  A history ref counts like a live one ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs)), so the chunk's count
+  changes by the number of refs naming it after the transaction minus the
+  number before: moving a whole ref changes nothing, and a narrowed ref whose
+  removed part moves to history becomes two refs — the live remainder and the
+  history piece — and increments its chunk once, as a split does
+  ([§6.2](#6.2%20Truncation%20and%20deallocation)); a ref that moves as several pieces counts each one. A live cut here is
   one that covers the ref's shard: a share cut covers every shard, a subtree cut
-  only its covered set ([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)). In the common case `died` is the
-  current `k` and the test is `born < max(klatest, SubCut(share, shard).klatest)`,
-  the second term being the newest live subtree cut covering the shard; when `died` is older
-  — a held version offloaded late, a removal batch — the transaction reads the
-  `LiveCut` records in `(born, died]` with conflict tracking, keeping those whose
-  covered set holds the ref's shard, so it conflicts
-  with a deletion's first transaction, which deletes the `LiveCut` it read, and a
-  snapshot deleted meanwhile leaves nothing behind that no walk visits. A held version that commits after a newer ref
+  only its covered set ([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)). Every move to history
+  **MUST** read, with conflict tracking, the `LiveCut` record that justifies it,
+  keeping only records whose covered set holds the ref's shard, and retest
+  against the remaining live cuts when it is gone. In the common case `died` is
+  the current `k` and the test is `born < max(klatest, SubCut(share, shard).klatest)`,
+  the second term being the newest live subtree cut covering the shard; the
+  record read is that maximum's `LiveCut`. When `died` is older — a held version
+  offloaded late, a removal batch — it reads the `LiveCut` records in
+  `(born, died]`. Either way the read conflicts with a deletion's first
+  transaction, which deletes the `LiveCut` it read, so a snapshot deleted
+  meanwhile leaves nothing behind that no walk visits; the cut gate orders the
+  read of `Cut(share)`, not the move against a deletion. A drop needs no tracked
+  read: a deletion only lowers `klatest`, so a ref judged unseen stays unseen
+  ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). A held version that commits after a newer ref
   already replaced its extent is recorded straight into history, with `born` its
   own and `died` the newer ref's `born`, rather than refused as older
   ([M10](#9.%20Invariants) governs live refs) — or dropped, when no live cut is left in its
@@ -2203,20 +2240,22 @@ and never returned ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%
 
 ### 10.2 Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| commits, labelled `result` = `ok`, `adoption_refused`, `no_intent`, `stale_epoch` or `error` | `dittofs_blockmeta_commits_total` | counter |
-| refs a commit did not apply, labelled `reason` = `removed`, `older`, `released` or `already_committed` | `dittofs_blockmeta_refs_skipped_total` | counter |
-| existence commits and the files each covered | `dittofs_blockmeta_existence_commits_total`, `dittofs_blockmeta_existence_files_per_commit` | counter, histogram |
-| time per commit, lookup and existence commit, by `op` | `dittofs_blockmeta_op_seconds` | histogram |
-| put intents held, and abandoned intents removed | `dittofs_blockmeta_intents`, `dittofs_blockmeta_intents_abandoned_total` | gauge, counter |
-| retirements and resurrections made inside count changes, labelled `op` | `dittofs_blockmeta_retire_total` | counter |
-| underflows ([§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)); any nonzero value is an alert | `dittofs_blockmeta_underflow_total` | counter |
-| lowerings deferred because the stamp changed (the mismatches themselves are GC's metric, [RFC 9 §10](rfc-9-gc.md#10.%20Observability)) | `dittofs_blockmeta_audit_stamp_changed_total` | counter |
-| conflicts retried, by `op` | `dittofs_blockmeta_conflict_retries_total` | counter |
-| removal records held, and those not done; a value that only grows means pruning or phase 2 stopped | `dittofs_blockmeta_removals`, `dittofs_blockmeta_removals_pending` | gauge, gauge |
-| phase-2 sub-transactions, by `kind`, and refs per sub-transaction | `dittofs_blockmeta_batches_total`, `dittofs_blockmeta_batch_refs` | counter, histogram |
-| history refs held, per share | `dittofs_blockmeta_history_refs` | gauge |
+| commits, labelled `result` = `ok`, `adoption_refused`, `no_intent`, `stale_epoch` or `error` | `blockmeta_commits_total` | counter |
+| refs a commit did not apply, labelled `reason` = `removed`, `older`, `released` or `already_committed` | `blockmeta_refs_skipped_total` | counter |
+| existence commits and the files each covered | `blockmeta_existence_commits_total`, `blockmeta_existence_files_per_commit` | counter, histogram |
+| time per commit, lookup and existence commit, by `op` | `blockmeta_op_seconds` | histogram |
+| put intents held, and abandoned intents removed | `blockmeta_intents`, `blockmeta_intents_abandoned_total` | gauge, counter |
+| retirements and resurrections made inside count changes, labelled `op` | `blockmeta_retire_total` | counter |
+| underflows ([§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)); any nonzero value is an alert | `blockmeta_underflow_total` | counter |
+| lowerings deferred because the stamp changed (the mismatches themselves are GC's metric, [RFC 9 §10](rfc-9-gc.md#10.%20Observability)) | `blockmeta_audit_stamp_changed_total` | counter |
+| conflicts retried, by `op` | `blockmeta_conflict_retries_total` | counter |
+| removal records held, and those not done; a value that only grows means pruning or phase 2 stopped | `blockmeta_removals`, `blockmeta_removals_pending` | gauge, gauge |
+| phase-2 sub-transactions, by `kind`, and refs per sub-transaction | `blockmeta_batches_total`, `blockmeta_batch_refs` | counter, histogram |
+| history refs held, per share | `blockmeta_history_refs` | gauge |
 
 An underflow logs the record at `Error`. An audit mismatch logs the record, its
 stored and recomputed counts, at `Error` when low (sweep hazard) and `Warn` when
@@ -2409,9 +2448,20 @@ The key layout — prefixes, encodings, and where these records sit beside
 RFC 7's — is [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed), the one place it is defined. What this document
 requires of it: one file's per-file records form one contiguous range under
 `F‖ShareID‖FileID`; live refs scan in offset order (the covering lookup reads
-from an offset down, [§8.1](#8.1%20Covering%20lookup)); history records scan by `died`; chunk, block, put
-intent and GC index records are keyed by namespace, then by hash-like values, so
-within a namespace they spread evenly and no key is sequential.
+from an offset down, [§8.1](#8.1%20Covering%20lookup)); history records scan by `died`; chunk, block and put
+intent records are keyed by namespace, then by hash-like values, so within a
+namespace they spread evenly. The GC index is the exception: the retired index
+`BR‖ns‖not_before‖name` is ordered by time, so every retirement inserts near the
+same key range's tail, and the compaction index `BC‖ns‖bucket‖name` buckets by
+dead ratio in sixteenths, so its writes fall in a handful of ranges. Each is one insert or delete
+per retirement, resurrection or bucket change, written in that transaction
+([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)); the keys are distinct, so they contend on no record, only on a
+range-splitting backend's tail range.
+
+> ponytail: a time-ordered retired index puts every retirement in one namespace
+> on one key range. Upgrade to a hash-bucketed prefix (`BR‖ns‖h‖not_before‖name`,
+> the deleter scanning the buckets in parallel) when that range's write rate
+> shows in a profile of a delete-heavy workload.
 
 ### B.2 Records
 

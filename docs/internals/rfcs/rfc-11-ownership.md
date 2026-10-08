@@ -418,10 +418,11 @@ shard, and a directory renamed into it keeps its own.
   table per installation, whose size is fixed by the slot count, not by nodes or
   shards. A rebalance touches the shards of the moved slots only.
 
-**Nothing hot is per share.** With 10^5 per-child shards in one share:
+**No client operation writes a per-share key.** With 10^5 per-child shards in one share:
 
-- usage is counted per shard, as deltas each primary folds, and summed for the
-  share when read ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change));
+- usage is written as per-shard deltas and folded into per-shard totals,
+  summed when read, so no key is written from every shard
+  ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change));
 - a path walk crosses the share's root, but lookups and listings that need no
   primary-held state are served from the store by any node
   ([RFC 15 §4](rfc-15-topology.md#4.%20Where%20each%20call%20runs)). The root's own primary sees only the root's namespace writes,
@@ -1201,21 +1202,23 @@ var (
 
 ## 13. Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| claims, labelled `result` = `granted`, `held` or `takeover` | `dittofs_shard_claims_total` | counter |
-| changes of primary, labelled `reason` = `follow_writer`, `rebalance`, `replace`, `operator` or `failover` | `dittofs_shard_primary_changes_total` | counter |
-| handover time, freeze to new primary serving | `dittofs_shard_handover_seconds` | histogram |
-| batches moved, and files in them | `dittofs_shard_move_batches_total`, `dittofs_shard_moved_files_total` | counter |
-| reads on a node other than the primary, labelled `result` = `served`, `refilled` or `forwarded` | `dittofs_shard_other_node_reads_total` | counter |
-| shards this node is primary of, and replica of | `dittofs_shard_primaries`, `dittofs_shard_replicas` | gauge |
-| shard records in the store; they follow shares and directories, not files | `dittofs_shard_records` | gauge |
-| planned moves back to a primary the shard left within the dwell time; nonzero is a bug | `dittofs_shard_bounces_total` | counter |
-| self-fences, labelled `reason` = `lease` or `clock` | `dittofs_shard_self_fences_total` | counter |
-| cross-shard operations, labelled `result` = `committed`, `refused` or `timed_out` | `dittofs_shard_cross_ops_total` | counter |
-| shards away from their placed node, waiting out the re-placement delay | `dittofs_shard_displaced` | gauge |
-| slots per node, and the node's share of capacity, so a skew is visible | `dittofs_shard_slots`, `dittofs_shard_capacity_share` | gauge |
-| slots whose nodes a rebalance changed, and slots whose shards are still being handed over | `dittofs_shard_slot_moves_total`, `dittofs_shard_slots_pending` | counter, gauge |
+| claims, labelled `result` = `granted`, `held` or `takeover` | `shard_claims_total` | counter |
+| changes of primary, labelled `reason` = `follow_writer`, `rebalance`, `replace`, `operator` or `failover` | `shard_primary_changes_total` | counter |
+| handover time, freeze to new primary serving | `shard_handover_seconds` | histogram |
+| batches moved, and files in them | `shard_move_batches_total`, `shard_moved_files_total` | counter |
+| reads on a node other than the primary, labelled `result` = `served`, `refilled` or `forwarded` | `shard_other_node_reads_total` | counter |
+| shards this node is primary of, and replica of | `shard_primaries`, `shard_replicas` | gauge |
+| shard records in the store; they follow shares and directories, not files | `shard_records` | gauge |
+| planned moves back to a primary the shard left within the dwell time; nonzero is a bug | `shard_bounces_total` | counter |
+| self-fences, labelled `reason` = `lease` or `clock` | `shard_self_fences_total` | counter |
+| cross-shard operations, labelled `result` = `committed`, `refused` or `timed_out` | `shard_cross_ops_total` | counter |
+| shards away from their placed node, waiting out the re-placement delay | `shard_displaced` | gauge |
+| slots per node, and the node's share of capacity, so a skew is visible | `shard_slots`, `shard_capacity_share` | gauge |
+| slots whose nodes a rebalance changed, and slots whose shards are still being handed over | `shard_slot_moves_total`, `shard_slots_pending` | counter, gauge |
 
 Forwarding and refusals by epoch are counted once, in [RFC 15 §10](rfc-15-topology.md#10.%20Observability).
 
