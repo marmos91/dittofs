@@ -13,6 +13,8 @@ depends_on:
   - "[[rfc-9-gc]]"
   - "[[rfc-12-snapshots]]"
   - "[[rfc-13-configuration]]"
+  - "[[rfc-26-catalog-backups]]"
+  - "[[rfc-27-namespace-migration]]"
 aliases:
   - RFC 4
 tags:
@@ -192,7 +194,7 @@ tested alone ([§7.1](#7.1%20Conformance%20suite), [§7.3](#7.3%20Codec%20tests)
 several rules here are split with them — health is probed here and derived in
 [RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work), a body's bounds come from [RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces), the settings re-check is
 called by [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) and by the holder of a backup location
-([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)) — so this document builds on those RFCs, and its frontmatter
+([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) — so this document builds on those RFCs, and its frontmatter
 says so. The cycles that makes (this RFC with RFC 3, 5, 9 and 12) are reviewed
 together, as [the RFC index](rfc-index.md) lists them, rather than hidden by
 leaving the edges out.
@@ -373,7 +375,7 @@ type Name [32]byte
 type Role uint8
 
 const (
-	RoleClaim  Role = iota + 1 // the namespace claim (RFC 12)
+	RoleClaim  Role = iota + 1 // the namespace claim (RFC 27)
 	RoleHealth                 // the health probe's object (§4.7)
 	RoleRepair                 // the proof that a suspended store holds no old versions (§4.11)
 	RoleKeys                   // the namespace's key records, wrapped; a non-encrypting namespace's chunk-ID key in the clear (RFC 5 Appendix B.2)
@@ -384,9 +386,9 @@ const (
 type ObjectKind uint8
 
 const (
-	ObjExport   ObjectKind = iota + 1 // one backup's export (RFC 12 §5.1)
-	ObjState                          // one backup's state object (RFC 12 §3.4.1)
-	ObjProgress                       // one batch of a running copy (RFC 12 §3.4.3)
+	ObjExport   ObjectKind = iota + 1 // one backup's export (RFC 26 §3.1)
+	ObjState                          // one backup's state object (RFC 26 §2.4.1)
+	ObjProgress                       // one batch of a running copy (RFC 26 §2.4.3)
 	ObjKeys                           // the namespace's key records, one object per namespace, Backup empty (RFC 5 Appendix B.2)
 )
 
@@ -619,7 +621,7 @@ store opened from one configuration shares that configuration's client
   ([RFC 8](rfc-8-engine.md)). The rule holds per store namespace, since two stores never share
   one ([§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside)). A backup's block folder is a store namespace of its own, whose
   names are put only by copies of one block, byte for byte as its source
-  namespace stored it ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)): one name is still one byte sequence
+  namespace stored it ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)): one name is still one byte sequence
   there, though no attempt minted it in that namespace. At an immutable
   location the guarantee readers rely on is narrower and holds against any
   writer: a recorded version is one byte sequence ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)).
@@ -648,7 +650,7 @@ carry a rule that needs one.
 
 > decision: conditional put is measured and reported, never used. The one
 > object that would gain from it is the namespace claim, which stays a check
-> fenced by clocks ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). Add a conditional control put, used only
+> fenced by clocks ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). Add a conditional control put, used only
 > where the check proved it, if a deployment runs two installations on one bucket
 > whose clocks cannot be held within the drift bound.
 
@@ -881,7 +883,7 @@ how to test them: they are specific to each backend and live in its profile
 - the client's checksum mode is pinned explicitly in the profile, never left to
   a client library's default, which can change between releases;
 - the namespace claim ([§4.13](#4.13%20Control%20objects)) is read, and handed to the opener, which applies
-  [RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim rule; a claim that exists but cannot be read fails the
+  [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)'s claim rule; a claim that exists but cannot be read fails the
   open, while an absent one is reported as absent;
 - where a service's listings lag its writes, a check that lists what it just
   wrote **MAY** re-list a bounded number of times, over a bounded time the
@@ -907,7 +909,7 @@ exactly those, and the claim. It has one caller per store, on one period:
 - for a namespace's own store, GC, on its recheck period, independent of any
   other GC work ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); a GC pass does not re-read settings of its own;
 - for a backup location's block folder store, the holder of the namespace's
-  folder record ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)), on GC's recheck period and once more before each
+  folder record ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)), on GC's recheck period and once more before each
   copy and each sweep starts. Nothing else touches that store, so without this
   caller a folder whose lock was lowered, or whose versioning was suspended,
   would be written and swept as if nothing had changed.
@@ -923,7 +925,7 @@ caller does two things before its next call to the store:
 
 A later `Recheck` that passes clears the condition. A folder store's holder that
 finds drift fails the copy or sweep it was about to start, which then follows
-[RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step)'s failure path. The store itself keeps
+[RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)'s failure path. The store itself keeps
 neither the result nor the condition ([§4.9](#4.9%20No%20state%20across%20calls)). Each profile names the settings
 its `Recheck` covers.
 
@@ -986,7 +988,7 @@ already logs what it does about it.
 ### 4.13 Control objects
 
 A few small objects are not blocks but belong to the store's namespace: the
-namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), the health probe's object ([§4.7](#4.7%20Health%20is%20one%20probe%20call)), the
+namespace claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), the health probe's object ([§4.7](#4.7%20Health%20is%20one%20probe%20call)), the
 versioning repair proof ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), and the **keys** object: every key record of
 the namespace, wrapped as the metadata store holds it, each written there before
 it becomes current, so a recovery that has lost the metadata store finds keys
@@ -1003,7 +1005,7 @@ go through `PutControl` and `GetControl`, by a fixed **role**:
 - a control object is small, bounded by a constant of the profile, and read
   into memory, not streamed;
 - no conditional put and no locking: the claim is a check, not a lock
-  ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+  ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 
 Roles are a closed set in code. A new role is a new constant and a new location,
 not a caller-chosen key, so control objects cannot become a second, unlisted
@@ -1013,10 +1015,10 @@ block store.
 
 Every namespace's own store is **mutable**: no versioning, no object lock, no
 expiring rule, and deletes allowed (the refusals of [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) and
-[Appendix C.1](#C.1%20Required%20service%20features)). A backup location's block folder ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)) is opened
+[Appendix C.1](#C.1%20Required%20service%20features)). A backup location's block folder ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) is opened
 in the **mode** its location's configuration record states — `mutable` or
 `immutable` — together with the credential reference and the lifecycle age that
-record holds ([RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration)). The mode is never inferred from what the bucket
+record holds ([RFC 26 §4.2](rfc-26-catalog-backups.md#4.2%20Configuration)). The mode is never inferred from what the bucket
 happens to have: an immutable location whose bucket lacks a setting fails to
 open, and a mutable one whose bucket has one fails too.
 
@@ -1037,7 +1039,7 @@ one:
   remaining retention exceeds the location record's retention cap
   ([Appendix C.1](#C.1%20Required%20service%20features)) — read at every open and provoked once per location record. The
   cap is the longest retention any policy writing there may set, plus one
-  extension generation and `backups.max_copy_time` ([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep)). Without it, a
+  extension generation and `backups.max_copy_time` ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). Without it, a
   stolen put credential could lock objects in compliance mode for a century,
   which no one can undo and the bucket's owner pays for;
 - **requires the bucket's configuration out of the credential's reach.** The
@@ -1067,7 +1069,7 @@ one:
   open, naming it. A delete of a recorded version is not sent: the lock refuses
   it whatever the credential holds, so it proves the lock, not the credential;
 - **reads and writes by version.** `PutVersion` returns the version the service
-  stored, which the caller records ([RFC 12 §3.4.2](rfc-12-snapshots.md#3.4.2%20What%20is%20copied)); `GetVersion` reads that
+  stored, which the caller records ([RFC 26 §2.4.2](rfc-26-catalog-backups.md#2.4.2%20What%20is%20copied)); `GetVersion` reads that
   version and no other. A put by anyone, under any name, then only adds a
   version: it cannot replace what a recorded version holds;
 - **extends instead of re-putting, in generations.** `ExtendRetention` reads a
@@ -1084,7 +1086,7 @@ one:
   `hash(name) mod G`, so the versions reused on one day fall due spread across
   the generation rather than in one burst at its end — at 1 PiB of 4 MiB blocks,
   a burst would be about 2.7 × 10⁸ extensions in one copy. Which versions need
-  extending, and when, is the copier's ([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep));
+  extending, and when, is the copier's ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep));
 - **sends no put probe.** Each probe would add a locked version. `Health(DirPut)`
   is `ErrInvalid` without a request, and the syncer registers the store with no
   put probe, judging the put direction by the copies' own puts
@@ -1096,7 +1098,7 @@ one:
   cap**. That is never more than the cap, so the bucket policy never refuses it,
   and at least the cap less one generation ahead, so a process that stays up
   keeps it alive through its `Recheck`s as one that restarts does through its
-  opens. This is the one target; [RFC 12](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep) defers to it. An extension adds
+  opens. This is the one target; [RFC 26](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep) defers to it. An extension adds
   no version, so neither adds one. Without it the health object's lock would
   end, the lifecycle rules would remove its version, and the location would stop
   opening;
@@ -1135,7 +1137,7 @@ reads the policy, which proves the cap is still there.
 ### 4.15 Versioned objects at a backup location
 
 Besides blocks, a backup location holds, per backup, an **export**, a **state
-object** and the **progress objects** of a running copy ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)).
+object** and the **progress objects** of a running copy ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)).
 They are not blocks, and not control objects either: there are many, one per
 backup, and at an immutable location every write of one is a version that must
 stay readable by version. So the block folder store reaches them as **versioned
@@ -1165,7 +1167,7 @@ and backup ID, through `PutObject`, `GetObject`, `ObjectRetention`,
   under the namespace's export key ([RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted)) and takes the
   authentic one with the **highest authenticated sequence** — never the newest
   by store order or time, which anyone holding the put credential can change by
-  re-putting an older authentic version ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)).
+  re-putting an older authentic version ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)).
 
 Every call here is one attempt, like every other store call ([§4.9](#4.9%20No%20state%20across%20calls)); the
 backup copier reaches them through the syncer as small-object transfers, which
@@ -1351,7 +1353,7 @@ Settled in this revision, with the evidence in [Appendix B](#Appendix%20B%20%E2%
    namespace's own store each stops sweep from freeing space or deletes stored
    blocks behind the store's back, so every namespace's store is mutable and
    refuses them ([Appendix C.1](#C.1%20Required%20service%20features)). A backup location states its mode in its
-   configuration record ([RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration)). In `immutable` mode the location
+   configuration record ([RFC 26 §4.2](rfc-26-catalog-backups.md#4.2%20Configuration)). In `immutable` mode the location
    needs versioning and a compliance-mode lock with no default retention, a
    service-enforced cap on the retention a put may set, a noncurrent-version
    expiry rule, and a credential that cannot delete; every put carries its own

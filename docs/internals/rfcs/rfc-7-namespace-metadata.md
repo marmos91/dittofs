@@ -316,7 +316,7 @@ A `Principal` is an **opaque ID minted by the store and never reissued**, as a
 maps to a principal, never the principal itself, and the adapter resolves
 through that index. So a file, an ACL entry or a quota never carries a number
 another installation may have given to someone else, and an import maps
-principals by ID and refuses one that collides ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)).
+principals by ID and refuses one that collides ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)).
 
 `Mode` stays as permission bits because both protocols expose it, but it is not the authority when an ACL
 exists ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). SMB's DOS attributes are generic `Flags`, and `Birth` is SMB's
@@ -329,7 +329,7 @@ tell a handle to a released file from one to its successor. A `FileID` is a
 UUID that is never reissued, and every per-file key is scoped by its share
 ([RFC 16](rfc-16-metadata-store.md)), so a handle to a released file finds nothing and resolves stale
 ([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)). A restore makes a new share with a new `ShareID` and so new keys
-([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)), and cannot alias a handle to the original; nothing rolls a share
+([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), and cannot alias a handle to the original; nothing rolls a share
 back in place ([RFC 12 §1.1](rfc-12-snapshots.md#1.1%20Non-goals)), so a released file's handle never resolves again. What clients do need is a
 per-file change counter, and that is `Version`.
 

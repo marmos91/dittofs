@@ -406,7 +406,7 @@ grace is granted when grace ends rather than failed while grace still refuses it
 One answered `ErrDelay` because its share is quiesced or frozen for a move
 **MUST** be held the same way, until the freeze ends plus 35 s and never longer
 than `migration.freeze_timeout` plus 35 s
-([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)), rather than failed at 60 s while
+([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)), rather than failed at 60 s while
 the freeze still holds; if the share's namespace has moved when the freeze ends,
 the adapter drops the connection, so the client's durable handles reconnect at
 the new owner. One answered `ErrDelay` for a transient capacity refusal is held

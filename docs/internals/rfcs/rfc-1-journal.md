@@ -317,7 +317,7 @@ older bytes are served.
 
 **A share attached as an import holds none of its old extents.** `imported` is
 set when the share arrives from another installation — a move back, a recovery
-import ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)). If the journal still holds anything under `tag`, `Share`
+import ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)). If the journal still holds anything under `tag`, `Share`
 **MUST** `Forget` the tag before it returns the handle, or refuse naming the tag.
 Otherwise the journal would serve its own stale, clean extents, keyed by FileIDs
 the share kept, over what the other installation wrote since.
@@ -330,13 +330,13 @@ with a lower sequence number, so none of them is held, retained or rebuilt as a
 marker again ([§9.1](#9.1%20Rebuilding)). `Since` never yields it and no caller settles it: unlike
 a `Delete` per file, whose markers wait for a metadata transaction ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)),
 `Forget` is used exactly where no such transaction will come. It is the
-**detach** of a move's drop ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step), step 9) and of an import's attach
+**detach** of a move's drop ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step), step 9) and of an import's attach
 above. `Forget` **MUST** be refused while a handle of the tag is open. The record
 draws on the reserved headroom ([§7](#7.%20Capacity)), and is live while any segment holds a
 record of the tag below its sequence number ([§8.2](#8.2%20Repack)).
 
 **A tag no share claims is resolved before serving.** After a recovery import,
-which gives the shares new identities ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)), or a share's deletion, the
+which gives the shares new identities ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), or a share's deletion, the
 journal can hold records under a tag no share of the installation claims; its
 dirty extents would never be offered and never become evictable. The caller
 **MUST**, before it serves, either export each such tag's held extents for

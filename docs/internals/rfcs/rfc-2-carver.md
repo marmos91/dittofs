@@ -575,7 +575,7 @@ migration instead of quietly applying it.
 **Content cut elsewhere keeps its cut, within this namespace's `Max`.** A path
 that brings chunks cut under other settings into a namespace — a re-home, a
 restore, or an import of another namespace's content
-([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) — keeps their boundaries as stored, and **MUST** re-cut under
+([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) — keeps their boundaries as stored, and **MUST** re-cut under
 the destination's settings, or refuse, any chunk longer than the destination's
 `Max`. It **MUST NOT** admit a longer one. Every buffer sized by `Max` — the
 carver's, the syncer's per worker ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), a cold read's — then holds every
@@ -759,7 +759,7 @@ the chunk-ID key that computed it. A block plan, and the put intent recorded for
 it, name the namespace and the chunk-ID key ID its chunk IDs were computed
 under, and the intent step **MUST** refuse a plan whose namespace or key differs
 from the target store's ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)). Without it, a plan formed before a re-home's
-switch ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) could commit chunk IDs computed under the old namespace's
+switch ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) could commit chunk IDs computed under the old namespace's
 key into the new one, where no read could ever match them.
 
 Names are minted per attempt ([§4.2](#4.2%20A%20block)), so two puts never share an object by
@@ -999,7 +999,7 @@ the file. Which namespaces hold a chunking key, and how, is
   material it carries a **fingerprint** stored with its ID, so a later open that
   finds a different key under that ID, or an import naming another, is refused
   instead of silently re-cutting; an export carries it wrapped, with its ID and
-  fingerprint ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)).
+  fingerprint ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)).
 - it **MUST NOT** rotate with the data keys. Changing it re-cuts everything
   ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)); rotating data keys ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) re-encrypts and cuts nothing;
 - it costs no deduplication: chunks are compared within one namespace only
@@ -1090,7 +1090,7 @@ rows need no reader and no hash at all.
 | carver | [§4](#4.%20Identity) hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
 | carver | [§4.1](#4.1%20A%20chunk) chunk IDs are keyed | Cut the same input under two chunk-ID keys; assert the boundaries are the same and every ID differs, and that no ID equals the unkeyed BLAKE3 hash of its bytes. A design with plaintext IDs gives equal IDs under both keys. |
 | chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) derivation golden | Derive the unkeyed table, a keyed table under a fixed key, and one chunk ID; assert each against committed bytes computed from [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)'s text by an independent implementation, and that the test uses *t* + 1 and *t* − 3 top bits. |
-| consumer | [§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration) adopted chunks within `Max` | Re-home content cut at a 1 MiB `Target` into a namespace with a 256 KiB `Target` ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); assert every chunk longer than 1 MiB is re-cut or the move refused, and none is admitted. A path that adopts chunks as stored admits 4 MiB chunks into a namespace whose readers hold 1 MiB. |
+| consumer | [§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration) adopted chunks within `Max` | Re-home content cut at a 1 MiB `Target` into a namespace with a 256 KiB `Target` ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); assert every chunk longer than 1 MiB is re-cut or the move refused, and none is admitted. A path that adopts chunks as stored admits 4 MiB chunks into a namespace whose readers hold 1 MiB. |
 | carver | [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) artificial end | Cut random input as one stretch with a real end, and again as a series of offers ending at arbitrary limits, each re-offered from the previous `consumed`; assert both emit identical chunks, and no call emits a byte past its last content-chosen boundary. |
 | name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, the nonce or the chain ID; assert each gives a different name. Encode the scope with a different length byte; assert the name changes. |
 | carver | [§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) borrowed bytes | Hold on to the slice passed to `emit` and assert it is seen to change. The check exists to prove the contract is real, so a caller that copies is not doing it out of superstition. |

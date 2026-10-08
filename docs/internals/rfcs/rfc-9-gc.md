@@ -366,11 +366,11 @@ So every chunk a live snapshot can read has refcount ≥ 1, the block its record
 names has `live` > 0 and is never retired, and the deleter's verification would
 refuse it even if it were. Deleting the snapshot drops the history refs no other
 live snapshot sees; only then can their counts reach zero. A catalog backup is an
-export of one snapshot's metadata ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)), held by a use record on that
-snapshot until it expires ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)): the use record refuses the
+export of one snapshot's metadata ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)), held by a use record on that
+snapshot until it expires ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)): the use record refuses the
 snapshot's deletion, so the refs it sees keep every block the backup names
 counted, and GC needs no second liveness mechanism for it. A copying backup
-holds the snapshot the same way only while it copies ([RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step)); once
+holds the snapshot the same way only while it copies ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)); once
 complete it holds no block of the namespace, because the blocks it names are
 copies in its own block folder, which this GC never lists or deletes.
 
@@ -489,7 +489,7 @@ committed again ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20unde
 > exported records that already exist, and each can meet a `retired` block: a
 > clone batch after a removal on its source dropped the last ref, a re-home after
 > the source namespace dropped its own, a restore of a copy taken before a
-> release ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence), [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)). Each resurrects the block, or fails
+> release ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence), [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)). Each resurrects the block, or fails
 > where it is `deleted`, by the table below; an implementation that drops
 > resurrection loses that content when the deleter reaches the block. Resurrection
 > by a count correction — the audit's raise or the deleter's refused
@@ -742,7 +742,7 @@ three purposes, none of which needs dedup:
 
 **A recovered state settles its retired blocks before it serves.** Every open of
 the metadata store at a state older than the one last served — a restore from a
-backup or a replica, a recovery import ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)) — **MUST**, before any
+backup or a replica, a recovery import ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)) — **MUST**, before any
 client is served and before any adoption, clone, restore or GC pass runs, move
 every `retired` block whose `not_before` is at or before store time to
 `deleted`, in batched transactions through the `BR` index, without the
@@ -1050,7 +1050,7 @@ been read. GC **MUST NOT** delete an object found only by listing unless:
 - the deployment meets [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) — one keyspace partition per namespace, and key
   derivation that includes the namespace ID — and GC can verify it from
   configuration, not assume it;
-- the namespace claim names this installation as its holder ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim));
+- the namespace claim names this installation as its holder ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim));
 - every store in the counting domain ([§2.3](#2.3%20The%20absence%20of%20a%20record%20proves%20nothing)) was enumerated completely in this
   pass. A store that failed or was skipped **MUST** stop the backstop for the
   whole namespace.
@@ -1367,12 +1367,12 @@ increments `gc_index_mismatches_total` and emits an event naming the key.
 Some service settings can drift after a store opens: versioning, object lock,
 lifecycle rules ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). GC runs `Recheck` on every store of the namespace on
 a fixed short period (proposed: 5 min), independent of any other GC work, and
-also reads the namespace claim ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
+also reads the namespace claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
 it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
 
 **The claim is read before it is rewritten, and the nonce is recorded before it
 is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
-([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) **MUST** first read the claim and compare its nonce with the last
+([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) **MUST** first read the claim and compare its nonce with the last
 nonce this installation recorded as written or intended; on a mismatch it
 writes nothing, stops writing the namespace and issues no delete. It **MUST**
 then record the nonce it is about to write as *intended*, durably in the
@@ -1385,10 +1385,10 @@ that should have stopped wins. With it, the stale image reads the original's
 newer nonce, which its own older record does not hold, and stops first.
 
 **Backup locations' folder stores are rechecked on the same period.** For each
-folder record this installation holds at a backup location ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)),
+folder record this installation holds at a backup location ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)),
 the record's holder **MUST** run `Recheck` on that folder's store on GC's period,
 and again before each copy into the folder and each expiry sweep of it
-([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep)). A folder store whose `Recheck` fails, or last passed more than two
+([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). A folder store whose `Recheck` fails, or last passed more than two
 periods ago, takes no copy and no sweep until one passes, and raises the store's
 drift condition, exactly as a namespace store does. Otherwise a folder store
 registered once is trusted for the life of the process, and a drifted backup
@@ -1405,7 +1405,7 @@ location is written and swept as if nothing had changed.
   ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
 - **A paused namespace gets no relocation, delete or collection.** While the
   namespace's GC pause record exists — written by a move between installations
-  ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)) and kept across a restart — GC **MUST** read it before every
+  ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) and kept across a restart — GC **MUST** read it before every
   pass and before every batch, and start neither. Each relocation commit, each
   move to `deleted` ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 3) and each listing retirement ([§5.4](#5.4%20Age%20is%20not%20the%20guard))
   **MUST** read it with conflict tracking, so writing it aborts every one of them
@@ -1424,12 +1424,12 @@ location is written and swept as if nothing had changed.
   *sent* its last read of the claim that named this installation `owned`,
   whatever batch it is in, so a slow read cannot stretch the window; a process
   paused or partitioned past that bound stops before its next delete rather
-  than acting on a claim it can no longer see ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). It is the only
+  than acting on a claim it can no longer see ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). It is the only
   guard where no pause was written: a claim taken over from an installation
   whose metadata store could not be reached. A clock that runs slow measures
   less than *T* while more passes, so the installation taking the claim over
   **MUST** wait *T* × (1 + ρ) plus the clock skew limit before it puts, adopts or
-  deletes there, where ρ is the clock-rate bound of [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A
+  deletes there, where ρ is the clock-rate bound of [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A
   rate bound is a stretch of the wait, not an offset added to it: at 5 % on a
   10-minute *T*, the old fence may run until 10.5 minutes.
 

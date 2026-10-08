@@ -19,6 +19,8 @@ depends_on:
   - "[[rfc-12-snapshots]]"
   - "[[rfc-15-topology]]"
   - "[[rfc-16-metadata-store]]"
+  - "[[rfc-26-catalog-backups]]"
+  - "[[rfc-27-namespace-migration]]"
 aliases:
   - RFC 13
 tags:
@@ -68,7 +70,7 @@ Under this RFC:
    any, the control plane refuses the change and names the field and the rule.
    alice's data stays readable.
 3. What the operator wants is a migration — a re-home into a new namespace
-   ([RFC 12](rfc-12-snapshots.md)) — not an edit. `Target`, the chunk-ID key and whether the
+   ([RFC 27](rfc-27-namespace-migration.md)) — not an edit. `Target`, the chunk-ID key and whether the
    namespace encrypts are bound the same way: each decides the identity of
    stored content.
 
@@ -164,7 +166,7 @@ the table to look a setting up in.
   now, apply at restart, govern the next write, or nothing, because it is bound
   to content already stored.
 - A setting bound to stored content **MUST NOT** change while content exists.
-  Changing it is a migration ([RFC 12](rfc-12-snapshots.md)), never an edit.
+  Changing it is a migration ([RFC 27](rfc-27-namespace-migration.md)), never an edit.
 - An invalid setting is refused, twice: by the control plane when it is written,
   and by the component when it is built. It is never replaced by a default.
 - Configuration never holds a secret. It holds a reference to one.
@@ -279,7 +281,7 @@ managed record's fields are of two kinds. **Declared** fields are the ones the
 file states; the refusal above guards them. **System** fields are written by the
 control plane as a consequence of an operation, never by the file: a backup
 location's put-integrity outcome ([§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record)), a share's namespace generations
-and state during a re-home or a move ([RFC 12 §4](rfc-12-snapshots.md#4.%20Moving%20a%20namespace%20between%20installations)), a record's generation.
+and state during a re-home or a move ([RFC 27 §2](rfc-27-namespace-migration.md#2.%20Moving%20a%20namespace%20between%20installations)), a record's generation.
 The control plane **MUST** write a system field of a managed record as it would
 of any other, and a file that declares one is refused at validation. A
 declared field that an operation the API allows must change — a re-home rebinds
@@ -315,7 +317,7 @@ identical file on every node, provisions it.
 
 ### 2.5 A backup location is its own record
 
-A backup location ([RFC 12 §3.4](rfc-12-snapshots.md#3.4%20Copying%20backups)) is an installation-scoped record,
+A backup location ([RFC 26 §2.4](rfc-26-catalog-backups.md#2.4%20Copying%20backups)) is an installation-scoped record,
 not a field of a snapshot policy, so its mode, credential and lifecycle are
 validated once and shared by every policy that names it. It holds:
 
@@ -325,7 +327,7 @@ validated once and shared by every policy that names it. It holds:
 | credential reference | a `Secret` ([§7](#7.%20Secrets)), sealed under the `storage` key | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) |
 | **mode** | `mutable` or `immutable`; required, no default | bound while any backup is held there |
 | lifecycle age | the age at which the service expires an object, as its expiry rule is configured; for `immutable`, the current-version expiry rule's age is at least this ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live, within the checks below |
-| retention cap | for `immutable`, the longest retention a put may set, enforced by the bucket's policy and verified at every open: at least the longest retention of any policy writing there, plus one generation and `backups.max_copy_time` ([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep)) | live, within the checks below |
+| retention cap | for `immutable`, the longest retention a put may set, enforced by the bucket's policy and verified at every open: at least the longest retention of any policy writing there, plus one generation and `backups.max_copy_time` ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)) | live, within the checks below |
 | generation `G` | for `immutable`, the period every retain-until is extended past its need, so a reused version is extended about once per `G` ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live; default 7 days |
 | put-integrity outcome | for `immutable`, the result of the capability check's integrity step, run once when the record is created and whenever its store or credential changes, since check objects there cannot be deleted | system field ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)): written by the control plane, never configured |
 | health object identity | the location-level health object at `<location>control/health`, put when the record is created, before any namespace copies there: its version for `immutable`, the nonce written in it for `mutable` ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)). Every folder's get probe reads it, and a changed endpoint or credential proves the same location by it ([§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change)) | system field, written once with the record |
@@ -351,7 +353,7 @@ refused when its `retain` plus `backups.max_copy_time` exceeds the lifecycle age
 copy must outlive the copy and the retention — when its `retain` plus one
 generation and `backups.max_copy_time` exceeds the retention cap, and, with
 `ErrPolicyPeriod`, when its period is shorter than its estimated incremental
-copy at the configured copy rate ([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep)). A first copy is not held to
+copy at the configured copy rate ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). A first copy is not held to
 the period: it completes across attempts, each building on the last.
 
 ## 3. Scopes
@@ -476,11 +478,11 @@ deduplicates nothing against what is stored ([RFC 2 §3.6](rfc-2-carver.md#3.6%2
 So the control plane **MUST** refuse a change to a bound setting while the
 namespace or store holds content, and a share's binding to its namespace
 **MUST NOT** change while the share holds content, except by a re-home
-([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the one sanctioned change of that binding: it copies the
+([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the one sanctioned change of that binding: it copies the
 share's content into a new namespace while the share serves, and rebinds it only
 once no ref names the old one. What an operator wants from such a change is a
 migration — a re-home into a new namespace, or a move between installations
-([RFC 12 §4](rfc-12-snapshots.md#4.%20Moving%20a%20namespace%20between%20installations)) — which leaves the old content where it can still be read
+([RFC 27 §2](rfc-27-namespace-migration.md#2.%20Moving%20a%20namespace%20between%20installations)) — which leaves the old content where it can still be read
 until the move completes.
 
 ### 5.2 Reaching the same content another way is not a change
@@ -490,7 +492,7 @@ its credential. A new endpoint for the same bucket, or a rotated credential, is
 allowed, and is proven rather than trusted: the store's capability check
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) **MUST** find, at the new location, what identifies the old one.
 For a namespace's store that is the namespace claim the old one held
-([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A backup location holds no claim, so for it that is its health
+([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A backup location holds no claim, so for it that is its health
 object's identity in its record ([§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record)): the recorded version, read by
 version, at an immutable location, or the recorded nonce in the object's body at
 a mutable one. A location that answers but holds another claim or identity, or
@@ -619,7 +621,7 @@ type SecretProvider interface {
 
 - **Read never returns a secret.** No API, export, log line or metric carries
   one. An export that must travel with its secrets, a backup that must be
-  restorable ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)), carries references, and says which secrets the
+  restorable ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), carries references, and says which secrets the
   destination must hold.
 - **A secret changes without a record change, in two phases.** Rotating a
   credential writes a new value under the same reference, as a new version of
@@ -673,11 +675,11 @@ type SecretProvider interface {
     current one that later exports are sealed with. Each is a **next write**
     setting, not bound. The chunk-ID and chunking keys never rotate: changing
     either renames or re-cuts every chunk, which is a re-home
-    ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
+    ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 - **An export names its keys and is sealed under them.** It carries the
   namespace's key records as that table holds them, the IDs of the master keys
   that wrap them and of its current and retired export keys, and is encrypted
-  and authenticated under the export key ([RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout)).
+  and authenticated under the export key ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)).
 
 - The only secrets on a host are the bootstrap credential for the configuration
   store and the wrapping keys of its own roles, or references to them in an
@@ -753,7 +755,7 @@ because the rule stands here alone, or marked not yet applied:
    credential change under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change). *Dropped:* RFC 4 states no class for them,
    so nothing there contradicts [§5.1](#5.1%20A%20bound%20setting%20refuses%20change), [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) and Appendix B, which carry
    the rule.
-4. **RFC 12 §6.2:** its example is the control-plane records it describes, with
+4. **RFC 12 §3.2:** its example is the control-plane records it describes, with
    the scopes of Appendix B: `snapshots.hold_bound` and `snapshots.directory`,
    which Appendix B scopes per share, sit under the share. *Applied.*
 5. **RFC 7 §3.3:** case sensitivity is fixed at the share's creation. *Applied.*
@@ -762,7 +764,7 @@ because the rule stands here alone, or marked not yet applied:
    settable from 1 MiB to 64 MiB. *Applied.*
 8. **RFC 5 §3.2 and §5.1:** whether the chain encrypts is fixed when the
    namespace is created. *Applied.*
-9. **RFC 12 §3.4 and §6.2:** a policy names a backup location by its record
+9. **RFC 26 §2.4 and RFC 12 §3.2:** a policy names a backup location by its record
    ([§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record)). *Applied.*
 10. **RFC 16:** the node record holds its registered version ranges, the
     installation record the active versions, a `Secret` its version and the
@@ -828,7 +830,7 @@ default this document suggests where the owning RFC states none.
 | `Target` | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) | namespace | bound | 256 KiB |
 | key scope | [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | namespace | bound | required |
 | chunk-ID key (material kind `chunk-id-key`) | [RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities), [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | bound | created with the namespace, never configured; wrapped under a master key when the namespace encrypts, in the clear beside its blocks when it does not ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
-| export key (material kind `export-key`): seals and authenticates the namespace's exports and state objects | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys), [RFC 12 §5.1](rfc-12-snapshots.md#5.1%20Layout) | namespace | next write: a new current key seals later exports; a retired one stays until no retained export names it | created with the namespace, never configured; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
+| export key (material kind `export-key`): seals and authenticates the namespace's exports and state objects | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys), [RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout) | namespace | next write: a new current key seals later exports; a retired one stays until no retained export names it | created with the namespace, never configured; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | `encrypts`: whether the namespace's chain has an encrypt stage, recorded at creation | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | namespace | bound | required |
 | chunking key | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | namespace | bound | derived at creation when the chain encrypts; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | header key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write: rotates by new material plus relocation ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) | derived at creation when the chain encrypts; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
@@ -844,15 +846,15 @@ default this document suggests where the owning RFC states none.
 | transform chain but its encrypt stage: compression and its settings, `require` | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | empty |
 | material provider | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | remote store | live | required on every store configuration |
 | compress stage `with_encryption: accept`: compression in a chain that encrypts | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | absent: a chain with an encrypt stage and a compress stage without it is refused |
-| case sensitivity: the share's fold rule, by ID from the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound; an export carries it ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) | sensitive (identity rule) |
-| entry-digest hash key: orders a directory's entries and keys its listing cookies | [RFC 7 §3.4](rfc-7-namespace-metadata.md#3.4%20Enumeration) | share | bound; an export carries it ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) | drawn at the share's creation, never configured |
+| case sensitivity: the share's fold rule, by ID from the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound; an export carries it ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) | sensitive (identity rule) |
+| entry-digest hash key: orders a directory's entries and keys its listing cookies | [RFC 7 §3.4](rfc-7-namespace-metadata.md#3.4%20Enumeration) | share | bound; an export carries it ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) | drawn at the share's creation, never configured |
 | xattr value bound, xattrs per file, named streams per file | [RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams) | share | live: a change applies to later writes; existing ones stay readable | proposed: 64 KiB; 1024; 1024 |
 | `atime` policy | [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | share | live | proposed: relative |
 | `gc.interval`: between compaction and collection passes | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
 | `gc.trash_retention`: time a retired block with recoverable chunks waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
 | `gc.space_amp_target`: stored over referenced bytes the compactor holds the namespace under; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | proposed: 1.25 |
 | GC `Recheck` period: between re-reads of a namespace store's settings and claim | [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) | — | fixed | proposed in RFC 9: 5 min |
-| lease durations: GC partition lease, a backup folder record's lease, a snapshot use record's deadline | [RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix), [RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location), [RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot) | — | fixed: constants of the implementation | open in RFC 9 and RFC 12 |
+| lease durations: GC partition lease, a backup folder record's lease, a snapshot use record's deadline | [RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix), [RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location), [RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot) | — | fixed: constants of the implementation | open in RFC 9 and RFC 12 |
 | `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
 | `gc.audit.forward_period`: time within which a full forward pass covers every ref; incremental passes cover the refs changed since the last pass, and only a full pass lets a count be lowered | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | proposed: 90 days |
 | replica count **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default, shard override (in its shard record) | live | 3 |
@@ -888,12 +890,12 @@ default this document suggests where the owning RFC states none.
 | `shard.replace_delay`: **(cluster)** the re-placement delay | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | installation | live | 10 min |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
 | oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) | share | live | proposed: 1 h |
-| snapshot policy: schedule, retention and the backup location it names | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
+| snapshot policy: schedule, retention and the backup location it names | [RFC 12 §3.2](rfc-12-snapshots.md#3.2%20Configuration) | share | live | none |
 | backup location: store, credential reference, mode, lifecycle age, retention cap, generation `G`; system fields put-integrity outcome and health object identity | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) | installation | per field, as §2.5 states | mode required; `G` 7 days; the rest as the store's |
-| policy `backup.kind`: `catalog` or `copy`, a copying backup | [RFC 12 §3.4](rfc-12-snapshots.md#3.4%20Copying%20backups) | share | live | `catalog` |
-| policy `backup.verify_every`: period between verifications of a copying backup; 0 never verifies on a period | [RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step) | share | live | 0 |
-| `backups.copy_rate`: copying backups' transfer rate | [RFC 12 §3.4.6](rfc-12-snapshots.md#3.4.6%20Cost%20and%20pacing) | installation | live | proposed: 200 MiB/s |
-| `rehome.rate`: a re-home's copy rate; 0 pauses it | [RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) | installation default, share override while its re-home runs | live | proposed: 100 MiB/s |
+| policy `backup.kind`: `catalog` or `copy`, a copying backup | [RFC 26 §2.4](rfc-26-catalog-backups.md#2.4%20Copying%20backups) | share | live | `catalog` |
+| policy `backup.verify_every`: period between verifications of a copying backup; 0 never verifies on a period | [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step) | share | live | 0 |
+| `backups.copy_rate`: copying backups' transfer rate | [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | installation | live | proposed: 200 MiB/s |
+| `rehome.rate`: a re-home's copy rate; 0 pauses it | [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) | installation default, share override while its re-home runs | live | proposed: 100 MiB/s |
 | `snapshots.hold_bound`: held journal bytes per share before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | share | live | 64 GiB |
 | `snapshots.hold_journal_fraction`: held share of one journal's capacity, summed over every share it carries, before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | installation | live | 0.25 |
 | `snapshots.reserve`: history bytes per share before a new cut is refused | [RFC 12 §2.9](rfc-12-snapshots.md#2.9%20Space%20is%20reported%2C%20not%20charged) | share | live | none |
@@ -904,9 +906,9 @@ default this document suggests where the owning RFC states none.
 | `snapshots.directory`: the browse directory's name | [RFC 12 §2.5](rfc-12-snapshots.md#2.5%20Browsing%20a%20snapshot) | share | live | `.snapshot` |
 | snapshot ordinal quarantine after a deletion | [RFC 12 §2.5](rfc-12-snapshots.md#2.5%20Browsing%20a%20snapshot) | — | fixed | 24 h |
 | consecutive skipped policy ticks before a health condition | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | — | fixed | 3 |
-| `migration.freeze_timeout`: bound on a move's freeze, through B's ready | [RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step) | installation | live | 5 min |
-| `migration.hold_reply`: longest a call waits in a freeze before `ErrDelay` | [RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step) | installation | live | 1 s |
-| `backups.max_copy_time`: bound on one copy attempt; a successor builds on a failed one | [RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step) | installation | live | 48 h |
+| `migration.freeze_timeout`: bound on a move's freeze, through B's ready | [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step) | installation | live | 5 min |
+| `migration.hold_reply`: longest a call waits in a freeze before `ErrDelay` | [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step) | installation | live | 1 s |
+| `backups.max_copy_time`: bound on one copy attempt; a successor builds on a failed one | [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step) | installation | live | 48 h |
 | `existence_age`: longest a synced write's existence waits for the group commit | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) | installation | live | proposed: 1 s |
 | group-commit bound `G`, files per existence batch | [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) | node, per journal | live | proposed: 256 |
 | offload retry backoff caps, normal and under capacity pressure | [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline) | node | live | proposed: 1 s to 60 s; 5 s under pressure |
