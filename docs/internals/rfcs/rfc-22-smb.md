@@ -1489,14 +1489,16 @@ durability rules: the writes that matter are the ones not yet flushed.
 
 ## 18. Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| sessions and channels per node | `dittofs_smb_sessions`, `dittofs_smb_channels` | gauge |
-| requests waiting async on a break or lock | `dittofs_smb_async_pending{reason}` | gauge |
-| durable reconnects, by result | `dittofs_smb_reconnects_total{kind, result}` | counter |
-| channel binds refused for another node | `dittofs_smb_bind_refused_total` | counter |
-| names hidden from SMB in listings | `dittofs_smb_names_hidden_total` | counter |
-| Witness registrations per node | `dittofs_smb_witness_registrations` | gauge |
+| sessions and channels per node | `smb_sessions`, `smb_channels` | gauge |
+| requests waiting async on a break or lock | `smb_async_pending{reason}` | gauge |
+| durable reconnects, by result | `smb_reconnects_total{kind, result}` | counter |
+| channel binds refused for another node | `smb_bind_refused_total` | counter |
+| names hidden from SMB in listings | `smb_names_hidden_total` | counter |
+| Witness registrations per node | `smb_witness_registrations` | gauge |
 
 Operation latency is RFC 17's; leases, breaks and grace are RFC 14's. No share
 or client label.

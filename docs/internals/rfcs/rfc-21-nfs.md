@@ -1537,15 +1537,17 @@ single-node restart, which bind only the single-node profile.
 
 ## 13. Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| sessions held per node | `dittofs_nfs_sessions` | gauge |
-| slot-table saturation | `dittofs_nfs_slots_in_use{channel}` | gauge |
-| reply-cache hits (genuine retransmissions) | `dittofs_nfs_replay_hits_total` | counter |
-| `NFS4ERR_BADSESSION` answered — clients recovering a session lost with a node | `dittofs_nfs_badsession_total` | counter |
-| callbacks with no live back channel | `dittofs_nfs_cb_path_down_total` | counter |
-| GSS contexts held per node | `dittofs_nfs_gss_contexts` | gauge |
-| NLM blocked waiters | `dittofs_nfs_nlm_waiters` | gauge |
+| sessions held per node | `nfs_sessions` | gauge |
+| slot-table saturation | `nfs_slots_in_use{channel}` | gauge |
+| reply-cache hits (genuine retransmissions) | `nfs_replay_hits_total` | counter |
+| `NFS4ERR_BADSESSION` answered — clients recovering a session lost with a node | `nfs_badsession_total` | counter |
+| callbacks with no live back channel | `nfs_cb_path_down_total` | counter |
+| GSS contexts held per node | `nfs_gss_contexts` | gauge |
+| NLM blocked waiters | `nfs_nlm_waiters` | gauge |
 
 Operation latency is RFC 17's; grants, recalls and grace are RFC 14's. No share
 or client label.
