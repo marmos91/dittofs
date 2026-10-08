@@ -21,7 +21,7 @@ reliable way to tell what they found.
 **The proposal.**
 
 - **One command, `dt`, written in Go,** runs every suite the same way on a laptop and in CI.
-- **One file, `test/suites.yaml`, lists the 14 suites.** A variant of a suite is an option of it,
+- **One file, `test/suites.yaml`, lists the 15 suites.** A variant of a suite is an option of it,
   and sets of suites are groups.
 - **`dt` builds the DittoFS server each suite needs** (the fixture) and calls each test tool
   directly. The per-suite scripts go.
@@ -37,8 +37,8 @@ reliable way to tell what they found.
 
 **Decided:** Go from the start, CTRF, and GitHub issues with the project board for tracking (team
 call and reviews, 2026-10-08).
-**Open (§9):** the tier budgets, the operator and Windows jobs on PRs, the SMB client-compatibility
-workflow, who runs the dedicated test host, and when the gate becomes required.
+**Open (§9):** the tier budgets, the operator and Windows jobs on PRs, the workloads the client
+suite runs, who runs the dedicated test host, and when the gate becomes required.
 **Plan (§8):** seven steps, conformance first. Each step ships on its own, and an old CI job keeps
 running beside its replacement until their results match.
 
@@ -67,13 +67,18 @@ graders and their tests, the system scenarios in `test/scenarios/`, and `dfsbenc
 - **Revision 3 (same day, after the second review and the team call):**
   - `dt` is written in Go from the start, and the bash `dt` never lands;
   - CTRF is decided;
-  - options and groups take the registry from 30 suites to 14;
+  - options and groups take the registry from 30 suites to 14 (15 with `clients` in 3.1);
   - `kind` becomes `format`;
   - the tiers are `pr`, `merge` and `nightly`, and `gate` becomes `blocking`;
   - known failures and expected skips move to YAML, and an unexpected skip counts as not run;
   - `dt report --failures --post` opens issues;
   - component RFCs name their suites;
   - §1 and §10 record what a deep check of every CI job found.
+- **Revision 3.1 (same day, Marco's follow-ups):**
+  - a `clients` suite mounts the fixture with each OS's own client, Linux, macOS and Windows, and
+    replaces `smb-client-compat.yml`. Windows connects on DittoFS's port with `net use /TCPPORT`,
+    which the hosted Windows Server 2025 runners support;
+  - each known failure says `fix: planned` or `fix: wontfix`.
 
 ---
 
@@ -441,6 +446,18 @@ suites:
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
 
+  # Each OS's own clients mount the fixture's share, and the workloads run over the mount. Replaces
+  # smb-client-compat.yml once its results match.
+  clients:
+    tests: test/clients/*               # the workloads: today's smb-client-compat checks, cthon04, nfstest
+    cmd: "{test} {mount}"
+    fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }   # each OS mounts what its clients support
+    tier: nightly
+    options:
+      linux:   { needs: [linux, root, smb-client, nfs-client] }
+      macos:   { needs: [macos] }
+      windows: { needs: [windows] }     # Windows Server 2025 runners: net use /TCPPORT, no port 445 needed
+
   # The system scenarios: a real server in a container, real clients, faults injected.
   system:
     cmd: test/scenarios/setup.sh {test}
@@ -526,11 +543,8 @@ output. `dt plan --json` gives them the same, from YAML.
 known-failure paths `known`. Its two other readers change too: `ci-health.yml` reads
 `dt list --json`, and `test/conformance/check-docs.sh` becomes `dt docs --check`.
 
-**What isn't registered, and why.** Each has a §9 question or an issue:
+**What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
-- **`smb-client-compat.yml`:** its Linux checks overlap e2e and the scenarios, and its Windows job
-  has skipped `net use` on most runs since mid-September (#2994). Its macOS job is the only macOS
-  client test.
 - **The crash rigs, the edge tests and the reproductions:** they stay runnable by hand, as today,
   and come back as `manual` suites when someone needs them in a run.
 
@@ -546,7 +560,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`); `export` exports it without a mount, for pynfs |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their flags, as data; the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share |
 | `squash`, `delegations`, `lease` | Export and adapter settings |
@@ -688,14 +702,20 @@ treats them differently, which is the main defence against another flood.
 never reported as passed. In CI, `dt plan` gives each cell its runner from the same list:
 `windows` and `macos` get those hosted runners, everything else Ubuntu.
 
-There are three places to run, and one missing:
+There are three places to run:
 
 | Place | Gives | Used for |
 |---|---|---|
 | A developer's machine | the host, or `dtc` (pinned Linux toolchain, privileged) | anything the machine can meet; macOS runs Linux-only suites in `dtc` |
-| GitHub-hosted runner | Linux, 4 CPU, 16 GB RAM, 14 GB SSD (public repositories); the Ubuntu 24.04 image has Docker, podman 4.9.3 and Go 1.26.8 | the `pr` and `merge` tiers, and the nightly suites that fit |
+| GitHub-hosted runner | Linux, 4 CPU, 16 GB RAM, 14 GB SSD (public repositories); the Ubuntu 24.04 image has Docker, podman 4.9.3 and Go 1.26.8. Windows runners are Windows Server 2025, and macOS runners are available | the `pr` and `merge` tiers, the nightly suites that fit, and the `clients` options |
 | Dedicated test host | a large disk and long run times | nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file |
-| A Windows machine with port 445 free (none today) | the native Windows SMB client | `net use` and Windows-client tests, which hosted runners can't run (#2994) |
+
+**Windows clients on a hosted runner.** The runner's own system owns TCP port 445, which is why
+`smb-client-compat.yml`'s Windows job has skipped `net use` on most runs since mid-September
+(#2994). Since Windows Server 2025, which the hosted runners are, the SMB client can connect on
+another port: `net use \\localhost\share /TCPPORT:12445`, or `New-SmbMapping -TcpPort`. So the
+fixture mounts on DittoFS's own port, and port 445 isn't needed. This still needs one run to prove
+it end to end.
 
 **Scenarios on a runner.** They need podman 5.6 or later (`test/scenarios/README.md`), and the
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:
@@ -823,22 +843,28 @@ converts the old lists once.
 # test/posix/known.yaml
 - test: open/03.t
   status: fail                 # fail | skip
-  category: env                # bug | env | proto | permanent
+  fix: wontfix                 # planned | wontfix
+  category: env                # bug | feature | env | proto | permanent
   reason: "PATH_MAX: the mount-point prefix pushes the absolute path over PATH_MAX in the client"
   where: { nfs: ["4", "4.1"] } # optional: the matrix values it applies to
 - test: utimensat/09.t
   status: fail
+  fix: wontfix
   category: proto
   reason: NFSv3 nfstime3 uses uint32 seconds and cannot represent values >= 2^32
   where: { nfs: ["3"] }
 ```
 
-- **Every entry has a reason**, which says why it fails or skips, and a category. The
-  `where` field replaces today's separate lists per NFS version.
-- **An entry needs an issue only if its category is `bug`.** Today most rows have none: 19 of 20
-  and 13 of 14 in the POSIX lists, 4 of 10 in pynfs's, and the WPTS list has no issue column. An
-  `env`, `proto` or `permanent` entry is a fact about the environment or the protocol, not work to
-  do.
+- **Every entry says whether it will be fixed:** `fix: planned` or `fix: wontfix`. A missing
+  `fix` is an error, so nothing is left unclassified by accident. Today the lists carry this in
+  their Category column, with different words in each (`bug`, `feature`, `proto`, `env`, `suite`,
+  and WPTS's Expected and Permanent).
+- **Every entry has a reason**, which says why it fails or skips, and a category. A reason helps
+  whoever fixes a planned entry too, and no list today has an entry without one. The `where`
+  field replaces today's separate lists per NFS version.
+- **A planned entry needs an issue; a won't-fix entry doesn't.** Today most rows have no issue:
+  19 of 20 and 13 of 14 in the POSIX lists, 4 of 10 in pynfs's, and the WPTS list has no issue
+  column.
 - **One matcher.** The Go matcher shares golden fixtures with today's
   `test/common/known-failures_test.sh` until that goes, so the two parsers can't drift. Today
   `run.sh` resolves a suite's list but never passes it on, each runner picks its own file again,
@@ -930,12 +956,13 @@ began requiring pull requests.
 their workflows move into `tests.yml` after the main ones (§8 step 3); until then they keep running
 as they are.
 
-Four things stay outside the registry:
+Three things stay outside the registry:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
 - **combined-tree,** which picks open PRs to merge and build together (its self-test runs in
   `lint-repo`);
-- **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit;
-- **`smb-client-compat.yml`,** for now (§4.1, §9).
+- **the canary** on `dev/test-harness`, which watches a live deployment rather than a commit.
+
+`smb-client-compat.yml` keeps running until the `clients` suite's results match it, and then goes.
 
 **Develop goes red.** This extends `ci-health.yml` and watches `tests.yml`, plus any workflow still
 outside it:
@@ -1095,8 +1122,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - Make the gate required.
 
    *Exit:* PR p90 ≤ 20 min over a week, the gate required, and none of §3's 35 scripts left.
-4. **System scenarios and fio.** The `system` suite, its known list, the lock check and the
-   podman-in-container path on runners. Groups 0x–8x run in the merge tier, sharded over runners;
+4. **System scenarios, clients and fio.** The `system` suite, its known list, the lock check and the
+   podman-in-container path on runners. The `clients` suite on Linux, macOS and Windows, and then
+   `smb-client-compat.yml` goes. Groups 0x–8x run in the merge tier, sharded over runners;
    the 9x long runs run nightly on the dedicated host. Then `fio-verify`.
    *Exit:* the merge tier includes the system scenarios, and has no new failures.
 5. **Alerting, flakes and issues.** The develop-status issue, quarantine, `dt history`, and
@@ -1119,9 +1147,8 @@ scenarios and fio (R8).
     merge.
 
   Agreed?
-- `smb-client-compat.yml`: its Windows job can't test `net use` on hosted runners (#2994). Do we
-  provide a Windows machine for it, and keep the macOS job, the only test of the macOS client? Or
-  do we drop the workflow?
+- The `clients` suite: which workloads run on which OS? `cthon04` may run on macOS and Windows as
+  well as Linux, still to be confirmed; `nfstest` is Linux only.
 - Who runs the dedicated host, and holds its issue-writing token?
 - When does the gate become required: after two green weeks, or on a measured rate of failures not
   caused by code?
@@ -1136,6 +1163,7 @@ Settled since the last revision:
 - Which profiles run on PRs: `badger-s3` only.
 - WPTS's setup: it fits the fixture's fields.
 - The NFS `sec=krb5` job: it goes.
+- Real Windows and macOS mounts: the `clients` suite, on hosted runners.
 
 ## 10. What was checked
 
@@ -1162,7 +1190,7 @@ this. Where the assumption was wrong, the design follows what was found.
 | The nightly conformance run is green | It has failed every night since at least 2026-09-10: the baseline job's push to develop is refused ("Changes must be made through a pull request"), and the summary job, which doesn't need it, stays green (#2997) | `conformance.yml:521-562` |
 | Only lint and security gate merges | Until 2026-10-08. `Unit Tests` and `Integration Tests` are required since then, with their path filters moved inside the jobs by #2972; develop also needs one approval, and auto-merge is enabled | ruleset `Protect develop` |
 | Enable the merge queue | Not available on a user-owned repository; up-to-date branches are required instead | GitHub docs, ruleset |
-| `smb-client-compat` tests the Windows client | Mostly not: its `net use` step skips because port 445 is owned by the runner's kernel, and the job passes, on most runs since mid-September (#2994). Its Linux job mounts SMB 2.1 while its summary says 3.1.1 | `smb-client-compat.yml:104, 114, 149-164` |
+| `smb-client-compat` tests the Windows client | Mostly not: its `net use` step skips because port 445 is owned by the runner's kernel, and the job passes, on most runs since mid-September (#2994). Its Linux job mounts SMB 2.1 while its summary says 3.1.1. The hosted Windows runner is Windows Server 2025, whose SMB client supports `net use /TCPPORT` | `smb-client-compat.yml:104, 114, 149-164` |
 | Tool versions are pinned once | Go is pinned four different ways; pjdfstest and pynfs revisions are copied from `flake.lock` | `go.mod:3`, `lint.yml:56`, `dev.Dockerfile:12, 24, 54` |
 | The conformance `-s3` cells exercise S3 | No: the bucket they name is never created. pjdfstest (v3, v4, v4.1) and pynfs (4.0, 4.1) all graded green with localstack answering `NoSuchBucket`, and no upload accepted (#2986) | `setup-posix.sh:282`, run 37661151652 and 37661151773 |
 | The NFS `sec=krb5` job mounts with Kerberos | No: it exits 0 when the client container can't load the NFS module, on every retrievable run; its bootstrap also calls two `dfsctl` commands that don't exist (#2987) | `test-nfs-krb5.sh:52-56`, `nfs-conformance/bootstrap.sh:54, 63` |
