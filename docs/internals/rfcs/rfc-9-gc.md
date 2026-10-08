@@ -1091,17 +1091,40 @@ chunk records it names, and computes `live`, `dead` and the index keys. A third
 walk, the **forward walk**, streams each share's refs and history refs in file
 order and point-reads the `CR` key each one implies; it catches the one defect the
 merge cannot see, a ref written without its reverse key, which would otherwise let
-the deleter's verification pass over a referenced chunk.
+the deleter's verification pass over a referenced chunk. The streaming is
+sequential; the point reads are its cost. A **full** pass point-reads every ref;
+an **incremental** pass point-reads only the refs whose change sequence
+([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), which the scan returns with each key, is above the start
+of the last completed pass, so every ref is checked by at least one pass that
+began after the ref was last written.
 
 ### 6.1 Coverage
 
-The audit **MUST** cover every chunk record, every block record and every ref at
-least once per `gc.audit.period` (default 7 days). Its rate is derived, not set: records
+The audit **MUST** cover every chunk record and every block record at least once
+per `gc.audit.period` (default 7 days), and every ref written since the last
+completed forward pass within the same period, by an incremental pass. A full
+forward pass **MUST** complete at least once per `gc.audit.forward_period`
+(proposed: 90 days), and runs in place of that period's last incremental pass. Its rate is derived, not set: records
 remaining over time remaining in the period, and a derived rate above the
 scheduler's cap for the source **MUST** raise a health condition. It **MUST**
 report the time since each hash range was last covered, and a range not covered
 within the period **MUST** raise a health condition. A cursor per walk lets a
 restarted walk resume its range ([§7.2](#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)).
+
+**The forward walk's reads are bounded by change, plus a long full pass.** Its
+point reads per second are at most the refs written per second plus all refs
+over `gc.audit.forward_period`. At 2 PB, with [RFC 16 §7.4](rfc-16-metadata-store.md#7.4%20Metadata%20footprint%20at%202%20PB)'s 8.6×10⁹ live and
+2.6×10⁹ history refs, a full pass every week is 1.1×10¹⁰ reads, about 18,500
+per second; with 1% of bytes rewritten a day the incremental passes read about
+1.2×10⁹ refs a week (a new ref and a history move per rewritten chunk), about
+2,000 per second, and the 90-day full pass about 1,450 per second more.
+
+> ponytail: the full pass still point-reads every ref, and the lowering it gates
+> waits up to `gc.audit.forward_period`, so a count left high by a defect holds
+> its block that long. Upgrade to letting incremental passes gate lowering, once
+> every path that deletes a `CR` key is shown to write or re-read its ref in the
+> same transaction, when the full pass shows in a profile or held leaks show in
+> the space-amplification benchmark.
 
 Each walk checks:
 
@@ -1114,7 +1137,7 @@ Each walk checks:
 | a live ref of a file with no `File` record and no release removal not done | the forward walk, one point read of the file's record per file | an orphan live ref: a release removal is recorded for the file, whose phase 2 drops it ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)); reported |
 | each block's `live` and `dead` against its chunk records | the block walk | corrected like a count |
 | index keys against the block records | the block walk | an index mismatch, repaired in place ([§7.4](#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
-| a ref or history ref with no `CR` key | the forward walk, one point read per ref | a **reverse-index defect**: the key is written in a transaction that re-reads the ref, the chunk's count is recounted, a block retired or `deleted` meanwhile is resurrected or reported **Lost**, and the defect is reported at `Error` |
+| a ref or history ref with no `CR` key | the forward walk, one point read per ref it checks ([§6](#6.%20Audit)) | a **reverse-index defect**: the key is written in a transaction that re-reads the ref, the chunk's count is recounted, a block retired or `deleted` meanwhile is resurrected or reported **Lost**, and the defect is reported at `Error` |
 | a `CR` key with no ref or history ref behind it | the forward walk's share range, merged with the `CR` keys of that share | a stale reverse key: deleted in a transaction that re-reads both, then the count is recounted |
 
 ### 6.2 Corrections
@@ -1129,16 +1152,17 @@ Each walk checks:
   count is lowered only when two consecutive walks computed the same lower
   value, the correcting transaction finds the chunk record's `stamp` unchanged
   since before the second walk counted it ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), **and a complete
-  forward walk of every share in the namespace ran between the two**: it
+  full forward walk of every share in the namespace ran between the two**: it
   started after the first walk recorded its value and finished before the second
   counted. Two walks of the index agree with each other when a ref was written
   without its key, and lowering to their count would retire a block that ref
   still reads; the forward walk is the one check that reads refs, and it writes
-  any missing key ([§6.1](#6.1%20Coverage)), so the second walk then counts it. A forward pass
-  already running when the first walk records its value does not count: it is
-  paced to end with each period, so one is almost always running, and it may
+  any missing key ([§6.1](#6.1%20Coverage)), so the second walk then counts it. An incremental pass does not count: it skips a ref
+  whose key a defect deleted after the ref was last written. A full pass
+  already running when the first walk records its value does not count either: it is
+  paced to end with its period, so one is almost always running, and it may
   have passed the ref before the missing key mattered. So `NS‖ns‖gc‖forward`
-  holds two numbers, the last pass **started** and the last pass **completed**;
+  holds two numbers, the last full pass **started** and the last full pass **completed**;
   a pass's first transaction raises `started`, and its last raises `completed`
   to its own number. The first walk records `NS‖ns‖gc‖suspect‖hash` = {computed,
   stamp, pass}, where pass is `started` + 1 — the number of the next pass to
@@ -1265,7 +1289,7 @@ key column is that table's, repeated so a reader of this one need not switch.
 | `Recheck` result ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | `NS‖ns‖gc‖recheck` | authoritative | one per namespace | overwritten by each `Recheck` |
 | hold ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)) | `NS‖ns‖gc‖hold` | authoritative | one per namespace, listing its reasons | cleared when its last reason clears |
 | lowering suspect ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖suspect‖hash` | authoritative | one per hash found high by the last walk | the next walk over its range, which lowers or deletes it; a walk runs every period, so its removal is guaranteed |
-| forward pass ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖forward` | authoritative | one per namespace: the numbers of the last forward walk started and the last completed over every share, and when | overwritten as each pass starts and completes |
+| forward pass ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖forward` | authoritative | one per namespace: the numbers of the last full forward walk started and the last completed over every share, and when; and the start change sequence of the last completed pass of either kind, which the next incremental pass compares against | overwritten as each pass starts and completes |
 | walk cursor | `NS‖ns‖gc‖cursor‖walk‖partition` | derived | one per kind of walk (audit, block walk, index rebuild) per partition: the last key done | overwritten as the walk advances; deleted when it completes |
 
 A record not in this table **MUST NOT** be added without a row. Where a pass
@@ -1569,7 +1593,7 @@ are constants of the implementation, not settings.
 | G10 | Deferred work is bounded per conflict domain: one sub-transaction in flight per file, per (namespace, source, prefix), within a per-node transaction-time budget. |
 | G11 | Every time GC stores or compares is store time; the deleter does not run while its clock is outside the clock skew limit. |
 | G12 | Derived index keys are functions of block records, and repairing or rebuilding them changes no block record and deletes nothing early. The reverse index is authoritative, and is rebuilt only under the hold. |
-| G13 | The audit covers every chunk and block record within its period; it corrects by the maximum, lowers only by two agreeing walks with an unchanged stamp and a forward walk that started after the first walk recorded its value and completed before the second counted, reports a ref with no live chunk record as Lost, and drops orphan refs through the paths that drop any ref. |
+| G13 | The audit covers every chunk and block record within its period; it corrects by the maximum, lowers only by two agreeing walks with an unchanged stamp and a full forward walk that started after the first walk recorded its value and completed before the second counted, reports a ref with no live chunk record as Lost, and drops orphan refs through the paths that drop any ref. |
 | G14 | No delete batch is issued, and no `deleted` record is pruned, unless the claim names this installation and a `Recheck` passed recently enough; a prune waits for a `Recheck` that began after its delete. A `Recheck` reads the claim before rewriting it and records its nonce before the put; a backup location's folder store is rechecked on the same period and before each copy and sweep. |
 | G15 | On a single node, every start abandons the put intents of the node's own shards before its first offload. |
 | G16 | No move to `deleted`, relocation or listing retirement commits after a namespace's GC pause record; a cooperative move between installations depends on no clock. A compaction source waits the full trash retention. |
@@ -1640,8 +1664,8 @@ the implementation, not by timing.
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) reply | Return a multi-delete reply that omits one requested name. Assert that name stays `deleted` and is retried. |
 | [§5.3](#5.3%20It%20runs%20only%20where%20the%20namespace%20is%20proven) namespace | Point two stores at one bucket and prefix, run collection from one. Assert it refuses. |
 | [§6.2](#6.2%20Corrections) raise never lowers | Let a count rise between the walk's read and its correction. Assert the correction leaves it. Change a ref under the first of two lowering walks; assert no lowering. |
-| [§6.2](#6.2%20Corrections) a running pass does not count | Write a ref without its reverse key and raise its chunk's count by one. Start a forward pass and let it pass the ref's file; then run the first index walk, which records the suspect; let that pass complete; run the second walk. Assert no lowering, and that a pass started after the suspect, once complete, writes the key. A rule that waits only for the last completed pass number lowers the count and retires a block the ref still reads. |
-| [§6.2](#6.2%20Corrections) lowering needs the forward walk | Write a ref without its reverse key and raise its chunk's count by one. Run two index walks with no forward walk between them; assert no lowering. Let a forward walk complete; assert it writes the key, and the second walk then finds the count right and lowers nothing. A lowering on two index walks alone retires a block the ref still reads. |
+| [§6.2](#6.2%20Corrections) a running pass does not count | Write a ref without its reverse key and raise its chunk's count by one. Start a full forward pass and let it pass the ref's file; then run the first index walk, which records the suspect; let that pass complete; run the second walk. Assert no lowering, and that a pass started after the suspect, once complete, writes the key. A rule that waits only for the last completed pass number lowers the count and retires a block the ref still reads. |
+| [§6.2](#6.2%20Corrections) lowering needs the forward walk | Write a ref without its reverse key and raise its chunk's count by one. Run two index walks with no forward walk between them; assert no lowering. Delete the key of a second ref written before the last completed pass, so no incremental pass reads it, and run two index walks with only an incremental pass between them; assert no lowering. Let a full forward walk complete; assert it writes the key, and the second walk then finds the count right and lowers nothing. A lowering on two index walks alone retires a block the ref still reads. |
 | [§6.1](#6.1%20Coverage) orphan refs | Leave a history ref no live cut sees, and a live ref of a file with no `File` record and no removal. Run the audit. Assert the history ref is dropped and counted down, the live ref dropped by a release removal, and both reported. |
 
 ### 11.2 Group B — model-based, with crashes
@@ -1694,6 +1718,7 @@ The emulator of [RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite) in
 | [§5.2](#5.2%20Collection%20is%20housekeeping) intents collect crashes | Crash offloads and compactions after their puts, many times, with listing disabled. Assert every orphan is deleted from its abandoned intent. |
 | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) no intervention | Fail every delete until the backlog is reported, then restore the remote; trip the hold, then let a clean period pass. Assert both clear with no operator action. |
 | [§4.4](#4.4%20When%20to%20compact%20is%20policy) default | With default configuration, churn files until amplification passes the target. Assert it returns under the target with no configuration change, and small blocks are merged. |
+| [§6.1](#6.1%20Coverage) forward reads | Grow the refs tenfold at a fixed write rate and run incremental passes. Assert point reads per pass track refs written since the last pass, not refs stored, and that every ref written is read; shorten `gc.audit.forward_period` below what the cap allows and assert the health condition. |
 | [§6.1](#6.1%20Coverage) coverage | Run the audit on a store sized so one period covers it. Assert every record is covered and the gauge says so; shorten the period below what the cap allows and assert the health condition. |
 | [§7.1](#7.1%20GC%20bounds%20its%20own%20work) deletion storm | Delete a snapshot of a heavily rewritten share and release a 10⁷-ref file while clients run. Assert client p99 latency stays within the budget's bound and the drops still finish. |
 | [§7.2](#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation) I7 | Run many passes with retirements, resurrections, compactions and failed deletes. Assert each record kind stays within its row. |
@@ -1741,10 +1766,12 @@ where a row names the scale tier.
 1. **The default space-amplification target** ([§4.4](#4.4%20When%20to%20compact%20is%20policy)). 1.25 is proposed; what
    settles it is the amplification of a churning workload under each target
    against the bytes each rewrites.
-2. **The forward walk's cost** ([§6](#6.%20Audit)). It adds one point read per ref per period —
-   about 10¹⁰ reads a week at 2 PB, some 17,000 per second. Sampling it, or
-   checking only files changed since the last walk, is the upgrade if a profile
-   shows it; until then it covers every ref.
+2. **The forward walk's cost — settled** ([§6.1](#6.1%20Coverage)). A weekly full pass was 1.1×10¹⁰
+   point reads at 2 PB, about 18,500 per second. Incremental passes read refs
+   changed since the last pass, about 2,000 per second at 1% daily churn, and a
+   full pass runs every `gc.audit.forward_period`; 90 days, about 1,450 per
+   second, is proposed and wants confirming against how long a leaked count may
+   hold its block.
 3. **The trip threshold** ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)). 16 low counts per period is proposed; it wants a
    decision once the audit has run on a real store.
 4. **The counting domain under one key scope** ([§2.3](#2.3%20The%20absence%20of%20a%20record%20proves%20nothing)). With one scope for several

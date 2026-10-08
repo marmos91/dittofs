@@ -965,7 +965,10 @@ every client whose record names the shard:
   `RENEW` and to every operation naming its client ID, until it repeats
   `SETCLIENTID` and `SETCLIENTID_CONFIRM`. That is the signal NFSv4.0 clients
   start reboot recovery on; `NFS4ERR_STALE_STATEID` with the client ID still
-  valid is answered by a `RENEW`, which succeeds, and the client loops. The loss
+  valid is answered by a `RENEW`, which succeeds, and the client loops. A
+  stateid of the lost shard is still answered `NFS4ERR_STALE_STATEID`: the
+  client's `RENEW` that follows is what meets `NFS4ERR_STALE_CLIENTID`, so it
+  recovers rather than loops. The loss
   marks the record's entry for the shard, durably, and the signal lasts while
   any entry is marked. The repeated `SETCLIENTID` carries the same owner and
   verifier, so it is not a reboot (§2.1): its confirm keeps the client ID and

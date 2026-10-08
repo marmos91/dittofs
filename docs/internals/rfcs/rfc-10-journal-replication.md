@@ -686,6 +686,14 @@ record, whose other shards it still serves. Without the rule, a primary cut off
 from both replicas but reaching the store removes them both before any watchdog
 fires, and the shard runs on one copy on the isolated node, below its floor.
 
+**The relinquishing node does not claim the shard back.** It is still listed in
+the shard record as primary, so the takeover conditions alone would let it claim
+the shard at once and run it, alone, on the copy it just gave up. A claim of a
+relinquished shard therefore **MUST NOT** come from the node the record marks as
+relinquishing, except under the operator acknowledgement below
+([§9.2](#9.2%20Takeover)). It may claim again once another primary has taken the
+shard over and the record no longer marks it relinquished.
+
 **A relinquished shard whose replicas are truly lost leaves by operator
 acknowledgement (cluster).** If no replica returns to take it over, the shard
 stays unavailable; an operator who acknowledges that its replicas are lost lets
@@ -836,7 +844,9 @@ When the primary's node lease lapses, a replica takes over:
    lapsed: store time past its expiry plus the drift bound, or its node epoch
    superseded, which implies it ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3) — or on the record
    marking the primary relinquished ([§7.2](#7.2%20Removal)), in which case the claim does not
-   mark its node record. A claimant that could not reach the store while the
+   mark its node record and is further conditional on the claimant not being the
+   node that relinquished it, unless the record carries an operator's
+   acknowledgement that the replicas are lost. A claimant that could not reach the store while the
    old primary's lease lapsed first waits out the claim hold
    ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). Replicas it could not reach
    within the interval are dropped too. Every dropped node and every learner
@@ -1204,7 +1214,7 @@ Each invariant is stated where its rule lives; the model checks them as properti
 | R18 | A node other than the primary serves an extent only where every extent within it carries the version the primary named for it | [§8](#8.%20Reads) |
 | R19 | The committed point counts a learner only from its join point; the floor counts learners | [§2.1](#2.1%20Terms), [§7.1](#7.1%20Count%2C%20floor%20and%20placement) |
 | R20 | The ownership epoch fences, the node epoch guards commits and supersedes put intents, and the shard incarnation drives the write verifier and the grace instance; no rule reads one for another's job | [§2.1](#2.1%20Terms) |
-| R21 | A primary removes a replica for silence only while another that is not a learner answers it within the removal bound, and removes one that refused or reported lag regardless; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by takeover or operator acknowledgement | [§7.2](#7.2%20Removal) |
+| R21 | A primary removes a replica for silence only while another that is not a learner answers it within the removal bound, and removes one that refused or reported lag regardless; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by another node's takeover or operator acknowledgement, never by the relinquishing node's own claim | [§7.2](#7.2%20Removal) |
 | R22 | An operation's request ID and result survive its eviction, settling and repack, on every member, until the retry window has passed | [§2.3](#2.3%20The%20journal%20extension) |
 | R23 | A node's self-fence by its own clock falls before a successor may serve, at the clock-rate bound ρ: `(L − δ) × (1 + ρ) < L + δ` | [§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3 |
 

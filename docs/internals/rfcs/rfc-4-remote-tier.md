@@ -949,7 +949,7 @@ version under its prefix, forever.
 
 ### 4.12 What a store makes observable
 
-Every store exports the same metrics, labelled by store. A backend adds none of
+Every store exports the same metrics, labelled by store; names are shown without the deployment's prefix. A backend adds none of
 its own, so a dashboard works for every backend. The codec's metrics are
 exported by the codec, whichever store it reads from. Each event is counted in one place:
 a verification is counted here, once, and neither the syncer nor the transforms

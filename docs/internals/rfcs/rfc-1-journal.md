@@ -1036,11 +1036,41 @@ One directory per journal, containing:
 
 | Name | Is |
 | --- | --- |
-| `format` | the format version, the **journal identity** — a random 128-bit value chosen when the journal is created and never changed — and the **installation ID** the explicit initialisation step wrote ([§3](#3.%20Interface)), all covered by a checksum. From the replication extension's version on it also holds the journal's **generation**, which only that extension changes: it is raised, and swapped into the metadata store, at every open of the journal and every acquisition and renewal of its node's lease — at open and acquisition before anything is served from it — and a journal whose swap loses serves nothing more ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)). An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
-| `<id>.seg` | a segment, zero-padded fixed-width id, ascending |
+| `format` | the format version, the **journal identity** — a random 128-bit value chosen when the journal is created and never changed — and the **installation ID** the explicit initialisation step wrote ([§3](#3.%20Interface)), all covered by a checksum; byte layout below. From the replication extension's version on it also holds the journal's **generation**, which only that extension changes: it is raised, and swapped into the metadata store, at every open of the journal and every acquisition and renewal of its node's lease — at open and acquisition before anything is served from it — and a journal whose swap loses serves nothing more ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)). An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
+| `<id>.seg` | a segment: its id ([§4.2](#4.2%20Segments)) in 20 decimal digits, zero-padded, so names sort as ids do |
 
 An implementation **MUST NOT** require any other file to reconstruct its state
 ([§4.4](#4.4%20The%20segment%20catalog)). A file it does not recognise **MUST** be left alone, not deleted.
+
+**Byte layouts.** Every on-disk structure in §4 is packed without padding, with
+integers little-endian. **CRC32C** is the Castagnoli CRC of RFC 3720 §B.4 (reflected,
+initial value and final XOR all ones), stored as a little-endian 32-bit integer.
+Where a checksum is **seeded with the journal identity**, it is the CRC32C of
+the 16 identity bytes followed by the bytes it covers; otherwise it is the CRC32C
+of those bytes alone. Magic values are ASCII. Reserved bytes are written as zero
+and covered by their structure's checksum.
+
+**The `format` file — 56 bytes.**
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | magic, `DJF1` |
+| 4 | 2 | format version: 1 for this RFC; each later version names what it adds |
+| 6 | 2 | reserved, zero |
+| 8 | 16 | journal identity |
+| 24 | 16 | installation ID, a 128-bit value |
+| 40 | 8 | generation; zero, and never read, below the replication extension's version |
+| 48 | 4 | CRC32C over bytes `[0, 48)`, not seeded |
+| 52 | 4 | reserved, zero |
+
+Open reads the version first and fails on one it does not recognise; for
+version 1 a file of any length but 56 bytes fails the open like a bad checksum.
+**The file is replaced whole, never edited in place.** `Init`, and every later
+rewrite (only the replication extension's generation changes it), writes the
+new content to `format.tmp`, syncs it, renames it over `format`, and syncs the
+directory before returning, so a crash leaves the old file or the new one
+whole, never a mix. Open ignores a `format.tmp`, the next rewrite overwrites
+it, and `Init`'s refusal of a directory holding a journal does not count it.
 
 ### 4.2 Segments
 
@@ -1089,6 +1119,25 @@ created and covered by its own checksum. It **MUST** identify:
   recovery treats it as one that could have been open at a crash, and its
   unsynced tail as torn ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
 
+**The segment header — 48 bytes at offset 0.** The first record slot is at 48.
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | magic, `DJH1` |
+| 4 | 2 | format version of the journal that created the segment ([§4.1](#4.1%20Layout)) |
+| 6 | 2 | reserved, zero |
+| 8 | 16 | journal identity |
+| 24 | 8 | segment id; ids start at 1 and ascend across all streams |
+| 32 | 8 | predecessor's segment id, or 0 for none |
+| 40 | 4 | number of the append stream that opened it, for reporting only: the predecessor, not this number, links a stream's segments |
+| 44 | 4 | CRC32C over bytes `[0, 44)`, **not seeded** |
+
+The header checksum is deliberately not seeded with the journal identity: a
+seeded one would make another journal's segment fail its checksum and be
+reported as damage, where [§9.1](#9.1%20Rebuilding) needs it to verify and be recognised as
+foreign by the identity it names. A segment whose version this binary does not
+recognise, or that is newer than the `format` file's, fails the open.
+
 **A new file's name is durable before its records are.** Syncing a file makes
 its bytes durable, not its entry in the directory: after power loss a synced
 segment whose directory entry was never synced is simply gone. So after creating
@@ -1115,6 +1164,23 @@ marker belong to the footer, never to records. A segment named as another's
 predecessor is therefore known to have been sealed, which is how recovery tells a
 crash from a truncation ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
 
+**The seal marker — 32 bytes, at a record slot just past the last record.**
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | magic, `DJS1` |
+| 4 | 4 | reserved, zero |
+| 8 | 8 | segment id |
+| 16 | 8 | the marker's own offset in the segment |
+| 24 | 4 | CRC32C over bytes `[0, 24)`, seeded with the journal identity |
+| 28 | 4 | reserved, zero |
+
+A scan tells a slot by its first four bytes: `DJR1` a record header ([§4.3](#4.3%20Records)),
+`DJS1` a seal marker, all zeros the zero-slot rule of [§9.3](#9.3%20Torn%20and%20corrupt%20records), anything else damage. A
+seal marker verifies only if its checksum does under this journal's identity and
+its segment id and own offset are the segment and offset it was read at, so a
+copy of one inside a payload never ends a scan.
+
 **Records, once written, are immutable.** No operation modifies a record in
 place — not offload, not release, not recovery. The offloaded bit of [§2](#2.%20The%20model%20it%20presents) is
 persisted by appending an **offloaded record** ([§4.3](#4.3%20Records)), never by changing the record
@@ -1123,8 +1189,9 @@ it describes.
 ### 4.3 Records
 
 Each record carries a header; a write or fill record carries a payload of
-content, a loss record a fixed payload naming the record it drops ([§3.8](#3.8%20Loss%20events)), and a
-clone target record a fixed payload carrying its clone spec ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)). The header
+content, a loss record a fixed payload naming the record it drops ([§3.8](#3.8%20Loss%20events)), a
+clone target record a fixed payload carrying its clone spec ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), and a hold,
+unhold or stamp record the cut number it is for ([§3.11](#3.11%20Snapshot%20holds)). The header
 **MUST** identify:
 
 - the record's kind: write, fill, release, truncate, deallocate, delete, clone
@@ -1172,7 +1239,12 @@ it moves would carry rotted bytes forward under a fresh, valid checksum.
 An unrecognised record kind fails the open like an unrecognised format ([§4.1](#4.1%20Layout)).
 **A kind added later is a new format version**: a newer binary opens a journal of
 the older version, and an older binary refuses the newer one. The replication
-kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) are added this way.
+kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) are added this way. The numeric values are in the kinds
+table below. The kind is read only once the header verifies — a header that does
+not is damage ([§9.3](#9.3%20Torn%20and%20corrupt%20records)) — and a verifying header whose kind the segment's format version
+does not define fails the open in every range, the extension range included. It
+is never skipped by its length: an unknown kind may be a removal, and stepping
+over a removal resurrects what it removed.
 
 **A record, field by field.** For alice-pc's 64 KiB write at 1 GiB:
 
@@ -1192,8 +1264,8 @@ kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)
 | modification time | 2026-10-07 09:05:00.123 | `write` only: the `mtime` the write sets, or zero when the open suspended it; covered by the payload checksum |
 | payload | 64 KiB of data | the bytes themselves; only `write` and `fill` carry content. A `loss` record's payload is 16 bytes: the sequence number of the record it drops, then a flag word whose lowest bit says the dropped record was synced ([§3.8](#3.8%20Loss%20events)). A `clone target` record's payload is 32 bytes: the source `FileID`, the source offset and `AsOf`; its file offset and length are the spec's `DstOff` and `Len` ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
 
-Only `write` and `fill` carry content. Every other kind — `loss` and `clone
-target` with their fixed payloads included — changes what the earlier records mean: a `release` stops holding an extent, an
+Only `write` and `fill` carry content. Every other kind — `loss`, `clone
+target`, `hold`, `unhold` and `stamp` with their fixed payloads included — changes what the earlier records mean: a `release` stops holding an extent, an
 `offloaded` marks it offloaded, a `truncate` drops everything past an offset.
 
 **The record header's byte layout.** All integers little-endian, packed without
@@ -1216,6 +1288,32 @@ padding; 96 bytes.
 | 88 | 4 | reserved, zero |
 | 92 | 4 | header checksum, over bytes `[0, 92)` |
 
+**Record kinds.** Values are stable: a value is never reassigned, nor reused once
+its kind is retired. 0 is never a kind, so a zero slot never reads as one. 15–127
+are reserved for later core kinds and 128–255 for extensions ([RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)),
+each assigned with the format version that introduces it. A field this table
+gives as 0 is written as zero.
+
+| Value | Kind | `FileID` | file offset, length | content version | After the header |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `write` | the file | the extent written | the version written | 8-byte modification time, then `length` bytes |
+| 2 | `fill` | the file | the extent filled | the `v` given to `Fill` | `length` bytes |
+| 3 | `release` | the file | one extent released; one record per extent | the version released | none |
+| 4 | `truncate` | the file | the new size, 0 | its version | none |
+| 5 | `deallocate` | the file | the extent punched | its version | none |
+| 6 | `delete` | the file | 0, 0 | its version | none |
+| 7 | `clone target` | the destination | `DstOff`, `Len` | its version | 32 bytes: source `FileID`, source offset, `AsOf` |
+| 8 | `offloaded` | the file | one extent marked; one record per extent | the newest version marked | none |
+| 9 | `unmark` | the file | one extent unmarked; one record per extent | the version of the content unmarked | none |
+| 10 | `loss` | the dropped record's | the extent dropped | the version dropped | 16 bytes: dropped sequence number, then a flag word — bit 0 synced, bit 1 its offloaded bit was set, bits 8–15 the reason: 1 corrupt, 2 stale, 3 failed sync window; the rest zero |
+| 11 | `hold` | the file | 0, 0 | the hold mark | 8 bytes: the cut number ([RFC 6](rfc-6-block-metadata.md)'s `SnapshotCut`) |
+| 12 | `unhold` | zero | 0, 0 | zero | 8 bytes: the cut number |
+| 13 | `stamp` | the file | 0, 0 | `through` | 8 bytes: the cut number |
+| 14 | `forget` | zero | 0, 0 | zero | none |
+
+The share tag field carries the share in every kind; it is all a `forget`
+names, and all an `unhold` names besides its cut.
+
 A `write` record is followed, before its payload, by an 8-byte **modification
 time**: nanoseconds since the Unix epoch, UTC, that the write sets as the file's
 `mtime`, or zero when the caller's open has suspended modification-time updates
@@ -1225,7 +1323,7 @@ value, and never from the clock at commit, so a suspended time stays suspended a
 replayed write keeps the time the client saw. No other kind carries the field.
 
 A record starts at a multiple of 8 bytes within its segment: the modification
-time for `write`, then the payload, of `length` bytes for `write` and `fill`, 16 bytes for `loss`, 32 for `clone target` and none otherwise, is followed by zero
+time for `write`, then the payload, of `length` bytes for `write` and `fill`, 16 bytes for `loss`, 32 for `clone target`, 8 for `hold`, `unhold` and `stamp`, and none otherwise, is followed by zero
 padding to the next multiple of 8, which no checksum covers and a reader ignores.
 Both checksums are CRC32C **seeded with the journal identity**: each is the CRC32C
 of the 16-byte journal identity of [§4.1](#4.1%20Layout) followed by the bytes it covers. A
@@ -1309,14 +1407,18 @@ the trailer.
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 4 | magic |
-| 4 | 2 | format version |
-| 6 | 2 | flags |
-| 8 | 8 | `footerOffset` — absolute offset of the first footer entry, and equally the offset just past the last record |
+| 0 | 4 | magic, `DJT1` |
+| 4 | 2 | catalog layout version, 1 for this layout; independent of the `format` file's |
+| 6 | 2 | flags; none defined, so a nonzero value is read as an unrecognised version |
+| 8 | 8 | `footerOffset` — absolute offset of the first footer entry: just past the seal marker, which itself begins just past the last record ([§4.2](#4.2%20Segments)) |
 | 16 | 4 | `entryCount` |
 | 20 | 4 | CRC32C over the footer entries |
 | 24 | 4 | CRC32C over trailer bytes `[0, 24)` |
 | 28 | 4 | reserved, zero |
+
+Both catalog checksums are plain CRC32C, not seeded ([§4.1](#4.1%20Layout)): which journal a
+segment belongs to is settled by its header ([§4.2](#4.2%20Segments)), and every entry is checked
+against the seeded record header it leads to ([§4.4](#4.4%20The%20segment%20catalog)).
 
 **Entry — 72 bytes, repeated `entryCount` times, ascending by `recordOffset`.**
 
@@ -2752,6 +2854,10 @@ A check here fails by **coming back up describing something other than what is o
 | [§6.3](#6.3%20A%20failed%20sync) header-only records are never failed | Write A and `Sync`; in one window, truncate A's file and release another offloaded extent; fail the sync and make reads of the failed segment return stale bytes. Assert both records are re-appended, no loss event names either, and both extents read `missing` before and after reopen, and the failed segment carries no seal marker. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) a bad copy does not mask a good one | Write A, fail its sync and resolve by re-appending; corrupt the original on the failed segment; crash before that segment is unlinked and reopen. Assert A reads back, no loss record names its sequence number, and the damage is reported against the failed segment. |
 | [§4.3](#4.3%20Records) record layout | Encode a record of every kind; assert the bytes match the committed golden headers, a header checksummed under another journal identity does not verify, and every record starts at a multiple of 8. |
+| [§4.3](#4.3%20Records) kind values | Golden vectors, one per kind of the kinds table, with fixed identity, `FileID`, tag, offsets, version and payload: assert each encodes to the committed bytes and decodes back, that the kind byte is the table's value, and that every payload and zero field is as the table gives. Flip a verifying header's kind to 15 and to 128, re-checksumming it; assert both fail the open and neither is skipped. |
+| [§4.2](#4.2%20Segments) segment header and seal marker | Golden vectors for a segment header with and without a predecessor, and for a seal marker: assert the committed bytes. Write a segment under another identity; assert its header verifies and the segment is reported as foreign, not damaged. Copy a seal marker into a write's payload; assert a scan does not stop at it. |
+| [§4.1](#4.1%20Layout) `format` file | Golden vector for a version-1 `format` file: assert the committed 56 bytes. Assert a 55- or 57-byte file, a bad checksum and version 2 each fail the open. Crash after `format.tmp` is synced but before the rename, and again after the rename before the directory sync; assert each reopen sees the old file or the new one whole. |
+| [§4.5](#4.5%20Catalog%20layout) trailer | Golden vector for a trailer over two entries: assert magic `DJT1`, version 1, and `footerOffset` equal to the seal marker's offset plus 32. |
 | [§3.8](#3.8%20Loss%20events) a loss survives restart | Drop a corrupt dirty extent; crash before anyone reads `Losses`; reopen; assert the loss is in `Losses`, marked found at open, the dropped record is not held even if the corruption is repaired on disk, and a second reopen does not report it as new. |
 
 #### Group D — observability
