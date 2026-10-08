@@ -580,7 +580,16 @@ retransmission.
 - The **next expected sequence ID** of each owner **MUST** be held in RFC 14's
   owner sequence record (`OwnerSeq.Next`, at the owner's home primary,
   [RFC 14 §2.8](rfc-14-open-state.md#2.8%20NFSv4.0%20owner%20sequences)), and
-  advanced in the step that applies the operation, so every node agrees on it.
+  advanced in the step that answers the operation, so every node agrees on it.
+- **Every in-sequence reply advances it, refusals included.** As RFC 7530
+  §9.1.7 requires, an in-sequence request answered `NFS4ERR_DELAY`,
+  `NFS4ERR_GRACE`, `NFS4ERR_DENIED` or any other error advances `Next`, except
+  `NFS4ERR_STALE_CLIENTID`, `NFS4ERR_STALE_STATEID`, `NFS4ERR_BAD_STATEID`,
+  `NFS4ERR_BAD_SEQID`, `NFS4ERR_BADXDR`, `NFS4ERR_RESOURCE`,
+  `NFS4ERR_NOFILEHANDLE` and `NFS4ERR_MOVED`. The home primary advances it even
+  when another shard's primary refused the request, and the refusal is the
+  reply kept for replay. Linux counts every such reply; a sequence left behind
+  answers its next request `NFS4ERR_BAD_SEQID`.
 - Whether a new open owner has been confirmed is held in the same record: the
   first `OPEN` of an owner creates its `OwnerSeq` with `Confirmed` false, and
   only `OPEN_CONFIRM` sets it
@@ -659,7 +668,12 @@ adapter's ([RFC 17 §4.2](rfc-17-vfs.md#4.2%20Translation%20stays%20in%20adapter
 1. **`other` names a record, not a table slot.** It **MUST** be a type tag and
    the RFC 14 identifier it stands for — open, a lock owner's lock state,
    delegation, layout or copy — so any `protocol` node resolves it without a
-   table of its own, and a stateid survives a `protocol` node loss.
+   table of its own, and a stateid survives a `protocol` node loss. Its
+   non-random part carries the number of the shard that holds the record, and
+   its random bits are unique within that shard, whose primary keeps an index
+   from them to the record
+   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): a stateid is resolved
+   by shard, then index, with no file handle.
 2. **`other` cannot be guessed.** At least **64 bits** of it **MUST** come from
    a random source, so a client that sees its own stateids learns nothing that
    names another's. `other` has the room: RFC 14 gives an open's stateid its
@@ -730,7 +744,12 @@ Three stateid values are special:
   `COMPOUND` returned" — is resolved inside the compound.
 
 Asking whether stateids are still valid (`TEST_STATEID`) answers per stateid
-without changing state. `FREE_STATEID` releases a lock state with no locks held,
+without changing state. `TEST_STATEID` and `FREE_STATEID` carry no file handle
+(RFC 8881 §18.48, §18.38), and clients send them without `PUTFH` while
+recovering from a revocation, so each stateid is resolved by rule 1's shard
+number and index, never through the current file handle; a stateid quoted with
+a file handle that names another file than its record's is
+`NFS4ERR_BAD_STATEID`. `FREE_STATEID` releases a lock state with no locks held,
 or a revoked delegation or layout the client acknowledges, and is refused with
 `NFS4ERR_LOCKS_HELD` otherwise. `RECLAIM_COMPLETE` maps to `ReclaimComplete`
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)).
@@ -755,7 +774,11 @@ and later, none to NFSv4.0, and no directory ones.
   is revoked; the client is told by `SEQ4_STATUS_RECALLABLE_STATE_REVOKED`, its
   delegation stateid is `NFS4ERR_DELEG_REVOKED` until freed, and writes it sends
   under the revoked delegation are refused. That client is offered no delegation
-  for the rest of its lease, and its other delegations **SHOULD** be recalled.
+  for 90 s after the revocation, each further revocation restarting the period,
+  and its other delegations **SHOULD** be recalled
+  ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
+  The fence is bounded in time, not tied to the lease: an active client renews
+  its lease on every request, so a lease-long fence would never lift.
 - `CB_RECALL_ANY` is sent when the primary's grant table is over its budget.
 - **A lock request recalls a delegation.** A byte-range lock request from any
   other client — NFSv4 `LOCK`, an NLM lock (§6.1), an SMB lock — on a file under
@@ -908,11 +931,12 @@ NLM codes are for NFSv3 locking (§6).
 
 | Service error | NFSv4 | NFSv3 / NLM |
 | --- | --- | --- |
-| `ErrDelay` — a recall or break in progress, a clone holding the range, the journal's capacity or the share's journal limit refusing a write while offload or repack can drain it, or a stability reply waiting on a stalled store (§9.1) | `NFS4ERR_DELAY` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
+| `ErrDelay` — a recall or break in progress, a clone holding the range, the journal's capacity or the share's journal limit refusing a write while offload or repack can drain it, or a stability reply waiting on a stalled store (§9.1) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrBlocked` — a blocking NLM lock left waiting (§6.1) | — | NLM: `NLM4_BLOCKED` |
-| `ErrNoSpace` — a capacity refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here) names as no space | `NFS4ERR_NOSPC` | `NFS3ERR_NOSPC` |
+| `ErrNoSpace` — a permanent capacity refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here) names as no space: the store denies or has drifted, a retention pin holds the bytes, or the device is full | `NFS4ERR_NOSPC`, at once | `NFS3ERR_NOSPC` |
 | `ErrQuota` — a logical quota | `NFS4ERR_DQUOT` | `NFS3ERR_DQUOT` |
-| `ErrInvalid` — a `COPY` or `CLONE` of overlapping ranges of one file (§9.3) | `NFS4ERR_INVAL` | — |
+| `ErrInvalid` — a `COPY` or `CLONE` of overlapping ranges of one file, or a `CLONE` longer than `clone_max_len` (§9.3) | `NFS4ERR_INVAL` | — |
+| `ErrCrossNamespace` — a `COPY` or `CLONE` between shares in different namespaces (§9.3) | `NFS4ERR_XDEV` | — |
 | `ErrClientInUse` | `NFS4ERR_CLID_INUSE` | — |
 | `ErrSeqMisordered` | `NFS4ERR_SEQ_MISORDERED` | — |
 | `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
@@ -932,6 +956,13 @@ them. A write refused by the journal's capacity or by the share's journal limit
 is `ErrDelay` while offload or repack can drain it, and which refusals become
 `ErrNoSpace`, and when, is [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s
 one table ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)).
+**A transient refusal never becomes "no space" because a deadline ran out.** A
+write still `ErrDelay` at the caller's deadline is answered `NFS4ERR_DELAY` /
+`NFS3ERR_JUKEBOX`, the protocol's native retry-later, and the client retries for
+as long as the outage lasts; only a permanent cause is `NFS4ERR_NOSPC`, at
+once. Linux treats `ENOSPC` on a write as fatal and reports it at `fsync` or
+close, so converting at the deadline would turn a two-minute remote outage into
+lost writes.
 A share's journal limit is a bound on local space, not a quota: answering it
 "no space" at once would fail applications with `ENOSPC` on a share with room
 in the remote tier, while offload clears the limit in seconds. Only a logical
@@ -945,7 +976,8 @@ Lock Manager) takes and releases byte-range locks. **NSM** (Network Status
 Monitor) handles crashes: each side's status daemon (`statd`) records whom it
 holds locks with and, after a restart, sends them `SM_NOTIFY` so they reclaim.
 Here NLM locks are RFC 14 locks, conflicting with NFSv4 and SMB locks, and
-`SM_NOTIFY` is sent when a shard fails over, not when a `protocol` node dies.
+`SM_NOTIFY` is sent when a shard fails over or its primary restarts, not when a
+`protocol` node dies.
 
 ### 6.1 NLM
 
@@ -1045,7 +1077,8 @@ The server monitors clients as its peers expect: a client statd's request to be
 monitored (`SM_MON`) is recorded with the client, as its `Notify`
 ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)).
 
-- After a failover of a shard in which any NLM host held locks, the
+- After a shard in which any NLM host held locks fails over or its primary
+  restarts, the
   installation's NSM state number is raised, durably, before the shard's grace
   begins ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)),
   and the new primary asks the `protocol` node currently holding each address
@@ -1263,9 +1296,11 @@ metadata (`FILE_SYNC`).
   before a loss it was told of.
 - A write refused for capacity is answered as §5.6 says: "retry"
   (`NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`) for the journal's capacity or the
-  share's journal limit while offload or repack can drain it, and "no space"
-  only when [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)
-  says so.
+  share's journal limit while offload or repack can drain it, for as long as
+  that lasts and never turned into "no space" by a deadline, and "no space", at
+  once, only for a permanent cause
+  [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)
+  names.
 
 ### 9.2 Close-to-open, and what the server guarantees
 
@@ -1303,12 +1338,17 @@ guarantees what that needs:
   every `wcc_data`, `before` is absent for a directory, always. For a file it
   is present only when the primary read it from the File and its overlay —
   committed attributes plus every write staged and not yet committed
-  ([RFC 17 §5.7](rfc-17-vfs.md#5.7%20GetAttr)) — in the step that admits the
-  operation, in the file's write order: no write from any client, through any
-  node, is admitted between the capture and the operation, and `after` is read
-  in the same step once the operation is staged. Where the operation cannot be
-  admitted in one such step — a `WRITE` that waits on a recall, a `SETATTR`
-  that commits — `before` is absent and the client revalidates. A `before`
+  ([RFC 17 §5.7](rfc-17-vfs.md#5.7%20GetAttr)) — and accepted the operation in
+  one hold of the file's **accept lock**, the per-file lock every write,
+  truncate and attribute change takes before it draws its `Version`
+  ([RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps),
+  [§9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)):
+  no write from any client, through any node, is accepted between the capture
+  and the operation, and `after` is read in the same hold once the operation is
+  staged. The commit serialisation is not enough, since it orders commits while
+  another write is accepted in between. Where the lock cannot be taken — a
+  `WRITE` that waits on a recall, a forwarded operation, a lock contended past
+  its bound — `before` is absent and the client revalidates. A `before`
   that another client's staged write fell behind would let the client patch a
   stale cache over it.
 
@@ -1329,18 +1369,37 @@ Not served, answered `NFS4ERR_NOTSUPP`: `ALLOCATE`, copy between installations
 `LAYOUTERROR` and `LAYOUTSTATS`, and on a single node every layout operation
 (§3.3).
 
-**`COPY` and `CLONE` are one copy.** Both are the service's `Copy`, the engine's
-journal copy resolved at one point in the source's history under the source's
-guard ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). On the wire:
+**`COPY` and `CLONE` are one mechanism, two atomicities.** Both are the
+service's `Copy`, the engine's clone
+([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone),
+[RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
+RFC 7862 requires atomicity of `CLONE` only, and `COPY` reports the bytes it
+copied. On the wire:
 
+- **`CLONE` is atomic.** The whole range is one clone, resolved at one point of
+  the source, and the reply is sent only when the clone is done. A `CLONE`
+  longer than `clone_max_len`
+  ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
+  1 GiB by default) is `NFS4ERR_INVAL` (`ErrInvalid`) and changes nothing; the
+  client falls back to copying.
+- **`COPY` is not atomic.** It runs as bounded chunks (64 MiB) in offset order,
+  each one small atomic clone, so only the current chunk's source range is
+  frozen and a writer of the source waits at most one chunk; nothing freezes the
+  whole source for the copy. The reply reports the bytes copied: at the
+  caller's deadline the copy stops after its current chunk and answers a short
+  `wr_count`, which RFC 7862 §15.2 allows, and the client continues from there.
 - a `COPY` or `CLONE` whose source and destination are one file and whose
   ranges overlap **MUST** be `NFS4ERR_INVAL` (`ErrInvalid`) and change nothing,
   as RFC 7862 §15.2.3 and §15.13.3 require and Linux answers `EINVAL`;
-- a `WRITE` or `DEALLOCATE` into the source or destination range while the copy
-  runs is `NFS4ERR_DELAY`, so the copy reads one consistent source;
+- a `COPY` or `CLONE` between shares in different namespaces **MUST** be
+  `NFS4ERR_XDEV` (`ErrCrossNamespace`) and change nothing, so the client falls
+  back to reading and writing: no chunk can be adopted across namespaces;
+- a `WRITE` or `DEALLOCATE` into a `CLONE`'s source or destination range, or a
+  running `COPY` chunk's, is `NFS4ERR_DELAY`, so each clone reads one
+  consistent source;
 - a source range the engine reads as Lost is carried to the destination as
-  Lost, never as zeros, and a copy that fails leaves the destination's prior
-  content.
+  Lost, never as zeros; a clone refused at admission leaves the destination's
+  prior content, and one begun is resumed after a crash, never undone.
 
 > decision: `ALLOCATE` is not served. It promises that later writes to the
 > range will not fail for space, and nothing below this adapter reserves
@@ -1359,11 +1418,13 @@ guard ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). On the wire:
 
 A long server-side copy may answer at once and report completion later.
 
-- A `COPY` whose length is at most 64 MiB, or which shares content without
-  moving bytes, runs synchronously.
+- A `COPY` whose length is at most one chunk, 64 MiB, runs synchronously.
 - A longer one with `ca_synchronous` false returns a copy stateid at once and
   runs at the destination file's primary, which holds the copy state
-  ([RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)).
+  ([RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)). It runs as the same bounded
+  chunks as a synchronous copy (§9.3), freezing one chunk's source range at a
+  time, never the whole source; `CB_OFFLOAD` and `OFFLOAD_STATUS` report the
+  bytes copied, which may be short of the request.
 - Completion is a `CB_OFFLOAD` through the client's current callback
   registration (§3.4). A `CB_OFFLOAD` that cannot be delivered is dropped, and
   the client learns the result by asking (`OFFLOAD_STATUS`), which any node
@@ -1410,12 +1471,12 @@ Authentication and principal mapping are RFC 18's (planned). On the wire:
 | N14 | A lock request from another client recalls a read or write delegation before the lock is decided, and meanwhile is answered retry or blocked, never denied; a delegation is never a handle grant. |
 | N15 | An NLM host is its name and source address; NLM callbacks leave from the floating address the host used. |
 | N16 | Audit entries are read or changed only by an administrator, on every minor version; the ctime NFS reports moves on every change. |
-| N17 | A stability reply waits for the journal sync of its range and for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's; a capacity refusal is answered as RFC 8 §10.2 classifies it, and only a logical quota is answered at once. |
+| N17 | A stability reply waits for the journal sync of its range and for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's; a capacity refusal is answered as RFC 8 §10.2 classifies it, a transient one retry-later for as long as it lasts, never "no space" because a deadline passed; only a logical quota or a permanent cause is answered at once. |
 | N18 | The owner string, verifier, creating principal, state protection, back-channel node, session holders and last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `OwnerSeq`. |
-| N19 | A directory's `change_info4` is never reported atomic, and NFSv3 pre-operation attributes are returned only when read from the File and its overlay in the step that admits the operation, never for a directory. |
+| N19 | A directory's `change_info4` is never reported atomic, and NFSv3 pre-operation attributes are returned only when read from the File and its overlay in the hold of the file's accept lock that accepts the operation, never for a directory. |
 | N20 | A single node advertises no pNFS role and answers every layout operation `NFS4ERR_NOTSUPP`. |
 | N21 | An NLM waiter ends only as RFC 14's lifetime ends it; no adapter timer drops it, and no cancel is answered before `CancelLock` returns. |
-| N22 | A `COPY` or `CLONE` of overlapping ranges of one file is `NFS4ERR_INVAL` and changes nothing; I/O into a running copy's ranges is `NFS4ERR_DELAY`. |
+| N22 | A `COPY` or `CLONE` of overlapping ranges of one file, or a `CLONE` over `clone_max_len`, is `NFS4ERR_INVAL` and changes nothing; one across namespaces is `NFS4ERR_XDEV`; a `CLONE` is atomic and answered when done; a `COPY` runs in bounded chunks and may answer a short count; I/O into a running clone's or chunk's ranges is `NFS4ERR_DELAY`. |
 | N23 | A loss of unstable writes reaches the next `COMMIT` as a changed verifier, never as a success under the old one. |
 
 
@@ -1449,7 +1510,7 @@ otherwise; the protocol suites test translation, and the service suite
 | §5.4 reclaim per grace | A client mounts (sending `RECLAIM_COMPLETE`), opens files in two shards, then one shard fails over while its session survives. Assert `SEQ4_STATUS_RESTART_RECLAIM_NEEDED` on the next `SEQUENCE`, its reclaim in the failed shard granted without a delegation, its reclaim in the healthy shard of an open holding a delegation answered with the open and that delegation, and a second failover reclaimed the same way. | `RECLAIM_COMPLETE` counted once per client, a revocation flag as the signal, or a healthy shard dropping a delegation it holds |
 | §5.4 single-node restart | On one node: a client mounts, sending `RECLAIM_COMPLETE`, and takes a lock; restart the node. Assert the shard's incarnation rose, the client's reclaim of the lock is granted rather than `NFS4ERR_NO_GRACE`, and a second client's conflicting lock is refused until the reclaim. | an incarnation raised only when a journal begins serving, so the grace instance repeats |
 | §5.4 NFSv4.0 signal | An NFSv4.0 client holds an open in a shard that fails over. Assert its `RENEW` is `NFS4ERR_STALE_CLIENTID`, a `READ` under the open's stateid `NFS4ERR_STALE_STATEID`, and after it repeats `SETCLIENTID` and the confirm, the client ID unchanged and its reclaim granted. A Linux client completes recovery without looping. | `NFS4ERR_STALE_STATEID` with a valid client ID as the only signal |
-| §5.6 full journal | Fill the journal with offload stalled and the remote reachable; assert a write is answered `NFS4ERR_DELAY` (v4) and `NFS3ERR_JUKEBOX` (v3), not `NFS4ERR_NOSPC`, and succeeds on retry once offload resumes. Fill one share's journal limit the same way: assert `NFS4ERR_DELAY` too, and success once offload drains it. Make the store deny puts; assert `NFS4ERR_NOSPC`. Exceed a logical quota; assert `NFS4ERR_DQUOT` at once. | a share's journal limit answered "no space" at once, or a quota answered "retry" |
+| §5.6 full journal | Fill the journal with offload stalled and the remote reachable; assert a write is answered `NFS4ERR_DELAY` (v4) and `NFS3ERR_JUKEBOX` (v3), not `NFS4ERR_NOSPC`, and succeeds on retry once offload resumes. Fill one share's journal limit the same way: assert `NFS4ERR_DELAY` too, and success once offload drains it. Fill the journal with the store unreachable for 2 minutes, past the caller's deadline: assert every retry is `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, never `NOSPC`, and the writes succeed once the store returns. Make the store deny puts; assert `NFS4ERR_NOSPC` at once. Exceed a logical quota; assert `NFS4ERR_DQUOT` at once. | a share's journal limit answered "no space" at once, a transient refusal turned into "no space" at its deadline, or a quota answered "retry" |
 | §5.3 lock recall | Client A holds a write delegation; client B sends an NLM lock and, separately, an NFSv4 `LOCK` over a range A locked locally. Assert `CB_RECALL` before B's answer, A's lock sent to the server, and B refused. Repeat with A holding a read delegation and no local lock; assert `CB_RECALL` before B is granted. While A delays its `DELEGRETURN`, assert B's NFSv4 `LOCK` answered `NFS4ERR_DELAY`, a blocking NLM lock `NLM4_BLOCKED` and then `NLM4_GRANTED` once A returns, and a non-blocking one `NLM4_DENIED_GRACE_PERIOD` — never `NFS4ERR_DENIED` or `NLM4_DENIED`. | a lock request that does not recall, recalls write delegations only, or is answered "held" or "blocked" with no waiter while the recall runs |
 | §5.3 handle-cached deny mode | An SMB client opens with deny-write under an RWH lease and closes its handle locally. An NFSv4 client opens for write, and an NFSv3 client writes: assert each `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX` while the break runs, then succeeds. Repeat with the SMB handle still in use: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES` only after the break. | an NFS request refused by a deny mode only a handle cache held |
 | §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLM4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |
@@ -1464,9 +1525,9 @@ otherwise; the protocol suites test translation, and the service suite
 | §9.1 stability | Write `DATA_SYNC`, crash the primary, read back. Assert the data and its `size` and `mtime`. Append 10^4 `FILE_SYNC` writes to a new file with the metadata store stalled; assert every reply arrives. Overwrite committed bytes `FILE_SYNC` with the store stalled; assert no success reply until the store commits — `NFS4ERR_DELAY` within the deadline — and that the reply follows that write's existence commit. Same with unstable overwrites and `COMMIT`. | an append waiting on a metadata transaction, or an overwrite answered stable before its existence commit |
 | §9.1 loss verifier | Write unstable, then fail the sync window holding the writes; `COMMIT`. Assert the `COMMIT` succeeds with a verifier different from the writes', the client resends, and the data reads back. | a loss reported as a `COMMIT` error, or a `COMMIT` answered under the old verifier |
 | §9.2 close-to-open | Two clients on two nodes: one writes and closes, the other opens and reads. Assert the new data, for writes staged and not yet committed. Two writes with no commit between them change `change` twice. Write, `GETATTR`, fail the shard over to another node, `GETATTR` again; assert `change` not lower. | `change` from the committed record only, or from a counter that restarts with the primary |
-| §9.2 change info | Run 64 parallel creates in one directory over NFSv4 and NFSv3; assert every `change_info4` has `atomic` false and no NFSv3 `wcc_data` for the directory carries `before`. Two NFSv3 clients on two nodes write one file in parallel, 10^4 writes each; for every reply that carries `before`, assert its `size` and `mtime` equal the previous write's `after` in the file's write order. | a change-info pair reported exact that another create fell between, or a file `before` read outside the step that admits the write |
+| §9.2 change info | Run 64 parallel creates in one directory over NFSv4 and NFSv3; assert every `change_info4` has `atomic` false and no NFSv3 `wcc_data` for the directory carries `before`. Two NFSv3 clients on two nodes write one file in parallel, 10^4 writes each; for every reply that carries `before`, assert its `size` and `mtime` equal the previous write's `after` in the file's write order. | a change-info pair reported exact that another create fell between, or a file `before` read outside the accept-lock hold that accepts the write |
 | §9.3 NFSv4.2 | xfstests over NFSv4.2 (`SEEK_HOLE`/`SEEK_DATA`, `copy_file_range`, `FICLONE`, punch-hole, xattrs); `READ_PLUS` over a file with holes reads zeros where holes are. `ALLOCATE` is `NFS4ERR_NOTSUPP`. | an `ALLOCATE` answered success with nothing reserved |
-| §9.3 copy and clone | `CLONE` and `COPY` of one file onto an overlapping range of itself: assert `NFS4ERR_INVAL` and the file unchanged. During a 1 GiB `CLONE`, `WRITE` into its source range: assert `NFS4ERR_DELAY`, then success after it, and the clone's destination equal to the source before the write. Clone a source with a Lost run: assert the destination reads that run as Lost, not zeros. Fail a clone midway: assert the destination's prior content. | overlapping clones run, a clone reading a source that changed under it, or a Lost run copied as zeros |
+| §9.3 copy and clone | `CLONE` and `COPY` of one file onto an overlapping range of itself: assert `NFS4ERR_INVAL` and the file unchanged. `CLONE` one byte over `clone_max_len`: assert `NFS4ERR_INVAL`. `COPY` and `CLONE` between shares in different namespaces: assert `NFS4ERR_XDEV`, and that Linux `cp` falls back and copies the bytes. During a 512 MiB `CLONE`, `WRITE` into its source range: assert `NFS4ERR_DELAY`, then success after the `CLONE` is answered, and the destination equal to the source before the write. `COPY` a 4 GiB file while writing its source continuously: assert no source write waits longer than one 64 MiB chunk, and that a `COPY` cut by its deadline answers a short `wr_count` the client continues from. Clone a source with a Lost run: assert the destination reads that run as Lost, not zeros. Crash the primary mid-clone: assert after restart the destination equals the source at the clone's point, never zeros or a mix. | overlapping or over-length clones run, a cross-namespace copy attempted, a `COPY` freezing the whole source, a clone reading a source that changed under it, or a Lost run copied as zeros |
 | §9.4 async copy | A 1 GiB `COPY` async; kill the client's `protocol` node before completion; assert `OFFLOAD_STATUS` from another node reports it. | copy state held in the adapter |
 
 **What must not stand in.** A single-node run cannot fail §3.2–§3.5, §4.2 or
@@ -1563,9 +1624,9 @@ Not supported:
 | `DEALLOCATE` | `Deallocate` | holes are RFC 6's |
 | `SEEK` | `Seek` | `NFS4_CONTENT_DATA` / `NFS4_CONTENT_HOLE`, from the engine's allocation answer ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)); a zero ref under a newer overwrite record is data |
 | `READ_PLUS` | `Read` and `Seek` | holes returned as `NFS4_CONTENT_HOLE` segments only where RFC 6 records one, never derived from reads; zeros written as data stay data, and so does a zero ref under a newer overwrite record |
-| `COPY` (intra-server) | `Copy` | sync or async, §9.4; overlapping ranges of one file `NFS4ERR_INVAL` (§9.3) |
+| `COPY` (intra-server) | `Copy` | bounded chunks, not atomic, may answer a short `wr_count`; sync or async, §9.4; overlapping ranges of one file `NFS4ERR_INVAL`; across namespaces `NFS4ERR_XDEV` (§9.3) |
 | `OFFLOAD_STATUS`, `OFFLOAD_CANCEL`, `CB_OFFLOAD` | async copy state ([RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)) | |
-| `CLONE` | `Copy` | the engine's journal copy at one point of the source ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)); overlapping ranges of one file `NFS4ERR_INVAL`; I/O into its ranges `NFS4ERR_DELAY` while it runs (§9.3) |
+| `CLONE` | `Copy` as one atomic clone | the engine's clone at one point of the source ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)), answered only when done; over `clone_max_len` or overlapping ranges of one file `NFS4ERR_INVAL`; across namespaces `NFS4ERR_XDEV`; I/O into its ranges `NFS4ERR_DELAY` while it runs (§9.3) |
 | `GETXATTR`, `SETXATTR`, `LISTXATTRS`, `REMOVEXATTR` (RFC 8276) | `Xattrs`, `SetXattr`, `RemoveXattr` | the user namespace only; the same records SMB extended attributes reach |
 | `COPY_NOTIFY`, inter-server `COPY` | `NFS4ERR_NOTSUPP` | one installation only ([RFC 17 §1.1](rfc-17-vfs.md#1.1%20Non-goals)) |
 | `IO_ADVISE`, `WRITE_SAME`, `LAYOUTERROR`, `LAYOUTSTATS` | `NFS4ERR_NOTSUPP` | |
