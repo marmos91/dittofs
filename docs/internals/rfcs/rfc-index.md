@@ -45,8 +45,8 @@ order: each part builds on the ones before it.
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
 | RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
-| RFC 21 | NFS | planned | decisions the NFS standards leave open |
-| RFC 22 | SMB | planned | decisions the SMB standards leave open |
+| RFC 21 | NFS | draft (on its own branch) | decisions the NFS standards leave open; drafted on the `docs/rfc-21-22-protocols` branch and not yet rebased on this set, so its error table, stable-write and grace rules still predate RFC 8, RFC 14 and RFC 17 |
+| RFC 22 | SMB | draft (on its own branch) | decisions the SMB standards leave open; drafted beside RFC 21 on the same branch, with the same rebase pending |
 | **Operations** | | | |
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
@@ -94,8 +94,10 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** in
 every RFC of this set are to be interpreted as in RFC 2119.
 
 - Each RFC's frontmatter carries its status and what it builds on
-  (`depends_on`); the body does not repeat them, and the table and graph above
-  are generated from it.
+  (`depends_on`), and the table and graph above are generated from it. The body
+  repeats only the status, in the one **Status:** line under its title, which
+  **MUST** match the frontmatter and adds only where its open questions are; it
+  never repeats `depends_on`.
 - **Status** is one of: `planned` (no text yet); `draft` (rules still moving);
   `reviewed` (an external review's findings are closed in the normative text);
   `frozen` (reviewed, and a change to it is made only together with every RFC
@@ -103,12 +105,17 @@ every RFC of this set are to be interpreted as in RFC 2119.
   rules bind only once a second storage node can serve a share,
   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). An RFC is never marked `reviewed` or `frozen` while an RFC
   it builds on is `draft`: a reviewed rule resting on a moving one is not
-  reviewed.
+  reviewed. The pairwise cycles under the graph join into one strongly
+  connected component, RFC 3 to RFC 17, with the deferred RFC 10, 11 and 15
+  inside it, so that component is reviewed as one: none of its members is marked
+  `reviewed` before all of its non-deferred members are. A deferred member holds
+  the review back only through the rules a first-release RFC cites from it; one
+  cited only by **(cluster)** rules is reviewed with the cluster.
 - A rule that binds only in a cluster is marked **(cluster)** where it is
   stated, and links the single-node profile.
-- Normative text names no product, package, file or function. Products appear
-  only in appendices labelled as a profile, an example, prior art, a measurement
-  or where the current code differs.
+- Normative text names no product, package or file. Products appear only in
+  appendices labelled as a profile, an example, prior art, a measurement or
+  where the current code differs.
 - **Every RFC opens with `## Start here`**, written for a reader who knows
   neither the codebase nor the problem: what the component is for, the problem
   shown through one worked example, one drawing, the few terms needed, what it
@@ -117,7 +124,16 @@ every RFC of this set are to be interpreted as in RFC 2119.
   across RFCs use one cast — the `profiles` share of per-user profile
   containers over SMB, the `builds` share over NFS, users alice and bob — so a
   story started in one RFC continues in the next.
-- Signatures are indicative; the obligations around them are normative.
+- Code appears in normative sections only as interface sketches — signatures,
+  types and the names of calls, in most RFCs of the set (RFC 1, 7, 8, 14 and 16
+  most of all). A
+  sketch is indicative: the obligations stated around it are normative, its
+  identifiers and package names are not, and an implementation may name and
+  shape them differently.
+- A number inside a **MUST** is either a fixed value or a setting's default, and
+  [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) lists which. That audit is not finished: about
+  forty-six such sentences have not yet been checked against the list, and until
+  they are, a number in a rule that RFC 13 does not list is a proposal.
 - `ponytail:` notes mark a deliberately simple design and name what would justify
   replacing it; `decision:` notes mark a deliberately narrow rule and name what
   would overturn it.
@@ -191,6 +207,8 @@ failures. The model tests the set specifies:
 | [RFC 9 §11.2](rfc-9-gc.md#11.2%20Group%20B%20%E2%80%94%20model-based%2C%20with%20crashes) | GC | retirement, resurrection, deletion and compaction, with crashes |
 | [RFC 16 §6.2](rfc-16-metadata-store.md#6.2%20Model-based%20and%20property%20tests) | the metadata store | transactions, conflicts and the KV contract |
 | [RFC 10](rfc-10-journal-replication.md) **(cluster)** | replication | its invariants as properties of a cluster model |
+| [RFC 11 §14](rfc-11-ownership.md#14.%20Test%20plan%20and%20benchmarks) **(cluster)** | shards | handover, batched moves, cross-shard operations and failover, on RFC 10's simulator |
+| [RFC 12 §8](rfc-12-snapshots.md#8.%20Test%20plan%20and%20benchmarks) | snapshots, backups and moves | cuts, holds, clones, backups and moves with crashes between their steps |
 
 An RFC that adds a batched or racing rule adds it to its model test, or names
 the counted check that stands in for it.
@@ -233,6 +251,59 @@ that caused it — or, where only the after-merge run sees it, the next change t
 that path — until the regression is explained: fixed, or accepted with its reason
 recorded beside the result. The after-merge run does not undo a merge; the
 explanation is what it waits for.
+
+## Test harness
+
+Each RFC builds the seam its own component needs; this section owns what they
+share, so a check that crosses components runs against one composition rather
+than a private one per RFC.
+
+1. **One clock and one fault interface.** Every component that reads time —
+   the journal, the engine, the syncer, GC, the snapshot cut, leases — takes it
+   from one clock interface (now, timers, and, under test, advance and skew).
+   Every fault seam implements one fault interface: fail, delay, drop, tear or
+   reorder a named operation, on a seeded schedule read from that clock. The
+   seams are the journal's storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), the fake store
+   ([RFC 3 §1.4](rfc-3-syncer.md#1.4%20It%20is%20testable%20on%20its%20own)), the fault transport under a real store client
+   ([RFC 4 §7.2](rfc-4-remote-tier.md#7.2%20Fault%20transport)) and the fault-injecting store wrappers
+   ([RFC 16 §6.4](rfc-16-metadata-store.md#6.4%20Faults%20and%20crashes)). A seam with a private clock cannot take part in a
+   check that skews time across components, such as RFC 0's clock made 5% fast.
+2. **One composed single-node harness.** The production composition root
+   ([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role), [RFC 8 §2](rfc-8-engine.md#2.%20Composition)) builds the node, with the journal's
+   storage seam, the fault-injecting metadata store and the fault transport put
+   in place of the device, the store and the network, and nothing else swapped.
+   Every first-release check that crosses components runs on it:
+   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s checks (an erroring store, the self-fence threshold, a lost
+   metadata store, a clock 5% fast), [RFC 8 §15](rfc-8-engine.md#15.%20Conformance) and [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance).
+3. **A seeded simulator, deferred.** The only seeded deterministic simulator is
+   RFC 10's, deferred with it. When it is built it gains a single-node mode, so
+   the cluster and the single node share one scenario format, and
+   [RFC 12 §8](rfc-12-snapshots.md#8.%20Test%20plan%20and%20benchmarks)'s scenarios move onto it. Until then the composed harness,
+   driven from seeds, stands in.
+4. **A tier for every protocol suite**, with the deployment it runs against.
+   Each runs against one single node composed as in production, its remote tier
+   a local emulator of the remote service unless the row says otherwise.
+
+   | Suite | Tier | Deployment |
+   | --- | --- | --- |
+   | pynfs, NFSv4.0 and v4.1 server tests | after merge | single node; the protocol RFC's known-failure list |
+   | the Linux kernel NFS client: connectathon-style basic, general and lock tests, and a filesystem regression suite (xfstests) | daily | single node; kernel client over NFSv3, v4.0 and v4.1 |
+   | smbtorture, SMB2 and SMB3 groups | after merge | single node; the protocol RFC's known-failure list |
+   | real Windows and Linux SMB clients | daily | single node, once a day against a real remote service as well |
+
+   The protocol RFCs (RFC 21 and RFC 22) own which tests each
+   suite must pass; this table owns only when they run and against what.
+
+### Today's suites, mapped to the tiers
+
+*Non-normative: where the current code differs.* The existing suites carry
+over as follows; none is deleted until its tier row above runs instead.
+
+| Today | Becomes | Tier |
+| --- | --- | --- |
+| `pkg/metadata/storetest` conformance suite | the metadata store's conformance suite ([RFC 16 §6.1](rfc-16-metadata-store.md#6.1%20Two%20suites%2C%20layered%20like%20the%20code)), run on the fault-injecting store as well | per change |
+| `RemoteBlockStoreConformance` | the remote tier's conformance suite ([RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite)): against the emulator per change, against a real service daily | per change, daily |
+| `test/e2e` (kernel NFS client against a running server) | the kernel-client row above | daily |
 
 ## Reference workloads
 

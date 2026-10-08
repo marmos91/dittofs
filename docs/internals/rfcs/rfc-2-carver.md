@@ -119,9 +119,10 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
   What that hides is scoped by [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys): in an encrypting namespace, a
   bucket reader who can cause no write into it cannot confirm a file by hashing
   it; in a non-encrypting one the key is in the clear and nothing is hidden.
-  An encrypting namespace also keys where boundaries fall and seals chunk
-  lengths in block headers, which hides a known file's boundaries only from a
-  reader who cannot get content of their choosing into the namespace
+  An encrypting namespace also keys where boundaries fall, which hides which
+  known file a run of chunk lengths belongs to — the lengths themselves stay
+  visible to a bucket reader — and only from a reader who cannot get content of
+  their choosing into the namespace
   ([§6](#6.%20Boundaries%20are%20public)). A non-encrypting namespace cuts under the public, unkeyed table.
 
 ### How the rest is organised
@@ -972,16 +973,17 @@ header**: a block's header indexes each chunk body's offset and encoded length
 ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), and encoding changes a length by a fixed or bounded amount, so the
 plaintext lengths can be read off to within it. Its chunk IDs are keyed, but
 under a key in the clear beside the blocks ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so they hide
-nothing either. **In an encrypting namespace the header seals both** the IDs and
-each body's offset and length ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)); what a bucket reader still
-sees is each block's size, and a chunk's length wherever a log of ranged gets
-shows which range was read.
+nothing either. **In an encrypting namespace the header seals the IDs**, but not the
+lengths: every encrypted body starts with the same clear envelope, so one get of
+a block and a scan for it yields every body's offset and length
+([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). A bucket reader sees every chunk's length in
+either kind of namespace.
 
 **Without encryption, boundaries stay public**, and an implementation **MUST NOT**
 claim otherwise.
 
 **With encryption, boundaries are keyed.** When a namespace encrypts, its header
-IDs and lengths are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
+IDs are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
 derived from a **chunking key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so an observer without it cannot predict where
 a candidate file's boundaries fall, and so cannot match the lengths it sees to
 the file. Which namespaces hold a chunking key, and how, is
@@ -1002,16 +1004,14 @@ the file. Which namespaces hold a chunking key, and how, is
   ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)); rotating data keys ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) re-encrypts and cuts nothing;
 - it costs no deduplication: chunks are compared within one namespace only
   ([§4.3](#4.3%20Key%20scope)), and every share of the namespace cuts under the same key;
-- what it leaves visible is block sizes, repetition, and a chunk's length
-  wherever a ranged read of it is seen. Keying hides which file the lengths
-  belong to; sealing the index hides them from the header, not from a request
-  log.
+- what it leaves visible is block sizes, repetition, and every chunk's length,
+  which the clear envelopes give a bucket reader. Keying hides which file the
+  lengths belong to; it does not hide the lengths.
 
 **What the key protects against: passive observers only.** Recent work [5]
 recovers the keys of deployed keyed-chunking schemes, gear-table ones included,
-from the chunk lengths of content the attacker chose. Sealing the index takes
-those lengths out of the header, but a reader of the service's request log, or
-one who sees which ranges are read, still recovers them. So anyone who can both read the bucket and
+from the chunk lengths of content the attacker chose, and a bucket reader sees
+those lengths in the stored bodies. So anyone who can both read the bucket and
 get content of their choosing cut in the namespace can map the table: not only a
 writer of the namespace, but anyone who can cause a write into it, such as a
 sender whose mail lands in a profile container. The claim is scoped to an
@@ -1201,8 +1201,9 @@ into two chunks ([§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20ca
 
 - random data, where boundaries come from the fingerprint;
 - zeros, where only `Max` ends a chunk, and a repeating pattern of period 64 or
-  less, where at most `p` fingerprints exist ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)); and a period just above 64, where
-  boundaries return;
+  less, where at most `p` fingerprints exist ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)); and a period above 64, where the
+  fingerprint still takes at most `p` values, so boundaries fall at a fixed
+  multiple of the period or not at all, never below `Min`;
 - random data with a repetitive region in the middle, crossing in and out of it;
 - the same bytes at two `base` offsets, which **MUST** produce one set of hashes.
 

@@ -352,7 +352,7 @@ type ExportPolicy struct {
 	Clients     []ClientRule  // first match decides; no match refuses. Empty admits every client
 	Squash      Squash        // none, root, all
 	Anonymous   Principal     // what a squashed caller becomes
-	SMB         SMBShareFlags // encrypt, require signing, hidden from enumeration, continuously available
+	SMB         SMBShareFlags // encrypt, hidden from enumeration, continuously available
 	Version     uint64        // raised by every change; the authorisation cache key carries it
 }
 
@@ -372,7 +372,12 @@ type Netgroup struct {
 }
 
 // Installation is the installation's identity: one record. ID is minted at
-// random when the store is created and never changed. It is the NFSv4.1 server
+// random by the explicit initialisation step, which writes it here and into
+// every journal's format file (RFC 1 §3), and is never changed. A start never
+// creates this record: a start that finds journals naming an installation and
+// no record, or a record and no journal, reports the side that is missing
+// ("metadata store lost", or a journal foreign or missing) and waits for an
+// operator (RFC 13 §2.2). It is the NFSv4.1 server
 // owner's major ID and the server scope on every node (RFC 14 §2.1), and the
 // input the pseudo-filesystem's handles digest (RFC 7 §6.1). A store copied to
 // make a second installation MUST be given a new one, or two installations
@@ -386,11 +391,12 @@ type Installation struct {
 	// says which copy is the installation.
 	Instance   [16]byte
 	Generation []byte // the platform's machine-generation identifier last seen; empty where the platform offers none
-	// Active is the version written for each shared format — store format,
-	// journal format, block format, settings schema, (cluster) node messages —
-	// raised only by the control plane's gate once every registered node's
-	// range holds the new version (RFC 13 §5.5), never by a binary opening the
-	// store.
+	// Active is the version written for each shared format other than the
+	// store format — journal format, block format, settings schema, (cluster)
+	// node messages — raised only by the control plane's gate once every
+	// registered node's range holds the new version (RFC 13 §5.5), never by a
+	// binary opening the store. The store format's one record is \x00format
+	// (§4.6), which the same gate raises.
 	Active map[Format]uint32
 }
 
@@ -489,6 +495,7 @@ type Setting struct {
 type Secret struct {
 	ID    SecretRef
 	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, remote credential, key, node credential (RFC 15 §4.4)
+	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
 	Value []byte     // sealed
 }
@@ -851,7 +858,7 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `F‖id‖s‖streamID` | named stream link |
 | | `F‖id‖e‖digest‖key` | Entry, under its **parent** directory. `key` is the name folded by the share's fold rule (§4.6), the identity on a case-sensitive share; `digest` is the 63-bit keyed digest of `key` that orders a listing and is its resume cookie ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)); the fold is [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case)'s; the name's original bytes are in the value |
 | | `F‖id‖t‖unique` | directory time delta, carrying the cut it was written after (§4.4) |
-| | `F‖id‖h‖start`, `F‖id‖rm‖version` | Hole; Removal, with its range, kind, the cut it was written after, and its pruning cursor ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)) |
+| | `F‖id‖h‖start`, `F‖id‖rm‖version` | Hole; Removal, with its range, kind, the cut it was written after, and its pruning cursor, and for a clone its **clone spec** — source FileID, source offset, destination offset, length and the journal position `asOf` the source was read at — from which a clone resumes after a crash, its source range registration rebuilt ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)) ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)) |
 | | `F‖id‖ow‖start` | Overwrite record: an extent of content whose existence was committed and which a later committed write replaced, with the newest such write's version; an offset in it whose covering ref's `newest` is below that version reads as uncarved. Written only by an existence commit, never for an append or a first write into a hole ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes), [§3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)) |
 | | `F‖id‖r‖offset` | ChunkRef, live; its value carries `nsgen`, the generation of the share's namespace its chunk is counted in ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `F‖id‖H‖died‖suffix` | **history** of a versioned per-file record: the value it had, under its live key's suffix — `r‖offset` (ChunkRef), empty (File), `acl`, `x‖name`, `s‖streamID`, `e‖digest‖key`, `h‖start`, `ow‖start` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) |
@@ -870,7 +877,6 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `S‖id‖hr‖cut‖shard` | hold record: the shard's journals still hold content of that cut not yet offloaded; written by the cut, and for the receiving shard by a move's commit that ships held versions ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) |
 | | `S‖id‖use‖cut‖useID` | use record: its kind — `clone`, `restore`, `backup`, `copy` or `move` — reading that snapshot, and the deadline its reader renews, which a `move` record has none of; while one exists the snapshot cannot be deleted ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot)) |
 | | `S‖id‖rh` | re-home record: the new namespace, the cursor and the pass number of a running re-home; its existence refuses new clones, new catalog backups and moves of either namespace with `ErrRehoming`, while snapshots, copying backups and reads of existing snapshots go on ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
-| | `S‖id‖pk‖ns‖FileID‖offset‖died` | parked ref: a ref a re-home dropped from namespace `ns` while an unexpired catalog backup taken before the re-home finished still needs it; keeps its chunk count and reverse key in `ns`, is seen by no read, snapshot or listing, only by `ns`'s GC, and is dropped when the last such backup expires ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `S‖id‖or` | `old_refs`: the share's refs still at the old generation during a re-home, folded like usage: a transaction that writes or drops such a ref writes the change in its usage delta (`S‖id‖ud‖…`), never to this key (§4.4) |
 | | `S‖id‖u`, `S‖id‖pu‖principal`, `S‖id‖pj‖project` | folded usage: share, with its `history_bytes`, principal, project (§4.4) |
 | | `S‖id‖ud‖shard‖unique` | usage delta, not yet folded, per shard (§4.4) |
@@ -884,10 +890,11 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `BR‖ns‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖bucket‖name` | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 | | `NS‖ns‖gc‖lease‖shard`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per prefix shard with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
-| | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, and the last one it wrote; a `Recheck` reads the claim and compares it with these before any rewrite ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
+| | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, and the last one it wrote; a `Recheck` reads the claim and compares it with these before any rewrite. Every claim put on any path — start, `Recheck`, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
 | | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; GC reads it before every pass and batch, and every relocation commit guards it ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
 | | `NS‖ns‖gc‖cursor‖walk‖shard` | walk cursor per kind of walk (audit, block walk, index rebuild) and shard, so a restarted walk resumes; derived |
-| | `NS‖ns‖key‖kind‖keyID` | namespace key record: kind (`chunk-id-key`, `chunking-key`, `header-key`, `export-key`, `data-key`), ID, fingerprint, the ID of the master key that wraps it, the wrapped bytes, and state — `current`, `retired` or `destroyed`; a destroyed key keeps only ID, fingerprint and state. Not a secret: useless without the master key, which is never here ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
+| | `NS‖ns‖pk‖ShareID‖FileID‖offset‖died` | parked ref: a ref a re-home dropped from namespace `ns` while an unexpired catalog backup taken before the re-home finished still needs it, filed under `ns`'s prefix and owned by `ns`'s installation, so moving the re-homed share neither carries nor drops it; it keeps its chunk count and reverse key in `ns`, is seen by no read, snapshot or listing, only by `ns`'s GC, and is dropped when the last such backup expires ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
+| | `NS‖ns‖key‖kind‖keyID` | namespace key record: kind (`chunk-id-key`, `chunking-key`, `header-key`, `export-key`, `data-key`), ID, fingerprint, the ID of the master key that wraps it, the wrapped bytes, and state — `current`, `retired` or `destroyed`; a destroyed key keeps only ID, fingerprint and state. Every key is wrapped but one: a non-encrypting namespace's chunk-ID key, held in the clear, with no master key ID. Each record reaches the namespace's `keys` control object and every backup location its policies write to before it becomes current. Not a secret: a wrapped key is useless without the master key, which is never here, and the one clear key hides nothing its plaintext blocks do not already show ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
 | | `NS‖ns‖bk‖location` | folder record: the copy or sweep holding the namespace's block folder at a backup location, its deadline, the **lease number** raised at every take, which every sweep commit reads, and the folder's census of (material ID, fingerprint) ([RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location)) |
 | **Server-wide** | `U‖principal`, `G‖principal` | User, Group, keyed by `PrincipalID` |
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
@@ -895,7 +902,7 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `NP‖path` | share path index: path → `ShareID`, unique; the pseudo-filesystem is built by listing it (RFC 17 §4.9) |
 | | `NG‖name` | Netgroup |
 | | `SL` | ShareList: one version per installation |
-| | `IN` | Installation: the installation's identity, written once at store creation; its instance part and recorded machine-generation identifier; and the active version of every shared format, raised only by the control plane's gate (§2.3, §4.6) |
+| | `IN` | Installation: the installation's identity, written once by the explicit initialisation step, which writes the same ID into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); its instance part and recorded machine-generation identifier; and the active version of every shared format but the store format, which `\x00format` holds, each raised only by the control plane's gate (§2.3, §4.6) |
 | | `NSM` | the NSM state number, one per installation; raised durably before the grace of any failover that lost NLM locks ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
 | | `PX‖scheme‖id` | protocol-ID index: UID, GID, SID → `PrincipalID`; the only place a protocol spelling is stored (§2.2) |
 | | `N‖node`, `N‖node‖exp` | Node: its roles, binary version, the version range it reads and writes for every shared format, failure domain, node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease (cluster): the lease's expiry, which a renewal writes with its journals' generations and nothing else, and a resume rewrites with the node record ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). On a single node the node record's epoch rises at every start and no lease is written ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) |
@@ -907,9 +914,9 @@ Every key starts with a kind byte. The layout encodes the boundary
 | | `RS‖partition` | (cluster) repair scheduler lease per partition of the shard-ID hash, with its epoch ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)) |
 | | `MV‖giving‖receiving` | move record: the cursor of a move of files from the giving shard to the receiving one, one per pair, so a crashed move resumes and several moves out of one shard run at once ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | | `SLOT` | (cluster) slot table: the fixed slot count and each slot's ordered nodes, primary first, in distinct failure domains, weighted by node capacity; one per installation, changed only by compare-and-swap ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) |
-| | `CFG‖scope‖key` | Setting |
+| | `CFG‖scope‖key` | Setting. A backup location's record ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)) is one, and carries two system fields the control plane writes when it creates the record: the put-integrity outcome, and the **location health object's identity** — the version of `<location>control/health` at an immutable location, the nonce written in it at a mutable one ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)) |
 | | `CFGGEN` | settings generation: one installation-wide counter, raised in the transaction of every `Setting` or `Secret` change; every node point-reads it each second and re-reads the records when it moved ([RFC 13 §5](rfc-13-configuration.md#5.%20Binding%20classes)) |
-| | `SEC‖id` | Secret (§2.3): envelope-encrypted, never dumped or exported |
+| | `SEC‖id‖version` | Secret (§2.3), one key per version, the previous one kept only until every node reports the current one: envelope-encrypted, never dumped or exported |
 | | `CL‖clientID`, `CL‖clientID‖sh‖shard` | durable Client record. Its fields are **exactly** these, and the store **MUST** write no other: protocol, owner, boot verifier, principal (zero for an SMB record, which is keyed by `ClientGuid` alone and names a machine, not a user), state protection, the NFSv4.1 `CREATE_SESSION` sequence ID and its cached reply (`CSSeq`, `CSReply`: RFC 8881 §18.36.4 compares `csa_sequence` with them after any restart or failover), whether its state was revoked, and (cluster) lease owner, back-channel node, path-down flag and session holders ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client), [§8](rfc-14-open-state.md#8.%20What%20is%20durable)). `Expires` **MUST NOT** be written: it is volatile, held by the lease owner, so a renewal (`SEQUENCE`, `RENEW`) writes nothing; written, it would make 10⁵ clients cost 10⁵ writes per lease period. The record is rewritten only when one of its fields changes. One key per shard the client held state in (`Client.Shards`), checked on reclaim, whose value is the grace instance of the client's last `RECLAIM_COMPLETE` there and, for NFSv4.0, whether a loss of that shard's state is still to be signalled to the client ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); for an NLM host also its notification address, so these records are the NSM monitor list ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
 | | `CLO‖protocol‖owner` | client owner index: the client's own name for itself → `ClientID`, unique, so `EXCHANGE_ID`, `SETCLIENTID` and an SMB negotiate find the record after any restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
 | **Store** | `\x00format` | store format record (§4.6) |
@@ -1064,7 +1071,11 @@ read raw keys.
 ### 4.6 Store format
 
 One record, `\x00format`, holds one integer, the store format, and the fold
-rules the store's shares use. Opening a store **MUST** read it first and refuse a
+rules the store's shares use. It is the **only** record of the store format:
+the store format's active version is this integer, and the control plane's gate
+raises it by rewriting this record, in the transaction that checks every
+registered node's range. The explicit initialisation step writes it, with the
+Installation record, when it creates the store. Opening a store **MUST** read it first and refuse a
 format outside the range the binary reads and writes, before reading any other
 key. A new record kind, a key encoding, or permission to write a new codec
 version is a format bump: format *n* names, in code, the codec versions a binary
@@ -1072,8 +1083,8 @@ may write, so no value is written that an older reader of format *n* cannot
 decode.
 
 **A store is never upgraded by being opened.** The format a store is written in
-is the store format's *active version* in the Installation record (§2.3), and it
-is raised only through the control plane's gate, which refuses while any
+is the store format's *active version*, the integer in `\x00format`, and it is
+raised only through the control plane's gate, which refuses while any
 registered node's range lacks the new version ([RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)). A newer binary
 opening an older store keeps writing the older format, on a single node as in a
 cluster, and records its own range in its node record. Until the raise, the
@@ -1081,14 +1092,19 @@ older binary still opens the store, so rolling back a single node is
 reinstalling the old binary; after it, the older binary refuses the store and
 says why. A format change that would let a newer binary read only a store it has
 rewritten is not a format bump but a migration, run as its own operator step.
-Each node's ranges sit in its node record and the active versions in the
-Installation record (§2.3), so the gate reads both in one scan.
+Each node's ranges sit in its node record, the store format's active version in
+`\x00format` and the others in the Installation record (§2.3), so the gate reads
+all three in one scan and raises a version in one transaction. With one record
+for the store format, an old binary that reads `\x00format` first finds the
+raised version there and refuses; two records could disagree, and the first
+check would pass a binary the second refuses.
 
 **Fold rules.** An entry's key is its name folded by the share's fold rule
 (§4.2), so the rule is part of the key encoding: a binary that folded one name
 differently would miss existing entries and admit duplicates. Each fold rule is
-recorded in the format record by ID with its definition's version (the
-Unicode version and case mapping it applies); a share's case setting names
+recorded in the format record by ID, and an ID names one 16-bit **upcase
+table**: the mapping each UTF-16 code unit of a name goes through, unit for
+unit, with no normalisation ([RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case)). A different table is a new ID; a share's case setting names
 one ID and is bound ([RFC 13](rfc-13-configuration.md)); a binary that does not implement every
 recorded rule **MUST** refuse the store. The identity rule serves
 case-sensitive shares.

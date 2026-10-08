@@ -37,7 +37,7 @@ that no single component can keep on its own.
 
 ### The problem
 
-An object store is cheap, durable and close to bottomless, but it has the wrong
+An object store is cheap, outlives any one machine and is close to bottomless, but it has the wrong
 shape for files:
 
 - an object is written whole and never changed in place, so changing 64 KiB of a
@@ -245,7 +245,8 @@ The words the whole set shares, one or two sentences each. **The row is the
 definition**; the linked section elaborates it, and every other RFC uses the
 word in this sense and does not redefine it. A linked section that drifts from
 its row is a defect in that section, and a row changes only together with the
-sections that rely on it. Where a word is overloaded across RFCs, its row names
+sections that rely on it. A row that says it defers to a section — the epoch's
+and the loss event's — gives only the gist, and that section is the definition. Where a word is overloaded across RFCs, its row names
 every sense. A row marked **(cluster)** names a thing the first release does not
 have ([§1.4](#1.4%20The%20single-node%20profile)).
 
@@ -342,7 +343,7 @@ Two families of unit. The **bytes** units say where content is; the
 | Term | Means | Defined in |
 | --- | --- | --- |
 | **journal** | the local tier: one per device on a storage node, holding recent writes until they are offloaded | [RFC 1](rfc-1-journal.md) |
-| **remote tier** / **remote store** | the durable object storage behind the journals / one configured backend of it | [RFC 4](rfc-4-remote-tier.md) |
+| **remote tier** / **remote store** | the object storage behind the journals, where offloaded content is held / one configured backend of it | [RFC 4](rfc-4-remote-tier.md) |
 | **remote block store** | one backend's adapter: it maps block names to object keys and makes one attempt per call | [RFC 4 §2](rfc-4-remote-tier.md#2.%20The%20dividing%20line) |
 | **bucket** | the object-store container a remote store points at; it holds one or more namespaces, each under its own prefix | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) |
 | **namespace** | one prefix, like a folder, inside a bucket of the remote tier; chunks are named under its chunk-ID key and counted (and, once deduplication is added, deduplicated) within it, never across two. Whether it encrypts is fixed when it is created | [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count) |
@@ -369,10 +370,10 @@ Two families of unit. The **bytes** units say where content is; the
 | **replica set** | **(cluster)** a shard's primary and its replicas; an acknowledged write is in all of their journals until offloaded | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
 | **shard record** | the metadata-store record naming a shard's primary as (node, node epoch, journal identity, join incarnation), its shard incarnation, its replicas, its epoch and its replica count and floor; it changes only by compare-and-swap. The **join incarnation** **(cluster)** is raised each time a node joins the shard as a replica, so a node that left and returned is never taken for the copy that left | [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities) |
 | **shard incarnation** | a number in the shard record raised each time a node or journal begins serving the shard as primary — every start of the node, a re-claim and a journal attach included — and by nothing else. It fences nothing, unlike the epoch: it is an input of the write verifier and names the grace instance | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms), [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
-| **stall bound** | **(cluster)** how long a node's journal sync, serving loop or replication to every replica may make no progress before the node stops renewing its lease and its shards fail over; an installation setting, 5 s by default | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **stall bound** | **(cluster)** how long a node's journal sync or serving loop may make no progress before the node stops renewing its lease and its shards fail over; an installation setting, 5 s by default. A shard whose replication stalls does not count against it: its primary relinquishes that shard alone ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
 | **node lease** | **(cluster)** the one lease each storage node renews in the metadata store; a node whose lease lapsed serves nothing, a takeover marks its node record lapsed, and every commit on its shards guards that mark. Not a client lease, nor an SMB lease | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
 | **node epoch** | a number raised for one node at every start and, in a cluster, every new lease; a node whose lease lapsed takes a new one at a higher node epoch and is primary of nothing until it takes a shard over. The write verifier is derived from it, not from the shard epoch | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
-| **epoch** (shard epoch) | a number in the shard record, raised by every change of its primary or replicas but a lone node's re-claim, and not by a raise of the shard incarnation alone; **(cluster)** a message carrying an older one is refused, and a commit is refused unless the file's fence records hold exactly its (shard, epoch) and the primary's node record is not marked lapsed | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
+| **epoch** (shard epoch) | in gist, a number in the shard record raised by every change to it that must fence a sender; **(cluster)** a message carrying an older one is refused, and a commit is refused unless the file's fence records hold exactly its (shard, epoch) and the primary's node record is not marked lapsed. Which changes raise it, and which raise only the shard incarnation, is stated once in [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms); this row defers to it | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) |
 | **fence records** | two records per file, `F_x` and `F_o`, each holding the (shard, epoch) the file's commits must carry; read and written by every commit of their path, so two concurrent commits of one file conflict. On a single node only the epoch comparison is moot ([§1.4](#1.4%20The%20single-node%20profile)) | [RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit), [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency) |
 | **committed point** | **(cluster)** per shard, the newest version at or below which the whole replica set holds every operation | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
 | **takeover** / **handover** | **(cluster)** a replica becoming primary after the primary's lease lapsed, followed by grace / a planned change of primary, with no lease wait and no grace | [RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover), [RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover) |
@@ -396,7 +397,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **chunk record** | one per chunk ID per namespace: which block holds the chunk, where in it, and the chunk's refcount. Two files that carried identical bytes name one record, located in the first carrier's block ([§3.1](#3.1%20Deduplication)) | [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk) |
 | **block record** | one per block: how many of its chunks are still referenced, and its state — `live`, `retired` or `deleted`. It exists only once the block is stored | [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block) |
 | **reverse ref index** | one key per ref, ordered by chunk hash; the deleter reads it before every delete, and the counts are a cache of it | [RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority) |
-| **existence** | a file's size, holes, overwrite set and modification time: that a write happened, recorded apart from its content. Group-committed across files within a bounded age (1 s proposed); a stability point waits for the existence commit of every pending write it covers that overwrites committed content, and a snapshot cut commits its share's pending existence before its gate closes; until committed, the journal is its authority | [§5.1](#5.1%20Write), [RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence) |
+| **existence** | a file's size, holes, overwrite set and modification time: that a write happened, recorded apart from its content. Group-committed across files within a bounded age (1 s proposed); a stability point waits for the existence commit of every pending write it covers that overwrites committed content, and a snapshot cut, once its gate is closed and its cut points taken, commits its share's pending existence behind the gate; until committed, the journal is its authority | [§5.1](#5.1%20Write), [RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence) |
 | **hole** | an extent of a file below its size that was never written, or was deallocated; it reads as zeros with no fetch. Recorded as its own record, never inferred from gaps between refs | [RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents) |
 | **hole** / **uncarved** / **carved** | metadata's three answers for an offset below the size: never written; written but with no current chunk; covered by a current chunk | [RFC 6 §3.2](rfc-6-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) |
 | **overwrite set** | per file, one overwrite record for each run of a committed write that overlapped content whose existence was committed before it, with the newest version covering the run; an offset under a record newer than its ref is uncarved, so a lost overwrite reads as Lost, never as the old chunk. A record leaves only where refs at or above its version cover its whole extent, or the extent became a hole | [RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents) |
@@ -409,7 +410,7 @@ Two families of unit. The **bytes** units say where content is; the
 | Term | Means | Defined in |
 | --- | --- | --- |
 | **residency** | where an extent's bytes are, computed on every read from the journal's answer and metadata's, and never stored: one of the five classes below | [§4.2](#4.2%20The%20residency%20function) |
-| **Absent** | metadata says hole (or past the end of the file) and the journal holds nothing: reads as zeros, with no fetch | [§4.2](#4.2%20The%20residency%20function) |
+| **Absent** | metadata says hole (or past the end of the file), or a zero ref covers the offset, and the journal holds nothing: reads as zeros, with no fetch | [§4.2](#4.2%20The%20residency%20function) |
 | **Dirty** | the journal holds the bytes and no current chunk covers them: served locally, and never evicted | [§4.2](#4.2%20The%20residency%20function) |
 | **Resident** | a current chunk covers the bytes and the journal still holds them: served locally, evictable | [§4.2](#4.2%20The%20residency%20function) |
 | **Remote** | a current chunk covers the bytes and the journal does not hold them: fetched, verified and served | [§4.2](#4.2%20The%20residency%20function) |
@@ -433,7 +434,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **retire** / **resurrect** | move a block record to `retired` in the transaction that leaves its count of referenced chunks at zero / bring it back to `live` when a clone, copy or restore references one of its chunks again | [RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses) |
 | **trash** | the wait between a block's retirement and its deletion, 48 hours by default; it postpones a delete the refs already allow and never allows one | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) |
 | **delete** | (file) remove its last entry; its refs go at release, and nothing leaves the remote tier / (block) `retired` to `deleted`, done only by the deleter after checking the reverse ref index, then the object is deleted | [§7](#7.%20Mutation%20and%20removal), [RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes) |
-| **loss event** | an extent the journal stopped holding without being asked — dropped as corrupt or stale, or in a failed sync window — recorded by the exact records lost, by sequence number, so content those records superseded is held again; a loss of content not yet offloaded raises the loss generation | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
+| **loss event** | an extent the journal stopped holding without being asked — dropped as corrupt or stale, or in a failed sync window — recorded by the exact records lost, by sequence number; what else a loss reaches — whether content a lost record superseded is held again — is RFC 1 §3.8's rule, which this row defers to; a loss of content not yet offloaded raises the loss generation | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
 
 ### Clients and protocols
 
@@ -521,7 +522,7 @@ server that writes a shard is its primary.
 
 DittoFS stores file content in two tiers. The **journal** is the local tier: it
 holds bytes on this machine, one journal per device, each serving the files of
-many shares. The **remote tier** holds them durably elsewhere.
+many shares. The **remote tier** holds them elsewhere, once they are offloaded.
 "Journal" names the component throughout this set; where a sentence contrasts
 the two sides, "remote tier" is its counterpart.
 
@@ -628,9 +629,10 @@ cases, and where the two differ for one node, this section wins:
   points ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)). The cluster's use of them is
   [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency).
 - **The clock bound.** A wait that outlasts a timeout another clock measured
-  waits *T* × (1 + ρ) + σ, where *T* is the timeout, ρ the **clock-rate bound** —
-  how far one clock's rate may differ from another's over the wait, 0.05 in the
-  first release — and σ the **clock-offset bound** — how far apart two hosts'
+  waits *T* × (1 + ρ) + σ on its own clock, where *T* is the timeout, ρ the
+  **clock-rate bound** — how much faster the waiter's clock may run than the
+  clock that measured the timeout, as a fraction of that clock's rate, 0.05 in
+  the first release — and σ the **clock-offset bound** — how far apart two hosts'
   clocks may read when the wait starts from a timestamp the other host recorded,
   1 s in the first release, and 0 for a wait measured wholly on one monotonic
   clock. Every single-node wait on another process's or installation's timeout
@@ -654,11 +656,11 @@ cases, and where the two differ for one node, this section wins:
 | fence records | read and written exactly as in a cluster: every commit of a path reads its fence record and the commits that conflict with it write it ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)), so two concurrent commits of one file — two offload passes, an offload and a removal — conflict and one retries. Only the epoch comparison is moot: the shard's epoch does not change on one node | the epoch carried in the records changes with the primary ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)) |
 | put intents | at start, before its first offload, the node abandons every put intent recorded under its shards ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)): it is the only writer, so every attempt an earlier process began has ended | an intent records the node epoch it was written under, and is abandoned once the shard record no longer names that (node, node epoch) as primary ([RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms)) |
 | self-fence | owned by the engine, which issues the node's existence, offload and removal commits ([RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)). Once a write transaction has been outstanding or failing and **no write transaction has committed for 30 s** — the default request deadline ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) — the node stops acknowledging writes and stability points, answering retry-later ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)), and keeps serving reads. The trigger counts commits, not answers, so a store whose writes fail fast while its reads complete — device full, a read-only remount — trips it like one that answers nothing. It is a local fault, reported as a health condition of the node, never a lease loss: it clears when a write transaction commits, with no new node epoch and no grace | at half the node lease, as a lease loss |
-| stability under a store stall | a stability reply that covers an overwrite of committed content waits for its existence commit, answering retry-later within the caller's deadline and then failing; one that covers only appends and hole fills is answered after its sync. One rule, [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) | the same |
+| stability under a store stall | a stability reply that covers an overwrite of committed content waits for its existence commit until the caller's deadline and is then answered retry-later, never success; one that covers only appends and hole fills is answered after its sync. One rule, [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) | the same |
 | write verifier | derived from the node, its node epoch, the process instance, the shard's incarnation and the journal's loss generation ([§4.2](#4.2%20The%20residency%20function)) | the same inputs, at whichever node is primary |
 | version order | a journal raises its counter above a share's version floor before serving a share it did not serve when it opened ([§2.1](#2.1%20Entities)) | the same rule at every takeover and move |
 | lost journal device | the shares it served are refused until an operator acknowledges the loss ([§10](#10.%20Failure%20model)) | a replica holding the content takes over with no operator |
-| lost metadata store | the embedded store goes with its host; the installation is rebuilt by a recovery import from the newest catalog backup ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)), which an operator starts ([§10](#10.%20Failure%20model)) | the replicated store survives the loss of a node |
+| lost metadata store | the embedded store goes with its host; the installation is rebuilt by a recovery import from the newest catalog backup ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)), which an operator starts ([§10](#10.%20Failure%20model)). An installation exists only by an explicit initialisation step, which writes its installation ID into the store's bootstrap and into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); a start never creates a store, so a start that finds a journal naming an installation and no store is this row, never a first start. A start-time option to initialise when both sides are empty exists for development and tests only | the replicated store survives the loss of a node |
 | pNFS | none: the node advertises no pNFS metadata-server role, and every layout operation (`LAYOUTGET`, `LAYOUTCOMMIT`, `LAYOUTRETURN`, `GETDEVICEINFO`, `GETDEVICELIST`) answers `NFS4ERR_NOTSUPP` | layouts and the data-server role ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)) |
 
 > decision: on one node a store stall fences only after 30 s, not at half a
@@ -677,8 +679,8 @@ cases, and where the two differ for one node, this section wins:
 | incarnation on attach | Attach a share to a second journal whose counter is below the share's version floor. Assert the incarnation rose, the verifier changed, and a write after the attach reads back rather than the ref imported with the share. |
 | fences on one node | Run two offload passes over one file whose commits interleave, with an overwrite record pruned between them. Assert the older pass's commit conflicts on `F_o` and retries, and never writes its ref over the newer one. A design that skips the fence records on one node lets the older ref land. |
 | no pNFS | Send `EXCHANGE_ID` and every layout operation. Assert no pNFS role is advertised and each layout operation answers `NFS4ERR_NOTSUPP`. |
-| clock bound | Run a wait of *T* on a clock made 5% fast against the other side's; assert it ends no sooner than *T* × 1.05 + σ by the slow clock. A wait of *T* + σ ends early. |
-| metadata store lost | Delete the embedded store with the node stopped; start. Assert the node refuses to serve, naming the store, and GC deletes nothing, until a recovery import completes; then files read as of the backup, and content written after it is not served as current. |
+| clock bound | Run a wait of *T* on a clock made 5% fast against the other side's; assert it ends no sooner than *T* + σ / (1 + ρ) by the slow clock: *T* × 1.05 + σ on the fast clock is (*T* × 1.05 + σ) / 1.05 on the slow one. A wait of *T* + σ on the fast clock ends early, at (*T* + σ) / 1.05 by the slow one. |
+| metadata store lost | Initialise and run the node; stop it, delete the embedded store, start. Assert the node creates no store, refuses to serve, naming the store as lost, and GC deletes nothing, until a recovery import completes; then files read as of the backup, and content written after it is not served as current. Start a node never initialised, with an empty store path and an empty journal directory: assert it refuses and names the missing initialisation rather than creating either. A design that takes an absent store for a first start fails the first half; one that creates a store at start fails the second. |
 
 ## 2. Terminology
 
@@ -722,7 +724,7 @@ to a chunk size.**
 **A chunk whose bytes are all zero is never stored.** Where one is cut, the
 offload commit records a **zero ref** in its place
 ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)): a ref that names no chunk and is never counted. Metadata
-answers it as carved; a read returns zeros with no fetch, and a query of where
+answers it as carved, residency classes it **Absent** ([§4.2](#4.2%20The%20residency%20function)), a read returns zeros with no fetch, and a query of where
 data lies reports it as a hole unless a newer overwrite record covers it.
 
 **ChunkRef** — one file's use of one chunk at one offset. A file's content is
@@ -982,7 +984,7 @@ lies past the size — never merely because no ref covers it.
 | uncarved, stale chunk | absent | **Lost** | fail; never the stale chunk | the same overwrite, stabilised and its journal extent dropped, fails rather than reading the older chunk; and again with the overwrite staged while an older offer of the extent was in flight, so the older ref commits after the overwrite's existence |
 | carved | present | **Resident** | serve locally | an offloaded, unevicted extent reads with no fetch |
 | carved | absent | **Remote** | get, fill, serve | an evicted extent is fetched and verified |
-| carved by a zero ref | absent | **Remote** | zeros, with no fetch | an offloaded all-zero extent, evicted, reads zeros and issues no get |
+| carved by a zero ref | absent | **Absent** | zeros, with no fetch | an offloaded all-zero extent, evicted, reads zeros and issues no get |
 
 Each row's check is driven at the component that consumes the answer
 ([RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)), and each fails on a design that merges that row into
@@ -1003,19 +1005,25 @@ because the journal's record survives a crash and recovery re-applies its
 existence before serving.
 
 An append or a hole fill keeps its lazy existence commit past the stability
-point. If the journal loses its bytes to local corruption after the stability
-point and before the bounded-age group commit (1 s proposed), the extent reads
-as **Absent** — zeros inside the size, or past the end of a file whose size did
-not grow — and never as older content, since it replaced none.
+point. If the journal loses a synced record of one after the stability point and
+before the bounded-age group commit (1 s proposed), the engine commits that
+write's existence from the journal's loss record, which names the file, the
+extent and the version dropped ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events), [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), so the extent reads as
+**Lost** — never as zeros, and never as older content, since it replaced none.
+A stop commits every pending existence before the journal closes, so a clean
+stop leaves none to re-apply. Only a lost journal device, which takes the loss
+record with it, leaves an acknowledged append or hole fill with no trace: the
+file reads as it did before the write — shorter, or a hole — and the shares the
+device served are refused until the loss is acknowledged ([§10](#10.%20Failure%20model)).
 
 > decision: appends and hole fills are not committed before a stability reply,
 > so a flush of them costs one journal sync and no metadata transaction. The
-> price is the case above: a synced record that rots or fails verification
-> within the group-commit age reads as zeros or as a shorter file; the loss is
-> reported as a loss event and raises the loss generation. Overturned by a
-> measured rate of synced-record loss within that age that a deployment cannot
-> accept, which would make every stability point wait for the existence commit
-> of every pending write it covers.
+> price is the lost-device case above: appends and hole fills synced within the
+> last group-commit age, on a device that is gone, read as a shorter file or a
+> hole rather than as **Lost**; the share's incarnation rises, so the write
+> verifier changes. Overturned by a deployment that cannot accept that window,
+> which would make every stability point wait for the existence commit of every
+> pending write it covers.
 
 In every case the journal reports the corruption as a loss event and, since
 the extent was not yet offloaded, raises its loss generation, which changes the
@@ -1092,8 +1100,9 @@ a close where the protocol requires one) **waits for the existence commit of
 every pending write it covers that overwrites committed content**, the writes
 that need an overwrite record. The flush joins the next group commit rather than
 issuing its own; appends and hole fills stay with the bounded age
-([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A snapshot cut commits each shard's pending existence, in
-journal order, before its gate closes ([§7](#7.%20Mutation%20and%20removal)). Until committed, the journal is the authority for
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A snapshot cut closes each shard's gate first, takes its final
+cut points, and then commits the shard's pending existence, in journal order,
+behind the closed gate ([§7](#7.%20Mutation%20and%20removal)). Until committed, the journal is the authority for
 it: reads see the write through the journal, and after a crash the engine
 re-applies existence from the journal before serving ([RFC 8](rfc-8-engine.md)). Truncate,
 deallocate, release and clone are not deferred this way; each is a synchronous
@@ -1218,9 +1227,21 @@ under-count (I10).
 
 **Snapshots keep superseded records.** A snapshot is a versioned view, not a
 copy: taking one writes one cut record, and nothing is drained or copied
-([RFC 12](rfc-12-snapshots.md)). Before its gate closes, the cut commits each shard's pending
-existence in journal order, so a snapshot holds every write flushed before it
-was requested and, across files, never a later write without an earlier one. Refs, and the namespace records — files, entries, ACLs,
+([RFC 12](rfc-12-snapshots.md)). The cut closes each shard's gate first and takes its final cut
+points there; it then commits the shard's pending existence, in journal order,
+behind the closed gate and within the gate's bound, so a snapshot holds every
+write flushed before it was requested and, across files, never a later write
+without an earlier one. No existence commit of any kind — a group commit, a
+removal's first transaction, an offer's capture, an explicit time set — lands
+above a cut point; a primary's own pre-cut and recovery commits pass its own
+closed gate. Namespace operations wait for about one group commit and one sync
+at the gate; data writes never wait there
+([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+
+> ponytail: committing all of a shard's pending existence behind the closed
+> gate makes the gate's close time grow with the pending set. If gate-close time
+> measures too long, bulk-commit to provisional cut points with the gate open,
+> then commit only the remainder behind it. Refs, and the namespace records — files, entries, ACLs,
 extended attributes, stream links — carry the cut they were born after and the
 cut they died after. An overwrite, removal or release that replaces
 a ref a snapshot can still see moves it into the file's history in the same
@@ -1333,7 +1354,7 @@ These hold across components. No component can enforce any of them alone.
 
 | # | Invariant |
 | --- | --- |
-| **I1** | An extent whose write has reached its stability point is never read as older content that write replaced, and, once the write's existence is committed, never as zeros. Zeros are returned only for **Absent** and a zero ref. |
+| **I1** | An extent whose write has reached its stability point is never read as older content that write replaced, and, once the write's existence is committed, never as zeros. Zeros are returned only for **Absent**, a zero ref included. |
 | **I2** | A **Dirty** extent is never evicted. |
 | **I3** | A remote block is never deleted while a referenced chunk's record locates the chunk in it. |
 | **I4** | Fill never overwrites content the journal holds. |
@@ -1409,18 +1430,20 @@ Every condition below has exactly one specified behaviour.
 | Condition | Behaviour |
 | --- | --- |
 | **Remote tier unavailable** | Writes continue into the journal while capacity allows. No extent becomes **Resident**, so no extent becomes evictable. Reads of **Remote** extents fail; they **MUST NOT** return zeros. |
-| **Journal at capacity, remote available** | Eviction is triggered by **allocated occupancy** — what the journal's segments allocate, clean held bytes included — against the limit; dirty plus **unreclaimed bytes** (released or superseded but still on disk) pace writes. Offload what is **Dirty**, evict what is **Resident**, and repack the segments whose live share is smallest, so the space returns ([§8.2](#8.2%20Reclaim)); repack draws on the repack reserve and so runs even with every share at its limit. A write refused by the journal's capacity or by its share's journal limit is transient: it answers retry-later (`ErrDelay`) while offload or repack can drain it, within the caller's deadline, and then no space (`ErrNoSpace`). Only a logical quota answers over quota (`ErrQuota`) at once. One table, [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here). |
-| **Remote tier slow** | The remote accepts transfers but drains slower than writes arrive, with no error to act on. Writes are paced to the measured drain rate ([RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); each waits at most until its deadline ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) and is then refused. Progress is not a reason to keep waiting: a drain that frees a trickle never runs a writer out of time otherwise. |
-| **Journal at capacity, remote unavailable** | Refuse the write with retry-later (`ErrDelay`): space is coming, from repack while unreclaimed bytes remain and from offload once the remote returns, so the client retries rather than failing. No space (`ErrNoSpace`) is answered only when nothing will free space without an operator — the store refuses puts as denied or drifted, a retention pin holds the bytes, or the device itself is full ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). I2 forbids evicting a **Dirty** extent, so refusal is the only behaviour that does not lose data. |
-| **Metadata unwritable** | Writes are still staged and acknowledged from the journal, until the node fences itself ([§1.4](#1.4%20The%20single-node%20profile)). A stability point that covers an overwrite of committed content waits for its existence commit, answering retry-later within the caller's deadline and then failing; one that covers only appends and hole fills is answered after its sync ([§5.1](#5.1%20Write)). This is the one rule of [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here). Truncate, deallocate and the other synchronous operations fail. Offload fails, so extents stay **Dirty** and the journal fills until writes are refused ([§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)). Reads continue while metadata is readable. |
+| **Journal at capacity, remote available** | Eviction is triggered by **allocated occupancy** — what the journal's segments allocate, clean held bytes included — against the limit; dirty plus **unreclaimed bytes** (released or superseded but still on disk) pace writes. Offload what is **Dirty**, evict what is **Resident**, and repack the segments whose live share is smallest, so the space returns ([§8.2](#8.2%20Reclaim)); repack draws on the repack reserve and so runs even with every share at its limit. A write refused by the journal's capacity or by its share's journal limit is transient while offload or repack can drain it: it answers retry-later (`ErrDelay`), and a deadline running out never turns it into no space — NFS answers `NFS4ERR_DELAY` or `NFS3ERR_JUKEBOX` for as long as it lasts, and SMB holds the request pending up to its pending cap (`smb_pending_cap`, [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) and only there answers `STATUS_DISK_FULL`. No space (`ErrNoSpace`) is answered at once, and only for a permanent cause: the store refuses puts as denied or drifted, a retention pin holds the bytes, or the device itself is full. Only a logical quota answers over quota (`ErrQuota`) at once. One table, [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here). |
+| **Remote tier slow** | The remote accepts transfers but drains slower than writes arrive, with no error to act on. Writes are paced to the measured drain rate ([RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); each waits at most until its deadline ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) and is then refused with retry-later, never no space, since the drain continues. Progress is not a reason to keep waiting: a drain that frees a trickle never runs a writer out of time otherwise. |
+| **Journal at capacity, remote unavailable** | Refuse the write with retry-later (`ErrDelay`): space is coming, from repack while unreclaimed bytes remain and from offload once the remote returns, so the client retries rather than failing, for as long as the outage lasts: the caller's deadline ending does not change the answer, and only an SMB request held past its pending cap is answered no space. No space (`ErrNoSpace`) is otherwise answered, at once, only when nothing will free space without an operator — the store refuses puts as denied or drifted, a retention pin holds the bytes, or the device itself is full ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). I2 forbids evicting a **Dirty** extent, so refusal is the only behaviour that does not lose data. |
+| **Metadata unwritable** | Writes are still staged and acknowledged from the journal, until the node fences itself ([§1.4](#1.4%20The%20single-node%20profile)). A stability point that covers an overwrite of committed content waits for its existence commit until the caller's deadline and is then answered retry-later, never success; one that covers only appends and hole fills is answered after its sync ([§5.1](#5.1%20Write)). This is the one rule of [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here). Truncate, deallocate and the other synchronous operations fail. Offload fails, so extents stay **Dirty** and the journal fills until writes are refused ([§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)). Reads continue while metadata is readable. |
 | **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail — the records of the newest segment after the last that verifies, unless a later record proves them synced — is treated as never written: never served, never reported as damage, and never appended after ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)). Records that verify but lie past the last point a sync is proven to have reached may be only in the operating system's cache after the process died, so they are re-appended and synced, with the directory, before the journal serves ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). A removal recorded but not done masks until its batches resume, and an unfinished clone resumes before its destination is served ([§7](#7.%20Mutation%20and%20removal)). A put whose attempt died leaves an intent, abandoned at the next start on a single node ([§1.4](#1.4%20The%20single-node%20profile)) and, in a cluster, once its shard's epoch or the node epoch it was written under is superseded ([§5.2](#5.2%20Offload)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
-| **Local content corrupt** | The journal drops only the extents backed by records that fail verification ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)). A dropped extent that was offloaded resolves as **Remote** and is fetched again, and raises no loss generation. One that was **Dirty** resolves as **Lost** once its write's existence is committed — at its stability point for an overwrite of committed content; before that, the extent reads as it did before the write ([§4.2](#4.2%20The%20residency%20function)). Either way the loss generation rises so the NFS write verifier changes. The journal records the loss by the exact record dropped ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). The rest of the segment stays usable and reclaimable. |
-| **Journal device lost** | The device or its filesystem is gone, or the journal found at open is not the one recorded. Content already offloaded is unaffected and resolves as **Remote**. On a single node the engine refuses every share the journal served, naming each, and opens no new journal on the device until an operator acknowledges the loss ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); afterwards content never offloaded resolves as **Lost**, never zeros, the shares attach to a new journal under §2.1's version-floor rule, and their incarnation rises, so the write verifier changes. **(cluster)** A shard whose content a replica's journal holds is taken over by that replica with no operator action; only a shard no other journal holds waits for the acknowledgement. |
+| **Local content corrupt** | The journal drops only the extents backed by records that fail verification ([RFC 1 §9.3](rfc-1-journal.md#9.3%20Torn%20and%20corrupt%20records)). A dropped extent that was offloaded resolves as **Remote** and is fetched again, and raises no loss generation. One that was **Dirty** resolves as **Lost** once its write's existence is committed — at its stability point for an overwrite of committed content, and, for a synced append or hole fill whose existence was still pending, from the loss record itself ([§4.2](#4.2%20The%20residency%20function)); only a write lost before its stability point reads as it did before the write. Either way the loss generation rises so the NFS write verifier changes. The journal records the loss by the exact record dropped ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). The rest of the segment stays usable and reclaimable. |
+| **Journal device lost** | The device or its filesystem is gone, or the journal found at open is not the one recorded. Content already offloaded is unaffected and resolves as **Remote**. On a single node the engine refuses every share the journal served, naming each, and opens no new journal on the device until an operator acknowledges the loss ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); afterwards content never offloaded whose existence was committed resolves as **Lost**, never zeros; an append or hole fill whose existence was still pending when the device went leaves no trace, and the file reads as it did before that write — shorter, or a hole — not as zeros over written data ([§4.2](#4.2%20The%20residency%20function)). The shares attach to a new journal under §2.1's version-floor rule, and their incarnation rises, so the write verifier changes. **(cluster)** A shard whose content a replica's journal holds is taken over by that replica with no operator action; only a shard no other journal holds waits for the acknowledgement. |
 | **Node lost** | On a single node, a node that restarts is **Crash**; a host that does not come back takes its journal device with it, which is **Journal device lost**. **(cluster)** A replica takes the node's shards over once its lease has lapsed plus the drift bound ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)); acknowledged writes survive in the replicas' journals. |
 | **Partition** | On a single node, a partition from the remote tier is **Remote tier unavailable**; the embedded metadata store cannot be partitioned from its node. **(cluster)** A node cut off from the metadata store fences itself at half its lease and its shards fail over where the store is reachable; a primary cut off from a replica cannot acknowledge until that replica is removed ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)). |
 | **Metadata store stalled or erroring** | The store answers nothing, or fails every write while reads complete. On a single node it is **Metadata unwritable** while it lasts, and once no write transaction has committed for 30 s the engine fences the node as a local fault, not a lease loss: writes and stability points answer retry-later, reads continue, and the node resumes with no new node epoch when a write commits ([§1.4](#1.4%20The%20single-node%20profile)). **(cluster)** A node that cannot renew fences itself at half its lease, and its shards fail over. |
-| **Journal sync fails** | The device reports a failed sync for a window of appended records, or the directory sync that makes a new segment's name durable fails. The journal re-appends the window or fails it. Failing it drops exactly the window's records, named by sequence number, as loss events, and raises its loss generation; content those records superseded is held again, because a superseded record is kept until its superseding write is synced. The failure is reported once to the next `Sync` of each file that had a write in the window, waiting or not, and then cleared, so that stability point fails and the NFS write verifier changes. A later sync of the same file covers only what was appended after, so it is never wedged by the failed window ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)). |
-| **Metadata store lost** | The store's data is gone or unreadable — on a single node the embedded store went with its host or its device. The node does not open a new, empty store in its place: it refuses to serve, naming the store, and GC deletes nothing. An operator starts a recovery import from the newest catalog backup ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)); files then read as of that backup, content written after it is not served as current, and GC resumes only once the operator confirms the import ([§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave)). **(cluster)** The replicated store survives a node's loss; losing every replica is this row. |
+| **Journal sync fails** | The device reports a failed sync for a window of appended records, or the directory sync that makes a new segment's name durable fails. The journal re-appends the window or fails it. Failing it drops exactly the window's records, named by sequence number, as loss events, and raises its loss generation; what else each loss reaches — here, content those unsynced records superseded is held again — is [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)'s rule. The failure is reported once to the next `Sync` of each file that had a write in the window, waiting or not, and then cleared, so that stability point fails and the NFS write verifier changes. A later sync of the same file covers only what was appended after, so it is never wedged by the failed window ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)). |
+| **Metadata store lost** | The store's data is gone or unreadable — on a single node the embedded store went with its host or its device. A start tells this from a first start by the explicit initialisation step, which wrote the installation ID into both the store's bootstrap and every journal's `format` file ([§1.4](#1.4%20The%20single-node%20profile)): a journal naming an installation with no store beside it is this row — the journal's open, given no recorded identity because the store holds none, fails and reports the store lost ([RFC 1 §9.4](rfc-1-journal.md#9.4%20Unattachable%20files)) — and a store with no journal is **Journal device lost**. A start never creates a store, so the node does not open a new, empty one in its place: it refuses to serve, naming the store, and GC deletes nothing. An operator starts a recovery import from the newest catalog backup ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)); files then read as of that backup, content written after it is not served as current, and GC resumes only once the operator confirms the import ([§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave)). The import gives the shares new identities, so no share claims the journal's old tags: before serving, each such tag is read out for salvage and then forgotten, or forgotten at once (`Forget`, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), and every one is reported with its held and dirty bytes, so a stranded tag never fills the device. The same holds for a tag left by a deleted share. **(cluster)** The replicated store survives a node's loss; losing every replica is this row. |
+| **Clock outside its bound** | A clock runs faster or slower than the clock-rate bound allows, or two hosts' clocks read further apart than the clock-offset bound ([§1.4](#1.4%20The%20single-node%20profile)). Every wait on another clock's timeout is sized by those bounds, so outside them such a wait can end early: an abandoned put's delete can race a put still running, and an importer can take a namespace before the old installation's fence has passed. The node cannot detect this alone; it **MUST** report a host clock not under time synchronisation as a health condition of the node, and the deployment owns the bound. **(cluster)** The drift bound of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) is the same assumption for leases. |
+| **Node started from a copied image** | The node runs on a restored or cloned copy of its own disks: the platform's machine-generation identifier differs from the one recorded. The node mints a new instance and holds no namespace until an operator says whether this copy is the installation ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). Meanwhile it refuses every write at once with no space (`ErrNoSpace`), the answer for a cause only an operator clears ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)), rather than staging writes that cannot be offloaded until the journal fills; reads of offloaded content continue. This is the third exception of [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave). |
 | **Material unavailable** | The material provider cannot supply a key ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)). Behaves as **Remote tier unavailable**: offload cannot encode and reads of **Remote** extents cannot decode. Material lost for good is not this row: its blocks are not offloaded ([§4.2](#4.2%20The%20residency%20function)). |
 
 ### 10.1 Capacity is a bound, not a target
@@ -1435,10 +1458,14 @@ released — has no exit.
 ### 10.2 No state requires intervention to leave
 
 Every condition in this section **MUST** resolve on its own once the underlying
-cause is removed, with two exceptions: a lost journal device on a share no other
-journal holds waits for an operator to acknowledge the loss, and a lost metadata
-store waits for an operator to run a recovery import and confirm it before GC
-resumes. An implementation **MUST NOT** have any other state reachable by normal
+cause is removed, with three exceptions: a lost journal device on a share no
+other journal holds waits for an operator to acknowledge the loss; a lost
+metadata store waits for an operator to run a recovery import and confirm it
+before GC resumes; and a node started from a copied or restored image waits for
+an operator to say whether it is the installation, refusing writes at once
+meanwhile. **(cluster)** A fourth: a relinquished shard whose replicas are truly
+lost leaves only when an operator acknowledges the loss
+([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)). An implementation **MUST NOT** have any other state reachable by normal
 operation from which it cannot return without operator action.
 
 > decision: a lost metadata store waits for an operator, and GC deletes nothing
@@ -1447,6 +1474,15 @@ operation from which it cannot return without operator action.
 > that ran on its own would delete content a second, newer backup still names.
 > Overturned by a recovery that can prove no newer backup exists, which would let
 > GC resume once the import completes.
+
+> decision: a node started from a copied image waits for an operator rather
+> than resuming when its claim read finds its own last nonce. A restored image
+> that finds its own nonce may still be yesterday's copy of a node that never
+> wrote since, and two copies that both resume would answer clients as one
+> server; refusing writes at once keeps the journal from filling with content
+> that cannot be offloaded meanwhile. Overturned by a platform whose
+> machine-generation identifier changes only on a restore that replaces the
+> original, which would make the copy the installation by construction.
 
 > decision: a lost journal device, on a share no replica holds, waits for an
 > operator. Serving the share at once would turn every write not yet offloaded
@@ -1488,10 +1524,13 @@ cold read ([RFC 8 §7.5](rfc-8-engine.md#7.5%20An%20unreachable%20remote%20fails
 - the refusal **MUST** say why. A write refused because the journal or its
   share's journal limit is full — transient while offload or repack can drain
   it — reaches the client as retry-later (`ErrDelay`, which the adapters map to
-  `NFS4ERR_DELAY`, `NFS3ERR_JUKEBOX` and, for SMB, a request held pending)
-  within the caller's deadline, and as "no space" (`ErrNoSpace`) once it runs
-  out or nothing will drain it; one refused by a logical quota reaches it as
-  "over quota" at once. None is an I/O error, so the client can tell a full
+  `NFS4ERR_DELAY`, `NFS3ERR_JUKEBOX` and, for SMB, a request held pending), and
+  a deadline running out never turns a transient refusal into "no space": an
+  NFS client is answered retry-later for as long as it lasts, and an SMB request
+  held pending is answered `STATUS_DISK_FULL` only at its pending cap
+  (`smb_pending_cap`, longer than a move's freeze). "No space" (`ErrNoSpace`) is
+  answered at once, and only when nothing will drain the journal without an
+  operator; one refused by a logical quota reaches it as "over quota" at once. None is an I/O error, so the client can tell a full
   store from a broken one. The one table is
   [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here).
 
