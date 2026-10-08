@@ -91,11 +91,29 @@ cleanup() {
 trap cleanup EXIT
 
 # --tbsize sizes the kernel buffer of every packet capture. nfstest's default is
-# 192 MiB, and it does not stop every capture it starts: within one module the
-# survivors pile up, a dio run held over thirty of them at once, and the host
-# ran out of memory — mounts failed with ENOMEM and new captures came back
-# empty. At 8 MiB the leak costs little; cleanup() reaps the rest between
-# modules.
+# 192 MiB; with the captures it orphans (see reap_orphan_captures) a dio run
+# once held over thirty at once, and the host ran out of memory until the OOM
+# killer took dfs. The reaper ends the leak; the smaller buffer bounds what an
+# orphan costs in the two seconds before the reaper finds it.
+
+# reap_orphan_captures — kill nfstest's packet captures that nfstest has let go
+# of, every two seconds, until killed. nfstest starts each tcpdump through
+# `sh -c` and stops it by killing that shell, which orphans the tcpdump rather
+# than ending it. Every orphan goes on capturing all loopback traffic: within
+# one dio module they reach dozens, a new capture then starts too slowly to see
+# its test's traffic, and every packet-checking assertion after that fails. A
+# capture is kept while its parent is still nfstest's shell or nfstest itself.
+reap_orphan_captures() {
+    local pid ppid parent
+    while sleep 2; do
+        for pid in $(pgrep -f 'tcpdump .*nfstest_' 2>/dev/null); do
+            ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+            [[ -n "$ppid" ]] || continue
+            parent="$(ps -o args= -p "$ppid" 2>/dev/null)"
+            [[ "$parent" == *tcpdump* || "$parent" == *nfstest_* ]] || kill "$pid" 2>/dev/null
+        done
+    done
+}
 
 # module_args MODULE — the arguments one module needs beyond the common ones.
 module_args() {
@@ -130,6 +148,8 @@ COUNT=0
             COUNT=$((COUNT + 1))
             continue
         fi
+        reap_orphan_captures &
+        reaper=$!
         # shellcheck disable=SC2046  # module_args is a word list on purpose
         (cd "$RESULTS_DIR" && PYTHONPATH="$NFSTEST" timeout --kill-after=30 "$MODULE_TIMEOUT" \
             python3 "$NFSTEST/test/nfstest_$m" \
@@ -137,6 +157,8 @@ COUNT=0
             --nfsversion "$VERSION" --mtpoint "$MOUNT_POINT" \
             --mtopts "$MTOPTS" --tbsize 8k --rmtraces --notty $(module_args "$m"))
         echo "nfstest_$m exited $?"
+        kill "$reaper" 2>/dev/null
+        wait "$reaper" 2>/dev/null
         COUNT=$((COUNT + 1))
         cleanup
     done
