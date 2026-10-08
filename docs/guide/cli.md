@@ -5473,6 +5473,9 @@ stdin is a terminal. An empty endpoint means AWS S3; the resolved target is
 echoed before the store is created.
 ```
 
+--config gives the store config as JSON. Flags passed with it are merged into
+it; a flag that contradicts a key the JSON sets is refused.
+
 ```
 dfsctl store block add [flags]
 ```
@@ -5502,7 +5505,7 @@ Flags:
       --access-key string                 AWS access key ID (for s3)
       --bucket string                     S3 bucket name (required for s3)
       --compression string                Enable per-block compression: zstd, lz4 (default: off)
-      --config string                     Store configuration as JSON
+      --config string                     Store configuration as JSON (flags passed with it are merged in)
       --encryption-aead string            Enable client-side encryption with the given AEAD: aes-256-gcm, chacha20-poly1305, xchacha20-poly1305
       --encryption-key-file string        Path to local key file (kind=local)
       --encryption-key-kind string        Key provider: local | kmip (required when --encryption-aead is set)
