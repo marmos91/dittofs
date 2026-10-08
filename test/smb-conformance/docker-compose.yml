@@ -48,7 +48,18 @@ services:
       - DITTOFS_LOGGING_LEVEL=DEBUG
       - DITTOFS_CONTROLPLANE_SECRET=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
       - DITTOFS_ADMIN_INITIAL_PASSWORD=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
-    # Healthcheck is defined in Dockerfile.dittofs
+    # Declared here as well as in Dockerfile.dittofs. The image-level
+    # HEALTHCHECK is dropped when the image is built in OCI format (no docker
+    # format available, e.g. the podman/ buildah builder), which makes the
+    # container report "no healthcheck configured" and every service_healthy
+    # dependency below fail. A compose-level healthcheck is applied to the
+    # container regardless of the image format.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health/ready || exit 1"]
+      interval: 2s
+      timeout: 5s
+      start_period: 5s
+      retries: 15
 
   wpts:
     image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
