@@ -113,6 +113,12 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		}
 	}
 
+	guard, err := s.lockNamespace(namespaceAccess{handle: parentHandle})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer guard.unlock()
+
 	// Prepare return value
 	returnFile := &File{
 		ID:        file.ID,
@@ -121,19 +127,9 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		FileAttr:  file.FileAttr,
 	}
 
-	// wcc captures the parent directory attributes before and after the
-	// mutation. Per #1573 the child-removing transaction no longer touches the
-	// parent inode, so WCC.Before is captured here (before the transaction) and
-	// WCC.After is synthesized after commit rather than both being read inside
-	// the txn.
+	// The transaction rechecks the parent's lifetime and captures WCC.Before;
+	// the coalesced timestamp bump supplies WCC.After after commit.
 	wcc := &DirWcc{}
-
-	// Overlay any coalesced parent-directory timestamps onto the pre-op snapshot
-	// so WCC.Before reflects what readers currently observe, then capture it
-	// before the transaction: the remove no longer reads or writes the parent
-	// inode, so there is nothing to re-snapshot inside it (#1573).
-	s.mergeDirTimes(parentHandle, &parent.FileAttr)
-	wcc.Before = CopyFileAttr(&parent.FileAttr)
 	now := time.Now()
 
 	// lastLink records whether this unlink removed the final name for the inode.
@@ -149,17 +145,30 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 	// cannot be re-applied to the inode after we drop it (#1753).
 	flushMu := s.pendingWrites.GetFlushLock(fileHandle)
 	flushMu.Lock()
-	defer flushMu.Unlock()
+	defer func() {
+		if flushMu != nil {
+			flushMu.Unlock()
+		}
+	}()
 
-	// Execute the child-removing writes in a single transaction. Like create,
-	// this transaction does NOT touch the parent inode — the parent timestamp
-	// bump that used to serialize concurrent same-dir removes on a BadgerDB SSI
-	// hot key is coalesced after commit instead (#1573).
+	// The parent is read but never written here; its timestamp bump remains
+	// coalesced after commit so unrelated child removals do not share a write key.
 	//
 	// Relaxed durability (#1573 Wall 1): these writes are pure namespace — the
 	// child unlink and link-count — not paired with block data. A crash can lose
 	// the removal (the entry reappears; the client re-unlinks), never corrupt data.
 	err = withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
+		txParent, pErr := transactionDirectory(ctx.Context, tx, parentHandle)
+		if pErr != nil {
+			return pErr
+		}
+		parent = txParent
+		s.mergeDirTimes(parentHandle, &parent.FileAttr)
+		wcc.Before = CopyFileAttr(&parent.FileAttr)
+		if err := requireChildIdentity(ctx.Context, tx, parentHandle, name, fileHandle); err != nil {
+			return err
+		}
+
 		// Read the link count INSIDE the transaction so the read, the
 		// branch decision, and the write are atomic. Reading it outside the
 		// tx is a TOCTOU race with CreateHardLink: a concurrent link bump in
@@ -269,6 +278,8 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 	if lastLink {
 		s.pendingWrites.PopPending(fileHandle)
 	}
+	flushMu.Unlock()
+	flushMu = nil
 
 	// Coalesce the parent directory timestamp bump (Mtime/Ctime/Atime per
 	// POSIX unlink(2)) out of the transaction, same as create (#1573). MS-FSA
@@ -279,6 +290,7 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 	parent.Atime = now
 	wcc.After = CopyFileAttr(&parent.FileAttr)
 
+	guard.unlock()
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
 	return returnFile, wcc, nil
 }

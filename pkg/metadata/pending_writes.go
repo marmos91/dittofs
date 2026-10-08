@@ -34,37 +34,39 @@ type PendingWritesTracker struct {
 	mu      sync.RWMutex
 	pending map[string]*PendingWriteState // handleKey -> state
 
-	// flushMu serializes FlushPendingWriteForFile per file handle.
-	// With concurrent NFS dispatch, multiple COMMITs for the same file
-	// may arrive simultaneously. Without this, they'd all hit BadgerDB
-	// concurrently causing conflict retries. With this, only one COMMIT
-	// flushes at a time per file; others find no pending state and skip.
-	flushMu    sync.Mutex
-	flushLocks map[string]*sync.Mutex // handleKey -> per-file mutex
+	// Stable, bounded stripes serialize pop -> metadata commit -> restore/cache.
+	// Removing a lock when its pending entry is popped would let a new flush
+	// overtake the still-running commit that owns the old lock.
+	flushLocks [256]sync.Mutex
 }
 
 // NewPendingWritesTracker creates a new tracker.
 func NewPendingWritesTracker() *PendingWritesTracker {
-	return &PendingWritesTracker{
-		pending:    make(map[string]*PendingWriteState),
-		flushLocks: make(map[string]*sync.Mutex),
-	}
+	return &PendingWritesTracker{pending: make(map[string]*PendingWriteState)}
 }
 
-// GetFlushLock returns a per-file mutex for serializing flush operations.
-// This prevents concurrent COMMITs for the same file from causing BadgerDB
-// transaction conflicts and expensive retries.
+// GetFlushLock returns a stable lock for a handle's metadata flush. Unrelated
+// handles can share a stripe; the fixed bank bounds memory without retiring
+// a mutex that a flush or its waiters still own.
 func (t *PendingWritesTracker) GetFlushLock(handle FileHandle) *sync.Mutex {
-	key := handleKey(handle)
-
-	t.flushMu.Lock()
-	mu, exists := t.flushLocks[key]
-	if !exists {
-		mu = &sync.Mutex{}
-		t.flushLocks[key] = mu
+	var h uint32 = 2166136261
+	for _, b := range []byte(pendingWriteKey(handle)) {
+		h ^= uint32(b)
+		h *= 16777619
 	}
-	t.flushMu.Unlock()
-	return mu
+	return &t.flushLocks[h%uint32(len(t.flushLocks))]
+}
+
+// pendingWriteKey unifies the handle spellings accepted by metadata stores.
+// Deferred writes, flush exclusion and cache invalidation must all address the
+// same inode. Invalid handles retain their opaque key; validation belongs to
+// the service entrypoints.
+func pendingWriteKey(handle FileHandle) string {
+	share, id, err := DecodeFileHandle(handle)
+	if err != nil {
+		return string(handle)
+	}
+	return share + ":" + id.String()
 }
 
 // handleKey converts a FileHandle to a map key.
@@ -75,7 +77,7 @@ func handleKey(handle FileHandle) string {
 // RecordWrite records a pending write for deferred commit.
 // Returns the current pending state (with max size across all writes).
 func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOperation, clearSetuid bool) *PendingWriteState {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -134,7 +136,7 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 // GetPendingSize returns the pending size for a file, if any.
 // Returns (size, true) if there's a pending write, (0, false) otherwise.
 func (t *PendingWritesTracker) GetPendingSize(handle FileHandle) (uint64, bool) {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -148,7 +150,7 @@ func (t *PendingWritesTracker) GetPendingSize(handle FileHandle) (uint64, bool) 
 
 // GetPending returns the pending state for a file, if any.
 func (t *PendingWritesTracker) GetPending(handle FileHandle) (*PendingWriteState, bool) {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -165,7 +167,7 @@ func (t *PendingWritesTracker) GetPending(handle FileHandle) (*PendingWriteState
 // GetCachedFile returns the cached file metadata for fast-path PrepareWrite.
 // Returns nil if no cache exists for this file.
 func (t *PendingWritesTracker) GetCachedFile(handle FileHandle) *File {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -181,7 +183,7 @@ func (t *PendingWritesTracker) GetCachedFile(handle FileHandle) *File {
 
 // SetCachedFile stores file metadata for fast-path PrepareWrite.
 func (t *PendingWritesTracker) SetCachedFile(handle FileHandle, file *File) {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -200,7 +202,7 @@ func (t *PendingWritesTracker) SetCachedFile(handle FileHandle, file *File) {
 // PopPending removes and returns the pending state for a file.
 // Used when flushing pending writes to the store.
 func (t *PendingWritesTracker) PopPending(handle FileHandle) (*PendingWriteState, bool) {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -210,11 +212,6 @@ func (t *PendingWritesTracker) PopPending(handle FileHandle) (*PendingWriteState
 		return nil, false
 	}
 	delete(t.pending, key)
-
-	// Clean up per-file flush lock to prevent unbounded growth
-	t.flushMu.Lock()
-	delete(t.flushLocks, key)
-	t.flushMu.Unlock()
 
 	return state, true
 }
@@ -230,7 +227,7 @@ func (t *PendingWritesTracker) RestorePending(handle FileHandle, state *PendingW
 	if state == nil {
 		return
 	}
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -270,26 +267,28 @@ func (t *PendingWritesTracker) PopAllPending() []PendingEntry {
 	defer t.mu.Unlock()
 
 	result := make([]PendingEntry, 0, len(t.pending))
-	keys := make([]string, 0, len(t.pending))
 	for key, state := range t.pending {
 		result = append(result, PendingEntry{
 			Handle: FileHandle(key),
 			State:  state,
 		})
-		keys = append(keys, key)
 	}
 	t.pending = make(map[string]*PendingWriteState)
 
-	// Clean up the per-file flush locks for the popped entries to prevent
-	// unbounded growth of flushLocks (mirrors PopPending). Lock ordering is
-	// t.mu -> t.flushMu, consistent with PopPending, so no deadlock.
-	t.flushMu.Lock()
-	for _, key := range keys {
-		delete(t.flushLocks, key)
-	}
-	t.flushMu.Unlock()
-
 	return result
+}
+
+// PendingHandles snapshots the handles without taking their pending state.
+// Shutdown must acquire each handle's flush lock before popping its state,
+// just like an ordinary flush, so clone reconciliation cannot miss it.
+func (t *PendingWritesTracker) PendingHandles() []FileHandle {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	handles := make([]FileHandle, 0, len(t.pending))
+	for key := range t.pending {
+		handles = append(handles, FileHandle(key))
+	}
+	return handles
 }
 
 // Count returns the number of pending writes.
@@ -306,7 +305,7 @@ func (t *PendingWritesTracker) Count() int {
 // original write timestamp.
 // Returns true if the pending state was updated, false if no pending state exists.
 func (t *PendingWritesTracker) UpdatePendingMtime(handle FileHandle, mtime time.Time) bool {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -323,7 +322,7 @@ func (t *PendingWritesTracker) UpdatePendingMtime(handle FileHandle, mtime time.
 // This should be called when file attributes change (e.g., via SETATTR)
 // to ensure subsequent writes use fresh attributes from the store.
 func (t *PendingWritesTracker) InvalidateCache(handle FileHandle) {
-	key := handleKey(handle)
+	key := pendingWriteKey(handle)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

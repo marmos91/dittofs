@@ -122,145 +122,242 @@ func (h *Handler) SetAttr(
 	logger.DebugCtx(ctx.Context, "SETATTR",
 		"share", ctx.Share)
 
-	currentFile, status, err := h.getFileOrError(ctx, fileHandle, "SETATTR", req.Handle)
-	if currentFile == nil {
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
-	}
+	apply := func(ctx *NFSHandlerContext) (*SetAttrResponse, error) {
+		currentFile, status, err := h.getFileOrError(ctx, fileHandle, "SETATTR", req.Handle)
+		if currentFile == nil {
+			return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
+		}
 
-	// Capture pre-operation attributes for WCC data
-	wccBefore := xdr.CaptureWccAttr(&currentFile.FileAttr)
+		// Capture pre-operation attributes for WCC data
+		wccBefore := xdr.CaptureWccAttr(&currentFile.FileAttr)
 
-	// Handle Empty SETATTR (No-Op)
-	// If no attributes are specified, return success immediately with current
-	// attributes. This is valid NFS behavior - macOS Finder and other clients
-	// sometimes send empty SETATTR requests (possibly for access verification).
-	// Note: This is a true no-op; ctime is NOT updated for empty SETATTR.
+		// Handle Empty SETATTR (No-Op)
+		// If no attributes are specified, return success immediately with current
+		// attributes. This is valid NFS behavior - macOS Finder and other clients
+		// sometimes send empty SETATTR requests (possibly for access verification).
+		// Note: This is a true no-op; ctime is NOT updated for empty SETATTR.
 
-	if req.NewAttr.Mode == nil && req.NewAttr.UID == nil && req.NewAttr.GID == nil &&
-		req.NewAttr.Size == nil && req.NewAttr.Atime == nil && req.NewAttr.Mtime == nil {
+		if req.NewAttr.Mode == nil && req.NewAttr.UID == nil && req.NewAttr.GID == nil &&
+			req.NewAttr.Size == nil && req.NewAttr.Atime == nil && req.NewAttr.Mtime == nil {
 
-		logger.DebugCtx(ctx.Context, "SETATTR: no attributes specified (no-op)",
-			"handle", fmt.Sprintf("%x", req.Handle),
-			"client", clientIP)
-
-		// Return current attributes without modification
-		wccAfter := h.convertFileAttrToNFS(fileHandle, &currentFile.FileAttr)
-
-		return &SetAttrResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-			AttrBefore:      wccBefore,
-			AttrAfter:       wccAfter,
-		}, nil
-	}
-
-	// Context Cancellation Check - After Metadata Lookup
-	// Check again after metadata lookup, before guard check and attribute update
-	if ctx.isContextCancelled() {
-		logger.DebugCtx(ctx.Context, "SETATTR: request cancelled after metadata lookup",
-			"handle", fmt.Sprintf("%x", req.Handle),
-			"client", clientIP)
-		return nil, ctx.Context.Err()
-	}
-
-	// The guard implements optimistic concurrency control by checking if
-	// the file's ctime has changed since the client last read it.
-	// If it has changed, another client has modified the file and this
-	// operation should be rejected to prevent lost updates.
-
-	if req.Guard.Check {
-		currentCtime := xdr.TimeToTimeVal(currentFile.Ctime)
-
-		// Compare ctime from guard with current ctime
-		if currentCtime.Seconds != req.Guard.Time.Seconds ||
-			currentCtime.Nseconds != req.Guard.Time.Nseconds {
-			logger.DebugCtx(ctx.Context, "SETATTR guard check failed",
+			logger.DebugCtx(ctx.Context, "SETATTR: no attributes specified (no-op)",
 				"handle", fmt.Sprintf("%x", req.Handle),
-				"expected", fmt.Sprintf("%d.%d", req.Guard.Time.Seconds, req.Guard.Time.Nseconds),
-				"got", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds),
 				"client", clientIP)
 
-			// Get updated attributes for WCC data (best effort)
-			var wccAfter *types.NFSFileAttr
-			if file, err := metaSvc.GetFile(ctx.Context, fileHandle); err == nil {
-				wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-			}
+			// Return current attributes without modification
+			wccAfter := h.convertFileAttrToNFS(fileHandle, &currentFile.FileAttr)
 
 			return &SetAttrResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotSync},
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 				AttrBefore:      wccBefore,
 				AttrAfter:       wccAfter,
 			}, nil
 		}
 
-		logger.DebugCtx(ctx.Context, "SETATTR guard check passed",
-			"handle", fmt.Sprintf("%x", req.Handle),
-			"ctime", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds))
-	}
+		// Context Cancellation Check - After Metadata Lookup
+		// Check again after metadata lookup, before guard check and attribute update
+		if ctx.isContextCancelled() {
+			logger.DebugCtx(ctx.Context, "SETATTR: request cancelled after metadata lookup",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP)
+			return nil, ctx.Context.Err()
+		}
 
-	authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, fileHandle, &currentFile.FileAttr, "SETATTR", "", req.Handle)
-	if authCtx == nil {
-		return &SetAttrResponse{
-			NFSResponseBase: NFSResponseBase{Status: authStatus},
-			AttrBefore:      wccBefore,
-			AttrAfter:       wccAfter,
-		}, err
-	}
+		// The guard implements optimistic concurrency control by checking if
+		// the file's ctime has changed since the client last read it.
+		// If it has changed, another client has modified the file and this
+		// operation should be rejected to prevent lost updates.
 
-	// The store is responsible for:
-	// - Checking ownership (for chown/chmod)
-	// - Checking write permission (for size/time changes)
-	// - Validating attribute values (e.g., invalid size)
-	// - Coordinating with block store for size changes
-	// - Updating ctime automatically
-	// - Ensuring atomicity of updates
-	// - Respecting context cancellation (especially for size changes)
-	//
-	// IMPORTANT: Per RFC 5661 Section 18.30.4, size changes should be applied
-	// separately from other attribute changes because filesystems may not
-	// expect size mixed with other attributes. This matches Linux kernel
-	// behavior in fs/nfsd/vfs.c (nfsd_setattr).
-	//
-	// If both size and other attributes are being set:
-	//   1. First apply size change (truncation/extension)
-	//   2. Then apply other attributes (mode, uid, gid, atime, mtime)
+		if req.Guard.Check {
+			currentCtime := xdr.TimeToTimeVal(currentFile.Ctime)
 
-	// Log which attributes are being set (for debugging)
-	logSetAttrRequest(req, clientIP)
+			// Compare ctime from guard with current ctime
+			if currentCtime.Seconds != req.Guard.Time.Seconds ||
+				currentCtime.Nseconds != req.Guard.Time.Nseconds {
+				logger.DebugCtx(ctx.Context, "SETATTR guard check failed",
+					"handle", fmt.Sprintf("%x", req.Handle),
+					"expected", fmt.Sprintf("%d.%d", req.Guard.Time.Seconds, req.Guard.Time.Nseconds),
+					"got", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds),
+					"client", clientIP)
 
-	// Check if we have both size and other attributes to set
-	hasSize := req.NewAttr.Size != nil
-	hasOtherAttrs := req.NewAttr.Mode != nil || req.NewAttr.UID != nil ||
-		req.NewAttr.GID != nil || req.NewAttr.Atime != nil || req.NewAttr.Mtime != nil
+				// Get updated attributes for WCC data (best effort)
+				var wccAfter *types.NFSFileAttr
+				if file, err := metaSvc.GetFile(ctx.Context, fileHandle); err == nil {
+					wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+				}
 
-	// setWcc accumulates the file's own pre/post attributes captured atomically
-	// with the SetFileAttributes mutation(s) (H9). For the two-phase size+other
-	// case, Before comes from the first (size) call and After from the second.
-	var setWcc *metadata.DirWcc
-	sizeApplied := false
-	if hasSize && hasOtherAttrs {
-		// Apply size change first (separate call per RFC 5661)
-		sizeOnlyAttrs := metadata.SetAttrs{Size: req.NewAttr.Size}
-		var sizeWcc *metadata.DirWcc
-		sizeWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
+				return &SetAttrResponse{
+					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotSync},
+					AttrBefore:      wccBefore,
+					AttrAfter:       wccAfter,
+				}, nil
+			}
+
+			logger.DebugCtx(ctx.Context, "SETATTR guard check passed",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"ctime", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds))
+		}
+
+		authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, fileHandle, &currentFile.FileAttr, "SETATTR", "", req.Handle)
+		if authCtx == nil {
+			return &SetAttrResponse{
+				NFSResponseBase: NFSResponseBase{Status: authStatus},
+				AttrBefore:      wccBefore,
+				AttrAfter:       wccAfter,
+			}, err
+		}
+
+		// The store is responsible for:
+		// - Checking ownership (for chown/chmod)
+		// - Checking write permission (for size/time changes)
+		// - Validating attribute values (e.g., invalid size)
+		// - Coordinating with block store for size changes
+		// - Updating ctime automatically
+		// - Ensuring atomicity of updates
+		// - Respecting context cancellation (especially for size changes)
+		//
+		// IMPORTANT: Per RFC 5661 Section 18.30.4, size changes should be applied
+		// separately from other attribute changes because filesystems may not
+		// expect size mixed with other attributes. This matches Linux kernel
+		// behavior in fs/nfsd/vfs.c (nfsd_setattr).
+		//
+		// If both size and other attributes are being set:
+		//   1. First apply size change (truncation/extension)
+		//   2. Then apply other attributes (mode, uid, gid, atime, mtime)
+
+		// Log which attributes are being set (for debugging)
+		logSetAttrRequest(req, clientIP)
+
+		// Check if we have both size and other attributes to set
+		hasSize := req.NewAttr.Size != nil
+		hasOtherAttrs := req.NewAttr.Mode != nil || req.NewAttr.UID != nil ||
+			req.NewAttr.GID != nil || req.NewAttr.Atime != nil || req.NewAttr.Mtime != nil
+
+		// setWcc accumulates the file's own pre/post attributes captured atomically
+		// with the SetFileAttributes mutation(s) (H9). For the two-phase size+other
+		// case, Before comes from the first (size) call and After from the second.
+		var setWcc *metadata.DirWcc
+		sizeApplied := false
+		if hasSize && hasOtherAttrs {
+			// Apply size change first (separate call per RFC 5661)
+			sizeOnlyAttrs := metadata.SetAttrs{Size: req.NewAttr.Size}
+			var sizeWcc *metadata.DirWcc
+			sizeWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
+			if err != nil {
+				// Handle size change error
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					logger.DebugCtx(ctx.Context, "SETATTR: size change cancelled",
+						"handle", fmt.Sprintf("%x", req.Handle),
+						"client", clientIP)
+					return nil, err
+				}
+
+				logError(ctx.Context, err, "SETATTR failed: size change error",
+					"handle", fmt.Sprintf("%x", req.Handle),
+					"client", clientIP)
+
+				var wccAfter *types.NFSFileAttr
+				if file, getErr := metaSvc.GetFile(ctx.Context, fileHandle); getErr == nil {
+					wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+				}
+
+				status := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "SETATTR")
+				return &SetAttrResponse{
+					NFSResponseBase: NFSResponseBase{Status: status},
+					AttrBefore:      wccBefore,
+					AttrAfter:       wccAfter,
+				}, nil
+			}
+
+			sizeApplied = true
+
+			// Now apply other attributes (without size)
+			otherAttrs := metadata.SetAttrs{
+				Mode:  req.NewAttr.Mode,
+				UID:   req.NewAttr.UID,
+				GID:   req.NewAttr.GID,
+				Atime: req.NewAttr.Atime,
+				Mtime: req.NewAttr.Mtime,
+			}
+			var otherWcc *metadata.DirWcc
+			otherWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
+			if err != nil {
+				// The client is about to be told the whole SETATTR failed while the
+				// size change stands. The reply carries one status and one wcc_data
+				// pair (RFC 1813), so that cannot be said on the wire; the refetched
+				// AttrAfter below at least reports the new size.
+				logger.WarnCtx(ctx.Context, "SETATTR partially applied: size committed, remaining attributes rejected",
+					"handle", fmt.Sprintf("%x", req.Handle),
+					"size", *req.NewAttr.Size,
+					"client", clientIP,
+					"error", err)
+			}
+			// Before from the size call (true pre-op), After from the latest call.
+			setWcc = &metadata.DirWcc{}
+			if sizeWcc != nil {
+				setWcc.Before = sizeWcc.Before
+			}
+			if otherWcc != nil {
+				setWcc.After = otherWcc.After
+			}
+		} else {
+			// Only size or only other attributes - single call is fine
+			setWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
+			sizeApplied = hasSize && err == nil
+		}
+
+		// SetFileAttributes prunes FileAttr.Blocks + size, but the per-share block
+		// store still holds the dropped CAS chunks and physical tail bytes. Drive
+		// the shared reclaim with the PRE-truncate snapshot (currentFile, captured
+		// before SetFileAttributes ran) so the engine reaps RefCount on every
+		// dropped block (#832) and a later re-extend reads zeros, not stale data.
+		// No-ops unless a genuine shrink; best-effort (metadata already committed).
+		// Same helper as NFSv4 SETATTR / CREATE-truncate and SMB SetEndOfFile.
+		//
+		// Gated on sizeApplied rather than on overall success, and placed before the
+		// error branch below: the size phase commits on its own, so a later phase
+		// being rejected leaves the blocks past the new size orphaned all the same.
+		//
+		// decision: the reclaim is best-effort and its failure is only logged, so
+		// the client is told NFS3OK with the tail still live. That covers every way
+		// it can fail -- a dead request context, an unresolvable block store, a
+		// failing reap -- not just the cancellation case, and the cost is more than
+		// wasted space: the helper exists because a later re-extend over an
+		// un-reclaimed tail reads the discarded bytes back as file content instead
+		// of a hole. Detaching the context would close the cancellation case alone
+		// and trade it for block-store I/O that outlives the request while holding
+		// the store-close lock. Withdraw the exemption -- fail the SETATTR, or
+		// queue the reclaim for retry -- if a re-extend ever reads back stale tail
+		// bytes in practice rather than in principle.
+		if sizeApplied {
+			if rErr := common.ReclaimTruncatedBlocks(ctx.Context, h.Registry, fileHandle, currentFile, *req.NewAttr.Size); rErr != nil {
+				logger.WarnCtx(ctx.Context, "SETATTR: block store truncate reclaim failed",
+					"handle", fmt.Sprintf("%x", req.Handle), "size", *req.NewAttr.Size, "error", rErr)
+			}
+		}
+
 		if err != nil {
-			// Handle size change error
+			// Check if error is due to context cancellation
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				logger.DebugCtx(ctx.Context, "SETATTR: size change cancelled",
+				logger.DebugCtx(ctx.Context, "SETATTR: store operation cancelled",
 					"handle", fmt.Sprintf("%x", req.Handle),
 					"client", clientIP)
 				return nil, err
 			}
 
-			logError(ctx.Context, err, "SETATTR failed: size change error",
+			logError(ctx.Context, err, "SETATTR failed: store error",
 				"handle", fmt.Sprintf("%x", req.Handle),
 				"client", clientIP)
 
+			// Get updated attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
 			if file, getErr := metaSvc.GetFile(ctx.Context, fileHandle); getErr == nil {
 				wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 			}
 
+			// Map store errors to NFS status codes
 			status := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "SETATTR")
+
 			return &SetAttrResponse{
 				NFSResponseBase: NFSResponseBase{Status: status},
 				AttrBefore:      wccBefore,
@@ -268,129 +365,60 @@ func (h *Handler) SetAttr(
 			}, nil
 		}
 
-		sizeApplied = true
+		// H9: prefer the file's pre/post attributes captured atomically with the
+		// SetFileAttributes mutation. The wccBefore read at handler entry can race a
+		// concurrent mutation in the window; setWcc.Before is the state the op
+		// actually transitioned from. The WCC subject for SETATTR is the file itself.
+		wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, fileHandle, setWcc, wccBefore)
 
-		// Now apply other attributes (without size)
-		otherAttrs := metadata.SetAttrs{
-			Mode:  req.NewAttr.Mode,
-			UID:   req.NewAttr.UID,
-			GID:   req.NewAttr.GID,
-			Atime: req.NewAttr.Atime,
-			Mtime: req.NewAttr.Mtime,
-		}
-		var otherWcc *metadata.DirWcc
-		otherWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
-		if err != nil {
-			// The client is about to be told the whole SETATTR failed while the
-			// size change stands. The reply carries one status and one wcc_data
-			// pair (RFC 1813), so that cannot be said on the wire; the refetched
-			// AttrAfter below at least reports the new size.
-			logger.WarnCtx(ctx.Context, "SETATTR partially applied: size committed, remaining attributes rejected",
-				"handle", fmt.Sprintf("%x", req.Handle),
-				"size", *req.NewAttr.Size,
-				"client", clientIP,
-				"error", err)
-		}
-		// Before from the size call (true pre-op), After from the latest call.
-		setWcc = &metadata.DirWcc{}
-		if sizeWcc != nil {
-			setWcc.Before = sizeWcc.Before
-		}
-		if otherWcc != nil {
-			setWcc.After = otherWcc.After
-		}
-	} else {
-		// Only size or only other attributes - single call is fine
-		setWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
-		sizeApplied = hasSize && err == nil
-	}
-
-	// SetFileAttributes prunes FileAttr.Blocks + size, but the per-share block
-	// store still holds the dropped CAS chunks and physical tail bytes. Drive
-	// the shared reclaim with the PRE-truncate snapshot (currentFile, captured
-	// before SetFileAttributes ran) so the engine reaps RefCount on every
-	// dropped block (#832) and a later re-extend reads zeros, not stale data.
-	// No-ops unless a genuine shrink; best-effort (metadata already committed).
-	// Same helper as NFSv4 SETATTR / CREATE-truncate and SMB SetEndOfFile.
-	//
-	// Gated on sizeApplied rather than on overall success, and placed before the
-	// error branch below: the size phase commits on its own, so a later phase
-	// being rejected leaves the blocks past the new size orphaned all the same.
-	//
-	// decision: the reclaim is best-effort and its failure is only logged, so
-	// the client is told NFS3OK with the tail still live. That covers every way
-	// it can fail -- a dead request context, an unresolvable block store, a
-	// failing reap -- not just the cancellation case, and the cost is more than
-	// wasted space: the helper exists because a later re-extend over an
-	// un-reclaimed tail reads the discarded bytes back as file content instead
-	// of a hole. Detaching the context would close the cancellation case alone
-	// and trade it for block-store I/O that outlives the request while holding
-	// the store-close lock. Withdraw the exemption -- fail the SETATTR, or
-	// queue the reclaim for retry -- if a re-extend ever reads back stale tail
-	// bytes in practice rather than in principle.
-	if sizeApplied {
-		if rErr := common.ReclaimTruncatedBlocks(ctx.Context, h.Registry, fileHandle, currentFile, *req.NewAttr.Size); rErr != nil {
-			logger.WarnCtx(ctx.Context, "SETATTR: block store truncate reclaim failed",
-				"handle", fmt.Sprintf("%x", req.Handle), "size", *req.NewAttr.Size, "error", rErr)
-		}
-	}
-
-	if err != nil {
-		// Check if error is due to context cancellation
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			logger.DebugCtx(ctx.Context, "SETATTR: store operation cancelled",
-				"handle", fmt.Sprintf("%x", req.Handle),
-				"client", clientIP)
-			return nil, err
-		}
-
-		logError(ctx.Context, err, "SETATTR failed: store error",
+		logger.DebugCtx(ctx.Context, "SETATTR successful",
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", clientIP)
 
-		// Get updated attributes for WCC data (best effort)
-		var wccAfter *types.NFSFileAttr
-		if file, getErr := metaSvc.GetFile(ctx.Context, fileHandle); getErr == nil {
-			wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+		if setWcc != nil && setWcc.After != nil {
+			logger.DebugCtx(ctx.Context, "SETATTR details",
+				"old_size", currentFile.Size,
+				"new_size", setWcc.After.Size,
+				"old_mode", fmt.Sprintf("%o", currentFile.Mode),
+				"new_mode", fmt.Sprintf("%o", setWcc.After.Mode))
+		} else {
+			logger.DebugCtx(ctx.Context, "SETATTR details",
+				"old_size", currentFile.Size,
+				"old_mode", fmt.Sprintf("%o", currentFile.Mode))
 		}
 
-		// Map store errors to NFS status codes
-		status := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "SETATTR")
-
 		return &SetAttrResponse{
-			NFSResponseBase: NFSResponseBase{Status: status},
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 			AttrBefore:      wccBefore,
 			AttrAfter:       wccAfter,
 		}, nil
 	}
-
-	// H9: prefer the file's pre/post attributes captured atomically with the
-	// SetFileAttributes mutation. The wccBefore read at handler entry can race a
-	// concurrent mutation in the window; setWcc.Before is the state the op
-	// actually transitioned from. The WCC subject for SETATTR is the file itself.
-	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, fileHandle, setWcc, wccBefore)
-
-	logger.DebugCtx(ctx.Context, "SETATTR successful",
-		"handle", fmt.Sprintf("%x", req.Handle),
-		"client", clientIP)
-
-	if setWcc != nil && setWcc.After != nil {
-		logger.DebugCtx(ctx.Context, "SETATTR details",
-			"old_size", currentFile.Size,
-			"new_size", setWcc.After.Size,
-			"old_mode", fmt.Sprintf("%o", currentFile.Mode),
-			"new_mode", fmt.Sprintf("%o", setWcc.After.Mode))
-	} else {
-		logger.DebugCtx(ctx.Context, "SETATTR details",
-			"old_size", currentFile.Size,
-			"old_mode", fmt.Sprintf("%o", currentFile.Mode))
+	if req.NewAttr.Size == nil {
+		return apply(ctx)
 	}
-
-	return &SetAttrResponse{
-		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-		AttrBefore:      wccBefore,
-		AttrAfter:       wccAfter,
-	}, nil
+	file, err := metaSvc.GetFileForRead(ctx.Context, fileHandle)
+	if err != nil {
+		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
+	}
+	if file.PayloadID == "" {
+		return apply(ctx)
+	}
+	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, fileHandle)
+	if err != nil {
+		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
+	}
+	var response *SetAttrResponse
+	err = blockStore.WithPayloadScope(ctx.Context, []string{string(file.PayloadID)}, false, func(scopeCtx context.Context) error {
+		scoped := *ctx
+		scoped.Context = scopeCtx
+		var callErr error
+		response, callErr = apply(&scoped)
+		return callErr
+	})
+	if err != nil && response == nil {
+		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
+	}
+	return response, err
 }
 
 // Request Validation

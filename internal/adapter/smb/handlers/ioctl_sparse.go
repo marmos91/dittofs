@@ -446,106 +446,122 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// byte file and asserts size stays 4096). If the entire request is past
 	// EOF the call is a no-op success.
 	metaSvc := h.Registry.GetMetadataService()
-	fileForSize, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
 		return NewErrorResult(types.StatusForErr(err)), nil
 	}
-	if fileOffset >= fileForSize.Size {
+	result, scopeErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, openFile.MetadataHandle, func(authCtx *metadata.AuthContext) (*HandlerResult, error) {
+		scopedHandler := *ctx
+		scopedHandler.Context = authCtx.Context
+		ctx := &scopedHandler
+		fileForSize, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+		if err != nil {
+			return NewErrorResult(types.StatusForErr(err)), nil
+		}
+		if fileOffset >= fileForSize.Size {
+			resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
+			return NewResult(types.StatusSuccess, resp), nil
+		}
+		beyond = min(beyond, fileForSize.Size)
+
+		// Byte-range lock check on the write window. WRITE and COPYCHUNK both
+		// gate on this; without it another handle could hold a conflicting
+		// lock over [fileOffset, beyond) and the zero-fill would silently win
+		// (smb2.ioctl.sparse_lock).
+		if err := metaSvc.CheckLockForIO(
+			authCtx.Context,
+			openFile.MetadataHandle,
+			openFile.OpenID(),
+			ctx.SessionID,
+			fileOffset,
+			beyond-fileOffset,
+			true, // isWrite
+		); err != nil {
+			logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: blocked by lock",
+				"path", path, "offset", fileOffset, "length", beyond-fileOffset)
+			return NewErrorResult(types.StatusFileLockConflict), nil
+		}
+
+		// Break Level II (Read) caching leases held by other clients on the
+		// target so they invalidate stale cached data. Mirrors the WRITE and
+		// COPYCHUNK paths.
+		if h.LeaseManager != nil {
+			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
+				logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: oplock break failed (non-fatal)",
+					"path", path, "error", breakErr)
+			}
+		}
+
+		// Capture the stored ChangeTime before the fill stamps it, so the frozen
+		// restore below can tell the fill's own stamp from a peer's advance.
+		preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
+
+		committed, fillErr := h.zeroFillRange(authCtx, openFile, fileOffset, beyond)
+		// The fill runs through the ordinary write chain, and CommitWrite stamps
+		// Mtime and ChangeTime from inside the write transaction where no SetAttrs
+		// reaches. Put the frozen values back afterwards the way WRITE does
+		// (MS-FSA §2.1.5.15.2).
+		//
+		// Deferred, and conditional on a chunk having actually committed. Deferred
+		// because the fill commits chunk by chunk, so a failure partway has already
+		// stamped the chunks that landed and the failure return needs the restore
+		// as much as the success return does. Conditional because the restore
+		// writes every frozen timestamp back explicitly, which drags a value some
+		// other opener advanced after the freeze backwards — acceptable as the
+		// price of undoing this operation's own stamp, but not on a failure that
+		// stamped nothing, where it would be a backwards write performed by an
+		// operation that changed no file state at all.
+		//
+		// The restore runs on a context detached from cancellation, because the
+		// case it most needs to cover is the cancelled one: the fill checks for
+		// cancellation between chunks, so a cancel after the first commit is
+		// exactly when timestamps have been stamped and the request is about to
+		// return without repairing them. Carrying the cancelled context here would
+		// mean the write that repairs the damage is the one write guaranteed to
+		// fail. Values are kept so the auth identity travels with it; only the
+		// cancellation is dropped, and a timeout bounds the detour so a wedged
+		// store cannot hold the handler open.
+		//
+		// A no-op on a handle with nothing frozen.
+		if committed {
+			restoreAuth := *authCtx
+			detached, cancelRestore := context.WithTimeout(
+				context.WithoutCancel(authCtx.Context), frozenRestoreTimeout)
+			restoreAuth.Context = detached
+			defer cancelRestore()
+			defer h.restoreFrozenTimestamps(&restoreAuth, openFile, preOpCtime)
+		}
+
+		if fillErr != nil {
+			if errors.Is(fillErr, errZeroFillCancelled) {
+				return NewErrorResult(types.StatusCancelled), nil
+			}
+			logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
+				"path", path, "error", fillErr)
+			return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(fillErr))), nil
+		}
+
+		// SMB requires immediate cross-session metadata visibility (unlike NFS
+		// which uses explicit COMMIT). Flush deferred metadata so a subsequent
+		// QUERY_INFO sees the new size/timestamps without waiting for CLOSE.
+		// Relaxed (#1687): visibility from the metadata write, durability from the
+		// journal size reconcile on restart; CLOSE/FLUSH remain strict.
+		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
+			logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: deferred metadata flush failed (non-fatal)",
+				"path", path, "error", flushErr)
+		}
+
 		resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
 		return NewResult(types.StatusSuccess, resp), nil
-	}
-	beyond = min(beyond, fileForSize.Size)
-
-	// Byte-range lock check on the write window. WRITE and COPYCHUNK both
-	// gate on this; without it another handle could hold a conflicting
-	// lock over [fileOffset, beyond) and the zero-fill would silently win
-	// (smb2.ioctl.sparse_lock).
-	if err := metaSvc.CheckLockForIO(
-		authCtx.Context,
-		openFile.MetadataHandle,
-		openFile.OpenID(),
-		ctx.SessionID,
-		fileOffset,
-		beyond-fileOffset,
-		true, // isWrite
-	); err != nil {
-		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: blocked by lock",
-			"path", path, "offset", fileOffset, "length", beyond-fileOffset)
-		return NewErrorResult(types.StatusFileLockConflict), nil
-	}
-
-	// Break Level II (Read) caching leases held by other clients on the
-	// target so they invalidate stale cached data. Mirrors the WRITE and
-	// COPYCHUNK paths.
-	if h.LeaseManager != nil {
-		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
-		if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
-			logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: oplock break failed (non-fatal)",
-				"path", path, "error", breakErr)
-		}
-	}
-
-	// Capture the stored ChangeTime before the fill stamps it, so the frozen
-	// restore below can tell the fill's own stamp from a peer's advance.
-	preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
-
-	committed, fillErr := h.zeroFillRange(authCtx, openFile, fileOffset, beyond)
-	// The fill runs through the ordinary write chain, and CommitWrite stamps
-	// Mtime and ChangeTime from inside the write transaction where no SetAttrs
-	// reaches. Put the frozen values back afterwards the way WRITE does
-	// (MS-FSA §2.1.5.15.2).
-	//
-	// Deferred, and conditional on a chunk having actually committed. Deferred
-	// because the fill commits chunk by chunk, so a failure partway has already
-	// stamped the chunks that landed and the failure return needs the restore
-	// as much as the success return does. Conditional because the restore
-	// writes every frozen timestamp back explicitly, which drags a value some
-	// other opener advanced after the freeze backwards — acceptable as the
-	// price of undoing this operation's own stamp, but not on a failure that
-	// stamped nothing, where it would be a backwards write performed by an
-	// operation that changed no file state at all.
-	//
-	// The restore runs on a context detached from cancellation, because the
-	// case it most needs to cover is the cancelled one: the fill checks for
-	// cancellation between chunks, so a cancel after the first commit is
-	// exactly when timestamps have been stamped and the request is about to
-	// return without repairing them. Carrying the cancelled context here would
-	// mean the write that repairs the damage is the one write guaranteed to
-	// fail. Values are kept so the auth identity travels with it; only the
-	// cancellation is dropped, and a timeout bounds the detour so a wedged
-	// store cannot hold the handler open.
-	//
-	// A no-op on a handle with nothing frozen.
-	if committed {
-		restoreAuth := *authCtx
-		detached, cancelRestore := context.WithTimeout(
-			context.WithoutCancel(authCtx.Context), frozenRestoreTimeout)
-		restoreAuth.Context = detached
-		defer cancelRestore()
-		defer h.restoreFrozenTimestamps(&restoreAuth, openFile, preOpCtime)
-	}
-
-	if fillErr != nil {
-		if errors.Is(fillErr, errZeroFillCancelled) {
+	})
+	if scopeErr != nil && result == nil {
+		if errors.Is(scopeErr, context.Canceled) || errors.Is(scopeErr, context.DeadlineExceeded) {
 			return NewErrorResult(types.StatusCancelled), nil
 		}
-		logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
-			"path", path, "error", fillErr)
-		return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(fillErr))), nil
+		return NewErrorResult(types.StatusForErr(scopeErr)), nil
 	}
-
-	// SMB requires immediate cross-session metadata visibility (unlike NFS
-	// which uses explicit COMMIT). Flush deferred metadata so a subsequent
-	// QUERY_INFO sees the new size/timestamps without waiting for CLOSE.
-	// Relaxed (#1687): visibility from the metadata write, durability from the
-	// journal size reconcile on restart; CLOSE/FLUSH remain strict.
-	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
-		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: deferred metadata flush failed (non-fatal)",
-			"path", path, "error", flushErr)
-	}
-
-	resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
-	return NewResult(types.StatusSuccess, resp), nil
+	return result, scopeErr
 }
 
 // frozenRestoreTimeout bounds the frozen-timestamp restore that follows a
@@ -583,36 +599,48 @@ func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFil
 		return false, err
 	}
 
-	chunkLen := min(uint64(zeroFillChunkSize), end-start)
-	zeros := make([]byte, chunkLen)
-	// One deadline for every chunk the range is written in, not one per chunk.
-	// The cancel check below stays on the request's own context, so a client
-	// cancel is still told apart from the deadline ending a write.
-	writeCtx, cancel := common.WithRequestDeadline(authCtx.Context)
-	defer cancel()
+	// The request's own context is captured before the scope wraps it, so the
+	// result can tell a client cancel apart from the write deadline below.
+	reqCtx := authCtx.Context
+	committed, err := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, openFile.MetadataHandle, func(authCtx *metadata.AuthContext) (bool, error) {
+		chunkLen := min(uint64(zeroFillChunkSize), end-start)
+		zeros := make([]byte, chunkLen)
+		// One deadline for every chunk the range is written in, not one per chunk:
+		// the scope's, since WithRequestDeadline keeps it. The cancel check below
+		// stays on the request's own context, so a client cancel is still told
+		// apart from the deadline ending a write.
+		writeCtx, cancel := common.WithRequestDeadline(authCtx.Context)
+		defer cancel()
 
-	committed := false
-	for offset := start; offset < end; {
-		if err := authCtx.Context.Err(); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return committed, errZeroFillCancelled
+		committed := false
+		for offset := start; offset < end; {
+			if err := reqCtx.Err(); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return committed, errZeroFillCancelled
+				}
+				return committed, err
 			}
-			return committed, err
+			remaining := min(end-offset, uint64(len(zeros)))
+			newSize := offset + remaining
+			writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
+			if err != nil {
+				return committed, err
+			}
+			if err := common.WriteToBlockStore(writeCtx, blockStore, writeOp.PayloadID, zeros[:remaining], offset); err != nil {
+				return committed, err
+			}
+			if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
+				return committed, err
+			}
+			committed = true
+			offset += remaining
 		}
-		remaining := min(end-offset, uint64(len(zeros)))
-		newSize := offset + remaining
-		writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
-		if err != nil {
-			return committed, err
-		}
-		if err := common.WriteToBlockStore(writeCtx, blockStore, writeOp.PayloadID, zeros[:remaining], offset); err != nil {
-			return committed, err
-		}
-		if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
-			return committed, err
-		}
-		committed = true
-		offset += remaining
+		return committed, nil
+	})
+	// A cancel that ends the wait for the scope is still a cancel. The write
+	// deadline is not: its error passes through, as on develop.
+	if err != nil && reqCtx.Err() != nil {
+		return committed, errZeroFillCancelled
 	}
-	return committed, nil
+	return committed, err
 }

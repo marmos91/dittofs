@@ -438,203 +438,213 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// setSmbStickyWriteTime cannot tear our view; armSmbDelayedWrite
 	// below re-checks the flags under the write lock so a race between probe
 	// and arm collapses to a single first-write capture.
-	var preWriteMtime time.Time
-	openFile.RLock()
-	probeArm := !openFile.SmbWriteTriggered && openFile.SmbStickyWriteTime == nil
-	openFile.RUnlock()
-	if probeArm {
-		if preFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil {
-			preWriteMtime = preFile.Mtime
+	result, scopeErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, openFile.MetadataHandle, func(authCtx *metadata.AuthContext) (*WriteResponse, error) {
+		scopedHandler := *ctx
+		scopedHandler.Context = authCtx.Context
+		ctx := &scopedHandler
+		var preWriteMtime time.Time
+		openFile.RLock()
+		probeArm := !openFile.SmbWriteTriggered && openFile.SmbStickyWriteTime == nil
+		openFile.RUnlock()
+		if probeArm {
+			if preFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil {
+				preWriteMtime = preFile.Mtime
+			}
 		}
-	}
 
-	newSize := req.Offset + uint64(len(req.Data))
-	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
-	if err != nil {
-		logger.Debug("WRITE: prepare failed", "path", path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
-	}
-
-	// ========================================================================
-	// Step 10: Write data to BlockStore (uses local cache internally)
-	// ========================================================================
-
-	// Routed through common.WriteToBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
-	if err != nil {
-		logger.Warn("WRITE: content write failed", "path", path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
-	}
-
-	// ========================================================================
-	// Step 11: Commit write operation
-	// ========================================================================
-
-	// Capture the stored ChangeTime before CommitWrite stamps it, so the frozen
-	// restore below can tell this write's own stamp apart from a peer's advance.
-	preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
-
-	_, err = metaSvc.CommitWrite(authCtx, writeOp)
-	if err != nil {
-		logger.Warn("WRITE: commit failed", "path", path, "error", err)
-		// Data was written but metadata not updated - this is an inconsistent state
-		// but we still report the error
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
-	}
-
-	// Per MS-SMB2 2.2.21 the write-through bit is undefined for the 2.0.2 dialect,
-	// so it is ignored there. A connection with no recorded dialect honors the
-	// bit: over-flushing is safe, silently dropping a requested durability point
-	// is not.
-	writeThrough := req.Flags&writeFlagWriteThrough != 0 &&
-		(ctx.ConnCryptoState == nil || ctx.ConnCryptoState.GetDialect() != types.Dialect0202)
-
-	// A failed durability step must not be acked as success, but it also cannot
-	// return early: CommitWrite has already applied the size/mtime mutation to
-	// the pending-write state, so other sessions can observe the change through
-	// GETINFO whether or not the fsync landed. The post-write bookkeeping below
-	// — frozen-timestamp restore and the change notification — describes a
-	// change that is already visible, so it still has to run. The failure is
-	// carried to the response instead.
-	writeStatus := types.StatusSuccess
-
-	if writeThrough {
-		// Per MS-SMB2 3.3.5.13, a write-through WRITE is its own durability
-		// point, so the deferred-commit optimization below does not apply: take
-		// the same strict pair FLUSH takes — block store commit, then an inline
-		// metadata fsync — and fail the request rather than ack a durability
-		// guarantee that does not hold.
-		if _, flushErr := blockStore.Flush(authCtx.Context, string(writeOp.PayloadID)); flushErr != nil {
-			logger.Warn("WRITE: write-through content flush failed", "path", path, "error", flushErr)
-			writeStatus = types.StatusFor(common.ClassifyBlockStoreError(flushErr))
-		} else if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true); flushErr != nil {
-			logger.Warn("WRITE: write-through metadata flush failed", "path", path, "error", flushErr)
-			writeStatus = types.StatusForErr(flushErr)
+		newSize := req.Offset + uint64(len(req.Data))
+		writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
+		if err != nil {
+			logger.Debug("WRITE: prepare failed", "path", path, "error", err)
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 		}
-	} else {
-		// SMB requires immediate metadata visibility across sessions (unlike NFS
-		// which has explicit COMMIT). Flush deferred metadata so that other sessions
-		// reading the same file see updated size/timestamps without a FLUSH command.
-		// Relaxed: visibility comes from the metadata write itself (applied
-		// in-txn), NOT from the fsync — so we can defer the metadata db.Sync off the
-		// per-WRITE ack path. CLOSE and FLUSH remain strict for durability; a crash
-		// before the background fsync is caught by the journal size reconcile.
-		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
-			logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", path, "error", flushErr)
+
+		// ========================================================================
+		// Step 10: Write data to BlockStore (uses local cache internally)
+		// ========================================================================
+
+		// Routed through common.WriteToBlockStore so any future []ChunkRef
+		// plumbing lands in one place (see common/doc.go).
+		err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
+		if err != nil {
+			logger.Warn("WRITE: content write failed", "path", path, "error", err)
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
 		}
-	}
 
-	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): If timestamps are frozen via SET_INFO with -1,
-	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
-	h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
+		// ========================================================================
+		// Step 11: Commit write operation
+		// ========================================================================
 
-	// Arm the SMB delayed-write window so QUERY_INFO masks the just-bumped
-	// Mtime until the 2-second timer expires (Samba parity).
-	armSmbDelayedWrite(openFile, preWriteMtime, writeOp.NewMtime)
-	h.StoreOpenFile(openFile)
+		// Capture the stored ChangeTime before CommitWrite stamps it, so the frozen
+		// restore below can tell this write's own stamp apart from a peer's advance.
+		preOpCtime := h.frozenPreOpCtime(authCtx, openFile)
 
-	// One snapshot of the triple: the ADS classification, the parent-atime
-	// bump and the change notification below must describe the same name even
-	// when a rename commits mid-WRITE.
-	name := openFile.Name()
-	fileName, filePath, parentHandle := name.FileName, name.Path, name.ParentHandle
-	isADSWrite := false
-	var baseFileName string
-	if colonIdx := strings.Index(fileName, ":"); colonIdx > 0 {
-		isADSWrite = true
-		baseFileName = fileName[:colonIdx]
-	}
-
-	// Per NTFS: Writing to an ADS updates the base object's ChangeTime and
-	// LastWriteTime. Respect frozen state on the ADS handle.
-	if isADSWrite {
-		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, parentHandle, baseFileName)
-	}
-
-	// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): After a successful write, update LastAccessTime
-	// to the current system time, unless frozen via SET_INFO -1.
-	// The parent directory's LastAccessTime is also updated. MS-FSA specifies no
-	// parent-directory timestamp update on write; this matches Windows.
-	// Both bumps coalesce per handle the way READ's does — see noteSmbAccess
-	// and noteSmbParentAccess.
-	now := time.Now()
-	// IsAtimeFrozen takes openFile.mu (read), so this probe is serialized
-	// against a concurrent SET_INFO freezing the access time.
-	if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
-		// A frozen ChangeTime is held across the bump, and a dropped bump is
-		// visible at Debug.
-		attrs := &metadata.SetAttrs{Atime: &now}
-		holdFrozenCtime(openFile, attrs)
-		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs); err != nil {
-			logger.Debug("WRITE: atime update failed", "path", path, "error", err)
+		_, err = metaSvc.CommitWrite(authCtx, writeOp)
+		if err != nil {
+			logger.Warn("WRITE: commit failed", "path", path, "error", err)
+			// Data was written but metadata not updated - this is an inconsistent state
+			// but we still report the error
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 		}
-	}
-	if len(parentHandle) > 0 && noteSmbParentAccess(openFile, now) {
-		// decision: the parent's bump does not hold ChangeTime the way the file's
-		// does above, so it stamps and the restore below puts the value back.
-		// Whether to hold it is not knowable from this handle: the freeze would be
-		// on whichever handle has the parent open, and there may be several, each
-		// frozen or not independently — which is why restoreParentDirFrozenTimestamps
-		// walks them all. Answering it here means folding that walk into the bump.
-		// The end state is correct either way; what remains is a window in which a
-		// reader sees a ChangeTime the freeze forbids. Fold them if that window is
-		// ever shown to matter.
-		if _, err := metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now}); err != nil {
-			logger.Debug("WRITE: parent atime update failed", "path", path, "error", err)
-		}
-		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on the parent directory
-		// if any open handle has them frozen. The SetFileAttributes call above
-		// unconditionally updates atime; if a handle has atime frozen, restore it.
-		// Skipped along with a coalesced-away bump: nothing was written to restore.
-		h.restoreParentDirFrozenTimestamps(authCtx, parentHandle)
-	}
 
-	// Publish the payload the metadata store allocated for this file. A file
-	// created empty has none until its first WRITE, and CLOSE reads this to
-	// decide whether to commit block-store content.
-	openFile.SetPayloadID(writeOp.PayloadID)
+		// Per MS-SMB2 2.2.21 the write-through bit is undefined for the 2.0.2 dialect,
+		// so it is ignored there. A connection with no recorded dialect honors the
+		// bit: over-flushing is safe, silently dropping a requested durability point
+		// is not.
+		writeThrough := req.Flags&writeFlagWriteThrough != 0 &&
+			(ctx.ConnCryptoState == nil || ctx.ConnCryptoState.GetDialect() != types.Dialect0202)
 
-	if h.NotifyRegistry != nil {
-		parentDirPath := changenotify.GetParentPath(filePath)
-		if isADSWrite {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, changenotify.StreamName(fileName), changenotify.FileActionModifiedStream, changenotify.FileNotifyChangeStreamWrite|changenotify.FileNotifyChangeStreamSize)
+		// A failed durability step must not be acked as success, but it also cannot
+		// return early: CommitWrite has already applied the size/mtime mutation to
+		// the pending-write state, so other sessions can observe the change through
+		// GETINFO whether or not the fsync landed. The post-write bookkeeping below
+		// — frozen-timestamp restore and the change notification — describes a
+		// change that is already visible, so it still has to run. The failure is
+		// carried to the response instead.
+		writeStatus := types.StatusSuccess
+
+		if writeThrough {
+			// Per MS-SMB2 3.3.5.13, a write-through WRITE is its own durability
+			// point, so the deferred-commit optimization below does not apply: take
+			// the same strict pair FLUSH takes — block store commit, then an inline
+			// metadata fsync — and fail the request rather than ack a durability
+			// guarantee that does not hold.
+			if _, flushErr := blockStore.Flush(authCtx.Context, string(writeOp.PayloadID)); flushErr != nil {
+				logger.Warn("WRITE: write-through content flush failed", "path", path, "error", flushErr)
+				writeStatus = types.StatusFor(common.ClassifyBlockStoreError(flushErr))
+			} else if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true); flushErr != nil {
+				logger.Warn("WRITE: write-through metadata flush failed", "path", path, "error", flushErr)
+				writeStatus = types.StatusForErr(flushErr)
+			}
 		} else {
-			// Mirror Samba `notify_fname(... NOTIFY_ACTION_MODIFIED, ...)` from
-			// `vfs_default_pwrite_recv`: a successful WRITE on a regular file
-			// fires FILE_ACTION_MODIFIED to parent-dir watchers whose
-			// CompletionFilter intersects size/last-write/attributes. Without
-			// this hook, in-memory backends never observe the kernel inotify
-			// MODIFIED event that real Samba relies on (smb2.notify.valid-req
-			// expects REMOVED + ADDED + MODIFIED for unlink → CREATE → WRITE).
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, fileName, changenotify.FileActionModified, changenotify.FileNotifyChangeSize|changenotify.FileNotifyChangeLastWrite|changenotify.FileNotifyChangeAttributes)
+			// SMB requires immediate metadata visibility across sessions (unlike NFS
+			// which has explicit COMMIT). Flush deferred metadata so that other sessions
+			// reading the same file see updated size/timestamps without a FLUSH command.
+			// Relaxed: visibility comes from the metadata write itself (applied
+			// in-txn), NOT from the fsync — so we can defer the metadata db.Sync off the
+			// per-WRITE ack path. CLOSE and FLUSH remain strict for durability; a crash
+			// before the background fsync is caught by the journal size reconcile.
+			if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
+				logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", path, "error", flushErr)
+			}
 		}
+
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): If timestamps are frozen via SET_INFO with -1,
+		// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
+		h.restoreFrozenTimestamps(authCtx, openFile, preOpCtime)
+
+		// Arm the SMB delayed-write window so QUERY_INFO masks the just-bumped
+		// Mtime until the 2-second timer expires (Samba parity).
+		armSmbDelayedWrite(openFile, preWriteMtime, writeOp.NewMtime)
+		h.StoreOpenFile(openFile)
+
+		// One snapshot of the triple: the ADS classification, the parent-atime
+		// bump and the change notification below must describe the same name even
+		// when a rename commits mid-WRITE.
+		name := openFile.Name()
+		fileName, filePath, parentHandle := name.FileName, name.Path, name.ParentHandle
+		isADSWrite := false
+		var baseFileName string
+		if colonIdx := strings.Index(fileName, ":"); colonIdx > 0 {
+			isADSWrite = true
+			baseFileName = fileName[:colonIdx]
+		}
+
+		// Per NTFS: Writing to an ADS updates the base object's ChangeTime and
+		// LastWriteTime. Respect frozen state on the ADS handle.
+		if isADSWrite {
+			h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, parentHandle, baseFileName)
+		}
+
+		// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): After a successful write, update LastAccessTime
+		// to the current system time, unless frozen via SET_INFO -1.
+		// The parent directory's LastAccessTime is also updated. MS-FSA specifies no
+		// parent-directory timestamp update on write; this matches Windows.
+		// Both bumps coalesce per handle the way READ's does — see noteSmbAccess
+		// and noteSmbParentAccess.
+		now := time.Now()
+		// IsAtimeFrozen takes openFile.mu (read), so this probe is serialized
+		// against a concurrent SET_INFO freezing the access time.
+		if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
+			// A frozen ChangeTime is held across the bump, and a dropped bump is
+			// visible at Debug.
+			attrs := &metadata.SetAttrs{Atime: &now}
+			holdFrozenCtime(openFile, attrs)
+			if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, attrs); err != nil {
+				logger.Debug("WRITE: atime update failed", "path", path, "error", err)
+			}
+		}
+		if len(parentHandle) > 0 && noteSmbParentAccess(openFile, now) {
+			// decision: the parent's bump does not hold ChangeTime the way the file's
+			// does above, so it stamps and the restore below puts the value back.
+			// Whether to hold it is not knowable from this handle: the freeze would be
+			// on whichever handle has the parent open, and there may be several, each
+			// frozen or not independently — which is why restoreParentDirFrozenTimestamps
+			// walks them all. Answering it here means folding that walk into the bump.
+			// The end state is correct either way; what remains is a window in which a
+			// reader sees a ChangeTime the freeze forbids. Fold them if that window is
+			// ever shown to matter.
+			if _, err := metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now}); err != nil {
+				logger.Debug("WRITE: parent atime update failed", "path", path, "error", err)
+			}
+			// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on the parent directory
+			// if any open handle has them frozen. The SetFileAttributes call above
+			// unconditionally updates atime; if a handle has atime frozen, restore it.
+			// Skipped along with a coalesced-away bump: nothing was written to restore.
+			h.restoreParentDirFrozenTimestamps(authCtx, parentHandle)
+		}
+
+		// Publish the payload the metadata store allocated for this file. A file
+		// created empty has none until its first WRITE, and CLOSE reads this to
+		// decide whether to commit block-store content.
+		openFile.SetPayloadID(writeOp.PayloadID)
+
+		if h.NotifyRegistry != nil {
+			parentDirPath := changenotify.GetParentPath(filePath)
+			if isADSWrite {
+				h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, changenotify.StreamName(fileName), changenotify.FileActionModifiedStream, changenotify.FileNotifyChangeStreamWrite|changenotify.FileNotifyChangeStreamSize)
+			} else {
+				// Mirror Samba `notify_fname(... NOTIFY_ACTION_MODIFIED, ...)` from
+				// `vfs_default_pwrite_recv`: a successful WRITE on a regular file
+				// fires FILE_ACTION_MODIFIED to parent-dir watchers whose
+				// CompletionFilter intersects size/last-write/attributes. Without
+				// this hook, in-memory backends never observe the kernel inotify
+				// MODIFIED event that real Samba relies on (smb2.notify.valid-req
+				// expects REMOVED + ADDED + MODIFIED for unlink → CREATE → WRITE).
+				h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, fileName, changenotify.FileActionModified, changenotify.FileNotifyChangeSize|changenotify.FileNotifyChangeLastWrite|changenotify.FileNotifyChangeAttributes)
+			}
+		}
+
+		// ========================================================================
+		// Step 12: Return response
+		// ========================================================================
+
+		if writeStatus != types.StatusSuccess {
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: writeStatus}}, nil
+		}
+
+		logger.Debug("WRITE successful",
+			"path", path,
+			"offset", req.Offset,
+			"bytes", len(req.Data))
+
+		// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): on success advance
+		// CurrentByteOffset to ByteOffset + BytesWritten — the write-side
+		// counterpart of READ's recordReadProgress, so QUERY_INFO
+		// FilePositionInformation reports the position after the last pipelined op.
+		recordReadProgress(openFile, req.Offset, uint64(len(req.Data)))
+
+		return &WriteResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Count:           uint32(len(req.Data)),
+			Remaining:       0,
+		}, nil
+	})
+	if scopeErr != nil && result == nil {
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(scopeErr)}}, nil
 	}
+	return result, scopeErr
 
-	// ========================================================================
-	// Step 12: Return response
-	// ========================================================================
-
-	if writeStatus != types.StatusSuccess {
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: writeStatus}}, nil
-	}
-
-	logger.Debug("WRITE successful",
-		"path", path,
-		"offset", req.Offset,
-		"bytes", len(req.Data))
-
-	// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): on success advance
-	// CurrentByteOffset to ByteOffset + BytesWritten — the write-side
-	// counterpart of READ's recordReadProgress, so QUERY_INFO
-	// FilePositionInformation reports the position after the last pipelined op.
-	recordReadProgress(openFile, req.Offset, uint64(len(req.Data)))
-
-	return &WriteResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		Count:           uint32(len(req.Data)),
-		Remaining:       0,
-	}, nil
 }
 
 // handlePipeWrite handles WRITE to a named pipe for DCE/RPC communication.

@@ -3,6 +3,7 @@ package handlers
 import (
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -66,7 +67,14 @@ func (h *Handler) handleAllocate(ctx *types.CompoundContext, reader io.Reader) *
 		return allocErr(types.NFS4ERR_SERVERFAULT)
 	}
 
-	if _, err := metaSvc.Allocate(authCtx, metadata.FileHandle(ctx.CurrentFH), offset, length); err != nil {
+	handle := metadata.FileHandle(ctx.CurrentFH)
+	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, handle)
+	if err != nil {
+		return allocErr(types.StatusForErr(err))
+	}
+	if _, err := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, handle, func(authCtx *metadata.AuthContext) (*metadata.File, error) {
+		return metaSvc.Allocate(authCtx, handle, offset, length)
+	}); err != nil {
 		return allocErr(types.StatusForErr(err))
 	}
 

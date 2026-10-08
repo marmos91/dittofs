@@ -170,90 +170,102 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
 
-	intent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
-	if err != nil {
-		status := types.StatusForErr(err)
-		logger.Debug("NFSv4 WRITE PrepareWrite failed",
-			"error", err,
-			"status", status,
-			"client", ctx.ClientAddr)
-		return writeErr(status)
-	}
+	result, scopeErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(authCtx *metadata.AuthContext) (*types.CompoundResult, error) {
+		scopedHandler := *ctx
+		scopedHandler.Context = authCtx.Context
+		ctx := &scopedHandler
+		return func() *types.CompoundResult {
+			intent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
+			if err != nil {
+				status := types.StatusForErr(err)
+				logger.Debug("NFSv4 WRITE PrepareWrite failed",
+					"error", err,
+					"status", status,
+					"client", ctx.ClientAddr)
+				return writeErr(status)
+			}
 
-	// RFC 7530 Section 16.36.5: "a WRITE request with count set to 0 should not
-	// cause the time_modify attribute of the file to be updated". PrepareWrite
-	// above is the permission gate the zero-count case is still "subject to"
-	// (Section 16.36.4) and changes no metadata by itself, so returning here
-	// leaves the file untouched. Nothing was written, so any committed level is
-	// truthful; report the one the client asked for.
-	if len(data) == 0 {
-		return encodeWrite4resok(0, stable)
-	}
+			// RFC 7530 Section 16.36.5: "a WRITE request with count set to 0 should not
+			// cause the time_modify attribute of the file to be updated". PrepareWrite
+			// above is the permission gate the zero-count case is still "subject to"
+			// (Section 16.36.4) and changes no metadata by itself, so returning here
+			// leaves the file untouched. Nothing was written, so any committed level is
+			// truthful; report the one the client asked for.
+			if len(data) == 0 {
+				return encodeWrite4resok(0, stable)
+			}
 
-	// Trace SUID/SGID-related writes for debugging
-	if intent.PreWriteAttr.Mode&0o6000 != 0 {
-		uid := uint32(0)
-		if authCtx.Identity != nil && authCtx.Identity.UID != nil {
-			uid = *authCtx.Identity.UID
-		}
-		logger.Debug("NFSv4 WRITE to SUID/SGID file",
-			"pre_mode", fmt.Sprintf("0%o", intent.PreWriteAttr.Mode),
-			"uid", uid,
-			"offset", offset,
-			"count", len(data),
-			"client", ctx.ClientAddr)
-	}
+			// Trace SUID/SGID-related writes for debugging
+			if intent.PreWriteAttr.Mode&0o6000 != 0 {
+				uid := uint32(0)
+				if authCtx.Identity != nil && authCtx.Identity.UID != nil {
+					uid = *authCtx.Identity.UID
+				}
+				logger.Debug("NFSv4 WRITE to SUID/SGID file",
+					"pre_mode", fmt.Sprintf("0%o", intent.PreWriteAttr.Mode),
+					"uid", uid,
+					"offset", offset,
+					"count", len(data),
+					"client", ctx.ClientAddr)
+			}
 
-	// Routed through common.WriteToBlockStore so any future []ChunkRef
-	// plumbing lands in one place (see common/doc.go).
-	err = common.WriteToBlockStore(ctx.Context, blockStore, intent.PayloadID, data, offset)
-	if err != nil {
-		logger.Debug("NFSv4 WRITE payload error",
-			"error", err,
-			"payloadID", intent.PayloadID,
-			"client", ctx.ClientAddr)
-		return writeErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
-	}
+			// Routed through common.WriteToBlockStore so any future []ChunkRef
+			// plumbing lands in one place (see common/doc.go).
+			err = common.WriteToBlockStore(ctx.Context, blockStore, intent.PayloadID, data, offset)
+			if err != nil {
+				logger.Debug("NFSv4 WRITE payload error",
+					"error", err,
+					"payloadID", intent.PayloadID,
+					"client", ctx.ClientAddr)
+				return writeErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
+			}
 
-	_, err = metaSvc.CommitWrite(authCtx, intent)
-	if err != nil {
-		status := types.StatusForErr(err)
-		logger.Debug("NFSv4 WRITE CommitWrite failed",
-			"error", err,
-			"status", status,
-			"client", ctx.ClientAddr)
-		return writeErr(status)
-	}
+			_, err = metaSvc.CommitWrite(authCtx, intent)
+			if err != nil {
+				status := types.StatusForErr(err)
+				logger.Debug("NFSv4 WRITE CommitWrite failed",
+					"error", err,
+					"status", status,
+					"client", ctx.ClientAddr)
+				return writeErr(status)
+			}
 
-	// Stability level (RFC 7530 Section 16.36.4). `stable` is what the client
-	// asked for; `committed` must report what the server actually did, and
-	// "it will not commit the data and metadata at a level less than that
-	// requested by the client". An UNSTABLE4 write leaves the bytes in the
-	// crash-safe local cache for a later COMMIT; DATA_SYNC4 and FILE_SYNC4 are
-	// honoured by flushing this file synchronously, exactly as COMMIT does. If
-	// that flush fails the reply drops back to UNSTABLE4 rather than claiming a
-	// durability that was not provided — the client then re-drives COMMIT.
-	committed := uint32(types.UNSTABLE4)
-	if stable >= types.DATA_SYNC4 {
-		if flushErr := common.FlushStableWrite(authCtx, metaSvc, blockStore, fileHandle, intent.PayloadID, stable >= types.FILE_SYNC4); flushErr != nil {
-			logger.Warn("NFSv4 WRITE stable flush failed, reporting UNSTABLE4",
-				"error", flushErr,
+			// Stability level (RFC 7530 Section 16.36.4). `stable` is what the client
+			// asked for; `committed` must report what the server actually did, and
+			// "it will not commit the data and metadata at a level less than that
+			// requested by the client". An UNSTABLE4 write leaves the bytes in the
+			// crash-safe local cache for a later COMMIT; DATA_SYNC4 and FILE_SYNC4 are
+			// honoured by flushing this file synchronously, exactly as COMMIT does. If
+			// that flush fails the reply drops back to UNSTABLE4 rather than claiming a
+			// durability that was not provided — the client then re-drives COMMIT.
+			committed := uint32(types.UNSTABLE4)
+			if stable >= types.DATA_SYNC4 {
+				if flushErr := common.FlushStableWrite(authCtx, metaSvc, blockStore, fileHandle, intent.PayloadID, stable >= types.FILE_SYNC4); flushErr != nil {
+					logger.Warn("NFSv4 WRITE stable flush failed, reporting UNSTABLE4",
+						"error", flushErr,
+						"stable_requested", stable,
+						"client", ctx.ClientAddr)
+				} else {
+					committed = stable
+				}
+			}
+
+			logger.Debug("NFSv4 WRITE successful",
+				"offset", offset,
+				"written", len(data),
+				"newSize", newSize,
 				"stable_requested", stable,
+				"committed", committed,
 				"client", ctx.ClientAddr)
-		} else {
-			committed = stable
-		}
+
+			return encodeWrite4resok(uint32(len(data)), committed)
+		}(), nil
+	})
+	if scopeErr != nil && result == nil {
+		return writeErr(types.StatusForErr(scopeErr))
 	}
+	return result
 
-	logger.Debug("NFSv4 WRITE successful",
-		"offset", offset,
-		"written", len(data),
-		"newSize", newSize,
-		"stable_requested", stable,
-		"committed", committed,
-		"client", ctx.ClientAddr)
-
-	return encodeWrite4resok(uint32(len(data)), committed)
 }
 
 // encodeWrite4resok encodes a successful WRITE4 response: the byte count, the

@@ -524,46 +524,59 @@ func (h *Handler) executeCopyChunks(
 		}
 		data = data[:n]
 
-		// Prepare write on destination (validates permissions, updates metadata).
-		// Use the declared chunk length for newSize, not the read result,
-		// to ensure consistent metadata even under concurrent source modifications.
-		newSize := chunk.TargetOffset + uint64(chunk.Length)
-		writeOp, err := metaSvc.PrepareWrite(authCtx, dstOpen.MetadataHandle, newSize)
-		if err != nil {
-			logger.Warn("COPYCHUNK: prepare write failed",
-				"chunk", i, "dstPath", dstPath, "error", err)
-			flushCommitted()
-			return copyChunkPartialResponse(ctlCode, dstFileID,
-				types.StatusForErr(err), chunksWritten, totalBytesWritten), nil
-		}
+		partial, scopeErr := common.WithFilePayloadScope(authCtx, metaSvc, dstBlockStore, dstOpen.MetadataHandle, func(authCtx *metadata.AuthContext) (*HandlerResult, error) {
+			scopedHandler := *ctx
+			scopedHandler.Context = authCtx.Context
+			ctx := &scopedHandler
+			// Prepare write on destination (validates permissions, updates metadata).
+			// Use the declared chunk length for newSize, not the read result,
+			// to ensure consistent metadata even under concurrent source modifications.
+			newSize := chunk.TargetOffset + uint64(chunk.Length)
+			writeOp, err := metaSvc.PrepareWrite(authCtx, dstOpen.MetadataHandle, newSize)
+			if err != nil {
+				logger.Warn("COPYCHUNK: prepare write failed",
+					"chunk", i, "dstPath", dstPath, "error", err)
+				flushCommitted()
+				return copyChunkPartialResponse(ctlCode, dstFileID,
+					types.StatusForErr(err), chunksWritten, totalBytesWritten), nil
+			}
 
-		// Write to destination.
-		// Nil currentBlocks; legacy / dual-read path drives the syncer.
-		// Returned []ChunkRef is discarded — a later refactor will
-		// thread the destination's FileAttr.Blocks update.
-		if _, err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), nil, data, chunk.TargetOffset); err != nil {
-			logger.Warn("COPYCHUNK: destination write failed",
-				"chunk", i, "dstPath", dstPath, "error", err)
-			// COPYCHUNK destination write is a content-path op:
-			// StatusForErr (via ClassifyBlockStoreError) maps a closed-store error (dest share removed
-			// mid-copy) to STATUS_FILE_CLOSED and preserves the
-			// CAS-corruption / remote-unavailable mappings, defaulting to
-			// the I/O-class status for opaque failures.
-			flushCommitted()
-			return copyChunkPartialResponse(ctlCode, dstFileID,
-				types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
-		}
+			// Write to destination.
+			// Nil currentBlocks; legacy / dual-read path drives the syncer.
+			// Returned []ChunkRef is discarded — a later refactor will
+			// thread the destination's FileAttr.Blocks update.
+			if _, err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), nil, data, chunk.TargetOffset); err != nil {
+				logger.Warn("COPYCHUNK: destination write failed",
+					"chunk", i, "dstPath", dstPath, "error", err)
+				// COPYCHUNK destination write is a content-path op:
+				// StatusForErr (via ClassifyBlockStoreError) maps a closed-store error (dest share removed
+				// mid-copy) to STATUS_FILE_CLOSED and preserves the
+				// CAS-corruption / remote-unavailable mappings, defaulting to
+				// the I/O-class status for opaque failures.
+				flushCommitted()
+				return copyChunkPartialResponse(ctlCode, dstFileID,
+					types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
+			}
 
-		// Commit write metadata
-		if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
-			logger.Warn("COPYCHUNK: commit write failed",
-				"chunk", i, "dstPath", dstPath, "error", err)
-			flushCommitted()
-			return copyChunkPartialResponse(ctlCode, dstFileID,
-				types.StatusInternalError, chunksWritten, totalBytesWritten), nil
-		}
+			// Commit write metadata
+			if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
+				logger.Warn("COPYCHUNK: commit write failed",
+					"chunk", i, "dstPath", dstPath, "error", err)
+				flushCommitted()
+				return copyChunkPartialResponse(ctlCode, dstFileID,
+					types.StatusInternalError, chunksWritten, totalBytesWritten), nil
+			}
 
-		lastWritePayloadID = writeOp.PayloadID
+			lastWritePayloadID = writeOp.PayloadID
+			return nil, nil
+		})
+		if partial != nil {
+			return partial, scopeErr
+		}
+		if scopeErr != nil {
+			flushCommitted()
+			return copyChunkPartialResponse(ctlCode, dstFileID, types.StatusForErr(scopeErr), chunksWritten, totalBytesWritten), nil
+		}
 		chunksWritten++
 		totalBytesWritten += uint64(chunk.Length)
 	}

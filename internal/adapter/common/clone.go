@@ -15,14 +15,15 @@ import (
 // CloneWholeFile clones the entire source into the destination at offset zero.
 // A zero count uses the source's current size; otherwise count must still match
 // that size after draining pending rollups. Destinations with an existing tail
-// beyond the source are unsupported, and a tail added during a local copy is
-// preserved rather than truncated.
+// beyond the source are unsupported. Source and destination are exclusive for
+// the full operation, so a concurrent tail write waits until it can survive.
 //
 // Remote-backed copies replace the manifest and update refcounts in one
 // metadata transaction, then discard the destination's replaced local content.
 // Local-only copies materialize bytes into the destination's own journal.
 // Both stores must belong to the same share; callers check handles, types,
-// stateids and permissions before entering this helper.
+// stateids and permissions before entering this helper. metaSvc is the service
+// owning deferred write metadata; nil is only valid when the caller has none.
 func CloneWholeFile(
 	ctx context.Context,
 	blockStore *engine.Store,
@@ -31,14 +32,51 @@ func CloneWholeFile(
 	srcHandle, dstHandle metadata.FileHandle,
 	dstPayloadID metadata.PayloadID,
 	count uint64,
+	metaSvc *metadata.Service,
 ) error {
-	// Force the source's pending writes into CAS + the FileChunk manifest before
-	// we copy it. DrainRollups bypasses the stabilization window and persists
-	// FileAttr.Blocks, so the post-drain GetFile below observes the complete
-	// manifest rather than an empty/partial one.
-	if err := blockStore.DrainRollups(ctx); err != nil {
-		return fmt.Errorf("drain source rollups: %w", err)
+	// Payload identity is stable for a file handle. Resolve it before admission,
+	// then re-read sizes and manifests only after both payloads are exclusive.
+	srcFile, err := metadataStore.GetFile(ctx, srcHandle)
+	if err != nil {
+		return fmt.Errorf("fetch source payload: %w", err)
 	}
+	return blockStore.WithPayloadScope(ctx, []string{string(srcFile.PayloadID), string(dstPayloadID)}, true, func(ctx context.Context) error {
+		if srcFile.PayloadID == dstPayloadID {
+			return nil
+		}
+		// Pending metadata is bounded by the journal's durable extent. Commit both
+		// journals before publishing sizes so a destination tail cannot be hidden
+		// by deferred metadata when the replacement transaction validates it.
+		for _, id := range []metadata.PayloadID{srcFile.PayloadID, dstPayloadID} {
+			if _, err := blockStore.Flush(ctx, string(id)); err != nil {
+				return fmt.Errorf("commit clone payload: %w", err)
+			}
+		}
+		if metaSvc != nil {
+			authCtx := &metadata.AuthContext{Context: ctx}
+			for _, handle := range []metadata.FileHandle{srcHandle, dstHandle} {
+				if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle, true); err != nil {
+					return fmt.Errorf("flush clone metadata: %w", err)
+				}
+			}
+		}
+		if err := blockStore.DrainPayload(ctx, string(srcFile.PayloadID)); err != nil {
+			return fmt.Errorf("drain source payload: %w", err)
+		}
+		err := cloneWholeFileScoped(ctx, blockStore, metadataStore, cache, srcHandle, dstHandle, dstPayloadID, count)
+		// Also invalidate on a post-commit local error: the manifest may already
+		// have changed, and a retry must not reuse pre-clone write attributes.
+		if metaSvc != nil {
+			metaSvc.InvalidateWriteCache(dstHandle)
+		}
+		return err
+	})
+}
+
+// cloneWholeFileScoped owns source and destination until the destination's
+// manifest, local ranges, and cache invalidation all describe the clone.
+func cloneWholeFileScoped(ctx context.Context, blockStore *engine.Store, metadataStore metadata.Store,
+	cache CacheInvalidator, srcHandle, dstHandle metadata.FileHandle, dstPayloadID metadata.PayloadID, count uint64) error {
 
 	// Local-only shares have no remote content-addressed tier to hydrate from,
 	// and the destination payload owns no journal intervals of its own, so a
@@ -165,8 +203,8 @@ func validateWholeCloneRange(srcSize, dstSize, count uint64) error {
 //
 // It runs after the commit, never before: until the commit lands those bytes
 // are the destination's real content, and a rolled-back copy that had already
-// dropped them could not get them back. What is left is the window between the
-// two, where a read still serves the replaced content.
+// dropped them could not get them back. The exclusive scope prevents readers,
+// writers and old carve passes from observing or changing this intermediate state.
 //
 // A failure fails the copy, which has already committed — the one place in
 // these helpers where an error does not mean nothing landed. Reporting it is
@@ -227,7 +265,7 @@ func seedClonedRanges(ctx context.Context, blockStore *engine.Store, dstPayloadI
 // there is no refcount-under-GC concern for it.
 //
 // It runs ENTIRELY OUTSIDE any metadata transaction: WriteAt / Flush /
-// DrainRollups persist destination rows through the per-share coordinator under
+// DrainPayload persist destination rows through the per-share coordinator under
 // a non-reentrant metadata lock, so nesting them inside a held transaction would
 // self-deadlock. Only the trailing size/mtime stamp opens its own short txn,
 // after the block writes have committed.
@@ -240,7 +278,7 @@ func materializeLocalClone(
 	dstPayloadID metadata.PayloadID,
 	count uint64,
 ) error {
-	// Re-read the source AFTER the caller's DrainRollups so Size and the source
+	// Re-read the source AFTER the caller's source drain so Size and the source
 	// journal intervals reflect the fully-materialized post-rollup view.
 	srcFile, err := metadataStore.GetFile(ctx, srcHandle)
 	if err != nil {
@@ -291,18 +329,17 @@ func materializeLocalClone(
 	}
 
 	// Durability barrier + carve: Flush fsyncs the destination's appended
-	// records; DrainRollups seals them into the destination's FileChunk manifest
+	// records; DrainPayload seals them into the destination's FileChunk manifest
 	// and derived File.Blocks — the same path a normal write + commit drives.
 	if _, err := blockStore.Flush(ctx, string(dstPayloadID)); err != nil {
 		return fmt.Errorf("materialize clone: flush dst payload: %w", err)
 	}
-	if err := blockStore.DrainRollups(ctx); err != nil {
-		return fmt.Errorf("materialize clone: drain dst rollups: %w", err)
+	if err := blockStore.DrainPayload(ctx, string(dstPayloadID)); err != nil {
+		return fmt.Errorf("materialize clone: drain dst payload: %w", err)
 	}
 
-	// Re-read the destination in the final transaction. A peer may have
-	// appended after validation; only the copied prefix belongs to this
-	// operation, so neither its bytes nor this size update may remove the tail.
+	// Re-read the destination in the final transaction to retain the manifest
+	// projection from the drain. The outer scope excludes peer data mutations.
 	err = metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		dstFile, err := tx.GetFile(ctx, dstHandle)
 		if err != nil {
