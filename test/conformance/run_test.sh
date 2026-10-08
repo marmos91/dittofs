@@ -449,7 +449,7 @@ assert_eq "no suite runner writes the common runner's step log" "" "$CLASH"
 # adapter port. nfs-kerberos is the trap here: it speaks NFS but runs entirely
 # in Docker and publishes no host port, so keying this off `protocol` would fail
 # it for something that is none of its business.
-assert_eq "suites owning the host adapter port" "pjdfstest pynfs" \
+assert_eq "suites owning the host adapter port" "pjdfstest pynfs cthon04 nfstest" \
     "$(jq -r '[.suites | to_entries[] | select(.value.host_adapter == true) | .key] | join(" ")' "${SCRIPT_DIR}/suites.json")"
 
 # The CI matrix is the manifest's cross product, not a hand-kept list.

@@ -145,6 +145,86 @@
           "root": false
         }
       ]
+    },
+    "cthon04": {
+      "description": "Connectathon basic/general/special/lock over named NFS mount option sets",
+      "host_adapter": true,
+      "protocol": "NFS",
+      "profiles": ["memory", "badger", "badger-s3"],
+      "variant": {
+        "name": "mount-options",
+        "values": ["v3", "v3-noac", "v4.0", "v4.1", "v4.1-smallio"]
+      },
+      "known_failures": {
+        "v3": "nfs-mount/cthon04/KNOWN_FAILURES_V3.md",
+        "v3-noac": "nfs-mount/cthon04/KNOWN_FAILURES_V3.md",
+        "v4.0": "nfs-mount/cthon04/KNOWN_FAILURES_V4.md",
+        "v4.1": "nfs-mount/cthon04/KNOWN_FAILURES_V4.md",
+        "v4.1-smallio": "nfs-mount/cthon04/KNOWN_FAILURES_V4.md"
+      },
+      "tiers": { "pull_request": ["memory"], "push": [] },
+      "timeout_minutes": 30,
+      "steps": [
+        {
+          "name": "setup",
+          "cmd": "posix/setup-posix.sh",
+          "args": ["{profile}", "--no-mount"],
+          "root": true
+        },
+        {
+          "name": "run",
+          "cmd": "nfs-mount/cthon04/run.sh",
+          "args": ["--variant", "{variant}"],
+          "root": true
+        },
+        {
+          "name": "teardown",
+          "cmd": "posix/teardown-posix.sh",
+          "args": [],
+          "root": true,
+          "always": true
+        }
+      ]
+    },
+    "nfstest": {
+      "description": "NetApp nfstest modules over named NFS mount option sets",
+      "host_adapter": true,
+      "protocol": "NFS",
+      "profiles": ["memory", "badger", "badger-s3"],
+      "variant": {
+        "name": "mount-options",
+        "values": ["v3", "v3-noac", "v4.0", "v4.1", "v4.1-smallio"]
+      },
+      "known_failures": {
+        "v3": "nfs-mount/nfstest/KNOWN_FAILURES_V3.md",
+        "v3-noac": "nfs-mount/nfstest/KNOWN_FAILURES_V3.md",
+        "v4.0": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
+        "v4.1": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
+        "v4.1-smallio": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md"
+      },
+      "tiers": { "pull_request": [], "push": [] },
+      "timeout_minutes": 60,
+      "steps": [
+        {
+          "name": "setup",
+          "cmd": "posix/setup-posix.sh",
+          "args": ["{profile}", "--no-mount"],
+          "root": true
+        },
+        {
+          "name": "run",
+          "cmd": "nfs-mount/nfstest/run.sh",
+          "args": ["--variant", "{variant}"],
+          "root": true
+        },
+        {
+          "name": "teardown",
+          "cmd": "posix/teardown-posix.sh",
+          "args": [],
+          "root": true,
+          "always": true
+        }
+      ]
     }
   },
 

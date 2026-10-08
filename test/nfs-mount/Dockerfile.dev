@@ -1,0 +1,19 @@
+# Local-development stand-in for the CI runner: an Ubuntu host with the kernel
+# NFS client tools, Go, and what cthon04 and nfstest need to build and run.
+# CI does not use this image; it runs the same scripts on ubuntu-latest.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         ca-certificates curl git jq netcat-openbsd procps lsof iproute2 sudo \
+         nfs-common rpcbind kmod \
+         build-essential libtirpc-dev pkg-config \
+         python3 tcpdump time \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG GO_VERSION=1.26.0
+RUN arch="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH \
+    GOFLAGS=-buildvcs=false

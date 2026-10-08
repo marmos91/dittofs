@@ -109,6 +109,8 @@ graphify-out/
 .tokensave/
 results/
 bench/results/
+# Upstream NFS suites fetched by test/nfs-mount/fetch.sh
+test/nfs-mount/.cache/
 infra/infra
 bench.yaml
 

@@ -35,6 +35,7 @@ For the end-user guide to connecting a Windows client, see
   - [smbtorture (Samba Test Suite)](#smbtorture-samba-test-suite)
   - [Running both SMB suites](#running-both-smb-suites)
   - [pynfs (NFSv4 protocol)](#pynfs-nfsv4-protocol)
+  - [cthon04 and nfstest (NFS mount options)](#cthon04-and-nfstest-nfs-mount-options)
 - [Device-loss crash testing (dm-flakey)](#device-loss-crash-testing-dm-flakey)
 
 ---
@@ -404,6 +405,8 @@ in `test/conformance/suites.json`:
 | `pjdfstest` | NFS | `memory`, `badger`, `badger-s3` | `3`, `4`, `4.1` | `memory`, `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
 | `nfs-kerberos` | NFS | `memory-kerberos` | — | `memory-kerberos` | — |
 | `pynfs` | NFS | `memory`, `badger`, `badger-s3` | `4.0`, `4.1` | `memory`, `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
+| `cthon04` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v3-noac`, `v4.0`, `v4.1`, `v4.1-smallio` | `memory` | [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md) |
+| `nfstest` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v3-noac`, `v4.0`, `v4.1`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md) |
 
 Tiering, profiles and blacklists come from
 [`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through
@@ -468,6 +471,25 @@ through a kernel client, which only ever sends the subset of the protocol it nee
 
 Runs in CI via `.github/workflows/nfs-pynfs.yml` on every non-docs PR. See
 [`test/nfs-conformance/pynfs/README.md`](../../test/nfs-conformance/pynfs/README.md).
+
+### cthon04 and nfstest (NFS mount options)
+
+The other NFS suites mount with client caching and locking off (`noac`, `nolock`,
+`actimeo=0`), or do not mount at all. These two mount the way a user would, through the
+kernel client. They run once per named option set (`v3`, `v3-noac`, `v4.0`, `v4.1`,
+`v4.1-smallio`), so a failure points at the option that caused it.
+
+- **Suites:** Connectathon (cthon04): basic, general, special, and lock on the v4 sets.
+  NetApp's nfstest: `posix` and `dio`, plus `lock` and `delegation` on the v4 sets.
+- **Known failures:** `test/nfs-mount/<suite>/KNOWN_FAILURES_V3.md` and `_V4.md`
+- **Run locally:**
+  ```bash
+  sudo test/conformance/run.sh --suite cthon04 --profile memory --variant v4.1   # Linux host
+  test/nfs-mount/dev-docker.sh cthon04 memory v4.1                               # anywhere with Docker
+  ```
+
+Runs in the `nfs-mount` job of `.github/workflows/conformance.yml`. See
+[`test/nfs-mount/README.md`](../../test/nfs-mount/README.md).
 
 > Do not run two instances of the e2e or conformance suites concurrently — they share a Docker
 > container name and will collide. Run them serially and `docker rm -f` between runs if needed.

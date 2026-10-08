@@ -722,6 +722,23 @@ go test -v -timeout 30m ./test/e2e/...
 go test -v ./test/e2e -run TestE2E/memory/BasicOperations
 ```
 
+### Which mount options are tested
+
+CI mounts DittoFS with the kernel client's defaults, not only with caching turned off. The
+Connectathon (cthon04) and NetApp nfstest suites run under each of these option sets:
+
+| Set | Options |
+|---|---|
+| `v3` | `vers=3,tcp,nolock` (attribute caching on) |
+| `v3-noac` | `vers=3,tcp,nolock,noac` |
+| `v4.0` | `vers=4.0` |
+| `v4.1` | `vers=4.1` |
+| `v4.1-smallio` | `vers=4.1,rsize=32768,wsize=32768` |
+
+Known gaps are listed in `test/nfs-mount/*/KNOWN_FAILURES_*.md`. NFSv3 locking is not covered by
+these sets; it needs a client on a separate network namespace and is tested in
+the e2e suite instead (see [Testing DittoFS](../internals/testing.md#real-nfsv3-nlm-lock-testing-network-namespace-isolation)).
+
 ---
 
 ## Troubleshooting
