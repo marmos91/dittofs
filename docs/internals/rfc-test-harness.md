@@ -1,4 +1,4 @@
-# RFC: one test harness — a suite registry, one runner, one result format
+# RFC: one test harness, with a suite registry, one runner and one result format
 
 **Status:** proposed. Nothing here is implemented yet; §8 orders the work.
 **Revised:** 2026-10-08, after the first review. Fixtures replace the suites' setup scripts and
