@@ -468,7 +468,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **cut** / **snapshot** | a number marking one instant of a share / the share as it was at one cut, read-only | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
 | **cut number** | a per-share counter raised by one at each snapshot; snapshot *k* is the share as of the instant it became *k* | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
 | **born**, **died** | the cut number a version was committed under, and the one its replacement was; snapshot *k* sees a version when born < *k* ≤ died | [RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) |
-| **history** / **history ref** | versions a live snapshot can still see after the share replaced them / a ref among them, counted like a live one; the chunk's count does not change when a ref moves into history | [§7](#7.%20Mutation%20and%20removal), [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref) |
+| **history** / **history ref** | versions a live snapshot can still see after the share replaced them / a ref among them, counted like a live one; a ref moved whole keeps its count, and a narrowed ref whose cut part moves to history adds one, as a split does ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) | [§7](#7.%20Mutation%20and%20removal), [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref) |
 | **snapshot hold** | the journal keeping a flushed but not yet offloaded version that a cut sees, until it is offloaded | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) |
 | **use record** | a durable mark on a snapshot while a clone, restore, backup or move reads it; the snapshot cannot be deleted meanwhile | [RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot) |
 | **clone** | (share) a new writable share made from a complete snapshot, in the snapshot's namespace / (file) a copy of an extent of a file made by copying refs, not bytes; a server-side copy works the same way | [RFC 12 §2.6](rfc-12-snapshots.md#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace), [RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy) |
@@ -1250,7 +1250,8 @@ transaction, instead of dropping it; a namespace record is superseded the same
 way. Content still dirty in the journal at the cut is under a snapshot hold for
 that cut: the journal keeps the superseded version until it is offloaded under the
 cut. A history ref is counted
-like a live one; the chunk's count does not change when a ref moves. Which
+like a live one: a ref moved whole keeps its count, and a narrowed ref whose
+cut part moves to history adds one, as a split does ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)). Which
 snapshots see a ref is decided by the share's cut number, recorded on the ref as
 the cut its content's existence commit read and as its successor's ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)), never by a
 journal version: versions are per journal, and a share's files may live in
@@ -1399,9 +1400,9 @@ Conformance drives concurrent writers at one deliberately shared key and asserts
 two things together: conflicts **occur**, and **none** reaches the caller.
 
 **A read that gates a commit MUST conflict with every concurrent write that would
-change its result.** Stores differ in what they detect: one tracks point reads
-but not range scans, another validates no reads at all and detects only
-write-write conflicts and explicit locks. A scan over a key range is therefore
+change its result.** Every supported store tracks point reads and detects
+write-write conflicts, blind writes included, but none is required to track a
+range scan ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). A scan over a key range is therefore
 never such a read, and a check that must hold under any supported store is made
 on point records written by both sides ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)).
 

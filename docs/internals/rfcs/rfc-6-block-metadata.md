@@ -1204,8 +1204,9 @@ here — a second index, a per-ref version entry — breaks the bound and fails
 
 - **A popular chunk's refcount.** Every file that references a common chunk
   increments one record. Zero chunks are not counted ([§3.5](#3.5%20Operations%20that%20make%20holes)), which removes
-  the worst case; a snapshot adds no count at all, since a superseded ref moves
-  to history with its count ([§6.5](#6.5%20Who%20owns%20a%20ref)).
+  the worst case. A ref moved whole into history keeps its count; a narrowed
+  ref whose cut part moves to history adds one, as a split does
+  ([§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs), [§6.5](#6.5%20Who%20owns%20a%20ref)).
 - **A popular block's `live`.** Moves only when a refcount crosses zero.
 - **Usage accounting.** A per-share, per-principal or per-project counter is
   shared by many files. It is not kept as one record read and rewritten per
@@ -1318,13 +1319,13 @@ to [RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%2
 The engine's per-file guard ([RFC 8 §6.4](rfc-8-engine.md#6.4%20The%20offload%20guard%20is%20narrow)) keeps a process's own commits from
 conflicting; it is an optimisation, and no rule here depends on it.
 
-**Backend notes (non-normative).** On a backend that tracks point reads in an
-update transaction, a conflict-tracked read is a plain get there; a blind write
-detects nothing, so a guarded write also gets its key first. On a backend with
-snapshot isolation that validates no reads, a conflict-tracked read is a key lock
-(optimistic or pessimistic; pessimistic suits a contended key), and a
-transaction locking several files takes them in file-identity order. A guard
-there is a shared lock, and a write the exclusive one. Per-
+**Backend notes (non-normative).** Every supported backend gives snapshot
+isolation, detects write-write conflicts on every key including blind writes,
+and tracks point reads ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). On a backend that tracks reads
+natively, a conflict-tracked read is a plain get. On one that implements
+tracking with key locks, it is a lock (optimistic or pessimistic; pessimistic
+suits a contended key), a guard is a shared lock and a write the exclusive one,
+and a transaction locking several files takes them in file-identity order. Per-
 transaction entry and size limits give K ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A long read transaction holds
 back the store's version garbage collection, so no transaction spans an upload.
 The key layout that keeps one file's records together ([§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace)) is
@@ -2321,7 +2322,7 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow | Force a double decrement. Assert the transaction fails, the count is unchanged, a recount is scheduled and repairs it, and the removal then completes with no operator action. |
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow from a missing reverse key | Write a ref without its reverse key, with its chunk's count at zero, then release the file. Assert the drop completes within the call's deadline with no audit run, the key was written first and a reverse-index defect reported, and the count ends exact. |
 | [§6.4](#6.4%20Delete) release | Release a file with a pass in flight, then commit the pass. Assert the pass's refs are dropped, and that a restart resumes phase 2. |
-| [§6.5](#6.5%20Who%20owns%20a%20ref) snapshot through history | Snapshot a file, overwrite and truncate it, delete it. Assert every overwritten ref moved to history with its count unchanged, the snapshot reads its cut content, and the chunks' blocks are not retirable. Take snapshots 1, 2 and 3, delete 2. Assert exactly the history refs with 1 ≤ `born` < 2 ≤ `died` < 3 were dropped. Put the share's files in two journals whose versions interleave and assert every snapshot still reads its cut. |
+| [§6.5](#6.5%20Who%20owns%20a%20ref) snapshot through history | Snapshot a file, overwrite and truncate it, delete it. Assert every ref moved whole to history kept its count, every ref the truncate narrowed added one for the piece it moved to history, the snapshot reads its cut content, and the chunks' blocks are not retirable. Take snapshots 1, 2 and 3, delete 2. Assert exactly the history refs with 1 ≤ `born` < 2 ≤ `died` < 3 were dropped. Put the share's files in two journals whose versions interleave and assert every snapshot still reads its cut. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | Clone over a destination extent with a pass in flight. Assert the pass's refs there are dropped and the cloned refs, versioned at the clone's version, survive. Clone content the journal holds newer than its ref, drop the source's journal extent. Assert the destination reads the newer bytes. Crash mid-clone; assert the destination is not served until resumed, and the clone completes rather than fails, its phase 2 driven by the `Removal` record's clone spec alone. Delete the chunk record under a source ref before a batch; assert the run reads **Lost**, the carry is counted, and the batch does not fail. Clone an extent onto an overlapping extent of the same file; assert `ErrInvalid` and nothing changed. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone of a Lost extent | Write `[0, 4M)` and offload it; overwrite `[1M, 2M)`, commit existence and drop the journal's copy; clone the file onto a destination holding other data. Assert the clone completes, the destination's `[1M, 2M)` fails as **Lost**, and the rest reads the source. A clone that reads refs directly writes the v1 ref re-versioned and serves it as current; one that writes a hole there serves zeros; one that undoes itself by a removal leaves the destination zeroed. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone against a newer destination ref | With K forced to 2, clone into an extent; after phase 1, commit a destination ref at a version above the clone's into the extent before phase 2 reaches it — the engine refuses such writes, and this rule must hold without that refusal. Assert phase 2 leaves that ref, and the destination reads the write once the clone is done. |
