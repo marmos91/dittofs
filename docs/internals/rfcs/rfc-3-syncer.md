@@ -101,7 +101,9 @@ new writes still landing in the journal until it fills.
 - **put attempt** — one upload of one block under a name minted for it; every
   retry reuses that name and those bytes ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
 - **health** — kept per store and per direction, put or get, from probes and
-  recent failures; an unhealthy direction refuses calls at once ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+  recent failures, with the cause that turned it; an unhealthy direction refuses
+  calls at once. A store whose put probe would write what it must not is judged
+  by its transfers alone ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
 - **fill** — the engine placing fetched chunks into the journal
   ([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)); the syncer only hands them over.
 
@@ -119,7 +121,10 @@ new writes still landing in the journal until it fills.
   are refused; nothing queues without bound.
 - A waiting reader goes before offload and relocation, which go before
   speculation; many readers of one cold chunk share one fetch; a store that
-  refuses writes still serves reads.
+  refuses writes still serves reads, and says whether it refuses for a quota,
+  for access or because it cannot be reached.
+- A copying backup carries a block byte for byte, at its exact size, without
+  the keys to open it, and learns the version the backup location stored.
 
 ### How the rest is organised
 
@@ -263,22 +268,50 @@ type Store interface {
     // Ranges adjacent in the block are read with one request. Each chunk comes
     // back decoded and verified against its own hash.
     Get(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
+    // GetVersion is Get of one recorded version, at an immutable backup
+    // location (RFC 4 §4.14): decoded and verified chunk by chunk like Get.
+    GetVersion(ctx context.Context, name BlockName, v Version, want []ChunkRange) iter.Seq2[Chunk, error]
+    // PutRaw stores exactly size opaque bytes under name, without decoding or
+    // encoding them, and returns the version the store recorded (empty on a
+    // mutable store). src is called once per attempt.
+    PutRaw(ctx context.Context, name BlockName, src func() (io.Reader, error), size int64, retainUntil time.Time) (Version, error)
+    // GetRaw streams the stored bytes of name, of version v when v is not
+    // empty: exactly the block's size, or an error, and nothing decoded.
+    GetRaw(ctx context.Context, name BlockName, v Version) (io.ReadCloser, int64, error)
     // Health makes one probe call of the given direction against this store's
     // own namespace (RFC 4 §4.7).
     Health(ctx context.Context, d Direction) error
 }
 
+// Version names one stored version of a block at an immutable location
+// (RFC 4 §4.14). Opaque to the syncer.
+type Version string
+
 // Every Store error wraps one of the syncer's own error values below, or is a
 // local error returned as itself. The engine's Store maps RFC 4's closed set
 // (§4.8) and RFC 5's ErrMaterialUnavailable (§2.7) onto them.
 var (
-    ErrNotFound, ErrInvalid, ErrDenied, ErrTransient, ErrCorrupt, ErrMaterialUnavailable error
+    ErrNotFound, ErrInvalid, ErrDenied, ErrTransient, ErrCorrupt, ErrMaterialUnavailable, ErrMaterialDestroyed error
     ErrThrottled error // wraps ErrTransient
+    ErrDrift     error // the store's drift condition stands (§2.8)
 )
+
+// DeniedQuota is set on an ErrDenied whose cause is a quota or storage limit
+// of the service (RFC 4 §4.8), as opposed to an access refusal.
+type DeniedQuota interface{ Quota() bool }
+
+// Probes says which probes the syncer sends for a store. A store whose put
+// probe would write what it must not, such as an immutable backup location
+// (RFC 4 §4.14), is registered with PutProbe false.
+type Probes struct{ PutProbe, GetProbe bool }
 
 // probe names the probe this store shares with every store registered under the
 // same value (§2.8); the engine derives it from endpoint, credential and bucket.
-Register(name string, store Store, probe ProbeKey) (StoreID, error)
+// probes says which directions are probed at all.
+Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, error)
+// Unregister drops a store once no flow on it is open: its health state, its
+// probes and its counters end with it.
+Unregister(store StoreID) error
 // A background flow's fetches run in the background class (§2.9); GC, copying
 // backups and re-homes open one.
 OpenFlow(store StoreID, background bool) (*Flow, error)
@@ -286,7 +319,18 @@ OpenFlow(store StoreID, background bool) (*Flow, error)
 func (f *Flow) Upload(ctx context.Context, name BlockName, size int64, src func() iter.Seq2[Chunk, error]) (Stored, error)
 func (f *Flow) Fetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
 func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
+// A raw transfer carries a block byte for byte between two stores, never
+// decoding it; a copying backup uses it (RFC 12 §3.4.2). FetchRaw reads the
+// whole stored block into the caller's writer, returning its exact size;
+// UploadRaw puts exactly size bytes and returns the store's version.
+func (f *Flow) FetchRaw(ctx context.Context, name BlockName, v Version, size int64, dst io.Writer) error
+func (f *Flow) UploadRaw(ctx context.Context, name BlockName, size int64, retainUntil time.Time, src func() (io.Reader, error)) (Version, error)
+// FetchVersion is Fetch of one recorded version, verified like Fetch.
+func (f *Flow) FetchVersion(ctx context.Context, name BlockName, v Version, want []ChunkRange) iter.Seq2[Chunk, error]
 func (f *Flow) Healthy(d Direction) bool
+// Health is nil while direction d is healthy, and otherwise the error that made
+// it unhealthy, naming the store and wrapping its cause (§2.8).
+func (f *Flow) Health(d Direction) error
 func (f *Flow) Close() error
 
 Close() error // the syncer's own
@@ -318,11 +362,12 @@ service's or a transform's own errors:
 | --- | --- | --- |
 | `ErrNotFound` | fails the call; the engine re-resolves ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | no |
 | `ErrInvalid` | fails the call, not retried | no |
-| `ErrDenied` | fails the call, not retried | yes, in the call's direction |
+| `ErrDenied` | fails the call, not retried; its cause, quota or access, is kept as the direction's cause ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | yes, in the call's direction |
 | `ErrThrottled` | holds the flow, then retries after backoff within its bound ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | no: it is backpressure, not failure |
 | `ErrTransient` | retries within its bound ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | yes, in the call's direction |
 | `ErrCorrupt` | on a put, retries within its bound; on a fetch, fails the call, not retried | on a put, yes, toward put health; on a fetch, no |
 | `ErrMaterialUnavailable` | fails the call, not retried; the read fails as the remote being unavailable | no |
+| `ErrMaterialDestroyed` | fails the call, not retried; the engine reports the chunk Lost, never corrupt ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)) | no |
 | a local error | fails the call | no |
 
 A put that keeps failing its in-transit check says something about the path to
@@ -383,7 +428,7 @@ It waits in its flow's queue until a worker is free or `ctx` ends, which is the
 backpressure of [§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer), and fails at once if its store is put-unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) or its
 flow's queue, or the half's waiter bound, is full ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). It returns the store's `Stored`, and a `nil` error,
 only on the store's acknowledgement, which is durable because every store is
-([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)); every other ending, an unknown one included ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), is an error.
+([§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred)); every other ending, an unknown one included ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), is an error.
 The ranges and the census go into the block's commit, where later reads and
 retirement find them ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk), [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
 
@@ -396,6 +441,30 @@ One `Upload` is one **put attempt** of [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20b
 and recorded its put intent before calling ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)). Every retry inside
 `Upload` puts that same name with the same bytes; the syncer never puts a name
 it was not handed, and never puts a name again after `Upload` returns.
+
+**A raw transfer copies a block without opening it.** A copying backup carries
+each block byte for byte from the namespace's store to the backup's block folder
+([RFC 12 §3.4.2](rfc-12-snapshots.md#3.4.2%20What%20is%20copied)): a copy that decoded and re-encoded would need the
+namespace's material and hold plaintext, which the copier must not. So
+`FetchRaw` and `UploadRaw` move **opaque bytes of an exact size**:
+
+- `FetchRaw` writes the whole stored block, of the version named when one is,
+  into the caller's writer, and fails unless exactly `size` bytes arrive — the
+  size block metadata or the backup's manifest recorded. Nothing is decoded or
+  verified beyond the store's own transfer checks; the copier checks the
+  block's name from its header without material ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)), and `Verify`
+  checks content later;
+- `UploadRaw` puts exactly `size` bytes from `src`, under the retain-until the
+  caller names at an immutable location, and returns the **version** the store
+  recorded, which the caller writes into its progress object and manifest. Its
+  `src` reads local staging the caller filled with `FetchRaw`, never a remote
+  stream ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports));
+- **`FetchVersion`** reads chunks of one recorded version, decoded and verified
+  exactly as `Fetch` does; `Verify` and a restore from an immutable location use
+  it ([RFC 12 §3.4.5](rfc-12-snapshots.md#3.4.5%20Restore%20into%20a%20new%20namespace)).
+
+Each is a transfer like any other: background class, scheduled, retried within
+the bound, refused by an unhealthy direction, and charged at its size.
 
 **`Fetch`** is a demand: a reader is waiting. **`Prefetch`** is speculation
 ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are separate methods, not one method with
@@ -435,8 +504,10 @@ The syncer's **`Close`** stops accepting work and returns once every transfer in
 flight has ended, which [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) bounds. `Flow.Close` refuses the flow's queued
 transfers with an error and lets its running ones finish; callers from other
 flows joined to one of its fetches are detached, not failed ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)). A call
-after either **MUST** fail. Stores are registered for the life of the process; a store removed
-from the configuration is dropped at the next start.
+after either **MUST** fail. A store removed from the configuration — a backup
+location deleted, a namespace re-homed away — is unregistered once its flows are
+closed; `Unregister` on a store with an open flow **MUST** fail. A registration
+that outlived its store would go on probing, and reporting, a store nothing uses.
 
 `Store` keeps no health state; `Health` is one probe call ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)). The syncer
 probes each store itself, per direction, and refuses work in a direction that is unhealthy, and `Flow.Healthy` reports the result
@@ -561,7 +632,7 @@ own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20m
   no joined callers.
 
 Nothing on the path holds the whole block: not the store, whose put takes a
-stream ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)), and not a file on disk. A measuring pass encodes each
+stream ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)), and not a file on disk. A measuring pass encodes each
 chunk and discards it, so it adds CPU, not memory. Every size the syncer bounds,
 charges or budgets is an encoded size; the **largest encoded block** is the
 header cap plus the block target plus one chunk ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P2), each chunk at
@@ -729,9 +800,9 @@ found by its intent, never a listing's guess.
 
 ![A put whose response was lost leaves three indistinguishable remote states; a retry within the same attempt, under the same name and bytes, converges all three to one object](img/rfc3-unknown-outcome.svg)
 
-### 2.6 Durability is observed, never inferred
+### 2.6 A stored block is observed, never inferred
 
-The syncer **MUST** report durability only on the acknowledgement [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)
+The syncer **MUST** report durability only on the acknowledgement [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)
 defines for the backend in use. None of the following is evidence, and an
 implementation **MUST NOT** report durability on any of them:
 
@@ -744,7 +815,7 @@ implementation **MUST NOT** report durability on any of them:
 | a later read succeeded | the read may be served from a cache the write populated |
 
 Every store is durable, and what counts as its acknowledgement is fixed per
-backend by [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success); there is no setting that declares a store non-durable.
+backend by [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success); there is no setting that declares a store non-durable.
 
 ### 2.7 It reports; it does not persist
 
@@ -766,9 +837,18 @@ trip against the store's own namespace, no state ([RFC 4 §4.7](rfc-4-remote-tie
 syncer calls it to decide each direction's state. Every rule below applies to
 each direction on its own:
 
-- the syncer **MUST** probe every registered store in each direction at a fixed
-  interval, and **SHOULD** probe that direction at once when a transfer in it
-  fails with an error that counts toward health ([§1.3](#1.3%20Interface));
+- the syncer **MUST** probe every registered store, in each direction its
+  registration probes ([§1.3](#1.3%20Interface)), at a fixed interval, and **SHOULD** probe that
+  direction at once when a transfer in it fails with an error that counts toward
+  health;
+- **a direction registered without a probe is judged by its transfers alone.**
+  An immutable backup location has no put probe: each probe would add a
+  compliance-locked version ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). Its put direction turns
+  unhealthy by the failure window below, and since no probe can observe its
+  recovery, **an unhealthy unprobed direction expires back to healthy after the
+  hold-down** below, so the next transfer tests it; a failure then turns it
+  unhealthy again, with the hold-down doubling as for any flap. The syncer
+  **MUST NOT** call `Health` in a direction its registration does not probe;
 - **a successful transfer stands in for the probe of its direction.** A store
   that completed an upload within the last interval has just proved what the put
   probe proves — reachable, credentials accepted, namespace writable — so the
@@ -805,9 +885,10 @@ each direction on its own:
   clear the state would flap the store between unhealthy and healthy once per
   interval. Such a store is retried once per probe interval, by its own probe,
   rather than continuously, and never latched;
-- an unhealthy direction **MUST** keep being probed. Once transfers stop, the
-  probe is the only thing that can observe recovery, so without it unhealthy
-  would be a latch (below);
+- an unhealthy direction **MUST** keep being probed, where its registration
+  probes it, and otherwise expires after its hold-down (above). Once transfers
+  stop, the probe or the expiry is the only thing that can observe recovery, so
+  without them unhealthy would be a latch (below);
 - a probe **MUST** be bounded in time like any call, and one that does not
   return within its bound is a failed probe. A hung probe that left the store
   healthy would keep sending traffic to a dead store;
@@ -817,7 +898,20 @@ each direction on its own:
   ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). While it stands the syncer **MUST** treat the
   put direction as unhealthy whatever its probes say, since a put into a drifted
   store may be expired or kept as a version nothing deletes; the get direction
-  is untouched, and no probe clears it.
+  is untouched, and no probe clears it. Its cause is `ErrDrift`.
+
+**Each unhealthy direction has a cause, and the syncer reports it.** A direction
+turned unhealthy keeps the error class that turned it: `ErrDenied` with its
+cause — `quota` when the service says it is full, `access` otherwise
+([RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)) — `ErrTransient` for an unreachable or stalled store,
+`ErrCorrupt` for puts that keep failing in transit, or `ErrDrift`. Where the
+outcomes that turned it differ, the latest one counted decides. `Flow.Health(d)`
+returns nil while `d` is healthy and otherwise an error naming the store and
+wrapping that cause; `Flow.Healthy(d)` is `Flow.Health(d) == nil`. The engine
+needs the cause, not only the state: a put direction refused for quota is a
+store that is full, and writes waiting on it answer as out of space, while one
+that is unreachable is an outage writes wait out ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). A bare
+healthy flag forces one answer for both.
 
 **An unhealthy direction refuses work.** `Upload` to a put-unhealthy store, and
 `Fetch` or `Prefetch` from a get-unhealthy one, **MUST** fail at once, before
@@ -937,8 +1031,10 @@ Each half runs its own scheduler over its own pool:
   slow but healthy can hold every worker for as long as its puts take, and no
   turn comes round. The cap is not a reservation, and it binds only where there
   is someone to leave room for: the per-store cap applies only while another
-  store has work waiting in this half or holds a worker of it, and the per-flow
-  cap only while another flow on the same store does. A store merely configured,
+  store has work waiting in this half, and the per-flow cap only while another
+  flow on the same store does. A store or flow that merely holds a worker, with
+  nothing queued, needs no room left for it: a cap that bound for it would idle
+  a quarter of the pool beside one long transfer. A store merely configured,
   such as an idle backup's block folder, leaves no room it would not use. So an
   install with one busy store and one busy share uses the whole pool, as
   [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) needs to fill the link; a flow or store that arrives while another
@@ -1030,7 +1126,7 @@ setting:
 | Value | Is | Because |
 | --- | --- | --- |
 | DRR quantum | the worker-time estimate of the largest encoded block on the slowest store with work waiting ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) needs it to be at least that, and nothing is gained above it |
-| per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one. The per-store cap applies only while another store has work waiting or holds a worker of the half, the per-flow cap only while another flow on the store does ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | leaves a quarter for every other busy flow and store, and lets a lone busy flow on a lone busy store use the whole pool the link needs |
+| per-store and per-flow cap | three quarters of the pool, rounded down, at least one worker; with a pool of more than one, at most the pool less one. The per-store cap applies only while another store has work waiting in the half, the per-flow cap only while another flow on the store has ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | leaves a quarter for every other busy flow and store, and lets a lone busy flow on a lone busy store use the whole pool the link needs |
 | throttle limit | per store and direction; starts at the cap, halves (not below one) on each throttling response, rises by one per transfer completed without one, up to the cap | a throttled store is sent fewer requests at once, not the same number later ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | detached-buffer cap | the fetch pool's size | bounds [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)'s detached term at one per worker |
 | per-flow queue length | four times the pool, per class | a waiting transfer holds a reference, not bytes ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)), so the length bounds bookkeeping, not memory |
@@ -1202,7 +1298,7 @@ billed and invisible to a listing. Revisit if a measurement shows one put of a
 maximum-size block cannot saturate the uplink even with the pool full.
 
 **The put streams.** The store needs the block's length, and on some services a
-checksum, before the first byte ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). The engine's `Store` takes them
+checksum, before the first byte ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). The engine's `Store` takes them
 from each transform's declared length when the chain allows it, and otherwise
 from a measuring pass that encodes each chunk, keeps its length and checksum, and
 discards it; then it sends the header and encodes each chunk again as it sends
@@ -1349,7 +1445,7 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | --- | --- |
 | A block's name | [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block) |
 | Encoding, transforms, verification, the remote store's errors | [RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [§3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec), [§4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set), [RFC 5](rfc-5-transforms.md) |
-| What a durable acknowledgement is, per backend | [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success) |
+| What a durable acknowledgement is, per backend | [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) |
 | Recording durability and residency | [RFC 6](rfc-6-block-metadata.md) |
 | Keeping referenced bytes stable; filling fetched ones | [RFC 1](rfc-1-journal.md) |
 | Deleting a remote block; what to relocate | [RFC 9](rfc-9-gc.md), deleting through [RFC 4](rfc-4-remote-tier.md) directly |
@@ -1377,13 +1473,17 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | S14 | A call in a direction in which its store is unhealthy fails without taking a worker or calling the backend; a put failure never refuses a get. |
 | S15 | An unhealthy direction is probed until it is healthy; it turns healthy only on two consecutive successes and not within its hold-down; one made unhealthy by the failure window is cleared only by its own evidence. |
 | S16 | Log volume while a store is unhealthy does not grow with traffic. |
-| S17 | No store holds more workers of a half than its cap while another store has work waiting or holds a worker of the half, nor more than its throttle limit; no flow more than its cap while another flow on its store does; and no store gets a worker beyond its fair share while another store with work waiting holds none. |
+| S17 | No store holds more workers of a half than its cap while another store has work waiting in the half, nor more than its throttle limit; no flow more than its cap while another flow on its store does; and no store gets a worker beyond its fair share while another store with work waiting holds none. |
 | S18 | A transfer at the head of its flow's queue is dispatched within one round of the other waiting flows of its class, once no higher class has work waiting. |
 | S19 | Every `Store` error is one of the closed set; only `ErrTransient`, `ErrDenied` and a put's `ErrCorrupt` count toward health, `ErrThrottled` never does, and a floor trip only when the store's aggregate is below the floor. |
 | S20 | Waiters per half — queued transfers and joined callers — never exceed the waiter bound, whatever the number of flows, and a flow below its share of the bound is never refused for the bound being full. |
 | S21 | Retries on a store never exceed what that store's retry budget holds, and no transfer makes more than four attempts. |
 | S22 | Turns are charged in worker-time: over a round, flows of one class with work waiting hold workers for times within one quantum of each other. |
 | S23 | No transfer holds a worker while moving under a quarter of its store's mean per-transfer rate for the floor's interval. |
+| S24 | A raw transfer moves exactly the recorded size of opaque bytes, never decodes them, and an upload returns the version the store recorded. |
+| S25 | A direction registered without a probe is never probed; while unhealthy it expires to healthy after its hold-down, so it never latches. |
+| S26 | Every unhealthy direction reports the cause that turned it; a quota refusal is distinguishable from an access refusal and from an outage. |
+| S27 | Destroyed material is reported as itself, never as `ErrCorrupt`, and never counts toward health. |
 
 ## 7. Conformance
 
@@ -1396,7 +1496,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | Requirement | Check |
 | --- | --- |
 | [§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) unknown is failure | Drop the response of a put the backend committed; assert failure is reported, then that the retry inside the same `Upload` puts the same name with byte-identical content, and that the store holds one object under it. Assert the syncer never puts a name it was not handed, nor one after its `Upload` returned. |
-| [§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred) no inference | Drive the real backend against a service that closes the connection after receiving the whole body and before responding; assert `Upload` returns an error. |
+| [§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred) no inference | Drive the real backend against a service that closes the connection after receiving the whole body and before responding; assert `Upload` returns an error. |
 | [§3.4](#3.4%20One%20put%20per%20block) partial put | Interrupt a transfer; assert the name is not retrievable and was not reported durable. |
 | [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration) stability | Give `Upload` a `src` whose bytes change mid-stream; assert the put is refused and nothing is stored under the name. That the journal keeps offered bytes stable is [RFC 1](rfc-1-journal.md)'s check. |
 | [§4.1](#4.1%20One%20fetch%2C%20two%20consumers) verification | Corrupt the fetched bytes; assert no byte of the chunk is yielded and the error is `ErrCorrupt`. |
@@ -1436,7 +1536,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§1.3](#1.3%20Interface) lifecycle | Call on a closed flow and after `Close`; assert both fail. Assert `Close` returns only when transfers have ended, and that `src` is never called after `Upload` returns. |
 | [§1.3](#1.3%20Interface) stream rules | Assert an error is yielded once and ends the stream, and that leaving the loop stops the store's read. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) store level | Run eight flows on a slow store and one on a healthy one; assert the healthy store's flow starts within one round and the slow store never holds more than its cap. Let the slow store hold its cap while the healthy store has work and holds no worker; assert the next free worker goes to the healthy store. |
-| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) lone flow | With one store configured and one flow open, saturate uploads; assert the flow holds the whole pool. Open a second, idle flow; assert the first still holds the whole pool. Give the second flow work; assert it starts on the next free worker and that from then on neither flow holds more than its cap. Repeat with a second store configured and idle; assert the busy store still holds the whole pool until the second store has work. A cap keyed on configured stores leaves a quarter of the pool idle. |
+| [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) lone flow | With one store configured and one flow open, saturate uploads; assert the flow holds the whole pool. Open a second, idle flow; assert the first still holds the whole pool. Give the second flow work; assert it starts on the next free worker and that from then on neither flow holds more than its cap. Repeat with a second store configured and idle; assert the busy store still holds the whole pool until the second store has work. Repeat with the second store holding one long transfer and nothing queued: the busy store holds every other worker, and when the second store queues work it gets the next free worker. A cap keyed on configured stores, or on stores merely holding a worker, leaves a quarter of the pool idle. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) classes | Queue uploads, relocation fetches on a background flow and prefetches on many flows, then one demand on another flow; assert the demand is dispatched first, background before any speculation. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) eviction | Fill a flow's queue, and then the waiter bound, with speculation; issue a demand; assert it is accepted, the youngest speculative entry is refused with `evicted`, and with no speculation queued a demand is refused. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) waiter bound | Open a thousand flows and queue on all of them; assert waiters never exceed the bound. |
@@ -1448,6 +1548,11 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) drift condition | Raise a store's drift condition with both probes passing; assert uploads to it are refused at once and fetches still run. Clear it; assert uploads resume without waiting for a probe transition. A syncer that reads only its probes keeps putting into the drifted store. |
+| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to a fake immutable store: the bytes it saw equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) no put probe | Register a store with `PutProbe` false: over an hour no put probe reaches it. Fail every upload for the failure window: put-unhealthy, uploads refused; with no probe and no transfer, it turns healthy after its hold-down and the next upload is sent; fail that one too: unhealthy again with the hold-down doubled. A design that waits for a put probe here latches it unhealthy for good. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) cause per direction | Turn a store put-unhealthy with `ErrDenied` of cause quota, then another with cause access, a third with `ErrTransient`, and raise a fourth's drift condition: `Flow.Health(Put)` wraps the quota cause, the access cause, `ErrTransient` and `ErrDrift` in turn, and `Flow.Healthy(Put)` is false for all four. |
+| [§1.3](#1.3%20Interface) destroyed material | A fake store returning `ErrMaterialDestroyed` on every fetch for the failure window: each call fails unretried with that error, never `ErrCorrupt`, and the store stays get-healthy. |
+| [§1.3](#1.3%20Interface) unregister | `Unregister` a store with an open flow: refused. Close its flows and unregister it: its probes stop and its counters leave `Stats`. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) re-home and close | Join a queued speculative fetch with a demand from another flow; assert it moves to the demanding flow in the demand class. Close the flow that owns a running joined fetch; assert the other flows' callers are detached, not failed. Detach a caller holding its chunk; assert its bytes are unchanged until its next iteration while the fetch continues. |
 
 ### 7.3 What must not stand in
@@ -1660,7 +1765,7 @@ integrity) are listed once, in [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%
 | D15 | everything but the pool sizes is fixed and derived ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | further hard-coded queue lengths and timeouts in place of a throughput floor |
 | D16 | `Close` returns once every transfer has ended ([§1.3](#1.3%20Interface)) | waits give up after a timeout; reader-side fetches are untracked |
 | D17 | the syncer decides and persists nothing ([§1.1](#1.1%20Non-goals)) | the upload side decides when to carve and commits block records itself |
-| D18 | no store is declared non-durable ([§2.6](#2.6%20Durability%20is%20observed%2C%20never%20inferred)) | a per-store durability setting, and a commit rule that branches on it |
+| D18 | no store is declared non-durable ([§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred)) | a per-store durability setting, and a commit rule that branches on it |
 | D20 | classes, then fair scheduling across stores and flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | no class order across flows, per-flow queue, round robin, cap or waiter bound |
 | D21 | a closed `Store` error set, a streamed put, and the census returned by `Put` ([§1.3](#1.3%20Interface)) | none of these exists; callers interpret service errors |
 | D22 | GC relocates through a background syncer flow ([§1.3](#1.3%20Interface)) | relocation calls the remote store directly |

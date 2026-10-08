@@ -73,9 +73,10 @@ committed while the cut number was 3 (`born` 3).
    malware overwrote it. Normally the journal would keep only the newer bytes
    and upload those. The **snapshot hold** makes it keep the 09:59:58 version
    until it is uploaded, straight into history. Snapshot 5 stays `holding` until
-   that upload lands, then becomes `complete` and browsable. A write whose
-   size and times were not yet committed to metadata by 10:00 (typically one
-   not yet flushed) is not in snapshot 5.
+   that upload lands, then becomes `complete` and browsable. Before its gate
+   closes, the cut commits the share's pending existence — the size and times
+   of writes the journal holds but metadata does not yet record — so every
+   write acknowledged before 10:00 is in snapshot 5, flushed or not.
 4. **10:45 — the undo.** alice opens Previous Versions in Explorer, picks
    10:00, and reads her disk as it was: every ref with `born` < 5 ≤ `died`. The
    operator can also clone snapshot 5 into a new writable share.
@@ -124,7 +125,9 @@ committed while the cut number was 3 (`born` 3).
   share's size; writes wait only behind a brief per-shard gate.
 - A complete snapshot reads back exactly the share's bytes, attributes, ACLs and
   extended attributes as committed at its cut, whatever the share does
-  afterwards; a write acknowledged but not yet committed then is not in it.
+  afterwards. Every write acknowledged before the snapshot was requested is in
+  it, and within one shard it is crash-consistent: it never holds a write while
+  missing one acknowledged before it.
 - A snapshot keeps its content alive only through counted refs, and deleting it
   drops only the history no other live snapshot sees. A snapshot under a
   compliance lock cannot be deleted through DittoFS, by anyone, until the lock
@@ -133,8 +136,9 @@ committed while the cut number was 3 (`born` 3).
   yet uploaded, the new snapshot is refused instead.
 - A catalog backup survives losing the metadata store but not the bucket; a
   copying backup survives losing the bucket too, and at an immutable location
-  survives a stolen installation credential as well. Every export is sealed and
-  authenticated. Moving a namespace to another installation on the same bucket
+  survives a stolen installation credential as well. No backup survives losing
+  the master key of an encrypting namespace, which therefore lives off the host.
+  Every export is sealed and authenticated. Moving a namespace to another installation on the same bucket
   copies no block.
 
 **How the rest is organised.** §1 lists the four questions operators ask. §2 is
@@ -223,9 +227,12 @@ All four are composed from what the set already has: counted history refs
 This document **MUST NOT** be read as specifying:
 
 - a replica of the block store kept in step with it: a copying backup
-  ([§3.4](#3.4%20Copying%20backups)) copies one snapshot's blocks when it runs, and protecting the
-  bucket itself — its versioning, object lock or replication — is outside this
-  set ([§3](#3.%20Catalog%20backups));
+  ([§3.4](#3.4%20Copying%20backups)) copies one snapshot's blocks when it runs. A namespace's own bucket
+  runs with versioning and object lock off, which a namespace store requires
+  ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), and so with no service-side replication that depends on
+  versioning; this set's protection against losing that bucket, or against a
+  holder of its credential, is a copying backup at an immutable location
+  ([§3](#3.%20Catalog%20backups));
 - a backup of master keys: an export carries the namespace's own keys only
   wrapped under a master key, and never a master key
   ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys));
@@ -300,7 +307,8 @@ it holds content ([RFC 13 §5.1](rfc-13-configuration.md#5.1%20A%20bound%20setti
 ### 2.2 A snapshot is counted content and a frozen tree
 
 A snapshot is its **cut number** *k*. Each share keeps one `Cut(share) = { k,
-klatest, cut time, deleting }` record and one `LiveCut(share, k)` per live snapshot
+klatest, cut time, deleting }` record — its cut time the newest share cut's
+([§2.5](#2.5%20Browsing%20a%20snapshot)) — and one `LiveCut(share, k)` per live snapshot
 ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). Nothing else is written when a snapshot is taken: what it
 sees is read from records the share already keeps, each stamped with a cut.
 
@@ -319,20 +327,48 @@ every later one `born ≥ k`.
 
 **An acknowledged write is in a snapshot only if its existence committed before
 the cut.** Snapshot *k* **MUST NOT** contain, and **MUST NOT** be described as
-containing, a write whose existence commit came after cut *k*, however long
-before the cut the client was told it succeeded. That covers an NFS `UNSTABLE`
-write not yet committed, an SMB write not yet flushed, and a stable write whose
-bytes are synced in the journal but whose size and times wait for their
-existence commit ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). The cut does not flush and does not commit
-anyone's pending existence. A client that needs its writes in a snapshot commits
-or flushes them, and sees that call return, before the snapshot is requested.
+containing, a write whose existence commit came after cut *k*.
 
-> decision: a cut never waits for pending existence commits, so the gate stays
-> within its target ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) whatever clients have outstanding. What a
-> snapshot misses is bounded by the existence-commit cadence: seconds of
-> acknowledged writes. Add a pre-cut step that commits the share's pending
-> existence before the gate closes if operators need a snapshot to hold every
-> write acknowledged before they asked for it.
+**The cut commits pending existence first, so every write acknowledged before
+the request is in it.** When a primary is asked to close for cut *k*
+([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate), step 2), it first takes a **cut point** in every journal holding
+the shard's files — the position below which lies every append it has
+acknowledged — at one instant of its acknowledgement order, holding
+acknowledgements for the few reads that takes. It then commits the shard's
+pending existence up to those points, in journal order ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), syncing each file first,
+as group commits that join each journal's next group commit rather than running
+beside it, and only then closes the gate. That covers an NFS `UNSTABLE` write
+not yet committed, an SMB write not yet flushed, and a stable write whose size
+and times waited for their existence commit ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). Each pre-cut
+commit is an ordinary admitted transaction and reads cut *k* − 1, so its
+versions take `born < k`. From the cut point until the gate reopens, the
+journal's group commits **MUST NOT** commit existence above the cut point for
+the shard's files, so snapshot *k* holds exactly the shard's writes acknowledged
+before its cut points: a write acknowledged later is never in it, and an earlier
+one never missing.
+
+- **Within a shard the snapshot is crash-consistent:** it is the shard as a
+  crash at the cut points would have left it, recovered. On a single node a
+  share is one shard ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), so the whole snapshot is.
+- **(cluster)** Across shards each primary takes its cut points when its own
+  close request arrives, so a write acknowledged on one shard can be in the
+  snapshot while a write another shard acknowledged slightly earlier, after its
+  own points, is not. Every write acknowledged before the snapshot was requested
+  is still in it.
+- **A stability reply waiting meanwhile** for the existence commit of an
+  overwrite above the cut point ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)) waits at most until the gate
+  reopens, bounded by the cut's deadline and, once the gate is closed, by
+  `snapshots.gate_max` ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+- **A stalled store refuses the cut.** A pre-cut commit that cannot commit before
+  the cut's deadline aborts the cut ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), and the policy skips that tick
+  ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)); writes are not held for it.
+
+> decision: the pre-cut commit runs before the gate closes, not behind it, so
+> writes are never queued at a gate for it: it costs the cut one group commit and
+> one sync per journal, and delays only a stability point covering an overwrite
+> acknowledged after the cut point, by at most the time to the gate's reopening. Across shards the snapshot is consistent per
+> shard only; take every shard's cut points behind one coordinator barrier if a
+> multi-shard application needs cross-shard crash consistency.
 
 **`died` is the successor's `born`.** When a transaction supersedes a version —
 an overwrite's offload commit, a truncate or deallocate, a release, a rename, a
@@ -437,13 +473,16 @@ removed as a deletion removes them ([§2.8](#2.8%20Deleting)).
 ### 2.3 The cut is one transaction behind a brief gate
 
 A share can span several shards, each with its own primary on its own node
-([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)). A cut must split every one of them at the same point: every
+([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)). On a single node a share is one shard and the node is its primary
+([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), so the four steps below run with one gate and no remote round
+trip; a rule or example marked **(cluster)** in this document binds only where a
+second storage node can serve a share. A cut must split every one of them at the same point: every
 transaction on every shard is either before it, and reads the old cut number, or
 after it, and reads the new one. Each primary therefore keeps a **cut gate** for
 each of its shards. A transaction that writes a versioned record **MUST** pass
 the gate before it takes its read snapshot or timestamp. Reads never wait at a gate.
 
-**A transaction that spans shards** ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) **MUST** be admitted at
+**(cluster)** **A transaction that spans shards** ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) **MUST** be admitted at
 all its shards' gates or at none: it takes them in shard-ID order, and on meeting
 a closed one releases those it already took, waits at the closed one, and starts
 again from the first. A closing gate therefore waits only for transactions
@@ -461,7 +500,9 @@ is four steps:
    handover, a move of files or the creation of a shard — **MUST** start with that
    shard's gate closed.
 2. **Close and hold.** The coordinator asks the primary of every shard of the
-   share, as the shard records name them, to close. Each primary closes its gate:
+   share, as the shard records name them, to close. Each primary first takes
+   its cut points and commits the shard's pending existence up to them
+   ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)), then closes its gate:
    new transactions wait at it, and those already admitted finish. It then
    records the shard's snapshot hold for *k* ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) as a replicated
    journal operation, durable on every replica of the shard
@@ -475,9 +516,11 @@ is four steps:
    snapshot's ordinal ([§2.5](#2.5%20Browsing%20a%20snapshot)) and one hold record per shard that reported
    content not yet offloaded; stamps the
    snapshot's **cut time**, the later of the store's time and one second past the
-   share's previous cut time, which `Cut(share)` keeps; and moves the snapshot to
+   latest cut time of any snapshot it will be visible beside — for a share cut,
+   the share's previous cut time, which `Cut(share)` keeps, and every covered
+   shard's `SubCut` cut time ([§2.10](#2.10%20Subtree%20snapshots)); and moves the snapshot to
    `holding`, or to `complete` if there is no hold record. It commits no existence
-   and writes no per-file record.
+   itself — step 2 did that — and writes no per-file record.
 4. **Open.** The coordinator tells every primary to reopen. Every later
    transaction reads cut *k*.
 
@@ -502,21 +545,26 @@ cut, a takeover right after the cut would lose it ([§2.4](#2.4%20A%20snapshot%2
 
 **The gate is bounded, not just short.** It is held for the transactions already
 in flight, step 3's one transaction and the round trips around them, never for an
-offload. Two bounds make that a ceiling rather than a hope:
+offload. One bound makes that a ceiling rather than a hope:
 
-- **drain.** A primary that closes its gate waits at most `snapshots.gate_drain`
-  for its admitted transactions to finish. One still running then — a prepared
-  cross-shard transaction near its hold deadline, a slow commit — makes the
-  primary reopen at once and refuse the close; the coordinator aborts the cut and
-  retries it after a backoff, counted. A cut never makes writes wait on a slow
-  transaction for longer than the drain bound;
+- **drain.** A primary that closes its gate stops admitting and waits for its
+  admitted transactions to finish, for as long as the ceiling below allows. A
+  group commit of up to `G` files and an offload commit within the key budget K ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)) are
+  admitted transactions too, and under sustained offload one of them is nearly
+  always in flight; a drain bound shorter than such a commit would refuse every
+  cut. A transaction still running when the ceiling arrives — a prepared
+  cross-shard transaction near its hold deadline, a stalled commit — ends the cut
+  by the ceiling's abort; the coordinator retries after a backoff, counted;
 - **ceiling.** A primary whose gate has been closed for `snapshots.gate_max`
   reopens it by committing the abort, as when the coordinator fails, whatever the
   coordinator is doing. So no write waits at a gate longer than `gate_max`,
-  whatever the number of shards, round trips or retries.
+  whatever the number of shards, round trips, slow transactions or retries.
 
-A cut that cannot fit inside the bounds is refused, never stretched; the
-snapshot policy skips that tick ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)). `Cut(share).k` and `klatest` rise only at a cut, behind the gate, so the
+A cut that cannot fit inside the bound is refused, never stretched; the
+snapshot policy skips that tick ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)), and three consecutive skipped ticks of one
+policy, for any reason, raise a health condition naming the share and the
+reason of the last refusal, so a policy that silently stopped taking snapshots
+is seen within three periods. `Cut(share).k` and `klatest` rise only at a cut, behind the gate, so the
 transactions that read them need no conflict tracking on them; a deletion lowers
 `klatest`, which the history path guards against by its tracked `LiveCut` read
 ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)).
@@ -534,7 +582,7 @@ removal's `born` as their `died`, below *k*: the snapshot does not see them. If
 its first phase commits after the cut, the snapshot reads the refs it has not yet
 dropped, or their history.
 
-**Worked example: a cut across two shards while one fails over** —
+**(cluster)** **Worked example: a cut across two shards while one fails over** —
 `S-snap-cut-failover`. Share `data` has shards S1 (primary A, epoch 6) and S2
 (primary B, epoch 7, replicas C and D). `Cut(data)` is `{k 3, klatest 3}`.
 
@@ -555,7 +603,8 @@ of `born` 3, replacing it in place, and snapshot 4 would have shown it. A
 transaction B admitted before its lease lapsed cannot commit after t3 either:
 every fenced commit takes a shared guard on its primary's node lease record, and
 C's takeover writes that record first ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)), so B's late commit
-conflicts and aborts.
+conflicts and aborts. On a single node no takeover exists, and that guard is not
+taken ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)); the per-file fence records still order every commit.
 
 ### 2.4 A snapshot hold bridges dirty content to history
 
@@ -576,12 +625,14 @@ show it. Two cases:
   has committed it, and the offload writes a superseded one **straight to
   history**, with its own `born` and, as `died`, its successor's `born`.
 
-**The mark is committed existence, and so is superseding.** The cut commits no
-existence ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), so what snapshot *k* shows of a file is what its existence
-had committed up to when the cut committed, and the hold mark is exactly that
-version — the file's `applied` at the cut, not the newest version the journal
-holds. A version acknowledged before the cut but whose existence commits after it
-lies above the mark, takes `born ≥ k`, and is not in the snapshot. For the
+**The mark is committed existence, and so is superseding.** The cut transaction
+commits no existence ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)); the pre-cut commit before it carried every
+write below the cut points ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). So what snapshot *k* shows of a file is
+what its existence had committed up to when the cut committed, and the hold mark
+is exactly that version — the file's `applied` at the cut, not the newest
+version the journal holds. A version acknowledged after the cut points, whose
+existence commits after the cut, lies above the mark, takes `born ≥ k`, and is
+not in the snapshot. For the
 version below it to still be in the journal when `Hold` runs, the journal
 **MUST** treat an existence-committed version as superseded — for release,
 compaction and the offload's superseded flag — only once its successor's
@@ -620,15 +671,16 @@ versions of one range visible to snapshot 1. The ordering rule below forbids it.
 | --- | --- | --- | --- |
 | 0 | v1 offloaded and released | r1 live, `born` 0 → c1 | c1, count 1 |
 | 1 | v2 written; its existence commits under cut 0: `born` 0, `applied` v2 | r1 live | c1 |
-| 2 | v3 written over v2 and acknowledged; its existence has not committed, so v2 is not superseded and stays | r1 live | c1 |
+| 2 | close for cut 1: cut point taken above v2, pre-cut commit has nothing left to carry; v3 written over v2 and acknowledged above the cut point, so its existence waits for the gate to reopen and v2 is not superseded | r1 live | c1 |
 | 3 | cut 1: Hold(1) marks v2, the file's `applied`, on every replica | `Cut {1, 1}`, `LiveCut 1`, hold record; snapshot 1 `holding` | c1 |
 | 4 | gate open; v3's existence commits under cut 1: `born` 1; v2 now superseded, kept by the hold | `applied` v3 | c1 |
 | 5 | offload carries v2, then v3 | r1 → `died` 0, dropped; h2 history `born` 0 `died` 1 → c2; r3 live `born` 1 → c3 | c1 count 0; c2, c3 count 1 |
 
-Snapshot 1 reads h2: v2 was the file's content when the cut committed. Had the
-journal let v3 replace v2 at t2, the hold at t3 would have found nothing below
-its mark and snapshot 1 would have read r1, content the share had already
-replaced before the cut.
+Snapshot 1 reads h2: v2 was the file's content at the cut point. Had v3 been
+acknowledged before the cut point, the pre-cut commit would have committed it
+under cut 0 and snapshot 1 would read v3. Had the journal let v3 replace v2 at
+t2, the hold at t3 would have found nothing below its mark and snapshot 1 would
+have read r1, content the share had already replaced before the cut.
 
 **Rules.**
 
@@ -642,7 +694,7 @@ replaced before the cut.
   the file's latest, since a file's existence commits are serialised, and the File
   versions the rebuild reads are never dropped from under it: a drop means no live
   cut lies between the two candidate cuts, so either gives the same visibility.
-- **A hold follows its files between shards.** A move of files between shards
+- **(cluster)** **A hold follows its files between shards.** A move of files between shards
   ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) **MUST** ship held versions with their stamps and hold marks.
   The receiving primary re-versions moved content on arrival under its own epoch
   ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)), held superseded versions included, keeping each file's version
@@ -713,19 +765,34 @@ share's root, configurable and hidden from listings. What protocols rely on:
   the snapshot's ordinal, so a client that keys its caches or hard-link
   detection on volume and file id never takes a file in one snapshot for the
   same file in another, or in the live share;
-- each snapshot carries an **ordinal**: the smallest value below 2¹⁵ that no
-  other live snapshot of the share holds, assigned by the cut transaction
-  ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) and free again once the snapshot is deleted. A snapshot file's
-  64-bit file id carries the ordinal and the file's `Number`, and its 128-bit id
-  the share and the cut ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)): they differ from the live file's and
-  from the same file's in every other live snapshot, so tools never take two of
-  them for one file. A cut that finds every ordinal held is refused with
-  `ErrSnapshotLimit`;
+- each snapshot carries an **ordinal**, a value below 2¹⁵ assigned by the cut
+  transaction ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)). It **MUST** be unique among the snapshots visible at
+  any one path: every live share snapshot, and every live subtree snapshot whose
+  root lies on the same chain of ancestors as the new one's ([§2.10](#2.10%20Subtree%20snapshots)).
+  Two subtree snapshots of disjoint subtrees never show the same file, since a
+  file's `Number` is unique in its share, so they **MAY** share an ordinal. The
+  cut takes the smallest such value that is not **quarantined**: an ordinal
+  stays unusable for 24 h after the snapshot holding it is deleted, so a client
+  that cached a deleted snapshot's volume serial or file ids does not meet them
+  again on a new snapshot. A snapshot file's 64-bit file id carries the ordinal
+  and the file's `Number`, and its 128-bit id the share and the cut
+  ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)): they differ from the live file's and from the same file's in
+  every other snapshot visible beside it, so tools never take two of them for
+  one file. A cut that finds every eligible ordinal held or quarantined is
+  refused with `ErrSnapshotLimit`. So 10⁴ home directories with 24 hourly
+  subtree snapshots each need about 48 ordinals per path, not 240,000 per share;
 - **SMB Previous Versions** names each complete snapshot by the token
   `@GMT-YYYY.MM.DD-HH.MM.SS` of its cut time in UTC. The cut transaction sets
-  each cut time at least one second past the share's previous one
-  ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), from the record it already writes, so each token names exactly
-  one snapshot — also after a move to an installation whose clock is behind.
+  each cut time at least one second past that of every snapshot visible beside
+  it ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), from records it already reads, so at each path each token
+  names exactly one snapshot — also after a move to an installation whose clock
+  is behind.
+
+> decision: the ordinal quarantine is fixed at 24 h, the horizon past which a
+> client is assumed to have dropped a snapshot's cached identifiers, since SMB
+> clients key caches on volume serial and file id with no expiry this set can
+> observe. Raise it, or make it a setting, if a client is found reusing a cached
+> id across a longer gap.
 
 > ponytail: snapshot reads bypass the journal and run at the remote tier's
 > latency, which bounds a mass restore ([§8.5](#8.5%20Benchmarks%20and%20targets)). Add a fill keyed by the
@@ -787,8 +854,14 @@ UTC by default: an hour on the clock, a calendar day, an ISO week starting
 Monday, a calendar month. A snapshot belongs to the period holding its cut time.
 For each interval with keep N, the policy keeps the newest `complete` policy
 snapshot of each of the N most recent periods **that hold one**; periods with no
-snapshot — the service was down, every tick was refused — are skipped, not
-counted, so an outage never prunes history to make room for empty periods. A
+snapshot — the service was down, every tick was refused by the hold bounds or the
+gate — are skipped, not counted, so an outage never prunes history to make room
+for empty periods. **A period whose tick the snapshot reserve refused
+([§2.9](#2.9%20Space%20is%20reported%2C%20not%20charged)) is the exception: it counts as holding one.** Pruning then runs as
+if that snapshot had been taken, so the oldest policy snapshots age out, their
+history is dropped, and cuts are admitted again once `history_bytes` falls below
+the reserve. Skipping those periods too would leave a churny share refused for
+ever: nothing would age out, and no cut would ever be taken again. A
 snapshot kept by any interval is kept; one kept by none is pruned
 ([§2.8](#2.8%20Deleting)). A `cutting` or `holding` snapshot is neither counted nor pruned
 until it is `complete` or `failed`; a `failed` one is deleted. A wall-clock hour
@@ -825,8 +898,10 @@ with a locked snapshot cannot be deleted. A move carries locks and their modes
 
 > decision: a lock refuses deletion through this system's API only, and a
 > governance lock yields to one separately granted right. An attacker
-> holding the bucket's credentials can still delete the objects, and protecting
-> the bucket is the bucket's job ([§1.1](#1.1%20Non-goals)). The lock's value is that one
+> holding the namespace bucket's credentials can still delete the objects; the
+> namespace's bucket cannot be versioned or locked ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), so the
+> protection against that attacker is a copying backup at an immutable location
+> ([§3.4](#3.4%20Copying%20backups), [§1.1](#1.1%20Non-goals)). The lock's value is that one
 > stolen administrator credential cannot erase every snapshot and, through the use
 > records, every backup.
 
@@ -961,7 +1036,7 @@ Quotas charge a share's live logical bytes only
 
 ### 2.10 Subtree snapshots
 
-A **subtree snapshot** is a snapshot of one subtree shard: a shard rooted at a
+**(cluster)** A **subtree snapshot** is a snapshot of one subtree shard: a shard rooted at a
 directory an operator chose, or created in a directory marked for per-child shards
 ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards), [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)). It is browsed under that directory. A
 home directory on its own per-child shard is the usual case. The mechanism is
@@ -976,10 +1051,17 @@ A subtree cut of a directory that is not a shard's root **MUST** be refused with
 `ErrNotShardRoot`.
 
 **Subtree cuts draw from the share's sequence.** A subtree cut takes the next
-number from `Cut(share).k` and the next cut time, as a share cut does. So cut
-numbers and cut times stay unique across both kinds, which keeps the Previous
-Versions tokens of [§2.5](#2.5%20Browsing%20a%20snapshot) distinct, and a `born` means the same thing
-whichever shard its file sits in.
+number from `Cut(share).k`, as a share cut does, so cut numbers stay unique
+across both kinds and a `born` means the same thing whichever shard its file
+sits in. **Its cut time is unique only where it is seen**: the later of the
+store's time and one second past the newest cut time among the share's share
+cuts and the `SubCut` of each covered shard, which records the cut time of the
+newest subtree cut covering it. Every snapshot visible under the new one's root
+is a share cut or a subtree cut covering one of its shards, so the Previous
+Versions tokens of [§2.5](#2.5%20Browsing%20a%20snapshot) stay distinct at every path. Drawing every cut
+time from one share-wide sequence instead would push 10⁴ hourly subtree cuts
+about 10⁴ s ahead of the clock each hour; under this rule each runs at most one
+second ahead of the store's time per cut on its own path.
 
 **Only the covered shards' gates close.** [§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)'s four steps run over the covered set
 only. The coordinator announces the cut, closes and holds at each covered shard's
@@ -998,8 +1080,9 @@ it sees a cut number at least as new as the one that version was stamped with.
 
 **Coverage decides history.** A version moves to history exactly when a live cut
 that covers its shard sees it ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). Each shard in some live subtree cut's
-covered set keeps `SubCut(share, shard) = { klatest }`, the newest live subtree cut
-covering it. `Cut(share).klatest` stays the newest live share cut. So:
+covered set keeps `SubCut(share, shard) = { klatest, cut time }`: the newest live
+subtree cut covering it, and the cut time of the newest subtree cut that ever
+covered it. `Cut(share).klatest` stays the newest live share cut. So:
 
 - the common-case test is `born < max(Cut.klatest, SubCut(shard).klatest)`;
 - the interval test reads the `LiveCut` records in `(born, died]` with conflict
@@ -1109,7 +1192,29 @@ store: the tree and the refs, and where the blocks they name are. It holds no
 data. It survives the loss of the metadata store, and nothing else: it does not
 survive the loss of the bucket or of the namespace's folder, the destruction of
 key material, or a bucket-level attack. Use a copying backup ([§3.4](#3.4%20Copying%20backups)), which also
-copies the blocks, against those losses.
+copies the blocks, against the first and last of those.
+
+**No backup survives losing the master key.** In an encrypting namespace every
+key an export needs — its export key, chunk-ID key, header and data keys — is
+held only wrapped under a master key, so a backup of either kind, at any
+location, mutable or immutable, opens only where that master key is held. The
+master key therefore **MUST** live off the host, in a key service or in a key
+file whose off-host escrow was verified at setup, and no key falls back to the
+host's own wrapping key; [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s table is the one statement of
+which keys exist per namespace kind, what wraps each and what must live off the
+host. A non-encrypting namespace keeps its chunk-ID key in the clear beside its
+blocks, so losing the host loses none of its content.
+
+**A backup records the master keys it needs, and they outlive it.** Each export
+names, in its clear part ([§5.1](#5.1%20Layout)), the ID of every master key that wraps a
+key record it carries, and the backup's state object repeats them. The material
+provider **MUST** refuse to destroy a master key that any retained export of any
+namespace names — a backup not `expired`, at any configured location — with
+`ErrMaterialInUse`, naming the backups. Rotating a master key re-wraps the key
+records in the metadata store only ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)); every retained
+export keeps the old wrapping, so the old key is destroyed only once the last
+export naming it has expired, and immutable backups are not made unrestorable by
+the usual compliance rotation.
 
 **A backup location has a mode**, stated in its location record
 ([§6.2](#6.2%20Configuration)) and enforced by the store that opens it
@@ -1144,15 +1249,22 @@ carries:
 - the chunk and block records of every chunk they name, as **location hints**
   only ([§3.3](#3.3%20Restore));
 - the material in those blocks' census, each as (material ID, fingerprint)
-  ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), and the namespace's key records — data, header, chunk-ID,
-  chunking and export keys — wrapped under their master keys, never unwrapped
-  ([§4.4](#4.4%20Key%20scope%20and%20material), [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys));
+  ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), and the namespace's key records, each held as
+  [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s table says for its kind — wrapped under a master key,
+  never unwrapped, or in the clear for a non-encrypting namespace's chunk-ID key
+  — with the IDs of the master keys that wrap them ([§3](#3.%20Catalog%20backups), [§4.4](#4.4%20Key%20scope%20and%20material));
 - the namespace's identity, prefix and key scope, and every other bound setting
-  of the namespace ([§5.1](#5.1%20Layout)).
+  of the namespace ([§5.1](#5.1%20Layout));
+- per share, its fold rule and the hash key its entries' digests are keyed under
+  ([RFC 7 §3.4](rfc-7-namespace-metadata.md#3.4%20Enumeration)), both fixed when the share was created. Every entry key and
+  every directory position is derived from them, so an import that drew its own
+  would find no entry by lookup and resume no listing where a client's cookie
+  points.
 
 Like every export, it is sealed and authenticated under the namespace's export
-key ([§5.1](#5.1%20Layout)): a reader of the location who lacks the master key learns
-neither the tree nor the chunk IDs, and cannot alter a byte unnoticed.
+key ([§5.1](#5.1%20Layout)): in an encrypting namespace, a reader of the location who
+lacks the master key learns neither the tree nor the chunk IDs, and cannot alter
+a byte unnoticed.
 
 Its state — `writing`, `complete`, `failed`, `expired` — is kept in the location,
 listable without the installation that wrote it.
@@ -1215,7 +1327,9 @@ Restore creates a new share. There are two sources:
     the export never listed. Material missing from its provider refuses the
     import naming the IDs, as [§4.4](#4.4%20Key%20scope%20and%20material) requires;
   - recomputes every count from the imported refs ([RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)) and ends
-    with the audit ([RFC 6 §7.5](rfc-6-block-metadata.md#7.5%20Audit));
+    with the audit ([RFC 6 §7.5](rfc-6-block-metadata.md#7.5%20Audit)); a retired block the backup records whose
+    `not_before` has passed is moved to deleted before anything is served, since
+    the old installation may already have deleted it ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded));
   - imports **every other unexpired backup of the namespace** found in every
     configured backup location as a detached, held snapshot ([§2.8](#2.8%20Deleting)), each
     under a share identity and FileIDs of its own, before GC runs, or GC would
@@ -1232,6 +1346,17 @@ Restore creates a new share. There are two sources:
     nothing: an import of one share never deletes a block
     another share needs. The pause costs the space those deletes would have
     freed, and is reported ([§9](#9.%20Observability), `dittofs_move_gc_paused`).
+
+**Losing the metadata store is recovered this way, and only this way.** On a
+single node the embedded metadata store goes with its host
+([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile), [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). A node that starts with its store missing or
+unopenable **MUST** refuse to serve, naming the store, and its GC deletes
+nothing; an operator starts a recovery import from the newest catalog or copying
+backup of each namespace. Each recovered share's files read as they were at that
+backup's snapshot: content written after it, still in the bucket or the
+journals, is not served as current, and its blocks wait, unreferenced, under the
+GC pause above until the operator's statement. Taking a catalog backup on a
+period is what bounds that loss.
 
 > decision: a recovery import finds other backups only in the backup locations
 > the recovering installation is configured with, and the operator states that
@@ -1286,10 +1411,11 @@ namespace's folder is gone. Restoring from them always makes a new namespace
 
 ```
 <location>/
-  exports/<namespace>/<backup>             the export, and its state object
-  progress/<namespace>/<backup>/<n>        blocks a running copy has made durable
-  blocks/<namespace>/                      the block folder: one store namespace
-    <block name>                           a block, byte for byte as the namespace stored it
+  exports/<namespace>/<backup>/export      the export
+  exports/<namespace>/<backup>/state       its state object
+  progress/<namespace>/<backup>/<batch>    blocks a running copy has stored
+  blocks/<namespace>/                      the block folder: one store, this its prefix
+    blocks/<block name>                    a block, byte for byte as the namespace stored it
 ```
 
 - **One block folder per source namespace and location.** The backups of every
@@ -1313,12 +1439,13 @@ namespace's folder is gone. Restoring from them always makes a new namespace
   or sweep commits — census additions, the release — reads the folder record
   with conflict tracking and requires its own lease number, and a sweep reads it
   before each delete batch. Deletes and puts are not transactions, so a holder
-  also fences itself by its own clock: it issues no put or delete later than its
-  deadline minus the drift bound ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)), measured from when it sent the
-  read that last confirmed its lease. A new holder takes the record only past
-  the old deadline. A sweep's delete then never lands after a copy has taken the
-  folder and reused the block, short of a pause the drift bound does not cover —
-  the ceiling the claim's decision names ([§4.1](#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+  also fences itself by its own clock: when the read that last confirmed its
+  lease showed *L* left before the deadline, it issues no put or delete once
+  *L* / (1 + ρ) − σ has passed on its own monotonic clock since it sent that read,
+  with ρ and σ [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock bounds. A new holder takes the record only
+  past the old deadline. A sweep's delete then never lands after a copy has taken
+  the folder and reused the block, short of a pause the clock bound does not
+  cover — the ceiling the claim's decision names ([§4.1](#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 
 #### 3.4.2 What is copied
 
@@ -1334,8 +1461,17 @@ Each manifest is complete. A backup needs only the blocks its own manifest lists
 never another backup's export, so backups expire independently. The bytes are
 incremental: a copy puts only the blocks its **base** does not already hold. The
 base is the newest `complete` copying backup of the same share at the same
-location. A share with no such backup gets a full copy. So does a share whose
-newest complete backup is `damaged`.
+location, **plus the blocks listed by the progress objects of every `failed`
+copy of the share made since it**. A share with no complete backup starts from
+its failed copies' progress alone, and from nothing when it has none; a share
+whose newest complete backup is `damaged` takes no base from it. So a failed copy
+is the base of its successor: a first copy larger than one `max_copy_time` at
+`backups.copy_rate` completes across several attempts, each putting only what the
+ones before it did not, instead of restarting from zero and failing again. A
+progress-listed block was put with its transfer checksum and is reused as a
+base block is; at an immutable location only while its recorded version's
+retain-until lies at least `max_copy_time` ahead, and otherwise it is copied
+afresh.
 
 The copier plans in chunk-hash order. It builds the set of chunks the snapshot's
 refs name, live and history, sorted by hash, and merge-joins that set with the
@@ -1354,16 +1490,18 @@ copied again: its chunks are found at their old folder block, by hash. A chunk
 whose folder block carries retiring material is copied afresh, so that the
 material leaves the folder as older backups expire.
 
-**Blocks are copied as sealed bytes, never re-sealed.** A copy is a whole-block
-get from the namespace and a put of the same bytes, under the same name, into the
-folder. Nothing is decoded or encoded.
+**Blocks are copied as sealed bytes, never re-sealed.** A copy is a raw
+transfer: a whole-block get from the namespace and a put of the same bytes, under
+the same name, into the folder, through the syncer's raw transfers, which carry
+a block byte for byte and return the stored version
+([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). Nothing is decoded or encoded.
 
 - **The copier needs no material, and never holds plaintext.** A block's
   structure is readable from its own bytes, and its name can be recomputed from
   its header and the namespace's key scope without material ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), R1).
   The copier recomputes the name from the header's nonce, chain ID and index
   under the namespace's scope ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)) before it streams the bodies, and the
-  put carries the transfer checksum ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)). That proves the copy is the
+  put carries the transfer checksum ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). That proves the copy is the
   block of that name, byte for byte; it does not prove the chunks inside decode
   to their IDs, which needs the material, and which `Verify` checks
   ([§3.4.3](#3.4.3%20Writing%20one%2C%20step%20by%20step)).
@@ -1400,8 +1538,9 @@ serialises them.
 
 1. **Start.** One transaction requires the snapshot `complete`. It writes a use
    record of kind `copy`, with a deadline ([§3.2](#3.2%20A%20backup%20holds%20its%20snapshot)). It takes the folder record,
-   which must be free or past its deadline. The copier then writes the backup's
-   state object `writing` at the location.
+   which must be free or past its deadline. The holder runs the folder store's
+   `Recheck` ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) and refuses to start on any drift it reports. The
+   copier then writes the backup's state object `writing` at the location.
 2. **Plan**, as [§3.4.2](#3.4.2%20What%20is%20copied) describes.
 3. **Copy, in batches.** For each batch of blocks to copy:
    - one transaction adds the batch's census to the folder record, so the census
@@ -1413,7 +1552,7 @@ serialises them.
      relocation moved its chunks, it re-resolves them and copies their new block
      ([RFC 9 §4.3](rfc-9-gc.md#4.3%20A%20reader%20can%20hold%20the%20old%20location)). The snapshot's counted refs keep every chunk it names
      somewhere in the namespace;
-   - once the batch is durable, a progress object lists its block names, and at
+   - once the batch's puts have succeeded, a progress object lists its block names, and at
      an immutable location the version of each.
 4. **Export.** The copier writes the `backup-copy` export, manifest last. Every
    manifest block was either put by this copy or taken from the base's manifest.
@@ -1448,8 +1587,14 @@ deadlines while it makes progress.
   listing it is put again, with the same bytes.
 - **Past the deadline**, the backup is abandoned ([§3.2](#3.2%20A%20backup%20holds%20its%20snapshot)): the state object is
   marked `failed` if it is still `writing`, then the folder record is released,
-  then the use record is deleted. The next sweep collects every block the failed
-  copy put that no retained manifest lists.
+  then the use record is deleted. Its progress objects stay: the share's next
+  copy takes the blocks they list as base ([§3.4.2](#3.4.2%20What%20is%20copied)), and the sweep keeps them
+  until a copy of the share completes, then collects every block of the failed
+  copies that no retained manifest lists.
+- **`max_copy_time` bounds one attempt**, from its start, not the whole chain of
+  attempts that a large first copy takes. A copy still running at
+  `max_copy_time` is marked `failed` as above, and its successor resumes from
+  its progress at the next policy tick.
 - **A location that stays unreachable, or a namespace bucket that is lost
   mid-copy,** ends in the same `failed`. Earlier backups are untouched.
 
@@ -1467,12 +1612,18 @@ So a chain of copies that keep failing — the namespace's bucket gone, say — 
 expires the backups that are still good.
 
 **The sweep** runs after an expiry, after a `failed` backup, or on a period. It
-holds the folder record, and runs only while the claim names its installation
-`owned`:
+holds the folder record, runs only while the claim names its installation
+`owned`, and starts only after the folder store's `Recheck` passes. The folder
+record's holder also runs that `Recheck` on GC's period
+([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so a location whose settings drift is reported while no copy runs:
 
-1. **Mark.** Read the state object of every backup of the namespace at the
-   location. The mark set is the union of the manifests of every `complete` and
-   `damaged` backup, plus the progress objects of every backup still `writing`.
+1. **Mark.** Read the state object of every backup at the location whose state
+   object names this folder, whichever namespace it is filed under — a backup
+   taken mid-re-home names two ([§4.7](#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)). The mark set is the union of the
+   manifests of every `complete` and `damaged` backup, plus the progress objects
+   of every backup still `writing`, and of every `failed` one whose share has
+   completed no copy at the location since (its blocks are a successor's base,
+   [§3.4.2](#3.4.2%20What%20is%20copied)).
    An export or state object that cannot be read or verified **MUST** stop the
    sweep with no delete. An incomplete mark set would delete a live backup's
    blocks.
@@ -1502,13 +1653,51 @@ own bookkeeping:
   exactly those versions. A put under the same name later — a retry, a
   misbehaving installation, a stolen credential — adds a version and changes
   nothing any backup reads.
+- **Backups are found by version, and state objects are authenticated.** The
+  current-version rule puts a delete marker on every object once it reaches the
+  lifecycle age counted from its writing — the health object, and the export and
+  state object of a last good backup included — so a listing of current objects
+  stops showing them. Restore, the sweep and `List` therefore list object
+  **versions** ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), never current objects, and a delete marker
+  hides nothing. Every export, state-object and progress-object version is
+  authenticated under the namespace's export key — a state object by a MAC over
+  the backup's ID, its state and the export's digest
+  ([RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted)) — and for each backup the reader takes the newest
+  version that authenticates, so a stolen put credential's newer, forged `expired` or
+  `failed` version is ignored rather than ending a restore.
+- **The health object stays locked.** Every open and every `Recheck` extends the
+  retention of the health object's recorded version to the open time plus the
+  location's retention, so the location still opens after the lifecycle age;
+  extending writes no object.
+- **Every put carries its own retain-until, and every retain-until is
+  recorded.** The location has no bucket default retention to rely on: a
+  default at least the longest retention would lock every hourly block as long
+  as a monthly one. Each put sets its version's retain-until explicitly — the
+  put time plus the backup's retention *R*, rounded up as below — and the copier
+  records that value beside the version, in the progress object and then the
+  manifest. Later decisions read the recorded value, or the store's retention
+  read ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)) where no record survives, and an extension that the
+  service refuses because it would shorten the lock is treated as done.
 - **Retention starts when a copy completes.** A backup with retention *R* that
   completes at *T* needs every version its manifest and export name kept until
-  *T* + *R*. Blocks are put with the folder's default retention; at step 5
-  ([§3.4.3](#3.4.3%20Writing%20one%2C%20step%20by%20step)), before the state object is marked `complete`, the copier extends
-  every version the backup names whose retain-until is below *T* + *R*, and the
-  export's, to *T* + *R*. A block put early in a long copy is therefore kept as
-  long as one put at the end.
+  *T* + *R*. At step 5 ([§3.4.3](#3.4.3%20Writing%20one%2C%20step%20by%20step)), before the state object is marked `complete`,
+  the copier extends every version the backup names whose recorded retain-until
+  is below *T* + *R*, and the export's, and records the new values. A block put
+  early in a long copy is therefore kept as long as one put at the end.
+- **Extensions come in generations.** Every retain-until the copier sets is
+  extended one **generation** `G` past the time it needs, `G` being the location
+  record's ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes); 7 days by default), and a version whose
+  recorded retain-until already covers the need is not touched. A block that
+  daily backups keep reusing is then extended about once per `G`, not once a
+  day: about *N* ÷ `G` calls a day for *N* reused blocks — at 1 PiB of 4 MiB
+  blocks with `G` of 7 days about 3.8×10⁷ a day, 440/s — against one call per
+  block per backup. The cost is that a version is held up to `G` past its need.
+- **What a credential may lock is capped.** The location's bucket policy **MUST**
+  cap the remaining retention a put may set at the location record's retention
+  cap — the longest retention of any policy writing there, plus one generation
+  and `backups.max_copy_time` — and the open checks verify that cap
+  ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)), so a stolen put credential cannot lock objects for a century
+  and hold their storage cost to ransom.
 - **A copy reuses its base's versions, extending them.** Incremental copies work
   as elsewhere ([§3.4.2](#3.4.2%20What%20is%20copied)): a block the base holds is not put again, and
   the new manifest names the base's version, whose retention step 5 extends. No
@@ -1517,11 +1706,13 @@ own bookkeeping:
   The location record's lifecycle age **MUST** be at least the longest retention
   of any policy writing there plus `backups.max_copy_time`, and the bucket's
   current-version rule no younger, as its open checks
-  ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). A copy still running at `max_copy_time` is failed. A policy
-  whose period is shorter than its estimated full copy — the share's referenced
-  bytes over `backups.copy_rate` — **MUST** be refused when set, with
-  `ErrPolicyPeriod`: its copies could never complete, and the location would
-  only fill.
+  ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). An attempt still running at `max_copy_time` is failed, and its
+  successor builds on it ([§3.4.3](#3.4.3%20Writing%20one%2C%20step%20by%20step)). A policy whose period is shorter than its
+  estimated **incremental** copy — the bytes the share wrote over its last
+  period, from its usage counters, over `backups.copy_rate` — **MUST** be refused
+  when set, and its next tick skipped, with `ErrPolicyPeriod`: its increments
+  could never keep up, and the location would only fill. The first copy is not
+  held to the period, since it completes across attempts.
 - **Expiry** marks the state object `expired` (a new version of it) and then
   deletes the use record, as [§3.2](#3.2%20A%20backup%20holds%20its%20snapshot) orders, so an expired backup is never
   restored. Removing anything is the lifecycle rules': the current-version rule
@@ -1534,8 +1725,9 @@ own bookkeeping:
 - **The last good backup stays locked.** Policy never expires a share's newest
   complete backup (the rule above), but a lifecycle rule would remove its
   versions once their lock ended. So while no newer backup has completed, the
-  policy extends the newest one's versions by its retention again whenever
-  their retain-until comes within one policy period. A chain of failing copies
+  policy extends the newest one's versions — its blocks, its export and every
+  version of its state object — by its retention again whenever their
+  retain-until comes within one policy period. A chain of failing copies
   then keeps the last good backup, at an immutable location as at a mutable one.
 
 > ponytail: copies and sweeps of one folder run one at a time, so the backups of
@@ -1664,18 +1856,33 @@ any — until an operator states which of the copies is the installation. A copy
 is never silently a second holder.
 
 **The claim catches a copy the platform does not report.** At every start, and
-at every `Recheck`, the holder rewrites its claim with a fresh instance nonce,
-and records the nonce it wrote. A claim read that names this installation's
-identity but carries a nonce it did not write means another process with the
-same identity is writing it: the reader **MUST** stop writing to the namespace,
-and its GC **MUST** issue no further delete, at once, and alert. Two copies
-started from one disk image therefore fence each other within one `Recheck`
-period: the one that reads the other's nonce stops, and only one keeps writing.
+at every `Recheck`, the holder rewrites its claim with a fresh instance nonce, in
+this order, each step done before the next:
+
+1. **read** the claim. If it names this installation's identity with a nonce
+   other than the two this installation recorded — the last it wrote and the one
+   it intended to write next — the reader stops (below), and writes nothing;
+2. **record** the new nonce as the intended one, committed in its own metadata
+   store, beside the instance part ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities));
+3. **put** the claim with that nonce, then record it as the last written.
+
+A claim read that names this installation's identity but carries a nonce it did
+not record means another process with the same identity is writing it: the
+reader **MUST** stop writing to the namespace, and its GC **MUST** issue no
+further delete, at once, and alert. Reading before rewriting is what lets the
+original win against a stale image: a disk image restored from yesterday records
+yesterday's nonces, finds the original's newer one at its first start, and stops
+before its own put; rewriting first would let the stale copy overwrite the
+claim and fence the original instead, after which its GC deletes blocks only the
+original's newer records name. Recording before the put is what lets a holder
+that crashed between the two recognise its own claim at restart. Two copies
+started at once from one image fence each other within one `Recheck` period: the
+one that reads the other's nonce stops, and only one keeps writing.
 
 > decision: which copy survives is decided by timing, not by which is the
 > original, and the alert names both so an operator can swap them. The cost is
 > one claim put per namespace per `Recheck` period. Make the claim a conditional
-> write ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20durable%20on%20success)) if a fleet's claim puts show in its request costs.
+> write ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) if a fleet's claim puts show in its request costs.
 Reading it is a step of the store's capability check
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). Installations that share only the bucket check each other
 through it:
@@ -1692,17 +1899,18 @@ through it:
 - An import **MUST** take the claim only from a claim that is `released` with the
   digest of the export being imported, or, for a recovery import ([§3.3](#3.3%20Restore)), on
   the operator's statement that the installation holding it is gone. It writes the
-  claim `owned` at the next epoch. After a recovery import it then waits two
-  `Recheck` periods plus the drift bound ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) before it puts, adopts,
-  resolves a hint or deletes, so that a partitioned old installation's GC has
-  fenced itself.
+  claim `owned` at the next epoch. After a recovery import it then waits
+  *T* × (1 + ρ) + σ, with *T* two `Recheck` periods and ρ and σ the clock-rate
+  and clock-offset bounds of [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile), before it puts, adopts, resolves a
+  hint or deletes, so that a partitioned old installation's GC, counting its two
+  periods on a clock that may run slow, has fenced itself.
 
 > decision: the claim is a check, not a lock: the remote contract has no
 > conditional put, so two installations that both believe they hold a namespace
 > can both write it. The order of [§4.2](#4.2%20The%20move%2C%20step%20by%20step) prevents that, and the
-> self-fence bounds a partitioned one by clocks within the drift bound, the same
-> assumption node leases make. Make the claim a lock if the contract gains a
-> conditional write.
+> self-fence bounds a partitioned one by clocks within [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock
+> bound, which rests on the hosts' time synchronisation. Make the claim a lock if
+> the contract gains a conditional write.
 
 ### 4.2 The move, step by step
 
@@ -1733,7 +1941,9 @@ freeze carries only what changed since.
    records it changes. Once every base cut is `complete`, so that no offload can
    still write a ref a base cut sees, A writes an export of kind `move-base`: every
    record the base cuts see, all history, every chunk and block record, and the
-   principals they name. B stages it and publishes nothing. From here until the
+   principals they name. B stages it, rebuilds its derived indexes — reverse ref
+   keys, the died index, the version-floor index, the GC index — and recomputes
+   its counts as it stages, and publishes nothing. From here until the
    move ends, the namespace refuses share creation, share deletion, clones,
    backups of either kind and re-homes ([§4.7](#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) with `ErrMoving`, and defers snapshot deletion and pruning; a deletion,
    clone or backup already running finishes first.
@@ -1765,15 +1975,26 @@ freeze carries only what changed since.
      `born` — removals, pending releases, durable opens — which B takes in place
      of the base's, so a deletion among them carries too;
    - every put intent ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)), and the principals the delta names.
-7. **Release.** A writes the claim `released` with the digest over base and delta,
-   and records the namespace `released`.
-8. **Claim at B.** B imports the delta over the base ([§5.2](#5.2%20Import%20is%20staged%20and%20published%20atomically)), rebuilds every
-   derived index — reverse ref keys, the died index, the version-floor index, the
-   GC index — recomputes counts, publishes, writes the claim `owned` at the next
-   epoch, and starts the shares. Clients reconnect to B.
-9. **Drop at A.** A deletes the namespace's records from its metadata store
-   **without releasing them**: no refcount is decremented, no GC index key is
-   written, nothing is swept, and nothing in the remote store is deleted.
+7. **Ready at B, then release.** B stages the delta over the base
+   ([§5.2](#5.2%20Import%20is%20staged%20and%20published%20atomically)), applying its changes to the indexes and counts it built from
+   the base, verifies it, and reports **ready**: everything but the publish is
+   done. Only then does A write the claim `released` with the digest over base
+   and delta, and record the namespace `released`. Everything up to ready runs
+   inside `migration.freeze_timeout`, and a failure or a timeout before it
+   aborts the move as below; no unbounded or unabortable step follows the
+   release.
+8. **Claim at B.** B publishes the staged import — one transaction — writes the
+   claim `owned` at the next epoch, and starts the shares. Clients reconnect to
+   B.
+9. **Drop at A.** A first deletes every file of the namespace's shares from
+   every journal that holds one ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)), and detaches the shares' tags,
+   so no extent of a moved file stays in A's journals. Step 4 offloaded all of
+   them, so this discards nothing B lacks. A then deletes the namespace's records
+   from its metadata store **without releasing them**: no refcount is
+   decremented, no GC index key is written, nothing is swept, and nothing in the
+   remote store is deleted. A crash between the two resumes the journal deletes
+   at A's next start, before anything is served, from the namespace's
+   `released` record.
 
 B drops the GC pause record at publish, then deletes each move use record and its
 base cut as an ordinary snapshot. The freeze lasts the drain plus the delta. The
@@ -1788,10 +2009,10 @@ reads only, no remote I/O.
 The pause from step 2 grows the namespace by what relocation and deletes would have reclaimed during the
 pre-seed.
 
-**Aborting.** Before step 7 A **MAY** abort: it records the namespace `serving`,
+**Aborting.** Before A writes the claim `released` in step 7, A **MAY** abort: it records the namespace `serving`,
 deletes the GC pause record, deletes each move use record and then its base cut,
 and reopens the gates; B drops its staging.
-After step 7, A **MUST NOT** re-claim, reopen or write the namespace unless the
+After that write, A **MUST NOT** re-claim, reopen or write the namespace unless the
 operator states that B has not published the import, which A cannot learn itself;
 it then writes the claim `owned` at a higher epoch. A move keeps share identities
 and FileIDs ([§4.5](#4.5%20Versions%20and%20FileIDs%20on%20import)), so clients' handles **SHOULD** stay valid at B.
@@ -1805,9 +2026,9 @@ and FileIDs ([§4.5](#4.5%20Versions%20and%20FileIDs%20on%20import)), so clients
 | 1 | base cut 20, held by a move use record; GC pause record written, one relocation in flight aborts; 20 `complete` after 40 s; `move-base` export, 10⁷ files, 3 h | stages it | writing to A throughout |
 | 2 | pre-drain: 40 GiB dirty down to 2 GiB | — | writing to A, slower |
 | 3 | `moving`; gates closed; drains 2 GiB in 20 s; joins writers and GC | — | calls answered retry-later after 1 s, and retried |
-| 4 | `move-delta`: 3×10⁴ records with change sequence above cut 20's — among them the kept part of a ref a truncate narrowed at t1, still `born` 12 — all share-prefix records, intents; 5 s | stages it over the base | calls wait |
+| 4 | `move-delta`: 3×10⁴ records with change sequence above cut 20's — among them the kept part of a ref a truncate narrowed at t1, still `born` 12 — all share-prefix records, intents; 5 s | stages it over the base, applies it to the indexes and counts built at t1, verifies; ready | calls wait |
 | 5 | claim `released` with the digest | — | calls retried |
-| 6 | — | verifies, rebuilds indexes, recomputes counts, publishes; claim `owned` at epoch 4; serves | reconnect to B: 40 s after t3 |
+| 6 | — | publishes; claim `owned` at epoch 4; serves | reconnect to B: 40 s after t3 |
 | 7 | drops its records | drops the pause record; deletes the move use record, then base cut 20 | — |
 
 ### 4.3 GC across installations on one bucket
@@ -1833,7 +2054,7 @@ No namespace is ever served by two GC services:
   finds no intent, and the object is left to B's listing backstop. One that
   deletes is stopped by the claim check before each batch and by its own fence
   two `Recheck` periods after its last good claim read ([§4.1](#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A process
-  that escapes both — paused past the drift bound between its check and its
+  that escapes both — paused past the clock bound between its check and its
   delete — can delete a block B resurrected or minted; that is the ceiling the
   claim's decision states.
 
@@ -1851,6 +2072,10 @@ whose bound settings differs from its configuration: names derived under
 another scope would never match the imported records ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), another
 chunking target would re-cut every file B writes against content cut the old
 way, and a namespace that encrypts at A must not take plaintext writes at B.
+Each share's fold rule and entry-digest hash key travel the same way, and B
+**MUST** create the share with them, never draw its own: every entry key and
+every client's listing cookie was derived under them
+([RFC 7 §3.4](rfc-7-namespace-metadata.md#3.4%20Enumeration)).
 
 The export lists every material ID in the census of the blocks it names, each
 with its fingerprint, and B **MUST** find each held by its provider, with the same
@@ -1862,15 +2087,26 @@ B needs no particular *current* material: its own chain writes new blocks
 ([RFC 5 §2.8](rfc-5-transforms.md#2.8%20The%20chain%20ID)).
 
 The namespace's **data keys**, **header keys**, **chunk-ID key**, **chunking
-key** and **export key** are wrapped namespace keys, kept as key records
-([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)). The export carries every key record, wrapped under its
-master key, and never a master key. B **MUST** hold a master key that unwraps
-each, and each **MUST** match its fingerprint, before staging: without the
+key** and **export keys** are kept as key records, each held as
+[RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s table says for the namespace's kind: wrapped under a
+master key, except a non-encrypting namespace's chunk-ID key, kept in the clear
+beside its blocks. The export carries every key record so held, and the IDs of
+the master keys that wrap them, and never a master key. B **MUST** hold every
+master key the export names, and each key record **MUST** unwrap and match its
+fingerprint, before staging: without the
 export key it cannot read the export, without the chunk-ID key it cannot verify a
 chunk, without a header key it cannot verify A's block headers, and without the
 chunking key its new writes chunk differently from every block A wrote.
 
 ### 4.5 Versions and FileIDs on import
+
+**A journal attaching an imported share holds none of its extents.** A share
+moved back to an installation that once held it — A to B and back to A — arrives
+with FileIDs A's journals may have held. Attaching a share whose tag the journal
+already knows as an import ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) **MUST** first delete every extent of
+that tag, or be refused naming the tag; otherwise A would serve its stale,
+clean extents keyed by those FileIDs over what B wrote since. Step 9's deletes
+make this the rare case of a crash, not the rule.
 
 **Versions.** A version B's journal assigns to an imported file **MUST** exceed
 every version imported for it, or a new write loses precedence to older content
@@ -1912,7 +2148,7 @@ the source can resolve into it.
 
 ### 4.6 After replication
 
-Once replication and sharding span installations, two installations **MAY** serve
+**(cluster)** Once replication and sharding span installations, two installations **MAY** serve
 one namespace under [RFC 10](rfc-10-journal-replication.md) and [RFC 11](rfc-11-ownership.md)'s rules — one
 metadata store, primaries fenced by epoch, handover
 ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)) in place of a move. This document does not specify that;
@@ -1958,11 +2194,13 @@ two namespaces.
 
 1. **Start.** A re-home is refused:
    - with `ErrMoving` during a move of N;
-   - with `ErrRehoming` while another re-home of the share runs;
-   - with `ErrHeld` while an unexpired catalog backup of the share exists, because
-     its hints and its recovery import would name blocks in N that the re-home
-     lets N's GC reclaim. A copying backup does not hold a re-home: it holds its
-     own blocks.
+   - with `ErrRehoming` while another re-home of the share runs.
+
+   An unexpired catalog backup of the share does not refuse a re-home, although
+   its hints and its recovery import name chunks in N. Its blocks are kept by
+   **parking** instead (step 3): the share's refs leave N's live set but stay
+   counted in N until the last catalog backup taken before the re-home finished
+   has expired. A copying backup needs no parking: it holds its own blocks.
 
    A share that is N's only share is re-homed like any other; N is left empty
    and is deleted once its GC has collected what the switches retired.
@@ -1976,14 +2214,20 @@ two namespaces.
    `ErrRehoming` too. Snapshots and copying backups go on ([§3.4](#3.4%20Copying%20backups)). A clone or
    catalog backup that is already running finishes first.
 2. **Switch writes.** Each primary of the share's shards is told of the change. It
-   carves every new put attempt under N', and adopts — once deduplication is
-  added — only from N'. An
-   attempt fixes its namespace when it starts ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)), so the primary
-   joins every attempt started under N before it acknowledges. From then on,
-   offload commits write refs at *g* + 1.
+   carves every new offer under N', and adopts — once deduplication is added —
+   only from N'. Chunk IDs are fixed when an offer is carved, before any put
+   attempt, so **an offer captures its namespace and that namespace's keys when it
+   is carved** ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope), [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)), and every later step of it — the plan,
+   the names it mints, the puts, the commit — uses the captured namespace, not
+   the write namespace current when that step runs. The primary joins every offer
+   captured under N, through its commit or its abandonment, before it
+   acknowledges the switch. The put-intent step **MUST** refuse, with
+   `ErrScopeMismatch`, a plan whose chunk IDs are keyed under a namespace other
+   than the one it mints names into, so an offer carved under N can never put
+   N-keyed IDs into N'. From then on, offload commits write refs at *g* + 1.
 3. **Copy and switch, in batches.** The re-home walks the share's ref keys, live
-   and history, in key order from its cursor. It takes up to K refs at *g* per
-   batch.
+   and history, in key order from its cursor. It takes refs at *g* per batch, as
+   many as the key budget K allows ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)).
    - **Copy.** Chunk IDs are keyed per namespace ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)), so a chunk
      has one ID in N and another in N'. For each chunk the batch names, the
      re-home reads it from N — a ranged get of its body
@@ -1996,7 +2240,7 @@ two namespaces.
      N''s scope and chain. Each put has a put intent
      and runs through a background flow of the syncer. This is relocation's read,
      mint and put ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)), with the target in another namespace.
-   - **Switch.** Once those puts are remote-durable, one transaction:
+   - **Switch.** Once those puts have succeeded, one transaction:
      - consumes their intents and creates their block and chunk records in N';
      - reads each ref of the batch with conflict tracking, and requires it
        unchanged;
@@ -2004,7 +2248,11 @@ two namespaces.
        resurrecting a retired block ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence), [RFC 9 §3.3](rfc-9-gc.md#3.3%20Adoption%20resurrects%20a%20retired%20block)) — normative here
        whatever is deferred with deduplication — and writes its reverse key there;
      - drops the ref from N: it decrements the chunk, removes the reverse key, and
-       retires any block it leaves at zero ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero));
+       retires any block it leaves at zero ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)) — or, while an
+       unexpired catalog backup of the share taken before the re-home finished
+       exists, **parks** it: the ref moves to the share's parked prefix in N,
+       keeping its count and reverse key, where no read, snapshot or listing
+       sees it and only N's GC counts it;
      - rewrites each ref at *g* + 1, naming its N' chunk ID, with the same range,
        version, `born` and `died`; a ref that was re-cut becomes its pieces,
        each with those same values;
@@ -2035,6 +2283,15 @@ N's GC reclaims each chunk the share alone held, as its count reaches zero. Chun
 the other shares hold stay in N at their counts. Nothing in N is deleted on the
 re-home's behalf.
 
+**Parked refs outlive the backups that need them.** When the last catalog
+backup of the share taken before the re-home finished expires, the parked refs
+are dropped from N in batches ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), decrementing each chunk, and N
+can then empty. Until then a recovery import of such a backup resolves its hints
+in N as it would before the re-home, and finds every block they name. N is not
+deleted while it holds parked refs, and a move of N carries them. The parking
+costs the space of the share's content in both namespaces for one catalog
+retention.
+
 **The switch is not a new version.** It rewrites which namespace counts a ref's
 chunk, and nothing a snapshot reads. So it passes no cut gate, stamps nothing and
 writes no history. Every snapshot and every live read returns the same bytes
@@ -2048,7 +2305,13 @@ share's backups do not stop for it. Copying backups go on throughout: the copier
 resolves each ref's chunk in the namespace its generation names, and copies that
 namespace's block into that namespace's folder ([§3.4.1](#3.4.1%20Layout%20at%20the%20location)), so a backup taken
 mid-re-home lists blocks of both folders, each with its namespace, and its
-census lists both namespaces' material. Its base is matched per folder, so a
+census lists both namespaces' material. **Its export carries both namespaces**:
+both IDs, both sets of key records with the master-key IDs that wrap them, and
+both scopes, each chunk record naming its namespace; it is filed under N', and
+its state object names every folder its manifest lists blocks in. The sweep of
+a folder marks from every retained manifest that names the folder, whichever
+namespace's exports directory holds it ([§3.4.4](#3.4.4%20Expiry%20and%20the%20sweep)), so N's sweep never deletes a
+block that a backup filed under N' needs. Its base is matched per folder, so a
 copy after a switch puts the N' blocks once and keeps reusing the N blocks its
 base holds until no ref names them. A restore from it decodes each chunk with
 the material of the namespace it came from ([§3.4.5](#3.4.5%20Restore%20into%20a%20new%20namespace)). Catalog backups,
@@ -2110,29 +2373,39 @@ another installation alone.
 An export is one stream, written and read front to back, never seeked:
 
 ```
-clear    = magic ‖ format version ‖ kind ‖ namespace id ‖ export salt ‖
-           the namespace's key records, wrapped ‖ clear MAC
+clear    = magic ‖ format version ‖ kind ‖ namespace id(s) ‖ export salt ‖
+           sealing export-key ID ‖ current and retired export-key IDs ‖
+           IDs of every master key whose wrapping it carries ‖
+           the namespace's key records, each as RFC 5 Appendix B.2 holds it ‖ clear MAC
 header   = (sealed) prefix, key scope and every other bound setting ‖
+           per share: fold rule and entry-digest hash key ‖
            source installation ‖ share and snapshot ids ‖ cuts ‖ base digest
            (move-delta only) ‖ (material ID, fingerprint) of every census
            material ‖ record counts per section ‖ header MAC
 section* = type ‖ frame* ‖ section MAC ‖ record count
 frame    = length ‖ sealed records ‖ frame index      (frames of at most 4 MiB)
-trailer  = end marker ‖ MAC over the clear part, the header and every section MAC
+trailer  = end marker ‖ trailer MAC
 ```
 
 **Sealed and authenticated.** Everything after the clear part is sealed under
-keys derived from the namespace's export key and the export's own random salt
-([RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted)): each frame with an AEAD whose associated data is the
-export's salt, its section and its frame index, so a frame moved, dropped,
-repeated or reordered fails; every digest above is a MAC under a key derived the
-same way. The clear part says only what an importer needs to find the keys: the
-namespace and its key records, each wrapped under a master key the export does
-not carry. A reader of the location without that master key learns the
-namespace ID and the export's size, and nothing of the tree, the names, the
-chunk IDs or the principals; a writer without it cannot change a byte unnoticed,
+keys derived from the namespace's export key and the export's own random salt,
+exactly as [RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted) specifies, with golden vectors: AES-256-GCM-SIV
+for each frame, its nonce the section index and the frame index, so no two frames
+of one export share a nonce, and its associated data the export's salt, section
+and frame index, so a frame moved, dropped, repeated or reordered fails;
+HMAC-SHA256 for the clear, header, section and trailer MACs; HKDF-SHA256 with
+32-byte outputs for every derived key. Each key record is wrapped as RFC 5
+specifies, with associated data namespace ‖ kind ‖ key ID, so a record moved to
+another namespace or kind fails to unwrap. The clear part says only what an
+importer needs to find the keys: the namespace, the export-key IDs current and
+retired, the master-key IDs, and the key records. The export key rotates
+([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)); a retired one stays until no retained export names it. In an
+encrypting namespace a reader of the location without the master key learns the
+namespace ID and the export's size, and nothing of the tree, the names, the chunk
+IDs or the principals; a writer without it cannot change a byte unnoticed,
 including in the clear part, which the clear MAC covers once the export key is
-unwrapped.
+unwrapped. A non-encrypting namespace's export claims authentication only against
+a reader who cannot read its bucket's key object ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)).
 
 Kinds are `backup` and `backup-copy` (one snapshot), and `move-base` and
 `move-delta` (a namespace). A `backup-copy` adds a `blocks` section, its manifest
@@ -2180,6 +2453,14 @@ and **MUST** be refused, naming it, when B holds that ID for someone else or whe
 an imported protocol ID — a UID, GID or SID — already maps to a different
 principal at B. It **MUST NOT** match principals by protocol ID: `u:1000` at A
 and at B are unrelated until an operator maps them.
+
+**Names and paths collide the same way.** An import is a create for the
+control plane's naming rules ([RFC 16 §2.3.1](rfc-16-metadata-store.md#2.3.1%20Share%20names%2C%20paths%20and%20state)): it **MUST** be refused, before it
+publishes anything and naming the collision, when a share's name collides under
+the name fold with one B holds, when its path equals, contains or lies inside
+another share's, or when a principal's name already names a different principal
+at B. The import request **MAY** carry a new share name, path or principal name,
+applied in the staged copy; nothing is renamed silently.
 
 ### 5.2 Import is staged and published atomically
 
@@ -2315,38 +2596,51 @@ What other components gain:
   record's lease number; a retired share; the allocator raise at publish.
 - **Re-homes** ([§4.7](#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a share's namespaces by generation, and each ref's
   generation, which reads, adoptions, drops and the dedup oracle resolve in; the
-  `old_refs` counter; the re-home record; a write namespace that put attempts
-  fix when they start.
+  `old_refs` counter; the re-home record; a write namespace that each offer
+  captures, with its keys, when it is carved, and an intent step that refuses a
+  plan keyed under another namespace ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)); the share's parked refs
+  in the old namespace.
+- **The journal at a move** ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)): the drop deletes the moved shares'
+  files from every journal; attaching an imported share's tag purges, or
+  refuses, any extent of it the journal still holds.
+- **The engine at a cut** ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)): cut points per journal, the pre-cut
+  existence commit up to them, and no existence committed above them while the
+  gate is closed.
 
 ### 6.2 Configuration
 
-Snapshot policies, locks, backup locations and moves are set through the control
-plane's API ([RFC 13 §2.1](rfc-13-configuration.md#2.1%20The%20control%20plane%20is%20the%20source)), like every other record. A declarative
-provisioning file comes later
-([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)); the shape below shows the fields as that file
-would hold them.
+Snapshot policies, locks, backup locations and moves are control-plane records,
+set through the API ([RFC 13 §2.1](rfc-13-configuration.md#2.1%20The%20control%20plane%20is%20the%20source)) like every other record, with the scope and
+class [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) gives each: `snapshots.hold_bound` and
+`snapshots.reserve` per share; `snapshots.hold_journal_fraction`,
+`snapshots.gate_max`, `snapshots.lock_max`, `migration.*`, `backups.copy_rate`
+and `backups.max_copy_time` per installation; each backup location its own
+installation-scoped record ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)), which a policy names. The shape below
+is how a provisioning file declares them
+([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
 
 ```yaml
 snapshots:
   directory: .snapshot          # the browse directory (§2.5)
   hold_bound: 64GiB             # held bytes per share before a cut is refused (§2.4)
   hold_journal_fraction: 0.25   # held share of a journal's capacity, all shares (§2.4)
-  gate_drain: 50ms              # longest a closing gate waits for admitted transactions (§2.3)
   gate_max: 1s                  # longest a gate stays closed, whatever the coordinator does (§2.3)
   lock_max: 8760h               # longest lock a snapshot may carry (§2.7)
   reserve_fraction: 1.0         # default reserve: history bytes per byte charged live (§2.9)
 migration:
-  freeze_timeout: 60s           # bound on a move's freeze (§4.2)
+  freeze_timeout: 5m            # bound on a move's freeze, through B's ready (§4.2)
   hold_reply: 1s                # longest a call waits in the freeze before ErrDelay (§4.2)
 backups:
   copy_rate: 200MiB/s           # copying backups' transfer rate, per installation (§3.4.6)
-  max_copy_time: 48h            # a copy still running then is failed (§3.4.4)
+  max_copy_time: 48h            # one copy attempt still running then is failed; its successor builds on it (§3.4.3)
   locations:                    # each a location record (§3)
     same-bucket:                # beside the namespaces: survives losing the metadata store only
       { type: s3, bucket: dfs-data, prefix: backups/, mode: mutable, credential: dfs-data-rw }
     vault:                      # another bucket, locked: may hold copying backups
       { type: s3, bucket: dfs-vault, prefix: backups/, mode: immutable,
-        credential: dfs-vault-put-only, lifecycle_age: 2208h }      # ≥ longest retain + max_copy_time
+        credential: dfs-vault-put-only, lifecycle_age: 2208h,       # ≥ longest retain + max_copy_time
+        generation: 168h,                                           # extension generation G (§3.4.4)
+        retention_cap: 2376h }      # ≥ longest retain + G + max_copy_time; enforced by bucket policy
 rehome:
   rate: 100MiB/s                # a re-home's copy rate; 0 pauses it (§4.7)
 shares:
@@ -2381,9 +2675,9 @@ shares:
 | S14 | An import publishes all of its records or none; a staged ref is counted and indexed, is never served or found by dedup, and is dropped if the import fails. |
 | S15 | An import proceeds only with every material ID held and the namespace's scope and prefix configured. |
 | S16 | Every version assigned to an imported file exceeds every version imported for it: a journal raises its counter above a share's version floor before it serves a share it did not serve when it opened. Every file number issued after an import exceeds every number imported. |
-| S17 | A move keeps FileIDs and refuses a collision; a clone, a restore and a detached snapshot get new ones. |
+| S17 | A move keeps FileIDs and refuses a collision; a clone, a restore and a detached snapshot get new ones. A move's drop deletes the namespace's files from every journal at the old installation, and attaching an imported share's tag finds none of its extents. |
 | S18 | Counts after an import are recomputed from imported refs, never read from the export. |
-| S19 | An import maps principals by opaque ID, never by protocol ID, refuses a collision, and carries no secret. |
+| S19 | An import maps principals by opaque ID, never by protocol ID, refuses a collision of principal ID, protocol ID, principal name, share name, share path or netgroup, and carries no secret. |
 | S20 | After a move, the base plus the delta equal the source's records at the freeze; the base is exported only once its cuts are `complete`, and the delta is every record whose change sequence is above the base's. |
 | S21 | Quota charges live logical bytes only; history bytes are reported per share and per snapshot. |
 | S22 | A subtree cut closes only its covered shards' gates and draws its number from the share's sequence. A version moves to history exactly when a live cut covering its shard sees it. A subtree snapshot shows only files of its covered shards, reached through covered directories, and no file moves into or out of a covered shard while the cut lives. |
@@ -2391,13 +2685,20 @@ shares:
 | S24 | At an immutable location DittoFS deletes nothing, every object a backup names is read by its recorded version, and each is locked until at least the backup's completion plus its retention ([§3.4.4](#3.4.4%20Expiry%20and%20the%20sweep)). Elsewhere, a folder block is deleted only by a sweep that runs alone at its folder, from the namespace's claim holder, and finds the block in no manifest of a `complete` or `damaged` backup and in no progress of a `writing` one. Any unreadable export stops the sweep. Material named by a folder's census is never removed. |
 | S25 | A copying backup releases its snapshot only once `complete`. Retention never expires a share's newest complete copying backup at a location. A restore from one re-encodes into a new namespace, checks every chunk against its plaintext hash, and publishes all or nothing. |
 | S26 | During a re-home every ref of the share names the namespace its chunk is counted in, by that namespace's chunk ID. A switch adopts in the new namespace and drops from the old in one transaction, keeping range, version, `born` and `died`, so no snapshot's or live read's bytes change. The re-home finishes only when no ref names the old namespace, decided from a folded counter that cannot rise once the re-home is closing. |
-| S27 | A snapshot contains exactly the writes whose existence committed before its cut, never an acknowledged write whose existence committed after. |
-| S28 | No write waits at a cut gate longer than `gate_max`, and none waits on a slow transaction longer than `gate_drain`. |
-| S29 | An export is sealed and authenticated under its namespace's export key, carries the namespace's key records only wrapped, carries every bound setting and every netgroup its policy names with its members, and an import refuses any mismatch. |
+| S27 | A snapshot contains exactly the writes whose existence committed before its cut, never one whose existence committed after. The cut commits each shard's pending existence up to its cut points before the gate closes, so every write acknowledged before the snapshot was requested is in it, and within one shard no write is in it while one acknowledged before it is missing. |
+| S28 | No write waits at a cut gate longer than `gate_max`; a closed gate waits for admitted transactions up to that bound and refuses the cut only past it. Three consecutive skipped policy ticks raise a health condition. |
+| S29 | An export is sealed and authenticated under its namespace's export key by RFC 5's export cryptography, names in its clear part the export-key and master-key IDs it needs, carries each key record as RFC 5's key table holds it, carries every bound setting, each share's fold rule and entry-digest key, and every netgroup its policy names with its members, and an import refuses any mismatch. |
 | S30 | A recovery import leaves its namespace's GC paused until the operator states every share recovered or given up. |
-| S31 | A folder record is a fenced lease: a holder acts only under its own lease number, and issues no put or delete past its deadline minus the drift bound. |
-| S32 | A claim carries the holder's instance nonce; a process that reads its own identity with a nonce it did not write stops writing and deleting at once, and an installation started on a copy holds no namespace until an operator states which copy it is. |
+| S31 | A folder record is a fenced lease: a holder acts only under its own lease number, and issues no put or delete once *L* / (1 + ρ) − σ has passed since the read that showed *L* left. Every wait on another process's or installation's timeout is *T* × (1 + ρ) + σ. |
+| S32 | A claim carries the holder's instance nonce; a holder reads the claim before it rewrites it and records the new nonce before it puts it; a process that reads its own identity with a nonce it did not record stops writing and deleting at once, and an installation started on a copy holds no namespace until an operator states which copy it is. |
 | S33 | A detached snapshot's share is retired: it serves nothing, accepts no write, and keeps only what its snapshots see. |
+| S34 | A policy tick refused by the snapshot reserve counts as a period holding a snapshot, so pruning still ages history out and cuts resume. |
+| S35 | An ordinal is unique among the snapshots visible at any one path and is not reassigned within 24 h of its snapshot's deletion; a cut time is unique among the snapshots visible at any one path, and a subtree cut's runs ahead of the store's time only by the cuts on its own path. |
+| S36 | No backup survives losing the master key that wraps its namespace's keys; every export names the master keys it needs, and a master key any retained export names is never destroyed. |
+| S37 | A failed copy is the base of its successor; `max_copy_time` bounds one attempt; a policy is held to its incremental copy, not its first. At an immutable location every put carries its own recorded retain-until within the location's cap, extensions come once per generation, backups are found by listing versions, every state version is authenticated, and the health object and the last good backup never age out. |
+| S38 | An offer uses the namespace and keys it captured when carved; no put lands N-keyed chunk IDs in another namespace. A copy taken mid-re-home carries both namespaces and is honoured by every folder's sweep it names; a ref the re-home drops from N stays counted there while a catalog backup taken before the re-home finished is unexpired. |
+| S39 | After a move's drop, no journal of the old installation holds an extent of the moved shares, and a journal attaching an imported share holds none of its tag's extents before it serves. B's work after A's release is one publish and the claim. |
+| S40 | The cut commits each shard's pending existence up to its cut points before its gate closes, and commits none above them until the gate reopens. |
 
 ## 8. Test plan and benchmarks
 
@@ -2447,7 +2748,11 @@ subtree cut it committed after; a move of files refused on a covered shard; a
 copy reusing a base block, and one refusing a block with retiring material; a
 copy resumed from its progress; a sweep stopped by an unreadable export; a
 relocated block re-resolved mid-copy; a re-home batch retried on a changed ref;
-a catch-up pass switching a ref written behind the cursor.
+a catch-up pass switching a ref written behind the cursor; a pre-cut existence
+commit carrying an unflushed write into a snapshot; a reserve-refused tick that
+pruned; a copy built on a failed predecessor's progress; a parked ref dropped
+when the last pre-re-home catalog backup expired; a claim read that stopped a
+stale image before its put.
 
 ### 8.2 Scenario catalogue
 
@@ -2468,7 +2773,7 @@ a catch-up pass switching a ref written behind the cursor.
 | `S-snap-delete-concurrent` | a deletion is stopped between batches, cuts are taken meanwhile, and it resumes correctly |
 | `S-snap-delete-serialised` | [§2.8](#2.8%20Deleting)'s example: two deletions of one share requested at once run one after the other, and `klatest` ends at the greatest remaining live cut |
 | `S-snap-delete-vs-history` | a primary takes over mid-deletion with its gate open; a transaction that read `LiveCut(k)` before the deletion's first transaction moves a version to history against *k*; one of the two conflicts and retries, and no orphan history remains |
-| `S-snap-hold-uncommitted-successor` | [§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)'s example: a successor appended before the cut whose existence commits after it; the snapshot reads the committed version |
+| `S-snap-hold-uncommitted-successor` | [§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)'s example: a successor acknowledged above the cut point, whose existence commits after the cut; the snapshot reads the committed version |
 | `S-snap-hold-shard-move` | files with held superseded versions move between shards, and are re-versioned on arrival, before their offload; the receiving shard's hold record is written in the move's commit, and the snapshot completes with the held bytes |
 | `S-snap-stamp-takeover` | the primary fails after an existence commit, before its stamp replicates; the new primary rebuilds that stamp from metadata, and every other stamp arrived by replication |
 | `S-snap-cross-shard-gate` | a cut closes the gates of shards S1 and S2 while cross-shard renames run, some prepared; each rename is admitted at both gates or at neither, and the cut commits within its deadline |
@@ -2498,12 +2803,12 @@ a catch-up pass switching a ref written behind the cursor.
 | `S-snap-copy-damaged` | a folder block is corrupted; `Verify` marks the backup `damaged`; the next copy takes no base from it; restore refuses it |
 | `S-snap-rehome` | [§4.7](#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)'s example: a re-home under writes, a cross-share copy caught by a second pass, and snapshot reads before and after |
 | `S-snap-rehome-crash-<step>` | the re-home crashes after each step and between a batch's puts and its switch; it resumes at its cursor, and N''s GC collects the orphaned puts |
-| `S-snap-rehome-straddle` | an offload attempt started under N commits after the write namespace changed; the primary's join makes it land before the acknowledgement |
+| `S-snap-rehome-straddle` | an offload carved under N mints names and puts after the write namespace changed: it puts into N with N-keyed IDs, the primary's join makes it commit before the acknowledgement, and every read of it verifies; hand the intent step a plan keyed under N for a put into N': refused `ErrScopeMismatch` |
 | `S-snap-rehome-sole` | the only share of its namespace is re-homed into a namespace with a different chunking target and encryption on; it serves throughout, every snapshot reads back, its refs are re-cut, and the old namespace ends empty |
-| `S-snap-rehome-backup` | copying backups run every day of a long re-home; each lists blocks of both folders, a restore from one taken mid-way reads back, and catalog backups are refused and counted |
+| `S-snap-rehome-backup` | copying backups run every day of a long re-home; each lists blocks of both folders and carries both namespaces' IDs and key records, a restore from one taken mid-way reads back, and N's sweep keeps every block it lists; new catalog backups are refused and counted. A share with a 90-day catalog backup is re-homed at once: its refs are parked in N, a recovery import of that backup reads back after the re-home finished, and N empties only once the backup expires |
 | `S-snap-rehome-finish-load` | the finish runs while 64 writers write the share: it commits on the folded counter alone, without a range read; a server-side copy by reference from N after `closing` copies bytes |
 | `S-snap-retention-dst` | a year of hourly ticks in a zone with daylight saving, with a two-day outage: kept snapshots match the period rule exactly, and the outage prunes nothing |
-| `S-snap-subtree-scale` | 10⁴ per-child shards, each with an hourly subtree snapshot kept 24: each subtree deletion reads only its own shard's history, and the deletion queue drains |
+| `S-snap-subtree-scale` | 10⁴ per-child shards, each with an hourly subtree snapshot kept 24: each subtree deletion reads only its own shard's history, the deletion queue drains, and no cut is refused `ErrSnapshotLimit`; no two snapshots visible at one path share an ordinal, and no ordinal is reassigned within 24 h of its snapshot's deletion; every cut time stays within a few seconds of the store's time, and Previous Versions at each path lists distinct tokens. Draw cut times from one share-wide sequence: they run hours ahead within a day |
 | `S-snap-import-version-floor` | a share imported into an installation whose journals are already open is written at once; the journal raises its counter above the share's floor first |
 | `S-snap-copy-immutable` | copies to an immutable location under a stolen put credential, a long copy, and a chain of failing copies; restores read recorded versions |
 | `S-snap-gate-bounds` | a slow admitted transaction and a stopped coordinator meet the gate's drain and ceiling bounds |
@@ -2522,7 +2827,7 @@ a catch-up pass switching a ref written behind the cursor.
 | S3 | Model-based run above; then kill the process at every step between the cut and `complete`, and inside every transaction that moves a record to history; restart. Each snapshot completes and equals the model. |
 | S3 | Give a file mode 0644 and an ACL denying principal X; snapshot; replace the ACL, then release the file. Browsing the snapshot as X is refused both times. Leave the ACL unversioned: the check fails. |
 | S4 | `S-snap-cut-failover` and `S-snap-shard-move-mid-cut`. Remove the epoch check from the cut transaction: a post-cut `chmod` appears in the snapshot. `S-snap-cross-shard-gate`: admit per gate instead of all-or-nothing, and cuts abort at their deadline. |
-| S5 | Acknowledge a write before a cut whose existence commits after it: the snapshot does not show it. `S-snap-carve-straddle`: remove the split, and the snapshot reads post-cut bytes. `S-snap-stamp-takeover`: leave stamps unreplicated, and more than one version per file needs a rebuilt stamp. |
+| S5 | Acknowledge a write after the cut points, before the gate closes: its existence commits after the cut and the snapshot does not show it. `S-snap-carve-straddle`: remove the split, and the snapshot reads post-cut bytes. `S-snap-stamp-takeover`: leave stamps unreplicated, and more than one version per file needs a rebuilt stamp. |
 | S6 | `S-snap-hold-overwrite` with v3 committed first: the check fails on two versions visible at cut 1. `S-snap-offload-after-drop`: remove the live-cut test, and the audit reports an orphan history ref. `S-snap-delete-vs-history`: read `LiveCut` untracked, and the audit reports an orphan history ref. |
 | S7 | `S-snap-hold-takeover` and `S-snap-hold-lost`. Keep holds unreplicated: the first reads the wrong bytes. `S-snap-hold-uncommitted-successor`: let the uncommitted successor supersede, and the snapshot reads r1. `S-snap-hold-shard-move`: leave the receiving hold record out of the move's commit, and the snapshot completes reading the wrong bytes. |
 | S8 | `S-snap-remote-down` and `S-snap-journal-bound`: each cut commits within the gate target, writes never stall, snapshots stay `holding`, refused cuts return `ErrHoldBacklog`; restore the tier and every snapshot completes. `S-snap-hold-bound-dirty`: count held bytes only, and the journal fills. |
@@ -2534,9 +2839,9 @@ a catch-up pass switching a ref written behind the cursor.
 | S14 | Corrupt one byte in each frame position, truncate the stream at every frame boundary, kill the importer at each step: nothing publishes, staging is empty after restart. During a clone's staging, run two audit walks and the deleter: no chunk a staged ref names is retired. |
 | S15 | Import with one material ID removed from B's provider, and with a different scope: refused before any record is staged. |
 | S16 | `S-snap-import-version-floor`: import a share whose files carry versions far above the counter of a journal already open at B, and write to one file at once, then from a per-child shard created afterwards. Each write's version exceeds the imported ones, commits and reads back. Skip the raise: the first write is dropped at its commit and the read returns the imported bytes. Restore a share whose highest `Number` is 10⁶ and create a file: its number is above 10⁶; skip the allocator raise and two files report one id. |
-| S17 | Move a namespace to B, back to A, and to B again: FileIDs preserved. Restore one backup twice: two shares, disjoint FileIDs. |
+| S17 | Move a namespace to B, back to A, and to B again: FileIDs preserved. Restore one backup twice: two shares, disjoint FileIDs. Move A→B, overwrite a file at B, move back: A reads B's bytes, and A's journals held no extent of the share between the drop and the return. Skip step 9's journal deletes: A serves its stale extent. Crash A between the journal deletes and the record drop, and plant a stale extent of the tag: the attach purges it or refuses, and never serves it. |
 | S18 | Plant wrong counts in an export: the import's counts are correct and the audit is clean. |
-| S19 | Import an export whose principal ID B holds for another user, and one whose UID B maps to another principal: both refused, naming the principal. Import one whose principals B lacks: adopted by ID, with no secret. |
+| S19 | Import an export whose principal ID B holds for another user, and one whose UID B maps to another principal: both refused, naming the principal. Import a share named `Photos` into a B holding `photos`, and one whose path lies inside another share's: both refused, naming the collision; with a new name given in the request, accepted. Import one whose principals B lacks: adopted by ID, with no secret. |
 | S20 | `S-snap-move-preseed` under the model-based run on A during the pre-seed: after the move B's records equal A's at the freeze, and the delta holds no record unchanged since the base. `S-snap-move-delta-seq`: select the delta by `born` and `died`, and B misses the narrowed ref. `S-snap-move-gc-pause`: pause in memory only, and B maps a relocated chunk to its deleted block. |
 | S21 | Rewrite a 10 GiB file hourly under a quota with hourly snapshots: charged usage stays at 10 GiB, `history_bytes` grows, and bytes freed if deleted for the oldest snapshot matches what its deletion frees. |
 | S22 | `S-snap-subtree-rename`, `S-snap-subtree-coexist` and `S-snap-subtree-nested` under the model-based run: each live snapshot of either kind reads back its model copy. `S-snap-subtree-stale-stamp`. Test coverage by klatest alone, ignoring `SubCut`: the subtree snapshot reads post-cut bytes. Allow the move of `S-snap-subtree-move-refused`: a later write drops history the subtree snapshot reads. |
@@ -2545,14 +2850,16 @@ a catch-up pass switching a ref written behind the cursor.
 | S25 | `S-snap-copy-restore`, `S-snap-copy-damaged`. Delete the snapshot right after a copy completes, run GC to completion, and restore from the copy: every file reads back by hash. |
 | S26 | `S-snap-rehome` and `S-snap-rehome-crash-<step>` under the model-based run: every snapshot and the live share read back their model copies at every step, and after the finish no ref names N and the audit of both namespaces is clean. Skip the catch-up passes: finish refuses, since `old_refs` is not zero. |
 | [§3.3](#3.3%20Restore) | `S-snap-catalog-restore` with every block the backup names relocated first: every stale hint is resolved from block headers and every file reads back; the older backup survives GC. |
-| S24 | `S-snap-copy-immutable`: copies to an immutable location — every get by recorded version; a put under an existing name by a stolen credential, then a restore: the restore reads the recorded versions and every file reads back. A copy that took 40 h: every version its manifest names is locked to its completion plus retention, including blocks put in its first hour. Copies keep failing for twice the retention: the last good backup's versions are still locked and it restores. A policy whose period is below its estimated full copy is refused `ErrPolicyPeriod`. |
-| S27 | Write with `UNSTABLE` and acknowledge, take a snapshot before the commit: the snapshot lacks the write; commit first and it has it. |
-| S28 | `S-snap-gate-bounds`: a prepared cross-shard transaction holds one shard past `gate_drain` when its gate closes: the primary reopens, the cut is refused and retried, and no write waited longer than `gate_drain`. Stop the coordinator after every gate closed: every gate reopens by `gate_max`. Remove either bound: a write waits past it. |
-| S29 | Flip one byte of an export's clear part, header, a frame and the trailer, and move one frame to another position: each is refused `ErrExportCorrupt`. Read an export without the master key: no file name, chunk ID or principal appears in its bytes. Import with a chunking target, an encrypt flag or a key ID that differs from B's: refused `ErrScopeMismatch` naming it. Import a policy naming netgroup `ops` into a B whose `ops` has other members: refused `ErrNetgroupCollision`; into a B without `ops`: adopted with its members, and a client of the deny list is still denied. |
+| S24 | `S-snap-copy-immutable`: copies to an immutable location — every get by recorded version; a put under an existing name by a stolen credential, then a restore: the restore reads the recorded versions and every file reads back. A copy that took 40 h: every version its manifest names is locked to its completion plus retention, including blocks put in its first hour. Copies keep failing for twice the retention: the last good backup's versions are still locked and it restores. A policy whose period is below its estimated incremental copy is refused `ErrPolicyPeriod`; one below its full copy but above its increment is accepted. A first copy of 40 TiB at 200 MiB/s with `max_copy_time` 48 h: it fails once, its successor builds on its progress, and the share has a complete backup within three attempts; restart each attempt from zero and none completes. Run past the lifecycle age with the health object and the last good backup untouched: the location still opens, and a restore lists versions and finds the backup. Put a newer `expired` state version with a stolen credential: the restore ignores it, since it does not authenticate. |
+| S27 | Write with `UNSTABLE` and acknowledge, write a stable overwrite with no `COMMIT`, and take a snapshot at once, before any group commit is due: the snapshot has both writes. Write w1 then w2 to two files of one shard with the group commit stalled, and cut between them while the stall lasts: the snapshot holds w1 whenever it holds w2. Remove the pre-cut commit: the snapshot lacks both writes of the first case. Stall the store past the cut's deadline: the cut is aborted and writes keep being acknowledged. |
+| S28 | `S-snap-gate-bounds`: under sustained offload, with a group commit of 256 files and an offload commit filling the key budget K admitted at every close and taking 200 ms each, every hourly cut for a day commits. Cap the drain at 50 ms: every cut is refused. A prepared cross-shard transaction holds one shard past `gate_max`: the gate reopens by `gate_max`, the cut is refused and retried, and no write waited longer. Stop the coordinator after every gate closed: every gate reopens by `gate_max`. Refuse three ticks in a row: the health condition names the share. |
+| S29 | Flip one byte of an export's clear part, header, a frame and the trailer, and move one frame to another position: each is refused `ErrExportCorrupt`. Read an export without the master key: no file name, chunk ID or principal appears in its bytes. Import with a chunking target, an encrypt flag or a key ID that differs from B's: refused `ErrScopeMismatch` naming it. Import a policy naming netgroup `ops` into a B whose `ops` has other members: refused `ErrNetgroupCollision`; into a B without `ops`: adopted with its members, and a client of the deny list is still denied. || S29 | Restore a catalog backup of a case-insensitive share whose listings clients were paging: every name is found by lookup, and a listing resumed from a cookie taken before the backup continues where it stopped. Draw a fresh digest key or fold rule at import: lookups miss and cookies resume elsewhere. Check the export's frame nonces: no two frames of one export repeat one. |
 | S30 | `S-snap-recovery-shared`: a namespace holds a share with a catalog backup and its clone with none, sharing blocks. Recover the share alone: GC deletes, relocates and collects nothing in the namespace, and every block the clone needs survives; after the operator's statement GC runs and the audit is clean. Start GC at publish instead: the clone's blocks are deleted. |
-| S31 | `S-snap-folder-lease`: a sweep pauses past its deadline after its mark; a copy takes the folder and reuses a block the mark left unlisted; the sweep resumes: it deletes nothing, by its lease number and its own clock. Fence by the deadline alone, without the drift margin: the sweep deletes the reused block. |
-| S32 | `S-snap-cloned-vm`: start two copies of one installation's disk, on a platform that reports a clone and on one that does not. With the report, the copy holds no namespace. Without it, within one `Recheck` period exactly one copy writes and deletes, and the other has alerted. |
+| S31 | `S-snap-folder-lease`: a sweep pauses past its deadline after its mark; a copy takes the folder and reuses a block the mark left unlisted; the sweep resumes: it deletes nothing, by its lease number and its own clock. Run the sweep's clock 5% slow: it stops by *L* / 1.05 − σ; fence by the deadline alone, without the clock bound, and the sweep deletes the reused block. A recovery import whose clock runs 5% fast against a partitioned old holder's waits two `Recheck` periods × 1.05 + σ by the slow clock; wait two periods plus a fixed margin and both delete for a while. |
+| S32 | `S-snap-cloned-vm`: start two copies of one installation's disk, on a platform that reports a clone and on one that does not. With the report, the copy holds no namespace. Without it, within one `Recheck` period exactly one copy writes and deletes, and the other has alerted. Restore a day-old image of a running installation, on a platform that reports nothing: it stops at its first start, before any put, and the original keeps writing; rewrite the claim before reading it, and the original is the one fenced. Crash the holder between its put and recording the nonce: at restart it recognises its own claim. |
 | S33 | `S-snap-detach`: delete a share detaching its two snapshots; the share serves nothing and refuses writes; each snapshot restores; content no snapshot saw is released; deleting the second snapshot removes the share's records. |
+| S36 | Back up an encrypting namespace, rotate its master key, and destroy the old one: refused `ErrMaterialInUse`, naming the backup; expire the backup and the destroy succeeds. Restore the backup on an installation that holds no master key: refused `ErrMaterialMissing`. Back up a non-encrypting namespace, lose the host's disk, and restore from the bucket and the backup alone: every file reads back. |
+| S30 | Delete the embedded metadata store with the node stopped and start it: the node serves nothing and GC deletes nothing, naming the store; a recovery import from the newest catalog backup serves the files as of that backup, and the blocks written since stay until the operator's statement. |
 | S11 | Set a lock past `lock_max`: refused `ErrLockTooLong`. Shorten a governance lock with the override right: allowed, logged and counted; without it, and on a compliance lock: `ErrLocked`. |
 
 ### 8.4 Group B — cost and wedging
@@ -2563,13 +2870,13 @@ a catch-up pass switching a ref written behind the cursor.
 | [§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree) cost to change | After a cut, the first change to a record writes one history version and a second writes none; with no live snapshot no change writes history. |
 | [§2.8](#2.8%20Deleting) deletion | Deleting a snapshot reads only history in its interval, whatever the share's total history, and writes no transaction larger than the batching bound. |
 | [§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks) retention | A simulated year of hourly ticks under the example policy: never more than 47 policy snapshots, manual snapshots untouched, locked ones kept to expiry. |
-| [§4.2](#4.2%20The%20move%2C%20step%20by%20step) freeze | The delta exported holds exactly the records changed since the base; the freeze time is reported against the namespace's key count (the scan's ceiling). |
+| [§4.2](#4.2%20The%20move%2C%20step%20by%20step) freeze | The delta exported holds exactly the records changed since the base; the freeze time is reported against the namespace's key count (the scan's ceiling). B's work after A's release is one publish transaction and the claim put, whatever the namespace's size; kill B mid-rebuild, or delay it past `freeze_timeout`: the move aborts and A serves. Rebuild indexes after the release instead: the freeze ends while B still rebuilds for minutes, and an abort is no longer possible. |
 | [§5.1](#5.1%20Layout) streaming | Import of a 10⁶-file export holds at most one frame plus bounded batches in memory. |
 | [§2.10](#2.10%20Subtree%20snapshots) cut | A subtree cut of one per-child shard of a 10⁴-shard share closes one gate, and reads one shard record. |
 | [§3.4](#3.4%20Copying%20backups) increment | A second copy of an unchanged share puts no block. After one changed file, it puts only the blocks holding its new chunks. A sweep lists the folder once. |
 | [§4.7](#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) re-home | Each chunk is read from N and put into N' once. A re-home with no concurrent writes finishes in one pass. |
 | [§2.10](#2.10%20Subtree%20snapshots) subtree deletion | `S-snap-subtree-scale`: keys read by a subtree deletion are proportional to its own shard's history in its interval, whatever the number of shards. |
-| [§2.9](#2.9%20Space%20is%20reported%2C%20not%20charged) reserve | A share with no reserve set and hourly snapshots of a file rewritten hourly: cuts are refused `ErrSnapshotReserve` once history reaches its live bytes. |
+| [§2.9](#2.9%20Space%20is%20reported%2C%20not%20charged) reserve | A share with no reserve set and hourly snapshots of a file rewritten hourly: cuts are refused `ErrSnapshotReserve` once history reaches its live bytes. Keep running for 48 h under `keep: { hourly: 24 }`: each refused tick still prunes the oldest policy snapshot, history falls, and cuts are taken again within a day. Skip refused periods as empty: no cut is taken after the first refusal. |
 
 ### 8.5 Benchmarks and targets
 
@@ -2617,7 +2924,7 @@ Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)); the
 | import refusals, labelled `reason` = `corrupt`, `material`, `scope`, `fileid`, `claim`, `hint`, `principal` | `dittofs_import_refused_total` | counter |
 | move phase per namespace (`preseed`, `freeze`, `released`, none), freeze duration, and whether the GC pause record is present | `dittofs_move_phase`, `dittofs_move_freeze_seconds`, `dittofs_move_gc_paused` | gauge, histogram, gauge |
 | namespace claim state (1 when `owned` by this installation) | `dittofs_namespace_owned` | gauge |
-| cuts refused by the gate's drain or ceiling bound | `dittofs_snapshot_gate_refused_total` | counter |
+| cuts refused by the gate's ceiling; consecutive skipped ticks per policy, a health condition at 3 | `dittofs_snapshot_gate_refused_total`, `dittofs_snapshot_policy_skipped_consecutive` | counter, gauge |
 | governance-lock overrides, labelled by principal; any value is an audit event | `dittofs_snapshot_lock_overrides_total` | counter |
 | claim reads naming this installation with a nonce it did not write, and starts on a copied disk; any value is an alert | `dittofs_namespace_claim_copy_total` | counter |
 | folder-lease actions refused by a lease number or a holder's own clock | `dittofs_backup_lease_fenced_total` | counter |

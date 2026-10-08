@@ -46,8 +46,10 @@ upload path, offers the dirty bytes of many files in one pass.
    fingerprint over the last 64 bytes picks each boundary — into about 160
    chunks between 64 KiB and 1 MiB, 256 KiB on average.
 2. **Name.** Each chunk is named by its **chunk ID**: a 32-byte BLAKE3 hash of
-   its bytes, keyed with the `builds` namespace's chunk-ID key, so someone who
-   reads the bucket cannot hash a file of their own and look for it.
+   its bytes, keyed with the `builds` namespace's chunk-ID key. Were `builds`
+   encrypting, someone who reads the bucket and can cause no write into it could
+   not hash a file of their own and look for it; it is not, so its chunk-ID key
+   sits in the clear beside its blocks and the key hides nothing there.
 3. **Pack.** The assembler takes the chunks file after file and closes a block
    each time it reaches the 4 MiB block target. About 100 MB becomes about 25
    blocks, so 25 uploads rather than 2,001 objects; object stores are slow on
@@ -107,17 +109,20 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
   quiet configuration change.
 - Every chunk is between Min and Max, except the last of a stretch that really
   ends. Max always ends a chunk, so repetitive data cannot become one huge
-  chunk. An all-zero chunk is a hole and is never stored.
+  chunk. An all-zero chunk is recorded as a zero ref and is never stored ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)).
 - A block holds whole chunks only, at most 1,024, and passes its target by at
   most one chunk.
 - A block name is minted once, for one put attempt, and put by no other.
 - A failed cut hands over no shortened chunk, and a retry produces the same
   chunks.
-- A chunk ID is keyed per namespace, so a bucket reader cannot confirm a file
-  by hashing it. Chunk lengths stay visible to anyone who can read the bucket.
-  An encrypting namespace also keys where boundaries fall, which hides a known
-  file's boundaries only from a reader who cannot get content of their choosing
-  into the namespace ([§6](#6.%20Boundaries%20are%20public)).
+- A chunk ID is keyed per namespace from the first write, so it never changes.
+  What that hides is scoped by [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys): in an encrypting namespace, a
+  bucket reader who can cause no write into it cannot confirm a file by hashing
+  it; in a non-encrypting one the key is in the clear and nothing is hidden.
+  An encrypting namespace also keys where boundaries fall and seals chunk
+  lengths in block headers, which hides a known file's boundaries only from a
+  reader who cannot get content of their choosing into the namespace
+  ([§6](#6.%20Boundaries%20are%20public)). A non-encrypting namespace cuts under the public, unkeyed table.
 
 ### How the rest is organised
 
@@ -491,7 +496,10 @@ a definition:
   bytes of BLAKE3's extendable output in key-derivation mode, context
   `dittofs gear table v1`, over the empty input.
 - **Keyed table** ([§6](#6.%20Boundaries%20are%20public)). The same 2,048 bytes, from BLAKE3's keyed mode under
-  the namespace's chunking key, over the ASCII input `dittofs chunking key v1`.
+  the namespace's chunking key, over the ASCII input `dittofs chunking key v1`. Only
+  an encrypting namespace has a chunking key ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)); every
+  other namespace cuts under the unkeyed table, and a cutter **MUST** refuse a
+  keyed table for one.
 - **Chunk ID** ([§4.1](#4.1%20A%20chunk)). BLAKE3's keyed mode under the namespace's chunk-ID key,
   32 bytes of output, over the chunk's bytes.
 
@@ -629,8 +637,8 @@ Three consequences, and an implementation **MUST NOT** treat any as incidental:
 - **Repetitive data does not dedup well, and cannot.** Whole-file-sized chunks
   only match other whole-file-sized chunks. This is inherent to any CDC scheme
   with a bounded window, not a defect in this one. Zeros are the exception that
-  costs nothing: an all-zero chunk is recorded as a hole and never stored
-  ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). The carver emits it like any other chunk; the engine decides.
+  costs nothing: an all-zero chunk is recorded as a zero ref, a ref that names no chunk,
+  and never stored ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). The carver emits it like any other chunk; the engine decides.
 - **Where the period is longer than the window, chunking becomes fixed-size at a
   multiple of that period**, never below `Min`. Sizes on structured data are set
   by the data's period, not by `Target`.
@@ -651,14 +659,18 @@ profile or a version number into the hash.
 
 **The key exists from the first release, for every namespace.** It is material of
 kind `chunk-id-key`, 32 bytes, drawn when the namespace is created, whether or not
-the namespace encrypts, held by the material provider like every key
-([RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) and named, like all material, by ID and fingerprint. It never
+the namespace encrypts, and named, like all material, by ID and fingerprint. How
+it is held is [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s key table: wrapped under a master key in an
+encrypting namespace, and in the clear beside the blocks in one that does not,
+so that a non-encrypting namespace never loses its data with a key. It never
 rotates: a chunk ID is a name, and rotating the key renames every chunk. Keyed
-mode costs what the plain hash costs. An unkeyed hash of plaintext would let
-anyone who reads a chunk record, a block header or an export confirm that a
-namespace holds a known file by hashing it, and changing the chunk ID after the
-first release would migrate every chunk record, header and export already
-written; so the choice is made now, while it costs nothing.
+mode costs what the plain hash costs. In an encrypting namespace an unkeyed hash
+of plaintext would let anyone who reads a chunk record, a block header or an
+export confirm that the namespace holds a known file by hashing it; changing the
+chunk ID after the first release would migrate every chunk record, header and
+export already written; so every namespace keys its IDs from the start, while
+it costs nothing. In a non-encrypting namespace the keyed ID claims nothing:
+its bodies are plaintext and its key is readable.
 
 The hash covers exactly the bytes handed to `emit` — the same bytes a later read
 has to reproduce. It **MUST** be computed over the chunk as cut, never over a
@@ -686,8 +698,9 @@ nonce drawn for one put attempt:
   the IDs of the material in use.
 - `h₁ … hₙ` are the 32-byte chunk IDs as the block header records them, in
   block order: the chunk IDs ([§4.1](#4.1%20A%20chunk)), or their sealed form when the namespace
-  encrypts ([RFC 5](rfc-5-transforms.md)). Neither is a value a bucket reader can compute from a
-  candidate file, so the name confirms nothing about one.
+  encrypts ([RFC 5](rfc-5-transforms.md)). In an encrypting namespace neither is a value a bucket
+  reader who can cause no write can compute from a candidate file, so the name
+  confirms nothing about one to that reader ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)).
 
 A **put attempt** is one decision to store one planned block: its chunks, their
 order and its encoding plan. A name **MUST NOT** be minted twice. Every retry
@@ -740,6 +753,14 @@ namespace's name.
 The scope **MUST NOT** change within a put attempt, or the attempt's retries would
 write under two names.
 
+**A plan is keyed under one namespace.** A chunk ID means something only under
+the chunk-ID key that computed it. A block plan, and the put intent recorded for
+it, name the namespace and the chunk-ID key ID its chunk IDs were computed
+under, and the intent step **MUST** refuse a plan whose namespace or key differs
+from the target store's ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)). Without it, a plan formed before a re-home's
+switch ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) could commit chunk IDs computed under the old namespace's
+key into the new one, where no read could ever match them.
+
 Names are minted per attempt ([§4.2](#4.2%20A%20block)), so two puts never share an object by
 name. What the scope decides is which chunks the dedup oracle may match: a chunk
 stored by one share is found by another only within one namespace.
@@ -763,8 +784,9 @@ orphans every existing object at once ([§4.2](#4.2%20A%20block)).
 > verify under another namespace's name, and adding dedup later changes no name.
 >
 > Chunk IDs are not deferred: they are keyed per namespace from the first
-> release ([§4.1](#4.1%20A%20chunk)), so a dedup index built later holds values no bucket reader
-> can compute from a candidate file, and re-adding dedup renames nothing.
+> release ([§4.1](#4.1%20A%20chunk)), so re-adding dedup renames nothing. In an encrypting
+> namespace, a dedup index built later holds values no bucket reader who can
+> cause no write can compute from a candidate file.
 
 ## 5. The block assembler
 
@@ -812,7 +834,7 @@ passes, and **MUST NOT** survive its pass. A lookup error carries the chunk
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
 | P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. A block falls short of the target only when P4's cap closed it or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
-| P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a hole, and no block carries it ([RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities)). |
+| P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a zero ref, and no block carries it ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). |
 | P4 | A block holds at most `N` chunks, where `N` is a constant of the block format version: 1,024 in this one. It bounds the header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), which short chunks next to holes would otherwise grow without limit. |
 | P5 | The target counts **carried** bytes. Adopted chunks and zero refs contribute nothing, or a mostly-deduplicated file yields blocks of a few kilobytes. |
 | P6 | A chunk repeated within one pending block is carried once and referenced each time: its refs and its bytes commit in one transaction. A chunk repeated across blocks is carried in each ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)). |
@@ -945,45 +967,51 @@ answer about their content.
 **How much this gives away: everything, for any file of more than a few chunks.**
 A chunk's length alone carries about as many bits as the spread of chunk sizes —
 some eighteen at a 256 KiB `Target` — so a run of three or four lengths already
-singles a file out. **Lengths are visible to every bucket reader, encrypted or
-not**: a block's header indexes each chunk body's offset and encoded length
+singles a file out. **In a non-encrypting namespace lengths are in every
+header**: a block's header indexes each chunk body's offset and encoded length
 ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), and encoding changes a length by a fixed or bounded amount, so the
-plaintext lengths can be read off to within it ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). The
-header also lists chunk IDs, but those are keyed ([§4.1](#4.1%20A%20chunk)): a bucket reader holding
-a candidate file cannot compute its IDs and look them up.
+plaintext lengths can be read off to within it. Its chunk IDs are keyed, but
+under a key in the clear beside the blocks ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so they hide
+nothing either. **In an encrypting namespace the header seals both** the IDs and
+each body's offset and length ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)); what a bucket reader still
+sees is each block's size, and a chunk's length wherever a log of ranged gets
+shows which range was read.
 
 **Without encryption, boundaries stay public**, and an implementation **MUST NOT**
 claim otherwise.
 
 **With encryption, boundaries are keyed.** When a namespace encrypts, its header
-IDs are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
+IDs and lengths are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
 derived from a **chunking key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so an observer without it cannot predict where
-a candidate file's boundaries fall, and so cannot match the lengths it reads to
-the file. It still reads every length:
+a candidate file's boundaries fall, and so cannot match the lengths it sees to
+the file. Which namespaces hold a chunking key, and how, is
+[RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s; this section restates none of it:
 
 - **Scope.** Keyed boundaries follow the namespace's encryption setting at
   creation: a namespace created encrypting derives a chunking key then, and one
   created without it never has one. Like every setting of [§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration), it is fixed for
   the namespace's content.
 - **Construction.** The key is material of kind `chunking-key`, one per
-  namespace for its life, held by the material provider like every key
-  ([RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)). The gear table is expanded from it under the label
+  encrypting namespace for its life, held as [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) states. The gear table is expanded from it under the label
   `dittofs chunking key v1`, distinct from every other derivation. Like all
   material it carries a **fingerprint** stored with its ID, so a later open that
   finds a different key under that ID, or an import naming another, is refused
-  instead of silently re-cutting; an export carries the key's ID and
-  fingerprint, never the key ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)).
+  instead of silently re-cutting; an export carries it wrapped, with its ID and
+  fingerprint ([RFC 12 §4.4](rfc-12-snapshots.md#4.4%20Key%20scope%20and%20material)).
 - it **MUST NOT** rotate with the data keys. Changing it re-cuts everything
   ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)); rotating data keys ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) re-encrypts and cuts nothing;
 - it costs no deduplication: chunks are compared within one namespace only
   ([§4.3](#4.3%20Key%20scope)), and every share of the namespace cuts under the same key;
-- what it leaves visible is block sizes, every chunk's length, and repetition.
-  Keying hides which file the lengths belong to; it does not hide the lengths.
+- what it leaves visible is block sizes, repetition, and a chunk's length
+  wherever a ranged read of it is seen. Keying hides which file the lengths
+  belong to; sealing the index hides them from the header, not from a request
+  log.
 
 **What the key protects against: passive observers only.** Recent work [5]
 recovers the keys of deployed keyed-chunking schemes, gear-table ones included,
-from the chunk lengths of content the attacker chose — and this design hands
-those lengths to every bucket reader. So anyone who can both read the bucket and
+from the chunk lengths of content the attacker chose. Sealing the index takes
+those lengths out of the header, but a reader of the service's request log, or
+one who sees which ranges are read, still recovers them. So anyone who can both read the bucket and
 get content of their choosing cut in the namespace can map the table: not only a
 writer of the namespace, but anyone who can cause a write into it, such as a
 sender whose mail lands in a profile container. The claim is scoped to an
@@ -999,7 +1027,7 @@ which files a namespace holds from anyone else.
 > call per candidate and re-cuts every namespace that adopts it.
 
 Randomising how blocks are assembled is not a mitigation: it changes object sizes
-but not the chunk lengths each header lists.
+but not the chunk lengths a ranged read shows.
 
 ## 7. Errors
 
@@ -1031,6 +1059,8 @@ produces the same chunks. A failed pass costs work and never correctness.
 | C7 | On an artificial stretch end, no byte after the last content-chosen boundary is emitted. |
 | C8 | A block name is minted once, for one put attempt, and never put by another. |
 | C9 | No chunk a namespace serves is longer than that namespace's `Max`, wherever it was cut. |
+| C10 | A non-encrypting namespace cuts under the unkeyed table and has no chunking key; an encrypting one cuts under its own chunking key. |
+| C11 | A plan's chunk IDs are computed under the chunk-ID key of the namespace the plan is put into; a plan keyed under another is refused before its put. |
 
 
 Two properties are missing because the shape of [§1.2](#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) makes them unbreakable: a
@@ -1052,6 +1082,8 @@ rows need no reader and no hash at all.
 | chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) mask comes from target | Build at several targets; assert the mask's bit count tracks the target, and that one hard-coded mask cannot satisfy two of them. |
 | chunker | [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) bad settings refused | Build with a `Target` that is not a power of two, one below the floor and one above the ceiling; assert each errors and nothing usable comes back. |
 | chunker | [§6](#6.%20Boundaries%20are%20public) keyed boundaries | Cut the same input under two chunking keys and under none; assert the boundaries differ between all three, the average stays within tolerance of `Target` under each, and the same key reproduces the same boundaries. |
+| consumer | C10 table follows encryption | Create one non-encrypting and one encrypting namespace: assert the first has no chunking key and its boundaries equal the unkeyed table's, and that building a cutter with a keyed table for it is refused; assert the second's boundaries are the keyed table's. A design that keys every namespace's boundaries fails the first half. |
+| consumer | C11 plan keyed under one namespace | Form a plan in namespace A, then hand it to namespace B's intent step, as a re-home switching mid-pass would; assert it is refused and nothing is put. |
 | chunker | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) warm-up equivalence | Assert boundaries are identical whether the fingerprint is warmed from the chunk start or over the last 64 bytes, across several profiles. |
 | chunker | [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) repetitive input still terminates | Chunk 64 MiB of zeros under the unkeyed table at every supported `Target`; assert every chunk is exactly `Max`. Chunk a 64-byte repeating pattern, keyed and unkeyed; assert the pass ends and no chunk exceeds `Max`. Without `Max` the search can fail forever and the whole file becomes one chunk. |
 | chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |

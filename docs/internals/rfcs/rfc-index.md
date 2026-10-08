@@ -67,7 +67,7 @@ graph LR
   R1["1 journal"]
   R2["2 carver"] --> R1
   R3["3 syncer"] --> R1 & R2 & R4 & R5
-  R4["4 remote tier"] --> R2
+  R4["4 remote tier"] --> R2 & R3 & R5 & R6 & R8 & R9 & R12 & R13
   R5["5 transforms"] --> R2 & R4
   R6["6 block metadata"] --> R2 & R3 & R4 & R5
   R7["7 namespace metadata"] --> R6 & R16
@@ -86,7 +86,7 @@ graph LR
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17.
+Cycles: RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17.
 
 ## Conventions
 
