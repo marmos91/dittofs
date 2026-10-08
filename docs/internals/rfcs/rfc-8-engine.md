@@ -1635,8 +1635,10 @@ Truncate down, deallocate, release and a clone's destination are **removals**
    `Removal(file, v)`, and checks and writes the file's fences. For a release it
    also re-checks the file's holders and deletes its namespace records and its
    pending release, aborting if an open has arrived ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)); writes a pending
-   release for each of the file's named streams; and deletes its FileData
-   ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)).
+   release for each of the file's named streams; and deletes its File record,
+   FileData fields included ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). Phase 1 writes no ref and drops
+   none, whatever the range's size: every ref over the range is dropped or
+   narrowed in phase 2 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)).
 4. Release the guard, `Settle(id, v)`, post `RemovalPending(file, v)` ([§6.1](#6.1%20The%20work%20queue)),
    and return.
 5. Phase 2, from the work queue: batches within the key budget `K` from the
@@ -1730,7 +1732,7 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   `NFS4ERR_INVAL`, `STATUS_INVALID_PARAMETER`): the destination's removal would
   mask the very source refs the adoption must read. A clone between disjoint
   extents of one file is allowed. A `CLONE` or duplicate-extents request longer
-  than `clone_max_len` ([RFC 13](rfc-13-configuration.md)) is refused with `ErrInvalid`, so a client
+  than `clone_max_len` ([RFC 13](rfc-13-configuration.md), default 1 GiB) is refused with `ErrInvalid`, so a client
   falls back to copying. A clone or copy whose destination's share does not list
   every namespace the source's share lists ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) **MUST** be refused
   with `ErrCrossNamespace` (`NFS4ERR_XDEV`, `STATUS_NOT_SUPPORTED`), so the
@@ -1798,8 +1800,9 @@ source extent is frozen for one chunk at a time and a writer of the source waits
 at most one chunk. The reply reports the bytes copied: at the caller's deadline
 the copy stops after its current chunk and answers a short count, which RFC 7862
 §15.2 allows (`wr_count` below the request), and the client continues from there.
-**Proposal:** 64 MiB chunks. `CLONE` and duplicate-extents stay one atomic clone,
-capped by `clone_max_len`.
+A chunk is the copy chunk setting's length ([RFC 13](rfc-13-configuration.md)), default 64 MiB. `CLONE`
+and duplicate-extents stay one atomic clone, capped by `clone_max_len`, default
+1 GiB.
 
 **Steps.**
 
@@ -2228,29 +2231,30 @@ per-operation metric carries a share label: one engine serves every share of its
 node, and at 10⁴ shares a share label multiplies every histogram by 10⁴
 ([RFC 16 §8.1](rfc-16-metadata-store.md#8.1%20Metrics)). Per-share figures — offload backlog, oldest unoffloaded age,
 health — are gauges exported for the shares a stated rule selects (the worst
-*n* by each figure), and every share's are readable through the management API.
+*n* by each figure), and every share's are readable through the management API. Metric names are shown without the
+deployment's prefix.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| dirty bytes, drain rate, time to drain ([§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)) | `dittofs_engine_dirty_bytes`, `dittofs_engine_drain_bytes_per_second`, `dittofs_engine_drain_seconds` | gauge |
-| age of the oldest unoffloaded extent the journal holds; alert past the share's bound | `dittofs_engine_oldest_unoffloaded_seconds` | gauge |
-| work-queue entries and events, labelled `event` ([§6.1](#6.1%20The%20work%20queue)) | `dittofs_engine_queue_entries`, `dittofs_engine_queue_events_total` | gauge, counter |
-| offload passes, labelled `result` ([§6.3](#6.3%20The%20offload%20pipeline)) | `dittofs_engine_offload_passes_total` | counter |
-| time in each pipeline state, and step failures and retries, labelled `state` | `dittofs_engine_pipeline_state_seconds`, `dittofs_engine_pipeline_retries_total` | histogram, counter |
-| attempts abandoned, and the intents the pipeline abandoned itself | `dittofs_engine_attempts_abandoned_total`, `dittofs_engine_intents_abandoned_total` | counter |
-| files backed off as failing ([§6.3](#6.3%20The%20offload%20pipeline), O6) | `dittofs_engine_failing_files` | gauge |
-| passes aborted as wholly removed; commits that found their intent gone | `dittofs_engine_passes_aborted_total`, `dittofs_engine_intent_missing_total` | counter |
-| busy time of each stage — carve, assemble, put, commit ([§15.4](#15.4%20Benchmarks)) | `dittofs_engine_stage_busy_ratio` | gauge |
-| dedup lookups, labelled `result` = `adopted`, `carried` or `error`; adoptions refused at commit ([§6.5](#6.5%20The%20dedup%20oracle)); exported once deduplication is added | `dittofs_engine_dedup_lookups_total`, `dittofs_engine_adoptions_refused_total` | counter |
-| stability points, the operations each committed, and group-commit splits ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) | `dittofs_engine_stability_points_total`, `dittofs_engine_pending_existence_ops`, `dittofs_engine_group_commit_splits_total` | counter, histogram, counter |
-| reads, labelled `class` = `journal`, `hole`, `remote`, `lost`, `corrupt` or `unavailable`; time to first byte ([§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)) | `dittofs_engine_reads_total`, `dittofs_engine_read_first_byte_seconds` | counter, histogram |
-| fetches, labelled `shape` = `chunks` or `block` ([§7.8](#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), and bytes fetched against bytes read | `dittofs_engine_fetches_total`, `dittofs_engine_fetch_bytes_total` | counter |
-| fills, labelled `result` = `done`, `declined` or `refused` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | `dittofs_engine_fills_total` | counter |
-| speculative bytes fetched, and those read before eviction ([§7.4](#7.4%20The%20speculator)) | `dittofs_engine_speculation_bytes_total`, `dittofs_engine_speculation_used_bytes_total` | counter |
-| re-resolutions after an absent object ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | `dittofs_engine_reresolves_total` | counter |
-| evictions and bytes freed; pacing delays; refusals ([§10](#10.%20Local%20space)) | `dittofs_engine_evicted_bytes_total`, `dittofs_engine_pacing_seconds`, `dittofs_engine_write_refusals_total` | counter, histogram, counter |
-| offloaded bits cleared by the consistency check ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) | `dittofs_engine_ledger_mismatches_total` | counter |
-| time waiting on engine-internal locks, labelled `area` (file state, share context table, work queue); not labelled by share ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | `dittofs_engine_lock_wait_seconds` | histogram |
+| dirty bytes, drain rate, time to drain ([§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)) | `engine_dirty_bytes`, `engine_drain_bytes_per_second`, `engine_drain_seconds` | gauge |
+| age of the oldest unoffloaded extent the journal holds; alert past the share's bound | `engine_oldest_unoffloaded_seconds` | gauge |
+| work-queue entries and events, labelled `event` ([§6.1](#6.1%20The%20work%20queue)) | `engine_queue_entries`, `engine_queue_events_total` | gauge, counter |
+| offload passes, labelled `result` ([§6.3](#6.3%20The%20offload%20pipeline)) | `engine_offload_passes_total` | counter |
+| time in each pipeline state, and step failures and retries, labelled `state` | `engine_pipeline_state_seconds`, `engine_pipeline_retries_total` | histogram, counter |
+| attempts abandoned, and the intents the pipeline abandoned itself | `engine_attempts_abandoned_total`, `engine_intents_abandoned_total` | counter |
+| files backed off as failing ([§6.3](#6.3%20The%20offload%20pipeline), O6) | `engine_failing_files` | gauge |
+| passes aborted as wholly removed; commits that found their intent gone | `engine_passes_aborted_total`, `engine_intent_missing_total` | counter |
+| busy time of each stage — carve, assemble, put, commit ([§15.4](#15.4%20Benchmarks)) | `engine_stage_busy_ratio` | gauge |
+| dedup lookups, labelled `result` = `adopted`, `carried` or `error`; adoptions refused at commit ([§6.5](#6.5%20The%20dedup%20oracle)); exported once deduplication is added | `engine_dedup_lookups_total`, `engine_adoptions_refused_total` | counter |
+| stability points, the operations each committed, and group-commit splits ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) | `engine_stability_points_total`, `engine_pending_existence_ops`, `engine_group_commit_splits_total` | counter, histogram, counter |
+| reads, labelled `class` = `journal`, `hole`, `remote`, `lost`, `corrupt` or `unavailable`; time to first byte ([§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)) | `engine_reads_total`, `engine_read_first_byte_seconds` | counter, histogram |
+| fetches, labelled `shape` = `chunks` or `block` ([§7.8](#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), and bytes fetched against bytes read | `engine_fetches_total`, `engine_fetch_bytes_total` | counter |
+| fills, labelled `result` = `done`, `declined` or `refused` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | `engine_fills_total` | counter |
+| speculative bytes fetched, and those read before eviction ([§7.4](#7.4%20The%20speculator)) | `engine_speculation_bytes_total`, `engine_speculation_used_bytes_total` | counter |
+| re-resolutions after an absent object ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | `engine_reresolves_total` | counter |
+| evictions and bytes freed; pacing delays; refusals ([§10](#10.%20Local%20space)) | `engine_evicted_bytes_total`, `engine_pacing_seconds`, `engine_write_refusals_total` | counter, histogram, counter |
+| offloaded bits cleared by the consistency check ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) | `engine_ledger_mismatches_total` | counter |
+| time waiting on engine-internal locks, labelled `area` (file state, share context table, work queue); not labelled by share ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | `engine_lock_wait_seconds` | histogram |
 
 A **Lost** or corrupt read logs the file and extent at `Error`, once per extent.
 A share entering or leaving an offload health condition logs at `Warn`, and so
@@ -2331,7 +2335,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) pacing law | Hold *M* half-way between *S* and *L* at a measured drain rate *r*; write *n* bytes. Assert the delay is *n* / 2*r* within 10 %, and zero below *S*. |
 | [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) group commit | Run 64 writers with `fsync` while `chmod` hits random files of the same journal. Assert no `fsync` waits on a conflict of another file beyond the split bound. Make one file's File record undecodable: assert the other files' overwrite flushes succeed, that file alone answers `ErrDelay`, and a health condition names it. |
 | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context) shared journal | Two shares on one device journal; fill one. Assert the other's writes are not refused. |
-| [§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck) no cross-share slowdown | Run N shares with M writers each on one node; saturate one share with writes and cold reads. Assert every other share's p99 write and read latency stays within its unloaded baseline's bound, and `dittofs_engine_lock_wait_seconds` shows no area whose wait grows with the loaded share's rate. |
+| [§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck) no cross-share slowdown | Run N shares with M writers each on one node; saturate one share with writes and cold reads. Assert every other share's p99 write and read latency stays within its unloaded baseline's bound, and `engine_lock_wait_seconds` shows no area whose wait grows with the loaded share's rate. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join | Close with an offload parked in a stalled put. Assert no component is closed while the pass runs. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) self-fence threshold | Stall the store for 10 s: assert writes are still acknowledged. Stall it for 31 s: assert writes and stability points answer `ErrDelay`, reads are served, a condition names the store, and once a write commits, writes resume with the verifier unchanged. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) self-fence on an erroring store | Make every write transaction fail at once while reads succeed: assert the engine fences after 30 s and resumes once a write commits. Leave the node idle with no write for 60 s: assert it does not fence. A trigger on "no transaction completed" never fires on the first. |

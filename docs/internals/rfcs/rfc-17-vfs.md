@@ -808,8 +808,9 @@ it fails against handles nobody is using.
 
 **The service runs every release.** It calls the engine's `Release`
 ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) at the file's primary, at three moments: when `Unlink` or `Rename`
-reports a file left with no entry and no open holds it; at the last close of a
-file with no entry, after deleting the durable open record; and in recovery, for
+reports a file left with no entry and no open holds it; when open state's `Close`
+reports the last close of a file with no entry, having deleted its durable open
+record ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)) — open state reports, the service releases; and in recovery, for
 every pending release, once the shard's grace has ended. The release transaction
 re-checks its holders itself ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)), so a release begun on a stale view aborts
 and loses nothing. A delete on close runs as the principal of the open that set
@@ -1002,13 +1003,15 @@ at one point in the source's history. The two kinds differ in atomicity:
 
 ## 7. Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| How fast is each operation, per protocol? | `dittofs_vfs_op_seconds{op, protocol, outcome}` | histogram |
-| How often are clients told to retry? | `dittofs_vfs_delayed_total{op, reason}` | counter |
-| How often does quota refuse, and how much is reserved? | `dittofs_vfs_quota_refusals_total{kind}`, `dittofs_vfs_quota_reserved_bytes` | counter, gauge |
-| Are callbacks failing? | `dittofs_vfs_callback_errors_total{kind}` | counter |
-| Are events being lost? | `dittofs_vfs_events_dropped_total{stream}` | counter |
+| How fast is each operation, per protocol? | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| How often are clients told to retry? | `vfs_delayed_total{op, reason}` | counter |
+| How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{kind}`, `vfs_quota_reserved_bytes` | counter, gauge |
+| Are callbacks failing? | `vfs_callback_errors_total{kind}` | counter |
+| Are events being lost? | `vfs_events_dropped_total{stream}` | counter |
 
 Operation latency and quota metrics are owned here and nowhere else.
 Forwarding and epoch refusals are RFC 15's; recalls are RFC 14's.

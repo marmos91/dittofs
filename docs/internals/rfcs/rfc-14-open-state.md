@@ -1362,9 +1362,15 @@ An open is the second holder of a file ([RFC 7 §4.2](rfc-7-namespace-metadata.m
 open file with no entry **MUST**, in the transaction that removes the entry, make
 the open durable; the file's pending release ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) is written in the
 same transaction and names no holders — the durable open records are the only
-list of them. The last close releases the file. Held only in
-one process past that point, another node could release a file a client still
-has open, drop its refs, and let sweep delete its content.
+list of them. When the entry is in another shard, the file's primary makes the
+opens durable while it prepares that unlink ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)). An open of a file
+that already has no entry, by handle, writes its durable open record in its own
+transaction and guards the File record there
+([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)). The last close of a file with no entry deletes its durable
+open record and reports the file to the filesystem service, which runs the
+release ([RFC 17 §5.3](rfc-17-vfs.md#5.3%20Open%20and%20close)); open state never releases a file itself. Held
+only in one process past the unlink, an open would let another node release a
+file a client still has open, drop its refs, and let sweep delete its content.
 
 Opening and closing a linked file **MUST NOT** write a record for the open
 itself unless the open is persistent ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens)). The only other write an open may
@@ -1517,7 +1523,7 @@ type OpenState interface {
 	Disconnect(ctx context.Context, c ClientID) error                                                // closes volatile opens, times the rest (§8.1)
 	SetDisposition(ctx context.Context, c ClientID, o OpenID, delete bool) error                   // §9.4
 	SuspendTimes(ctx context.Context, c ClientID, o OpenID, suspend, resume TimeMask) error         // §2.2
-	Close(ctx context.Context, c ClientID, o OpenID) error // the last close may unlink (§9.4) and release (§9.1)
+	Close(ctx context.Context, c ClientID, o OpenID) (orphan bool, err error) // the last close may unlink (§9.4); orphan reports a file left with no entry and no open, for the filesystem service to release (§9.1)
 	Flushed(ctx context.Context, c ClientID, o OpenID, loss uint64) error // SMB FLUSH: ErrLost once when loss, the file's loss sequence, is above the open's LossSeen (§8.1)
 
 	// Byte-range locks. o is zero for an NLM lock (§2.3); seq is SMB's lock
@@ -1677,7 +1683,7 @@ index's tiers.
 | [§9.2](#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends) new primary | Open a file on one primary, move the shard, unlink through the new primary. Assert no release before grace ends. |
 | [§9.4](#9.4%20Delete%20on%20close) delete pending | Open a file twice over SMB, the first with delete-on-close; close the first. Assert the name still resolves, a third open through each protocol and a rename are refused `ErrDeletePending`; close the second and assert the name is gone and the file released. Repeat with a second hard link: assert only the opened name goes. |
 | [§9.4](#9.4%20Delete%20on%20close) persistent | Set delete pending on a file held by a persistent open, fail the shard over, reconnect. Assert a new open is refused and the last close removes the name. |
-| [§7](#7.%20Conflicts%20across%20protocols) remove against deny-delete | Hold an SMB open without share-delete; `REMOVE` the name over NFS. Assert `ErrShareViolation`. Reopen sharing delete, `REMOVE` again: assert the name is gone, the SMB open still reads, and its close releases the file. |
+| [§7](#7.%20Conflicts%20across%20protocols) remove against deny-delete | Hold an SMB open without share-delete; `REMOVE` the name over NFS. Assert `ErrShareViolation`. Reopen sharing delete, `REMOVE` again: assert the name is gone, the SMB open still reads, and after its close the file is released. |
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) reconnect matching | Disconnect a durable v2 open; reconnect with its FileId but each of another client GUID, another principal, another create GUID, another lease key. Assert each refused, and the exact match accepted. |
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) timeout | Disconnect a durable open holding a deny-write; open for write from another client before and after `Timeout`. Assert refused, then granted. |
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) create replay | Send a `CREATE` with a create GUID, drop the reply, replay it. Assert one open exists and the replay returns its `OpenID`. |
@@ -1741,19 +1747,21 @@ index's tiers.
 
 ## 14. Observability
 
+Metric names are shown without the deployment's prefix.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| state held, by kind | `dittofs_openstate_held{kind=client\|open\|lock\|grant\|watch\|layout\|copy\|delete_pending}` | gauge |
-| grants offered and declined | `dittofs_openstate_grants_total{result}` | counter |
-| recall time | `dittofs_openstate_recall_seconds` | histogram |
-| recalls revoked at the deadline | `dittofs_openstate_recalls_revoked_total` | counter |
-| conflicts refused, by rule | `dittofs_openstate_conflicts_total{rule}` | counter |
-| shards in grace | `dittofs_openstate_grace_shards` | gauge |
-| grace periods ended, by `reason` = `complete` or `timeout` | `dittofs_openstate_grace_ended_total{reason}` | counter |
-| requests answered `ErrDelay` while a recall is outstanding | `dittofs_openstate_delays_total` | counter |
-| layouts recalled on a primary change | `dittofs_openstate_layout_recalls_total` | counter |
-| reclaims accepted and refused | `dittofs_openstate_reclaims_total{result}` | counter |
-| leases expired | `dittofs_openstate_expired_total` | counter |
+| state held, by kind | `openstate_held{kind=client\|open\|lock\|grant\|watch\|layout\|copy\|delete_pending}` | gauge |
+| grants offered and declined | `openstate_grants_total{result}` | counter |
+| recall time | `openstate_recall_seconds` | histogram |
+| recalls revoked at the deadline | `openstate_recalls_revoked_total` | counter |
+| conflicts refused, by rule | `openstate_conflicts_total{rule}` | counter |
+| shards in grace | `openstate_grace_shards` | gauge |
+| grace periods ended, by `reason` = `complete` or `timeout` | `openstate_grace_ended_total{reason}` | counter |
+| requests answered `ErrDelay` while a recall is outstanding | `openstate_delays_total` | counter |
+| layouts recalled on a primary change | `openstate_layout_recalls_total` | counter |
+| reclaims accepted and refused | `openstate_reclaims_total{result}` | counter |
+| leases expired | `openstate_expired_total` | counter |
 
 Recall, grant, grace and open-state metrics are defined here only; other RFCs
 link to this table. No share or client label. A revoked recall and an expired lease log at `Warn`

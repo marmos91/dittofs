@@ -958,22 +958,22 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok` or the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set)) | `dittofs_remote_requests_total` | counter |
-| time per call, by `op` | `dittofs_remote_request_seconds` | histogram |
-| bytes moved, by `op` | `dittofs_remote_bytes_total` | counter |
-| connections opened; against requests, how well the pool reuses them ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `dittofs_remote_connections_opened_total` | counter |
-| entries under the block namespace that are not blocks ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | `dittofs_remote_list_foreign_total` | counter |
-| the last capability check, per feature: 1 if present ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | `dittofs_remote_capability` | gauge |
-| chunks the codec returned verified | `dittofs_codec_chunks_verified_total` | counter |
-| blocks encoded with a measuring pass ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); against blocks encoded, how often a put encodes twice | `dittofs_codec_measuring_passes_total` | counter |
-| chunks that failed verification, labelled `kind` = `hash`, `name`, `version`, `malformed`. Any of these is an alert | `dittofs_codec_verify_failures_total` | counter |
-| encode and decode time per block, by direction | `dittofs_codec_seconds` | histogram |
+| calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok` or the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set)) | `remote_requests_total` | counter |
+| time per call, by `op` | `remote_request_seconds` | histogram |
+| bytes moved, by `op` | `remote_bytes_total` | counter |
+| connections opened; against requests, how well the pool reuses them ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `remote_connections_opened_total` | counter |
+| entries under the block namespace that are not blocks ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | `remote_list_foreign_total` | counter |
+| the last capability check, per feature: 1 if present ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | `remote_capability` | gauge |
+| chunks the codec returned verified | `codec_chunks_verified_total` | counter |
+| blocks encoded with a measuring pass ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); against blocks encoded, how often a put encodes twice | `codec_measuring_passes_total` | counter |
+| chunks that failed verification, labelled `kind` = `hash`, `name`, `version`, `malformed`. Any of these is an alert | `codec_verify_failures_total` | counter |
+| encode and decode time per block, by direction | `codec_seconds` | histogram |
 
 `op` also takes `recheck`, `put_control`, `get_control`, `put_version`,
 `get_version`, `retention`, `extend_retention`, `put_object`, `get_object`,
 `list_objects` and `delete_objects`, and an `ErrDenied` result is labelled with
 its cause; a drifted `Recheck`
-sets the drifted setting's `dittofs_remote_capability` to 0. The gauge also
+sets the drifted setting's `remote_capability` to 0. The gauge also
 carries `conditional_put`, whether the service honoured one at the last check
 ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); it is reported, and no rule reads it.
 

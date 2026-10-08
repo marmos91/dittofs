@@ -263,7 +263,7 @@ journal, offload, ref, chunk, block, cut and snapshot are defined once, in
 | **snapshot hold** | the journal keeping content the cut sees until it is offloaded; its **hold mark** is, per file, the version the file's existence had committed up to at the cut ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) |
 | **hold record** | the metadata-store record, one per shard, saying that a shard's journals still hold content of cut *k* not yet offloaded ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) |
 | **use record** | a durable record that a clone, restore, catalog backup or move is reading a snapshot, which blocks its deletion ([§3.2](#3.2%20A%20backup%20holds%20its%20snapshot)) |
-| **change sequence** | a value every transaction stamps on each record it writes under a share's prefixes, or its namespace's content-addressed ones, ordered like the commits; a move's delta is the records stamped above the base's ([§4.2](#4.2%20The%20move%2C%20step%20by%20step)) |
+| **change sequence** | the commit timestamp the metadata store keeps with each key version a transaction writes under a share's prefixes, or its namespace's content-addressed ones, ordered like the commits and returned by a scan; no record holds it in its value ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)); a move's delta is the records stamped above the base's ([§4.2](#4.2%20The%20move%2C%20step%20by%20step)) |
 | **lock** | an expiry time before which a snapshot cannot be deleted by anyone ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)) |
 | **export**, **import** | a self-describing stream of metadata records ([§5](#5.%20The%20export%20format)), and building records from one, staged and published at once |
 | **claim** | the control object in a namespace's folder naming the one installation that may write and collect there ([§4.1](#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
@@ -430,8 +430,8 @@ In the common case `died` is the current *k*, and the test is `born < klatest`.
 When `died` is older — a held version offloaded late ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)), a removal
 batch — the transaction reads the `LiveCut` records in `(born, died]`. Either
 way a transaction that moves a version to history **MUST** read the `LiveCut`
-record that justifies the move — `klatest`'s, or the one it found in the
-interval — with conflict tracking, retesting against the live cuts if it is
+record that justifies the move — `klatest`'s, or `SubCut`'s newest covering
+live cut, or one found in the interval — with conflict tracking, retesting against the live cuts if it is
 already gone, so a deletion that removes that cut
 ([§2.8](#2.8%20Deleting)) conflicts with it and one of the two retries: a history version
 never lands behind a deletion's walk with no live cut to see it. The in-place
@@ -997,7 +997,9 @@ no walk visits: live cuts {5, 9} deleted together, the deletion of 9 sets
    finds `deleting` set and waits, and pruning defers its snapshot. A use record
    taken concurrently conflicts with it on the snapshot record, and a transaction
    moving a version to history against *k* conflicts with it on `LiveCut(share, k)`
-   ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). Each primary releases its journal hold for *k*, keeping what
+   ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). The cut gate orders only reads of `Cut(share)`; it does not
+   order a history move against a deletion — the tracked `LiveCut` read does.
+   Each primary releases its journal hold for *k*, keeping what
    another live cut's hold still covers.
 2. Batches walk the died index from *k*, in each shard the cut covers. Each batch, in its transaction, reads the
    live cuts, stops at the next one above its cursor, and drops a version only if
@@ -1403,7 +1405,7 @@ Restore creates a new share. There are two sources:
     blocks. While paused, the namespace deletes, relocates and collects
     nothing: an import of one share never deletes a block
     another share needs. The pause costs the space those deletes would have
-    freed, and is reported ([§9](#9.%20Observability), `dittofs_move_gc_paused`).
+    freed, and is reported ([§9](#9.%20Observability), `move_gc_paused`).
 
 **Losing the metadata store is recovered this way, and only this way.** On a
 single node the embedded metadata store goes with its host
@@ -1479,6 +1481,7 @@ namespace's folder is gone. Restoring from them always makes a new namespace
   exports/<namespace>/<backup>/export      the export
   exports/<namespace>/<backup>/state       its state object
   progress/<namespace>/<backup>/<batch>    blocks a running copy has stored
+  keys/<namespace>/keys                    the namespace's key records (`ObjKeys`, RFC 4)
   blocks/<namespace>/                      the block folder: one store, this its prefix
     blocks/<block name>                    a block, byte for byte as the namespace stored it
 ```
@@ -2706,7 +2709,8 @@ What other components gain:
   successor; the move to history, or the drop, tested against the live cuts; a
   covering lookup and listings at a cut; the died index and the batched history
   drop of [§2.8](#2.8%20Deleting); history moves that read their `LiveCut` with conflict
-  tracking; the per-share and per-namespace change sequence; use records with
+  tracking; the change sequence a scan returns with each key, the commit
+  timestamp ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)); use records with
   deadlines, and locks; staged, publishable imports.
 - **The journal** ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)): holds, their marks and their release;
   the cut of each existence commit kept with the versions it covered; a version
@@ -2751,8 +2755,8 @@ What other components gain:
 
 Snapshot policies, locks, backup locations and moves are control-plane records,
 set through the API ([RFC 13 §2.1](rfc-13-configuration.md#2.1%20The%20control%20plane%20is%20the%20source)) like every other record, with the scope and
-class [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) gives each: `snapshots.hold_bound` and
-`snapshots.reserve` per share; `snapshots.hold_journal_fraction`,
+class [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) gives each: `snapshots.directory`, `snapshots.hold_bound`
+and `snapshots.reserve` per share; `snapshots.hold_journal_fraction`,
 `snapshots.gate_max`, `snapshots.cut_deadline`, `snapshots.lock_max`, `migration.*`, `backups.copy_rate`
 and `backups.max_copy_time` per installation; each backup location its own
 installation-scoped record ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)), which a policy names. The shape below
@@ -2761,8 +2765,6 @@ is how a provisioning file declares them
 
 ```yaml
 snapshots:
-  directory: .snapshot          # the browse directory (§2.5)
-  hold_bound: 64GiB             # held bytes per share before a cut is refused (§2.4)
   hold_journal_fraction: 0.25   # held share of a journal's capacity, all shares (§2.4)
   gate_max: 1s                  # longest a gate stays closed, whatever the coordinator does (§2.3)
   cut_deadline: 5s              # a cut not committed this long after its announce is aborted (§2.3)
@@ -2789,6 +2791,8 @@ shares:
   photos:
     namespace: photos           # its own, by default (§2.1)
     snapshots:
+      directory: .snapshot      # the browse directory (§2.5)
+      hold_bound: 64GiB         # held bytes of this share before a cut is refused (§2.4)
       reserve: 2TiB             # history bytes before new cuts are refused (§2.9); default reserve_fraction × live bytes
       policy:
         every: 1h
@@ -3045,33 +3049,35 @@ Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)); the
 
 ## 9. Observability
 
+Metric names are shown without the deployment's prefix, which the exporter adds.
+
 | Answers | Metric | Type |
 | --- | --- | --- |
-| snapshot outcomes, labelled `result` = `complete`, `hold_backlog`, `reserve`, `aborted`, `failed`, and `kind` = `share`, `subtree` | `dittofs_snapshot_total` | counter |
-| cut gate held, per shard | `dittofs_snapshot_gate_seconds` | histogram |
-| held bytes not yet offloaded, per share and per journal, and time from cut to `complete` | `dittofs_snapshot_held_bytes`, `dittofs_snapshot_complete_seconds` | gauge, histogram |
-| history bytes per share; history refs and records; those dropped by deletion | `dittofs_snapshot_history_bytes`, `dittofs_snapshot_history_refs`, `dittofs_snapshot_history_records`, `dittofs_snapshot_history_dropped_total` | gauge, gauge, gauge, counter |
-| policy ticks, labelled `result` = `taken`, `skipped`, `pruned`, `locked` | `dittofs_snapshot_policy_total` | counter |
-| deletions refused or deferred, labelled `reason` = `locked`, `held`, `busy` (another deletion of the share running), `moving` | `dittofs_snapshot_delete_refused_total` | counter |
-| use records released at their deadline, labelled `reader` = `backup`, `clone`, `restore` | `dittofs_snapshot_use_abandoned_total` | counter |
-| cross-shard transactions that released their admissions at a closed gate | `dittofs_snapshot_gate_readmissions_total` | counter |
-| history moves retried on a conflict with a deletion's `LiveCut` | `dittofs_snapshot_history_conflicts_total` | counter |
-| age of the newest complete backup per share, labelled `kind`; the alert for a policy that stopped | `dittofs_backup_newest_age_seconds` | gauge |
-| moves of files refused because a subtree snapshot covers the shard | `dittofs_snapshot_subtree_move_refused_total` | counter |
-| copying backups' blocks, labelled `result` = `copied`, `reused`, `reresolved`; bytes put | `dittofs_backup_copy_blocks_total`, `dittofs_backup_copy_bytes_total` | counter, counter |
-| blocks and bytes held per block folder; blocks swept; sweeps stopped by an unreadable export, an alert | `dittofs_backup_folder_blocks`, `dittofs_backup_folder_bytes`, `dittofs_backup_swept_total`, `dittofs_backup_sweep_refused_total` | gauge, gauge, counter, counter |
-| verifications, labelled `result` = `ok`, `damaged` | `dittofs_backup_verify_total` | counter |
-| re-home progress per share: refs left at the old generation, bytes copied, passes | `dittofs_rehome_old_refs`, `dittofs_rehome_bytes_total`, `dittofs_rehome_passes_total` | gauge, counter, counter |
-| export and import records and bytes, labelled `kind` | `dittofs_export_records_total`, `dittofs_import_records_total` | counter |
-| import refusals, labelled `reason` = `corrupt`, `material`, `scope`, `fileid`, `claim`, `hint`, `principal` | `dittofs_import_refused_total` | counter |
-| move phase per namespace (`preseed`, `freeze`, `released`, none), freeze duration, and whether the GC pause record is present | `dittofs_move_phase`, `dittofs_move_freeze_seconds`, `dittofs_move_gc_paused` | gauge, histogram, gauge |
-| namespace claim state (1 when `owned` by this installation) | `dittofs_namespace_owned` | gauge |
-| cuts refused by the gate's ceiling; consecutive skipped ticks per policy, a health condition at 3 | `dittofs_snapshot_gate_refused_total`, `dittofs_snapshot_policy_skipped_consecutive` | counter, gauge |
-| governance-lock overrides, labelled by principal; any value is an audit event | `dittofs_snapshot_lock_overrides_total` | counter |
-| claim reads naming this installation with a nonce it did not write, and starts on a copied disk; any value is an alert | `dittofs_namespace_claim_copy_total` | counter |
-| folder-lease actions refused by a lease number or a holder's own clock | `dittofs_backup_lease_fenced_total` | counter |
-| immutable versions extended at copy completion or for the last good backup | `dittofs_backup_retention_extended_total` | counter |
-| GC passes stopped by the claim check or its fence; any nonzero value is an alert | `dittofs_gc_claim_refusals_total` | counter |
+| snapshot outcomes, labelled `result` = `complete`, `hold_backlog`, `reserve`, `aborted`, `failed`, and `kind` = `share`, `subtree` | `snapshot_total` | counter |
+| cut gate held, per shard | `snapshot_gate_seconds` | histogram |
+| held bytes not yet offloaded, per share and per journal, and time from cut to `complete` | `snapshot_held_bytes`, `snapshot_complete_seconds` | gauge, histogram |
+| history bytes per share; history refs and records; those dropped by deletion | `snapshot_history_bytes`, `snapshot_history_refs`, `snapshot_history_records`, `snapshot_history_dropped_total` | gauge, gauge, gauge, counter |
+| policy ticks, labelled `result` = `taken`, `skipped`, `pruned`, `locked` | `snapshot_policy_total` | counter |
+| deletions refused or deferred, labelled `reason` = `locked`, `held`, `busy` (another deletion of the share running), `moving` | `snapshot_delete_refused_total` | counter |
+| use records released at their deadline, labelled `reader` = `backup`, `clone`, `restore` | `snapshot_use_abandoned_total` | counter |
+| cross-shard transactions that released their admissions at a closed gate | `snapshot_gate_readmissions_total` | counter |
+| history moves retried on a conflict with a deletion's `LiveCut` | `snapshot_history_conflicts_total` | counter |
+| age of the newest complete backup per share, labelled `kind`; the alert for a policy that stopped | `backup_newest_age_seconds` | gauge |
+| moves of files refused because a subtree snapshot covers the shard | `snapshot_subtree_move_refused_total` | counter |
+| copying backups' blocks, labelled `result` = `copied`, `reused`, `reresolved`; bytes put | `backup_copy_blocks_total`, `backup_copy_bytes_total` | counter, counter |
+| blocks and bytes held per block folder; blocks swept; sweeps stopped by an unreadable export, an alert | `backup_folder_blocks`, `backup_folder_bytes`, `backup_swept_total`, `backup_sweep_refused_total` | gauge, gauge, counter, counter |
+| verifications, labelled `result` = `ok`, `damaged` | `backup_verify_total` | counter |
+| re-home progress per share: refs left at the old generation, bytes copied, passes | `rehome_old_refs`, `rehome_bytes_total`, `rehome_passes_total` | gauge, counter, counter |
+| export and import records and bytes, labelled `kind` | `export_records_total`, `import_records_total` | counter |
+| import refusals, labelled `reason` = `corrupt`, `material`, `scope`, `fileid`, `claim`, `hint`, `principal` | `import_refused_total` | counter |
+| move phase per namespace (`preseed`, `freeze`, `released`, none), freeze duration, and whether the GC pause record is present | `move_phase`, `move_freeze_seconds`, `move_gc_paused` | gauge, histogram, gauge |
+| namespace claim state (1 when `owned` by this installation) | `namespace_owned` | gauge |
+| cuts refused by the gate's ceiling; consecutive skipped ticks per policy, a health condition at 3 | `snapshot_gate_refused_total`, `snapshot_policy_skipped_consecutive` | counter, gauge |
+| governance-lock overrides, labelled by principal; any value is an audit event | `snapshot_lock_overrides_total` | counter |
+| claim reads naming this installation with a nonce it did not write, and starts on a copied disk; any value is an alert | `namespace_claim_copy_total` | counter |
+| folder-lease actions refused by a lease number or a holder's own clock | `backup_lease_fenced_total` | counter |
+| immutable versions extended at copy completion or for the last good backup | `backup_retention_extended_total` | counter |
+| GC passes stopped by the claim check or its fence; any nonzero value is an alert | `gc_claim_refusals_total` | counter |
 
 Logs: each cut, completion, abort, move step and publish logs at `Info` with share,
 namespace and snapshot or export digest. A refused cut, a failed snapshot, a move's

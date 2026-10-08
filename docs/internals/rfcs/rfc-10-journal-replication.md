@@ -1210,22 +1210,24 @@ Each invariant is stated where its rule lives; the model checks them as properti
 
 ## 14. Observability
 
+Metric names are shown without the deployment's prefix.
+
 Every metric is labelled by shard where it is per shard, and by share.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| committed-point lag: time between the newest assigned version and the committed point | `dittofs_replication_committed_lag_seconds` | gauge |
-| time replication adds to an acknowledgement | `dittofs_replication_ack_seconds` | histogram |
-| replicas per shard, labelled `learner`; below the floor raises a health condition | `dittofs_replication_replicas` | gauge |
-| under-replicated shards, and shards waiting for the repair scheduler | `dittofs_replication_under_replicated`, `dittofs_replication_repair_queue` | gauge |
-| refusals, labelled `reason` = `stale_epoch`, `committed`, `divergent`, `not_listed`, `amnesiac` or `pressure` | `dittofs_replication_refusals_total` | counter |
-| bytes taken by `Apply`, labelled `outcome` = `applied` or `older` | `dittofs_journal_applied_bytes_total` | counter |
-| record changes, labelled `kind` = `takeover`, `handover`, `remove`, `join` or `covered`, and `outcome` = `ok`, `stale` or `unknown` | `dittofs_replication_record_changes_total` | counter |
-| takeover time, lease expiry to writable | `dittofs_replication_takeover_seconds` | histogram |
-| seal duration, and the bytes it re-issued | `dittofs_replication_seal_seconds`, `dittofs_replication_seal_bytes_total` | histogram, counter |
-| join to learner flag cleared, and the tail bytes, labelled `by` = `copy` or `offload` | `dittofs_replication_tail_seconds`, `dittofs_replication_tail_bytes_total` | histogram, counter |
-| reads on nodes other than the primary, labelled `result` = `served` or `forwarded` | `dittofs_replication_remote_reads_total` | counter |
-| node clock offset from store time; self-fences, labelled `reason` = `lease`, `unreachable` or `clock` | `dittofs_node_clock_offset_seconds`, `dittofs_node_self_fences_total` | gauge, counter |
+| committed-point lag: time between the newest assigned version and the committed point | `replication_committed_lag_seconds` | gauge |
+| time replication adds to an acknowledgement | `replication_ack_seconds` | histogram |
+| replicas per shard, labelled `learner`; below the floor raises a health condition | `replication_replicas` | gauge |
+| under-replicated shards, and shards waiting for the repair scheduler | `replication_under_replicated`, `replication_repair_queue` | gauge |
+| refusals, labelled `reason` = `stale_epoch`, `committed`, `divergent`, `not_listed`, `amnesiac` or `pressure` | `replication_refusals_total` | counter |
+| bytes taken by `Apply`, labelled `outcome` = `applied` or `older` | `journal_applied_bytes_total` | counter |
+| record changes, labelled `kind` = `takeover`, `handover`, `remove`, `join` or `covered`, and `outcome` = `ok`, `stale` or `unknown` | `replication_record_changes_total` | counter |
+| takeover time, lease expiry to writable | `replication_takeover_seconds` | histogram |
+| seal duration, and the bytes it re-issued | `replication_seal_seconds`, `replication_seal_bytes_total` | histogram, counter |
+| join to learner flag cleared, and the tail bytes, labelled `by` = `copy` or `offload` | `replication_tail_seconds`, `replication_tail_bytes_total` | histogram, counter |
+| reads on nodes other than the primary, labelled `result` = `served` or `forwarded` | `replication_remote_reads_total` | counter |
+| node clock offset from store time; self-fences, labelled `reason` = `lease`, `unreachable` or `clock` | `node_clock_offset_seconds`, `node_self_fences_total` | gauge, counter |
 
 Logs: every record change at `Info`, with shard, old and new epoch and reason. A
 node that self-fences logs at `Error`. Stale-epoch refusals log at `Warn`,

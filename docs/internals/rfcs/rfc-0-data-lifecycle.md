@@ -386,7 +386,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **entity** | a plain value a metadata read returns, such as a File, an Entry or a Share; one entity is not one stored record | [RFC 16 §2.1](rfc-16-metadata-store.md#2.1%20The%20entity%20map) |
 | **record** (metadata) | one key and its value in the KV. Not a journal record | [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed) |
 | **guard** | a transaction's claim on a key it does not write; it conflicts with a concurrent write of that key, never with another guard | [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend) |
-| **file** | a namespace entry with an identity, attributes and an ordered list of chunk refs. Its identity is a random ID, never reused, that survives rename | [§2.1](#2.1%20Entities), [RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File) |
+| **file** | an object with an identity and attributes, named by zero or more entries; its content is the refs block metadata keeps against its ID, not a list it holds. Its identity is a random ID, never reused, that survives rename | [§2.1](#2.1%20Entities), [RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File) |
 | **FileAttr** | a file's size, owner and group, mode, timestamps and identifiers. At create, the owner is the caller's principal and the group is the credential's group — the NFS AUTH_SYS gid, or an SMB principal's primary group — or the parent directory's group when the parent has setgid | [§2.1](#2.1%20Entities) |
 | **FileData** | the fields of a file that only the write path sets — size, the newest version whose existence is recorded, write-time timestamps — named as a group; not a record of its own | [RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes) |
 | **entry** | one name in one directory, pointing at a file; a file with two hard links has two entries | [RFC 7 §2.2](rfc-7-namespace-metadata.md#2.2%20Entry) |
@@ -686,8 +686,9 @@ cases, and where the two differ for one node, this section wins:
 
 ### 2.1 Entities
 
-**File** — a namespace entry with an identity, attributes, and an ordered list
-of chunk references.
+**File** — an object with an identity and attributes, named by zero or more
+entries; its content is the set of refs, one per offset, that block metadata
+keeps against its ID.
 
 **FileAttr** — a file's size, owner and group, mode, timestamps and identifiers.
 
