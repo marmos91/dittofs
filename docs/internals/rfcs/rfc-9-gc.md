@@ -161,7 +161,7 @@ another's:
 | Space | Reclaimed by | When | Destroys |
 | --- | --- | --- | --- |
 | **Local journal space** | the journal's release and repack ([RFC 1 §8.1](rfc-1-journal.md#8.1%20Releasing%20storage), [§8.2](rfc-1-journal.md#8.2%20Repack)) | when the engine's `EvictionPolicy` and `CapacityGovernor` decide ([RFC 8 §10](rfc-8-engine.md#10.%20Local%20space)) | only local copies of content already offloaded ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)) |
-| **Metadata records** | removals, releases and snapshot deletion ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)) | when a file is truncated or released or a snapshot deleted, in batches of at most K refs; the batch that leaves a block unreferenced also retires it ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | refs and counts; never an object |
+| **Metadata records** | removals, releases and snapshot deletion ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)) | when a file is truncated or released or a snapshot deleted, in batches of at most K keys (the key budget); the batch that leaves a block unreferenced also retires it ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | refs and counts; never an object |
 | **Remote objects** | this RFC | once a block is retired, its trash delay has passed, and a check of the reverse ref index finds no ref to any chunk it still holds | the object |
 
 GC runs four operations, all on the remote tier. None of them decides that a
@@ -503,7 +503,7 @@ names, and acts on that block's state:
 | --- | --- | --- |
 | `live` | refcount +1; `live` +1 if the refcount left zero | one record each |
 | `retired` | refcount 0→1; the block is resurrected: `live` raised by one for each of its chunk records whose count leaves zero in the transaction ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 2), state `live`, `BR` key deleted, `BC` key written | one record each, no upload |
-| `deleted` | the adopting refs are refused: an offload re-offers them carrying the chunk ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); a clone, restore or re-home fails its batch and is undone | one upload, or a failed operation |
+| `deleted` | the adopting refs are refused: an offload re-offers them carrying the chunk ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); a clone, restore or re-home, which holds no bytes to carry, records the run as **Lost** in place of the ref, counted and logged as a backstop, and its batch commits ([RFC 6 §7.2](rfc-6-block-metadata.md#7.2%20Adoption%20is%20conditional%20on%20existence)) | one upload, or one run read as Lost |
 
 A commit that **carries** a chunk whose record names a `retired` or `deleted`
 block does not resurrect it: it repoints the chunk record to itself, as the
@@ -559,10 +559,10 @@ Block metadata rules it out by construction, not by a fence ([RFC 6 §7.6](rfc-6
   ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). No two attempts, and no two writers, ever put one name, and a
   retry within the attempt writes the same bytes.
 - **Before any put** — an offload's or a compaction's — the writer durably records
-  a **put intent** for the name: `Intent = {domain, id, epoch, nodeEpoch}`, where
-  the domain is a shard or a GC partition, the id is that shard's or
+  a **put intent** for the name: `Intent = {domain, id, epoch, node, nodeEpoch}`,
+  where the domain is a shard or a GC partition, the id is that shard's or
   partition's ID, the epoch is the one the writer runs under, and, for a shard,
-  the node epoch is the one its primary held. One transaction
+  the node and node epoch are those of the primary that wrote it. One transaction
   **MAY** record every intent of a pass.
 - **The commit that creates the block record consumes the intent** in the same
   transaction, and fails if it is absent.
@@ -575,12 +575,16 @@ GC deletes an object only when no block record not yet `deleted` and no intent
 names it: its own record is `deleted`, and no other record holds the name.
 Nothing can put or commit that name again.
 
-**An intent is abandoned by reading its domain.** An intent is superseded when its
-domain's durable epoch — the shard record's for a shard ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)), the lease
-partition's for GC ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) — is greater than the intent's; when a shard intent's
-node epoch is no longer the one the shard record names, as after a primary
-restarted and re-claimed its shard with no epoch rise ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)); or when the
-domain no longer exists. Supersession by a shard's epoch or node epoch is a **(cluster)** rule ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)): on a
+**An intent is abandoned by reading its domain.** A shard intent is superseded
+only once the shard record ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)) no longer names the (node, node epoch) it
+was written under as the shard's primary — after a takeover, a handover, or a
+primary that restarted and re-claimed its shard ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency),
+[RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)). A raise of the shard's epoch under a live primary — a replica
+joining, a learner cleared — supersedes none: that primary's puts are still in
+flight and commit under the new epoch once it has rewritten the file's fences.
+A GC partition's intent is superseded when the lease partition's durable epoch
+([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) is greater than the intent's. Any intent is superseded when its
+domain no longer exists. Supersession of a shard intent is a **(cluster)** rule ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)): on a
 single node a restart need not raise any shard's epoch, and an intent waiting for
 one leaks its object for good. There the node **MUST** abandon every intent
 recorded under its own shards at every start, before its first offload
@@ -592,17 +596,19 @@ epoch, a restart included ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namesp
 Abandonment is one transaction that guards the domain's epoch record,
 reads and deletes the intent key, and writes the name's block record in state
 `retired`, with an empty chunk list and `not_before` = store time + the longest
-put deadline a writer may use ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O1) + the clock bound ([§3.7](#3.7%20Trash)).
+put deadline a writer may use ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O1) + the clock skew limit ([§3.7](#3.7%20Trash)).
 A live writer that gives up an attempt abandons that intent itself, at once,
 through the same transaction; the offload pipeline does so ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline), O4),
 and so does the compactor ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
 
-**A commit racing an abandonment (cluster).** *W* puts *K* under shard *U*, epoch 7, and
-stalls before its commit; the primary of *U* moves and the epoch becomes 8.
+**A commit racing an abandonment (cluster).** *W*, the primary of shard *U* on
+node A at node epoch 3, puts *K* under `I(K, U, 7, A, 3)` and stalls before its
+commit; A's node lease lapses and node C takes *U* over: the shard record now
+names C at node epoch 5, and the epoch becomes 8.
 
-| t | *W* (epoch 7) | GC | Result |
+| t | *W* (A, node epoch 3) | GC | Result |
 | --- | --- | --- | --- |
-| 5 | — | reads `SH‖U` epoch 8 > 7; deletes `I(K)`, writes `B(K)` = `retired` | *K* is final |
+| 5 | — | reads `SH‖U`: primary (C, 5) ≠ (A, 3); deletes `I(K)`, writes `B(K)` = `retired` | *K* is final |
 | 6 | commit reads `I(K)`: absent | — | commit fails; *W* re-offers under a new name |
 
 In the other order, *W*'s commit consumes `I(K)` first and the abandonment finds
@@ -612,12 +618,12 @@ shard's fence, which the new primary wrote, so a stale commit fails on the fence
 even before it reaches the intent.
 
 **Example: an abandoned intent and a put that lands late.** The put deadline is
-10 min and the clock bound 1 min.
+10 min and the clock skew limit 1 min.
 
 | t | Event | State of *K* |
 | --- | --- | --- |
-| 0 | *W* records `I(K, U, 7)` and starts a slow put | intended |
-| 2 min | *U* moves to epoch 8; GC abandons `I(K)` | `retired`, `not_before` = 13 min, no chunks |
+| 0 | *W* records `I(K, U, 7, A, 3)` and starts a slow put | intended |
+| 2 min | C takes *U* over from A; GC abandons `I(K)` | `retired`, `not_before` = 13 min, no chunks |
 | 9 min | *W*'s put lands | object present, record `retired` |
 | 13 min | the deleter verifies (nothing to check), marks `deleted`, deletes *K* | object gone |
 | 14 min | a later `Recheck` passes; the record is pruned | gone |
@@ -696,7 +702,7 @@ seek of a short prefix for each chunk the block still owns: for a 4 MiB block of
 | `Recheck` failing or stale, or the claim not naming this installation | No delete is issued and nothing is pruned; the records wait ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). |
 | Metadata unwritable | Nothing retires or moves to `deleted`, so nothing is deleted. |
 | A conflict on a transition | Retried under I8: bounded by a deadline, not an attempt count, with randomised backoff ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)). The retry re-reads the record; it **MUST NOT** re-propose a decision taken on the pre-conflict state. |
-| The local clock differs from store time by more than the clock bound | The deleter stops and raises a health condition until it is back within the bound ([§3.7](#3.7%20Trash)). |
+| The local clock differs from store time by more than the clock skew limit | The deleter stops and raises a health condition until it is back within the limit ([§3.7](#3.7%20Trash)). |
 | Crash anywhere | Every step is either inside a transaction or recorded by a block state and its index key, so a restart resumes and does not re-decide. |
 
 **Absent is success only because the record and the delete name one store.** A
@@ -770,8 +776,10 @@ It is not a safety input — the refs and the conditional transactions are
 time inside the deleter's transaction ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), so no node's clock can
 shorten the trash. The deleter still computes durations locally — the freshness
 of the last `Recheck`, the put-bound wait — so it **MUST** refuse to run while
-its local clock differs from store time by more than a fixed **clock bound**
-(proposed: 1 min).
+its local clock differs from store time by more than a fixed **clock skew
+limit** (proposed: 1 min). It is a different quantity from [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock
+bound: that one stretches a wait on another clock's timeout; this one only
+stops the deleter while its clock reads far from the store's.
 
 **Restoring is recounting.** There is no restore that rebuilds a block from its
 header. A `retired` block comes back to `live` exactly when some chunk it still
@@ -1016,8 +1024,9 @@ leak.
 
 Collection has two sources:
 
-- **Abandoned intents — the primary source.** An intent whose domain's epoch has
-  moved on, or whose domain no longer exists, names its object exactly. GC
+- **Abandoned intents — the primary source.** An intent superseded under
+  [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) — its shard's primary no longer the (node, node epoch) that wrote it, its
+  partition's epoch moved on, or its domain gone — names its object exactly. GC
   abandons it ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)): one transaction deletes the intent and writes the name's
   block record `retired`, due once the put-bound wait has passed, so that a put
   still in flight has landed before the delete. A live writer that gives up an
@@ -1053,8 +1062,7 @@ its intent, not its age:
 
 - **An object named by an intent** is deleted only after the intent is abandoned,
   in a transaction that conflicts with the commit consuming it ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). GC
-  abandons only an intent whose domain's epoch has moved on or whose domain is
-  gone; a live writer's intent is never touched by GC, however old.
+  abandons only an intent superseded under [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete); a live writer's intent is never touched by GC, however old.
 - **An object named by neither an intent nor a block record** is in the final
   state ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)): no put of its name can ever commit. The backstop writes its
   block record `retired`, with an empty chunk list and `not_before` = store
@@ -1396,17 +1404,17 @@ location is written and swept as if nothing had changed.
   guard where no pause was written: a claim taken over from an installation
   whose metadata store could not be reached. A clock that runs slow measures
   less than *T* while more passes, so the installation taking the claim over
-  **MUST** wait *T* × (1 + ρ) plus the clock bound before it puts, adopts or
+  **MUST** wait *T* × (1 + ρ) plus the clock skew limit before it puts, adopts or
   deletes there, where ρ is the clock-rate bound of [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A
   rate bound is a stretch of the wait, not an offset added to it: at 5 % on a
   10-minute *T*, the old fence may run until 10.5 minutes.
 
-> decision: across installations the clock bound is kept only for a takeover
+> decision: across installations the clock skew limit is kept only for a takeover
 > that could not write the pause record. A cooperative move is made safe by the
 > pause record, read with conflict tracking by every transaction that leads to a
 > delete; a takeover has no such record to read, and the remote contract offers
 > no delete conditioned on another object, so the claim check and its clock
-> bound are all that remain. Overturn it if the remote store gains a delete
+> skew limit are all that remain. Overturn it if the remote store gains a delete
 > conditional on the claim object's version, which would let every delete carry
 > the claim it was decided under.
 
@@ -1462,8 +1470,9 @@ type Blocks interface {
 	Prune(ctx context.Context, bs []BlockName, before time.Time) error
 	// Intend durably records put intents for freshly minted targets (§3.4).
 	Intend(ctx context.Context, intents []Intent) error
-	// AbandonedIntents yields intents whose domain's epoch moved on or whose
-	// domain is gone (§3.4).
+	// AbandonedIntents yields superseded intents: a shard's whose (node, node
+	// epoch) is no longer its primary, a partition's whose epoch moved on, or
+	// any whose domain is gone (§3.4).
 	AbandonedIntents(ctx context.Context, part Partition) iter.Seq2[BlockName, error]
 	// Abandon deletes an intent and writes its name's record retired, due after
 	// the put-bound wait, conflicting with a commit that consumes it (§3.4).
@@ -1541,7 +1550,7 @@ func (g *GC) RebuildIndex(ctx context.Context, check bool) (IndexReport, error)
 func (g *GC) RebuildReverse(ctx context.Context, share ShareID, check bool) (IndexReport, error)
 ```
 
-The partition count, lease duration, `Recheck` period, clock bound and trip threshold
+The partition count, lease duration, `Recheck` period, clock skew limit and trip threshold
 are constants of the implementation, not settings.
 
 ## 9. Invariants
@@ -1558,7 +1567,7 @@ are constants of the implementation, not settings.
 | G8 | A conflict is retried under I8, and a failed delete never loses its `deleted` record. |
 | G9 | Every record GC stores has a named reclamation path at its maximum size. |
 | G10 | Deferred work is bounded per conflict domain: one sub-transaction in flight per file, per (namespace, source, prefix), within a per-node transaction-time budget. |
-| G11 | Every time GC stores or compares is store time; the deleter does not run while its clock is outside the clock bound. |
+| G11 | Every time GC stores or compares is store time; the deleter does not run while its clock is outside the clock skew limit. |
 | G12 | Derived index keys are functions of block records, and repairing or rebuilding them changes no block record and deletes nothing early. The reverse index is authoritative, and is rebuilt only under the hold. |
 | G13 | The audit covers every chunk and block record within its period; it corrects by the maximum, lowers only by two agreeing walks with an unchanged stamp and a forward walk that started after the first walk recorded its value and completed before the second counted, reports a ref with no live chunk record as Lost, and drops orphan refs through the paths that drop any ref. |
 | G14 | No delete batch is issued, and no `deleted` record is pruned, unless the claim names this installation and a `Recheck` passed recently enough; a prune waits for a `Recheck` that began after its delete. A `Recheck` reads the claim before rewriting it and records its nonce before the put; a backup location's folder store is rechecked on the same period and before each copy and sweep. |
@@ -1592,7 +1601,7 @@ lines.
 
 Logs: a verification refusal, a low count or a Lost ref logs the block or file at
 `Error`. The hold, a deletion backlog that stops draining and a clock outside the
-bound each raise a health condition and log once at `Warn` on entry and on exit.
+clock skew limit each raise a health condition and log once at `Warn` on entry and on exit.
 A collection refused because a store was not enumerated logs that store at `Warn`.
 Taking or losing a lease partition, an operator restore and a rebuild log at `Info`.
 
@@ -1613,9 +1622,9 @@ the implementation, not by timing.
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection counts every chunk | Release a file so its block retires, then clone a file naming two of the block's chunks in one batch. Assert the block's `live` is 2 and that dropping one of the two refs leaves it `live`. |
 | [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDeleted` is in flight; assert one of them retries. |
-| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (epoch moved on, domain deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
+| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (shard primary changed, partition epoch moved on, domain deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) late put | Abandon an intent while its put is in flight and land the put before the put-bound wait ends. Assert the object is deleted with no listing. Land it after the delete; assert only the backstop finds it. |
-| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) epoch domain | Run offload intents under a shard at epoch 41 while the GC partition is at epoch 50. Assert no offload intent is abandoned. Restart a compactor on the same partition; assert its earlier intents are abandoned. |
+| [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) epoch domain | Run offload intents under a shard at epoch 41 while the GC partition is at epoch 50. Assert no offload intent is abandoned. Raise the shard's epoch under its live primary (a replica joins): assert none is abandoned; take the shard over on another node: assert all are. Restart a compactor on the same partition; assert its earlier intents are abandoned. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) single-node restart | On one node, record offload intents, kill the process mid-put and restart it with no shard epoch raised. Assert every intent of the node's shards is abandoned before the first offload and each object is deleted after the put bound. A design that waits for the shard's epoch leaks them. |
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) two holders | Run two deleters and two compactors on one partition from two processes that both believe they hold the lease, with adopting offloads in a third. Assert no referenced block is deleted. |
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) time never permits | Set the retention to zero and stall an adopting commit past it. Assert the adoption resurrects or is refused; the clock changes only when the object goes. Skew a deleter's clock past the bound; assert it stops. |

@@ -225,6 +225,19 @@ second source ([§2.1](#2.1%20The%20control%20plane%20is%20the%20source)): nodes
 A provisioning file ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)) is not an override: it writes records through the
 control plane, and the record then says it came from the file.
 
+**An installation is created by an explicit initialisation step, never by a
+start.** The step mints the installation ID and writes it into the metadata
+store's bootstrap — the Installation record and the store format record
+([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) — and, through the journal's `Init`, into each journal's `format`
+file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A start opens what exists and creates neither: one that
+finds journals naming an installation and no metadata store reports **metadata
+store lost**, and one that finds a store whose journals are missing, or name
+another installation, reports the journal missing or foreign; both wait for an
+operator. All evidence that an installation exists is otherwise inside the
+store, so a store volume that mounts late would look like a first start. A
+start-time option to **initialise if empty** exists for development and tests
+only, and **MUST NOT** be on by default.
+
 ### 2.3 A record is versioned
 
 Each record carries a **generation**, raised by every change, and a **schema
@@ -315,17 +328,19 @@ validated once and shared by every policy that names it. It holds:
 | retention cap | for `immutable`, the longest retention a put may set, enforced by the bucket's policy and verified at every open: at least the longest retention of any policy writing there, plus one generation and `backups.max_copy_time` ([RFC 12 §3.4.4](rfc-12-snapshots.md#3.4.4%20Expiry%20and%20the%20sweep)) | live, within the checks below |
 | generation `G` | for `immutable`, the period every retain-until is extended past its need, so a reused version is extended about once per `G` ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live; default 7 days |
 | put-integrity outcome | for `immutable`, the result of the capability check's integrity step, run once when the record is created and whenever its store or credential changes, since check objects there cannot be deleted | system field ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)): written by the control plane, never configured |
+| health object identity | the location-level health object at `<location>control/health`, put when the record is created, before any namespace copies there: its version for `immutable`, the nonce written in it for `mutable` ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)). Every folder's get probe reads it, and a changed endpoint or credential proves the same location by it ([§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change)) | system field, written once with the record |
 
 **An immutable location is proven, not trusted.** The control plane **MUST**
 refuse an `immutable` record, and the store **MUST** refuse to open it, unless
 its open-time probe finds versioning on, compliance-mode object lock with **no**
 default retention — every put sets its own retain-until, and a default long
 enough for the longest policy would lock every hourly block as long — a bucket
-policy capping the retention a put may set at the record's retention cap, a
-noncurrent-version expiry rule, no current-version rule younger than the
-lifecycle age, no transition to an archive class, and a delete refused for its
-credential — of the health object and of one of its recorded versions; it issues
-no put as a probe
+policy capping the retention a put may set at the record's retention cap and
+denying the credential every change to the bucket's policy, lock, lifecycle and
+versioning, a noncurrent-version and a current-version expiry rule — the latter
+no younger than the lifecycle age — over the location's whole root, no
+transition to an archive class, and a delete of the health object, naming no
+version, refused for its credential; it issues no put as a probe
 ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). A
 `mutable` location takes the ordinary capability check
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
@@ -473,8 +488,12 @@ until the move completes.
 Some fields name how to reach content, not where it is: a store's endpoint, and
 its credential. A new endpoint for the same bucket, or a rotated credential, is
 allowed, and is proven rather than trusted: the store's capability check
-([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) **MUST** find, at the new location, the namespace claim the old
-one held ([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A location that answers but holds another claim, or
+([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) **MUST** find, at the new location, what identifies the old one.
+For a namespace's store that is the namespace claim the old one held
+([RFC 12 §4.1](rfc-12-snapshots.md#4.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). A backup location holds no claim, so for it that is its health
+object's identity in its record ([§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record)): the recorded version, read by
+version, at an immutable location, or the recorded nonce in the object's body at
+a mutable one. A location that answers but holds another claim or identity, or
 none, is a different store, and the change is refused.
 
 ### 5.3 What content was written with is recorded with it
@@ -515,8 +534,9 @@ write, at every start, in its node record.
   otherwise, naming the nodes that lag. A node that is down still counts, since
   it may start again with its old binary; one that will not return is
   **decommissioned** by the operator, which deletes its node record, and no
-  longer counts. The raise is one transaction on the installation record; a node
-  learns it through the settings generation ([§5](#5.%20Binding%20classes)).
+  longer counts. The raise is one transaction, on the installation record or,
+  for the store format, on the store format record `\x00format`, its only record
+  ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)); a node learns it through the settings generation ([§5](#5.%20Binding%20classes)).
 - **A downgrade is possible only while every active version lies in the older
   binary's range**; once a version has been raised past it, the older binary
   refuses to start rather than misread what it finds.
@@ -628,9 +648,11 @@ type SecretProvider interface {
   fingerprint), never the key; the provider refuses an ID whose fingerprint
   changed. In the terms of that table:
   - a **master key** lives off the host — in a key service, or in a key file
-    whose off-host escrow the provider has verified, a required setup step
-    ([§4.2](#4.2%20Every%20setting%20has%20a%20default%2C%20or%20is%20required)) — and rotates by re-wrapping, which changes no record. A master key
-    that any retained export names is never destroyed ([RFC 12 §3](rfc-12-snapshots.md#3.%20Catalog%20backups));
+    whose off-host escrow the provider has verified for that key before it
+    becomes current, at creation or rotation ([§4.2](#4.2%20Every%20setting%20has%20a%20default%2C%20or%20is%20required)) — and rotates by
+    re-wrapping, which changes no record. A master key that any retained export
+    names, or that a move pins, is never destroyed, and a destroy that cannot
+    read a backup location is refused ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys));
   - every namespace key — data, header, chunking, export, and an encrypting
     namespace's chunk-ID key — is wrapped only under a master key of its store
     configuration. **No namespace key is wrapped under the `storage` wrapping
@@ -639,7 +661,13 @@ type SecretProvider interface {
     needed;
   - a non-encrypting namespace's **chunk-ID key** is held in the clear, in its
     key record and beside its blocks, so losing the host loses none of its
-    content; its keyed IDs hide nothing, since its bodies are plaintext;
+    content; its keyed IDs hide nothing, since its bodies are plaintext. Its
+    exports are still sealed under its export key, which is wrapped under a
+    master key like every other: **restoring any namespace's metadata from a
+    backup needs the master key**, and the bucket alone does not suffice;
+  - every key record reaches the namespace's `keys` object in its bucket and
+    every backup location before it becomes current, so a recovery finds keys
+    rotated after the last backup ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys));
   - **header keys, data keys and export keys rotate**: a header or data key by
     new material plus relocation ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), an export key by issuing a new
     current one that later exports are sealed with. Each is a **next write**
@@ -685,6 +713,8 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
 | [§7](#7.%20Secrets) role keys | Start a protocol-only node. Assert its bootstrap names no `storage` wrapping key and that unsealing a remote-tier credential from it fails. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
+| [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) explicit initialisation | Start a node against an empty metadata store and empty journal directories: assert it refuses, creating nothing. Initialise: assert the store's Installation record and every journal's `format` file carry one installation ID. Start with the store volume unmounted: assert it reports the metadata store lost and creates nothing; with the journal directory emptied, the journal missing. Only with initialise-if-empty set does a start on empty storage create an installation. |
+| [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) backup location credential | Rotate an immutable and a mutable backup location's credential: assert both accepted, proven by the health object's recorded version and nonce. Point the record at another bucket: refused. A design that looks for a namespace claim at a backup location refuses every rotation. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) no host override | Set a record field in the host's environment. Assert it is refused at start, not applied. |
 | [§2.3](#2.3%20A%20record%20is%20versioned) schema | Present a record with a newer schema version. Assert refused. |
 | [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) provisioning | Start a node with a file declaring a namespace, a share and a setting. Assert all three exist and are marked managed. Edit the share through the API; assert refused, naming the file. Change the file and reload; assert applied. Remove the share from the file; assert it stays, unmanaged; add `prune: true`; assert deleted. |
@@ -695,7 +725,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§7](#7.%20Secrets) chunk-ID key | Create two namespaces without encryption and store one file's bytes in each. Assert the chunk IDs differ between them and differ from the unkeyed hash of the bytes. A design that keys chunk IDs only when encrypting fails. |
 | [§5.1](#5.1%20A%20bound%20setting%20refuses%20change) encryption bound | Turn encryption on for a namespace that holds content. Assert refused. Turn compression on; assert accepted, and old blocks still read. |
 | [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) source, not hash | Apply a file, edit it and raise its revision, reload. Assert applied — a design that owns records by hash refuses its own edit. Restart a second node with the earlier revision; assert refused as stale and no record reverted. Apply the same revision with different content; assert refused. |
-| [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) immutable location | Point an `immutable` location at a bucket with versioning but no object lock; assert the record is refused. Add compliance-mode lock, noncurrent-version expiry and the retention-cap bucket policy; assert accepted, and that the probe issued a delete, saw it refused, and issued no put. Add a bucket default retention; assert refused. Remove the cap policy, or raise it past the record's cap; assert refused at open and at `Recheck`. Give a policy a `retain` plus `max_copy_time` above the lifecycle age, or a `retain` plus one generation and `max_copy_time` above the cap; assert refused. Give a 40 TiB share a daily policy at 200 MiB/s whose increment fits a day: assert accepted, though its full copy does not; shrink the period below the increment: refused `ErrPolicyPeriod`. |
+| [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) immutable location | Point an `immutable` location at a bucket with versioning but no object lock; assert the record is refused. Add compliance-mode lock, noncurrent- and current-version expiry over the whole root, and a bucket policy holding the retention cap and denying the five configuration actions; assert accepted, that the record holds the health object's version, and that the open issued one delete naming no version, saw it refused, and issued no put. Drop the current-version rule, or one configuration deny; assert refused. Add a bucket default retention; assert refused. Remove the cap policy, or raise it past the record's cap; assert refused at open and at `Recheck`. Give a policy a `retain` plus `max_copy_time` above the lifecycle age, or a `retain` plus one generation and `max_copy_time` above the cap; assert refused. Give a 40 TiB share a daily policy at 200 MiB/s whose increment fits a day: assert accepted, though its full copy does not; shrink the period below the increment: refused `ErrPolicyPeriod`. |
 | [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) system fields | Provision a share and an immutable location from a file. Re-home the share: assert it runs, the share's namespace changes, and the next reload reports the file's stale namespace as a health condition without applying it. Create the location: assert its put-integrity outcome is recorded. Declare the outcome in the file: refused at validation. A design that refuses every write to a managed record fails both. |
 | [§5](#5.%20Binding%20classes) rolling restart class | **(cluster)** Raise the node lease from 10 s to 20 s and restart three nodes one at a time. Assert each restarted node waits out 20 s before taking over a lease and renews within the old interval until every node reports the new generation, and that no lease was served by two nodes at any instant. Apply the new value on each node as it restarts instead: a takeover by a restarted node falls inside a lease an old node still holds. |
 | [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) dead node | Stop one of three nodes for good and raise an active version: assert refused, naming it. Decommission it: assert the raise is accepted. On a single node, upgrade the binary without raising; assert the old binary still starts on the store. |
@@ -711,8 +741,8 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 Each owning RFC is the authority for what its settings mean; this document is
 the authority only for their scope and class, and where the two disagree the
 disagreement is a defect in one of them, fixed there, not settled by
-precedence. Every edit this document asked of another RFC is applied, or
-dropped because the rule stands here alone:
+precedence. Every edit this document asked of another RFC is applied, dropped
+because the rule stands here alone, or marked not yet applied:
 
 1. **RFC 2 §3.2:** `Target` is a namespace setting, bound. *Applied.*
 2. **RFC 2 §6 and RFC 5 §3.2:** "a share that encrypts" reads "a namespace that
@@ -722,7 +752,11 @@ dropped because the rule stands here alone:
    so nothing there contradicts [§5.1](#5.1%20A%20bound%20setting%20refuses%20change), [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) and Appendix B, which carry
    the rule.
 4. **RFC 12 §6.2:** its example is the control-plane records it describes, with
-   the scopes of Appendix B. *Applied.*
+   the scopes of Appendix B. *Not yet applied:* the example declares
+   `snapshots.hold_bound` and `snapshots.directory`, which Appendix B scopes per
+   share, at the installation level. Either they move under a share, or the
+   example says a top-level value is the installation default a share
+   overrides, and Appendix B gives them that scope form.
 5. **RFC 7 §3.3:** case sensitivity is fixed at the share's creation. *Applied.*
 6. **RFC 9 §8:** GC's `Config` holds four namespace fields. *Applied.*
 7. **RFC 2 §5:** the block target is a remote-store setting, next write, 4 MiB,
@@ -734,8 +768,8 @@ dropped because the rule stands here alone:
 10. **RFC 16:** the node record holds its registered version ranges, the
     installation record the active versions, a `Secret` its version and the
     wrapping key it is sealed under, and keytabs are `Secret` records.
-    *Applied*, except the installation-wide settings generation of [§5](#5.%20Binding%20classes), which
-    RFC 16 does not yet name as a record.
+    The installation-wide settings generation of [§5](#5.%20Binding%20classes) is RFC 16's `CFGGEN`
+    record. *Applied.*
 
 ## 11. Open questions
 
@@ -747,8 +781,8 @@ dropped because the rule stands here alone:
    bound, the offload backoff caps, the oldest-unoffloaded alert and the
    capacity weight. Each stands until a measurement on the reference box
    replaces it.
-2. **Settings open in their own RFCs.** Segment size ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions)), the GC
-   interval ([RFC 9](rfc-9-gc.md)), the speculation budget and read-ahead cap ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)),
+2. **Values open in their own RFCs.** The segment size, a fixed constant
+   ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions)), the GC interval ([RFC 9](rfc-9-gc.md)), the speculation budget and read-ahead cap ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)),
    the quota slack ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)); and **(cluster)** the failure domain, gather
    interval, replica removal triggers, mark persistence, re-read period and
    repair pacing ([RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)). Each takes a default here only once its
@@ -785,7 +819,10 @@ default this document suggests where the owning RFC states none.
 | journal devices and paths | [RFC 1](rfc-1-journal.md) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required |
 | journal maximum footprint | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | live | proposed: 80% of the device |
 | per-share journal limit | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | share | live | proposed: the journal's maximum |
-| segment size | [RFC 1 §4.2](rfc-1-journal.md#4.2%20Segments) | — | fixed | open in RFC 1 |
+| segment size | [RFC 1 §4.2](rfc-1-journal.md#4.2%20Segments) | — | fixed: a constant of the implementation, never a setting | value open in RFC 1 |
+| sync bound: longest a written record waits for a sync | [RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy) | — | fixed | proposed in RFC 1: 1 s |
+| `ExtentLimit`: placement-index entries per journal | [RFC 1 §5.2](rfc-1-journal.md#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) | node, per journal | restart | sized against a memory budget at about 51 bytes per entry; open in RFC 1 |
+| segments one offer may pin; segments all offers may pin together | [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload) | — | fixed | proposed in RFC 1: 64; 256 |
 | headroom for records without bytes (count of removal and offloaded records reserved) | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | restart | a proposal ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions), the headroom and seal-threshold question) |
 | idle-seal threshold | [RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding) | node, per journal | restart | proposed: 16 MiB ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions), the headroom and seal-threshold question) |
 | repack reserve: journal space outside every share's limit for repack's copies | [RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack) | — | fixed | at least one segment's live payload ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)) |
@@ -815,12 +852,14 @@ default this document suggests where the owning RFC states none.
 | `gc.interval`: between compaction and collection passes | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
 | `gc.trash_retention`: time a retired block with recoverable chunks waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
 | `gc.space_amp_target`: stored over referenced bytes the compactor holds the namespace under; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | proposed: 1.25 |
+| GC `Recheck` period: between re-reads of a namespace store's settings and claim | [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) | — | fixed | proposed in RFC 9: 5 min |
+| lease durations: GC partition lease, a backup folder record's lease, a snapshot use record's deadline | [RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix), [RFC 12 §3.4.1](rfc-12-snapshots.md#3.4.1%20Layout%20at%20the%20location), [RFC 12 §3.2](rfc-12-snapshots.md#3.2%20A%20backup%20holds%20its%20snapshot) | — | fixed: constants of the implementation | open in RFC 9 and RFC 12 |
 | `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | 7 days |
 | replica count **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default, shard override (in its shard record) | live | 3 |
 | replica floor **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default, shard override (in its shard record) | live | 2 |
 | failure domain **(cluster)**: the host, rack or zone a node lies in | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement), [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | node | live | the node itself |
 | replication gate **(cluster)**: opened by an operator once every node runs a binary that knows the journal extension | [RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) | installation | live, opened only under [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)'s rule; never closed again | closed |
-| stall bound **(cluster)**: how long a sync, the serving loop or replication may make no progress before a node stops renewing | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) | installation | live | 5 s |
+| stall bound **(cluster)**: how long a sync or the serving loop may make no progress before a node stops renewing; a shard whose replication stalls is relinquished instead, and stops no renewal ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) | installation | live | 5 s |
 | node lease duration **(cluster)** | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart ([§5](#5.%20Binding%20classes)) | 10 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
 | node lease renewal interval **(cluster)** | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 3 s; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
 | drift bound **(cluster)** | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | 500 ms; confirm by the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) |
@@ -831,6 +870,8 @@ default this document suggests where the owning RFC states none.
 | repair pacing: **(cluster)** joins in flight per node and per cluster | [RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
 | repair scheduler enabled **(cluster)** | [RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair) | installation | live | on |
 | open-state lease: NFSv4 lease period, SMB durable-handle timeout | [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease) | — | fixed | NFSv4 90 s; SMB per the protocol |
+| `smb_pending_cap`: longest an SMB request refused for a transient cause — capacity, a frozen or quiesced share — is held `STATUS_PENDING` before its refusal is answered, `STATUS_DISK_FULL` for capacity; longer than a move's freeze | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values), [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here) | installation | live | 10 min, above `migration.freeze_timeout` plus 35 s |
+| `clone_max_len`: longest `CLONE` or duplicate-extents request answered as one atomic clone; a longer one is `ErrInvalid` | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | installation | live | open in RFC 8 |
 | default request deadline, for an operation that arrives with none | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) | — | fixed | 30 s |
 | single-node self-fence: time with a write transaction outstanding or failing and none committed before a node stops acknowledging writes | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 30 s, the default request deadline |
 | clock-rate bound ρ: how far one clock's rate may differ from another's over a wait | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 0.05 |
@@ -847,7 +888,7 @@ default this document suggests where the owning RFC states none.
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
 | oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) | share | live | proposed: 1 h |
 | snapshot policy: schedule, retention and the backup location it names | [RFC 12 §6.2](rfc-12-snapshots.md#6.2%20Configuration) | share | live | none |
-| backup location: store, credential reference, mode, lifecycle age, retention cap, generation `G` | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) | installation | per field, as §2.5 states | mode required; `G` 7 days; the rest as the store's |
+| backup location: store, credential reference, mode, lifecycle age, retention cap, generation `G`; system fields put-integrity outcome and health object identity | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) | installation | per field, as §2.5 states | mode required; `G` 7 days; the rest as the store's |
 | policy `backup.kind`: `catalog` or `copy`, a copying backup | [RFC 12 §3.4](rfc-12-snapshots.md#3.4%20Copying%20backups) | share | live | `catalog` |
 | policy `backup.verify_every`: period between verifications of a copying backup; 0 never verifies on a period | [RFC 12 §3.4.3](rfc-12-snapshots.md#3.4.3%20Writing%20one%2C%20step%20by%20step) | share | live | 0 |
 | `backups.copy_rate`: copying backups' transfer rate | [RFC 12 §3.4.6](rfc-12-snapshots.md#3.4.6%20Cost%20and%20pacing) | installation | live | proposed: 200 MiB/s |
@@ -856,6 +897,7 @@ default this document suggests where the owning RFC states none.
 | `snapshots.hold_journal_fraction`: held share of one journal's capacity, summed over every share it carries, before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | installation | live | 0.25 |
 | `snapshots.reserve`: history bytes per share before a new cut is refused | [RFC 12 §2.9](rfc-12-snapshots.md#2.9%20Space%20is%20reported%2C%20not%20charged) | share | live | none |
 | `snapshots.gate_max`: longest a cut gate stays closed, its drain included | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | installation | live | 1 s |
+| `snapshots.cut_deadline`: a cut not committed this long after its announce is aborted | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | installation | live | 5 s |
 | `snapshots.lock_max`: longest lock a snapshot may carry past the time it is set | [RFC 12 §2.7](rfc-12-snapshots.md#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks) | installation | live | 8760 h |
 | `snapshots.reserve_fraction`: default reserve, history bytes per byte charged live | [RFC 12 §2.9](rfc-12-snapshots.md#2.9%20Space%20is%20reported%2C%20not%20charged) | installation | live | 1.0 |
 | `snapshots.directory`: the browse directory's name | [RFC 12 §2.5](rfc-12-snapshots.md#2.5%20Browsing%20a%20snapshot) | share | live | `.snapshot` |

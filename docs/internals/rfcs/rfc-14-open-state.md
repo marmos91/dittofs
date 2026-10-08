@@ -276,9 +276,15 @@ than a second session.
 else to prove it is the presenter's — an NFSv4 stateid, whose 12-byte `other`
 names an open (`Open.Nonce`), a lock state, a delegation (`GrantID`), a layout
 (`LayoutID`) or a copy (`CopyID`), and an NFSv4.0 confirm verifier (§2.9) —
-carries at least 64 random bits beside whatever part makes it unique within its
-file, which the request's file handle names; a client that sees one cannot
-derive another's. An ID with no room for them is unique and never reused but not
+carries at least 64 random bits; a client that sees one cannot derive
+another's. **A stateid is found without a file handle.** `TEST_STATEID` and
+`FREE_STATEID` name stateids with no current file handle (RFC 8881 §18.48,
+§18.38), so a stateid's non-random part carries the number of the shard that
+holds its record, the random bits are unique within that shard, and each primary
+keeps an index from random bits to the record (open, lock state, grant, layout or
+copy) and its file. A stateid is resolved by shard number, then by that index;
+a request whose file handle names another file than the record's is refused as a
+bad stateid. An ID with no room for them is unique and never reused but not
 random: `ClientID`, which `clientid4` carries in 8 bytes, and `OpenID`, which
 fills SMB's 8-byte persistent FileId together with the shard. Neither is honoured
 on its own: a `ClientID` is accepted only under its principal or session, and an
@@ -333,6 +339,8 @@ type Open struct {
 	AppVersion  [2]uint64     // the app instance version, high and low; zero: none
 	Timeout     time.Duration // how long it is kept once its client disconnects
 	LockSeq     [64]uint8     // lock sequence per index: a valid bit and a 4-bit sequence
+	ChannelSeq  uint16        // the open's channel sequence: replays carrying an older one are refused (§8.1)
+	Outstanding [2]uint32     // requests in flight under ChannelSeq and under the one before it (MS-SMB2 3.3.5.2.10)
 }
 ```
 
@@ -502,7 +510,7 @@ the same primary, and changes are delivered with their detail.
 
 ### 2.6 Layout
 
-A **layout** is a pNFS client's grant to send I/O for a byte range of a file
+A **layout** (cluster) is a pNFS client's grant to send I/O for a byte range of a file
 straight to the data servers it names ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)). It is open state like
 the others: held by the client under an open, in the file's table, released
 with the client's lease, recalled on conflict. It also records the (shard,
@@ -577,8 +585,20 @@ type OwnerSeq struct {
 An NFSv4.0 owner numbers its sequenced requests — `OPEN`, `OPEN_CONFIRM`,
 `OPEN_DOWNGRADE`, `CLOSE` for an open-owner; `LOCK` and `LOCKU` for a
 lock-owner — and the server refuses one out of sequence. The primary that holds
-the owner's `OwnerSeq` checks and advances it in the step that applies the
+the owner's `OwnerSeq` checks and advances it in the step that answers the
 request, so a sequence check and the state change it admits never separate.
+
+**Every in-sequence reply advances the sequence, refusals included.** RFC 7530
+§9.1.7 advances the seqid on every reply to an in-sequence request except
+`NFS4ERR_STALE_CLIENTID`, `NFS4ERR_STALE_STATEID`, `NFS4ERR_BAD_STATEID`,
+`NFS4ERR_BAD_SEQID`, `NFS4ERR_BADXDR`, `NFS4ERR_RESOURCE`,
+`NFS4ERR_NOFILEHANDLE` and `NFS4ERR_MOVED`, and clients count on it: a request
+refused `NFS4ERR_DELAY`, `NFS4ERR_GRACE` or `NFS4ERR_DENIED` still advances
+`Next`, or the client's next request is answered `NFS4ERR_BAD_SEQID`. A
+refusal outside that list is a reply like any other: it advances the sequence
+and is cached for replay below. The home primary advances the sequence even when
+the request is then refused at another shard's primary, since the client counts
+that refusal as a reply.
 
 **Where it is held.** An owner's `OwnerSeq` is held at the primary of its
 **home shard**: the shard of the file of its first sequenced request. A
@@ -680,7 +700,11 @@ primary records a `LockWaiter` and answers at once: `ErrLocked` for NFSv4, whose
 client polls by sending the request again, and `ErrBlocked` for NLM and SMB,
 whose client is answered later through the adapter's callback. A request
 without `wait` that conflicts is answered `ErrLocked` and leaves no waiter. One
-owner holds at most one waiter per file: its next request replaces it.
+owner holds at most one waiter per file: its next request replaces it. A repeat
+of the same request — same range and same lock type, as an NFSv4 poll or a
+re-sent blocking `NLM_LOCK` is — keeps the waiter's `Arrived`, so a client that
+re-sends while it waits keeps its place; only a request for a different range
+or type takes a new arrival time.
 
 **A lock that must wait for a recall waits as a waiter.** A lock request on a
 file whose caching grant another client holds starts the recall
@@ -763,7 +787,7 @@ ends.
 | **copy** | an asynchronous copy request | nothing: its writes are ordinary writes | until reported, cancelled, or lease expiry |
 | **caching grant** | the server, on an open | any conflicting access by another client ([§5](#5.%20Caching%20grants)) | until recalled, revoked, returned or expired |
 | **watch** | a watch request | nothing | until cancelled or lease expiry |
-| **layout** | a layout request, under an open | a conflicting open, lock or deny mode; a primary change of its shard, or a move of its file | until returned, recalled, revoked or lease expiry |
+| **layout** (cluster) | a layout request, under an open | a conflicting open, lock or deny mode; a primary change of its shard, or a move of its file | until returned, recalled, revoked or lease expiry |
 
 All of it is held against a **file**, never a name or a handle. A named stream
 belongs to its base file here: an open of a stream counts as an open of the base
@@ -823,9 +847,12 @@ signals it — NFSv4.1 `SEQ4_STATUS_CB_PATH_DOWN` — until the client binds a n
 back channel (`BIND_CONN_TO_SESSION`, `CREATE_SESSION`, or for NFSv4.0 a new
 `SETCLIENTID` callback), which rewrites `Callback` and clears the flag. While the
 path is down no grant is offered (§5.4) and a recall that cannot be sent is
-revoked at its deadline. `DESTROY_CLIENTID`, and an SMB logoff of the last
-session, reach the lease owner, which releases everything as at expiry, and is
-refused while `Sessions` still lists a session.
+revoked at its deadline. `DESTROY_CLIENTID` reaches the lease owner, which
+releases everything as at expiry, and is refused while `Sessions` still lists a
+session. An SMB client record names a machine whose sessions belong to many
+users (§2.1), so an SMB logoff closes only its own session's opens (MS-SMB2
+§3.3.5.6) and releases nothing else; the SMB record is released once it holds no
+open and no durable open's `Timeout` is still running.
 
 ### 4.2 Grace makes volatile state safe
 
@@ -1206,7 +1233,7 @@ the keys [RFC 16](rfc-16-metadata-store.md) lists; volatile state never is.
 | **CachingGrant** | **volatile**, never reclaimed; an SMB lease survives only inside a persistent open, with its key, parent key, kind and epoch ([§2.4](#2.4%20CachingGrant)) | a lost grant costs a client its cache, never correctness |
 | **delete pending** | **volatile** with the opens — **durable** while the file has a persistent open ([§9.4](#9.4%20Delete%20on%20close)) | a pending delete is a promise to the client that set it, which only a persistent open carries across a failover |
 | **Watch** | **volatile**, never reclaimed | the client re-registers; the NFSv4.1 specification does not allow reclaiming directory notifications |
-| **Layout** | **volatile**, reclaimed in grace; recalled, never handed over, when its shard's primary changes or its file moves | a lost layout costs a `LAYOUTGET`; a stale one is refused by epoch |
+| **Layout** (cluster) | **volatile**, reclaimed in grace; recalled, never handed over, when its shard's primary changes or its file moves | a lost layout costs a `LAYOUTGET`; a stale one is refused by epoch |
 | **Copy** | **volatile**, never reclaimed ([§2.7](#2.7%20Copy)) | the client runs a lost copy again |
 | **Unconfirmed** | **volatile**, at the `protocol` node that answered `SETCLIENTID`, for one lease period ([§2.9](#2.9%20NFSv4.0%20unconfirmed%20clients)) | a lost one costs the client a repeated `SETCLIENTID` |
 | **LockWaiter** | **volatile**, never reclaimed ([§2.10](#2.10%20Lock%20waiters)) | the client's poll, reclaim or reconnect asks again |
@@ -1252,7 +1279,12 @@ and at its last flush. A flush (SMB `FLUSH`) through an open whose `LossSeen` is
 below the file's current loss sequence **MUST** fail with `ErrLost`, and set
 `LossSeen` to the current value, so each open that was open across the loss
 learns of it once, at its next flush, and later flushes succeed. `LossSeen` is
-volatile with the open, durable only with a persistent one.
+volatile with the open, durable only with a persistent one. The loss sequence
+lives for one process and starts again at 0
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)),
+so a persistent open reinstated after its primary's restart or failover has
+`LossSeen` reset to 0: a value carried over from the previous process would sit
+above the new sequence and let a flush succeed over the new process's loss.
 
 > decision: an SMB open learns of a running-process loss at its next flush, as a
 > Linux file description learns of a writeback error at its next `fsync`, rather
@@ -1295,6 +1327,16 @@ otherwise the sequence is stored with the lock's result. For a persistent open,
 `LockSeq` is written in the transaction that writes the lock, so the answer
 survives a failover. Without it, a lock re-sent after a lost reply conflicts
 with itself.
+
+Every other request on an open is matched by the open's channel sequence, as
+MS-SMB2 3.3.5.2.10 does: a write, set-information or control request carrying a
+channel sequence older than `ChannelSeq` is refused, and a newer one becomes
+`ChannelSeq` only once no request under the value before the current one is
+still `Outstanding`. `ChannelSeq` and `Outstanding` are held in the
+open at its primary, so a replay reaching the primary through another
+`protocol` node is checked against the same state, and are durable with a
+persistent open, written in the transaction that applies the request, so a stale
+replayed write is still refused after a failover.
 
 **An app instance replaces its predecessor.** A create carrying an
 `AppInstance` that an open of the same file already holds closes that open
@@ -1463,7 +1505,7 @@ type OpenState interface {
 	CreateSession(ctx context.Context, c ClientID, seq uint32, reply []byte) ([]byte, error) // checks seq against CSSeq: a replay returns the cached reply, seq+1 records this one, any other is refused (§2.1)
 	Renew(ctx context.Context, c ClientID) error             // reaches the lease owner (§4.1)
 	Expire(ctx context.Context, c ClientID) error            // releases everything (§4.3)
-	Destroy(ctx context.Context, c ClientID, by Principal) error // DESTROY_CLIENTID, last SMB logoff; refused while a session remains or by a principal state protection excludes
+	Destroy(ctx context.Context, c ClientID, by Principal) error // DESTROY_CLIENTID; refused while a session remains or by a principal state protection excludes
 	Rebind(ctx context.Context, c ClientID, node NodeID) error   // a new back channel at node; clears PathDown (§4.1)
 
 	// Opens and deny modes (§6). Every call names its client, and the primary
@@ -1563,8 +1605,8 @@ var (
 | L8 | After a failover, nothing is released before grace ends; a handover or a batch move of files hands the state over and runs no grace. |
 | L9 | Open state never makes an extent ineligible for eviction or reclamation. |
 | L10 | Open state and shard placement share no records. |
-| L11 | A primary serves no open state past its node lease expiry less the drift bound. |
-| L12 | A layout is bound to the (shard, epoch) it was granted under and is recalled when that shard changes primary or the file moves. |
+| L11 | (cluster) A primary serves no open state past its node lease expiry less the drift bound. |
+| L12 | (cluster) A layout is bound to the (shard, epoch) it was granted under and is recalled when that shard changes primary or the file moves. |
 | L13 | Every open-state call names its client, and names only that client's state. |
 | L14 | A delete-pending file refuses every new open and every rename, keeps its name until its last open closes, and then loses that name through the ordinary unlink; it is durable while the file has a persistent open. |
 | L15 | A reconnect matches an open only on client, principal, create GUID (v2) and lease key; a replayed create or lock returns its first result; a create with a held app instance closes the earlier open first only when that open is another client's and the caller may read the file. A persistent open's record holds all of it. |
@@ -1589,7 +1631,7 @@ var (
 | L34 | A deferred delete runs as the principal that marked the file, never as the last closer. |
 | L35 | (cluster) A recursive watch whose subtree crosses into another shard is completed with enumerate-directory when a change there matches it. |
 | L36 | An open of a named stream is an open of its base file for deny modes, delete and keeping the file alive; no open suspends the change time. |
-| L37 | A layout stateid's seqid rises with every grant, return and recall of the layout, in the step that applies it, and a recall carries it. |
+| L37 | (cluster) A layout stateid's seqid rises with every grant, return and recall of the layout, in the step that applies it, and a recall carries it. |
 | L38 | An NFSv4.0 `SETCLIENTID` changes no state until its `SETCLIENTID_CONFIRM`, and an NFSv4.1 `EXCHANGE_ID` none until its first `CREATE_SESSION`; the unconfirmed proposal is volatile at the answering node and confirmed only by its principal within one lease period. |
 | L39 | No worker waits on a blocked lock: a waiting request leaves a volatile waiter, waiters overlapping one range are served first in, first out, and every waiter ends on grant, cancel, close, disconnect, its client's expiry, its host's restart, or for NFSv4 a missed poll, and on nothing else; no adapter answers a waiting request other than as granted before `CancelLock` has returned. |
 | L40 | Each primary holds at most 4096 caching grants per client; a client at the budget is offered none and is asked to return down to 2048, its least recently used grants first. |
@@ -1648,7 +1690,7 @@ index's tiers.
 | [§2.1](#2.1%20Client) server owner | Send `EXCHANGE_ID` through two `protocol` nodes. Assert one major ID and one scope, two minor IDs, and that the client ID from one is accepted by the other. |
 | [§7.1](#7.1%20Writers%20that%20do%20not%20coordinate) unlocked writers | Two clients, one per protocol, write overlapping 1 MiB ranges of distinct patterns concurrently, 10⁴ times, with commits and offloads between. Assert after each round the overlap holds exactly one writer's pattern, whole, and that it is the one the primary acknowledged last. A design that splits one request across versions fails this. |
 | [§2.2](#2.2%20Open) suspended time | Open a file twice over SMB; set `Modify` to -1 on the first. Write through the first; assert `Modify` unchanged after the existence commit. Write through the second; assert it advanced. Set -2 on the first, write through it; assert it advanced. Repeat on a persistent open across a failover. |
-| [§2.8](#2.8%20NFSv4.0%20owner%20sequences) owner sequence | Over NFSv4.0, one open-owner opens files in two shards with consecutive seqids; assert both accepted. Send a stale seqid to the second shard's file; assert `ErrBadSeqID` and no state change. Fail the home shard over; assert the owner's next sequenced request is accepted in grace as a new owner's. |
+| [§2.8](#2.8%20NFSv4.0%20owner%20sequences) owner sequence | Over NFSv4.0, one open-owner opens files in two shards with consecutive seqids; assert both accepted. Send a stale seqid to the second shard's file; assert `ErrBadSeqID` and no state change. Refuse an `OPEN` with `ErrDelay`, and a `LOCK` at the second shard's primary with `ErrLocked`; assert each advanced its owner's sequence and that owner's next seqid is accepted. Fail the home shard over; assert the owner's next sequenced request is accepted in grace as a new owner's. |
 | [§2.1](#2.1%20Client) owner index | `EXCHANGE_ID` with an owner string, then again with the same verifier from another node: assert the same client ID. Again with a new verifier: assert a new ID and the old one's state released. Again from another principal: assert refused. Restart the node and repeat the first: assert the same ID, found by the index. |
 | [§2.2](#2.2%20Open) opener only | Over NFSv4.0, client A opens a file for write; client B, as another principal, writes and closes using A's stateid. Assert both refused `ErrNotYours` and A's open intact. Guess a stateid by changing one bit of A's; assert it names nothing. |
 | [§2.2](#2.2%20Open) stateid seqid | Upgrade an open, then send `OPEN_DOWNGRADE` with the pre-upgrade seqid: assert refused as old. Send an `OPEN` from a new NFSv4.0 open-owner and then a `READ` before `OPEN_CONFIRM`: assert refused; confirm, then assert the read accepted. |

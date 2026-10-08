@@ -206,7 +206,7 @@ in the metadata store ([RFC 16](rfc-16-metadata-store.md)).
 | Role | Composes | Needs |
 | --- | --- | --- |
 | **protocol** | NFS and SMB endpoints, the pNFS metadata-server endpoint (in a cluster only, [§5.1](#5.1%20pNFS)), the filesystem service ([RFC 17](rfc-17-vfs.md)), the client-address agent ([§5.3](#5.3%20Client%20addressing)); holds no state of its own and forwards to primaries | the metadata store (reads), the primaries' addresses |
-| **storage** | serving as primary or replica of shards ([RFC 11](rfc-11-ownership.md)) and, for the shards it is primary of, namespace writes, open state and locks ([RFC 14](rfc-14-open-state.md)), layouts, the content subsystem — journal and its replication ([RFC 10](rfc-10-journal-replication.md)), engine, carver, syncer, GC — and the pNFS data server; the management API | the metadata store, journal devices, remote-tier credentials |
+| **storage** | serving as primary or replica of shards ([RFC 11](rfc-11-ownership.md)) and, for the shards it is primary of, namespace writes, open state and locks ([RFC 14](rfc-14-open-state.md)), layouts, the content subsystem — journal and its replication ([RFC 10](rfc-10-journal-replication.md)), engine, carver, syncer, GC — and, in a cluster only, the pNFS data server ([§5.1](#5.1%20pNFS)); the management API | the metadata store, journal devices, remote-tier credentials |
 
 The default is **both roles in one process**: a single node, where every call is
 a function call and nothing in this document costs anything.
@@ -258,7 +258,9 @@ roles. No other component builds components; each is handed what it needs.
 3. With `storage`: **shard placement** ([RFC 11](rfc-11-ownership.md)), then the **content subsystem** —
    engine, journals and their replication, carver, syncer, GC — in the order
    [RFC 8 §2](rfc-8-engine.md#2.%20Composition) gives, then **namespace** and **open state** for the shards
-   this node acquires, then the pNFS data server and the management API.
+   this node acquires, then **(cluster)** the pNFS data server, and the
+   management API. A single node composes no data server and advertises no
+   pNFS role ([§5.1](#5.1%20pNFS), [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 4. With `protocol`: the **router** ([§6](#6.%20Learning%20primaries)), the **filesystem service** over a local
    view of what this node owns and a remote view of everything else, the
    **client-address agent**, and last the **adapters**, which start accepting
@@ -352,7 +354,7 @@ Every call a node forwards to a primary carries one envelope:
 
 | Field | Means |
 | --- | --- |
-| request ID | minted by the front-end per client connection: the front-end's node ID and node epoch, the connection, and a number never reused on that connection, so it is unique across the cluster. A retry the front-end recognises on that connection — the same NFSv4.1 session slot and sequence ID, the same RPC transaction ID from the same client — reuses the original's ID. It is never derived from names the client chooses: SMB message IDs are per connection, so two channels of one session can send two different requests under one (client GUID, session ID, message ID) |
+| request ID | derived from the protocol's own retry identity, not from the connection, because an NFSv4 client retries only on a new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0, (client address, XID, procedure, checksum of the arguments), as a server's reply cache keys a retry; for NFSv4.1, (session, slot, sequence ID). A retry carrying the same identity, on any connection and through any front-end that holds the client's address, carries the same ID ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)). An SMB request is given an ID the front-end mints — its node ID and node epoch, the connection, and a number never reused on it — since SMB names its retries by open state instead (below); it is never derived from SMB message IDs, which are per connection, so two channels of one session can send two different requests under one (client GUID, session ID, message ID) |
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the front-end; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)) |
@@ -380,21 +382,22 @@ Every call a node forwards to a primary carries one envelope:
   matches it as MS-SMB2 does: a create by its create GUID, a lock by the open's
   lock sequence, and every other operation on an open by the open's channel
   sequence, refusing one whose channel sequence is stale (MS-SMB2 3.3.5.2.10).
-  That state is open state, held by the primary and handed over with it, so it
-  survives the loss of a front-end.
+  The channel sequence and the counts of requests outstanding under it are
+  fields of the `Open` record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), held at the primary, handed
+  over with it, and durable with a persistent open, so a stale replayed write
+  is refused after the loss of a front-end and after a failover alike.
 
-> decision: an NFS retry that reaches a different front-end is a new request.
-> NFSv3 and NFSv4.0 name no retry, and an NFSv4.1 session — its slot table and
-> replay cache — lives at the front-end and dies with it: the client finds the
-> session gone, creates a new one, and resends under a new slot and a new request
-> ID. A non-idempotent call whose reply was lost can then be applied twice, as
-> after a restart of a server without persistent sessions, which NFS clients
-> already tolerate; an exclusive create stays safe by its stored verifier
-> ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)). Overturned if re-applied
+> decision: an NFSv4.1 retry after its session was lost is a new request. The
+> session — its slot table and replay cache — lives at the front-end and dies
+> with it: the client finds the session gone, creates a new one, and resends
+> under a new slot and so a new request ID. A non-idempotent call whose reply was
+> lost can then be applied twice, as after a restart of a server without
+> persistent sessions, which NFS clients already tolerate; an exclusive create
+> stays safe by its stored verifier
+> ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)). NFSv3 and NFSv4.0 retries keep their identity
+> across a front-end loss, since it names no session. Overturned if re-applied
 > non-idempotent calls across a front-end loss show up in client-visible errors;
-> then NFSv4.1 sessions are persisted in the store with their replay caches, and
-> NFSv3 and NFSv4.0 entries are keyed on (client address, transaction ID) as a
-> duplicate-request cache does.
+> then NFSv4.1 sessions are persisted in the store with their replay caches.
 
 ### 4.4 Node channels
 
@@ -440,8 +443,12 @@ file across data servers needs per-file or range shards, which are deferred to
   file moves to another shard, the layout **MUST** be recalled, and revoked at the
   recall deadline
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
-- **Existence** is committed by the primary at its stability point — a stable
-  write or `COMMIT` — fenced by the file's fence records. A `LAYOUTCOMMIT` for a
+- **Existence** is committed by the primary, fenced by the file's fence records,
+  as on any other path: group-committed within a bounded age of the sync, with a
+  stability point — a stable write or `COMMIT` — waiting only for the existence
+  commit of an overwrite of committed content
+  ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)). Appends and hole fills reach the store lazily, so
+  the store does not reflect every flushed write until that commit lands. A `LAYOUTCOMMIT` for a
   layout whose epoch is stale **MUST** fail with `NFS4ERR_BADLAYOUT`, so the
   client rewrites through a fresh layout instead of committing a size over
   writes a failed primary lost.
@@ -551,7 +558,7 @@ store gives no high availability, whatever the roles.
 | T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost, and only after that node's lease has lapsed, the marking node has held the claim hold, and every `storage` node refuses its node epoch. |
 | T8 | A coordinator that is not the primary of a file it leaves without entries writes its pending release; only the file's primary releases it. |
 | T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
-| T10 | A request ID is minted by the front-end per connection and reused only by a retry it recognises on that connection; such a retry is answered from a durable record of its first result across a takeover of the primary. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or channel sequence. |
+| T10 | An NFS request ID is the protocol's retry identity — (client address, XID, procedure, argument checksum) for NFSv3 and NFSv4.0, (session, slot, sequence ID) for NFSv4.1 — so a retry on a new connection or through another front-end carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or the channel sequence and outstanding counts in its `Open`, durable for a persistent open. |
 | T11 | A single node advertises no pNFS and answers every layout operation with `NFS4ERR_NOTSUPP`. |
 
 ## 9. Conformance and benchmarks
@@ -577,14 +584,19 @@ store gives no high availability, whatever the roles.
   node. Assert both refused (T9).
 - **Retry across a primary takeover:** over NFSv3, NFSv4.1 and SMB 3.x, drop the
   reply of a non-idempotent call, fail the primary over, let the client retry
-  through the same front-end. Assert one application and the first result (T10).
+  through the same front-end. Assert one application and the first result. Repeat
+  over NFSv4.0 and NFSv3 with the retry sent on a new connection, and through a
+  second front-end that took the client's address over: assert the same (T10). A
+  request ID minted per connection applies the NFSv4.0 retry twice.
 - **Multichannel message IDs:** two channels of one SMB session send two
   different writes under the same message ID. Assert both are applied (T3, T10).
   A table keyed on (client GUID, session ID, message ID) answers the second with
   the first's result and fails this.
 - **SMB replay on another channel:** lose the reply of a create and of a lock on
   one channel, replay each on a second channel. Assert one open and one lock;
-  replay a write with a stale channel sequence and assert it is refused (T10).
+  replay a write with a stale channel sequence and assert it is refused; then
+  fail the primary over and replay it again on a persistent open, and assert it
+  is still refused (T10).
 - **No pNFS on one node:** against a single node, assert `EXCHANGE_ID` does not
   advertise a pNFS metadata server and `LAYOUTGET` answers `NFS4ERR_NOTSUPP` (T11).
 - **Marking after a stall:** stall the store for 15 s under two `protocol`

@@ -282,8 +282,10 @@ derived from its identifier.
 ## 3. Interface
 
 ```go
+Init(dir string, install InstallationID) (JournalID, error)
 Open(dir string, floor Version, expect JournalID) (*Journal, error)
 (*Journal) Share(tag ShareTag, limit int64, floor Version, imported bool) (*Handle, error)
+(*Journal) Forget(tag ShareTag) error
 ```
 
 One journal serves several shares. Each share's engine works through its own
@@ -291,7 +293,16 @@ One journal serves several shares. Each share's engine works through its own
 written into every record the share appends ([§4.3](#4.3%20Records)), so recovery rebuilds each
 share's accounting ([§7](#7.%20Capacity)); a file belongs to one share for its life. `Open`'s `floor` is
 the version floor of [§9.1](#9.1%20Rebuilding); `expect` is the identity the caller has recorded for
-this directory, zero when it has none ([§9.4](#9.4%20Unattachable%20files)).
+this directory ([§9.4](#9.4%20Unattachable%20files)).
+
+**Only an explicit initialisation step creates a journal.** `Init` creates a new
+journal in a directory that holds none, writing into its `format` file
+([§4.1](#4.1%20Layout)) a fresh journal identity and the **installation ID** it is given — the
+one the same initialisation step writes into the metadata store's bootstrap
+([RFC 16](rfc-16-metadata-store.md)) — and returns the identity for the caller to record. `Open` never
+creates one ([§9.4](#9.4%20Unattachable%20files)). So a start that finds a journal and no metadata store, or
+a metadata store and no journal, can tell which side is missing instead of
+taking either for a first start.
 
 **A share attached after open raises the counter first.** `Share`'s `floor` is
 the share's own version floor: the highest content version recorded for any file
@@ -306,11 +317,32 @@ older bytes are served.
 
 **A share attached as an import holds none of its old extents.** `imported` is
 set when the share arrives from another installation — a move back, a recovery
-import ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)). If the journal still holds any extent under `tag`, `Share`
-**MUST** delete every one of them, as `Delete` would, before it returns the
-handle, or refuse naming the tag. Otherwise the journal would serve its own stale,
-clean extents, keyed by FileIDs the share kept, over what the other installation
-wrote since.
+import ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step)). If the journal still holds anything under `tag`, `Share`
+**MUST** `Forget` the tag before it returns the handle, or refuse naming the tag.
+Otherwise the journal would serve its own stale, clean extents, keyed by FileIDs
+the share kept, over what the other installation wrote since.
+
+**`Forget` drops a tag whole, and leaves nothing to settle.** It appends one
+header-only **forget record** naming the tag, durable before it returns, and
+drops from the index every held and retained extent, removal marker and hold
+mark of the tag's files; recovery applies the record to every record of the tag
+with a lower sequence number, so none of them is held, retained or rebuilt as a
+marker again ([§9.1](#9.1%20Rebuilding)). `Since` never yields it and no caller settles it: unlike
+a `Delete` per file, whose markers wait for a metadata transaction ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)),
+`Forget` is used exactly where no such transaction will come. It is the
+**detach** of a move's drop ([RFC 12 §4.2](rfc-12-snapshots.md#4.2%20The%20move%2C%20step%20by%20step), step 9) and of an import's attach
+above. `Forget` **MUST** be refused while a handle of the tag is open. The record
+draws on the reserved headroom ([§7](#7.%20Capacity)), and is live while any segment holds a
+record of the tag below its sequence number ([§8.2](#8.2%20Repack)).
+
+**A tag no share claims is resolved before serving.** After a recovery import,
+which gives the shares new identities ([RFC 12 §3.3](rfc-12-snapshots.md#3.3%20Restore)), or a share's deletion, the
+journal can hold records under a tag no share of the installation claims; its
+dirty extents would never be offered and never become evictable. The caller
+**MUST**, before it serves, either export each such tag's held extents for
+salvage — read through a handle attached for the purpose, then `Forget` — or
+`Forget` it at once, and report every such tag with its held and dirty bytes.
+`Stats` names every tag that holds a record ([§3.7](#3.7%20State%20introspection)).
 
 ### 3.1 Write
 
@@ -374,9 +406,9 @@ a `missing` extent passes it back to `Fill`.
 ### 3.3 Offload
 
 ```go
-Offload(id FileID, limit, widen int64, fn func(o Offer, report func(offloaded []Extent)) error) error
+Offload(id FileID, limit, widen int64, fn func(o Offer, report func(offloaded []Extent) error) error) error
 
-OffloadMany(ids []FileID, limit, widen int64, fn func(offers []Offer, report func(id FileID, offloaded []Extent)) error) error
+OffloadMany(ids []FileID, limit, widen int64, fn func(offers []Offer, report func(id FileID, offloaded []Extent) error) error) error
 
 type Offer struct {
     ID         FileID
@@ -444,7 +476,10 @@ pass.
 
 - `report` **MAY** be called any number of times while `fn` runs.
 - Once `fn` returns, `report` **MUST** fail: the offer is over, and its records
-  may have moved or been superseded.
+  may have moved or been superseded. It also returns the error of the offloaded
+  record it appends ([§9.2](#9.2%20Offload%20state%20after%20recovery)) — the exhausted headroom of [§7](#7.%20Capacity), or a failed
+  write — and then marks nothing; the extents stay dirty and a later offer
+  carries them again.
 - The error `fn` returns covers only what was not reported; it takes back nothing.
 
 **A `report` costs what it reports.** Marking *k* extents **MUST** cost
@@ -587,7 +622,7 @@ newer than what is held, supersedes it and owes an offload; a fill is older, mus
 not touch held content, and is offloaded already. An implementation **SHOULD** share
 their append machinery and **MUST NOT** expose them as one entry point selected by
 a parameter: a caller passing the wrong value would discard a client's write or
-make undurable content evictable, and nothing would fail at the time.
+make content not yet offloaded evictable, and nothing would fail at the time.
 
 ### 3.5 Release
 
@@ -634,12 +669,24 @@ was before the release. A release record draws on the reserved headroom of
 Truncate(id FileID, size int64) (Version, error)
 Deallocate(id FileID, e Extent) (Version, error)
 Delete(id FileID) (Version, error)
+CloneTarget(id FileID, spec CloneSpec) (Version, error)
+
+type CloneSpec struct {
+    Src            FileID
+    SrcOff, DstOff int64
+    Len            int64
+    AsOf           Seq // the source's change sequence the clone resolves at (§3.2)
+}
 ```
 
 `Truncate` stops holding every extent at or beyond `size` and narrows an extent
 straddling it. `Deallocate` stops holding `e`, whatever its offloaded bit, and is
 how a punched extent stops being served ([RFC 8 §8.2](rfc-8-engine.md#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)). `Delete` stops holding every
-extent of `id`.
+extent of `id`. `CloneTarget` stops holding `(spec.DstOff, spec.Len)` of `id` as
+`Deallocate` does, and its record and marker carry `spec`: the removal phase 1 of
+a clone makes ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)). `Since` yields that marker with its spec, so a
+restart that re-applies it rebuilds the clone and resumes it, rather than applying
+a plain removal that would leave the destination reading zeros.
 
 Each is versioned like a write: the journal assigns the version inside the file's
 serialised append, appends a record carrying it, and leaves a **removal marker** —
@@ -664,7 +711,8 @@ repeated, idempotent metadata step.
 Each **MUST** be durable on return, and **MUST NOT** require the affected
 storage to be reclaimed first — reclamation is asynchronous ([§8](#8.%20Reclamation%20mechanisms)). Their
 records draw on the reserved headroom of [§7](#7.%20Capacity), and are never refused by the
-journal's own limit.
+journal's own limit; the one refusal they can meet is the exhausted headroom of
+[§7](#7.%20Capacity), which only removals of content the journal does not hold can reach.
 
 None of them is gated on the offloaded bit, and an implementation **MUST NOT**
 gate one. Discarding content the user removed is not data loss, and an
@@ -721,7 +769,7 @@ walk can produce is omitted.
 | `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([§9.1](#9.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
 | `LossGeneration` | value | raised on every loss of content not yet offloaded and every failed sync window; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
-| `Shares` | per share | `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§7](#7.%20Capacity)) |
+| `Shares` | per share | every tag that holds a record, attached or not ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§7](#7.%20Capacity)) |
 
 `DirtyBytes` against `HeldBytes` says whether anything is evictable at all, and
 `HeldBytes` against `UsedBytes` whether a full journal is full of content or of
@@ -799,9 +847,9 @@ index, unless a snapshot hold keeps it ([§3.11](#3.11%20Snapshot%20holds)).
 
 At open, every loss record still on disk is placed in the ring, marked as found
 at open, so a restart does not hide a loss nobody had read. A loss record is
-dropped by the same per-file test as a removal record ([§8.2](#8.2%20Repack)): once no segment
-still on disk holds a record of its file at or below the pair of the record it
-names, neither that record nor a copy of it can come back. Recovery that drops a record as
+dropped by the same per-extent test as a removal record ([§8.2](#8.2%20Repack)): once no segment
+still on disk holds a record of its file over its extent at or below the pair of
+the record it names, neither that record nor a copy of it can come back. Recovery that drops a record as
 corrupt appends the loss record once, so the next open applies it and does not
 report the same loss again.
 
@@ -880,15 +928,21 @@ Since(id FileID, from Version) iter.Seq2[Change, error]
 Settle(id FileID, v Version)
 
 type Change struct {
-    Kind    ChangeKind // write, truncate, deallocate or delete
+    Kind    ChangeKind // write, truncate, deallocate, delete, clone target or loss
     Extent  Extent     // a held extent, or the extent a removal marker covers
     Version Version
+    Clone   *CloneSpec // a clone target's spec (§3.6); nil for every other kind
 }
 ```
 
-`Since(id, from)` yields every held extent of `id` and every unsettled removal
-marker whose version is strictly above `from`, each with its version, in version
-order. It is how the engine learns, after a crash, what the journal holds that
+`Since(id, from)` yields every held extent of `id`, every unsettled removal
+marker and every synced loss record ([§3.8](#3.8%20Loss%20events)) whose version is strictly above
+`from`, each with its version, in version order. A loss is yielded so the engine
+can commit a lost write's existence from it, and the range reads **Lost** rather
+than as the file was before the write ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); an unsynced loss is not
+yielded, since its write was never answered as stable. A synced loss record
+above the caller's `applied` is therefore live, like an unsettled marker, until
+`Settle` covers it. It is how the engine learns, after a crash, what the journal holds that
 metadata has not recorded: the engine passes the file's `applied` version
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A held extent is reported as a write, whether it came from `WriteAt`
 or `Fill`: a fill carries the version of a ref metadata already has, so it lies
@@ -909,7 +963,7 @@ rebuilds it.
 Hold(share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
 Unhold(share ShareID, cut SnapshotCut) error
 Held(share ShareID) (bytes int64)
-Stamp(id FileID, through Version, cut SnapshotCut)
+Stamp(id FileID, through Version, cut SnapshotCut) error
 ```
 
 A snapshot cut is taken without draining the journal ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)); the
@@ -922,7 +976,9 @@ version of `id` it covered up to `through`. It is stored with those versions, no
 with each write record: a version's cut is the cut of the commit that made it
 exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each version with its
 stamp, and the offload commit copies it into the ref as `born`
-([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A stamp is a journal record made durable by the file's next `Sync`,
+([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A `Stamp` that cannot append its record — the headroom exhausted
+([§7](#7.%20Capacity)), or a failed write — returns the error and records nothing, and the
+caller treats it as the lost stamp below. A stamp is a journal record made durable by the file's next `Sync`,
 which every existence commit takes first, and where replication is composed it is
 a replicated operation like `Hold`. A file's existence commits are serialised, so
 at most the latest stamp — one not yet durable, or not yet replicated when its
@@ -980,7 +1036,7 @@ One directory per journal, containing:
 
 | Name | Is |
 | --- | --- |
-| `format` | the format version and the **journal identity**: a random 128-bit value chosen when the journal is created and never changed, both covered by a checksum. From the replication extension's version on it also holds the journal's **generation**, which only that extension changes: it is raised, and swapped into the metadata store, at every open of the journal and every acquisition and renewal of its node's lease — at open and acquisition before anything is served from it — and a journal whose swap loses serves nothing more ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)). An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
+| `format` | the format version, the **journal identity** — a random 128-bit value chosen when the journal is created and never changed — and the **installation ID** the explicit initialisation step wrote ([§3](#3.%20Interface)), all covered by a checksum. From the replication extension's version on it also holds the journal's **generation**, which only that extension changes: it is raised, and swapped into the metadata store, at every open of the journal and every acquisition and renewal of its node's lease — at open and acquisition before anything is served from it — and a journal whose swap loses serves nothing more ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)). An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
 | `<id>.seg` | a segment, zero-padded fixed-width id, ascending |
 
 An implementation **MUST NOT** require any other file to reconstruct its state
@@ -988,7 +1044,8 @@ An implementation **MUST NOT** require any other file to reconstruct its state
 
 ### 4.2 Segments
 
-A segment is append-only, capped at a configured size, and **sealed** when the
+A segment is append-only, capped at a fixed size — one constant of the
+implementation, not a setting; its value is open ([§12](#12.%20Open%20questions)) — and **sealed** when the
 cap is reached. A sealed segment **MUST NOT** be appended to again.
 
 **A file spans segments; a record does not.** Nothing ties a file to one
@@ -1006,7 +1063,7 @@ serialised; writes to different `FileID`s **MAY** proceed concurrently, and the
 number of independent append streams is configurable.
 
 **A segment is allocated whole when it is created.** The journal creates a
-segment at its configured cap and allocates every byte of it at once, with the
+segment at its cap and allocates every byte of it at once, with the
 platform's allocation call or, where there is none, by writing zeros
 ([Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile)). Records are then written into space the filesystem already
 allocated, so an append never needs the filesystem to find space, and the file
@@ -1028,7 +1085,7 @@ created and covered by its own checksum. It **MUST** identify:
 - the segment's own id;
 - its **predecessor**: the id of the segment its append stream sealed before
   opening this one, or none. A stream that leaves a segment after a failed sync
-  ([§6.3](#6.3%20A%20failed%20sync)) names none: that segment's seal is not known to be durable, so
+  ([§6.3](#6.3%20A%20failed%20sync)) names none: that segment is never sealed, so
   recovery treats it as one that could have been open at a crash, and its
   unsynced tail as torn ([§9.3](#9.3%20Torn%20and%20corrupt%20records)).
 
@@ -1066,13 +1123,15 @@ it describes.
 ### 4.3 Records
 
 Each record carries a header; a write or fill record carries a payload of
-content, and a loss record a fixed payload naming the record it drops ([§3.8](#3.8%20Loss%20events)). The header
+content, a loss record a fixed payload naming the record it drops ([§3.8](#3.8%20Loss%20events)), and a
+clone target record a fixed payload carrying its clone spec ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)). The header
 **MUST** identify:
 
-- the record's kind: write, fill, release, truncate, deallocate, delete,
-  offloaded, unmark ([§9.2](#9.2%20Offload%20state%20after%20recovery)), loss ([§3.8](#3.8%20Loss%20events)), hold, unhold or stamp
-  ([§3.11](#3.11%20Snapshot%20holds))
-- the `FileID` it belongs to, and the tag of its share ([§3](#3.%20Interface))
+- the record's kind: write, fill, release, truncate, deallocate, delete, clone
+  target ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), offloaded, unmark ([§9.2](#9.2%20Offload%20state%20after%20recovery)), loss ([§3.8](#3.8%20Loss%20events)), hold, unhold, stamp
+  ([§3.11](#3.11%20Snapshot%20holds)) or forget ([§3](#3.%20Interface))
+- the `FileID` it belongs to, and the tag of its share ([§3](#3.%20Interface)); a forget record names
+  only the tag, with a zero `FileID`
 - the file offset it begins at, and its length, both 64-bit: a removal can cover
   any extent of a file
 - its sequence number and its content version ([§5.3](#5.3%20Versions)): for a release, the version
@@ -1119,7 +1178,7 @@ kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)
 
 | Field | Example | What it is for |
 | --- | --- | --- |
-| kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `offloaded`, `unmark`, `loss`, `hold`, `unhold`, `stamp`) |
+| kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `clone target`, `offloaded`, `unmark`, `loss`, `hold`, `unhold`, `stamp`, `forget`) |
 | segment id | 42 | which segment the record was written into; a record found anywhere else is not this segment's |
 | `FileID` | `7c1e…` (alice.vhdx) | which file the bytes belong to |
 | share tag | `profiles` | which share's limits the bytes count against ([§3](#3.%20Interface)) |
@@ -1131,10 +1190,10 @@ kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)
 | payload checksum | CRC32C | detects damage to the bytes |
 | header checksum | CRC32C | detects damage to every field above, payload checksum included |
 | modification time | 2026-10-07 09:05:00.123 | `write` only: the `mtime` the write sets, or zero when the open suspended it; covered by the payload checksum |
-| payload | 64 KiB of data | the bytes themselves; only `write` and `fill` carry content. A `loss` record's payload is 16 bytes: the sequence number of the record it drops, then a flag word whose lowest bit says the dropped record was synced ([§3.8](#3.8%20Loss%20events)) |
+| payload | 64 KiB of data | the bytes themselves; only `write` and `fill` carry content. A `loss` record's payload is 16 bytes: the sequence number of the record it drops, then a flag word whose lowest bit says the dropped record was synced ([§3.8](#3.8%20Loss%20events)). A `clone target` record's payload is 32 bytes: the source `FileID`, the source offset and `AsOf`; its file offset and length are the spec's `DstOff` and `Len` ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
 
-Only `write` and `fill` carry content. Every other kind — `loss` with its fixed
-payload included — changes what the earlier records mean: a `release` stops holding an extent, an
+Only `write` and `fill` carry content. Every other kind — `loss` and `clone
+target` with their fixed payloads included — changes what the earlier records mean: a `release` stops holding an extent, an
 `offloaded` marks it offloaded, a `truncate` drops everything past an offset.
 
 **The record header's byte layout.** All integers little-endian, packed without
@@ -1166,7 +1225,7 @@ value, and never from the clock at commit, so a suspended time stays suspended a
 replayed write keeps the time the client saw. No other kind carries the field.
 
 A record starts at a multiple of 8 bytes within its segment: the modification
-time for `write`, then the payload, of `length` bytes for `write` and `fill`, 16 bytes for `loss` and none otherwise, is followed by zero
+time for `write`, then the payload, of `length` bytes for `write` and `fill`, 16 bytes for `loss`, 32 for `clone target` and none otherwise, is followed by zero
 padding to the next multiple of 8, which no checksum covers and a reader ignores.
 Both checksums are CRC32C **seeded with the journal identity**: each is the CRC32C
 of the 16-byte journal identity of [§4.1](#4.1%20Layout) followed by the bytes it covers. A
@@ -1179,8 +1238,9 @@ damage ([§9.3](#9.3%20Torn%20and%20corrupt%20records)). A header slot that is a
 of what was written only where no verifying header follows it ([§4.2](#4.2%20Segments), [§9.3](#9.3%20Torn%20and%20corrupt%20records)).
 
 A record whose payload checksum does not verify **MUST NOT** be used to serve a
-read. A record wholly covered by a release, truncate, deallocate, delete or synced
-loss record that outranks it ([§5.3](#5.3%20Versions)), or named by a loss record, is not held, and recovery **MUST NOT** verify or
+read. A record wholly covered by a release, truncate, deallocate, delete, clone target
+or synced loss record that outranks it ([§5.3](#5.3%20Versions)), named by a loss record, or of a
+tag a later forget record names, is not held, and recovery **MUST NOT** verify or
 report its payload.
 
 ### 4.4 The segment catalog
@@ -1463,9 +1523,16 @@ sized against a memory budget at about 51 bytes per entry) caps the entries of
 all files of the journal together. A `WriteAt` or `Fill` that would raise the
 count above the bound is refused at once, with the same named refusal as a
 capacity refusal, naming the index as the limit ([§7](#7.%20Capacity)), and counted in
-`index_refusals`. Records without bytes are never refused by it: a removal or a
-release only ever lowers the count of held extents, and a removal marker it adds
-is bounded by the files that hold one. The engine gets out of the refusal as out
+`index_refusals`. Records without bytes are never refused by it, though they can
+raise the count: a release or deallocate inside one held extent splits it in two,
+and a removal leaves a marker. Each adds at most two entries, and a refused one
+would wedge the very calls that lower the count, so the bound caps what content
+writes may add and the count may stand above it by what removals and releases
+added since; content writes stay refused until it falls back below. **An index
+over its bound at open** — rebuilt from records the bound did not refuse, or
+opened under a lowered `ExtentLimit` — is no different: the open **MUST**
+succeed, and `WriteAt` and `Fill` are refused until the count drops below the
+bound. The engine gets out of the refusal as out
 of a capacity one: it offloads and releases dirty content of the files holding
 the most entries, and repacks to coalesce what stays.
 
@@ -1676,8 +1743,11 @@ dropped the dirty pages it could not write and marked them clean, so a second
 sync can succeed without having written them, and a read of those pages can
 return what the device held before rather than what was written. So after a
 failed sync of a segment, **everything written to that segment since its last
-successful sync is not durable**, the segment takes no further append, and the
-stream continues in a new segment whose header names no predecessor ([§4.2](#4.2%20Segments)).
+successful sync is not durable**, the segment takes no further append — not
+even a seal marker: **a failed segment is never sealed** — and the stream
+continues in a new segment whose header names no predecessor ([§4.2](#4.2%20Segments)). The
+failed segment stays accounted at its cap to the journal until it is unlinked
+([§8.3](#8.3%20Accounting)), and is a repack candidate at once.
 For the window, the journal **MUST** do one of two things:
 
 - **re-append it.** Append those records again to the new segment and sync it;
@@ -1688,7 +1758,13 @@ For the window, the journal **MUST** do one of two things:
   payload checksum the journal computed when it wrote the record and kept in
   memory, never against the checksum read back with it. The page cache of a
   failed segment is not evidence: a read that does not verify against the kept
-  checksum fails that record's part of the window instead;
+  checksum fails that record's part of the window instead. **A header-only
+  record is always re-appended, never failed**: the journal keeps every one of a
+  window in memory until it is synced, since it is a header and at most a 32-byte
+  payload, so a removal, release, offloaded, unmark, loss, hold, unhold, stamp or
+  forget record never becomes a loss. Failing one would have no defined meaning —
+  a failed truncate or release would bring back what it removed — and nothing
+  forces it, because its bytes never depend on the failed segment's pages;
 - **fail it.** Drop exactly the window's records from the index, each as a loss
   event with an unsynced loss record in the new segment naming it by sequence
   number ([§3.8](#3.8%20Loss%20events)). Content those records superseded was kept, because a
@@ -1721,8 +1797,8 @@ fails every later flush, commit and offload of the file until a restart.
 Until the loss records are durable, a crash can find the window's records whole
 on the old segment and hold them again; that serves the client's own
 acknowledged bytes and loses nothing. Recovery does not then trust them as
-synced: they lie past the last proven sync point, and are re-appended at open
-([§9.1](#9.1%20Rebuilding)).
+synced: they lie past the last proven sync point, and are verified in place at
+open and re-appended only where that fails ([§9.1](#9.1%20Rebuilding)).
 
 ## 7. Capacity
 
@@ -1741,7 +1817,11 @@ are allocated whole ([§4.2](#4.2%20Segments)), so a write into one changes no a
 - **a share's limit bounds the record bytes of its records on disk** — header,
   payload and padding — counted when a record is written and released when the
   segment holding it is unlinked. Every record byte is accounted to the share
-  whose tag it carries.
+  whose tag it carries — with one named exception: a header-only record, drawn
+  from the headroom below, is counted in its share's `UsedBytes` like any other
+  record, so the share's usage reports it, but never reserves against or is
+  refused by the share's limit. Its storage is the headroom's, which the journal
+  sets aside outside every limit.
 
 `WriteAt` and `Fill` **MUST** reserve their record bytes, before accepting them,
 against the share's limit and against the free space left in their stream's
@@ -1767,18 +1847,24 @@ space (`ErrNoSpace`) only after it, by the one table of
 [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here). A full filesystem underneath (`ENOSPC`) is reported as
 itself.
 
-**Records without bytes are never refused by the journal's own limit.** Release,
-truncate, deallocate, delete, offloaded, unmark and loss records, seal markers and
-footers are what frees space or keeps it accounted; refusing them at the limit
-would wedge a full journal. They draw on a **reserved headroom** the journal sets
-aside at open, outside every share's limit: at least one seal marker and footer
-per open stream plus a configured number of header-only records (proposal:
-65,536, about 6 MiB). `ErrNoSpace` is never returned for them.
+**Records without bytes are not refused by the journal's own limit.** Release,
+truncate, deallocate, delete, clone target, offloaded, unmark, loss, hold, unhold,
+stamp and forget records, seal markers and footers are what frees space or keeps
+it accounted; refusing them at the limit would wedge a full journal. They draw on
+a **reserved headroom** the journal sets aside at open, outside every share's
+limit: at least one seal marker and footer per open stream plus a configured
+number of header-only records (proposal: 65,536, about 6 MiB). `ErrNoSpace` is
+never returned for them. Their one refusal is the exhausted headroom below, and
+only removals of content the journal does not hold can bring it about.
 
 **The headroom is real storage, allocated in advance.** The journal holds it as
 spare segments, created and allocated at their cap ahead of need ([§4.2](#4.2%20Segments)), so a
 header-only record never needs the filesystem to find space; a filesystem that
-fills (`ENOSPC`) cannot take it away. When a stream's segment fills, a spare
+fills (`ENOSPC`) cannot take it away — on a filesystem that writes allocated
+space in place. A copy-on-write filesystem can allocate anew on the first write
+into allocated space, so there the headroom holds only with copy-on-write
+disabled for the journal's files, and outside every filesystem snapshot, as
+[Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile) requires. When a stream's segment fills, a spare
 becomes its next segment and the journal allocates a new spare; if that
 allocation fails, content writes are refused until it succeeds, and header-only
 records go on drawing on what is allocated.
@@ -1916,7 +2002,7 @@ takes no new pin until the pass ends with it.
 **Content preservation.** Repack **MUST** preserve the set of held extents and of
 retained extents ([§3.11](#3.11%20Snapshot%20holds)), the bytes they produce, and their offloaded bits. Resetting an offloaded bit would make
 offloaded content look dirty and cause it to be re-uploaded; setting one would make
-undurable content evictable.
+content not yet offloaded evictable.
 
 **A copy of content gets a new sequence number and keeps its content version**
 ([§5.3](#5.3%20Versions)). The new sequence number makes the copy the successor if a crash leaves
@@ -1942,47 +2028,63 @@ is unlinked ([§8.1](#8.1%20Releasing%20storage)). Adjacent held extents of one 
 version and an offloaded bit are copied as one record, so repacked content
 coalesces ([§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)).
 
-**Records without content are carried forward.** A release or loss record is
-live while it may still outrank a record of its file in another segment
-([§5.3](#5.3%20Versions)). A truncate, deallocate or delete record is live while it may still outrank
-a record in another segment **or** its removal marker is unsettled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)):
-recovery rebuilds the marker from it. An offloaded or unmark record is live while it
+**Records without content are carried forward.** A release record, or a synced
+loss record, is live while it may still outrank a record of its file in another
+segment ([§5.3](#5.3%20Versions)), and a synced loss record also while `Settle` has not covered it
+([§3.10](#3.10%20Settle%20and%20Since)); an unsynced loss record reaches only the record it names
+([§3.8](#3.8%20Loss%20events)), and is live while any segment holds a copy of that record. A
+truncate, deallocate, delete or clone target record is live while it may still
+outrank a record in another segment **or** its removal marker is unsettled
+([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)): recovery rebuilds the marker from it. A forget record is live while
+any other segment holds a record of its tag below its sequence number ([§3](#3.%20Interface)).
+An offloaded or unmark record is live while it
 decides the bit of a held or retained extent ([§9.2](#9.2%20Offload%20state%20after%20recovery)). Hold, unhold and stamp
 records are live while the hold or stamp they record is ([§3.11](#3.11%20Snapshot%20holds)). A segment is
 **held** while it backs a held or retained extent or holds a live one of these
 records; repack copies such records forward like held content, and a segment that
 is not held is unlinked ([§8.1](#8.1%20Releasing%20storage)).
 
-**A removal record is dropped per file, by version, not by sequence.** A
-removal, release or loss record outranks a record exactly when its (content
-version, sequence number) pair is the greater ([§5.3](#5.3%20Versions)), so a record appended
-after it can still be one it outranks: a repack copy of retained content, or a
-fill, keeps an old version under a new sequence number. It can only ever outrank
-records **of its own file**. So a removal, release or loss record whose marker,
-if it has one, is settled, and below whose pair **no other segment holds a record
-of the same file** ([§5.1](#5.1%20What%20it%20must%20answer)), can outrank nothing on disk, and repack drops it —
-once the unlinks it counted on are durable ([§6.1](#6.1%20Ordering%20rules)). Comparing sequence
-numbers alone would drop a truncate that still covers a repacked copy of older
-retained content, and a crash would then bring that content back as held.
-Comparing against the lowest pair of every segment journal-wide would never drop
-it: every fill and every repacked copy of cached content carries an old version
-by design, so that minimum stays at the oldest cached content of any file, every
-later header-only record stays pinned behind it, and the headroom drains until
-the journal wedges.
+**A removal record is dropped per extent, by version, not by sequence.** A
+removal, release or synced loss record outranks a record exactly where their
+extents overlap and its (content version, sequence number) pair is the greater
+([§5.3](#5.3%20Versions)), so a record appended after it can still be one it outranks: a repack
+copy of retained content, or a fill, keeps an old version under a new sequence
+number. It can only ever outrank records **of its own file, inside its own
+extent**. So a removal, release or synced loss record whose marker, if it has
+one, is settled — a synced loss record being settled itself — and below whose pair **no other segment holds a record of the
+same file overlapping its extent** ([§5.1](#5.1%20What%20it%20must%20answer)), can outrank nothing on disk, and
+repack drops it — once the unlinks it counted on are durable ([§6.1](#6.1%20Ordering%20rules)).
+Comparing sequence numbers alone would drop a truncate that still covers a
+repacked copy of older retained content, and a crash would then bring that
+content back as held. Comparing against every record of the file, whatever its
+extent, would pin each release and deallocate of a file behind any older record
+of that file anywhere: a disk image whose boot region is refilled at every login
+would keep every later removal of the image alive, hundreds of thousands per
+eviction cycle. Comparing against the lowest pair journal-wide would never drop
+one at all: every fill and every repacked copy of cached content carries an old
+version by design, so the headroom drains until the journal wedges.
+
+To answer the test, the journal keeps in memory, per file and segment, the
+extents its records on disk cover, each with the lowest pair over it, merged
+where adjacent extents share it; it is rebuilt at open with the index and costs
+at most one entry per record on disk, usually far fewer, since a file's records
+cluster in the segments its stream wrote.
+
+**A pass decides its drops after its own copies.** The test runs once the pass's
+copies are appended, and counts them, its target segment included: a record the
+pass carries forward is on disk below the removal's pair like any other. A test
+run before the copies would drop a settled truncate whose segment it emptied,
+then carry forward the older, snapshot-retained version the truncate covered,
+and a crash would bring those bytes back as held where zeros belong.
 
 **A copy races the file's writes.** A repack copy is appended under the file's
-serialised append ([§4.2](#4.2%20Segments)), and only if its source record is still held at that
-moment. A write, removal or release that superseded the source after repack read
-it wins: the copy is skipped, not appended over the newer state.
-
-> [!note] ponytail
-> The per-file drop test keeps, in memory, one entry per (file, segment) pair
-> that holds a record — about 32 bytes each, at most one per record on disk and
-> usually far fewer, since a file's records cluster in the segments its stream
-> wrote. A removal record still lives as long as its own file has an older record
-> in any segment, so a long-lived segment holding that file's cached content pins
-> it. Upgrade to tracking which older records a removal actually covers when the
-> pair table shows up in memory or removal records in scan time.
+serialised append ([§4.2](#4.2%20Segments)), and only if its source record is still held **or
+retained** at that moment. A write, removal or release that superseded the source
+after repack read it does not make the source dead: it turns held content into
+content retained until that write syncs, or by a hold ([§3.11](#3.11%20Snapshot%20holds)), and the copy is
+still made, as retained. Only a source that is neither — released, or covered
+by a synced superseding record nothing retains — is skipped, so the segment is
+never unlinked while it backs a held or retained extent ([§8.1](#8.1%20Releasing%20storage)).
 
 **Ordering.** Copy the records; make the copies durable; repoint the placement
 index; only then unlink the source. A crash before the unlink leaves both copies
@@ -2012,8 +2114,9 @@ at its cap from creation until its unlink; a segment shortened by a torn-tail
 truncation ([§9.3](#9.3%20Torn%20and%20corrupt%20records)), or at seal, is accounted at its size after it. **A seal
 returns the free tail**: after the seal marker, footer and trailer are durable,
 the journal truncates the segment to end just after its trailer and makes that
-durable, so a segment sealed early — idle ([§9.1](#9.1%20Rebuilding)), or left after a failed
-sync — strands no unwritten space. No record lies past the trailer, so nothing
+durable, so a segment sealed early, idle ([§9.1](#9.1%20Rebuilding)), strands no unwritten space. A
+segment left after a failed sync is not sealed ([§6.3](#6.3%20A%20failed%20sync)) and keeps its cap until
+unlinked. No record lies past the trailer, so nothing
 held or retained is touched; a crash between the two steps leaves a segment
 whose last bytes are not its trailer, which recovery scans instead
 ([§4.4](#4.4%20The%20segment%20catalog)). The accounting therefore
@@ -2090,8 +2193,9 @@ released content leaves nothing on disk — and a restored directory shows up at
 reseed instead, as stale extents ([§9.2](#9.2%20Offload%20state%20after%20recovery)). A share attached later brings its own
 floor, applied before it is served ([§3](#3.%20Interface)).
 
-Recovery also rebuilds each file's retained extents ([§3.11](#3.11%20Snapshot%20holds)) and applies every
-loss record ([§3.8](#3.8%20Loss%20events)) as it applies a release record.
+Recovery also rebuilds each file's retained extents ([§3.11](#3.11%20Snapshot%20holds)), applies every loss
+record by the rule of [§3.8](#3.8%20Loss%20events), which decides what a loss reaches, and applies
+every forget record to the records of its tag below it ([§3](#3.%20Interface)).
 
 There are two sources for the index. An implementation **MUST** be able to scan
 alone, and **SHOULD** read catalogs where they verify:
@@ -2120,13 +2224,20 @@ died but the host did not, records written and never synced are still in the
 operating system's cache: they verify at reopen, and a later power loss takes
 them. So in the newest segment of each stream, every record past the highest
 synced-through offset any verifying record names ([§4.3](#4.3%20Records)) — past the last point
-a sync is proven to have reached — **MUST** be re-appended, keeping its numbers
-([§5.3](#5.3%20Versions)), to a new segment and synced, and the directory synced, before the
-journal serves; the old segment is then sealed after its last verifying record.
-A sync or directory sync that fails here is a failed sync window
-([§6.3](#6.3%20A%20failed%20sync)). The cost is at most what one sync bound's worth of writes appended
-per stream, and it makes "verified at open" mean "on the device".
-
+a sync is proven to have reached — is **verified in place** before the journal
+serves: the journal syncs the segment, then re-reads each such record bypassing
+the page cache (direct I/O, [Appendix A](#Appendix%20A%20%E2%80%94%20platform%20profile)) and checks it against its checksums.
+A record that verifies there is on the device and stays where it is. Only a
+record that does not — or every record of the tail, when the sync fails, which is
+a failed sync window ([§6.3](#6.3%20A%20failed%20sync)) — **MUST** be re-appended, keeping its numbers
+([§5.3](#5.3%20Versions)), from a copy that verified at the first read, to a new segment that is
+then synced with the directory; one that verified at neither read is dropped by
+[§9.3](#9.3%20Torn%20and%20corrupt%20records). Once its tail is proven, the segment is sealed after its last verifying
+record, unless its sync failed ([§6.3](#6.3%20A%20failed%20sync)). The re-appends draw on the repack reserve ([§7](#7.%20Capacity)), never on a share's
+limit, so a journal opened at its maximum after the process was killed still
+opens. The cost is one sync and one read of at most one sync bound's worth of
+writes per stream, and it makes "verified at open" mean "on the device"; in the
+common case it re-appends nothing, and leaves no duplicate copies behind.
 
 ### 9.2 Offload state after recovery
 
@@ -2276,7 +2387,15 @@ segment of a stream the torn-tail rule above still decides whether the bad one i
 torn or corrupt: a record found past it that names a synced-through offset beyond
 it proves it synced.
 
-Each record dropped as corrupt is a loss event with a loss record ([§3.8](#3.8%20Loss%20events)). A
+Each record dropped as corrupt is a loss event with a loss record ([§3.8](#3.8%20Loss%20events)),
+**unless another copy of it verifies.** A re-append ([§6.3](#6.3%20A%20failed%20sync), [§9.1](#9.1%20Rebuilding)) or a carried
+header-only record ([§8.2](#8.2%20Repack)) leaves copies with equal numbers; among them recovery
+uses one that verifies, and a copy that does not verify while another with its
+sequence number does is damage to a dead copy — reported with its segment, not a
+loss, and no loss record is appended for it. Only when no copy verifies is the
+record lost. Otherwise a stale original left on a failed segment, rotting before
+that segment is unlinked, would append a loss naming the sequence number and so
+mask the good copy. A
 segment holding one or more unreadable records **MUST** be reported and
 **MUST NOT** be selected by a reclamation pass while it still backs held extents
 it cannot produce. Once the unreadable records' extents have been dropped as
@@ -2295,8 +2414,10 @@ A directory that holds a segment file but no `format` file ([§4.1](#4.1%20Layou
 this implementation can identify, and open **MUST** fail on it. An
 implementation **MUST NOT** treat such a directory as an empty journal: that
 turns data it cannot read into data it silently no longer holds, and the first
-write then mixes its own segments into the unknown ones. A directory with neither opens as a new journal; any other files in it,
-such as `lost+found`, are left alone.
+write then mixes its own segments into the unknown ones. A directory with neither
+holds no journal: `Open` fails on it, and only `Init` creates one there
+([§3](#3.%20Interface)); any other files in it, such as `lost+found`, are left alone. `Init`
+**MUST** refuse a directory that holds a `format` file or a segment.
 
 **A journal that has gone is not replaced silently.** The journal is opened
 with the identity its caller has recorded for the directory (`expect`), as it
@@ -2307,8 +2428,19 @@ empty directory where a journal was recorded is a lost device, a wrong mount or
 a deleted directory: opening it as new would answer every unoffloaded extent of
 every share on it as never written, and the shares would then serve stale
 remote content or zeros where acknowledged writes were. Only the caller, once
-an operator has acknowledged the loss, opens it again with `expect` zero
-([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+an operator has acknowledged the loss, runs the explicit initialisation step
+again ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+
+**A journal its caller has no record of means the metadata store is lost.**
+`expect` zero says the caller's metadata store records no journal for this
+directory. `Open` with `expect` zero **MUST** fail: on a directory holding a
+journal, with an error naming the journal identity and installation ID its
+`format` file holds ([§4.1](#4.1%20Layout)) — the journal of an installation whose metadata
+store is missing or was replaced, not a first start — and on one holding none,
+as uninitialised. It **MUST NOT** create a journal in either case. A start that
+reaches this cannot proceed until an operator says what happened: a store
+volume that mounted late, a store lost, or a device moved from another
+installation.
 
 ## 10. Concurrency
 
@@ -2484,7 +2616,7 @@ Beyond the named checks, the unit, model and fault tests **MUST** reach these.
 - a write larger than what remains of its segment, and one larger than a whole segment: assert each is split into records at the caps, reads back whole, and that a crash between the pieces leaves it partly held and never misplaced ([§4.2](#4.2%20Segments));
 - one segment selected by eviction and by repack at once, retired by one and then by the other; accounted footprint **MUST** fall by the segment's size exactly once and never go below zero ([§8.3](#8.3%20Accounting));
 
-**Opening**: an empty directory, one holding only a `format` file, and one from an older format.
+**Opening**: an empty directory, one holding only a `format` file, and one from an older format; `Init` on each.
 
 ### 11.3 Environments a check set must cover
 
@@ -2526,7 +2658,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.3](#3.3%20Offload) removal during offload | Truncate an offered extent while `fn` runs, then read `offered`; assert it returns the offered bytes, `ReadAt` reports the extent missing, and a report naming it marks nothing. Repeat with delete. |
 | [§3.3](#3.3%20Offload) neighbours are frozen | Hold offloaded content either side of a dirty extent; offload with `widen`; while `fn` runs, overwrite one neighbour and release the other; assert `Offered` still returns the neighbours' original bytes, `Oldest` covers their versions, and a report naming them changes no bit. |
 | [§8.2](#8.2%20Repack) removal records carried forward | Write A, offload; truncate it away; let every segment holding A's records but the oldest be repacked; reopen; assert the extent reads `missing`, not A. Repeat with a delete and a deallocate. Then truncate a file whose older records are all gone, leave the marker unsettled, repack the truncate's segment, reopen; assert `Since` still yields the marker. |
-| [§8.2](#8.2%20Repack) copy loses to a newer write | Hold a repack after it has read a record and before it appends the copy; overwrite the extent; let the repack continue; assert the new bytes are served, before and after reopen, and no copy of the old record was appended. |
+| [§8.2](#8.2%20Repack) copy loses to a newer write | Hold a repack after it has read a record and before it appends the copy; overwrite the extent and `Sync`, with no hold; let the repack continue; assert the new bytes are served, before and after reopen, and no copy of the old record was appended. Repeat with the overwrite unsynced: assert the copy is appended as retained, the source segment is unlinked, and failing the overwrite's window then serves the old bytes, before and after reopen. A pass that skips a source that has just become retained loses the flushed write when the window fails. |
 | [§3.8](#3.8%20Loss%20events) loss raises the loss generation | Read `LossGeneration`; drop a corrupt dirty extent and assert it rose by one; drop a corrupt offloaded extent and a stale one and assert it did not move; fail a sync and resolve it by failing its window, and assert it rose again before the failing `Sync` returned; fail another and resolve it by re-appending, and assert it did not move. A design without the generation leaves the write verifier unchanged, and a client never resends the writes the loss took. |
 | [§6.3](#6.3%20A%20failed%20sync) failed sync window | Write A and B to one segment; fail the sync at the seam and drop the unsynced writes; let a later sync of the segment succeed; assert `Sync` for A and B either failed or returned only after A and B were synced in another segment, and that after a crash both read back or `Sync` reported the failure. |
 | [§4.2](#4.2%20Segments) directory entry survives | Create a segment, write and `Sync`; crash at the seam dropping every directory change not synced; assert the segment and its record survive. |
@@ -2535,6 +2667,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§8.2](#8.2%20Repack) repack verifies the whole source | Release the middle of an offloaded 1 MiB record, then corrupt a byte in the released middle; repack its segment; assert nothing of the record is copied, it is dropped as corrupt, and both ends read `missing` rather than bytes under a fresh checksum. |
 | [§3.11](#3.11%20Snapshot%20holds) retained extents survive repack | Hold a cut over dirty v1, overwrite with v2, repack the segment holding v1, crash and reopen; assert `ReadAt` serves v2, the next offer carries v1 in `Superseded`, and after v1's commit is reported it leaves the index. A design that keeps only held extents in the index loses v1 at the repack. |
 | [§8.2](#8.2%20Repack) removal dropped by version | Hold a cut over v1, truncate it away at v2, repack v1's segment so its retained copy gets a sequence number above the truncate's; release the hold and settle the marker; repack until the truncate's segment is selected; crash and reopen. Assert the extent reads `missing`. A rule comparing sequence numbers alone drops the truncate and the copy comes back held. |
+| [§8.2](#8.2%20Repack) drops decided after the pass's copies | In one segment, put a settled truncate over v1 that a snapshot hold still retains, and nothing else of the file elsewhere; repack that segment; crash and reopen. Assert the extent reads `missing` and the truncate was carried forward with the retained v1. A pass that tests drops before appending its copies drops the truncate, carries v1, and brings it back held. |
 | [§8.2](#8.2%20Repack) carried release keeps its sequence | Write A at v7 and offload it; release it; `Fill` the same extent at v7; repack the release record's segment; crash and reopen. Assert the extent reads the filled bytes. A repack that gives the release a new sequence number makes it outrank the fill. |
 | [§6.3](#6.3%20A%20failed%20sync) re-append trusts no page cache | Write A, fail the next sync, and make reads of the failed segment return the bytes the device held before; resolve by re-appending; assert A is re-appended only from a copy that verifies against the checksum kept at write time, or its window is failed and A dropped as a loss — never re-appended with the stale bytes. Assert no record is appended to the failed segment afterwards. |
 | [§9.2](#9.2%20Offload%20state%20after%20recovery) unmark clears | Offload and mark an extent; `Unmark` it; assert `Release` refuses it, and still does after a crash and reopen. Call `MarkOffloaded` with extents that do not cover a marked extent; assert that extent's bit is unchanged. |
@@ -2542,7 +2675,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.8](#3.8%20Loss%20events) loss by exact record | Write v5 and `Sync` it; overwrite the same 64 KiB at v10 with no `Sync`; fail the timer's sync and resolve by failing the window. Assert a read serves v5, before and after a crash and reopen, and the loss record names v10's sequence number. A loss keyed on version inside the extent drops v5 too, and a design that let v5's record go once v10 was appended has nothing to restore. |
 | [§3.8](#3.8%20Loss%20events) a synced loss masks what it superseded | Write v5, `Sync`; write v10, `Sync`; corrupt v10's payload; reopen with v5's record still on disk. Assert the extent reads `missing`, never v5. A loss record that names only its record brings the superseded v5 back. |
 | [§6.3](#6.3%20A%20failed%20sync) a failed window is reported once | Write to file F with no `Sync` waiting; fail the timer's sync and fail the window. Assert the next `Sync(F)` fails, the one after succeeds, and a `Sync(G)` of a file with no write in the window succeeds throughout. A design that fails only the `Sync` calls waiting at the time lets F's next flush succeed with its data gone. |
-| [§9.1](#9.1%20Rebuilding) unproven tail re-appended at open | Write A and B and sync neither; reopen with the seam keeping them readable as a dead process's cache would; then drop every write the seam never saw synced and reopen again. Assert A and B read back both times, with their original sequence numbers. A recovery that trusts what verified at the first open loses them at the second. |
+| [§9.1](#9.1%20Rebuilding) unproven tail verified at open | Write A and B and sync neither; reopen with the seam keeping them readable as a dead process's cache would, and make the device-level read of B fail to verify; then drop every write the seam never saw synced and reopen again. Assert A and B read back both times with their original sequence numbers, A was verified in place and not re-appended, and B was re-appended. Repeat with the journal at its maximum: assert the open succeeds. A recovery that trusts what verified at the first open loses them at the second. |
 | [§4.2](#4.2%20Segments) failed directory sync is a failed window | Fill a segment so the stream creates the next; fail the directory sync at the seam; write A into the new segment and `Sync`. Assert the `Sync` either fails with A dropped as a loss or returns only after A is re-appended into a segment whose directory entry synced, and that after a crash dropping unsynced directory changes A reads back or its `Sync` failed. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) a zero slot is not the end | Start three concurrent appends to one stream; fail the middle one's write at the seam, leaving its slot zeros, and let the third complete and sync; crash and reopen. Assert the third reads back, nothing is reported as damage, the middle write's `WriteAt` returned an error, and no truncation fell below the third record. A scan that stops at the zero slot truncates the synced third write. |
 | [§5.3](#5.3%20Versions) a re-append keeps its numbers | Write A, fail its sync and resolve by re-appending; truncate over A; crash so the original, its copy and the truncate are all on disk; reopen. Assert the extent reads `missing`. A re-append given a new sequence number outranks the truncate and brings A back. |
@@ -2576,7 +2709,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§10.1](#10.1%20What%20must%20not%20block%20what) removals do not wait on offload | Stall an offload pass inside `fn`, mid-upload; delete another file whose records share a segment with the offered ones, then truncate and deallocate the offered file itself. Assert each call returns without waiting for `fn`, and that the deleted file's storage is reclaimed once the pass returns. A design that holds a lock across the pass blocks the delete until the upload ends. |
 | [§10.3](#10.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, fills, repack and release concurrently on the same segments under a deadlock detector and a lock-order recorder; assert no cycle, every acquisition follows the total order, no two locks of one domain are held together, the storage guard is taken with no other lock held, and no lock is held across the offload callback. |
 | [§10.7](#10.7%20Shutdown) background joined | Close the store with a repack in flight; assert it stops before any segment is closed and no work continues afterwards. |
-| [§8.2](#8.2%20Repack) removal records dropped per file | Keep one segment holding file X's filled content at an old version for the whole run; on file Y, issue 10^5 truncates, deallocates and releases, repacking as it goes. Assert Y's header-only records are dropped once no segment holds an older record of Y, and `HeadroomBytes` stays above half its size. A drop test against the lowest pair journal-wide keeps every one of them behind X's segment and drains the headroom. |
+| [§8.2](#8.2%20Repack) removal records dropped per extent | Keep one segment holding file X's filled content at an old version for the whole run; on file Y, issue 10^5 truncates, deallocates and releases, repacking as it goes. Assert Y's header-only records are dropped once no segment holds an older record of Y, and `HeadroomBytes` stays above half its size. A drop test against the lowest pair journal-wide keeps every one of them behind X's segment and drains the headroom. Then, in one file Z, keep one segment holding Z's filled content over `[0, 1 MiB)` for the whole run, and issue 10^5 releases and deallocates over `[1 GiB, 2 GiB)` of Z; assert they are dropped too. A drop test per file keeps them all behind Z's own old segment. |
 | [§8.2](#8.2%20Repack) repack aimed at a share | Fill share A to its limit with records interleaved in segments mostly holding share B's unreclaimed bytes, and leave sparser segments of B alone elsewhere; `Repack` with A's scope. Assert `freed` comes from segments holding A's records and A's `UsedBytes` falls. Repeat with a segment-set scope naming two segments; assert only they are repacked. A journal-wide pass spends its budget on B's sparser segments. |
 | [§7](#7.%20Capacity) segment and record accounting | Write records into an allocated segment; assert the journal's `UsedBytes` does not move while the share's `UsedBytes` rises by each record's bytes and `ReservedBytes` returns to zero after each. Let the segment go idle past the seal threshold; assert the seal truncates its unwritten tail and the journal's `UsedBytes` falls by it. |
 | [§3.3](#3.3%20Offload) pins bounded across offers | Run eight concurrent offers, each over a file with dirty extents scattered one per segment across 200 segments. Assert `PinnedSegments` never exceeds the journal-wide bound plus eight, and each offer still offers at least one extent. A per-offer cap alone lets eight offers pin 512. |
@@ -2604,15 +2737,20 @@ A check here fails by **coming back up describing something other than what is o
 | [§5.3](#5.3%20Versions) epoch half is zero | Write a record whose version has a non-zero epoch half into a segment; assert the open fails, as for an unknown kind. |
 | [§9.1](#9.1%20Rebuilding) version floor | Reopen with a floor above every version on disk; assert the next write's version exceeds the floor, and that `MarkOffloaded` with the floor as `newest` leaves that write unmarked. |
 | [§9.2](#9.2%20Offload%20state%20after%20recovery) stale extent | Write A into one segment and offload it; write B over it into a later segment, offload and release it, and let reclamation unlink B's segment; restore A's segment from a copy taken before; reopen and `MarkOffloaded` at B's versions; assert A is dropped, reported as stale, and the read reports the extent missing. |
-| [§9.4](#9.4%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and an empty directory opens as a new journal. |
-| [§9.4](#9.4%20Unattachable%20files) journal gone | Create a journal, record its identity, write and close; delete the directory's contents, then separately the directory itself, then replace it with another journal. Open each with the recorded identity; assert every open fails, nothing is created in the directory, and opening with `expect` zero then creates a new journal. A design that opens an empty directory as new passes the last step and fails the first. |
+| [§9.4](#9.4%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and `Init` refuses both. Assert an empty directory fails to open and that `Init` creates a journal there whose `format` carries the installation ID given. |
+| [§9.4](#9.4%20Unattachable%20files) journal gone | Create a journal, record its identity, write and close; delete the directory's contents, then separately the directory itself, then replace it with another journal. Open each with the recorded identity; assert every open fails, nothing is created in the directory, and only `Init` then creates a new journal. Open the original journal with `expect` zero; assert it fails naming its journal identity and installation ID, and creates nothing. A design that opens an empty directory as new, or adopts a journal its caller has no record of, fails. |
 | [§4.5](#4.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§5.3](#5.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) a scan resynchronises | Without a catalog, in a sealed segment, corrupt one record's length field; reopen; assert that record is reported as corruption, every record after it still reads, and `scan_resyncs` counts one. Write a file whose content is a byte copy of a segment of this journal; crash so its record is scanned; assert no record inside its payload is attached. |
 | [§9.3](#9.3%20Torn%20and%20corrupt%20records) torn tail cut off | Tear the last record of the newest segment; reopen; write and `Sync` A; crash again and reopen. Assert A reads back, `torn_tails` counted one, and the torn segment is sealed. A design that appends after the torn bytes loses A to the second scan. |
 | [§3](#3.%20Interface) attached share raises the counter | Open a journal whose counter stands at 10^3; attach a share with a floor of 9×10^8; assert the first write through it is assigned a version above the floor, and that a design attaching without raising assigns one below the share's imported refs. |
-| [§3](#3.%20Interface) import attach holds no old extents | Write and offload file F under tag T; attach T again with `imported` set. Assert no read of F serves the old bytes and `Files` lists none of T's old files, or that `Share` failed naming T. A journal that attaches the tag as it stands serves the old clean extents. |
+| [§3](#3.%20Interface) import attach holds no old extents | Write and offload file F under tag T; attach T again with `imported` set. Assert no read of F serves the old bytes and `Files` lists none of T's old files and `Since` yields no marker of them, or that `Share` failed naming T. A journal that attaches the tag as it stands serves the old clean extents. |
+| [§3](#3.%20Interface) forget leaves nothing to settle | Write files F and G under tag T, delete G and leave its marker unsettled; `Forget(T)`; crash and reopen. Assert no extent or marker of T is held, `Since` yields nothing for F or G, `RemovalMarkers` does not count them, and `Forget` was refused while a handle of T was open. Attach T again, write F at a higher version, crash and reopen: assert the new write is held. A drop that deletes per file leaves a marker that a later attach's `Since` yields as a removal. |
+| [§3](#3.%20Interface) unclaimed tag reported | Write dirty extents under tag T; reopen and attach no share for T. Assert `Stats().Shares` lists T with its held and dirty bytes, and that after `Forget(T)` it lists T no more. |
+| [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) clone target survives a crash | `CloneTarget` file D with a spec; crash before any `Settle`; reopen. Assert `Since(D, 0)` yields the marker with its spec unchanged, and the extent reads `missing`. A marker that keeps only the extent hands the engine a plain removal and the destination reads zeros. |
+| [§6.3](#6.3%20A%20failed%20sync) header-only records are never failed | Write A and `Sync`; in one window, truncate A's file and release another offloaded extent; fail the sync and make reads of the failed segment return stale bytes. Assert both records are re-appended, no loss event names either, and both extents read `missing` before and after reopen, and the failed segment carries no seal marker. |
+| [§9.3](#9.3%20Torn%20and%20corrupt%20records) a bad copy does not mask a good one | Write A, fail its sync and resolve by re-appending; corrupt the original on the failed segment; crash before that segment is unlinked and reopen. Assert A reads back, no loss record names its sequence number, and the damage is reported against the failed segment. |
 | [§4.3](#4.3%20Records) record layout | Encode a record of every kind; assert the bytes match the committed golden headers, a header checksummed under another journal identity does not verify, and every record starts at a multiple of 8. |
 | [§3.8](#3.8%20Loss%20events) a loss survives restart | Drop a corrupt dirty extent; crash before anyone reads `Losses`; reopen; assert the loss is in `Losses`, marked found at open, the dropped record is not held even if the corruption is repaired on disk, and a second reopen does not report it as new. |
 
@@ -2785,10 +2923,18 @@ Btrfs on Linux; APFS on macOS; NTFS on Windows.
 Allocation, per platform: `fallocate` on Linux, which on XFS also rules out
 speculative allocation past the end of the file, since the file never grows;
 `fcntl(F_PREALLOCATE)` then setting the size on macOS; setting the file's
-allocation size, then its end of file, on Windows. On Btrfs, a copy-on-write
-filesystem, allocation reserves space but an overwrite of allocated bytes may
-still allocate anew; the journal never overwrites a written byte, only writes
-into allocated bytes once, so its accounting holds there too.
+allocation size, then its end of file, on Windows.
+
+**On a copy-on-write filesystem**, such as Btrfs, allocation reserves space but
+a write into allocated bytes may still allocate anew, so a write can meet
+`ENOSPC` inside a segment ([§4.2](#4.2%20Segments)), and the headroom of [§7](#7.%20Capacity) is not guaranteed.
+The journal's directory **MUST** have copy-on-write disabled before any file is
+created in it (`chattr +C` on Btrfs, which new files inherit; it does not apply
+to a file that already holds data), and **MUST** be excluded from filesystem
+snapshots: a snapshot shares every extent it covers, and the next write into a
+shared extent is copied again whatever the attribute says. An implementation
+**MUST** check the attribute at `Init` and at open and refuse a directory without
+it on such a filesystem.
 
 Sync and unlink, per platform ([§4.2](#4.2%20Segments), [§6.2](#6.2%20Sync%20policy)):
 
@@ -2798,3 +2944,6 @@ Sync and unlink, per platform ([§4.2](#4.2%20Segments), [§6.2](#6.2%20Sync%20p
   create or an unlink.
 - **Windows**: segments are opened with `FILE_SHARE_DELETE`, so one can be
   deleted while a reader still holds it; `FlushFileBuffers` is the sync.
+
+Reading past the page cache, for the open-time tail check ([§9.1](#9.1%20Rebuilding)): `O_DIRECT`
+on Linux, `F_NOCACHE` on macOS, `FILE_FLAG_NO_BUFFERING` on Windows.

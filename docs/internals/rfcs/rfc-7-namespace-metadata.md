@@ -431,7 +431,12 @@ directory created under a setgid parent is itself setgid, so the rule carries
 down the tree. The rule is the same for every protocol, applied to what each
 protocol's credential carries. A fixed default group **MUST NOT** be used: it
 hands every file to whoever else holds that group, and makes the same user's file
-differ by the protocol that created it.
+differ by the protocol that created it. An owner or group the create request
+itself names — NFSv4 create attributes, the owner or group of an SMB create's
+security descriptor — is applied after this rule as a change of owner or group
+in the create's own transaction, permitted or refused exactly as that change
+would be on the new file; a create whose named owner or group is refused fails
+whole, and is never made under another owner instead.
 
 > decision: a creator with no group gets itself as the file's group rather than
 > a refused create, because SMB principals without a primary group are common
@@ -902,13 +907,17 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   name, so no client makes a name the share's Windows clients cannot open.
 
 **Neither names nor keys are normalised.** A stored name is the bytes given
-([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the fold rule is Unicode **simple** case
-folding — each code point to exactly one code point, the `C` and `S` mappings of
-the Unicode case-folding table — with no normalisation, at a Unicode version
-recorded with the rule. That is how NTFS's upcase table and Samba compare names:
-one code point for one, never one for two. So `Straße.docx` and `STRASSE.docx`,
-two files on a Windows volume, stay two entries here, and a profile or project
-copied from Windows keeps every file. On a case-sensitive share the key is the
+([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the fold rule is NTFS's: the name's
+UTF-16 code units are each mapped through a 16-bit **upcase table**, one unit for
+one, with no normalisation, and the table is recorded by ID with the rule
+([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)). That is how NTFS and Samba compare names, and it is not
+Unicode case folding: a supplementary-plane letter, whose units are surrogates,
+is compared as given, and the Kelvin, Ohm and Angstrom signs and the capital
+sharp s upcase to themselves rather than folding to `k`, `ω`, `å` and `ß`. So
+`K.txt` and the same name spelled with the Kelvin sign U+212A are two entries,
+as on NTFS; `Straße.docx` and `STRASSE.docx`, two files on a Windows volume,
+stay two entries here; and a profile or project copied from Windows keeps every
+file. On a case-sensitive share the key is the
 bytes. On either, a name one client sends decomposed and another composed is two
 entries, as on NTFS and on a local POSIX filesystem.
 
@@ -1444,6 +1453,15 @@ privileged or not, and for every protocol, as Linux does for
 | create, link or rename into it (a directory) | refused | allowed |
 | unlink or rename out of it (a directory) | refused | refused |
 
+Whether a write only appends depends on its offset and the file's size at that
+moment, which `Authorize` alone does not see. The check therefore runs where the
+primary accepts the write, inside the hold of the file's accept lock
+([§9.2](#9.2%20Timestamps)), against the request's offset and the size the File
+overlay reports there; an offset below that size is refused. Checked anywhere
+earlier, another client's append accepted between the check and the write
+would leave this write's offset below the size, and the "append" would
+overwrite what that client wrote.
+
 A refusal is a permission error (`EPERM`, `NFS4ERR_PERM`,
 `STATUS_ACCESS_DENIED`), never an I/O error. Only a privileged caller ([§7.4](#7.4%20The%20identity%20arrives%20resolved))
 **MAY** set or clear either flag, and clearing it is the one change an immutable
@@ -1591,7 +1609,9 @@ that moves backward, or repeats, keeps a stale cache alive.
   flag, ACL, xattr or link change, an accepted write, a directory delta — takes
   its `Version` from the version counter of the journal at the file's primary,
   the counter that orders content writes ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), when the primary accepts
-  the change. The counter only rises. Every time a journal opens, and before it
+  the change, holding the file's accept lock ([§9.2](#9.2%20Timestamps)). That lock is the one
+  rule for capturing NFSv3 pre-operation attributes; the layers above cite it
+  rather than restating it. The counter only rises. Every time a journal opens, and before it
   serves a share it did not serve when it opened, it raises the counter above the
   share's version floor ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 - **Every stored `Version` is in the floor.** A change that draws a `Version`
@@ -1675,6 +1695,9 @@ leaves the bits.
 
 ## 10. Invariants
 
+N33–N35 sit after N25, with the rules they belong beside, rather than in number
+order; the IDs are kept as issued, because other RFCs and tests cite them.
+
 | # | Invariant |
 | --- | --- |
 | N1 | A file's `Nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. |
@@ -1708,7 +1731,7 @@ leaves the bits.
 | N26 | A rename replaces a directory only with a directory, and only an empty one, which it proves empty and writes in its own transaction; a non-directory replaces only a non-directory. |
 | N27 | Removing, renaming and linking are authorised inside their own transactions, against both directories and the file. |
 | N28 | A handle carries no shard; a `FileID` is on no wire outside a handle. |
-| N29 | A share's name rule is enforced for every protocol; neither a stored name nor a key is normalised, and a case-insensitive key is folded by simple, one-to-one case folding. |
+| N29 | A share's name rule is enforced for every protocol; neither a stored name nor a key is normalised, and a case-insensitive key is folded unit for unit by the 16-bit upcase table its fold rule records by ID. |
 | N30 | A restore that keeps numbers raises the allocator above every number it imports; a snapshot's 64-bit id carries its ordinal. |
 | N31 | A delete on close unlinks as the principal of the open that set the mark, authorised by that open's grant. |
 | N32 | Every attribute a client sees is the join of the File and the overlay read under the file's commit serialisation; a directory's NFSv3 pre-operation attributes are never reported. |
@@ -1860,7 +1883,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie resolves | List a directory of 10⁵ entries in pages, deleting between pages the entry each cookie came from, and sending each page's request to a different node. Assert every untouched entry is returned once, every cookie is at least 3 with its top bit clear, and no cookie state was stored. With a test hash key forcing a chain of three, assert no page ends inside it. |
 | [§5.4](#5.4%20Rename%20over%20an%20existing%20entry) rename over an entry | Rename a directory over an empty directory: assert success and the target released. Over a non-empty one, a directory over a file, a file over a directory: assert each refused. On the backend that validates no reads, race a create into the target with the rename; assert one fails and no entry survives under a released directory. Rename a file onto another link of itself: assert nothing changes. |
 | [§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs) removal rights | Over NFS and over SMB: remove a file with delete-a-child on its directory and no right on the file, and with delete on the file and no right on the directory; assert both allowed and refused with neither. In a sticky directory governed by mode, remove another's file in another's directory: assert refused. Move a directory to another parent without write on it: assert refused. A build that authorises removal with one `Authorize` on the directory fails the second case. |
-| [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.` over NFS: assert each refused as an invalid name. On a `posix` share assert each is created. On a case-insensitive share create `Straße.docx`, then `STRASSE.docx`: assert two entries; create `ǅ` and look up `ǆ`: assert one entry, found with one read, listed as given. Create `café` decomposed over NFS and composed over SMB: assert two entries. A build that folds fully or normalises the key fails the first assertion. |
+| [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.` over NFS: assert each refused as an invalid name. On a `posix` share assert each is created. On a case-insensitive share create `Straße.docx`, then `STRASSE.docx`: assert two entries; create `ǅ` and look up `ǆ`: assert one entry, found with one read, listed as given. Create `K.txt` and look up the same name spelled with the Kelvin sign U+212A: assert not found, as NTFS answers; a build that applies Unicode case folding finds it. Create `café` decomposed over NFS and composed over SMB: assert two entries. A build that folds fully or normalises the key fails the first assertion. |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) no shard, no `FileID` | Mint a file's handle, move the file to another shard, look it up again: assert the two handles are byte-identical. Read every identifier each protocol reports for the file; assert none contains its `FileID`. |
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused) restored and snapshot ids | Restore a share keeping numbers, then create a file: assert its number exceeds every restored one. Take two snapshots of one file: assert their 64-bit ids differ from each other and from the live file's, over NFS and SMB. |
 | [§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later) delete on close identity | alice opens a file with delete on close; bob, with no right to delete it, holds a second open and closes last. Assert the file is unlinked, as alice. Repeat with alice's lease expiring before bob closes: assert it is unlinked, as alice. A build that unlinks as the last closer fails bob's close-time unlink. |

@@ -243,7 +243,7 @@ verifier and the grace instance. A put intent is superseded once the shard recor
 no longer names the (node, node epoch) it was written under as primary
 ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)), never by the
 epoch alone and never by the incarnation; a primary that stays through a raise
-of the epoch rewrites each file's fence records before its next commit on it. A retried request is recognised by its request ID
+of the epoch rewrites each object's fence records in its first fenced transaction on it under the new epoch ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). A retried request is recognised by its request ID
 alone, never by any of the three ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)).
 No rule here reads a number for another's job: a move's raise changes the epoch
 and nothing a client sees, and a single node's re-claim changes the incarnation
@@ -518,7 +518,9 @@ commit, and the client is acknowledged after that commit. Recorded first, a cras
 of the primary leaves metadata describing an operation no surviving journal holds.
 
 **A client's flush** ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)) is answered once every node of the replica set
-has synced the file's operations and their existence is committed.
+has synced the file's operations and the existence of those that overwrite
+committed content is committed; appends and hole fills keep the bounded age of
+[RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write), so the store need not yet reflect them.
 
 **The committed point** ([§2.1](#2.1%20Terms)) rides on every batch. A replica persists it
 in its install record, never lowers it, and then settles to it ([§2.3](#2.3%20The%20journal%20extension)).
@@ -663,18 +665,34 @@ share's limit ([§5](#5.%20Offload%20and%20release)), or that refuses as amnesia
 compare-and-swap and installs that epoch on the remaining replicas; operations
 the removed replica had not acknowledged are then acknowledged without it.
 
-**A removal keeps one recently answering replica.** A primary **MUST NOT** remove
-a replica unless another replica that is not a learner answered it within the
-removal bound, and keeps that one. A primary that has heard from no replica of
+**A silence removal keeps one recently answering replica.** A primary **MUST
+NOT** remove a replica for not answering within the bound unless another replica
+that is not a learner answered it within the removal bound, and keeps that one.
+A replica removed for an answer — a refusal as amnesiac, a refusal within its
+share's limit, or a lag it reported — is exempt: its answer proves the primary
+is not isolated, so it is removed even when it is the last full replica, and the
+shard runs below its floor, reported, until repair restores it. Otherwise a
+two-member shard whose one replica refuses could neither remove it nor
+relinquish, and its writes would stall on a replica that will never accept them.
+A primary that has heard from no replica of
 a shard within the bound cannot tell its own isolation from their loss, so it
 removes none and **relinquishes** the shard instead: it stops acknowledging,
 granting and serving for the shard, waits for its fenced commits for it to end,
-then writes the record at the next epoch marking itself relinquished, by
-compare-and-swap. A relinquished shard is taken over like one whose primary's
+ends its put intents for it as a handover does
+([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)), then writes the
+record at the next epoch marking itself relinquished, by compare-and-swap. A relinquished shard is taken over like one whose primary's
 lease lapsed ([§9.2](#9.2%20Takeover)), at once and without marking the old primary's node
 record, whose other shards it still serves. Without the rule, a primary cut off
 from both replicas but reaching the store removes them both before any watchdog
 fires, and the shard runs on one copy on the isolated node, below its floor.
+
+**A relinquished shard whose replicas are truly lost leaves by operator
+acknowledgement (cluster).** If no replica returns to take it over, the shard
+stays unavailable; an operator who acknowledges that its replicas are lost lets
+the relinquishing node, or any node holding its journal, claim it on that one
+copy. This is a named exception to [RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave): the system cannot tell a
+partition that will heal from a loss that will not, and claiming on its own
+would bring back the single isolated copy this rule exists to refuse.
 
 > decision: a primary that hears from no replica gives the shard up rather than
 > continue alone. On a shard with a floor of one this trades availability for the
@@ -1186,7 +1204,7 @@ Each invariant is stated where its rule lives; the model checks them as properti
 | R18 | A node other than the primary serves an extent only where every extent within it carries the version the primary named for it | [§8](#8.%20Reads) |
 | R19 | The committed point counts a learner only from its join point; the floor counts learners | [§2.1](#2.1%20Terms), [§7.1](#7.1%20Count%2C%20floor%20and%20placement) |
 | R20 | The ownership epoch fences, the node epoch guards commits and supersedes put intents, and the shard incarnation drives the write verifier and the grace instance; no rule reads one for another's job | [§2.1](#2.1%20Terms) |
-| R21 | A primary removes a replica only while another that is not a learner answers it within the removal bound; one that hears from none relinquishes the shard | [§7.2](#7.2%20Removal) |
+| R21 | A primary removes a replica for silence only while another that is not a learner answers it within the removal bound, and removes one that refused or reported lag regardless; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by takeover or operator acknowledgement | [§7.2](#7.2%20Removal) |
 | R22 | An operation's request ID and result survive its eviction, settling and repack, on every member, until the retry window has passed | [§2.3](#2.3%20The%20journal%20extension) |
 | R23 | A node's self-fence by its own clock falls before a successor may serve, at the clock-rate bound ρ: `(L − δ) × (1 + ρ) < L + δ` | [§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3 |
 

@@ -165,7 +165,7 @@ It also counts references, so that sweep can tell what is safe to delete
 
 It is a **ledger**, not an observer. Every fact in it was observed by another
 component and delivered by the engine — existence by the write path, chunks by
-the carver, durability by the syncer. Its job is to record those facts atomically
+the carver, offloads by the syncer. Its job is to record those facts atomically
 and answer from them without distortion.
 
 The engine is its caller on the content path: write, offload, read, truncate,
@@ -183,7 +183,7 @@ Block metadata **MUST NOT**:
   is the journal's question, and residency is computed, not stored
   ([RFC 0 §4.2](rfc-0-data-lifecycle.md#4.2%20The%20residency%20function)). It knows which content has an offloaded copy (a carved
   offset, [§3.2](#3.2%20Every%20offset%20is%20in%20exactly%20one%20class)); it **MUST NOT** try to know whether that content is also local;
-- observe durability — it records reports ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting), [RFC 3 §2.7](rfc-3-syncer.md#2.7%20It%20reports%3B%20it%20does%20not%20persist));
+- observe offload — it records reports ([RFC 0 §4.3](rfc-0-data-lifecycle.md#4.3%20Reporting), [RFC 3 §2.7](rfc-3-syncer.md#2.7%20It%20reports%3B%20it%20does%20not%20persist));
 - own names, directories, attributes, handles, permissions or locks — those are
   [RFC 7](rfc-7-namespace-metadata.md)'s;
 - decide what to offload, evict or sweep — it supplies the atomic operations those
@@ -301,7 +301,8 @@ type Carried struct {
 	Length int64
 }
 
-// Span: one run of a covering lookup or an allocation answer (§3.2, §8.1).
+// Span: one run of a covering lookup or an allocation answer (§3.2, §8.1). The
+// one definition: RFC 8's facade returns it from Allocation too.
 type Span struct {
 	Offset, Length int64
 	Class          Class          // Hole, Uncarved or Carved (§3.2)
@@ -327,8 +328,8 @@ ref is a `ChunkRef` with `Died` set.
 | --- | --- | --- | --- | --- |
 | Existence ([§3](#3.%20Existence)) | **FileData** | `FileID` — fields of RFC 7's `File` value | size, `applied` version, `Version`, `Charged`, write-time `Modify` and `Change` | how long is the file, when was it written, what is it charged, and up to which journal version is that recorded? |
 | | **Hole** | `(FileID, start)` | end | was this extent never written? |
-| | **Overwrite** | `(FileID, start)` | end, overwriting version, `born` | was this extent overwritten after content here was carved, and by which version? ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) |
-| | **Removal** | `(FileID, version)` | removed extent, kind, `cut`, cursor, done | what did a truncate, deallocate, release or clone remove, at which version and which snapshot cut, and how far has dropping its refs got? |
+| | **Overwrite** | `(FileID, start)` | end, overwriting version, `born` | did a committed write replace content here whose existence committed before it, and at which version? ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) |
+| | **Removal** | `(FileID, version)` | removed extent, kind, `cut`, cursor, done, and for a clone its clone spec | what did a truncate, deallocate, release or clone remove, at which version and which snapshot cut, what does a clone adopt from, and how far has dropping its refs got? |
 | | **Version index** | `(ShareID, bucket, version, FileID)`, one entry per File at its stored `Version`, plus one per unfolded directory delta | — | what is the highest version this store records for a share? ([§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) |
 | Content map ([§2.1](#2.1%20ChunkRef)) | **ChunkRef** | `(FileID, offset)` | chunk hash, skip, length, content versions, `born` | which bytes of which chunk are these? |
 | | **History** | `(FileID, died, offset)` | a `ChunkRef` as it was, with `Died` set to its successor's `born` | which bytes did a snapshot see here? |
@@ -351,7 +352,7 @@ Who writes each record:
 | Writer before a put ([§7.6](#7.6%20Put%20intents)) | — | — | — | — | — | — | — | — | creates | — |
 | Offload commit | — | reads | writes | creates, counts | creates, counts | — | reads, writes | reads `Cut` | deletes | writes |
 | Removal, phase 1 ([§6.2](#6.2%20Truncation%20and%20deallocation)) | writes FileData and Hole | writes | — | — | — | writes | writes | reads `Cut` | — | — |
-| Removal, phase 2 | drops Overwrite | advances | writes | counts | counts | — | reads | reads `Cut` | — | writes |
+| Removal, phase 2 | drops Hole; drops and narrows Overwrite, point-reading each key it rewrites; the last batch of a deallocate writes its merged Hole | advances | writes | counts | counts | — | reads | reads `Cut` | — | writes |
 | Primary under a new epoch ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)), lazily per file | — | — | — | — | — | writes | writes | — | — | — |
 | Namespace transaction ([RFC 7](rfc-7-namespace-metadata.md)) | — | — | — | — | — | guards | — | — | — | — |
 | Snapshot cut or deletion ([§6.5](#6.5%20Who%20owns%20a%20ref)) | — | — | drops History | counts | counts | — | — | writes | — | writes |
@@ -500,7 +501,7 @@ material each used as (material ID, fingerprint), as the store reported them at
 the put ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). The transform census and exports read it
 ([RFC 12 §3.1](rfc-12-snapshots.md#3.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)); the read path never does.
 
-A block record has **no durability flag**: by [§4.2](#4.2%20Only%20after%20the%20block%20is%20stored) it exists only once its block
+A block record has **no offloaded flag**: by [§4.2](#4.2%20Only%20after%20the%20block%20is%20stored) it exists only once its block
 is offloaded.
 
 **Where a block is.** Not on the block record: it is the share's remote store (a
@@ -514,7 +515,7 @@ tiering, or moving between buckets — `Block` gains a `Store` field then.
     FileData(file)         = { size, applied, Version, Charged, Modify, Change }   // fields of RFC 7's File value
     Hole(file, start)      = { end }
     Overwrite(file, start) = { end, version, born }
-    Removal(file, version) = { start, end, kind, cut, cursor, done }
+    Removal(file, version) = { start, end, kind, cut, cursor, done, clone }   // clone: { src, srcOff, dstOff, len, asOf }, kind clone only
 
 **FileData is not a record of its own.** It names the fields of the one `File`
 value ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) that only the write path sets: `size`, `applied`, the
@@ -568,7 +569,10 @@ destination refs are born at it ([§6.6](#6.6%20Clone%20and%20server-side%20copy
 It is also the durable intent of the removal's second phase: `kind` says which
 operation wrote it, `cursor` is the offset up to which its refs have been dropped,
 and `done` says the drop finished ([§6.2](#6.2%20Truncation%20and%20deallocation)). While `done` is false, the removal
-masks the refs it will drop ([§8.1](#8.1%20Covering%20lookup)).
+masks the refs it will drop ([§8.1](#8.1%20Covering%20lookup)). A clone's removal also carries the **clone
+spec** — source file, source offset, destination offset, length and the source
+journal position `asOf` — so its adoption resumes from this record alone
+([§6.6](#6.6%20Clone%20and%20server-side%20copy)).
 
 ### 2.5 Refs name hashes, never blocks
 
@@ -853,7 +857,10 @@ at every write:
 The rules:
 
 - Existence **MUST NOT** be committed for a version the journal does not yet hold
-  durably.
+  durably. The one exception is a synced write a loss event dropped: its
+  existence is committed from the journal's durable loss record, which makes the
+  range uncarved with nothing held, so it reads **Lost** rather than as zeros or
+  older content ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 - **A stability reply MUST NOT precede the existence commit of any pending write
   in its extent that overwrites committed content** — any write covering an
   offset below the committed `size` and outside the committed holes, which is
@@ -877,11 +884,15 @@ The rules:
 - **Truncate, deallocate, release and clone are synchronous in their first
   phase**: each commits the file's pending existence and its own existence change
   in one transaction before it returns; dropping its refs follows in batches
-  ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+  ([§6.2](#6.2%20Truncation%20and%20deallocation)). A clone is answered later still, once its batches are done
+  ([§6.6](#6.6%20Clone%20and%20server-side%20copy)).
 - **`applied` only moves forward.** Every write of it is `applied = max(applied,
   v)`. An existence commit applies a file's journal operations in version order;
   when it reaches a removal it applies that removal's phase 1 itself, and it
   **MUST NOT** advance `applied` past a removal whose phase 1 it has not applied.
+  A clone's phase 1 is applied only by the clone, or by recovery rebuilding it
+  from its spec, since its copies must be staged first ([§6.6](#6.6%20Clone%20and%20server-side%20copy)); a group commit
+  stops below it.
   A phase 1 that finds `applied ≥ v` and `Removal(file, v)` present is a no-op, so
   recovery, a group commit and the removal's own call can each reach it and only
   the first has effect.
@@ -899,8 +910,8 @@ The rules:
 | Write starting past `size` | `size` grows; `[old size, write offset)` becomes a hole |
 | Write over committed content | an overwrite record covers the overwritten runs ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) |
 | Truncate up | `size` grows; `[old size, new size)` becomes a hole |
-| Truncate down | `size` shrinks; holes past it are dropped; a removal is recorded, which masks the overwrite records past it until phase 2 drops them |
-| Deallocate | the extent becomes a hole; a removal is recorded, which masks the overwrite records in the extent, and phase 2 drops them and drops or narrows the refs over it ([§6](#6.%20Reference%20counting)) |
+| Truncate down | `size` shrinks; a removal is recorded, which masks the holes and overwrite records past it until phase 2 drops them |
+| Deallocate | the extent reads as a hole at once; a removal is recorded, which masks the holes and overwrite records in the extent, and phase 2 drops them, writes the merged hole and drops or narrows the refs over it ([§6](#6.%20Reference%20counting)) |
 | Allocate | none — see below |
 
 **Allocate MUST NOT remove a hole** unless the zeros it promises are staged in
@@ -1318,9 +1329,14 @@ change then runs in two phases.
 **Phase 1 — one transaction, O(1) plus holes changed, writes no ref:**
 
 - commits the file's pending existence ([§3.4](#3.4%20Ordering%20against%20the%20journal));
-- updates existence ([§3.5](#3.5%20Operations%20that%20make%20holes)), dropping or narrowing the holes inside the
-  extent, and sets `applied = max(applied, v)`. The overwrite records inside the
-  extent stay, masked, for phase 2 ([§3.3](#3.3%20Holes%2C%20not%20written%20extents));
+- updates existence ([§3.5](#3.5%20Operations%20that%20make%20holes)) in O(1): sets `size` for a truncate, narrows
+  at most the two holes that straddle the extent's edges, and sets
+  `applied = max(applied, v)`. The holes and overwrite records inside the extent
+  stay, masked, for phase 2 ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)): a TRIM-fragmented file holds 10⁵ holes, and
+  dropping them here would put O(holes) keys in one transaction, past `K` on
+  every retry. While the removal is not done, a masked hole counts as absent to
+  every reader and writer, as a masked overwrite record does, and a
+  deallocate's extent reads as one hole;
 - writes `Removal(file, v)` with its extent, kind and `cut` — the `k` it reads
   from `Cut(share)`, admitted through the share's cut gate like any transaction
   that orders against a cut ([§6.5](#6.5%20Who%20owns%20a%20ref)) — with `cursor` at the extent's start and
@@ -1345,11 +1361,17 @@ part of the extent it reaches, from `cursor` to its own end:
 - dates what it moves to history: a ref, or the part of one, it drops dies at
   the removal's `cut`, **except a part that an overwrite record covers whose
   `version` is above the ref's `newest` and below *v***. That part was superseded
-  when the overwrite's existence committed, so it dies at that record's `born`,
-  and the ref moves to history as separate pieces split at the record's edges,
-  each piece counted on the chunk like a split ref. The batch reads the
-  overwrite records over the refs it reaches — live ones, and masked ones an
-  existence commit moved to history ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)). Dating the whole ref at the
+  when the first such overwrite's existence committed, so it dies at the `born`
+  of the **lowest-version** overwrite record over it with `version` above the
+  ref's `newest`, and the ref moves to history as separate pieces split at the
+  records' edges, each piece counted on the chunk like a split ref. The batch
+  reads the overwrite records over the refs it reaches — live ones, and masked
+  or superseded ones an existence commit moved to history ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) — because a
+  second overwrite of the same extent re-stamps the live record with its own
+  version and `born`: dated by the live record, the piece would die at the
+  second overwrite's `born` and share a history key with the first overwrite's
+  held version. A held version written to history late ([§6.5](#6.5%20Who%20owns%20a%20ref)) is dated by
+  the same rule. Dating the whole ref at the
   removal's `cut` would show a snapshot taken between the overwrite and the
   removal the older bytes, and the held overwrite's own history record
   ([§6.5](#6.5%20Who%20owns%20a%20ref)) would then share a key with it;
@@ -1360,9 +1382,16 @@ part of the extent it reaches, from `cursor` to its own end:
   beyond the batch's end is narrowed to the part past it — rewritten at the
   batch's end with its `version` and `born` unchanged — so the next batch still
   reads it and dates the refs under that part at the record's `born`, not at the
-  removal's `cut`. Dropping the whole record with the batch that reached its
+  removal's `cut`. The rewrite is not blind: the batch point-reads the key it
+  rewrites with conflict tracking, and where an existence commit has written a
+  newer record there since, it clips the remainder around that record and
+  leaves it, so a later overwrite is never replaced by a masked remainder.
+  Dropping the whole record with the batch that reached its
   start would leave the next batch's refs under it dated at the cut, and show a
   snapshot taken between the overwrite and the removal the superseded bytes;
+- drops each hole inside the extent, and, for a deallocate, the last
+  sub-transaction writes the extent's one merged hole, joined with any hole it
+  touches;
 - advances `cursor` to its end; the last sub-transaction sets `done`.
 
 A re-run of a sub-transaction finds nothing left to drop below *v*, so it is
@@ -1503,7 +1532,8 @@ and writes nothing per file when it is taken:
 - **A superseded ref a snapshot can see moves to history.** A ref's `died` is its
   successor's `born`; for a removal it is the removal record's `cut`, whichever
   later batch drops the ref, except for a part an earlier overwrite superseded,
-  which dies at that overwrite record's `born` ([§6.2](#6.2%20Truncation%20and%20deallocation)). Any transaction that drops
+  which dies at the `born` of the lowest-version overwrite record above the
+  ref's `newest` ([§6.2](#6.2%20Truncation%20and%20deallocation)). Any transaction that drops
   or replaces a live ref — an offload commit overwriting it, a removal's phase 2,
   a release — **MUST**, when some live cut *c* has `born < c ≤ died`, move it in
   the same transaction to `History(file, died, offset)`, and otherwise drop it.
@@ -1603,71 +1633,85 @@ counted.
 ### 6.6 Clone and server-side copy
 
 Cloning carved content copies refs, not bytes. There is one clone design, the
-engine's ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)): it refuses an overlapping clone within one file, resolves
-the source at one journal position `asOf` while writes to the source extent
-answer retry-later, copies the source's unoffloaded bytes into the destination
-through the journal, and never waits on the remote tier. This section specifies
-only its metadata transactions. A clone is a **removal of the destination extent
-and an adoption**, run as the batched pattern of [§6.2](#6.2%20Truncation%20and%20deallocation):
+engine's ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)): it refuses an overlapping clone within one file and a
+clone across namespaces, freezes the source extent by a registration so the
+source reads as it was at one journal position `asOf`, copies the source's
+journal-held bytes into the destination through the journal and syncs them
+before phase 1, and never waits on the remote tier. A server-side copy is a
+series of bounded clones. This section specifies only the metadata
+transactions. A clone is a **removal of the destination extent and an
+adoption**, run as the batched pattern of [§6.2](#6.2%20Truncation%20and%20deallocation):
 
 1. **Phase 1**, under the destination's guard, after the journal removes the
-   destination extent at version *v*: one transaction deallocates the destination
-   extent as [§6.2](#6.2%20Truncation%20and%20deallocation)'s phase 1 does, writes `Removal(dst, v)` with kind clone,
-   and records the destination's existence over the extent, with the source's
-   holes at `asOf` as holes.
-2. **Phase 2**, sub-transactions within the key budget K in source-offset order.
-   Each reads its source extent **through the covering lookup** ([§8.1](#8.1%20Covering%20lookup)), never
-   by reading refs directly, so the source's overwrite set and its removals not
-   done apply: a ref the lookup does not return as carved is not the source's
-   current content, and copying it re-versioned at *v* would make it current in
-   the destination. For each run of the answer:
+   destination extent at version *v* and the engine has staged and synced the
+   source's journal-held runs into the destination above *v*: one transaction
+   commits the destination's pending existence — those copies included —
+   deallocates the destination extent as [§6.2](#6.2%20Truncation%20and%20deallocation)'s phase 1 does, writes
+   `Removal(dst, v)` with kind clone and the **clone spec** `{src, srcOff,
+   dstOff, len, asOf}` ([§2.4](#2.4%20FileData%20and%20holes)), and records the destination's existence over
+   the extent, with the source's holes at `asOf` as holes. Every byte it records
+   as existing is staged and synced, adopted from a ref by phase 2, or **Lost**
+   at the source.
+2. **Phase 2**, sub-transactions within the key budget K in source-offset order,
+   run by `Resume` from the `Removal` record alone: no journal bytes are read or
+   written. Each reads its source extent **through the covering lookup**
+   ([§8.1](#8.1%20Covering%20lookup)), never by reading refs directly, so the source's overwrite set and
+   its removals not done apply: a ref the lookup does not return as carved is
+   not the source's current content, and copying it re-versioned at *v* would
+   make it current in the destination. For each run of the answer:
    - **carved:** the batch drops the destination's refs below *v* there, then
      writes the cloned ref **re-versioned** with `oldest = newest = v` and `born`
      the removal's `cut` ([§6.5](#6.5%20Who%20owns%20a%20ref)), and increments its chunk, resurrecting a
      retired chunk's block ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)). The source ref keeps the chunk counted, so
      its block is live and the adoption cannot meet a deleted one;
-   - **uncarved, held by the journal at `asOf`:** the engine copies those bytes
-     into the destination's journal above *v*; the batch drops the destination's
-     refs below *v* there and writes nothing else, and the copy's own existence
-     and offload follow as for any write;
-   - **uncarved, not held at `asOf`:** the batch drops the destination's refs
-     below *v* there and writes nothing else. Phase 1 recorded existence over
-     it, so the destination's run is uncarved with no journal copy and resolves
-     **Lost**, as the source's does. A ref whose chunk record is gone is such a
-     run;
+   - **uncarved** — held by the journal at `asOf` and copied before phase 1, or
+     not held at `asOf` — the batch drops the destination's refs below *v* there
+     and writes nothing else. A copied run reads from the destination's journal
+     copy, whose existence phase 1 committed; a run not held resolves **Lost**,
+     as the source's does;
+   - **a ref whose chunk record is gone, or names a `deleted` block**, is carried
+     as Lost the same way, counted and logged. The counted source ref makes this
+     unreachable in a correct store; it is a backstop, never a failed batch;
    - **a hole or a zero ref** stays a hole or a zero ref.
 
    Each cloned ref is applied by [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)'s table against the destination's refs:
    a destination ref whose `newest` is at or above *v* holds content written
    after the clone, and is left alone, and the cloned ref is not written over it.
-   The cursor advances; the last batch sets `done`.
+   The cursor advances; the last batch sets `done`, and only then is the clone
+   answered.
 
-**A clone fails only before phase 1.** Every failure the design admits — an
-overlapping extent, a capacity refusal for the bytes it will copy — is found
-before phase 1 commits, and leaves the destination's prior content. After it,
-no batch can fail for good: an adoption's block is live, a Lost run is carried,
-and a crash or a store error resumes from the cursor. So no undo path exists,
-and none zeroes a destination.
+**A clone fails only before it changes anything.** Every failure the design
+admits — an overlapping extent, an over-length clone, a clone across namespaces,
+a capacity refusal for the bytes it will copy — is found before the journal
+removes the destination extent, and leaves the destination's prior content.
+After it, nothing fails for good: copies are re-made from the spec on the
+journal's marker until phase 1 commits, an adoption's block is live, a Lost run
+is carried, and a crash or a store error resumes from the cursor. So no undo
+path exists, and none zeroes a destination.
 
 Until the clone's removal is done, the destination extent **MUST NOT** be served,
 in the file or in any snapshot taken after the clone's `cut`: a read of it waits
 for the clone or fails at its deadline, rather than reading a half-copied extent.
-Unfinished clones resume at startup before their destination is served
-([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). The cloned refs are counted refs from the batch that writes them.
+Unfinished clones resume at startup before either file is served, the source
+freeze rebuilt from the spec ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). The cloned refs are counted refs
+from the batch that writes them, and a snapshot taken between two batches sees
+the whole clone or none of it: the adopted refs are born at the removal's `cut`,
+and the copies' existence committed in phase 1, under that same `cut`.
 
 Re-versioning makes the cloned refs outrank anything a destination pass in flight
 carries, and the removal drops what that pass would have committed there.
 
-**A clone by reference stays within a namespace.** A cloned ref adopts its chunk
-in the namespace the source ref's `nsgen` names, and only when the destination's
-share lists that namespace, so the cloned ref carries the generation it has
-there. Between namespaces the clone copies the bytes
+**A clone stays within a namespace.** A cloned ref adopts its chunk in the
+namespace the source ref's `nsgen` names, and the engine admits a clone only
+when the destination's share lists every namespace the source's share lists, so
+the cloned ref carries the generation it has there. Between namespaces a clone or
+copy is refused with `ErrCrossNamespace`, and the client copies the bytes itself
 ([RFC 12 §4.7](rfc-12-snapshots.md#4.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
 A clone **MUST NOT** record the destination extent as existing unless its bytes
-are staged, its refs written, or the source run there was **Lost** at `asOf`, so
-that the destination reads **Lost** where the source does and zeros nowhere the
-source held data.
+are staged and synced, its refs are written by phase 2, or the source run there
+was **Lost** at `asOf`, so that the destination reads **Lost** where the source
+does and zeros nowhere the source held data.
 
 ## 7. What sweep needs from this component
 
@@ -1723,8 +1767,10 @@ block's state:
   in that transaction, state `live`, retired index key deleted, `not_before`
   cleared;
 - `deleted`, or no chunk record: the adopting ref **MUST** fail, and the
-  transaction **MUST NOT** recreate the record; a clone or restore fails its
-  batch ([§6.6](#6.6%20Clone%20and%20server-side%20copy), [§7.4](#7.4%20Restore)), and a pass re-offers the chunk carrying its bytes.
+  transaction **MUST NOT** recreate the record. A clone carries that run into
+  the destination as **Lost**, counted and logged, and its batch goes on
+  ([§6.6](#6.6%20Clone%20and%20server-side%20copy)); a restore fails ([§7.4](#7.4%20Restore)); a pass re-offers the chunk carrying its
+  bytes.
 
 **In the first release offload adopts nothing** ([RFC 0 §3.1](rfc-0-data-lifecycle.md#3.1%20Deduplication)): an offload
 commit references only chunks its own block carries, so it takes the carrying
@@ -1732,9 +1778,11 @@ path below and never resurrects a block. A block whose count has reached zero is
 then raised again only by a clone, a restore or a re-home, which take their
 chunks from refs or exported records that already exist, and by a count
 correction ([§7.5](#7.5%20Audit)). Resurrection for those paths is normative in the first
-release: a source removal between two clone batches, or a re-home that switches
-a share after the source namespace dropped its last ref, meets a `retired`
-block. Only adoption by an offload commit waits for deduplication.
+release: a re-home that switches a share after the source namespace dropped its
+last ref meets a `retired` block. A clone does not in a correct store — the
+source ref it adopts from keeps the chunk counted and its block live, and the
+source extent stays frozen until the clone is done ([§6.6](#6.6%20Clone%20and%20server-side%20copy)) — but resurrects
+one if a count was wrong. Only adoption by an offload commit waits for deduplication.
 
 A commit that **carries** a chunk whose record names a `retired` or `deleted`
 block repoints the record to its own block, as a first writer does, and leaves
@@ -2028,9 +2076,9 @@ the highest key of each bucket: *B* point lookups per share.
 | M18 | A removal drops only refs whose `newest` is below its version, masks what it has not yet dropped, and `applied` never moves backwards. |
 | M19 | Every read that gates a commit conflicts with every concurrent write that would change it; no gate depends on a range scan or on an in-process guard. |
 | M20 | A ref never makes an offset carved while an overwrite record of higher version than the ref's `newest` covers it; every write over content whose existence was committed records one at its stability point, and no offload commit writes one. A record is pruned only where refs at or above its version actually cover it, or where its extent lies in a hole or past `size`; every allocated-range answer counts its extent as data. |
-| M21 | A removal records the cut it read. A ref it drops dies at that cut, except a part an earlier overwrite superseded, which dies at that overwrite's `born`; a snapshot after the cut applies its mask while it is not done; a history key is written once, and a second write of it fails as an inconsistency. |
+| M21 | A removal records the cut it read. A ref it drops dies at that cut, except a part an earlier overwrite superseded, which dies at the `born` of the lowest-version overwrite above the ref's `newest`, history records included; a snapshot after the cut applies its mask while it is not done; a history key is written once, and a second write of it fails as an inconsistency. |
 | M22 | Offload commits of one file serialise on a point key each of them writes, never on an in-process guard. |
-| M23 | A clone copies only what the covering lookup returns as carved, carries a source run uncarved and not held at `asOf` into the destination as uncarved, so it reads **Lost** there, never zeros and never a stale ref, fails only before its phase 1, writes every cloned ref born at its removal's cut, and never writes over a destination ref whose `newest` is at or above its version. |
+| M23 | A clone copies only what the covering lookup returns as carved, carries a source run uncarved and not held at `asOf` into the destination as uncarved, so it reads **Lost** there, never zeros and never a stale ref, carries a ref whose chunk record is gone as **Lost**, records existence in phase 1 only for bytes staged and synced, adopted or Lost at the source, carries its clone spec on its `Removal` so phase 2 resumes from block metadata alone, fails only before the journal removes its destination extent, writes every cloned ref born at its removal's cut, and never writes over a destination ref whose `newest` is at or above its version. |
 | M24 | After a restart no extent is offered that a committed ref already covers at or above its version, and a journal raises its version counter above a share's floor before it serves a share it did not serve when it opened. |
 | M25 | Overwrite records in a removal's extent are masked from its phase 1 and dropped by its phase-2 batches, never past a batch's end; every transaction — batch, existence commit, offload commit — writes at most the key budget K, and a batch's cursor may fall inside a ref. |
 | M26 | The version floor is the highest `Version` a File stores or an unfolded directory delta carries, read from one index entry per File, written by every transaction that raises that `Version`. |
@@ -2081,6 +2129,10 @@ type Existence interface {
     // under a newer overwrite record is data (§3.5).
     Allocation(ctx context.Context, file FileID, off int64) (Span, error)
     Applied(ctx context.Context, file FileID) (JournalVersion, error)             // §3.4 recovery
+    // Overwrites reports whether any run covers committed content — below the
+    // committed size and outside the committed holes (§3.3) — in one read, for a
+    // stability point's wait (RFC 8 §5.1).
+    Overwrites(ctx context.Context, file FileID, runs []Extent) (bool, error)
     // PruneOverwrites deletes the file's overwrite records that refs at or above
     // their version actually cover, or that lie in a hole or past size (§3.3);
     // housekeeping, never needed for a right answer.
@@ -2091,14 +2143,17 @@ type Content interface {
     // Intend durably records a put intent for a freshly minted name (§7.6).
     Intend(ctx context.Context, name BlockName, epoch uint64) error
     Commit(ctx context.Context, c BlockCommit) (CommitResult, error)              // §4.1
-    // Resume runs phase 2 of every removal, clone or restore not done, within K keys per transaction (§6.2).
+    // Resume runs phase 2 of every removal, clone or restore not done, within K keys per
+    // transaction (§6.2); a clone's from the spec its Removal record carries (§6.6).
     Resume(ctx context.Context, file FileID, epoch uint64) error
     PruneRemovals(ctx context.Context, file FileID, atOrBelow JournalVersion) error      // §6.2
     Covering(ctx context.Context, file FileID, off, n int64) iter.Seq2[Span, error] // §8.1
     SnapshotCovering(ctx context.Context, file FileID, cut SnapshotCut, off, n int64) iter.Seq2[Span, error] // §6.5
     Offloaded(ctx context.Context, hash ChunkHash) (ChunkAt, bool, error)              // §8.2; deferred with deduplication
-    // Clone applies phase 1 of a clone the engine admitted (§6.6, RFC 8 §9.1); its batches run through Resume.
-    Clone(ctx context.Context, src, dst FileID, epoch uint64, srcOff, dstOff, n int64, v JournalVersion) error
+    // Clone applies phase 1 of a clone the engine admitted and whose copies it synced
+    // (§6.6, RFC 8 §9.1), recording spec — RFC 1 §3.6's CloneSpec — on the Removal; its
+    // batches run through Resume.
+    Clone(ctx context.Context, dst FileID, epoch uint64, spec CloneSpec, v JournalVersion, pending PendingExistence) error
     Cut(ctx context.Context, share ShareID) (SnapshotCut, error)                    // §6.5, behind the cut gate
     DropCut(ctx context.Context, share ShareID, k SnapshotCut) error                // §6.5, batched
     VersionFloor(ctx context.Context, shares []ShareID) (JournalVersion, error)          // §8.3
@@ -2208,11 +2263,11 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow from a missing reverse key | Write a ref without its reverse key, with its chunk's count at zero, then release the file. Assert the drop completes within the call's deadline with no audit run, the key was written first and a reverse-index defect reported, and the count ends exact. |
 | [§6.4](#6.4%20Delete) release | Release a file with a pass in flight, then commit the pass. Assert the pass's refs are dropped, and that a restart resumes phase 2. |
 | [§6.5](#6.5%20Who%20owns%20a%20ref) snapshot through history | Snapshot a file, overwrite and truncate it, delete it. Assert every overwritten ref moved to history with its count unchanged, the snapshot reads its cut content, and the chunks' blocks are not retirable. Take snapshots 1, 2 and 3, delete 2. Assert exactly the history refs with 1 ≤ `born` < 2 ≤ `died` < 3 were dropped. Put the share's files in two journals whose versions interleave and assert every snapshot still reads its cut. |
-| [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | Clone over a destination extent with a pass in flight. Assert the pass's refs there are dropped and the cloned refs, versioned at the clone's version, survive. Clone content the journal holds newer than its ref, drop the source's journal extent. Assert the destination reads the newer bytes. Crash mid-clone; assert the destination is not served until resumed, and the clone completes rather than fails. Clone an extent onto an overlapping extent of the same file; assert `ErrInvalid` and nothing changed. |
+| [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | Clone over a destination extent with a pass in flight. Assert the pass's refs there are dropped and the cloned refs, versioned at the clone's version, survive. Clone content the journal holds newer than its ref, drop the source's journal extent. Assert the destination reads the newer bytes. Crash mid-clone; assert the destination is not served until resumed, and the clone completes rather than fails, its phase 2 driven by the `Removal` record's clone spec alone. Delete the chunk record under a source ref before a batch; assert the run reads **Lost**, the carry is counted, and the batch does not fail. Clone an extent onto an overlapping extent of the same file; assert `ErrInvalid` and nothing changed. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone of a Lost extent | Write `[0, 4M)` and offload it; overwrite `[1M, 2M)`, commit existence and drop the journal's copy; clone the file onto a destination holding other data. Assert the clone completes, the destination's `[1M, 2M)` fails as **Lost**, and the rest reads the source. A clone that reads refs directly writes the v1 ref re-versioned and serves it as current; one that writes a hole there serves zeros; one that undoes itself by a removal leaves the destination zeroed. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone against a newer destination ref | With K forced to 2, clone into an extent; after phase 1, commit a destination ref at a version above the clone's into the extent before phase 2 reaches it — the engine refuses such writes, and this rule must hold without that refusal. Assert phase 2 leaves that ref, and the destination reads the write once the clone is done. |
-| [§6.6](#6.6%20Clone%20and%20server-side%20copy), [§6.5](#6.5%20Who%20owns%20a%20ref) one cut per clone | With K forced to 2, take a snapshot between two clone batches. Assert every cloned ref carries `born` equal to the clone's removal `cut`, and the snapshot reads either the whole clone or none of it. |
-| [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) resurrection counts every chunk | Clone two chunks of one retired block in one batch. Assert the block's `live` is 2, not 1, and a later drop of one leaves it `live`. |
+| [§6.6](#6.6%20Clone%20and%20server-side%20copy), [§6.5](#6.5%20Who%20owns%20a%20ref) one cut per clone | With K forced to 2, clone a source part carved and part held only by the journal, and take a snapshot between two clone batches. Assert every cloned ref carries `born` equal to the clone's removal `cut`, and the snapshot reads either the whole clone or none of it, the journal-held runs included and never **Lost**. A clone that copies journal-held runs during phase 2 leaves them above the snapshot's hold mark. |
+| [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) resurrection counts every chunk | Restore two chunks of one retired block in one batch. Assert the block's `live` is 2, not 1, and a later drop of one leaves it `live`. |
 | [§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) resurrection race | Interleave `MarkDeleted` and an adopting commit on a retired block in every order. Assert that either the block is resurrected with the new ref and not deleted, or the adoption fails, and never a ref to a chunk of a `deleted` block. |
 | [§7.1](#7.1%20Conditional%20retirement) verified delete | Decrement a refcount without dropping its ref, then run `MarkDeleted`. Assert `ErrReferenced`, the block `live`, the count raised. |
 | [§7.1](#7.1%20Conditional%20retirement) prune only its own | Commit a chunk in K1, commit the same chunk carried in K2, retire and prune K2. Assert the chunk record survives, naming K1. |
@@ -2251,6 +2306,10 @@ The sequences **MUST** include, as fixed seeds kept as regression cases: overwri
 pruning while an older pass of the extent is in flight, its commit landing after
 the prune; a clone of an extent whose overwrite's journal copy was lost; a removal
 after a snapshot over a ref part of which an earlier overwrite superseded; two
+overwrites of one extent between two snapshots, then a truncate, so the
+superseded piece is dated by the first overwrite and not the re-stamped record;
+a deallocate over a file of many holes, with phase 2 interleaved with a truncate
+up and an overwrite into the extent; two
 offload commits of one file from two processes; and a crash between a commit and
 the journal's record of its report; a removal whose batches split an
 overwrite record and a ref; and a hole fill committed between a read's journal
@@ -2299,7 +2358,7 @@ these. Shrink every failing sequence to a minimal one and keep it.
 3. **Stripe count** ([§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file)). If the release gate adopts the striped count,
    *S* follows from the measured contention on one chunk record; 16 is proposed.
 4. **Separate metadata servers.** [§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace) keeps both sides in one database. If
-   metadata is ever split across servers, the cut **MUST** fall between
+   metadata is ever split across servers, the proposed cut falls between
    per-file and content-addressed records, never between namespace and
    content: the first puts only background work (offload commits, removal
    batches, GC) across the split, the second puts `GETATTR` and unlink on it.
@@ -2361,7 +2420,7 @@ within a namespace they spread evenly and no key is sequential.
 | **FileData** (fields of `File`) | `size` u64 · `applied` version (u128) · `Version` u64 · `Charged` u64 · `Modify`, `Change` (i64 ns) · the `File`'s `born` u64 | existence commit, removal phase 1 |
 | **Hole** | `end` u64 | existence commit, removal phase 1 and 2 |
 | **Overwrite** | `end` u64 · `version` (u128) · `born` u64 | existence commit creates and splits; a removal masks from phase 1 and drops or narrows in phase 2; the primary's pruning deletes |
-| **Removal** | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cut` u64 (`SnapshotCut`) · `cursor` u64 · `done` bool | removal phase 1 creates; phase 2 advances; primary prunes |
+| **Removal** | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cut` u64 (`SnapshotCut`) · `cursor` u64 · `done` bool · for kind clone, the clone spec: `src` FileID, `srcOff`, `dstOff`, `len` u64, `asOf` version | removal phase 1 creates; phase 2 advances; primary prunes |
 | **Version index** | — (the key is `share‖bucket‖version‖file`): one entry per File at its stored `Version`, and one per unfolded directory delta | every transaction that raises a File's `Version`, deleting the entry it supersedes; a directory delta writes its own and its fold deletes it; never an offload commit |
 | **ChunkRef** (live) | `hash` (32 B, or zero ref) · `nsgen` u32 · `skip`, `length` u64 · `oldest`, `newest` versions · `born` u64 (`SnapshotCut`) | offload commit, removal phase 2, clone |
 | **ChunkRef** (history) | the ref's fields as they were, `died` set | a transaction superseding a ref a live snapshot sees |
