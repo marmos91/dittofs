@@ -1,0 +1,39 @@
+; 06-logoff-compaction.fio
+; FSLogix VHDX compaction at sign-out: payload blocks are moved from the tail
+; of the VHDX toward the front, then the file is truncated. Over SMB this
+; is large I/O (up to the SMB max transfer size, typically 1 MB).
+; Modeled as a concurrent tail-read stream and front-write stream per user.
+; Not modeled: free-space analysis (small) and the final truncate (metadata).
+;
+; Single user: USERS=1.  Logoff storm (end of shift): e.g. USERS=200.
+; All users start together: worst case, close to a shift ending at a fixed time.
+; COMPACT_MOVE = data moved per user; size it from your containers' typical
+; reclaimable space.
+; Metric: per-user runtime = extra sign-out time spent compacting.
+
+[global]
+ioengine=${IOENGINE}
+directory=${TARGET_DIR}
+filename_format=user.$jobnum.vhdx
+allow_file_create=0
+direct=1
+refill_buffers=1
+buffer_compress_percentage=${COMPRESS_PCT}
+bs=${COMPACT_BS}
+iodepth=4
+io_size=${COMPACT_MOVE}
+lat_percentiles=1
+percentile_list=50:90:99:99.9
+
+[move-read-tail]
+numjobs=${USERS}
+offset=60%
+size=40%
+rw=read
+
+[move-write-front]
+numjobs=${USERS}
+offset=20%
+size=40%
+rw=write
+sync=1

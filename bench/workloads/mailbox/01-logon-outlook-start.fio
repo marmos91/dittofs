@@ -1,0 +1,34 @@
+; 01-logon-outlook-start.fio
+; Container attach + profile load + Outlook opening the OST.
+; Single user: USERS=1 STORM_WINDOW=0
+; Logon storm: e.g. USERS=200 STORM_WINDOW=600 (200 users within 10 minutes)
+;
+; Profile load and Outlook start are merged into one job. With separate
+; stonewalled phases, every user would wait for all others before starting
+; Outlook, which would distort a storm.
+; Metric: each job's runtime = I/O part of that user's logon time
+; (run.sh / run.ps1 print the runtime distribution).
+
+[global]
+ioengine=${IOENGINE}
+directory=${TARGET_DIR}
+filename_format=user.$jobnum.vhdx
+size=${VHDX_SIZE}
+allow_file_create=0
+direct=1
+sync=1
+refill_buffers=1
+buffer_compress_percentage=${COMPRESS_PCT}
+lat_percentiles=1
+percentile_list=50:90:99:99.9
+
+[logon-outlook-start]
+numjobs=${USERS}
+startdelay=0-${STORM_WINDOW}
+rw=randrw
+rwmixread=88
+; reads: small OST metadata pages + larger hive/profile reads ; writes: logs, header
+bssplit=4k/35:8k/15:16k/10:32k/10:64k/15:256k/5:1m/10,4k/70:8k/20:64k/10
+random_distribution=zipf:1.1
+iodepth=2
+io_size=${LOGON_IO}

@@ -72,5 +72,6 @@ benchstat before.txt after.txt
 bench/
   README.md          # this file
   workloads/         # fio job files, consumed by the dfsbench harness (#1602)
+    mailbox/         # fio mailbox simulator, run through its own run.sh (#3001)
 cmd/bench/           # the dfsbench binary (under construction — #1602)
 ```

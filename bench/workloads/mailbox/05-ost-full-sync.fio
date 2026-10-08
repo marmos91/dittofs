@@ -1,0 +1,40 @@
+; 05-ost-full-sync.fio
+; A user's OST being built from scratch (new user, lost/rebuilt OST,
+; non-persistent desktop without a retained cache).
+; Data arrives at roughly the download rate (SYNC_RATE) and is appended to the
+; growing file; B-tree / table maintenance runs alongside as small random I/O.
+; Metric: does download-data hold SYNC_RATE, and what does write latency do?
+; USERS>1 = several users syncing at once (e.g. a migration wave).
+
+[global]
+ioengine=${IOENGINE}
+directory=${TARGET_DIR}
+filename_format=user.$jobnum.vhdx
+allow_file_create=0
+direct=1
+sync=1
+refill_buffers=1
+buffer_compress_percentage=${COMPRESS_PCT}
+time_based=1
+runtime=${RUNTIME}
+lat_percentiles=1
+percentile_list=50:90:99:99.9
+
+[download-data]
+numjobs=${USERS}
+offset=60%
+size=40%
+rw=write
+bs=256k
+iodepth=2
+rate=${SYNC_RATE}
+
+[btree-and-tables]
+numjobs=${USERS}
+size=${VHDX_SIZE}
+rw=randrw
+rwmixread=30
+bssplit=4k/60:8k/40
+random_distribution=zipf:1.1
+iodepth=1
+rate_iops=${SYNC_META_IOPS}
