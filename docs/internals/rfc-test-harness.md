@@ -1,6 +1,63 @@
 # RFC: one test harness, with a suite registry, one runner and one result format
 
-**Status:** proposed. Nothing here is implemented yet; §8 orders the work.
+**Status:** proposed, revision 3. Nothing here is implemented yet; §8 orders the work.
+**Discussion:** the pull request that adds this file.
+
+## Summary
+
+**The problem.** DittoFS has many good test suites, but no single way to run them and no
+reliable way to tell what they found.
+
+- **Every suite is run its own way.** 16 workflows and about 30 jobs per pull request, with 35
+  glue scripts (about 8,900 lines) between CI and the test tools.
+- **Green doesn't always mean tested.** A check of every test workflow's latest green runs found
+  14 cases that pass without testing what they claim. S3 cells never reach S3, Kerberos tests skip,
+  and 70 WPTS tests never execute. All are filed (#2986 to #3000).
+- **Red goes unnoticed.** The nightly conformance run has failed every night since 2026-09-10,
+  and the AD-DC suite failed on every develop run after #2914. Nobody was told.
+- **Most tests don't decide merges, and PRs are slow.** A PR waits 25–40 minutes, and only unit,
+  integration, lint and security checks can block it.
+
+**The proposal.**
+
+- **One command, `dt`, written in Go,** runs every suite the same way on a laptop and in CI.
+- **One file, `test/suites.yaml`, lists the 14 suites.** A variant of a suite is an option of it,
+  and sets of suites are groups.
+- **`dt` builds the DittoFS server each suite needs** (the fixture) and calls each test tool
+  directly. The per-suite scripts go.
+- **A suite can't pass without running.** A missing prerequisite, a failed setup check or an
+  unexpected skip is reported as "not run", never as a pass.
+- **One result format:** CTRF JSON, with JUnit for CI tools. Results are graded against known
+  failures and expected skips kept as YAML, and history answers "is this flaky?".
+- **Three tiers.** A quick run on every PR, on the production storage profile only, aiming at 20
+  minutes or less. The full set after every merge. The long suites nightly. One gate check decides
+  merges.
+- **One develop-red issue, updated in place,** plus an issue per failing test with guardrails.
+  Red gets noticed, without the floods that got the last alarm removed (#1705).
+
+**Decided:** Go from the start, CTRF, and GitHub issues with the project board for tracking (team
+call and reviews, 2026-10-08).
+**Open (§9):** the tier budgets, the operator and Windows jobs on PRs, the SMB client-compatibility
+workflow, who runs the dedicated test host, and when the gate becomes required.
+**Plan (§8):** seven steps, conformance first. Each step ships on its own, and an old CI job keeps
+running beside its replacement until their results match.
+
+## About this document
+
+Read this before adding a test suite, changing a test workflow, or touching `test/harness/`. It
+describes the harness we want to end up with, and how to get there from what exists, suite by
+suite.
+
+**Builds on:** the `dt` harness on `dev/test-harness` (`1b9d49b9`) as a reference, the conformance
+graders and their tests, the system scenarios in `test/scenarios/`, and `dfsbench` (`cmd/bench`).
+**Checked against:**
+- `develop` at `d0efaa75` (at `e33edad6` for #2955) and `dev/test-harness` at `1b9d49b9`, on
+  2026-10-07;
+- `develop` at `0d8dbdd8` and the logs of each test workflow's latest green develop runs, on
+  2026-10-08.
+
+§10 lists what was checked and what turned out different from what was assumed.
+
 **Revised:**
 - **Revision 1 (2026-10-08, first review):** fixtures replace the suites' setup scripts, the tools
   are called directly, results are CTRF with JUnit generated from it, and pull requests get no
@@ -17,21 +74,6 @@
   - `dt report --failures --post` opens issues;
   - component RFCs name their suites;
   - §1 and §10 record what a deep check of every CI job found.
-
-**Discussion:** the pull request that adds this file.
-**Builds on:** the `dt` harness on `dev/test-harness` (`1b9d49b9`) as a reference, the conformance
-graders and their tests, the system scenarios in `test/scenarios/`, and `dfsbench` (`cmd/bench`).
-**Checked against:**
-- `develop` at `d0efaa75` (at `e33edad6` for #2955) and `dev/test-harness` at `1b9d49b9`, on
-  2026-10-07;
-- `develop` at `0d8dbdd8` and the logs of each test workflow's latest green develop runs, on
-  2026-10-08.
-
-§10 lists what was checked and what turned out different from what was assumed.
-
-Read this before adding a test suite, changing a test workflow, or touching `test/harness/`. It
-describes the harness we want to end up with, and how to get there from what exists, suite by
-suite.
 
 ---
 
