@@ -160,7 +160,7 @@ the live size of the files:
 
 To compare bucket usage with the live file sizes, set
 `gc.compaction_live_ratio` (for example `0.5`), wait out the grace period, run
-`dfsctl store block gc`, and measure after that.
+`dfsctl store block gc <share>`, and measure after that.
 
 ## Running scenarios together
 
