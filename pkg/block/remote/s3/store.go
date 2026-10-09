@@ -163,6 +163,18 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 		return retry.NewStandard(func(o *retry.StandardOptions) {
 			o.MaxAttempts = maxAttempts
 			o.MaxBackoff = 30 * time.Second
+			// The endpoint guard's verdict is permanent, but the SDK sees a
+			// refused dial as a connection error and retries it. This check
+			// goes first because the first definite answer wins.
+			o.Retryables = append([]retry.IsErrorRetryable{
+				retry.IsErrorRetryableFunc(func(err error) aws.Ternary {
+					if errors.Is(err, ErrUnsafeEndpoint) {
+						return aws.FalseTernary
+					}
+
+					return aws.UnknownTernary
+				}),
+			}, o.Retryables...)
 			o.Retryables = append(o.Retryables, retry.RetryableHTTPStatusCode{
 				Codes: map[int]struct{}{429: {}},
 			})
