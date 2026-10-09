@@ -1,9 +1,12 @@
 package kerberos
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"strings"
 
 	// gokrb5 uses gofork's asn1 package, not the Go stdlib, because stdlib's
 	// encoding/asn1 has known bugs with Kerberos types (GeneralizedTime
@@ -14,6 +17,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/iana/addrtype"
+	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/service"
@@ -119,6 +124,19 @@ func (s *KerberosService) Provider() *pkgkerberos.Provider {
 // Mutual authentication is not handled here; callers invoke BuildMutualAuth
 // separately when an AP-REP token is required.
 func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal string) (*AuthResult, error) {
+	return s.authenticate(apReqBytes, servicePrincipal, "")
+}
+
+// AuthenticateFromClient verifies an AP-REQ using the remote client's network
+// address per RFC 4120 §3.2.3 ("Receipt of KRB_AP_REQ Message"). Kerberos
+// tickets may contain an optional caddr list; gokrb5 checks that list
+// whenever it is present, so network protocol callers must supply the
+// address observed on the accepted connection.
+func (s *KerberosService) AuthenticateFromClient(apReqBytes []byte, servicePrincipal, clientAddr string) (*AuthResult, error) {
+	return s.authenticate(apReqBytes, servicePrincipal, clientAddr)
+}
+
+func (s *KerberosService) authenticate(apReqBytes []byte, servicePrincipal, clientAddr string) (*AuthResult, error) {
 	if s.provider == nil {
 		return nil, fmt.Errorf("kerberos provider not configured")
 	}
@@ -145,11 +163,48 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 		service.DecodePAC(false),
 		service.KeytabPrincipal(servicePrincipal),
 	)
+	var clientHost types.HostAddress
+	if clientAddr != "" {
+		hostAddr, err := kerberosHostAddress(clientAddr)
+		if err != nil {
+			return nil, fmt.Errorf("parse Kerberos client address %q: %w", clientAddr, err)
+		}
+		clientHost = hostAddr
+		service.ClientAddress(hostAddr)(settings)
+	}
 
-	// Verify the AP-REQ (ticket decryption, authenticator check, clock skew).
+	// RFC 4120 §3.2.3 ("Receipt of KRB_AP_REQ Message"): search ticket
+	// caddr for an address matching the OS-reported client. A TCP
+	// acceptor reports an IP.
 	ok, creds, err := service.VerifyAPREQ(&apReq, settings)
+	// Authenticate passes no client address. Leave that path alone: a retry
+	// here would accept a non-IP caddr that previously failed the check.
+	if clientAddr != "" && err != nil && isBadAddressError(err) {
+		caddr := apReq.Ticket.DecryptedEncPart.CAddr
+		if ticketAllowsClientIP(clientHost, caddr) {
+			if workaround, apply := gokrb5CAddrTypeWorkaround(caddr); apply {
+				// decision: gokrb5 HostAddress.Equal requires the same
+				// address type, so a NetBIOS-only caddr never matches a
+				// TCP IP and VerifyAPREQ returns KRB_AP_ERR_BADADDR.
+				// ticketAllowsClientIP already accepted: there is no IP
+				// to bind. Windows stamps NetBIOS as a workstation name,
+				// not an IP restriction. Pass a ticket address so gokrb5
+				// Contains succeeds. Remove when gokrb5 skips
+				// incomparable types, or when tickets no longer carry
+				// NetBIOS-only caddr. Cost: the TCP IP is not bound when
+				// caddr has no IPs; signing and encryption still apply.
+				service.ClientAddress(workaround)(settings)
+				ok, creds, err = service.VerifyAPREQ(&apReq, settings)
+			}
+		}
+	}
 	if err != nil {
-		return nil, fmt.Errorf("verify AP-REQ: %w", err)
+		return nil, fmt.Errorf(
+			"verify AP-REQ (client_address=%q ticket_addresses=%v): %w",
+			clientAddr,
+			formatKerberosHostAddresses(apReq.Ticket.DecryptedEncPart.CAddr),
+			err,
+		)
 	}
 	if !ok {
 		return nil, fmt.Errorf("AP-REQ verification failed")
@@ -219,6 +274,84 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 		UserSID:    userSID,
 		GroupSIDs:  groupSIDs,
 	}, nil
+}
+
+// kerberosHostAddress converts a net.Conn RemoteAddr string (host:port) or a
+// bare IP into the RFC 4120 HostAddress representation expected by gokrb5.
+func kerberosHostAddress(clientAddr string) (types.HostAddress, error) {
+	host := clientAddr
+	if splitHost, _, err := net.SplitHostPort(clientAddr); err == nil {
+		host = splitHost
+	}
+
+	// A scoped IPv6 RemoteAddr may contain a zone (for example
+	// fe80::1%eth0). Kerberos HostAddress carries only the IP bytes.
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	host = strings.Trim(host, "[]")
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return types.HostAddress{}, fmt.Errorf("not an IP address")
+	}
+	return types.HostAddressFromNetIP(ip), nil
+}
+
+func formatKerberosHostAddresses(addresses []types.HostAddress) []string {
+	formatted := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address.AddrType == addrtype.NetBios {
+			formatted = append(formatted, "NETBIOS:"+strings.TrimRight(string(address.Address), " \x00"))
+			continue
+		}
+		ip := net.IP(address.Address)
+		if parsed := ip.String(); parsed != "<nil>" {
+			formatted = append(formatted, parsed)
+			continue
+		}
+		formatted = append(formatted, fmt.Sprintf("type=%d:%x", address.AddrType, address.Address))
+	}
+	return formatted
+}
+
+func isBadAddressError(err error) bool {
+	var krbErr messages.KRBError
+	return errors.As(err, &krbErr) && krbErr.ErrorCode == errorcode.KRB_AP_ERR_BADADDR
+}
+
+func ticketIPAddresses(addresses []types.HostAddress) []types.HostAddress {
+	ips := make([]types.HostAddress, 0, len(addresses))
+	for _, address := range addresses {
+		if address.AddrType == addrtype.IPv4 || address.AddrType == addrtype.IPv6 {
+			ips = append(ips, address)
+		}
+	}
+	return ips
+}
+
+// ticketAllowsClientIP reports whether ticket caddr constrains the TCP
+// peer. RFC 4120 §3.2.3 ("Receipt of KRB_AP_REQ Message") matches the
+// OS-reported address; a TCP socket reports an IP. NetBIOS entries are
+// not that family and are ignored. No IP in caddr means no IP bind.
+func ticketAllowsClientIP(peer types.HostAddress, caddr []types.HostAddress) bool {
+	ips := ticketIPAddresses(caddr)
+	if len(ips) == 0 {
+		return true
+	}
+	return types.HostAddressesContains(ips, peer)
+}
+
+func gokrb5CAddrTypeWorkaround(caddr []types.HostAddress) (types.HostAddress, bool) {
+	if len(ticketIPAddresses(caddr)) > 0 {
+		return types.HostAddress{}, false
+	}
+	for _, address := range caddr {
+		if address.AddrType == addrtype.NetBios {
+			return address, true
+		}
+	}
+	return types.HostAddress{}, false
 }
 
 // decodePACBestEffort decodes the MS-PAC carried in a verified AP-REQ ticket

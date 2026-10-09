@@ -1112,17 +1112,21 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 				suppressSessionSetupEncryption = true
 			}
 			// Encrypt when the session forces it (mode=required), the
-			// per-share tree forces it (Share.EncryptData via TREE_CONNECT),
-			// or the inbound request was itself encrypted (MS-SMB2 §3.3.4.1.4).
-			// In preferred mode Session.EncryptData stays false so signing-only
-			// torture tests can run, but encrypted shares and clients that
-			// opt-in to encryption per-connection (e.g. smbtorture's
-			// encryption-aes-128-ccm with SMB_ENCRYPTION_REQUIRED credentials)
-			// must still get encrypted responses — pull the tree-level flag
-			// and honour responseEncrypted.
+			// per-share tree forces it, or the inbound request was itself
+			// encrypted (MS-SMB2 §3.3.4.1.4). In preferred mode
+			// Session.EncryptData stays false so signing-only torture tests
+			// can run, but an encrypted share must still encrypt later
+			// responses.
+			//
+			// TREE_CONNECT is the exception. That response carries
+			// SMB2_SHAREFLAG_ENCRYPT_DATA, which is how a client learns the
+			// share requires encryption. In preferred mode the session flag
+			// is still off, so the client is not decrypting yet. Encrypting
+			// this response hides the flag. Commands after the tree is up
+			// still follow the share flag.
 			shouldEncrypt := sess.ShouldEncrypt() || responseEncrypted
-			if cs := sess.GetCryptoState(); !shouldEncrypt && hdr.TreeID != 0 && cs != nil &&
-				cs.Encryptor != nil {
+			if cs := sess.GetCryptoState(); !shouldEncrypt && hdr.Command != types.SMB2TreeConnect &&
+				hdr.TreeID != 0 && cs != nil && cs.Encryptor != nil {
 				if tree, ok := connInfo.Handler.GetTree(hdr.TreeID); ok && tree.EncryptData {
 					shouldEncrypt = true
 				}
