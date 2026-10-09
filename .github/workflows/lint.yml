@@ -69,6 +69,13 @@ jobs:
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         run: go vet ./...
 
+      # Test files behind a build tag are compiled by no check unless their own
+      # workflow runs, so one can stop compiling without anything going red.
+      # Vet every tagged test together; none of these tags excludes another.
+      - name: Vet the build-tagged tests
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        run: go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...
+
       - name: Check MS-FSCC / MS-FSA / MS-SMB2 citations
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         run: go run ./test/spec-citations
