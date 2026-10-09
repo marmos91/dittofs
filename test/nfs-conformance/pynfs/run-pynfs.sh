@@ -303,6 +303,14 @@ fi
 
 # pynfs exits non-zero when tests fail; that is expected input to the grader,
 # not a harness error, so the verdict comes from parse-results.sh alone.
+
+# Let queued blocks reach the remote store while this shell still holds the
+# dfsctl login: the teardown in cleanup() runs under sudo without it, and
+# stops the server too quickly for the syncer to finish on its own.
+if [[ "$SERVER_STARTED" == true ]]; then
+    "${REPO_ROOT}/dfsctl" system drain-uploads --timeout 2m >/dev/null 2>&1 ||
+        log_warn "Upload drain did not complete"
+fi
 cp /tmp/dittofs-posix-server.log "${RESULTS_DIR}/dittofs.log" 2>/dev/null || true
 
 # pynfs skips any test whose DEPEND prerequisites did not run in the same

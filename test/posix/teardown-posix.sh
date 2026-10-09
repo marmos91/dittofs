@@ -15,6 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 DITTOFS_BIN="$REPO_ROOT/dfs"
+DITTOFSCTL_BIN="$REPO_ROOT/dfsctl"
 
 # Colors for output
 RED='\033[0;31m'
@@ -49,6 +50,13 @@ fi
 if [[ -f /tmp/dittofs-server.pid ]]; then
     pid=$(cat /tmp/dittofs-server.pid)
     if kill -0 "$pid" 2>/dev/null; then
+        # The kill below allows two seconds, too little for the syncer to finish,
+        # so wait for queued blocks to reach the remote store first. Without this
+        # an S3 profile can stop before its data ever reaches S3. Best-effort: a
+        # memory block store has nothing to drain.
+        log_info "Draining pending block uploads..."
+        "$DITTOFSCTL_BIN" system drain-uploads --timeout 2m >/dev/null 2>&1 ||
+            log_warn "Upload drain did not complete"
         log_info "Stopping DittoFS server (PID: $pid)"
         kill -TERM "$pid" || true
         sleep 2
