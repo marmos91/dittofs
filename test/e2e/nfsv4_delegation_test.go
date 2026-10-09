@@ -45,6 +45,7 @@ var (
 	delegGranted    = regexp.MustCompile(`Delegation granted`)
 	cbRecallSent    = regexp.MustCompile(`CB_RECALL (\(v4\.1\) )?sent successfully`)
 	cbRecallAny     = regexp.MustCompile(`CB_RECALL`)
+	delegationTrace = regexp.MustCompile(`op_name=(OPEN|WRITE|COMMIT|CLOSE|DELEGRETURN|READ)\b|[Dd]elegation|CB_RECALL`)
 )
 
 // =============================================================================
@@ -127,6 +128,12 @@ func testDelegationRecall(t *testing.T, holderVers, otherVers string) {
 
 	sp, _, nfsPort := setupNFSv4TestServer(t)
 	since := readLogFile(t, sp)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server delegation and I/O log since mount:\n%s",
+				grepLines(extractNewLogs(since, readLogFile(t, sp)), delegationTrace))
+		}
+	})
 
 	holder := mountForDelegations(t, nfsPort, holderVers)
 	t.Cleanup(holder.Cleanup)
@@ -254,6 +261,17 @@ func mountForDelegations(t *testing.T, port int, vers string) *framework.Mount {
 		return framework.MountNFSWithVersionAt(t, framework.NonLoopbackIPv4(t), port, vers)
 	}
 	return framework.MountNFSWithVersion(t, port, vers)
+}
+
+// grepLines returns the lines of logs that re matches.
+func grepLines(logs string, re *regexp.Regexp) string {
+	var out []string
+	for _, line := range strings.Split(logs, "\n") {
+		if re.MatchString(line) {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // waitForLog polls the server log until re matches at least n times in what
