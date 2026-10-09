@@ -79,6 +79,8 @@ takes no lock, so it does not block a scheduled run.
   `/logs` is the run's logs directory, kept when the run fails or is slow, and otherwise left in
   the cache's `run/` until the next run.
 - A run is capped at `SCENARIO_TIMEOUT` (900) seconds.
+- One batch run at a time per cache. A second one prints `not run: another run holds …` and
+  exits 75 without running anything, so a scheduled run that tested nothing never reads as a pass.
 
 ## Writing one
 
