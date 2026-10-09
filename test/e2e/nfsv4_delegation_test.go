@@ -45,6 +45,7 @@ var (
 	delegGranted    = regexp.MustCompile(`Delegation granted`)
 	cbRecallSent    = regexp.MustCompile(`CB_RECALL (\(v4\.1\) )?sent successfully`)
 	cbRecallAny     = regexp.MustCompile(`CB_RECALL`)
+	delegReturned   = regexp.MustCompile(`Delegation returned`)
 	delegationTrace = regexp.MustCompile(`op_name=(OPEN|WRITE|COMMIT|CLOSE|DELEGRETURN|READ)\b|[Dd]elegation|CB_RECALL`)
 )
 
@@ -94,8 +95,8 @@ func TestNFSv4DelegationBasicLifecycle(t *testing.T) {
 
 // TestNFSv4DelegationRecall checks that a write open from a second client
 // recalls the delegation a v4.0 client holds over the v4.0 callback
-// connection, and that the second client then sees the holder's unflushed
-// writes.
+// connection, that the open waits for the delegation to be returned, and that
+// the second client then sees the holder's data.
 func TestNFSv4DelegationRecall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NFSv4 delegation recall test in short mode")
@@ -152,23 +153,29 @@ func testDelegationRecall(t *testing.T, holderVers, otherVers string) {
 	require.True(t, waitForLog(t, sp, since, delegGranted, 1, 5*time.Second),
 		"holder should be granted a delegation")
 
-	// The holder keeps the file open and its data unflushed, so only the
-	// recall makes the write visible to the other client.
-	testData := []byte("written by the delegation holder, flushed only by the recall")
+	// fsync puts the data on the server without giving up the delegation. The
+	// recall is not relied on to flush it: the kernel client returns a write
+	// delegation and keeps its dirty pages cached under the open stateid.
+	testData := []byte("written and fsynced by the delegation holder")
 	_, err = f.Write(testData)
 	require.NoError(t, err, "holder: should write data")
+	require.NoError(t, f.Sync(), "holder: should fsync")
 
 	recallSince := readLogFile(t, sp)
 	g, err := os.OpenFile(other.FilePath(fileName), os.O_RDWR, 0)
-	require.NoError(t, err, "other client: write open should succeed once the delegation is recalled")
+	require.NoError(t, err, "other client: write open should succeed once the delegation is returned")
 	defer g.Close()
 
-	require.True(t, waitForLog(t, sp, recallSince, cbRecallSent, 1, 10*time.Second),
-		"a conflicting write open should recall the holder's delegation")
+	// The server answers the conflicting OPEN with NFS4ERR_DELAY until the
+	// holder returns the delegation, so both have happened by the time the
+	// open succeeds.
+	recallLogs := extractNewLogs(recallSince, readLogFile(t, sp))
+	assert.Regexp(t, cbRecallSent, recallLogs, "a conflicting write open should recall the holder's delegation")
+	assert.Regexp(t, delegReturned, recallLogs, "the holder should return the delegation before the open succeeds")
 
 	got, err := os.ReadFile(other.FilePath(fileName))
 	require.NoError(t, err, "other client: should read file")
-	assert.Equal(t, testData, got, "other client should see the holder's writes after the recall")
+	assert.Equal(t, testData, got, "other client should see the holder's data")
 }
 
 // =============================================================================
