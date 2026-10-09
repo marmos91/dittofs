@@ -19,7 +19,8 @@
 #   - a Python traceback becomes "traceback: <its exception line>", with
 #     addresses and numbers (ports, paths with timestamps) replaced by <ip> and
 #     N, so a row excuses the one exception it documents and not any crash in
-#     the same subtest
+#     the same subtest. A message spanning several lines is named by its last
+#     line, which then carries no "Exception: " prefix
 #   - a leading "<subtest> - " is dropped; the name already carries it
 #
 # A module with no closing tally did not finish; it grades as a TIMEOUT named

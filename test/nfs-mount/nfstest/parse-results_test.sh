@@ -136,6 +136,32 @@ else
     echo "FAIL: the shared v4 table does not"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
 fi
 
+# On a fresh host the first NFSv3 remount makes systemd start rpc-statd, which
+# adds its own line to mount.nfs's stderr and so to the exception: the name
+# keeps the real error, without the "Exception: " prefix. The v3 row must
+# match both forms.
+cat >"$WORK/nfstest.log" <<'EOF'
+NFSTEST-MODULE nfstest_dio
+    TEST: Running test 'rsize'
+    FAIL: Traceback (most recent call last):
+            File "/x/host.py", line 432, in run_cmd
+              raise Exception(self.pstderr)
+          Exception: Created symlink /run/systemd/system/remote-fs.target.wants/rpc-statd.service.
+          mount.nfs: requested NFS version or transport protocol is not supported for /tmp/dittofs-test
+
+    TEST: Running test 'wsize'
+    FAIL: Traceback (most recent call last):
+            File "/x/host.py", line 432, in run_cmd
+          Exception: mount.nfs: requested NFS version or transport protocol is not supported for /tmp/dittofs-test
+2 tests (0 passed, 2 failed)
+NFSTEST-DONE 1
+EOF
+if "$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$T.md:${T}_V3.md" >"$WORK/output" 2>&1; then
+    echo "ok: the v3 remount row matches a multi-line exception message too"
+else
+    echo "FAIL: the v3 remount row matches a multi-line exception message too"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
+fi
+
 # A traceback is named by its exception, so a row documenting one exception
 # does not excuse a different one in the same subtest.
 run_case "a different exception in a known subtest" 1 "posix/seekdir: traceback: OSError: [Errno N] Input/output error" "graded 1 0 0" <<'EOF'
