@@ -22,7 +22,7 @@ export SYNC_META_IOPS="${SYNC_META_IOPS:-200}"
 export COMPACT_MOVE="${COMPACT_MOVE:-4g}"
 export COMPACT_BS="${COMPACT_BS:-1m}"
 
-job="$1"; shift
+job="${1:?usage: run.sh <job.fio> [fio args]}"; shift
 mkdir -p results
 out="results/$(basename "$job" .fio)-u${USERS}-$(date +%Y%m%d-%H%M%S).json"
 fio --output-format=json+ --output="$out" "$@" "$job"
