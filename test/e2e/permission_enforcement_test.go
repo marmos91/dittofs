@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,22 +197,24 @@ func testNoAccessUserCannotRead(t *testing.T, cli *helpers.CLIRunner, smbPort in
 		Password: userPass,
 	}
 
-	mount, err := framework.MountSMBWithError(t, smbPort, creds)
-	if err != nil {
-		// Mount failed as expected - test passes
-		t.Logf("Mount correctly denied for no-access user: %v", err)
-		t.Log("ENF-02: No-access user cannot read - PASSED (mount denied)")
-		return
-	}
+	// The share default is "none", so TREE_CONNECT answers STATUS_ACCESS_DENIED.
+	_, err = framework.MountSMBWithError(t, smbPort, creds)
+	requireSMBMountDenied(t, err, "no-access user")
 
-	// Mount succeeded - operations should fail (implementation-dependent behavior)
+	// The same credentials mount once the user is granted read, so the denial
+	// above was the permission and not the login.
+	err = cli.GrantUserPermission(shareName, userName, "read")
+	require.NoError(t, err, "Should grant read permission")
+	t.Cleanup(func() { _ = cli.RevokeUserPermission(shareName, userName) })
+	time.Sleep(200 * time.Millisecond)
+
+	mount := framework.MountSMB(t, smbPort, creds)
 	defer mount.Cleanup()
+	got, err := os.ReadFile(mount.FilePath(testFile))
+	require.NoError(t, err, "User granted read should read the file")
+	assert.Equal(t, testContent, got)
 
-	// Try to read - should fail
-	_, err = os.ReadFile(mount.FilePath(testFile))
-	assert.Error(t, err, "No-access user should not be able to read files")
-
-	t.Log("ENF-02: No-access user cannot read - PASSED (operations denied)")
+	t.Log("ENF-02: No-access user cannot read - PASSED")
 }
 
 // testUserRemovedFromGroupLosesPermissions tests ENF-03: When a user is removed
@@ -273,18 +277,11 @@ func testUserRemovedFromGroupLosesPermissions(t *testing.T, cli *helpers.CLIRunn
 	// Small delay for permission propagation
 	time.Sleep(200 * time.Millisecond)
 
-	// Re-mount and verify user can no longer write
-	mount, err = framework.MountSMBWithError(t, smbPort, creds)
-	if err != nil {
-		// Mount failed - user has no access now, test passes
-		t.Log("ENF-03: User removed from group loses permissions - PASSED (mount denied after group removal)")
-		return
-	}
-	defer mount.Cleanup()
-
-	// Mount succeeded - write should now fail
-	err = os.WriteFile(mount.FilePath(testDir+"/after_removal.txt"), []byte("should fail"), 0644)
-	assert.Error(t, err, "User removed from group should not be able to write")
+	// The user's only grant came from the group, so the remount falls back to
+	// the "none" default. The successful mount above, with the same
+	// credentials, rules out a login failure.
+	_, err = framework.MountSMBWithError(t, smbPort, creds)
+	requireSMBMountDenied(t, err, "user removed from group")
 
 	t.Log("ENF-03: User removed from group loses permissions - PASSED")
 }
@@ -355,4 +352,21 @@ func testPermissionChangeEffectImmediate(t *testing.T, cli *helpers.CLIRunner, s
 	assert.NoError(t, err, "Write should succeed after permission upgrade")
 
 	t.Log("ENF-04: Permission change takes effect immediately - PASSED")
+}
+
+// requireSMBMountDenied asserts that an SMB mount failed because the server
+// refused the tree connect. Linux mount.cifs reports STATUS_ACCESS_DENIED as
+// "mount error(13): Permission denied"; macOS mount_smbfs reports it as an
+// authentication error, so on macOS the check is only that the mount failed
+// with that text.
+func requireSMBMountDenied(t *testing.T, err error, what string) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		require.Error(t, err, "%s mount should be denied", what)
+		msg := strings.ToLower(err.Error())
+		assert.True(t, strings.Contains(msg, "permission denied") || strings.Contains(msg, "authentication error"),
+			"%s mount should be denied, got: %v", what, err)
+		return
+	}
+	requireAccessDenied(t, err, what+" mount")
 }
