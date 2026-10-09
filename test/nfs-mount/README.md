@@ -23,6 +23,7 @@ runners.
 
 | Name | Options | Adds over its base |
 |---|---|---|
+| `default` | none | what a plain `mount -t nfs` negotiates: NFSv4.2 against DittoFS (nfstest names it explicitly) |
 | `v3` | `vers=3,tcp,mountproto=tcp,nolock` | — |
 | `v4.0` | `vers=4.0` | — |
 | `v4.1` | `vers=4.1` | — |

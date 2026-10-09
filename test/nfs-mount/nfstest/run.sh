@@ -5,7 +5,8 @@
 # Usage:
 #   sudo ./run.sh --variant v4.1 [--modules posix,lock]
 #
-# Expects a provisioned server (../setup.sh). nfstest mounts and unmounts the
+# Expects a provisioned server (the suite's setup step,
+# test/posix/setup-posix.sh --no-mount). nfstest mounts and unmounts the
 # export itself for every module, with the option set under test.
 #
 # Writes one log with each module's output between "NFSTEST-MODULE <module>"
@@ -18,8 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUITE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=../option-sets.sh
 source "$SUITE_DIR/option-sets.sh"
-# shellcheck source=../mounts.sh
-source "$SUITE_DIR/mounts.sh"
+# shellcheck source=../../common/mounts.sh
+source "$SUITE_DIR/../common/mounts.sh"
 
 VARIANT=""
 MODULES="${NFSTEST_MODULES:-}"

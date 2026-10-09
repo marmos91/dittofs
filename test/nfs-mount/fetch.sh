@@ -8,6 +8,14 @@
 # only (https answers 403). Each is pinned to a commit and the checkout is
 # verified against it, so a moved branch upstream cannot change what a run
 # grades. Override the cache location with NFS_MOUNT_CACHE.
+#
+# decision: the suites are fetched from upstream, not mirrored or vendored. In
+# CI the fetch only happens when the actions cache misses: it is keyed on this
+# file, the nightly keeps it warm, and GitHub drops a cache only after a week
+# unused. So an outage at git.linux-nfs.org turns a run red only when it
+# coincides with a re-pin or a cold cache, for reasons unrelated to DittoFS.
+# Mirror both repositories on GitHub, or vendor pinned tarballs, if a nightly
+# ever does go red on this fetch.
 
 set -euo pipefail
 

@@ -37,8 +37,8 @@ log_info "Tearing down POSIX test environment..."
 # Unmount NFS share. is_mounted and detach never stat the mount point, which
 # blocks forever on a hard mount whose server has hung, and teardown runs
 # exactly when something went wrong.
-# shellcheck source=../nfs-mount/mounts.sh
-source "$SCRIPT_DIR/../nfs-mount/mounts.sh"
+# shellcheck source=../common/mounts.sh
+source "$SCRIPT_DIR/../common/mounts.sh"
 if is_mounted "$MOUNT_POINT"; then
     log_info "Unmounting $MOUNT_POINT"
     detach "$MOUNT_POINT"

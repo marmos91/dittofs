@@ -8,6 +8,11 @@
 # plus one deliberate deviation each, so a difference between them points at
 # the option that caused it.
 #
+# `default` passes no options at all, so the kernel negotiates exactly what a
+# plain `mount -t nfs server:/export` gets. Against DittoFS that is NFSv4.2: the
+# client takes the highest version the server offers. The other sets pin a
+# version so a failure can be told apart by version.
+#
 # The port is not part of a set. It is appended by the callers, because the
 # two suites take it differently: cthon04 through `mount -o`, nfstest through
 # its own --port flag.
@@ -23,13 +28,14 @@
 
 # option_set_names — every set, in the order the manifest lists them.
 option_set_names() {
-    printf '%s\n' v3 v4.0 v4.1 v4.1-noac v4.1-smallio
+    printf '%s\n' default v3 v4.0 v4.1 v4.1-noac v4.1-smallio
 }
 
 # option_set_opts NAME — the mount options for NAME, without the port. Fails
 # for an unknown name so a typo in the manifest cannot fall back to a default.
 option_set_opts() {
     case "$1" in
+    default) echo "" ;;
     v3) echo "vers=3,tcp,mountproto=tcp,nolock" ;;
     v4.0) echo "vers=4.0" ;;
     v4.1) echo "vers=4.1" ;;
@@ -39,10 +45,22 @@ option_set_opts() {
     esac
 }
 
-# option_set_version NAME — the NFS version the set mounts with (3, 4.0, 4.1).
+# DEFAULT_NFS_VERSION — what the kernel negotiates against DittoFS when the
+# mount names no version. cthon04 never needs it: it mounts `default` with no
+# vers= and takes whatever is negotiated. nfstest has to name a version, so for
+# `default` it runs this one; if a kernel or DittoFS change moves the default,
+# update it here.
+DEFAULT_NFS_VERSION=4.2
+
+# option_set_version NAME — the NFS version the set mounts with (3, 4.0, 4.1,
+# or DEFAULT_NFS_VERSION for a set that names none).
 option_set_version() {
     local opts
     opts="$(option_set_opts "$1")" || return 1
+    if [[ ",${opts}," != *,vers=* ]]; then
+        echo "$DEFAULT_NFS_VERSION"
+        return
+    fi
     opts=",${opts},"
     opts="${opts#*,vers=}"
     echo "${opts%%,*}"
@@ -54,9 +72,9 @@ option_set_mount_opts() {
     local opts
     opts="$(option_set_opts "$1")" || return 1
     if [[ "$(option_set_version "$1")" == 3 ]]; then
-        echo "${opts},port=$2,mountport=$2"
+        echo "${opts:+${opts},}port=$2,mountport=$2"
     else
-        echo "${opts},port=$2"
+        echo "${opts:+${opts},}port=$2"
     fi
 }
 

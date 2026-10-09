@@ -5,7 +5,8 @@
 # Usage:
 #   sudo ./run.sh --variant v4.1 [--keep-mount]
 #
-# Expects a provisioned server (../setup.sh). Mounts the export itself, so the
+# Expects a provisioned server (the suite's setup step,
+# test/posix/setup-posix.sh --no-mount). Mounts the export itself, so the
 # option set under test is the only one in play, and unmounts on exit.
 #
 # Upstream's runtests scripts stop a group at its first failing test, so one
@@ -24,8 +25,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUITE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=../option-sets.sh
 source "$SUITE_DIR/option-sets.sh"
-# shellcheck source=../mounts.sh
-source "$SUITE_DIR/mounts.sh"
+# shellcheck source=../../common/mounts.sh
+source "$SUITE_DIR/../common/mounts.sh"
 
 VARIANT=""
 KEEP_MOUNT=false
