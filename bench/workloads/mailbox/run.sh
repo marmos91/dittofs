@@ -19,6 +19,7 @@ export SORT_WRITE="${SORT_WRITE:-30m}"
 export CATALOG_IOPS="${CATALOG_IOPS:-50}"
 export CATALOG_LOG_IOPS="${CATALOG_LOG_IOPS:-10}"
 export SYNC_RATE="${SYNC_RATE:-10m}"
+export SYNC_GROW="${SYNC_GROW:-6g}"        # bytes appended per user in a full sync
 export SYNC_META_IOPS="${SYNC_META_IOPS:-200}"
 export COMPACT_MOVE="${COMPACT_MOVE:-4g}"
 export COMPACT_BS="${COMPACT_BS:-1m}"

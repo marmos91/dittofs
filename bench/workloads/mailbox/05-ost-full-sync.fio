@@ -22,8 +22,10 @@ percentile_list=50:90:99:99.9
 
 [download-data]
 numjobs=${USERS}
-offset=60%
-size=40%
+; Appends SYNC_GROW bytes past the end of the file, so the file grows.
+file_append=1
+size=${SYNC_GROW}
+time_based=0
 rw=write
 bs=256k
 iodepth=2
