@@ -137,10 +137,10 @@ else
 fi
 
 # On a fresh host the first NFSv3 remount makes systemd start rpc-statd, which
-# adds its own line to mount.nfs's stderr and so to the exception: the name
-# keeps the real error, without the "Exception: " prefix. The v3 row must
-# match both forms.
-cat >"$WORK/nfstest.log" <<'EOF'
+# adds its own line to mount.nfs's stderr and so to the exception. The name
+# takes the type from the first line and the text from the last, so it is the
+# same with or without that line, and the exact v3 row matches both.
+cat >"$WORK/multiline.log" <<'EOF'
 NFSTEST-MODULE nfstest_dio
     TEST: Running test 'rsize'
     FAIL: Traceback (most recent call last):
@@ -156,11 +156,16 @@ NFSTEST-MODULE nfstest_dio
 2 tests (0 passed, 2 failed)
 NFSTEST-DONE 1
 EOF
-if "$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$T.md:${T}_V3.md" >"$WORK/output" 2>&1; then
+if "$SCRIPT_DIR/parse-results.sh" "$WORK/multiline.log" "$T.md:${T}_V3.md" >"$WORK/output" 2>&1; then
     echo "ok: the v3 remount row matches a multi-line exception message too"
 else
     echo "FAIL: the v3 remount row matches a multi-line exception message too"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
 fi
+
+# The name itself: the type from the message's first line, the text from its
+# last, never the noise in between.
+run_case "a multi-line exception keeps its type and its last line" 2 \
+    "dio/rsize: traceback: Exception: mount.nfs: requested NFS version or transport protocol is not supported for /tmp/dittofs-test" <"$WORK/multiline.log"
 
 # A traceback is named by its exception, so a row documenting one exception
 # does not excuse a different one in the same subtest.

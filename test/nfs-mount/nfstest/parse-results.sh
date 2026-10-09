@@ -19,8 +19,10 @@
 #   - a Python traceback becomes "traceback: <its exception line>", with
 #     addresses and numbers (ports, paths with timestamps) replaced by <ip> and
 #     N, so a row excuses the one exception it documents and not any crash in
-#     the same subtest. A message spanning several lines is named by its last
-#     line, which then carries no "Exception: " prefix
+#     the same subtest. A message spanning several lines is named by the
+#     exception type from its first line and the text of its last: tools print
+#     to stderr ahead of the error (systemd starting rpc-statd, say), and the
+#     name stays the same whether or not they did
 #   - a leading "<subtest> - " is dropped; the name already carries it
 #
 # A module with no closing tally did not finish; it grades as a TIMEOUT named
@@ -61,10 +63,18 @@ awk '
     # A traceback is emitted once its last line is known: nfstest indents the
     # frames and the exception ten spaces or more, and the exception is the
     # last of those lines before the next normal one.
-    function flush_traceback(    exc) {
+    function flush_traceback(    exc, type) {
         if (!in_tb) return
         in_tb = 0
         exc = tb_last
+        # The message starts on the first line at the exception indent, ten
+        # spaces exactly (frames sit deeper); its type is the "Name: " there.
+        # The later lines of a message are its text, even when one reads like
+        # "Name: " (mount.nfs: ...), so the type always comes from the first.
+        if (tb_first != "" && tb_first != tb_last && match(tb_first, /^[A-Za-z_][A-Za-z0-9_.]*: /)) {
+            type = substr(tb_first, 1, RLENGTH)
+            exc = type exc
+        }
         gsub(/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/, "<ip>", exc)
         gsub(/[0-9]+/, "N", exc)
         emit("FAIL", "traceback: " (exc == "" ? "?" : exc))
@@ -91,7 +101,10 @@ awk '
     }
     in_tb && /^          / {
         line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
-        if (line != "") tb_last = line
+        if (line != "") {
+            tb_last = line
+            if (tb_first == "" && $0 ~ /^          [^ ]/) tb_first = line
+        }
         next
     }
     in_tb { flush_traceback() }
@@ -110,7 +123,7 @@ awk '
         next
     }
     /^[ \t]*PASS: / { line = $0; sub(/^[ \t]*PASS: /, "", line); emit("PASS", line); next }
-    /^[ \t]*FAIL: Traceback \(most recent call last\)/ { in_tb = 1; tb_last = ""; next }
+    /^[ \t]*FAIL: Traceback \(most recent call last\)/ { in_tb = 1; tb_first = ""; tb_last = ""; next }
     /^[ \t]*FAIL: / { line = $0; sub(/^[ \t]*FAIL: /, "", line); emit("FAIL", line); next }
     /^[0-9]+ tests \([0-9]+ passed, [0-9]+ failed/ {
         finished = 1
