@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	gosync "sync"
 
@@ -373,6 +374,12 @@ func (m *RemoteSync) readChunkVerified(ctx context.Context, loc block.ChunkLocat
 // its own S3 GET. That shared budget is what keeps total remote concurrency
 // bounded when the readahead window overlaps demand.
 func (m *RemoteSync) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
+	release, err := m.admission.enter(ctx, payloadID)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if !m.canProcess(ctx) {
 		return ErrClosed
 	}
@@ -389,23 +396,39 @@ func (m *RemoteSync) fetchBlock(ctx context.Context, payloadID string, blockIdx 
 		return m.remoteUnavailableError()
 	}
 
+	if blockIdx > uint64(math.MaxInt64-block.BlockSize)/uint64(block.BlockSize) {
+		return block.ErrInvalidOffset
+	}
 	start := blockIdx * uint64(block.BlockSize)
+	// A full local block needs neither manifest resolution nor remote traffic.
+	// This is only a speculative skip: eviction can follow the probe, in which
+	// case the later demand read observes cold bytes and fetches them normally.
+	if resident, err := m.local.IsRangeResident(ctx, journal.FileID(payloadID), int64(start), block.BlockSize); err != nil {
+		return err
+	} else if resident {
+		return nil
+	}
 	chunks, err := m.collectCoveringChunks(ctx, payloadID, start, start+uint64(block.BlockSize))
 	if err != nil {
 		return err
 	}
 
-	// ponytail: no local-presence probe — the journal is (payloadID,offset)-
-	// keyed, not hash-keyed, so there is no cheap per-hash Has(). Prefetch just
-	// fetches; the in-flight dedup collapses concurrent duplicates and Hydrate
-	// is idempotent, so a re-fetch of an already-warm chunk is at worst a
-	// redundant GET (best-effort readahead). Add a journal residency probe here
-	// if redundant prefetch GETs ever show up in profiles.
-	//
 	// Chunks are staged serially: this already runs on a SyncQueue worker, and
 	// fanning out here would multiply the pool's concurrency by the chunks per
 	// block behind the window that bounds it.
 	for _, c := range chunks {
+		// A sparse or partly cold block still contains warm claims. Probe the
+		// resolved claim, not the whole chunk: overlaps can hide some of its
+		// bytes behind a newer row. Unrepresentable ranges are never skipped.
+		if c.span.To > c.span.From && c.span.To <= math.MaxInt64 {
+			resident, err := m.local.IsRangeResident(ctx, journal.FileID(payloadID), int64(c.span.From), int64(c.span.To-c.span.From))
+			if err != nil {
+				return err
+			}
+			if resident {
+				continue
+			}
+		}
 		if _, _, err := m.inlineFetchOrWait(ctx, payloadID, c.blockIdx, c.fb, c.span); err != nil {
 			return err
 		}

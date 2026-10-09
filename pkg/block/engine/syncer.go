@@ -22,6 +22,10 @@ import (
 // RemoteSync handles async local-to-remote transfers with eager block carving,
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type RemoteSync struct {
+	// Shared with the engine before Start; background passes acquire admission
+	// before journal.Flush and retain it through the manifest reap.
+	admission *payloadAdmission
+
 	local       local.LocalStore
 	remoteStore remote.RemoteStore
 	// hasRemote mirrors "remoteStore != nil" as an atomic so hot-path gating

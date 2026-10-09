@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"sync"
 	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -55,7 +54,10 @@ type warmTarget struct {
 //
 // progress (may be nil) is invoked after each block is processed with the
 // running (done, total) counts so callers can drive a poll/UI. total is the
-// number of enumerated chunks, which is what this run will fetch.
+// number of enumerated chunks, which is what this run will fetch. Callbacks are
+// serialized independently of downloads, and payload admission is released
+// before waiting for callbacks to finish. They may inspect or mutate files;
+// they must not close the engine whose lifecycle pins this operation.
 //
 // A nil remote tier is an error: there is nothing to warm from. A fetch that
 // fails with fs.ErrDiskFull is terminal — the bounded local tier cannot hold
@@ -82,6 +84,29 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 		return nil
 	}); err != nil {
 		return WarmResult{}, fmt.Errorf("warm: enumerate payloads: %w", err)
+	}
+
+	// Acquire before resolving any rows, and retain every guard until the last
+	// hydrate completes. Guarding already-resolved targets would still let a
+	// replacement finish before a worker writes the old manifest's bytes back.
+	// Sort and deduplicate exactly as clone does so reverse source/destination
+	// operations cannot form an admission cycle.
+	slices.Sort(payloadIDs)
+	payloadIDs = slices.Compact(payloadIDs)
+	var releases []func()
+	releaseAdmissions := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+		releases = nil
+	}
+	defer releaseAdmissions()
+	for _, id := range payloadIDs {
+		release, err := m.admission.enter(ctx, id)
+		if err != nil {
+			return WarmResult{}, err
+		}
+		releases = append(releases, release)
 	}
 
 	var targets []warmTarget
@@ -134,39 +159,43 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 	}
 
 	total := int64(len(targets))
+	var (
+		blocksFetched    atomic.Int64
+		bytesFetched     atomic.Int64
+		progressEvents   chan struct{}
+		progressFinished chan struct{}
+	)
 	if progress != nil {
-		progress(0, total)
+		// At most one event per target. The buffer lets every worker finish even
+		// when the callback is waiting for exclusive admission on a warmed file.
+		// The dispatcher owns the counter, so callbacks remain strictly ordered.
+		progressEvents = make(chan struct{}, len(targets))
+		progressFinished = make(chan struct{})
+		go func() {
+			defer close(progressFinished)
+			progress(0, total)
+			var done int64
+			for range progressEvents {
+				done++
+				progress(done, total)
+			}
+		}()
+	}
+	emitProgress := func() {
+		if progressEvents != nil {
+			progressEvents <- struct{}{}
+		}
+	}
+	finish := func() {
+		releaseAdmissions()
+		if progressEvents != nil {
+			close(progressEvents)
+			<-progressFinished
+		}
 	}
 	if total == 0 {
+		finish()
 		return WarmResult{}, nil
-	}
-
-	var (
-		blocksFetched atomic.Int64
-		bytesFetched  atomic.Int64
-	)
-
-	// progress reporting is serialized: the counter increment and the callback
-	// emission happen under one lock so callbacks fire in monotonic `done`
-	// order. Snapshotting an atomic counter and emitting outside the lock lets a
-	// goroutine that incremented to N-1 call back after the one that reached N,
-	// leaving the final observed progress below total even though every fetch
-	// finished.
-	var (
-		progressMu sync.Mutex
-		done       int64
-	)
-	emitProgress := func() {
-		if progress == nil {
-			return
-		}
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		done++
-		// Hold the lock across the user callback so emissions stay ordered;
-		// defer the unlock so a panicking callback can't leave it held and
-		// deadlock every later emit.
-		progress(done, total)
 	}
 
 	// Bound remote-download concurrency via the shared fetchGroup helper (same
@@ -199,6 +228,7 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 	// Counts are read after Wait so both the success and failure returns report
 	// everything that actually landed.
 	err := g.Wait()
+	finish()
 	return WarmResult{
 		BlocksFetched: blocksFetched.Load(),
 		BytesFetched:  bytesFetched.Load(),

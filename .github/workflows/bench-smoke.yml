@@ -1,0 +1,61 @@
+name: Bench Smoke
+
+on:
+  push:
+    branches: [develop]
+    paths: &paths
+      - 'bench/workloads/**'
+      - 'cmd/bench/**'
+      - 'internal/dfsbench/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/bench-smoke.yml'
+  pull_request:
+    branches: [develop, main]
+    paths: *paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  bench-smoke:
+    name: dfsbench smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Install fio
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fio
+          fio --version
+
+      - name: Build dfsbench
+        run: go build -v -o dfsbench ./cmd/bench
+
+      # Smoke runs fio against a temp dir on the runner, not against DittoFS.
+      # It checks that the job files parse and that the harness still reads
+      # fio's JSON output. The numbers mean nothing on a shared runner.
+      - name: Run smoke benchmark
+        run: ./dfsbench run --smoke --results ./bench-results
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-smoke-results
+          path: bench-results/
+          if-no-files-found: warn

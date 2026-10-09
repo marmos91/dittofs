@@ -5,39 +5,37 @@ import (
 	"testing"
 )
 
-// TestPopAllPending_CleansFlushLocks asserts PopAllPending removes the per-file
-// flush locks for every popped entry, so flushLocks does not grow unbounded
-// across repeated record/pop cycles (mirrors the cleanup in PopPending).
-func TestPopAllPending_CleansFlushLocks(t *testing.T) {
+// A pop removes pending state while a flush may still be committing it. A
+// second flush, truncate or clone reconciliation must keep waiting on the
+// same lock until the first commit finishes, including across shutdown drains.
+func TestPendingFlushLockSurvivesPop(t *testing.T) {
 	tr := NewPendingWritesTracker()
-
-	const rounds = 50
-	const perRound = 20
-
-	for r := 0; r < rounds; r++ {
-		for i := 0; i < perRound; i++ {
-			h := FileHandle(fmt.Appendf(nil, "share:%d-%d", r, i))
-			// GetFlushLock populates flushLocks (as the real flush path does),
-			// and RecordWrite populates pending.
-			tr.GetFlushLock(h)
-			tr.RecordWrite(h, &WriteOperation{Handle: h, NewSize: uint64(i + 1)}, false)
+	for _, all := range []bool{false, true} {
+		h := FileHandle("share:file")
+		tr.RecordWrite(h, &WriteOperation{Handle: h, NewSize: 100}, false)
+		mu := tr.GetFlushLock(h)
+		mu.Lock()
+		if all {
+			tr.PopAllPending()
+		} else {
+			tr.PopPending(h)
 		}
-
-		popped := tr.PopAllPending()
-		if len(popped) != perRound {
-			t.Fatalf("round %d: PopAllPending returned %d entries, want %d", r, len(popped), perRound)
+		next := tr.GetFlushLock(h)
+		acquired := next.TryLock()
+		if acquired {
+			next.Unlock()
 		}
-
-		tr.flushMu.Lock()
-		n := len(tr.flushLocks)
-		tr.flushMu.Unlock()
-		if n != 0 {
-			t.Fatalf("round %d: flushLocks has %d entries after PopAllPending, want 0", r, n)
+		mu.Unlock()
+		if acquired {
+			t.Fatal("pending pop replaced an owned flush lock")
 		}
 	}
-
-	if c := tr.Count(); c != 0 {
-		t.Fatalf("pending count = %d after all rounds, want 0", c)
+	// The bank stays bounded across distinct handles, without any lock deletion.
+	for i := 0; i < 10000; i++ {
+		tr.GetFlushLock(FileHandle(fmt.Sprintf("share:%d", i)))
+	}
+	if len(tr.flushLocks) != 256 {
+		t.Fatal("flush lock bank grew")
 	}
 }
 

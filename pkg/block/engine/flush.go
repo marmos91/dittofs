@@ -532,10 +532,11 @@ func (s engineBlockSink) commit(ctx context.Context, payloadID string, rec block
 //     is addressed; the caller should surface a protocol-level
 //     error to the client.
 func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return nil, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	// Durability barrier: fsync the deferred writes first.
 	if err := bs.local.Commit(ctx, journal.FileID(payloadID)); err != nil {
 		return nil, err
@@ -569,10 +570,11 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 // before calling this; the standalone `system drain-uploads` path relies on
 // the flush here.
 func (bs *Store) DrainAllUploads(ctx context.Context) error {
-	if err := bs.enter(); err != nil {
+	release, err := bs.enterContext(ctx)
+	if err != nil {
 		return err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	// Force-flush every dirty range to the remote (bypassing the age/size
 	// batching gate), then wait for the uploads to settle.
 	if err := bs.syncer.FlushAll(ctx); err != nil {
@@ -605,10 +607,11 @@ func (bs *Store) SyncCounts() (completed, failed int) {
 // non-empty snapshot manifest). It must run before DrainAllUploads — the
 // flush is what produces the CAS chunks that then pack to the remote.
 func (bs *Store) DrainRollups(ctx context.Context) error {
-	if err := bs.enter(); err != nil {
+	release, err := bs.enterContext(ctx)
+	if err != nil {
 		return err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	return bs.syncer.FlushAll(ctx)
 }
 
@@ -637,10 +640,15 @@ type ColdSeed struct {
 // A tier that cannot hold a range it does not have records nothing, which the
 // caller only hits on non-remote paths anyway.
 func (bs *Store) SeedColdBatch(ctx context.Context, seeds []ColdSeed) error {
-	if err := bs.enter(); err != nil {
+	ids := make([]string, len(seeds))
+	for i, seed := range seeds {
+		ids[i] = seed.PayloadID
+	}
+	ctx, release, err := bs.enterPayload(ctx, ids...)
+	if err != nil {
 		return err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	js := make([]journal.ColdSeed, 0, len(seeds))
 	for _, sd := range seeds {
 		js = append(js, journal.ColdSeed{ID: journal.FileID(sd.PayloadID), Extents: sd.Extents})
@@ -669,10 +677,11 @@ func (bs *Store) SeedColdBatch(ctx context.Context, seeds []ColdSeed) error {
 // One file at a time, under its shard lock, because the destination is live —
 // see journal.Store.SeedCold.
 func (bs *Store) SeedColdRefs(ctx context.Context, payloadID string, refs []block.ChunkRef) error {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	// Nothing to record on a share with no remote: a cold range there has
 	// nowhere to hydrate from and fails its reads closed, where the same range
 	// left as a hole reads as the zeros it is. Local-only copies materialize real
@@ -718,18 +727,19 @@ func (bs *Store) SeedColdRefs(ctx context.Context, payloadID string, refs []bloc
 // sparse case closed, because an absent range and a stale one are not the same
 // state and only the manifest can tell them apart.
 //
-// The local tier makes the clip durable before it takes effect and fences it by
-// version, so a write that raced past it survives and a crash cannot resurrect
-// what it dropped.
+// The local tier makes the clip durable before it takes effect. Callers that
+// replace a manifest must own an exclusive payload scope across the transaction
+// and this discard, so a newly acknowledged write cannot be removed here.
 //
 // The caller owns the ordering: this runs after the copy's metadata transaction
 // commits, never before. Until that commit lands, the bytes it drops are the
 // destination's real content, and a rolled-back copy could not get them back.
 func (bs *Store) DiscardLocalContent(ctx context.Context, payloadID string) error {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	if err := bs.local.Truncate(ctx, journal.FileID(payloadID), 0); err != nil {
 		return err
 	}
@@ -783,6 +793,28 @@ func (bs *Store) ResetLocalState(ctx context.Context) error {
 		if err := bs.local.Delete(ctx, journal.FileID(payloadID)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// DrainPayload commits and carves one payload synchronously, including the
+// manifest projection and reap. It joins an owned clone scope directly rather
+// than waiting for a background worker that would need that same scope.
+func (bs *Store) DrainPayload(ctx context.Context, payloadID string) error {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := bs.local.Commit(ctx, journal.FileID(payloadID)); err != nil {
+		return err
+	}
+	result, err := bs.syncer.Flush(ctx, payloadID)
+	if err != nil {
+		return err
+	}
+	if result == nil || !result.Finalized {
+		return fmt.Errorf("flush not finalized for %s", payloadID)
 	}
 	return nil
 }

@@ -38,6 +38,11 @@ workloads use a 1 MiB block, so they need `medium` or larger (fio requires file
 size ≥ block size). Cloud provisioning, competitor backends, protocol
 re-export, and S3-byte/ctxsw metering land in follow-up PRs (see #1602).
 
+CI runs `dfsbench run --smoke` on every pull request that touches
+`bench/workloads/`, `cmd/bench/` or `internal/dfsbench/` (see
+`.github/workflows/bench-smoke.yml`). The smoke run benchmarks a temp dir on
+the runner, not a DittoFS server, so its numbers are not performance data.
+
 ## Component microbenchmarks live with their code
 
 Per-package `Benchmark*` functions (chunker, hash, block engine, metadata,

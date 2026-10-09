@@ -64,41 +64,64 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 	}
 
 	handle := metadata.FileHandle(ctx.CurrentFH)
-	res, err := metaSvc.PunchHole(authCtx, handle, offset, length)
+	apply := func(authCtx *metadata.AuthContext) *types.CompoundResult {
+		scopedHandler := *ctx
+		scopedHandler.Context = authCtx.Context
+		ctx := &scopedHandler
+		res, err := metaSvc.PunchHole(authCtx, handle, offset, length)
+		if err != nil {
+			return deallocErr(types.StatusForErr(err))
+		}
+
+		// The engine punch is correctness-critical, not just reclaim: the read path
+		// resolves bytes with an empty ChunkRef list (the dual-read shim), so pruning
+		// the metadata block list alone does NOT guarantee zero reads — only the
+		// block-store zero-overwrite does. Therefore a failure here must FAIL the op
+		// (rather than log-and-succeed), or stale bytes could remain readable in the
+		// punched range while the client is told NFS4_OK. engine.PunchHole reaps CAS
+		// blocks fully inside the range and zero-writes [offset, offset+length) so
+		// both the pre-rollup and CAS read paths return zeros.
+		if res.PayloadID != "" && length > 0 && offset < res.File.Size {
+			if h.Registry == nil {
+				logger.Error("NFSv4.2 DEALLOCATE: no registry configured", "handle", string(handle))
+				return deallocErr(types.NFS4ERR_SERVERFAULT)
+			}
+			blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, handle)
+			if bsErr != nil {
+				logger.Error("NFSv4.2 DEALLOCATE: cannot resolve block store",
+					"handle", string(handle), "error", bsErr)
+				return deallocErr(types.NFS4ERR_SERVERFAULT)
+			}
+			if _, pErr := blockStore.PunchHole(ctx.Context, string(res.PayloadID), res.PreOpBlocks, offset, punchLen(offset, length, res.File.Size)); pErr != nil {
+				logger.Error("NFSv4.2 DEALLOCATE: block store punch failed",
+					"handle", string(handle), "error", pErr)
+				return deallocErr(types.StatusFor(common.ClassifyBlockStoreError(pErr)))
+			}
+		}
+
+		logger.Debug("NFSv4.2 DEALLOCATE", "offset", offset, "length", length,
+			"size", res.File.Size, "client", ctx.ClientAddr)
+
+		return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_DEALLOCATE, Data: encodeStatusOnly(types.NFS4_OK)}
+	}
+	file, err := metaSvc.GetFileForRead(authCtx.Context, handle)
 	if err != nil {
 		return deallocErr(types.StatusForErr(err))
 	}
-
-	// The engine punch is correctness-critical, not just reclaim: the read path
-	// resolves bytes with an empty ChunkRef list (the dual-read shim), so pruning
-	// the metadata block list alone does NOT guarantee zero reads — only the
-	// block-store zero-overwrite does. Therefore a failure here must FAIL the op
-	// (rather than log-and-succeed), or stale bytes could remain readable in the
-	// punched range while the client is told NFS4_OK. engine.PunchHole reaps CAS
-	// blocks fully inside the range and zero-writes [offset, offset+length) so
-	// both the pre-rollup and CAS read paths return zeros.
-	if res.PayloadID != "" && length > 0 && offset < res.File.Size {
-		if h.Registry == nil {
-			logger.Error("NFSv4.2 DEALLOCATE: no registry configured", "handle", string(handle))
-			return deallocErr(types.NFS4ERR_SERVERFAULT)
-		}
-		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, handle)
-		if bsErr != nil {
-			logger.Error("NFSv4.2 DEALLOCATE: cannot resolve block store",
-				"handle", string(handle), "error", bsErr)
-			return deallocErr(types.NFS4ERR_SERVERFAULT)
-		}
-		if _, pErr := blockStore.PunchHole(ctx.Context, string(res.PayloadID), res.PreOpBlocks, offset, punchLen(offset, length, res.File.Size)); pErr != nil {
-			logger.Error("NFSv4.2 DEALLOCATE: block store punch failed",
-				"handle", string(handle), "error", pErr)
-			return deallocErr(types.StatusFor(common.ClassifyBlockStoreError(pErr)))
-		}
+	if file.PayloadID == "" || length == 0 {
+		return apply(authCtx)
 	}
-
-	logger.Debug("NFSv4.2 DEALLOCATE", "offset", offset, "length", length,
-		"size", res.File.Size, "client", ctx.ClientAddr)
-
-	return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_DEALLOCATE, Data: encodeStatusOnly(types.NFS4_OK)}
+	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, handle)
+	if err != nil {
+		return deallocErr(types.StatusForErr(err))
+	}
+	result, err := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, handle, func(authCtx *metadata.AuthContext) (*types.CompoundResult, error) {
+		return apply(authCtx), nil
+	})
+	if err != nil {
+		return deallocErr(types.StatusForErr(err))
+	}
+	return result
 }
 
 // decodeAllocArgs decodes the shared (stateid, offset, length) argument tuple of

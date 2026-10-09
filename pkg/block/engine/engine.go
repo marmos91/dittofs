@@ -124,9 +124,10 @@ type Store struct {
 	// fast with ErrStoreClosed. The RLock side is shared, so concurrent
 	// data ops still run in parallel; only Close serializes.
 	//
-	// Re-entrancy: public ops never call another RLock-gated public op on
-	// the same Store (internal helpers in read_internal.go / the syncer are
-	// ungated), so the non-reentrant Go RWMutex read side is safe here.
+	// Nested data operations reuse the payload scope carried by their context,
+	// so they never recursively acquire this non-reentrant lifecycle gate.
+	admission payloadAdmission
+
 	closeMu  sync.RWMutex
 	closed   bool  // guarded by closeMu; true once teardown has run
 	closeErr error // memoized result of the first Close (idempotent)
@@ -187,6 +188,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// registry is built after shares load, so SetMetrics back-fills this cell
 	// on an already-serving share and the syncer must see that write.
 	cfg.RemoteSync.metrics = &bs.metrics
+	cfg.RemoteSync.admission = &bs.admission
 	return bs, nil
 }
 

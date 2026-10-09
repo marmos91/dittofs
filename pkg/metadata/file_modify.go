@@ -1270,7 +1270,10 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 			}
 			// Check if destination directory is empty
 			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1, NamesOnly)
-			if err == nil && len(entries) > 0 {
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(entries) > 0 {
 				return nil, nil, &StoreError{
 					Code:    ErrNotEmpty,
 					Message: "destination directory not empty",
@@ -1322,6 +1325,22 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		return nil, nil, err
 	}
 
+	// Recycling above calls namespace operations recursively, so acquire only
+	// after it finishes. A moved directory is exclusive too: its old name must
+	// stay bound while a concurrent rmdir validates the selected victim.
+	accesses := []namespaceAccess{{handle: fromDir}, {handle: toDir}}
+	if srcFile.Type == FileTypeDirectory {
+		accesses = append(accesses, namespaceAccess{handle: srcHandle, exclusive: true})
+	}
+	if dstFile != nil && dstFile.Type == FileTypeDirectory {
+		accesses = append(accesses, namespaceAccess{handle: dstHandle, exclusive: true})
+	}
+	guard, err := s.lockNamespace(accesses...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer guard.unlock()
+
 	// rename carries the source/destination directory pre/post attributes for
 	// WCC, captured inside the transaction below (H9). For an intra-directory
 	// move FromDir and ToDir reference the same DirWcc.
@@ -1338,10 +1357,16 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// same shared counter keys mkdir/rmdir bump, so without serialization a rename
 	// re-introduces the BadgerDB SSI conflict #1571 fixes — racing a concurrent
 	// mkdir/rmdir/rename on either parent. Serialize both parents for the whole
-	// transaction. File moves never touch parent nlink and stay lock-free.
+	// transaction. File moves never touch parent nlink and need no counter lock.
+	var unlockParents func()
 	if srcFile.Type == FileTypeDirectory && !sameDir {
-		defer s.lockParentLinks(fromDir, toDir)()
+		unlockParents = s.lockParentLinks(fromDir, toDir)
 	}
+	defer func() {
+		if unlockParents != nil {
+			unlockParents()
+		}
+	}()
 
 	// Execute all write operations in a single transaction for better performance.
 	// Relaxed durability (#1573 Wall 1): rename rewrites only directory entries
@@ -1354,8 +1379,8 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	var clobberedNlink uint32
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// The GetChild lookups above ran outside this transaction and are
-		// advisory only: no lock covers a file rename, so a concurrent rename
-		// or unlink can retarget either name in the gap. Re-resolve both
+		// advisory only: lifecycle guards permit concurrent child mutations,
+		// so a rename or unlink can retarget either name in the gap. Re-resolve both
 		// namespace edges here and abort when they no longer match, so two
 		// renames onto the same destination cannot both commit and orphan an
 		// inode. Reading the child keys through the transaction also enters
@@ -1398,18 +1423,22 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// Re-read the source/destination directories inside the transaction so
 		// the pre-op snapshots and the timestamp mutations derive from the same
 		// committed state (After then monotonic w.r.t. Before).
-		if txSrc, sErr := tx.GetFile(ctx.Context, fromDir); sErr == nil && txSrc != nil {
-			srcDir = txSrc
+		txSrc, sErr := transactionDirectory(ctx.Context, tx, fromDir)
+		if sErr != nil {
+			return sErr
 		}
+		srcDir = txSrc
 		// Overlay any pending coalesced bump so Before reflects the same mtime a
 		// concurrent GETATTR would see (the tx read only sees durable state), so
 		// WCC stays continuous across rapid same-dir mutations (#1573).
 		s.mergeDirTimes(fromDir, &srcDir.FileAttr)
 		rename.FromDir.Before = CopyFileAttr(&srcDir.FileAttr)
 		if !sameDir {
-			if txDst, dErr := tx.GetFile(ctx.Context, toDir); dErr == nil && txDst != nil {
-				dstDir = txDst
+			txDst, dErr := transactionDirectory(ctx.Context, tx, toDir)
+			if dErr != nil {
+				return dErr
 			}
+			dstDir = txDst
 			s.mergeDirTimes(toDir, &dstDir.FileAttr)
 			rename.ToDir.Before = CopyFileAttr(&dstDir.FileAttr)
 		}
@@ -1418,6 +1447,12 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		if dstFile != nil {
 			// Remove destination
 			if dstFile.Type == FileTypeDirectory {
+				if _, err := transactionDirectory(ctx.Context, tx, dstHandle); err != nil {
+					return err
+				}
+				if err := requireEmptyDirectory(ctx.Context, tx, dstHandle, toName); err != nil {
+					return err
+				}
 				if err := tx.DeleteFile(ctx.Context, dstHandle); err != nil {
 					return err
 				}
@@ -1575,7 +1610,6 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 
 		return nil
 	})
-
 	if txErr != nil {
 		return nil, nil, txErr
 	}
@@ -1610,6 +1644,17 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		dstDir.Ctime = now
 		rename.ToDir.After = CopyFileAttr(&dstDir.FileAttr)
 	}
+	if dstFile != nil && dstFile.Type == FileTypeDirectory {
+		s.dirTimes.Clear(dstHandle)
+	}
+	// Coalesced timestamp persistence still writes the parents after the
+	// namespace commit. Keep directory counter exclusion across that flush;
+	// otherwise the next rename can conflict with this operation's final write.
+	if unlockParents != nil {
+		unlockParents()
+		unlockParents = nil
+	}
+	guard.unlock()
 
 	// Notify directory change after successful move
 	s.notifyDirChange(shareNameForHandle(fromDir), fromDir, lock.DirChangeRenameEntry, ctx)
