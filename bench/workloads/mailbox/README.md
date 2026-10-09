@@ -62,7 +62,7 @@ There are two kinds of scenario:
 | `02-mail-flow.fio` | Receiving and sending mail | Bursts of small random I/O (4K to 64K, up to 256K on send), mostly writes, with a pause between bursts | Fixed time |
 | `03-folder-resort.fio` | Sorting a large folder by another column | Phase 1: small random reads over the folder's table. Phase 2: small random writes for the new index. Runs for one user only, `USERS` is ignored | Fixed work |
 | `04-search-reindex.fio` | Windows Search re-indexing the mailbox | Random reads (8K to 64K) over the whole file, plus paced 32K mixed I/O (40% reads) on the search catalog and paced sequential 64K writes to its log | Fixed time |
-| `05-ost-full-sync.fio` | Downloading a full mailbox into a new OST | Rate limited sequential 256K writes, plus small random metadata I/O | Fixed time |
+| `05-ost-full-sync.fio` | Downloading a full mailbox into a new OST | Rate limited sequential 256K writes appended past the end of the file, plus small random metadata I/O | Fixed time |
 | `06-logoff-compaction.fio` | Sign-out with FSLogix VHDX compaction | 1 MiB sequential reads from the tail of the file and 1 MiB sequential writes toward the front, at the same time | Fixed work |
 
 ## Running
@@ -130,13 +130,18 @@ segments, so one pending record keeps its segment local. Repeat the drain until
 | `CATALOG_IOPS` | `50` | Search catalog I/O rate, 40% reads and 60% writes (04) |
 | `CATALOG_LOG_IOPS` | `10` | Search catalog log write rate (04) |
 | `SYNC_RATE` | `10m` | Download rate in a full sync (05) |
+| `SYNC_GROW` | `6g` | Bytes appended per user in a full sync (05) |
 | `SYNC_META_IOPS` | `200` | Metadata I/O rate in a full sync (05) |
 | `COMPACT_MOVE` | `4g` | Bytes moved by compaction (06) |
 | `COMPACT_BS` | `1m` | Block size for compaction (06) |
 | `COMPRESS_PCT` | `30` | How compressible the written data is |
 
-With a small `VHDX_SIZE`, lower `LOGON_IO`, `SORT_READ`, `SORT_WRITE` and
-`COMPACT_MOVE` to match.
+With a small `VHDX_SIZE`, lower `LOGON_IO`, `SORT_READ`, `SORT_WRITE`,
+`COMPACT_MOVE` and `SYNC_GROW` to match.
+
+`05-ost-full-sync` makes each file `SYNC_GROW` larger on every run. The download
+stops after `SYNC_GROW` bytes or `RUNTIME` seconds, whichever comes first. Delete
+the files and run `00-prepare` again to get back to `VHDX_SIZE`.
 
 In `02-mail-flow` each user starts at a random point in the first 60 seconds
 and then pauses `MAIL_INTERVAL` or `SEND_INTERVAL` between bursts. For a short
