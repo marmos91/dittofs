@@ -166,8 +166,9 @@ func testDelegationRecall(t *testing.T, holderVers, otherVers string) {
 // Test 4: No Delegation Conflict (Concurrent Reads)
 // =============================================================================
 
-// TestNFSv4NoDelegationConflict checks that two clients reading the same file
-// do not recall each other's delegations.
+// TestNFSv4NoDelegationConflict checks that a read delegation is granted to a
+// reading client and that a second client reading the same file does not
+// recall it.
 func TestNFSv4NoDelegationConflict(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NFSv4 no-delegation-conflict test in short mode")
@@ -178,6 +179,10 @@ func TestNFSv4NoDelegationConflict(t *testing.T) {
 	sp, _, nfsPort := setupNFSv4TestServer(t)
 	since := readLogFile(t, sp)
 
+	// The file is written over NFSv3, which takes no delegation, so no recall
+	// precedes the reads and the file is not barred from a new grant.
+	writer := framework.MountNFS(t, nfsPort)
+	t.Cleanup(writer.Cleanup)
 	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
 	t.Cleanup(mount1.Cleanup)
 	mount2 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
@@ -185,22 +190,19 @@ func TestNFSv4NoDelegationConflict(t *testing.T) {
 	requireCallbackPathsUp(t, sp, since, 2)
 
 	fileName := helpers.UniqueTestName("deleg_noconflict") + ".txt"
-	filePath1 := mount1.FilePath(fileName)
-	filePath2 := mount2.FilePath(fileName)
-
 	testData := []byte("Concurrent read delegation test data -- no conflict expected")
-	framework.WriteFile(t, filePath1, testData)
-	t.Cleanup(func() { _ = os.Remove(filePath1) })
+	framework.WriteFile(t, writer.FilePath(fileName), testData)
+	t.Cleanup(func() { _ = os.Remove(writer.FilePath(fileName)) })
 
-	// Reading through mount2 may recall the write delegation mount1 took when
-	// it created the file; only the read-only opens after this point count.
-	framework.WaitForContent(t, filePath2, testData, 5*time.Second)
 	readSince := readLogFile(t, sp)
 
-	f1, err := os.Open(filePath1)
+	f1, err := os.Open(mount1.FilePath(fileName))
 	require.NoError(t, err, "mount1: should open for read")
 	defer f1.Close()
-	f2, err := os.Open(filePath2)
+	require.True(t, waitForLog(t, sp, readSince, delegGranted, 1, 5*time.Second),
+		"the first reader should be granted a read delegation")
+
+	f2, err := os.Open(mount2.FilePath(fileName))
 	require.NoError(t, err, "mount2: should open for read")
 	defer f2.Close()
 
@@ -213,7 +215,7 @@ func TestNFSv4NoDelegationConflict(t *testing.T) {
 
 	time.Sleep(time.Second)
 	assert.NotRegexp(t, cbRecallAny, extractNewLogs(readSince, readLogFile(t, sp)),
-		"read-only opens from two clients should not recall a delegation")
+		"a second reader should not recall the first reader's delegation")
 }
 
 // =============================================================================

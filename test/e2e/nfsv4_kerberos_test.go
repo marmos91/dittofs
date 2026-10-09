@@ -156,11 +156,12 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 	// Login and create shares
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// /krb-v4: Kerberos-protected share. Principals the static map does not
-	// name resolve to the default uid, which has no DittoFS user and so gets
-	// only the share's "read" default; alice and bob are granted read-write.
-	// The mount itself runs on the client's machine credential, which also
-	// resolves to the default uid, so "read" is what lets it traverse the root.
+	// /krb-v4: Kerberos-protected share. The server resolves a principal to the
+	// DittoFS user of the same name, so alice and bob get the uids created here
+	// and their read-write grants. A principal with no such user resolves to
+	// nobody (65534), which only the share's "read" default covers. The mount
+	// itself runs on the client's machine credential, which also resolves to
+	// nobody, so "read" is what lets it traverse the root.
 	setupKerberosV4Share(t, runner, "/krb-v4", helpers.WithShareDefaultPermission("read"))
 	for _, u := range []krbV4User{krbAlice, krbBob} {
 		_, err = runner.CreateUser(u.principal, u.password, helpers.WithUID(u.uid))
@@ -190,8 +191,8 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 	// --- Subtests ---
 
 	t.Run("AuthorizationDenial", func(t *testing.T) {
-		// unauthorized_user is absent from the static map, so the server
-		// resolves it to the default uid, which holds only the "read" default.
+		// unauthorized_user has no DittoFS user, so the server resolves it to
+		// nobody, which holds only the "read" default.
 		kinitAsLocalUID(t, kdc, krbAlice)
 		kinitAsLocalUID(t, kdc, krbUnauthorized)
 
@@ -223,8 +224,8 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 		require.NoError(t, framework.WriteFileAsUID(t, krbAlice.uid, krbAlice.uid, testFile, []byte("Alice's file")),
 			"alice should be able to create a file")
 
-		// The static map resolves alice@REALM to uid 1001; the file the server
-		// created must carry that owner.
+		// alice@REALM resolves to the DittoFS user alice, uid 1001; the file the
+		// server created must carry that owner.
 		info, err := os.Stat(testFile)
 		require.NoError(t, err, "should stat alice's file")
 		st, ok := info.Sys().(*syscall.Stat_t)
@@ -500,7 +501,7 @@ type krbV4User struct {
 var (
 	krbAlice = krbV4User{"alice", "alice123", 1001}
 	krbBob   = krbV4User{"bob", "bob123", 1002}
-	// No static-map entry: the server resolves it to the default uid.
+	// No DittoFS user of this name: the server resolves it to nobody.
 	krbUnauthorized = krbV4User{"unauthorized_user", "unauth123", 4002}
 )
 

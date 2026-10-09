@@ -64,12 +64,16 @@ func setupDirDelegation(t *testing.T, dirName string, files ...string) *dirDeleg
 	other := framework.MountNFSWithVersion(t, nfsPort, "4.0")
 	t.Cleanup(other.Cleanup)
 
-	holderDir := holder.FilePath(dirName)
-	framework.CreateDir(t, holderDir)
-	t.Cleanup(func() { _ = os.RemoveAll(holderDir) })
+	// The other client builds the directory, so the holder takes no file
+	// delegations of its own and its first access to the directory is the
+	// READDIR below.
+	otherDir := other.FilePath(dirName)
+	framework.CreateDir(t, otherDir)
+	t.Cleanup(func() { _ = os.RemoveAll(otherDir) })
 	for _, f := range files {
-		framework.WriteFile(t, filepath.Join(holderDir, f), []byte("content of "+f))
+		framework.WriteFile(t, filepath.Join(otherDir, f), []byte("content of "+f))
 	}
+	holderDir := holder.FilePath(dirName)
 
 	// Snapshot before the READDIR, which is what provokes GET_DIR_DELEGATION.
 	readdirSince := readLogFile(t, sp)
@@ -86,7 +90,7 @@ func setupDirDelegation(t *testing.T, dirName string, files ...string) *dirDeleg
 		sp:         sp,
 		holder:     holder,
 		holderDir:  holderDir,
-		otherDir:   other.FilePath(dirName),
+		otherDir:   otherDir,
 		mutateFrom: readLogFile(t, sp),
 	}
 }
