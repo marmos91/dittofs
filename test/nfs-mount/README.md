@@ -52,11 +52,13 @@ client host, and on one host its two mounts collide. Any other module runs with
 ## Grading
 
 Each runner turns its suite's output into one verdict per test and grades it with
-[`grade.sh`](grade.sh) against `<suite>/KNOWN_FAILURES_V3.md` or `_V4.md`. It uses the same table
-format and parser as pjdfstest and the SMB suites (`test/common/known-failures.sh`).
+[`grade.sh`](grade.sh) against `<suite>/KNOWN_FAILURES_V3.md` or `_V4.md`. nfstest's `v4.0` set is
+graded against `_V4.md` plus `KNOWN_FAILURES_V40.md`, which holds rows that would hide a regression
+on the v4.1 sets. It uses the same table format and parser as pjdfstest and the SMB suites
+(`test/common/known-failures.sh`).
 
 - A failure on the table is reported and does not fail CI. Any other failure does.
-- A test that timed out fails even when its name is on the table.
+- A test that timed out, or a module whose own total disagrees with the lines parsed for it, fails even when the names are on the table.
 - A tabled test that passes is listed under "consider removing".
 - A log without its completion marker is not graded at all.
 

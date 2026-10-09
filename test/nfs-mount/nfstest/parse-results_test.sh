@@ -100,5 +100,40 @@ Usage: nfstest_posix --server <server> [options]
 NFSTEST-DONE 1
 EOF
 
+# A tally that disagrees with the lines parsed means a line went unread, and
+# that line could have been a failure: never green, even when every failure
+# that was read is known.
+run_case "tally disagrees with parsed lines" 1 "posix: tally says 1 passed, 2 failed; parsed 1, 1" "graded 1 0 0" <<'EOF'
+NFSTEST-MODULE nfstest_posix
+    TEST: Running test 'read'
+    PASS: read - read should succeed
+    FAIL: read - file st_atime should be updated
+3 tests (1 passed, 2 failed)
+NFSTEST-DONE 1
+EOF
+
+# The real tables: a row only v4.0 needs must excuse its failure on v4.0,
+# graded against both tables as run.sh does, and on no v4.1 set.
+cat >"$WORK/nfstest.log" <<'EOF'
+NFSTEST-MODULE nfstest_dio
+    TEST: Running test 'vectored_io'
+    FAIL: Traceback (most recent call last):
+          Exception: Packet trace file is empty
+1 tests (0 passed, 1 failed)
+NFSTEST-DONE 1
+EOF
+cat "$SCRIPT_DIR/KNOWN_FAILURES_V4.md" "$SCRIPT_DIR/KNOWN_FAILURES_V40.md" >"$WORK/v40.md"
+if "$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$WORK/v40.md" >"$WORK/output" 2>&1; then
+    echo "ok: the v4.0 tables excuse the v4.0-only row"
+else
+    echo "FAIL: the v4.0 tables excuse the v4.0-only row"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
+fi
+"$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$SCRIPT_DIR/KNOWN_FAILURES_V4.md" >"$WORK/output" 2>&1
+if [[ $? -eq 1 ]]; then
+    echo "ok: the shared v4 table does not"
+else
+    echo "FAIL: the shared v4 table does not"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
+fi
+
 [[ "$FAILURES" -eq 0 ]] || { echo "$FAILURES case(s) failed"; exit 1; }
 echo "all nfstest grader cases passed"

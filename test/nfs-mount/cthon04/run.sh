@@ -108,7 +108,7 @@ result() {
     # builds. A failure does not stop the group.
     export NFSTESTDIR="$WORK/basic"
     mkdir -p "$NFSTESTDIR"
-    cd "$CTHON/basic"
+    cd "$CTHON/basic" || exit 2
     for t in test1 test2 test3 test4 test5 test6 test7 test8 test9; do
         result "basic/$t" "./$t" -t
     done
@@ -116,7 +116,7 @@ result() {
     # general compiles and runs programs on the mount; upstream treats the whole
     # sequence as one test, and so does this.
     export NFSTESTDIR="$WORK/general"
-    cd "$CTHON/general"
+    cd "$CTHON/general" || exit 2
     result "general/all" sh ./runtests -t
 
     # special: the programs run from a copy on the mount, as upstream's
@@ -124,7 +124,7 @@ result() {
     export NFSTESTDIR="$WORK/special"
     mkdir -p "$NFSTESTDIR"
     make -s -C "$CTHON/special" copy DESTDIR="$NFSTESTDIR" >/dev/null
-    cd "$NFSTESTDIR"
+    cd "$NFSTESTDIR" || exit 2
     umask 0
     result special/op_unlk env TMPDIR= ./op_unlk
     result special/op_ren env TMPDIR= ./op_ren
@@ -148,7 +148,7 @@ result() {
     if option_set_locks "$VARIANT"; then
         export NFSTESTDIR="$WORK/lock"
         mkdir -p "$NFSTESTDIR"
-        cd "$CTHON/lock"
+        cd "$CTHON/lock" || exit 2
         result lock/tlocklfs ./tlocklfs -r "$NFSTESTDIR"
         result lock/tlock64 ./tlock64 -r "$NFSTESTDIR"
     else

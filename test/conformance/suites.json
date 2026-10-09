@@ -197,7 +197,7 @@
       },
       "known_failures": {
         "v3": "nfs-mount/nfstest/KNOWN_FAILURES_V3.md",
-        "v4.0": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
+        "v4.0": "nfs-mount/nfstest/KNOWN_FAILURES_V40.md",
         "v4.1": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
         "v4.1-noac": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md",
         "v4.1-smallio": "nfs-mount/nfstest/KNOWN_FAILURES_V4.md"

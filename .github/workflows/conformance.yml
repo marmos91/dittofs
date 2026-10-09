@@ -99,11 +99,14 @@ jobs:
       - name: Resolve the matrix from the manifest
         id: resolve
         env:
-          # workflow_dispatch has no tier of its own; treat a manual run like a
-          # postsubmit one so a dispatch covers every profile.
+          # workflow_dispatch has no tier of its own. A blank dispatch runs like
+          # a postsubmit one. A dispatch naming one suite runs that suite's
+          # nightly set instead: a nightly-only suite has an empty push tier,
+          # and asking for it by name would otherwise run nothing.
           EVENT: >-
             ${{ github.event_name == 'pull_request' && 'pull_request'
                 || github.event_name == 'schedule' && 'schedule'
+                || (github.event_name == 'workflow_dispatch' && inputs.suite != '') && 'schedule'
                 || 'push' }}
           ONLY: ${{ inputs.suite }}
         run: |

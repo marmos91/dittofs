@@ -406,7 +406,7 @@ in `test/conformance/suites.json`:
 | `nfs-kerberos` | NFS | `memory-kerberos` | — | `memory-kerberos` | — |
 | `pynfs` | NFS | `memory`, `badger`, `badger-s3` | `4.0`, `4.1` | `memory`, `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
 | `cthon04` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `memory` | [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md) |
-| `nfstest` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md) |
+| `nfstest` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
 
 Tiering, profiles and blacklists come from
 [`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through

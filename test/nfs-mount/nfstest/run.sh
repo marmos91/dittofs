@@ -47,6 +47,11 @@ VERSION="$(option_set_version "$VARIANT")"
 
 if [[ "$VERSION" == 3 ]]; then
     KNOWN_FAILURES="$SCRIPT_DIR/KNOWN_FAILURES_V3.md"
+elif [[ "$VERSION" == 4.0 ]]; then
+    # v4.0 is graded against the shared v4 table plus its own, so a row only
+    # v4.0 needs cannot excuse the same failure on a v4.1 set.
+    KNOWN_FAILURES="$RESULTS_DIR/known-failures.md"
+    cat "$SCRIPT_DIR/KNOWN_FAILURES_V4.md" "$SCRIPT_DIR/KNOWN_FAILURES_V40.md" >"$KNOWN_FAILURES"
 else
     KNOWN_FAILURES="$SCRIPT_DIR/KNOWN_FAILURES_V4.md"
 fi

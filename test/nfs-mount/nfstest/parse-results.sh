@@ -20,7 +20,10 @@
 #   - a leading "<subtest> - " is dropped; the name already carries it
 #
 # A module with no closing tally did not finish; it grades as a TIMEOUT named
-# "<module>: did not finish", which no blacklist entry can excuse.
+# "<module>: did not finish", which no blacklist entry can excuse. A module
+# whose tally disagrees with the PASS and FAIL lines parsed for it grades as
+# INCOMPLETE: an assertion line the parser missed could be a failure, and
+# grading only what it did read could turn a red run green.
 #
 # Exit status: as test/nfs-mount/grade.sh, or 1 when the log is not gradable.
 
@@ -52,7 +55,10 @@ trap 'rm -rf "$WORK"' EXIT
 # POSIX awk only: this has to run on the BSD awk of a macOS checkout too.
 awk '
     function flush_module() {
-        if (module != "" && !finished) printf "TIMEOUT\t%s: did not finish\n", module
+        if (module == "") return
+        if (!finished) printf "TIMEOUT\t%s: did not finish\n", module
+        else if (passed != tally_pass || failed != tally_fail)
+            printf "INCOMPLETE\t%s: tally says %d passed, %d failed; parsed %d, %d\n", module, tally_pass, tally_fail, passed, failed
     }
     function emit(verdict, msg,    name) {
         sub(/^[ \t]+/, "", msg)
@@ -62,6 +68,7 @@ awk '
         # nfstest starts most messages with the subtest name, which the
         # name already carries.
         if (subtest != "" && index(msg, subtest " - ") == 1) msg = substr(msg, length(subtest) + 4)
+        if (verdict == "PASS") passed++; else failed++
         gsub(/\|/, "+", msg)
         gsub(/[ \t]+/, " ", msg)
         name = module "/" (subtest == "" ? "-" : subtest) ": " msg
@@ -70,7 +77,7 @@ awk '
     /^NFSTEST-MODULE / {
         flush_module()
         module = $2; sub(/^nfstest_/, "", module)
-        subtest = ""; finished = 0
+        subtest = ""; finished = 0; passed = 0; failed = 0
         next
     }
     /^NFSTEST-DONE / { flush_module(); module = ""; next }
@@ -83,7 +90,12 @@ awk '
     }
     /^[ \t]*PASS: / { line = $0; sub(/^[ \t]*PASS: /, "", line); emit("PASS", line); next }
     /^[ \t]*FAIL: / { line = $0; sub(/^[ \t]*FAIL: /, "", line); emit("FAIL", line); next }
-    /^[0-9]+ tests \([0-9]+ passed, [0-9]+ failed/ { finished = 1; next }
+    /^[0-9]+ tests \([0-9]+ passed, [0-9]+ failed/ {
+        finished = 1
+        tally_pass = $3; sub(/^\(/, "", tally_pass); tally_pass += 0
+        tally_fail = $5 + 0
+        next
+    }
 ' "$LOG" >"$WORK/results"
 
 [[ -s "$WORK/results" ]] || ungraded "no PASS or FAIL lines in the log"

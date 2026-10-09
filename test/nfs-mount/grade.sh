@@ -7,8 +7,9 @@
 #   ./grade.sh <results> <known-failures-file> [results-dir]
 #
 # <results> holds one line per test, "<VERDICT><TAB><name>", where VERDICT is
-# PASS, FAIL or TIMEOUT. A TIMEOUT grades as a failure: a test that never
-# finished is not a pass, whatever the blacklist says about its name.
+# PASS, FAIL, TIMEOUT or INCOMPLETE. TIMEOUT and INCOMPLETE grade as failures
+# that no blacklist row can excuse: a test that never finished, or a result
+# the parser could not account for, is not a pass whatever its name.
 #
 # Exit status: the number of failures not on the blacklist, capped at 254 so an
 # eight-bit status cannot wrap a large count to success. When a results
@@ -48,14 +49,14 @@ while IFS=$'\t' read -r verdict name; do
         # entry may cover a flaky test, and removing it is a human call.
         kf_is_known "$name" && STALE_LIST+=("$name")
         ;;
-    FAIL | TIMEOUT)
+    FAIL | TIMEOUT | INCOMPLETE)
         if [[ "$verdict" == FAIL ]] && kf_is_known "$name"; then
             KNOWN=$((KNOWN + 1))
             printf "  ${YELLOW}KNOWN${NC} %s (%s)\n" "$name" "$(kf_reason "$name")"
         else
             NEW=$((NEW + 1))
             NEW_LIST+=("$name")
-            printf "  ${RED}%-5s${NC} %s\n" "$verdict" "$name"
+            printf "  ${RED}%-10s${NC} %s\n" "$verdict" "$name"
         fi
         ;;
     *)
