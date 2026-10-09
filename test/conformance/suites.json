@@ -193,7 +193,7 @@
       "description": "NetApp nfstest modules over named NFS mount option sets",
       "host_adapter": true,
       "protocol": "NFS",
-      "profiles": ["memory", "badger-s3"],
+      "profiles": ["memory"],
       "variant": {
         "name": "mount-options",
         "values": ["v3", "v4.0", "v4.1", "v4.1-noac", "v4.1-smallio"]

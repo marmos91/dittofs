@@ -77,8 +77,9 @@ In CI the suites are entries in [`test/conformance/suites.json`](../conformance/
 in the `nfs-mount` job of `.github/workflows/conformance.yml`. That is an Ubuntu runner, with
 `sudo` for the mount. PRs run cthon04 on `memory`, five short jobs, one per option set. Everything
 else runs only in the nightly, because a v4 nfstest cell takes tens of minutes: cthon04 on every
-profile, and nfstest on `memory` and `badger-s3`. Most of what nfstest checks is client and protocol
-behaviour the storage backend shouldn't change. Merges to develop run neither.
+profile, and nfstest on `memory` only. Most of what nfstest checks is client and protocol behaviour
+the storage backend shouldn't change; its first runs on `memory` and `badger-s3` gave the same
+results, at twice the runner time. Merges to develop run neither.
 
 On a Linux host with root:
 
