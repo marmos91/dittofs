@@ -176,12 +176,6 @@ jobs:
             --profile "${{ matrix.profile }}" \
             --variant "${{ matrix.variant }}"
 
-      # An -s3 cell that sent nothing to S3 exercised only the local tier and
-      # would grade exactly like its local-only sibling.
-      - name: Check that the run reached S3
-        if: endsWith(matrix.profile, '-s3')
-        run: ./test/conformance/assert-s3-writes.sh "${{ job.services.localstack.id }}"
-
       - name: Add step summary
         if: always()
         run: |

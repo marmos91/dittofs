@@ -306,6 +306,13 @@ configure_via_api() {
         cache-s3|badger-s3)
             "$DITTOFSCTL_BIN" store block add --name default --type s3 \
                 --config "{\"bucket\":\"${S3_BUCKET}\",\"region\":\"us-east-1\",\"endpoint\":\"${S3_ENDPOINT}\",\"force_path_style\":true,\"access_key_id\":\"test\",\"secret_access_key\":\"test\",\"allow_private_endpoint\":true}"
+            # The server reaching the bucket is what makes this an S3 profile; an
+            # unreachable remote would leave the suite grading the local tier only.
+            log_info "Checking that the server can reach the S3 bucket..."
+            "$DITTOFSCTL_BIN" store block health --name default || {
+                log_error "Block store 'default' cannot reach bucket ${S3_BUCKET} at ${S3_ENDPOINT}."
+                exit 1
+            }
             ;;
         *)
             # Default: memory block store

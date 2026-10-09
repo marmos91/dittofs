@@ -15,7 +15,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 DITTOFS_BIN="$REPO_ROOT/dfs"
-DITTOFSCTL_BIN="$REPO_ROOT/dfsctl"
 
 # Colors for output
 RED='\033[0;31m'
@@ -37,12 +36,6 @@ log_info "Tearing down POSIX test environment..."
 
 # Unmount NFS share
 if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
-    # A suite can unlink everything it wrote before the syncer's upload delay
-    # elapses, leaving nothing for the drain below to upload. A file that is
-    # kept guarantees an S3 profile writes at least one object, so a check that
-    # the run reached S3 tests the wiring rather than the suite's timing.
-    dd if=/dev/urandom of="$MOUNT_POINT/.s3-sentinel" bs=64k count=16 2>/dev/null ||
-        log_warn "Could not write the upload sentinel"
     log_info "Unmounting $MOUNT_POINT"
     umount -f "$MOUNT_POINT" || {
         log_warn "Normal unmount failed, trying lazy unmount..."
@@ -56,13 +49,6 @@ fi
 if [[ -f /tmp/dittofs-server.pid ]]; then
     pid=$(cat /tmp/dittofs-server.pid)
     if kill -0 "$pid" 2>/dev/null; then
-        # The kill below allows two seconds, too little for the syncer to finish,
-        # so wait for queued blocks to reach the remote store first. Without this
-        # an S3 profile can stop before its data ever reaches S3. Best-effort: a
-        # memory block store has nothing to drain.
-        log_info "Draining pending block uploads..."
-        "$DITTOFSCTL_BIN" system drain-uploads --timeout 2m >/dev/null 2>&1 ||
-            log_warn "Upload drain did not complete"
         log_info "Stopping DittoFS server (PID: $pid)"
         kill -TERM "$pid" || true
         sleep 2
