@@ -47,7 +47,7 @@ func TestNormalizeEndpoint(t *testing.T) {
 func TestS3_RemoteBlockStoreConformance_Endpoint(t *testing.T) {
 	endpoint := os.Getenv("DITTOFS_S3_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("DITTOFS_S3_ENDPOINT not set; skipping S3 conformance suite. Set the env var (with DITTOFS_S3_ACCESS_KEY/DITTOFS_S3_SECRET_KEY/DITTOFS_S3_BUCKET) to run against Localstack or MinIO.")
+		t.Skip("DITTOFS_S3_ENDPOINT not set; skipping S3 conformance suite. Set the env var (with DITTOFS_S3_ACCESS_KEY/DITTOFS_S3_SECRET_KEY/DITTOFS_S3_BUCKET) to run against a local S3 emulator.")
 	}
 	bucket := os.Getenv("DITTOFS_S3_BUCKET")
 	if bucket == "" {
