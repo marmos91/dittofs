@@ -105,10 +105,12 @@ local copy before running `01`:
 
 ```sh
 dfsctl system drain-uploads
-dfsctl store block evict
+dfsctl store block evict --share <share>
 ```
 
-`evict` with no flags acts on every share.
+Eviction never drops a block that has not been uploaded, and it reclaims whole
+segments, so one pending record keeps its segment local. Repeat the drain until
+`dfsctl store block stats` reports 0 pending remote bytes, then evict.
 
 ### Variables
 
