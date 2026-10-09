@@ -37,6 +37,12 @@ log_info "Tearing down POSIX test environment..."
 
 # Unmount NFS share
 if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+    # A suite can unlink everything it wrote before the syncer's upload delay
+    # elapses, leaving nothing for the drain below to upload. A file that is
+    # kept guarantees an S3 profile writes at least one object, so a check that
+    # the run reached S3 tests the wiring rather than the suite's timing.
+    dd if=/dev/urandom of="$MOUNT_POINT/.s3-sentinel" bs=64k count=16 2>/dev/null ||
+        log_warn "Could not write the upload sentinel"
     log_info "Unmounting $MOUNT_POINT"
     umount -f "$MOUNT_POINT" || {
         log_warn "Normal unmount failed, trying lazy unmount..."
