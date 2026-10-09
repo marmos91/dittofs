@@ -214,7 +214,7 @@ jobs:
         run: |
           # Tests RPC client against system rpcbind
           # Skips automatically if rpcbind unavailable or NFS already registered
-          go test -tags=portmap_system -v -timeout=2m ./test/integration/portmap/...
+          go test -tags=portmap_system -v -count=1 -timeout=2m ./test/integration/portmap/...
 
       - name: Dump PyKMIP logs on failure
         if: failure()
