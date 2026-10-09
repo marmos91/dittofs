@@ -258,7 +258,7 @@ create_s3_bucket() {
 
     if ! curl -sf -o /dev/null -I "${S3_ENDPOINT}/${S3_BUCKET}"; then
         log_error "Bucket ${S3_BUCKET} does not exist at ${S3_ENDPOINT} (last create returned HTTP ${code:-none})."
-        log_error "Start localstack first, e.g.: docker run -d -p 4566:4566 -e SERVICES=s3 localstack/localstack"
+        log_error "Start localstack first, e.g.: docker run -d -p 4566:4566 -e SERVICES=s3 localstack/localstack:4.13.1"
         return 1
     fi
 }
@@ -306,11 +306,15 @@ configure_via_api() {
         cache-s3|badger-s3)
             "$DITTOFSCTL_BIN" store block add --name default --type s3 \
                 --config "{\"bucket\":\"${S3_BUCKET}\",\"region\":\"us-east-1\",\"endpoint\":\"${S3_ENDPOINT}\",\"force_path_style\":true,\"access_key_id\":\"test\",\"secret_access_key\":\"test\",\"allow_private_endpoint\":true}"
-            # The server reaching the bucket is what makes this an S3 profile; an
-            # unreachable remote would leave the suite grading the local tier only.
+            # decision: this proves the server can reach the bucket with this
+            # store config, not that the suite's data is ever uploaded — a suite
+            # that unlinks its files before the upload delay sends no PutObject
+            # at all. It catches a missing or unreachable bucket, which otherwise
+            # leaves the suite silently grading the local tier only.
             log_info "Checking that the server can reach the S3 bucket..."
             "$DITTOFSCTL_BIN" store block health --name default || {
                 log_error "Block store 'default' cannot reach bucket ${S3_BUCKET} at ${S3_ENDPOINT}."
+                "$DITTOFS_BIN" stop --force 2>/dev/null || pkill -f "dfs start" || true
                 exit 1
             }
             ;;
