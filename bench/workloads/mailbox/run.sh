@@ -23,9 +23,18 @@ export COMPACT_MOVE="${COMPACT_MOVE:-4g}"
 export COMPACT_BS="${COMPACT_BS:-1m}"
 
 job="${1:?usage: run.sh <job.fio> [fio args]}"; shift
-mkdir -p results
-out="results/$(basename "$job" .fio)-u${USERS}-$(date +%Y%m%d-%H%M%S).json"
+
+# Results live next to this script, wherever it is called from.
+results_dir="$(cd "$(dirname "$0")" && pwd)/results"
+mkdir -p "$results_dir"
+out="$results_dir/$(basename "$job" .fio)-u${USERS}-$(date +%Y%m%d-%H%M%S).json"
 fio --output-format=json+ --output="$out" "$@" "$job"
+
+# fio --parse-only writes nothing; drop the empty file and skip the summary.
+if [ ! -s "$out" ]; then
+  rm -f "$out"
+  exit 0
+fi
 echo "Results: $out"
 
 if command -v jq >/dev/null; then
