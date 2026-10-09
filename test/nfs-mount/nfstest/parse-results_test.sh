@@ -12,7 +12,7 @@ cat >"$WORK/known.md" <<'EOF'
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | posix/read: file st_atime should be updated | semantics | expected failure | - |
-| posix/seekdir: traceback | semantics | expected failure | - |
+| posix/seekdir: traceback: ValueError: NULL pointer access | semantics | expected failure | - |
 EOF
 
 # run_case NAME WANT_EXIT MESSAGE [WANT_VERDICT] < log
@@ -112,28 +112,52 @@ NFSTEST-MODULE nfstest_posix
 NFSTEST-DONE 1
 EOF
 
-# The real tables: a row only v4.0 needs must excuse its failure on v4.0,
-# graded against both tables as run.sh does, and on no v4.1 set.
+# The real tables, listed as the manifest lists them: a row only v4.0 needs
+# must excuse its failure on v4.0 and on no v4.1 set.
 cat >"$WORK/nfstest.log" <<'EOF'
 NFSTEST-MODULE nfstest_dio
     TEST: Running test 'vectored_io'
     FAIL: Traceback (most recent call last):
-          Exception: Packet trace file is empty
+            File "/x/nfstest_dio", line 1238, in vectored_io
+          Exception: Packet trace file is empty: use --trcdelay option to give tcpdump time to flush buffer to packet trace
 1 tests (0 passed, 1 failed)
 NFSTEST-DONE 1
 EOF
-cat "$SCRIPT_DIR/KNOWN_FAILURES_V4.md" "$SCRIPT_DIR/KNOWN_FAILURES_V40.md" >"$WORK/v40.md"
-if "$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$WORK/v40.md" >"$WORK/output" 2>&1; then
+T="$SCRIPT_DIR/KNOWN_FAILURES"
+if "$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$T.md:${T}_V4.md:${T}_V40.md" >"$WORK/output" 2>&1; then
     echo "ok: the v4.0 tables excuse the v4.0-only row"
 else
     echo "FAIL: the v4.0 tables excuse the v4.0-only row"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
 fi
-"$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$SCRIPT_DIR/KNOWN_FAILURES_V4.md" >"$WORK/output" 2>&1
+"$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$T.md:${T}_V4.md" >"$WORK/output" 2>&1
 if [[ $? -eq 1 ]]; then
     echo "ok: the shared v4 table does not"
 else
     echo "FAIL: the shared v4 table does not"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
 fi
+
+# A traceback is named by its exception, so a row documenting one exception
+# does not excuse a different one in the same subtest.
+run_case "a different exception in a known subtest" 1 "posix/seekdir: traceback: OSError: [Errno N] Input/output error" "graded 1 0 0" <<'EOF'
+NFSTEST-MODULE nfstest_posix
+    TEST: Running test 'seekdir'
+    FAIL: Traceback (most recent call last):
+            File "/x/nfstest_posix", line 1715, in _tell_seek_dir_test
+          OSError: [Errno 5] Input/output error
+1 tests (0 passed, 1 failed)
+NFSTEST-DONE 1
+EOF
+
+# Addresses and numbers vary between runs and hosts; the name must not.
+run_case "traceback names drop addresses and numbers" 1 "dio/basic: traceback: Exception: mount.nfs: Connection refused for <ip>:/export on /tmp/dittofs-test_N" <<'EOF'
+NFSTEST-MODULE nfstest_dio
+    TEST: Running test 'basic'
+    FAIL: Traceback (most recent call last):
+            File "/x/host.py", line 432, in run_cmd
+          Exception: mount.nfs: Connection refused for 172.17.0.2:/export on /tmp/dittofs-test_01
+1 tests (0 passed, 1 failed)
+NFSTEST-DONE 1
+EOF
 
 [[ "$FAILURES" -eq 0 ]] || { echo "$FAILURES case(s) failed"; exit 1; }
 echo "all nfstest grader cases passed"

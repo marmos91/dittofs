@@ -2,7 +2,7 @@
 # Run the cthon04 / nfstest conformance suites from a machine that is not a
 # Linux host — a Mac with Docker, say — inside a privileged Ubuntu container
 # that stands in for the CI runner. CI does not use this: it runs the same
-# test/conformance/run.sh steps directly on ubuntu-latest.
+# test/conformance/run.sh steps directly on the CI host.
 #
 # Usage:
 #   test/nfs-mount/dev-docker.sh <suite> [profile] [variant]

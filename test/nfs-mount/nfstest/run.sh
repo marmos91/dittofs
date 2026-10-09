@@ -45,16 +45,14 @@ MODULE_TIMEOUT="${NFSTEST_MODULE_TIMEOUT:-1200}"
 LOG="$RESULTS_DIR/nfstest.log"
 VERSION="$(option_set_version "$VARIANT")"
 
-if [[ "$VERSION" == 3 ]]; then
-    KNOWN_FAILURES="$SCRIPT_DIR/KNOWN_FAILURES_V3.md"
-elif [[ "$VERSION" == 4.0 ]]; then
-    # v4.0 is graded against the shared v4 table plus its own, so a row only
-    # v4.0 needs cannot excuse the same failure on a v4.1 set.
-    KNOWN_FAILURES="$RESULTS_DIR/known-failures.md"
-    cat "$SCRIPT_DIR/KNOWN_FAILURES_V4.md" "$SCRIPT_DIR/KNOWN_FAILURES_V40.md" >"$KNOWN_FAILURES"
-else
-    KNOWN_FAILURES="$SCRIPT_DIR/KNOWN_FAILURES_V4.md"
-fi
+# The known-failure tables come from test/conformance/suites.json, which
+# test/conformance/run.sh hands over in DITTOFS_KNOWN_FAILURES; the manifest is
+# the one place that says which tables grade which option set.
+KNOWN_FAILURES="${DITTOFS_KNOWN_FAILURES:-}"
+[[ -n "$KNOWN_FAILURES" ]] || {
+    echo "no known-failure tables: run through test/conformance/run.sh, or set DITTOFS_KNOWN_FAILURES" >&2
+    exit 2
+}
 
 # The modules that apply to this option set, unless --modules narrowed them.
 if [[ -z "$MODULES" ]]; then
@@ -64,7 +62,11 @@ if [[ -z "$MODULES" ]]; then
     # suite gains a second client (a network namespace or another runner).
     MODULES="posix,dio"
     # See option-sets.sh: under nolock the locks never leave the client.
-    option_set_locks "$VARIANT" && MODULES+=",lock"
+    # lock is the slowest module after dio and found nothing that varies with
+    # caching or I/O size, so it runs on the plain v4 sets only.
+    if option_set_locks "$VARIANT" && [[ "$VARIANT" == v4.0 || "$VARIANT" == v4.1 ]]; then
+        MODULES+=",lock"
+    fi
     [[ "$VERSION" != 3 ]] && MODULES+=",delegation"
 fi
 

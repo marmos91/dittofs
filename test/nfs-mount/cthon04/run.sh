@@ -49,11 +49,14 @@ RESULTS_DIR="${DITTOFS_RESULTS_DIR:-$(mktemp -d)}"
 TEST_TIMEOUT="${CTHON04_TEST_TIMEOUT:-600}"
 LOG="$RESULTS_DIR/cthon04.log"
 
-if [[ "$(option_set_version "$VARIANT")" == 3 ]]; then
-    KNOWN_FAILURES="$SCRIPT_DIR/KNOWN_FAILURES_V3.md"
-else
-    KNOWN_FAILURES="$SCRIPT_DIR/KNOWN_FAILURES_V4.md"
-fi
+# The known-failure tables come from test/conformance/suites.json, which
+# test/conformance/run.sh hands over in DITTOFS_KNOWN_FAILURES; the manifest is
+# the one place that says which tables grade which option set.
+KNOWN_FAILURES="${DITTOFS_KNOWN_FAILURES:-}"
+[[ -n "$KNOWN_FAILURES" ]] || {
+    echo "no known-failure tables: run through test/conformance/run.sh, or set DITTOFS_KNOWN_FAILURES" >&2
+    exit 2
+}
 
 CTHON="$("$SUITE_DIR/fetch.sh" cthon04)" || { echo "could not fetch cthon04" >&2; exit 2; }
 
@@ -90,6 +93,14 @@ result() {
     shift
     echo ""
     echo "=== $name"
+    # Against a server that has died every program waits out its timeout, and
+    # the job would hit its own limit with no verdict. Grade it at once instead.
+    if ! nc -z -w 5 localhost "$NFS_PORT" 2>/dev/null; then
+        echo "skipped: nothing answers on localhost:$NFS_PORT any more"
+        echo "CTHON04-RESULT $name TIMEOUT"
+        RESULTS=$((RESULTS + 1))
+        return
+    fi
     timeout --kill-after=30 "$TEST_TIMEOUT" "$@"
     status=$?
     case "$status" in

@@ -79,16 +79,20 @@ tier_profiles() {
     '
 }
 
-# known_failures SUITE VARIANT — path relative to test/, or empty when the suite
-# has no blacklist. Suites that grade each variant against its own table carry an
-# object here rather than a string; pynfs is the reason that shape exists.
+# known_failures SUITE VARIANT — the blacklists, one path relative to test/ per
+# line, or nothing when the suite has none. Suites that grade each variant
+# against its own table carry an object here rather than a string; pynfs is the
+# reason that shape exists. A table may also be a list, graded together: a
+# shared table plus a small overlay per variant, so a row the variants share is
+# written once and a row only one of them needs cannot excuse the others.
 known_failures() {
     mq --arg s "$1" --arg v "$2" '
         .suites[$s].known_failures as $kf
-        | if $kf == null then ""
-          elif ($kf | type) == "string" then $kf
-          else ($kf[$v] // "")
-          end
+        | (if $kf == null then []
+           elif ($kf | type) == "string" then [$kf]
+           elif ($kf | type) == "array" then $kf
+           else ($kf[$v] // []) | (if type == "array" then . else [.] end)
+           end)[]
     '
 }
 
@@ -276,12 +280,15 @@ run_one() {
     [[ -n "$variant" ]] && label="${profile}-${variant}"
 
     local results_dir="${RESULTS_ROOT}/${SUITE}/${label}"
-    local kf
-    kf="$(known_failures "$SUITE" "$variant")"
-    if [[ -n "$kf" ]]; then
-        [[ -f "${TEST_DIR}/${kf}" ]] || die "blacklist declared but missing: test/${kf}"
-        kf="${TEST_DIR}/${kf}"
-    fi
+    # Every blacklist is checked here and handed to the suite as absolute paths
+    # in DITTOFS_KNOWN_FAILURES, colon-separated, so the manifest is the one
+    # place that says which tables grade which variant.
+    local kf="" table
+    while IFS= read -r table; do
+        [[ -n "$table" ]] || continue
+        [[ -f "${TEST_DIR}/${table}" ]] || die "blacklist declared but missing: test/${table}"
+        kf+="${kf:+:}${TEST_DIR}/${table}"
+    done < <(known_failures "$SUITE" "$variant")
 
     local step_count
     step_count="$(mq --arg s "$SUITE" '.suites[$s].steps | length')"
@@ -312,7 +319,10 @@ run_one() {
     fi
 
     log_step "${SUITE} / ${label}"
-    [[ -n "$kf" ]] && log_info "blacklist: ${kf#"${REPO_ROOT}/"}"
+    if [[ -n "$kf" ]]; then
+        local shown="${kf//"${TEST_DIR}/"/test/}"
+        log_info "blacklist: ${shown//:/, }"
+    fi
 
     local status=0 failed_step="" i
     for ((i = 0; i < step_count; i++)); do
@@ -361,7 +371,7 @@ run_one() {
         # Never read $? after a pipe: tee's status would mask the runner's, and
         # the graders exit with a failure COUNT that has to survive to the caller.
         set -o pipefail
-        DITTOFS_RESULTS_DIR="$results_dir" \
+        DITTOFS_RESULTS_DIR="$results_dir" DITTOFS_KNOWN_FAILURES="$kf" \
             "${prefix[@]}" "$runner" "${args[@]}" 2>&1 | tee "$log"
         local step_status="${PIPESTATUS[0]}"
         set +o pipefail

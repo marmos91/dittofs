@@ -44,7 +44,8 @@ render() {
         | ($s.known_failures
            | if . == null then []
              elif type == "string" then [.]
-             else ([.[]] | unique)
+             elif type == "array" then unique
+             else ([.[] | if type == "array" then .[] else . end] | unique)
              end) as $kf
         | "| `\($name)` | \($s.protocol) | \(cell($s.profiles | map("`\(.)`")))"
           + " | \(cell($s.variant.values // [] | map("`\(.)`")))"

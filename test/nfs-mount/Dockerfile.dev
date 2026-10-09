@@ -1,6 +1,6 @@
 # Local-development stand-in for the CI runner: an Ubuntu host with the kernel
 # NFS client tools, Go, and what cthon04 and nfstest need to build and run.
-# CI does not use this image; it runs the same scripts on ubuntu-latest.
+# CI does not use this image; it runs the same scripts on the CI host.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 

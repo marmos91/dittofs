@@ -40,7 +40,8 @@ tested on the v4 sets.
 | cthon04 | all | basic `test1`–`test9`, general, special (15 programs) |
 | cthon04 | v4 sets | + lock `tlocklfs`, `tlock64` |
 | nfstest | all | `nfstest_posix`, `nfstest_dio` |
-| nfstest | v4 sets | + `nfstest_lock`, `nfstest_delegation` |
+| nfstest | v4 sets | + `nfstest_delegation` |
+| nfstest | `v4.0`, `v4.1` | + `nfstest_lock` |
 
 cthon04's own `runtests` stops a group at its first failure. [`cthon04/run.sh`](cthon04/run.sh)
 runs each program on its own instead, so one failure cannot hide the tests after it.
@@ -52,10 +53,12 @@ client host, and on one host its two mounts collide. Any other module runs with
 ## Grading
 
 Each runner turns its suite's output into one verdict per test and grades it with
-[`grade.sh`](grade.sh) against `<suite>/KNOWN_FAILURES_V3.md` or `_V4.md`. nfstest's `v4.0` set is
-graded against `_V4.md` plus `KNOWN_FAILURES_V40.md`, which holds rows that would hide a regression
-on the v4.1 sets. It uses the same table format and parser as pjdfstest and the SMB suites
-(`test/common/known-failures.sh`).
+[`grade.sh`](grade.sh). It uses the same table format and parser as pjdfstest and the SMB suites
+(`test/common/known-failures.sh`). Each suite has a shared table, `<suite>/KNOWN_FAILURES.md`, and
+small per-version overlays: `_V3.md`, and for nfstest `_V4.md` plus `_V40.md` for `v4.0` alone. An
+option set is graded against the shared table plus its overlays. Which tables grade which set is
+declared in `test/conformance/suites.json`; `test/conformance/run.sh` passes them to the runner in
+`DITTOFS_KNOWN_FAILURES`.
 
 - A failure on the table is reported and does not fail CI. Any other failure does.
 - A test that timed out, or a module whose own total disagrees with the lines parsed for it, fails even when the names are on the table.
@@ -63,16 +66,19 @@ on the v4.1 sets. It uses the same table format and parser as pjdfstest and the 
 - A log without its completion marker is not graded at all.
 
 nfstest names each assertion `<module>/<subtest>: <message>`, e.g.
-`posix/read: file st_atime should be updated`. So a table entry excuses one assertion, not a whole
-subtest.
+`posix/read: file st_atime should be updated`, and a Python traceback
+`<module>/<subtest>: traceback: <exception line>`. So a table entry excuses one assertion or one
+exception, not a whole subtest. cthon04 is graded per program (`basic/test6`), so its rows excuse
+any failure of that program.
 
 ## Running
 
 In CI the suites are entries in [`test/conformance/suites.json`](../conformance/suites.json) and run
 in the `nfs-mount` job of `.github/workflows/conformance.yml`. That is an Ubuntu runner, with
 `sudo` for the mount. PRs run cthon04 on `memory`, five short jobs, one per option set. Everything
-else (nfstest, and both suites on every profile) runs only in the nightly, because a v4 nfstest
-cell takes tens of minutes. Merges to develop run neither.
+else runs only in the nightly, because a v4 nfstest cell takes tens of minutes: cthon04 on every
+profile, and nfstest on `memory` and `badger-s3`. Most of what nfstest checks is client and protocol
+behaviour the storage backend shouldn't change. Merges to develop run neither.
 
 On a Linux host with root:
 

@@ -729,7 +729,7 @@ Connectathon (cthon04) and NetApp nfstest suites run under each of these option 
 
 | Set | Options |
 |---|---|
-| `v3` | `vers=3,tcp,nolock` (attribute caching on) |
+| `v3` | `vers=3,tcp,mountproto=tcp,nolock` (attribute caching on) |
 | `v4.0` | `vers=4.0` |
 | `v4.1` | `vers=4.1` |
 | `v4.1-noac` | `vers=4.1,noac` |

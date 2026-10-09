@@ -34,15 +34,14 @@ fi
 
 log_info "Tearing down POSIX test environment..."
 
-# Unmount NFS share. Checked through /proc/mounts rather than mountpoint(1):
-# stat() of a hard mount whose server has hung blocks forever, and teardown runs
+# Unmount NFS share. is_mounted and detach never stat the mount point, which
+# blocks forever on a hard mount whose server has hung, and teardown runs
 # exactly when something went wrong.
-if awk -v p="$MOUNT_POINT" '$2 == p { found = 1 } END { exit !found }' /proc/mounts; then
+# shellcheck source=../nfs-mount/mounts.sh
+source "$SCRIPT_DIR/../nfs-mount/mounts.sh"
+if is_mounted "$MOUNT_POINT"; then
     log_info "Unmounting $MOUNT_POINT"
-    timeout 30 umount -f "$MOUNT_POINT" || {
-        log_warn "Normal unmount failed, trying lazy unmount..."
-        timeout 30 umount -l "$MOUNT_POINT" || true
-    }
+    detach "$MOUNT_POINT"
 else
     log_info "Mount point not mounted"
 fi

@@ -405,8 +405,8 @@ in `test/conformance/suites.json`:
 | `pjdfstest` | NFS | `memory`, `badger`, `badger-s3` | `3`, `4`, `4.1` | `memory`, `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
 | `nfs-kerberos` | NFS | `memory-kerberos` | — | `memory-kerberos` | — |
 | `pynfs` | NFS | `memory`, `badger`, `badger-s3` | `4.0`, `4.1` | `memory`, `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
-| `cthon04` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `memory` | [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V4.md) |
-| `nfstest` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
+| `cthon04` | NFS | `memory`, `badger`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `memory` | [`test/nfs-mount/cthon04/KNOWN_FAILURES.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md) |
+| `nfstest` | NFS | `memory`, `badger-s3` | `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
 
 Tiering, profiles and blacklists come from
 [`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through
@@ -480,8 +480,10 @@ kernel client. They run once per named option set (`v3`, `v4.0`, `v4.1`, `v4.1-n
 `v4.1-smallio`), so a failure points at the option that caused it.
 
 - **Suites:** Connectathon (cthon04): basic, general, special, and lock on the v4 sets.
-  NetApp's nfstest: `posix` and `dio`, plus `lock` and `delegation` on the v4 sets.
-- **Known failures:** `test/nfs-mount/<suite>/KNOWN_FAILURES_V3.md` and `_V4.md`
+  NetApp's nfstest: `posix` and `dio`, plus `delegation` on the v4 sets and `lock` on `v4.0` and `v4.1`.
+- **Known failures:** `test/nfs-mount/<suite>/KNOWN_FAILURES.md`, shared by every option set, plus a
+  per-version overlay (`_V3.md`; for nfstest also `_V4.md`, and `_V40.md` for `v4.0` alone). Which
+  tables grade which set is declared in `test/conformance/suites.json`
 - **Run locally:**
   ```bash
   sudo test/conformance/run.sh --suite cthon04 --profile memory --variant v4.1   # Linux host

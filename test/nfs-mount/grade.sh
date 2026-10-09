@@ -4,7 +4,10 @@
 # input format below and leave the verdict to this.
 #
 # Usage:
-#   ./grade.sh <results> <known-failures-file> [results-dir]
+#   ./grade.sh <results> <known-failures-tables> [results-dir]
+#
+# <known-failures-tables> is one table or several, colon-separated, graded
+# together: a shared table plus a per-variant overlay.
 #
 # <results> holds one line per test, "<VERDICT><TAB><name>", where VERDICT is
 # PASS, FAIL, TIMEOUT or INCOMPLETE. TIMEOUT and INCOMPLETE grade as failures
@@ -31,8 +34,12 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\
 
 [[ -f "$RESULTS" ]] || { echo "usage: $(basename "$0") <results> <known-failures> [results-dir]" >&2; exit 1; }
 
-kf_load "$KNOWN_FAILURES_FILE"
-echo "Loaded ${KF_COUNT} known failure pattern(s) from $(basename "${KNOWN_FAILURES_FILE:-<none>}")"
+IFS=':' read -ra TABLES <<<"$KNOWN_FAILURES_FILE"
+for table in "${TABLES[@]}"; do
+    [[ -f "$table" ]] || { echo "known-failure table not found: $table" >&2; exit 1; }
+    kf_load "$table"
+done
+echo "Loaded ${KF_COUNT} known failure pattern(s) from ${#TABLES[@]} table(s)"
 
 PASSED=0 KNOWN=0 NEW=0
 declare -a NEW_LIST=() STALE_LIST=()
@@ -93,7 +100,7 @@ fi
 
 if [[ "$NEW" -gt 0 ]]; then
     echo -e "${RED}${BOLD}RESULT: ${NEW} new failure(s) detected!${NC}"
-    echo "If expected, append to $(basename "${KNOWN_FAILURES_FILE:-KNOWN_FAILURES.md}"):"
+    echo "If expected, add it to the table that fits, shared or per version:"
     echo "  | ${NEW_LIST[0]} | <category> | <reason> | <issue> |"
 else
     echo -e "${GREEN}${BOLD}RESULT: All failures are known. CI green.${NC}"

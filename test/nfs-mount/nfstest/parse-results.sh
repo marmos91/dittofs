@@ -16,7 +16,10 @@
 # Messages are normalised so the name is stable and fits a Markdown table:
 #   - a trailing "(N passed, M failed)" tally is dropped; its numbers move
 #   - "|" becomes "+", since it would end the table cell (O_EXCL|O_CREAT)
-#   - a Python traceback becomes "traceback", whatever its frames say
+#   - a Python traceback becomes "traceback: <its exception line>", with
+#     addresses and numbers (ports, paths with timestamps) replaced by <ip> and
+#     N, so a row excuses the one exception it documents and not any crash in
+#     the same subtest
 #   - a leading "<subtest> - " is dropped; the name already carries it
 #
 # A module with no closing tally did not finish; it grades as a TIMEOUT named
@@ -54,7 +57,19 @@ trap 'rm -rf "$WORK"' EXIT
 
 # POSIX awk only: this has to run on the BSD awk of a macOS checkout too.
 awk '
+    # A traceback is emitted once its last line is known: nfstest indents the
+    # frames and the exception ten spaces or more, and the exception is the
+    # last of those lines before the next normal one.
+    function flush_traceback(    exc) {
+        if (!in_tb) return
+        in_tb = 0
+        exc = tb_last
+        gsub(/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/, "<ip>", exc)
+        gsub(/[0-9]+/, "N", exc)
+        emit("FAIL", "traceback: " (exc == "" ? "?" : exc))
+    }
     function flush_module() {
+        flush_traceback()
         if (module == "") return
         if (!finished) printf "TIMEOUT\t%s: did not finish\n", module
         else if (passed != tally_pass || failed != tally_fail)
@@ -64,7 +79,6 @@ awk '
         sub(/^[ \t]+/, "", msg)
         sub(/[ \t]+$/, "", msg)
         sub(/ \([0-9]+ passed, [0-9]+ failed\)$/, "", msg)
-        if (msg ~ /^Traceback \(most recent call last\)/) msg = "traceback"
         # nfstest starts most messages with the subtest name, which the
         # name already carries.
         if (subtest != "" && index(msg, subtest " - ") == 1) msg = substr(msg, length(subtest) + 4)
@@ -74,6 +88,12 @@ awk '
         name = module "/" (subtest == "" ? "-" : subtest) ": " msg
         printf "%s\t%s\n", verdict, name
     }
+    in_tb && /^          / {
+        line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+        if (line != "") tb_last = line
+        next
+    }
+    in_tb { flush_traceback() }
     /^NFSTEST-MODULE / {
         flush_module()
         module = $2; sub(/^nfstest_/, "", module)
@@ -89,6 +109,7 @@ awk '
         next
     }
     /^[ \t]*PASS: / { line = $0; sub(/^[ \t]*PASS: /, "", line); emit("PASS", line); next }
+    /^[ \t]*FAIL: Traceback \(most recent call last\)/ { in_tb = 1; tb_last = ""; next }
     /^[ \t]*FAIL: / { line = $0; sub(/^[ \t]*FAIL: /, "", line); emit("FAIL", line); next }
     /^[0-9]+ tests \([0-9]+ passed, [0-9]+ failed/ {
         finished = 1
