@@ -27,7 +27,9 @@ import (
 // skips, naming the condition, when it does not hold:
 //
 //   - The server grants a delegation only once a CB_NULL probe of the client's
-//     callback path has succeeded.
+//     callback path has succeeded. A v4.0 client's callback address is the local
+//     address of its connection, and the server refuses to dial loopback, so
+//     v4.0 mounts go through a non-loopback address of this host.
 //   - A recall needs a second NFS client. Two mounts of one export with the same
 //     NFS version share a single kernel client (and superblock), so their opens
 //     never conflict. A v4.0 and a v4.1 mount are distinct clients with distinct
@@ -62,7 +64,7 @@ func TestNFSv4DelegationBasicLifecycle(t *testing.T) {
 	sp, _, nfsPort := setupNFSv4TestServer(t)
 	since := readLogFile(t, sp)
 
-	mount := framework.MountNFSWithVersion(t, nfsPort, "4.0")
+	mount := mountForDelegations(t, nfsPort, "4.0")
 	t.Cleanup(mount.Cleanup)
 	requireCallbackPathsUp(t, sp, since, 1)
 
@@ -126,9 +128,9 @@ func testDelegationRecall(t *testing.T, holderVers, otherVers string) {
 	sp, _, nfsPort := setupNFSv4TestServer(t)
 	since := readLogFile(t, sp)
 
-	holder := framework.MountNFSWithVersion(t, nfsPort, holderVers)
+	holder := mountForDelegations(t, nfsPort, holderVers)
 	t.Cleanup(holder.Cleanup)
-	other := framework.MountNFSWithVersion(t, nfsPort, otherVers)
+	other := mountForDelegations(t, nfsPort, otherVers)
 	t.Cleanup(other.Cleanup)
 	requireCallbackPathsUp(t, sp, since, 2)
 
@@ -183,9 +185,9 @@ func TestNFSv4NoDelegationConflict(t *testing.T) {
 	// precedes the reads and the file is not barred from a new grant.
 	writer := framework.MountNFS(t, nfsPort)
 	t.Cleanup(writer.Cleanup)
-	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
+	mount1 := mountForDelegations(t, nfsPort, "4.0")
 	t.Cleanup(mount1.Cleanup)
-	mount2 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	mount2 := mountForDelegations(t, nfsPort, "4.1")
 	t.Cleanup(mount2.Cleanup)
 	requireCallbackPathsUp(t, sp, since, 2)
 
@@ -242,6 +244,16 @@ func extractNewLogs(logBefore, logAfter string) string {
 		return logAfter[len(logBefore):]
 	}
 	return ""
+}
+
+// mountForDelegations mounts /export at vers, through a non-loopback address
+// for v4.0 so the server can dial its callback path.
+func mountForDelegations(t *testing.T, port int, vers string) *framework.Mount {
+	t.Helper()
+	if vers == "4.0" {
+		return framework.MountNFSWithVersionAt(t, framework.NonLoopbackIPv4(t), port, vers)
+	}
+	return framework.MountNFSWithVersion(t, port, vers)
 }
 
 // waitForLog polls the server log until re matches at least n times in what

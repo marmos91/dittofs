@@ -164,7 +164,9 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 	// nobody, so "read" is what lets it traverse the root.
 	setupKerberosV4Share(t, runner, "/krb-v4", helpers.WithShareDefaultPermission("read"))
 	for _, u := range []krbV4User{krbAlice, krbBob} {
-		_, err = runner.CreateUser(u.principal, u.password, helpers.WithUID(u.uid))
+		// The DittoFS password is never used: these users authenticate to the
+		// KDC. It only has to satisfy the server's password policy.
+		_, err = runner.CreateUser(u.principal, "kerberos-only-user", helpers.WithUID(u.uid))
 		require.NoError(t, err, "create user %s", u.principal)
 		require.NoError(t, runner.GrantUserPermission("/krb-v4", u.principal, "read-write"),
 			"grant read-write to %s", u.principal)
