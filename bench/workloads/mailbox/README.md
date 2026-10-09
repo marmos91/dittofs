@@ -96,6 +96,20 @@ Start small.
 Extra arguments after the file name are passed to fio, for example
 `./run.sh 02-mail-flow.fio --parse-only` to check syntax only.
 
+### Cold logon
+
+Right after `00-prepare` the data is still in the server's local store, so
+`01-logon-outlook-start` reads it locally and never touches the remote. A real
+logon storm reads from the remote. To test that, upload everything and drop the
+local copy before running `01`:
+
+```sh
+dfsctl system drain-uploads
+dfsctl store block evict
+```
+
+`evict` with no flags acts on every share.
+
 ### Variables
 
 | Variable | Default | Meaning |
