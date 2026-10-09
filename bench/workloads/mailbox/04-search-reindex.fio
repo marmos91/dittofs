@@ -46,4 +46,4 @@ size=2%
 rw=write
 bs=64k
 iodepth=1
-rate_iops=10
+rate_iops=${CATALOG_LOG_IOPS}

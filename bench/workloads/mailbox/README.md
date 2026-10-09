@@ -111,7 +111,8 @@ Extra arguments after the file name are passed to fio, for example
 | `SEND_INTERVAL` | `900s` | Pause between sent messages (02) |
 | `SORT_READ` | `150m` | Bytes read in a re-sort (03) |
 | `SORT_WRITE` | `30m` | Bytes written in a re-sort (03) |
-| `CATALOG_IOPS` | `50` | Search catalog write rate (04) |
+| `CATALOG_IOPS` | `50` | Search catalog I/O rate, 40% reads and 60% writes (04) |
+| `CATALOG_LOG_IOPS` | `10` | Search catalog log write rate (04) |
 | `SYNC_RATE` | `10m` | Download rate in a full sync (05) |
 | `SYNC_META_IOPS` | `200` | Metadata I/O rate in a full sync (05) |
 | `COMPACT_MOVE` | `4g` | Bytes moved by compaction (06) |
