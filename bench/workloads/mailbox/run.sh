@@ -35,7 +35,7 @@ if command -v jq >/dev/null; then
     (map(.job_runtime) | sort) as $rt |
     "\(.[0].jobname): jobs=\(length)  runtime_ms p50=\($rt[(length*0.5|floor)]) p90=\($rt[(length*0.9|floor)]) max=\($rt[-1])  " +
     "read_iops=\(map(.read.iops)|add|floor) write_iops=\(map(.write.iops)|add|floor)  " +
-    "read_MBps=\((map(.read.bw)|add)/1024|floor) write_MBps=\((map(.write.bw)|add)/1024|floor)  " +
+    "read_MiBps=\((map(.read.bw)|add)/1024|floor) write_MiBps=\((map(.write.bw)|add)/1024|floor)  " +
     "worst_p99_us read=\(p99("read")) write=\(p99("write"))"
   ' "$out"
 fi

@@ -128,7 +128,7 @@ run, lower both intervals, or a user does one burst and waits out the rest.
 ### Output
 
 Each run writes one JSON file to `results/` and prints one line per job
-(needs `jq`): per-user run time (p50, p90, max), total IOPS and MB/s, and the
+(needs `jq`): per-user run time (p50, p90, max), total IOPS and MiB/s, and the
 worst p99 latency.
 
 ## What counts as a pass
