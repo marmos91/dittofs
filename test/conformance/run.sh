@@ -22,7 +22,6 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MANIFEST="${CONFORMANCE_MANIFEST:-${SCRIPT_DIR}/suites.json}"
 # Step commands are relative to the manifest's parent, so a test can point
 # CONFORMANCE_MANIFEST at a synthetic tree and get its own scripts dispatched.
