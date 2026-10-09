@@ -42,8 +42,8 @@ func TestNormalizeEndpoint(t *testing.T) {
 //
 // Skipped unless DITTOFS_S3_ENDPOINT (and the credential pair
 // DITTOFS_S3_ACCESS_KEY / DITTOFS_S3_SECRET_KEY) are set in the
-// environment. Nothing sets them in CI yet (see #2925); run it locally by
-// exporting the env against an S3 emulator such as SeaweedFS or Localstack.
+// environment. Export them to run against an S3 emulator such as SeaweedFS or
+// Localstack.
 func TestS3_RemoteBlockStoreConformance_Endpoint(t *testing.T) {
 	endpoint := os.Getenv("DITTOFS_S3_ENDPOINT")
 	if endpoint == "" {
