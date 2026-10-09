@@ -146,6 +146,22 @@ The goal is stability, so a run passes when:
 jq '.jobs[] | {jobname, error, short: (.read.short_ios + .write.short_ios)}' results/*.json
 ```
 
+## Reading S3 usage after a run
+
+Right after a run the bucket holds roughly everything the run ever wrote, not
+the live size of the files:
+
+- Overwritten data is only reclaimed by a GC pass, which runs every 15 minutes
+  by default.
+- Orphaned blocks are kept for a 1 hour grace period (default) before GC deletes them.
+- A block that is only partly dead is never repacked unless
+  `gc.compaction_live_ratio` is set. It defaults to 0, so by default nothing is
+  repacked.
+
+To compare bucket usage with the live file sizes, set
+`gc.compaction_live_ratio` (for example `0.5`), wait out the grace period, run
+`dfsctl store block gc`, and measure after that.
+
 ## Running scenarios together
 
 Real load is a mix. Two useful pairs, started as two `run.sh` commands in
