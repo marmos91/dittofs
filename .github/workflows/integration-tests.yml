@@ -189,6 +189,13 @@ jobs:
           fi
           xargs go test -tags=integration -count=1 -v -timeout=20m -p 1 < /tmp/integration-pkgs.txt
 
+      # RPCSEC_GSS (krb5, krb5i, krb5p) against a real MIT KDC in Docker,
+      # through gokrb5, with no kernel client. It has its own build tag, so the
+      # package list above never picks it up.
+      - name: Run the Kerberos KDC integration test
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
+        run: go test -tags=kerberos -count=1 -v -timeout=5m ./test/integration/kerberos/
+
       - name: Install and start rpcbind
         if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         env:
