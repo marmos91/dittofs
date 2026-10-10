@@ -805,8 +805,9 @@ older content served as newer.
   since the last group commit, or captured, removed or cut meanwhile — **MUST**
   be committed in one transaction, not one per write or per file.
 - A batch **MUST** be bounded: at most `G` files, and at most the key budget `K`
-  of [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) in keys written. **Proposal:** `G` = 256. Overturned by E5's
-  transactions per stability point rising at the bound. One file whose pending
+  of [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) in keys written. `G` is the `group_commit.max_files` setting ([RFC 13](rfc-13-configuration.md);
+  proposal: 256), overturned by E5's transactions per stability point rising at
+  the bound. One file whose pending
   existence alone needs more than `K` keys — many scattered overwrites since its
   last commit — is committed over several transactions in version order, each
   advancing `applied` only to the newest version it wholly applies; a stability
@@ -971,8 +972,9 @@ pass when:
 
 A client's request for durability is not a trigger ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 
-**Proposal:** a dirty-byte threshold of one block target and a maximum age of a
-few seconds, with capacity pressure making every file with dirty bytes eligible.
+**Proposal:** a dirty-byte threshold of one block target, and a maximum age set
+by the `offload.max_age` setting ([RFC 13](rfc-13-configuration.md); proposal: a few seconds, the value
+open), with capacity pressure making every file with dirty bytes eligible.
 Overturned by a measurement showing the age bound, not the byte bound, fragments
 blocks under a streaming workload.
 
@@ -1018,8 +1020,9 @@ reported stays **Dirty**, and the file is re-queued with a `RetryDue`.
   ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) plus a transfer bound proportional to the block's size.
 - **O2 — retries never stop.** A failed step is retried with jittered
   exponential backoff, per file, for as long as this node is the shard's primary.
-  **Proposal:** from 1 s to a cap of 60 s, and a cap of 5 s under capacity
-  pressure while the store is healthy; the first success resets it. Overturned by
+  It starts at `offload.retry_min` and is capped by `offload.retry_max`, or by
+  `offload.retry_max_pressure` under capacity pressure while the store is
+  healthy ([RFC 13](rfc-13-configuration.md); proposal: 1 s, 60 s and 5 s); the first success resets it. Overturned by
   a measurement showing the cap either hammers a failing store or leaves a
   recovered one idle.
 - **O3 — a retry within an attempt reuses its name, plan and bytes;** it is the
@@ -1035,8 +1038,13 @@ reported stays **Dirty**, and the file is re-queued with a `RetryDue`.
 - **O6 — one file cannot sink another.** A file that fails repeatedly is backed
   off alone; while it backs off, its chunks are offered in passes of their own,
   so a block shared with other files never carries it. After five consecutive
-  failed passes (**proposal**) it is a health condition naming the file
+  failed passes it is a health condition naming the file
   ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)).
+
+  > decision: five is fixed, not a setting: it only decides when a file's
+  > failures are reported, never what is retried, and the backoff already
+  > spaces the passes. Lowered if a stuck file is found to go unreported for
+  > longer than the oldest-unoffloaded alert ([§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)) would catch it.
 - **O7 — a stale epoch stops, it does not retry.** A commit or intent refused on
   the primary epoch means the shard has moved: the shard's passes end without
   reporting, and the new primary offers the content again.
@@ -1497,8 +1505,9 @@ a window.
 > **Example — sequential detection.** A reader reads `f` at `[0, 1)`, `[1, 2)`,
 > `[2, 3)` MiB. The second read starts where the first ended, so the speculator
 > opens a window of one block ahead; each further read that continues where the
-> last ended doubles the window, up to its cap. **Proposal:** a cap of 8 blocks or
-> 64 MiB, whichever is smaller. A read at 900 MiB does not continue, and resets
+> last ended doubles the window, up to its cap: the read-ahead cap settings
+> `readahead.max_blocks` and `readahead.max_bytes` ([RFC 13](rfc-13-configuration.md); proposal: 8 blocks or
+> 64 MiB, whichever is smaller). A read at 900 MiB does not continue, and resets
 > the window to zero; a second read continuing from 900 MiB opens it again.
 >
 >     read [0,1)    → window 0            (nothing known yet)
@@ -1600,8 +1609,12 @@ are at most a quarter of the block **and** it is not sequential — it neither
 starts at the block's beginning nor continues where the file's previous read
 ended. Otherwise it asks for **the whole block**. Read-ahead and pre-warm follow
 the same rule over the bytes the journal does not hold, and skip a block it holds
-whole (S5, [§7.4](#7.4%20The%20speculator)). The quarter is borrowed from prior art; overturned by
-comparing bytes fetched and read latency across a few thresholds.
+whole (S5, [§7.4](#7.4%20The%20speculator)).
+
+> decision: the quarter is fixed, not a setting, and borrowed from prior art
+> rather than measured; a wrong threshold costs bytes fetched or one round trip,
+> never correctness. Overturned by comparing bytes fetched and read latency
+> across a few thresholds in E4 ([§15.4](#15.4%20Benchmarks)).
 
 ## 8. Truncate, deallocate and release
 
@@ -1732,7 +1745,7 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   `NFS4ERR_INVAL`, `STATUS_INVALID_PARAMETER`): the destination's removal would
   mask the very source refs the adoption must read. A clone between disjoint
   extents of one file is allowed. A `CLONE` or duplicate-extents request longer
-  than `clone_max_len` ([RFC 13](rfc-13-configuration.md), default 1 GiB) is refused with `ErrInvalid`, so a client
+  than `clone_max_len` ([RFC 13](rfc-13-configuration.md); proposal: 1 GiB) is refused with `ErrInvalid`, so a client
   falls back to copying. A clone or copy whose destination's share does not list
   every namespace the source's share lists ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) **MUST** be refused
   with `ErrCrossNamespace` (`NFS4ERR_XDEV`, `STATUS_NOT_SUPPORTED`), so the
@@ -1800,9 +1813,15 @@ source extent is frozen for one chunk at a time and a writer of the source waits
 at most one chunk. The reply reports the bytes copied: at the caller's deadline
 the copy stops after its current chunk and answers a short count, which RFC 7862
 §15.2 allows (`wr_count` below the request), and the client continues from there.
-A chunk is the copy chunk setting's length ([RFC 13](rfc-13-configuration.md)), default 64 MiB. `CLONE`
-and duplicate-extents stay one atomic clone, capped by `clone_max_len`, default
-1 GiB.
+A chunk is the copy chunk length, 64 MiB, fixed ([RFC 13](rfc-13-configuration.md)). `CLONE`
+and duplicate-extents stay one atomic clone, capped by `clone_max_len`
+(proposal: 1 GiB).
+
+> decision: the copy chunk is fixed, not a setting: it bounds how long a writer
+> of the source waits, and an operator who wants a shorter wait has the request
+> deadline already. 64 MiB is a proposal, not a measurement; overturned if the
+> source-write wait that [§15.1](#15.1%20Group%20A%20%E2%80%94%20lost%20or%20wrong%20content)'s refusals check measures during a `COPY`
+> shows writers stalling for a visible fraction of their deadline.
 
 **Steps.**
 
@@ -1948,14 +1967,20 @@ takes to drain *n* bytes at the limit, where writes are admitted at the drain
 rate. Above the soft threshold every file with dirty bytes is offload-eligible.
 *r* is measured, not refreshed by the wait: a trickle of progress does not stretch
 a delay already computed. A delay that would pass the caller's deadline returns
-`ErrDelay` at once instead of sleeping. **Proposal:** *S* at half of *L*, *r*
-over a 10 s window, *r*₀ of 1 MiB/s. Overturned by a curve that keeps p99
-submission latency lower at the same throughput.
+`ErrDelay` at once instead of sleeping. *S* is half of *L*, *r* is measured
+over a 10 s window, and *r*₀ is 1 MiB/s.
+
+> decision: these three are fixed, not settings: they change how soon and how
+> steeply a writer slows, not how much the journal admits, so no operator can
+> name a workload one value serves and another fails. They are proposals, not
+> measurements; overturned by a curve that keeps E3's p99
+> submission latency lower at the same throughput ([§15.4](#15.4%20Benchmarks)).
 
 ### 10.3 Repack is triggered here
 
 `EvictionPolicy` requests a repack when the journal's `UnreclaimedBytes`
-([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) pass a fraction of its capacity (**proposal**: 10 %), and the engine
+([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) pass the `eviction.repack_threshold` fraction of its capacity
+([RFC 13](rfc-13-configuration.md); proposal: 10 %), and the engine
 runs it through the journal's `Repack(budget, scope)` ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)), which chooses
 segments within the scope by unreclaimed bytes over held bytes and returns the
 bytes it freed. The scope aims a pass: a share at its limit repacks the segments
@@ -2358,6 +2383,15 @@ pipeline's checks, and a single-file rig **MUST NOT** stand in for [§8.3](#8.3%
 
 These measure the pipeline, against a local emulator of the remote service per
 change and each real service daily.
+
+> decision: the targets' figures (80 %, 20 %, 50 ms, 500 ms, 10 %, 2 round
+> trips, 1.1, 2×) are release bars proposed, not measured, and fixed rather than
+> settings because they gate a release rather than tune a deployment. The first
+> baseline run against each service replaces each with its measured value plus
+> headroom; a target the design cannot meet on that run is a design finding,
+> not a number to relax. Counts that follow from a rule — no transaction on an
+> `fsync`'s path, ≤ 1 per journal per interval or burst, ≤ 1 + conflicting
+> files × log₂ `G` — are derived from §5.1 and §5.2, not proposals.
 
 | # | Measures | Setup | Target |
 | --- | --- | --- | --- |

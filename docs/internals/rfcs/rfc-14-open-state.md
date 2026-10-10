@@ -292,6 +292,12 @@ on its own: a `ClientID` is accepted only under its principal or session, and an
 Every call naming any of them is also checked against its holder and the
 caller's principal (§10).
 
+> decision: 64 random bits is the floor because it is what a 12-byte stateid
+> `other` holds beside the shard number, and a guesser answered at a server's
+> request rate expects no hit within an installation's life. It is not measured
+> against an attack. Raise it if a format with room for more is adopted, or if a
+> reachable guessing rate is shown to give a hit within that life.
+
 **The server's identity is the installation's.** Every `protocol` node of an
 installation reaches the same state at the same primaries ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)), so to a client
 they are one server. The NFSv4.1 server owner's major ID and the server scope
@@ -733,9 +739,10 @@ How each protocol waits:
   `NLM_GRANTED`. The callback's deadline is **30 s** from the grant: the
   primary **MUST** resend `NLM_GRANTED` until the host acknowledges or 30 s
   pass, and if the host has not acknowledged by then it **MUST** release the
-  lock and consider the next waiter. 30 s is the default per-call deadline of
-  [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values); the
-  resend schedule within it is the NLM adapter's.
+  lock and consider the next waiter. 30 s is the default request deadline of
+  [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values), and is
+  that value, not a second one; the resend schedule within it is the NLM
+  adapter's.
 - **SMB:** a lock request without the fail-immediately flag asks to wait; with
   it, a conflict is refused at once. The waiter is answered pending, and when
   the range frees the primary grants it in the step that frees it and completes
@@ -821,10 +828,20 @@ for a whole lease period is treated as gone. Without that, a laptop that sleeps
 holding a lock blocks every other client forever. SMB's durable-handle timeout
 plays the same part for SMB clients.
 
-The lease period is the protocol's, fixed, not a setting ([RFC 13](rfc-13-configuration.md)): NFSv4 clients
+The lease period is fixed, not a setting ([RFC 13](rfc-13-configuration.md)): NFSv4 clients
 are given a 90 s lease, advertised in the `lease_time` attribute; an SMB durable
 handle is kept for the timeout its create request negotiates, within the bounds
 the protocol sets (MS-SMB2 3.3.5.9.10).
+
+> decision: the NFSv4 lease is 90 s, and every period this document states as
+> "one lease period" — grace, the grant fence, an NFSv4 waiter's poll deadline, an
+> unconfirmed client's life — is derived from it. NFSv4 leaves the value to the
+> server; 90 s is long enough that a client is not expired across a brief network
+> or suspend gap, and short enough that a failover's grace stays near a minute and
+> a half. It is not measured. Shorten it if failover-to-writable time is measured
+> to be dominated by grace; lengthen it if clients are measured being expired by
+> gaps they survive elsewhere. Either is a change to one value, not a setting,
+> since no operator can name a workload one lease suits and another does not.
 
 "Lease" names two unrelated things in this set: the client lease, here, and the
 **node lease** of [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch), which, with the shard record, decides which node may serve a shard. SMB
@@ -919,7 +936,8 @@ take first. A client has **finished reclaiming** when it has:
 
 A request refused with `ErrGrace` is a retry-later, not a failure: an adapter
 that holds such a request pending, as SMB holds an open, **MUST** let it outlive
-the grace period — its cap is the remaining grace plus a break deadline, 35 s
+the grace period — its cap is the remaining grace plus the SMB break deadline
+of §5.3, 35 s
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) — so that an
 open made during grace is granted when grace ends, rather than failed while
 grace still refuses it.
@@ -1065,6 +1083,8 @@ nothing but a promise the server made unprompted. A revoked grant costs one
 client its cache; an unbounded recall costs every other client the file. The
 deadline is generous for that reason: 35 s for an SMB lease or oplock break, the
 break timeout MS-SMB2 sets, and one client lease period for an NFS delegation.
+Both are derived, not chosen: one is the protocol's, the other §4.1's lease, and
+the grant fence below is that lease again.
 
 A client that let one recall be revoked, or one SMB break time out, **MUST NOT**
 be offered grants for one lease period, 90 s, after it, and its other grants
@@ -1247,6 +1267,15 @@ the keys [RFC 16](rfc-16-metadata-store.md) lists; volatile state never is.
 | **grant budget count** | **volatile**, per primary, starting at zero ([§5.5](#5.5%20A%20client%27s%20grants%20are%20bounded)) | grants are volatile too; the count is rebuilt as they are offered |
 | **NSM state number** | **durable**, one per installation ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)) | an NLM host recognises a server restart only by a higher number |
 
+**Every durable open record lives under its file's open prefix.** A durable
+Open **MUST** be written at `F‖id‖op‖openID`, where `id` is the file it opens — a
+named stream's own ID for an open of a stream — and a durable Lock only beneath
+its open, at `F‖id‖op‖openID‖l‖…` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)).
+No other key may record that a file is held open. A release finds holders by
+range-guarding `F‖id‖op‖` for the file and each of its streams
+([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)),
+so a durable open written anywhere else is a holder the release cannot see.
+
 Client records are held globally, not per shard, because one client's state spans
 many shards; the shard list in each is what scopes its reclaims. The list is
 written when the client first takes state in a shard, not per open, and is
@@ -1373,7 +1402,10 @@ list of them. When the entry is in another shard, the file's primary makes the
 opens durable while it prepares that unlink ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)). An open of a file
 that already has no entry, by handle, writes its durable open record in its own
 transaction and guards the File record there
-([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)). The last close of a file with no entry deletes its durable
+([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)).
+That guard aborts the open only when the release commits first; a guard binds
+only its own transaction, so an open that commits first is caught by the
+release's own range guard over `F‖id‖op‖` (§8), not by the open's guard. The last close of a file with no entry deletes its durable
 open record and reports the file to the filesystem service, which runs the
 release ([RFC 17 §5.3](rfc-17-vfs.md#5.3%20Open%20and%20close)); open state never releases a file itself. Held
 only in one process past the unlink, an open would let another node release a
@@ -1655,6 +1687,7 @@ var (
 | L45 | A client that let a recall be revoked or a break time out is offered no grant for one lease period after it; the fence ends on its own. |
 | L46 | A batch move's commit adds the receiving shard to every client record its open-state entries name; the entries are installed only after it. |
 | L47 | Grace lasts one lease period and ends earlier only when every client its records name has finished reclaiming; an NFSv4.0 client or NLM host never has. A request refused `ErrGrace` and held pending by an adapter outlives the grace period. |
+| L48 | Every durable open is recorded at `F‖id‖op‖openID` of the file or stream it opens, and every durable lock beneath its open; no other key records that a file is held open. |
 
 ## 13. Conformance
 
@@ -1685,6 +1718,7 @@ index's tiers.
 | [§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open) no downgrade | Request write against a deny-write. Assert refusal, never a read-only open. |
 | [§7](#7.%20Conflicts%20across%20protocols) cross-protocol | For every row of the table, assert the stated outcome with one protocol holding and the other requesting. |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) open-unlinked | Open, unlink, crash. Assert the content survives until grace ends, and is released after it unless the open was reclaimed. |
+| [§8](#8.%20What%20is%20durable) durable open prefix | Over the entity suite, make every kind of durable open: an open of an unlinked file, of an unlinked file's named stream, a persistent open with locks. Scan the whole store for keys written by each. Assert every one lies under `F‖id‖op‖` of the opened file or stream. Then race a release of the file against each durable-open write, both commit orders: assert the release aborts or the open's write fails, never both commit (L48). |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) open-unlinked across protocols | Open a file over NFSv4, unlink it over SMB, evict its content from the journal, read through the NFSv4 handle. Assert the exact bytes, fetched from the remote. Close; assert the release runs and the refs are dropped. A single-protocol rig, or one that never evicts, cannot fail this. |
 | [§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive) lazy | From one client, open and close a linked file 10^4 times with volatile opens. Assert exactly one write, the client record's shard list on the first open, and none after. Repeat with persistent opens; assert each open writes its record. |
 | [§9.2](#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends) new primary | Open a file on one primary, move the shard, unlink through the new primary. Assert no release before grace ends. |
@@ -1776,9 +1810,11 @@ with the client and file.
 
 ## 15. Open questions
 
-1. **Recall deadlines as settings.** The values are decided — 35 s for an SMB
-   break, one lease period for an NFS delegation ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) — whether they become settings
-   ([RFC 13](rfc-13-configuration.md)). The lease period is decided ([§4.1](#4.1%20A%20client%20lease)).
+1. **Recall deadlines as settings.** The values are not settings: 35 s for an
+   SMB break is the protocol's, and an NFS delegation's deadline is one lease
+   period ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), so it moves only with the lease's own
+   `decision:` ([§4.1](#4.1%20A%20client%20lease)). Open is whether a measured
+   workload needs an NFS recall deadline shorter than the lease.
 2. **Persistent opens** for continuously available shares: which shares allow
    them, and the cost of a synchronous write per open, grant change and close.
 3. **Byte-range lock splitting** across protocols with different range

@@ -2019,6 +2019,12 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | Handle resolution at path depth 1 and 64 | p99 latency | ≤ 50 µs, independent of depth |
 | Rename across directories of 10⁶ entries | p99 latency | ≤ 5 ms |
 
+> decision: these targets, and the 20 % bound of the shared-guards row
+> (§12.2), are proposals, not measurements. What is normative is their shape — a
+> cost independent of directory size and of path depth; the absolute values are
+> replaced by the first measured baseline on the reference box, per backend
+> ([RFC 16 §7.2](rfc-16-metadata-store.md#7.2%20Targets%2C%20gates%20and%20regressions)).
+
 ## 13. Open questions
 
 1. ~~**What a case-insensitive share should cost.**~~ Closed: the entry key is

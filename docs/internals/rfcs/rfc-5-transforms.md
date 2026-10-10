@@ -941,7 +941,7 @@ Run after merge ([the RFC index](rfc-index.md#Test%20tiers)), over three
 corpora: random bytes, a text and source tree, and a mixed VM image. Record the
 corpus, chunk size distribution and CPU with each result.
 
-| Benchmark | Measures | Target |
+| Benchmark | Measures | Proposed target |
 | --- | --- | --- |
 | Each transform, encode and decode | MB/s per core | report, per transform, against the previous run |
 | The chain around its transforms | overhead | within 2% of the sum of its transforms' own times, median of 10 runs |
@@ -981,6 +981,13 @@ less than 1/16 of the input, `Encode` returns `applied=false` and the chunk pass
 Already-compressed data (media, archives, encrypted files) then costs one attempt
 and no stored overhead.
 
+> decision: the 1/16 threshold is fixed, not a setting: it decides the output, so
+> a setting would have to enter the chain ID, and no operator can name a workload
+> it is wrong for. It was chosen, not measured, as the saving below which a
+> decode on every read costs more than the bytes it saves. Move it when the
+> compression-ratio benchmark ([§8.3](#8.3%20Benchmarks%20and%20targets)) shows a corpus whose chunks
+> cluster just either side of it.
+
 **Its header.** A format version (1 byte) and the decompressed length (varint).
 `Decode` refuses a declared length above `max` before allocating, and runs the
 decoder with its window capped at the chunk maximum, so a body cannot make it
@@ -998,8 +1005,8 @@ compresses each chunk twice.
 > ([§3.2](#3.2%20Configuration)). Keep the measuring pass's bodies for the send, within the syncer's
 > memory bound, when the second compression shows in a put profile.
 
-**Settings.** `level` (default 3 for zstd). It changes the output, so it is in the
-chain ID ([§2.8](#2.8%20The%20chain%20ID)). Changing it affects the next write only.
+**Settings.** `level` (proposal: 3 for zstd, zstd's own default). It changes the output,
+so it is in the chain ID ([§2.8](#2.8%20The%20chain%20ID)). Changing it affects the next write only.
 
 **Leaks.** Compression makes a body's size depend on its content, and
 encryption does not hide sizes. On an encrypted share, a chunk's stored size

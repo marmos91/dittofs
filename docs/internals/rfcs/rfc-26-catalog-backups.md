@@ -260,7 +260,10 @@ carries:
   ([RFC 7 §3.4](rfc-7-namespace-metadata.md#3.4%20Enumeration)), both fixed when the share was created. Every entry key and
   every directory position is derived from them, so an import that drew its own
   would find no entry by lookup and resume no listing where a client's cookie
-  points.
+  points. An import into an installation whose binary does not implement a
+  share's fold rule **MUST** be refused with `ErrScopeMismatch`, naming the rule's
+  ID, before it publishes anything: it never re-folds a share into another rule
+  ([RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case)).
 
 Like every export, it is sealed and authenticated under the namespace's export
 key ([§3.1](#3.1%20Layout)): in an encrypting namespace, a reader of the location who
@@ -728,7 +731,7 @@ own bookkeeping:
   early in a long copy is therefore kept as long as one put at the end.
 - **Extensions come in generations.** Every retain-until the copier sets is
   extended one **generation** `G` past the time it needs, `G` being the location
-  record's ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes); 7 days by default), and a version whose
+  record's ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes); proposal: 7 days), and a version whose
   recorded retain-until already covers the need is not touched. Each name has
   its own phase: its generation boundaries are the multiples of `G` offset by
   `hash(name) mod G`, so versions reused on one day fall due spread across the
@@ -1032,7 +1035,7 @@ Errors join RFC 12's closed set: `ErrPrincipalCollision`, `ErrMaterialMissing`
 (retryable when only unavailable), `ErrScopeMismatch`, `ErrExportCorrupt`,
 `ErrLocation`, `ErrBackupDamaged`, `ErrPolicyPeriod` and `ErrNetgroupCollision`.
 `ErrScopeMismatch` covers every bound setting
-([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)).
+([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), and a share's fold rule the binary does not implement ([§2.1](#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)).
 
 What other components gain:
 
@@ -1052,6 +1055,13 @@ installation-scoped record ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20bac
 ([RFC 12 §3.2](rfc-12-snapshots.md#3.2%20Configuration)). The shape below
 is how a provisioning file declares them
 ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+`copy_rate`, `max_copy_time` and the generation `G` are proposals, not
+measurements: the rate is settled by the daily-copy benchmark of
+[§6.5](#6.5%20Benchmarks%20and%20targets) against the location's own put throughput, `max_copy_time` by the
+wall time of a first copy of the largest share a location holds at that rate,
+and `G` by the extension calls a day the immutable-location check of
+[§6.3](#6.3%20Group%20A%20%E2%80%94%20lost%20or%20wrong%20content) counts. The location's `lifecycle_age` and `retention_cap` are derived
+from them, as their comments state.
 
 ```yaml
 backups:
@@ -1082,7 +1092,7 @@ stated in the one that owns its subject; the numbers missing here are theirs.
 | S23 | Every chunk a copying backup's export names lies in a folder block its manifest lists, and that block is byte for byte the namespace's block of that name. A copy reuses only its base's folder blocks, and never one whose census names material being retired. |
 | S24 | At an immutable location DittoFS deletes nothing, every object a backup names is read by its recorded version, and each is locked until at least the backup's completion plus its retention ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)). Elsewhere, a folder block is deleted only by a sweep that runs alone at its folder, from the namespace's claim holder, and finds the block in no manifest of a `complete` or `damaged` backup and in no progress of a `writing` one. Any unreadable export stops the sweep. Material named by a folder's census is never removed. |
 | S25 | A copying backup releases its snapshot only once `complete`. Retention never expires a share's newest complete copying backup at a location. A restore from one re-encodes into a new namespace, checks every chunk against its plaintext hash, and publishes all or nothing. |
-| S29 | An export is sealed and authenticated under its namespace's export key by RFC 5's export cryptography, names in its clear part the export-key and master-key IDs it needs, carries each key record as RFC 5's key table holds it, carries every bound setting, each share's fold rule and entry-digest key, and every netgroup its policy names with its members, and an import refuses any mismatch. |
+| S29 | An export is sealed and authenticated under its namespace's export key by RFC 5's export cryptography, names in its clear part the export-key and master-key IDs it needs, carries each key record as RFC 5's key table holds it, carries every bound setting, each share's fold rule and entry-digest key, and every netgroup its policy names with its members, and an import refuses any mismatch and any fold rule its binary does not implement. |
 | S30 | A recovery import leaves its namespace's GC paused until the operator states every share recovered or given up. |
 | S31 | A folder record is a fenced lease: a holder acts only under its own lease number, and issues no put or delete once *L* / (1 + ρ) − σ has passed since the read that showed *L* left. Every wait on another process's or installation's timeout is *T* × (1 + ρ) + σ. |
 | S36 | No backup survives losing the master key that wraps its namespace's keys; every export names the master keys it needs, and a master key any retained export names is never destroyed. |
@@ -1143,7 +1153,7 @@ failed predecessor's progress.
 | [§2.3](#2.3%20Restore) | `S-snap-catalog-restore` with every block the backup names relocated first: every stale hint is resolved from block headers and every file reads back; the older backup survives GC. |
 | S24 | `S-snap-copy-immutable`: copies to an immutable location — every get by recorded version; a put under an existing name by a stolen credential, then a restore: the restore reads the recorded versions and every file reads back. A copy that took 40 h: every version its manifest names is locked to its completion plus retention, including blocks put in its first hour. Copies keep failing for twice the retention: the last good backup's versions are still locked and it restores. A policy whose period is below its estimated incremental copy is refused `ErrPolicyPeriod`; one below its full copy but above its increment is accepted. A first copy of 40 TiB at 200 MiB/s with `max_copy_time` 48 h: it fails once, its successor builds on its progress, and the share has a complete backup within three attempts; restart each attempt from zero and none completes. Run past the lifecycle age with the health object and the last good backup untouched: the location still opens, and a restore lists versions and finds the backup. Put a newer `expired` state version with a stolen credential: the restore ignores it, since it does not authenticate. Re-put the backup's own authentic `writing` version: the restore reads `complete`, the higher sequence. Copy the first namespace ever to a fresh immutable location: it opens, finding the location's health object by its recorded version. Keep a process up past the lifecycle age plus two generations: the location still opens, and the health object's lock never exceeds the cap. A failed first copy is settled before its successor runs: its progress objects stay and the successor builds on them. Answer one extension in a burst with a throttling reply: the backup completes. |
 | S29 | Flip one byte of an export's clear part, header, a frame and the trailer, and move one frame to another position: each is refused `ErrExportCorrupt`. Read an export without the master key: no file name, chunk ID or principal appears in its bytes. Import with a chunking target, an encrypt flag or a key ID that differs from B's: refused `ErrScopeMismatch` naming it. Import a policy naming netgroup `ops` into a B whose `ops` has other members: refused `ErrNetgroupCollision`; into a B without `ops`: adopted with its members, and a client of the deny list is still denied. |
-| S29 | Restore a catalog backup of a case-insensitive share whose listings clients were paging: every name is found by lookup, and a listing resumed from a cookie taken before the backup continues where it stopped. Draw a fresh digest key or fold rule at import: lookups miss and cookies resume elsewhere. Check the export's frame nonces: no two frames of one export repeat one. |
+| S29 | Restore a catalog backup of a case-insensitive share whose listings clients were paging: every name is found by lookup, and a listing resumed from a cookie taken before the backup continues where it stopped. Draw a fresh digest key or fold rule at import: lookups miss and cookies resume elsewhere. Import an export whose share records a fold rule ID this binary does not implement: refused `ErrScopeMismatch` naming the ID, nothing published and staging empty; key it under the identity rule instead, and a lookup of `readme` misses the file stored as `README`. Check the export's frame nonces: no two frames of one export repeat one. |
 | S30 | `S-snap-recovery-shared`: a namespace holds a share with a catalog backup and its clone with none, sharing blocks. Recover the share alone: GC deletes, relocates and collects nothing in the namespace, and every block the clone needs survives; after the operator's statement GC runs and the audit is clean. Start GC at publish instead: the clone's blocks are deleted. |
 | S31 | `S-snap-folder-lease`: a sweep pauses past its deadline after its mark; a copy takes the folder and reuses a block the mark left unlisted; the sweep resumes: it deletes nothing, by its lease number and its own clock. Run the sweep's clock 5% slow: it stops by *L* / 1.05 − σ; fence by the deadline alone, without the clock bound, and the sweep deletes the reused block. A recovery import whose clock runs 5% fast against a partitioned old holder's waits two `Recheck` periods × 1.05 + σ by the slow clock; wait two periods plus a fixed margin and both delete for a while. |
 | S36 | Back up an encrypting namespace, rotate its master key, and destroy the old one: refused `ErrMaterialInUse`, naming the backup; expire the backup and the destroy succeeds. Restore the backup on an installation that holds no master key: refused `ErrMaterialMissing`. Back up a non-encrypting namespace, lose the host's disk, and restore from the bucket and the backup with the escrowed master key: every file reads back; without it, the restore is refused `ErrMaterialMissing` though the chunk-ID key is in the bucket. |
@@ -1160,7 +1170,7 @@ failed predecessor's progress.
 
 Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)).
 
-| Benchmark | Measures | Target |
+| Benchmark | Measures | Proposed target |
 | --- | --- | --- |
 | Export and import of a 10⁶-file namespace | records/s | at least half the backend's own scan and batch-write rates |
 | Recovery import, all hints stale | header gets per block | one ranged get per block in the namespace |

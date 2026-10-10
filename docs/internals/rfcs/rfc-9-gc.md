@@ -662,9 +662,15 @@ carried list:
 
 The guard on the chunk record, not a guard on the prefix, is what makes the check
 sound: every transaction that adds a ref to *h* writes `C‖ns‖h`, to count it and
-to change its stamp ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), so any ref committed concurrently conflicts
-with the deleter's transaction. The transaction also guards the namespace's hold
-key `NS‖ns‖gc‖hold` and refuses while it is set ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)).
+to change its stamp ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), so a ref that commits after the deleter's
+snapshot and before its commit aborts the deleter. The guard binds only the
+deleter ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): a ref that commits *after* the deleter, from an older
+snapshot, is not stopped by it. That order is closed by the block record, which
+the deleter writes (`retired` → `deleted`) and which every ref to a chunk of a
+retired block reads and writes, since such a ref is an adoption
+([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)): the later of the two aborts on `B‖B`. The transaction also reads the
+namespace's hold key `NS‖ns‖gc‖hold` with a tracked `Get` — not a `Guard`, which
+returns no value — and refuses while it is set ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)).
 
 **A ref found is a count defect, and the block is resurrected.** If any prefix is
 nonempty, the transaction does not mark *B* deleted. Instead it raises each
@@ -780,6 +786,12 @@ its local clock differs from store time by more than a fixed **clock skew
 limit** (proposed: 1 min). It is a different quantity from [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock
 bound: that one stretches a wait on another clock's timeout; this one only
 stops the deleter while its clock reads far from the store's.
+
+> decision: the clock skew limit is a fixed constant, not a setting: it widens
+> every abandonment's `not_before` and every takeover's wait, and an installation
+> whose clocks drift past it needs its time sync fixed rather than a looser
+> limit. 1 min is unmeasured; change it if measured skew on supported hosts under
+> ordinary time sync approaches it, or if takeover waits show its share matters.
 
 **Restoring is recounting.** There is no restore that rebuilds a block from its
 header. A `retired` block comes back to `live` exactly when some chunk it still
@@ -962,6 +974,12 @@ target invalidates nothing. The compactor reads the buckets from the highest
 down, scores the blocks it reads, and stops once the best remaining bucket
 cannot beat what it holds; its cost is O(candidates read).
 
+> decision: the small-block fraction (a quarter) and the bucket width
+> (sixteenths) are fixed, not settings: neither changes what is safe, only which
+> blocks are merged first, and the target already sets how much is rewritten.
+> Neither was measured; revisit them if the space-amplification benchmark
+> (§11.6) shows small blocks left unmerged, or bucket reads dominating a pass.
+
 **Bounds.** The compactor's transfers run on GC's syncer flow at its fair share
 ([§7.1](#7.1%20GC%20bounds%20its%20own%20work)), and it **MUST** yield to offload: under capacity pressure on any journal
 feeding the store it pauses. It holds one target in memory per worker.
@@ -1101,7 +1119,7 @@ began after the ref was last written.
 ### 6.1 Coverage
 
 The audit **MUST** cover every chunk record and every block record at least once
-per `gc.audit.period` (default 7 days), and every ref written since the last
+per `gc.audit.period` (proposal: 7 days), and every ref written since the last
 completed forward pass within the same period, by an incremental pass. A full
 forward pass **MUST** complete at least once per `gc.audit.forward_period`
 (proposed: 90 days), and runs in place of that period's last incremental pass. Its rate is derived, not set: records
@@ -1212,7 +1230,7 @@ would only add a stuck removal.
 
 Suspending one block per mismatch is right for one defect. Many low counts in one
 namespace mean a defect in a path, and every retirement that path made is
-suspect. So when more than a fixed number of low-count mismatches (proposed: 16)
+suspect. So when more than `gc.hold_threshold` low-count mismatches (proposal: 16)
 — from the audit or from refused verifications — accumulate within one audit
 period, GC **MUST** set the namespace's hold key `NS‖ns‖gc‖hold` and raise a
 health condition. While the hold is set the deleter moves nothing to `deleted`
@@ -1220,8 +1238,15 @@ health condition. While the hold is set the deleter moves nothing to `deleted`
 clears itself once a full audit period completes under the threshold, so no
 operator action is needed to leave it ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)).
 
-The hold is a durable record, read by every deleter through a guard, so two GC
-holders see the same hold.
+The hold is a durable record, read by every deleter's transaction with a tracked
+`Get`, so two GC holders see the same hold. A deleter whose snapshot already
+holds the hold reads it and refuses; one whose snapshot predates it and commits
+after it aborts on the conflict. One that commits **before** the hold is ordered
+before it and commits ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): the hold stops deletes decided after it,
+not one already decided, and nothing in the trip assumes otherwise — the
+mismatches that set it were counted from blocks the verification had already
+refused, and every other block it passed was checked against its refs
+([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)).
 
 ## 7. Bounds, records and scheduling
 
@@ -1366,7 +1391,7 @@ increments `gc_index_mismatches_total` and emits an event naming the key.
 
 Some service settings can drift after a store opens: versioning, object lock,
 lifecycle rules ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). GC runs `Recheck` on every store of the namespace on
-a fixed short period (proposed: 5 min), independent of any other GC work, and
+a fixed short period (proposal: 5 min), independent of any other GC work, and
 also reads the namespace claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
 it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
 
@@ -1408,8 +1433,18 @@ location is written and swept as if nothing had changed.
   ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) and kept across a restart — GC **MUST** read it before every
   pass and before every batch, and start neither. Each relocation commit, each
   move to `deleted` ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 3) and each listing retirement ([§5.4](#5.4%20Age%20is%20not%20the%20guard))
-  **MUST** read it with conflict tracking, so writing it aborts every one of them
-  not yet committed.
+  **MUST** read it with a tracked `Get` and refuse while it exists. A `Guard`
+  alone does not meet this: it returns no value, so a transaction whose snapshot
+  already holds the pause would commit past it. Writing the pause aborts every
+  such transaction whose snapshot predates it and that has not committed when
+  the pause commits.
+- **One already committed is not undone, and need not be.** The pause binds only
+  the transactions that read it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): a relocation or `MarkDeleted` that
+  commits before the pause is ordered before it, and the pause's writer decides
+  nothing from what that transaction wrote. Its records — the relocation's new
+  refs, the name's `deleted` record — are in every snapshot taken after the
+  pause, so the move's export carries them ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)), and its delete is one
+  of the deletes below.
 - **That pause, not a clock, is what makes a cooperative move safe.** After the
   pause commits, the old installation can make no new `deleted` record and no
   new relocation. A delete it issues later — from a paused or slow process,
@@ -1435,7 +1470,7 @@ location is written and swept as if nothing had changed.
 
 > decision: across installations the clock skew limit is kept only for a takeover
 > that could not write the pause record. A cooperative move is made safe by the
-> pause record, read with conflict tracking by every transaction that leads to a
+> pause record, read by a tracked `Get` in every transaction that leads to a
 > delete; a takeover has no such record to read, and the remote contract offers
 > no delete conditioned on another object, so the claim check and its clock
 > skew limit are all that remain. Overturn it if the remote store gains a delete
@@ -1465,6 +1500,12 @@ location is written and swept as if nothing had changed.
 A lifecycle rule that expires objects destroys content on the service's
 schedule, which no check can prevent; the short period bounds how long puts
 continue into such a store once it drifts.
+
+> decision: the `Recheck` period is fixed, not a setting, because *T*, a
+> takeover's wait and the drift window are all derived from it, and a longer one
+> only widens them. 5 min is unmeasured: one `Recheck` costs a few service
+> reads per store, so it can shrink if the per-store cost at 10⁴ namespaces
+> allows, and should grow only if that cost is measured to matter.
 
 ## 8. API surface
 
@@ -1558,7 +1599,8 @@ type Config struct {
 	Interval       time.Duration // between compaction and collection passes
 	TrashRetention time.Duration // default 48 h (§3.7)
 	SpaceAmpTarget float64       // proposed 1.25; 0 turns compaction off (§4.4)
-	AuditPeriod    time.Duration // default 7 days (§6.1)
+	AuditPeriod    time.Duration // proposal 7 days (§6.1)
+	HoldThreshold  int           // low-count mismatches per audit period that set the hold; proposal 16 (§6.4)
 	ForwardPeriod  time.Duration // full forward pass; proposed 90 days (§6.1)
 }
 
@@ -1648,7 +1690,7 @@ the implementation, not by timing.
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter | Interleave an adopting clone batch, restore batch and re-home switch — and, once dedup returns, an adopting offload commit — with `MarkDeleted` on one retired block, at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the clone or restore fails and is undone (an offload re-offer uploads the chunk). Assert no ref ever names a chunk whose object is gone. |
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection counts every chunk | Release a file so its block retires, then clone a file naming two of the block's chunks in one batch. Assert the block's `live` is 2 and that dropping one of the two refs leaves it `live`. |
-| [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDeleted` is in flight; assert one of them retries. |
+| [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDeleted` is in flight, the ref committing first and then the `MarkDeleted` committing first, both from snapshots taken before either commit; assert in each order that the later one aborts — on the chunk-record guard in the first, on `B‖B` in the second. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (shard primary changed, partition epoch moved on, domain deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) late put | Abandon an intent while its put is in flight and land the put before the put-bound wait ends. Assert the object is deleted with no listing. Land it after the delete; assert only the backstop finds it. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) epoch domain | Run offload intents under a shard at epoch 41 while the GC partition is at epoch 50. Assert no offload intent is abandoned. Raise the shard's epoch under its live primary (a replica joins): assert none is abandoned; take the shard over on another node: assert all are. Restart a compactor on the same partition; assert its earlier intents are abandoned. |
@@ -1657,6 +1699,8 @@ the implementation, not by timing.
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) time never permits | Set the retention to zero and stall an adopting commit past it. Assert the adoption resurrects or is refused; the clock changes only when the object goes. Skew a deleter's clock past the bound; assert it stops. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) drift | Turn versioning on between two deletes. Assert the next batch waits for `Recheck`, the noncurrent versions of the deleted names are deleted by version ID, nothing is pruned before, and puts and deletes resume after, with no operator action. Change the claim to another installation; assert no further delete. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) move without a clock | Hold a deleter's batch between its read of the claim and its `MarkDeleted`; write the GC pause record; release the batch with its clock frozen so the self-fence never fires. Assert `MarkDeleted` aborts on the pause, no delete is issued for any name not `deleted` before the pause, and a listing pass after the pause retires nothing. |
+| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) pause in both commit orders | For a relocation commit, a `MarkDeleted` and a listing retirement, each from a snapshot taken before the pause, commit it (a) after the pause and (b) before the pause; then (c) begin it after the pause commits. Assert (a) aborts and its retry refuses; (b) commits, its records are in the `move-base` export and its delete is for a name `deleted` before the pause, which the new installation neither adopts nor mints; (c) reads the pause and refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits, so the rig can see the gap. |
+| [§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter) hold in both commit orders | Set the hold while a `MarkDeleted` from an earlier snapshot is in flight, and commit the `MarkDeleted` (a) after and (b) before the hold; then (c) begin one after the hold commits. Assert (a) aborts and its retry refuses, (b) commits with its verification intact, and (c) refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) stale image | Copy an installation's disks, let the original run several `Recheck` periods and commit new blocks, then start the stale copy on a platform that reports no machine-generation change. Assert the copy's first `Recheck` reads the claim, finds a nonce its records do not hold, writes nothing and deletes nothing, while the original keeps serving. Kill the original between recording an intended nonce and its put, restart it: assert it accepts its own nonce. A `Recheck` that rewrites before reading lets the copy win and delete the original's blocks. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) folder store drift | Turn versioning on at a backup location's folder store mid-run. Assert the next copy and the next sweep wait for a `Recheck` and the store's drift condition is raised; restore the setting, assert both resume. A build that checks the folder store only when it registers copies into the drifted store. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) slow clock | Run the old installation's GC with its clock 5 % slow, partition it from the claim and take the claim over. Assert its last delete precedes the new installation's first put, adoption or delete. A wait of *T* plus an offset, with no rate stretch, overlaps them. |
@@ -1773,7 +1817,7 @@ where a row names the scale tier.
    full pass runs every `gc.audit.forward_period`; 90 days, about 1,450 per
    second, is proposed and wants confirming against how long a leaked count may
    hold its block.
-3. **The trip threshold** ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)). 16 low counts per period is proposed; it wants a
+3. **The trip threshold** ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)). `gc.hold_threshold` of 16 low counts per period is proposed; it wants a
    decision once the audit has run on a real store.
 4. **The counting domain under one key scope** ([§2.3](#2.3%20The%20absence%20of%20a%20record%20proves%20nothing)). With one scope for several
    shares, the stores of those shares are one counting domain, which [RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)

@@ -1344,7 +1344,7 @@ Run against the local emulator after merge and against a real service daily
 ([the RFC index](rfc-index.md#Test%20tiers)). Record the service, region, block size and pool sizes
 with every result.
 
-| Benchmark | Measures | Target |
+| Benchmark | Measures | Proposed target |
 | --- | --- | --- |
 | Codec encode and decode, no transform | MB/s per core | within 10% of plaintext hashing on the same box: verification is its only per-byte cost |
 | Put of one full block, 1 to N workers | MB/s at each step | at the service's saturation point, within 10% of the same curve measured with raw client calls; the pool-sizing tool uses this curve ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
@@ -1665,6 +1665,12 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
 6. Read the namespace claim at `<prefix>control/claim` and hand it to the opener.
 7. Put the health object at `<prefix>control/health`, then delete everything
    else the check wrote. The health object stays.
+
+> decision: step 4's five re-lists over at most 30 s are fixed, not a setting. A
+> service whose listing lags longer cannot back GC's listing walk
+> ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)), so refusing it is the intended outcome, not a value to tune
+> around. The bound was chosen, not measured. Raise it if a service that passes
+> the [§7.4](#7.4%20Services) suite is refused here by a lag seen on its own listing.
 
 An immutable store runs step 1, its version and retention rows, and the provoked
 retention cap and configuration puts ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) only when its

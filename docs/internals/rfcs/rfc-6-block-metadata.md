@@ -726,9 +726,10 @@ offered below v4 is in flight, the primary prunes the removal.
 ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Phase 1 deletes the File record, and with it the FileData fields, and writes `Removal(f, 5) = [0, ∞)`,
 kind release; phase 2 drops the three refs and their reverse keys. K1's and K2's
 `live` reach 0, and the sub-transaction that takes each to zero retires it:
-Block(K1) moves to `retired` with `not_before` 48 h ahead, and Chunk(A) and
+Block(K1) moves to `retired` with `not_before` one trash retention ahead
+(`gc.trash_retention`, [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash); 48 h by default), and Chunk(A) and
 Chunk(B) stay, still naming K1, so a clone or restore that names A or B within
-48 h resurrects K1. An offload of the same content does not: it carries the
+that time resurrects K1. An offload of the same content does not: it carries the
 bytes, and its commit repoints Chunk(A) and Chunk(B) to its own block
 ([§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)). After `not_before` the deleter finds no
 reverse key under A or B, moves K1 to `deleted`, deletes the object, and prunes
@@ -1150,18 +1151,21 @@ derived at open from the transaction limits the backend reports
 ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): the largest value, the largest key, the
 largest transaction — counted the way the backend counts it, conflict ranges
 included — and, where the backend has one, the number of entries per
-transaction. With *T* the transaction size limit and *E* the entry limit, *b*
-the cost of one key at its worst-case encoding — key bytes, value bytes and the
-conflict-range bytes the backend charges for writing or guarding it — and *F*
-and *e* the cost and entry count of the sub-transaction's fixed records (the
-removal or intent record, both fences, `Cut` and the `LiveCut` reads, with
-their conflict ranges):
+transaction. The symbols map to `TxnLimits` fields and to this RFC's encodings:
+
+| Symbol | Source | Meaning |
+| --- | --- | --- |
+| *T* | `TxnLimits.TxnBytes` | bytes one transaction may hold, keys, values and conflict ranges counted |
+| *E* | `TxnLimits.TxnEntries` | keys one transaction may write or delete; ∞ when it reports 0 (unbounded), so the second term drops |
+| *b* | derived: worst-case encoded key bytes + value bytes + the conflict-range bytes the backend charges for writing or guarding that key, over every key kind an item writes ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)); its key and value terms are at most `TxnLimits.Key` and `TxnLimits.Value` | cost of one key |
+| *F*, *e* | derived the same way for the sub-transaction's fixed records (the removal or intent record, both fences, `Cut` and the `LiveCut` reads, with their conflict ranges) | their bytes and their entry count |
 
     K = min( ⌊(T − F) / b⌋ , E − e )
 
 K **MUST NOT** be configured. The other two limits bound records, not K: every
-record's worst-case key and value **MUST** fit the backend's key and value limits,
-or the store refuses to open. The transaction age limit bounds a batch's wall
+record's worst-case key and value **MUST** fit `TxnLimits.Key` and
+`TxnLimits.Value`, or the store refuses to open. The transaction age limit,
+`TxnLimits.Age`, bounds a batch's wall
 time, not its size: a batch reads only its own items and holds no transaction
 across an upload or a fetch, so a K-key batch commits far inside it.
 
@@ -2438,6 +2442,15 @@ these. Shrink every failing sequence to a minimal one and keep it.
 | [§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file) hot refcount | Commit one chunk from many writers at once, each carrying it, and clone one file many times at once. Report commit latency and conflict retries; the release gate reads this. |
 
 ### 11.3 Benchmarks and targets
+
+> decision: the latency and rate targets below (100 µs, 2×, 5 ms, 2 ms, 2 µs,
+> 10^6 refs/s) are release bars proposed from the record counts §5.2 bounds, not
+> measured figures; they are fixed, not settings, because they gate a release
+> rather than tune a deployment. The first baseline run on the reference
+> hardware replaces each with its measured value plus headroom, and a target
+> that the bounded record count cannot meet on that run is a design finding,
+> not a number to relax. The structural targets — constant, zero, one, at most
+> one more — follow from §5.1 and §5.2 and are not proposals.
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |

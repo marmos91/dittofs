@@ -553,7 +553,15 @@ A cut that cannot fit inside the bound is refused, never stretched; the
 snapshot policy skips that tick ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)), and three consecutive skipped ticks of one
 policy, for any reason, raise a health condition naming the share and the
 reason of the last refusal, so a policy that silently stopped taking snapshots
-is seen within three periods. `Cut(share).k` and `klatest` rise only at a cut, behind the gate, so the
+is seen within three periods.
+
+> decision: three skipped ticks is fixed, not measured: one skip is a transient
+> worth only a counter, and three is the fewest that separates a stopped policy
+> from a busy hour while still alerting within three periods. Lower it if
+> operators report missing snapshots the condition did not name; raise it if
+> the condition fires on shares whose next tick succeeds.
+
+`Cut(share).k` and `klatest` rise only at a cut, behind the gate, so the
 transactions that read them need no conflict tracking on them; a deletion lowers
 `klatest`, which the history path guards against by its tracked `LiveCut` read
 ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)).
@@ -1272,6 +1280,13 @@ installation. A policy names a backup location ([RFC 26 §4.2](rfc-26-catalog-ba
 moves and re-homes are configured as [RFC 27 §3.2](rfc-27-namespace-migration.md#3.2%20Configuration)
 says. The shape below is how a provisioning file declares them
 ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+Every number in it is a proposal, not a measurement: `gate_max` and
+`cut_deadline` are settled by the cut benchmark of [§5.5](#5.5%20Benchmarks%20and%20targets) (the gate's
+p99 under sustained offload, and the announce-to-commit time over many shards),
+`hold_bound` and `hold_journal_fraction` by the dirty bytes a journal carries
+at a cut in the cut-to-`complete` benchmark, `reserve_fraction` by the history
+growth of [§5.4](#5.4%20Group%20B%20%E2%80%94%20cost%20and%20wedging)'s reserve check, and `lock_max` by the longest retention a
+compliance policy asks for (proposal: one year).
 
 ```yaml
 snapshots:
@@ -1449,7 +1464,7 @@ scenarios add.
 Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)); the
 10⁷-file rows run daily.
 
-| Benchmark | Measures | Target |
+| Benchmark | Measures | Proposed target |
 | --- | --- | --- |
 | Cut under a sustained writer, 64 clients, one shard and 64 shards | gate held; p99 write latency across the cut | gate ≤ 50 ms; p99 within 2× of no cut |
 | Snapshot of a 10⁷-file share | wall time, records written | same as a 10²-file share |
