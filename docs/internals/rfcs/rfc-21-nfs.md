@@ -16,6 +16,7 @@ depends_on:
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-17-vfs]]"
   - "[[rfc-22-smb]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 21
   - NFS
@@ -1266,7 +1267,7 @@ metadata (`FILE_SYNC`).
 - **What a stability reply waits for.** A stable write, and a `COMMIT`, **MUST**
   be answered once the journal has synced every record in its range, which
   carries the data and the modification time the write sets
-  ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Records)), and once the existence commit
+  ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), and once the existence commit
   of every pending write in its range that overwrites committed content — the
   writes that need an overwrite record — has committed. An append or a hole
   fill does not wait for its existence commit, which follows lazily within the

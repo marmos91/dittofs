@@ -17,6 +17,7 @@ depends_on:
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-17-vfs]]"
   - "[[rfc-21-nfs]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 22
   - SMB
@@ -1059,7 +1060,7 @@ holds an open, so that its own writes do not move it.
   the primary decides each write's times when it admits the write: the journal
   record carries the modification time the write sets, or none when its open
   suspended it, and the existence commit and a replay take `mtime` from the
-  records ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Records)).
+  records ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)).
 - A write through a suspending open **MUST NOT** move `LastWriteTime` or
   `LastAccessTime` while a write through another open of the same file still
   does.
@@ -1125,7 +1126,7 @@ and nothing else: every file may have holes, sparse or not, and holes are RFC
   its own
   ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
   The journal record carries the data and the modification time the write sets
-  ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Records)). A profile disk on a
+  ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)). A profile disk on a
   continuously available share, whose steady state is overwrites of committed
   64 KiB pieces, therefore pays one journal sync per write and a share of one
   group commit, which batches across files, never a transaction of its own.
