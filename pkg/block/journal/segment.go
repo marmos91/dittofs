@@ -287,7 +287,7 @@ func (s *Store) sealSegment(sh *shard) error {
 // only if append contention on a shard actually shows up in a profile.
 //
 // synced marks a hydrate, whose range is gated below; notAfter is its caller's
-// sampled WriteVersion, or 0 for no bound. See Store.Hydrate.
+// sampled WriteVersion, including the initial zero version. See Store.Hydrate.
 func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data []byte, synced bool, notAfter uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err

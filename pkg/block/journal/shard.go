@@ -85,6 +85,11 @@ type shard struct {
 	// mu, which serializes appends and index mutation — a flush holds flushMu
 	// across its whole pass but only grabs mu briefly to snapshot and flip.
 	flushMu sync.Mutex
+	// flushing identifies the one file whose pass owns flushMu. Both fields
+	// are guarded by mu and stay set through manifest publication, reap and
+	// the final application of durable credit.
+	flushing   bool
+	flushingID FileID
 	// reclaimQueued is true while a background reclaim for this shard waits for
 	// flushMu (reclaimAfterDelete). It clears once that reclaim holds flushMu,
 	// so the deletes that land while a flush pass runs share one queued

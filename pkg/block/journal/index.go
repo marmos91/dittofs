@@ -473,7 +473,7 @@ func appendExtent(out [][2]uint64, start, end, fileSize int64) [][2]uint64 {
 
 // hydratable returns the sub-ranges of [off, off+n) that a hydrate may fill:
 // those no live interval holds, plus those a cold interval holds that was
-// recorded no later than mark (0 bounds nothing). Ranges are ascending, disjoint
+// recorded no later than mark, including zero. Ranges are ascending, disjoint
 // and coalesced, and are offsets in the file, not in the caller's buffer.
 //
 // Live warm or dirty bytes are never included — they are the newer copy — and
@@ -507,7 +507,7 @@ func (fi *fileIndex) hydratable(off, n int64, mark uint64) [][2]int64 {
 			cur = min(iv.fileOff, end)
 		}
 		stop := min(iv.end(), end)
-		if iv.cold && (mark == 0 || iv.version <= mark) {
+		if iv.cold && iv.version <= mark {
 			add(cur, stop)
 		}
 		cur = max(cur, stop)

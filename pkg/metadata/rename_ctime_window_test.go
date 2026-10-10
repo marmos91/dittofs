@@ -22,7 +22,8 @@ import (
 // RegisterStoreForShare accepts the metadata.Store interface.
 type windowStore struct {
 	*badger.BadgerMetadataStore
-	beforeTx func()
+	beforeTx    func()
+	afterCommit func(context.Context)
 }
 
 // fire runs and clears the hook. Cleared before it runs: the hook itself
@@ -36,12 +37,20 @@ func (w *windowStore) fire() {
 
 func (w *windowStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	w.fire()
-	return w.BadgerMetadataStore.WithTransaction(ctx, fn)
+	err := w.BadgerMetadataStore.WithTransaction(ctx, fn)
+	if err == nil && w.afterCommit != nil {
+		w.afterCommit(ctx)
+	}
+	return err
 }
 
 func (w *windowStore) WithTransactionRelaxed(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	w.fire()
-	return w.BadgerMetadataStore.WithTransactionRelaxed(ctx, fn)
+	err := w.BadgerMetadataStore.WithTransactionRelaxed(ctx, fn)
+	if err == nil && w.afterCommit != nil {
+		w.afterCommit(ctx)
+	}
+	return err
 }
 
 // TestRenameCtime_AdvanceInsideMoveWindowIsNotErased pins that SourcePreCtime is

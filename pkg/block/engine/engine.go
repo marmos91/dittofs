@@ -114,9 +114,9 @@ type Store struct {
 	readBufferBytes int64 // budget for the cache (0 = disabled / Null Object)
 	prefetchWorkers int   // stored from config, used in Start()
 
-	// closeMu is the lifecycle gate. Every public data op (WriteAt,
-	// ReadAt, Flush, Truncate, Delete, …) takes closeMu.RLock() at entry
-	// and holds it for the op's full duration. Close takes closeMu.Lock(),
+	// closeMu is the lifecycle gate. Ordinary public data ops (WriteAt,
+	// ReadAt, Flush, Truncate, Delete, …) take closeMu.RLock() at entry
+	// and hold it for the op's full duration. Close takes closeMu.Lock(),
 	// which blocks until all in-flight ops drop their RLocks, then performs
 	// teardown. This makes Store.Close safe to call concurrently with
 	// in-flight ops (area-7 H-A use-after-close): an op either runs fully
@@ -131,6 +131,10 @@ type Store struct {
 	closeMu  sync.RWMutex
 	closed   bool  // guarded by closeMu; true once teardown has run
 	closeErr error // memoized result of the first Close (idempotent)
+
+	// warming is independent of closeMu so shutdown can cancel downloads
+	// before waiting for their lifecycle pins, including from a callback.
+	warming warmRegistry
 
 	// requireDurableCommit gates the strict honest-CLOSE/COMMIT rule.
 	// When false (the default), CommitBlockStore acks once engine.Flush
@@ -301,8 +305,8 @@ func (bs *Store) enter() error {
 	return nil
 }
 
-// Close releases resources held by the store. It first drains all in-flight
-// data ops (closeMu.Lock blocks until every enter()'s RLock is released),
+// Close releases resources held by the store. It cancels active warm runs,
+// then drains in-flight data ops (closeMu.Lock waits for their RLocks),
 // marks the store closed so new ops fail fast with ErrStoreClosed, then
 // tears down cache → syncer → local → remote. Close is idempotent: a second
 // call is a no-op that returns the first call's result.
@@ -313,6 +317,8 @@ func (bs *Store) enter() error {
 // makes it safe for RemoveShare to keep calling Close() outside the shares
 // service lock.
 func (bs *Store) Close() error {
+	bs.warming.stop()
+
 	// Acquire the write lock: this blocks until all in-flight data ops
 	// (which hold closeMu.RLock via enter) have finished, giving us the
 	// in-flight drain. New ops arriving after closed=true fail in enter().
@@ -456,18 +462,23 @@ func (bs *Store) DrainLocalSynced(ctx context.Context) (journal.EvictResult, err
 	return bs.local.Evict(ctx, 1<<62)
 }
 
-// WarmAll proactively fetches every remote block of every payload in this
-// share onto the local CAS tier, delegating to the syncer's WarmAll under the
-// store's close-gate so a concurrent Close drains the run instead of racing
-// the local/syncer/remote teardown. See (*RemoteSync).WarmAll for semantics
-// (bounded by ParallelDownloads, errors on a missing remote, terminal on
-// ErrDiskFull, honors ctx cancellation). progress may be nil.
+// WarmAll fetches this share's planned remote chunks with bounded downloads.
+// Planning and each fetch separately pin the engine lifecycle; callbacks run
+// outside those pins so they may call engine methods even when Close is queued.
+// Close cancels warm runs before draining active scopes; cancelled runs report
+// ErrStoreClosed while their callers' contexts and ordinary operations stay live.
+// See (*RemoteSync).WarmAll for progress and replacement semantics.
 func (bs *Store) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {
-	if err := bs.enter(); err != nil {
+	ctx, unregister, err := bs.warming.begin(ctx)
+	if err != nil {
 		return WarmResult{}, err
 	}
-	defer bs.closeMu.RUnlock()
-	return bs.syncer.WarmAll(ctx, progress)
+	defer unregister()
+	result, err := bs.syncer.warmAll(ctx, progress, bs.enterPayload, bs.ObservePayload)
+	if errors.Is(context.Cause(ctx), errWarmShutdown) && (errors.Is(err, context.Canceled) || errors.Is(err, errWarmShutdown)) {
+		err = ErrStoreClosed
+	}
+	return result, err
 }
 
 // loadCache returns the current cache under cacheMu. Always non-nil (Null

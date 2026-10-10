@@ -408,7 +408,9 @@ func (h *Handler) SetAttr(
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 	var response *SetAttrResponse
-	err = blockStore.WithPayloadScope(ctx.Context, []string{string(file.PayloadID)}, false, func(scopeCtx context.Context) error {
+	scopeCtx, cancel := common.WithRequestDeadline(ctx.Context)
+	defer cancel()
+	err = blockStore.WithPayloadScope(scopeCtx, []string{string(file.PayloadID)}, false, func(scopeCtx context.Context) error {
 		scoped := *ctx
 		scoped.Context = scopeCtx
 		var callErr error
@@ -416,6 +418,9 @@ func (h *Handler) SetAttr(
 		return callErr
 	})
 	if err != nil && response == nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		}
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 	return response, err

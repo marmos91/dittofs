@@ -534,7 +534,8 @@ func (s *Store) WriteAt(ctx context.Context, id FileID, offset int64, data []byt
 //
 // notAfter is the WriteVersion the caller sampled before it resolved which
 // remote bytes to fetch; a cold range recorded after it was superseded and
-// evicted while the fetch ran, so it is stale too. Zero applies no bound.
+// evicted while the fetch ran, so it is stale too. Zero is the initial version
+// of an empty journal and rejects every subsequently recorded cold interval.
 //
 // Dropping is always safe: the write-back is a cache fill, never a read's
 // answer, and costs at most a re-fetch.
@@ -585,10 +586,7 @@ func (s *Store) WriteVersion() uint64 { return s.version.Load() }
 //
 // Callers hold sh.mu.
 func hydrateFenced(sh *shard, id FileID, notAfter uint64, offset, n int64) bool {
-	if notAfter == 0 {
-		return false
-	}
-	if notAfter <= sh.evictedFenceFloor {
+	if sh.evictedFenceFloor != 0 && notAfter <= sh.evictedFenceFloor {
 		return true
 	}
 	f, ok := sh.hydrateFence[id]

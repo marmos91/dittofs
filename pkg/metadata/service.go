@@ -374,6 +374,26 @@ type fileForReadStore interface {
 	GetFileForRead(ctx context.Context, handle FileHandle) (*File, error)
 }
 
+// PayloadIDForIO locates the stable content identity without loading a file's
+// manifest again on a warm write path. It is only a routing hint: permissions,
+// size and all mutable attributes must be read under the operation's admission.
+func (s *Service) PayloadIDForIO(ctx context.Context, handle FileHandle) (PayloadID, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if payloadID, ok := s.pendingWrites.CachedPayloadID(handle); ok {
+		return payloadID, nil
+	}
+	file, err := s.GetFileForRead(ctx, handle)
+	if err != nil {
+		return "", err
+	}
+	if file == nil {
+		return "", &StoreError{Code: ErrNotFound, Message: "file no longer exists"}
+	}
+	return file.PayloadID, nil
+}
+
 // GetFileForRead loads a file for the handle-addressed hot paths (NFS
 // READ/WRITE/GETATTR) that never read File.Path. When the backend implements
 // fileForReadStore it skips the derivePath parent-edge walk; otherwise it

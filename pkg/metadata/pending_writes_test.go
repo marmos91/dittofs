@@ -16,7 +16,9 @@ func TestPendingFlushLockSurvivesPop(t *testing.T) {
 		mu := tr.GetFlushLock(h)
 		mu.Lock()
 		if all {
-			tr.PopAllPending()
+			for _, handle := range tr.PendingHandles() {
+				tr.PopPending(handle)
+			}
 		} else {
 			tr.PopPending(h)
 		}
@@ -39,11 +41,9 @@ func TestPendingFlushLockSurvivesPop(t *testing.T) {
 	}
 }
 
-// TestPopAllPending_ReturnsAllEntries asserts the pop still surfaces every
-// recorded entry with its state intact.
-func TestPopAllPending_ReturnsAllEntries(t *testing.T) {
+// Shutdown snapshots handles, then pops each under its stable flush lock.
+func TestPendingHandlesDrainReturnsAllEntries(t *testing.T) {
 	tr := NewPendingWritesTracker()
-
 	want := map[string]uint64{}
 	for i := 0; i < 8; i++ {
 		key := fmt.Sprintf("share:f%d", i)
@@ -51,22 +51,21 @@ func TestPopAllPending_ReturnsAllEntries(t *testing.T) {
 		tr.RecordWrite(h, &WriteOperation{Handle: h, NewSize: uint64(100 + i)}, false)
 		want[key] = uint64(100 + i)
 	}
-
-	popped := tr.PopAllPending()
-	if len(popped) != len(want) {
-		t.Fatalf("popped %d entries, want %d", len(popped), len(want))
+	handles := tr.PendingHandles()
+	if len(handles) != len(want) || tr.Count() != len(want) {
+		t.Fatal("snapshot lost pending entries")
 	}
-	for _, e := range popped {
-		k := string(e.Handle)
-		if e.State == nil {
-			t.Fatalf("entry %q has nil state", k)
-		}
-		if e.State.MaxSize != want[k] {
-			t.Errorf("entry %q MaxSize=%d, want %d", k, e.State.MaxSize, want[k])
+	for _, handle := range handles {
+		mu := tr.GetFlushLock(handle)
+		mu.Lock()
+		state, ok := tr.PopPending(handle)
+		mu.Unlock()
+		if !ok || state.MaxSize != want[string(handle)] {
+			t.Fatalf("state for %q differs: %+v", handle, state)
 		}
 	}
-	if c := tr.Count(); c != 0 {
-		t.Fatalf("pending count = %d after pop, want 0", c)
+	if tr.Count() != 0 {
+		t.Fatal("drain left pending entries")
 	}
 }
 

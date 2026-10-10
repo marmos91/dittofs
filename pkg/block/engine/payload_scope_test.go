@@ -150,3 +150,72 @@ func BenchmarkPayloadScope(b *testing.B) {
 		})
 	}
 }
+
+func TestTryPayloadScopeReleasesPartialAcquisitionWithoutChangingEpoch(t *testing.T) {
+	bs := newTestEngine(t, 0, 0)
+	ctx := context.Background()
+	version, releaseObserver, err := bs.ObservePayload(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseObserver()
+	err = bs.WithPayloadScope(ctx, []string{"b"}, false, func(context.Context) error {
+		tryCtx, cancelTry := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancelTry()
+		entered, err := bs.TryWithPayloadScope(tryCtx, []string{"b", "a"}, true, func(context.Context) error {
+			t.Error("callback ran despite busy second payload")
+			return nil
+		})
+		if err != nil || entered {
+			t.Fatalf("try: entered=%v err=%v", entered, err)
+		}
+		if got := version(); got != 0 {
+			t.Fatalf("failed try changed epoch to %d", got)
+		}
+		// A retained partial acquisition or queued exclusive waiter would block
+		// one of these shared operations until the outer holder released b.
+		waitCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		return bs.WithPayloadScope(waitCtx, []string{"a", "b"}, false, func(context.Context) error { return nil })
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bs.WithPayloadScope(ctx, []string{"a"}, true, func(context.Context) error {
+		if version() != 0 {
+			t.Error("exclusive epoch changed before operation finished")
+		}
+		return nil
+	})
+	if err != nil || version() != 1 {
+		t.Fatalf("exclusive epoch: version=%d err=%v", version(), err)
+	}
+	// The observer retains the same entry after ordinary scope references end.
+	if err := bs.WithPayloadScope(ctx, []string{"a"}, false, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if version() != 1 {
+		t.Fatal("shared scope reset or changed the epoch")
+	}
+	bs.admission.mu.Lock()
+	defer bs.admission.mu.Unlock()
+	if len(bs.admission.entries) != 1 || bs.admission.entries["a"].refs != 1 {
+		t.Fatalf("unexpected observer references: %#v", bs.admission.entries)
+	}
+}
+
+func TestTryPayloadScopeCancellationDoesNotEnter(t *testing.T) {
+	bs := newTestEngine(t, 0, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	entered, err := bs.TryWithPayloadScope(ctx, []string{"a"}, true, func(context.Context) error {
+		t.Error("cancelled callback ran")
+		return nil
+	})
+	if entered || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled try: entered=%v err=%v", entered, err)
+	}
+	if len(bs.admission.entries) != 0 {
+		t.Fatal("cancelled try leaked an admission entry")
+	}
+}

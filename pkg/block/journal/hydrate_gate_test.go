@@ -24,7 +24,7 @@ func TestHydrateFillsWithoutOverwriting(t *testing.T) {
 		return got
 	}
 
-	t.Run("live bytes survive an unmarked hydrate", func(t *testing.T) {
+	t.Run("live bytes survive a hydrate bounded at zero", func(t *testing.T) {
 		s, _ := evictStore(t, Config{})
 		if err := s.WriteAt(ctx, "f", 0, fresh); err != nil {
 			t.Fatalf("WriteAt: %v", err)
@@ -62,12 +62,7 @@ func TestHydrateFillsWithoutOverwriting(t *testing.T) {
 
 	t.Run("a cold range is filled only when it predates the mark", func(t *testing.T) {
 		s, _ := evictStore(t, Config{})
-		// An unrelated record first, so the mark taken before "f" is written is
-		// still non-zero — a zero mark means "no bound", not "the beginning".
-		if err := s.WriteAt(ctx, "g", 0, fresh); err != nil {
-			t.Fatalf("WriteAt: %v", err)
-		}
-		markBefore := s.WriteVersion()
+		markBefore := s.WriteVersion() // zero must fence the first later write too
 		if err := s.WriteAt(ctx, "f", 0, fresh); err != nil {
 			t.Fatalf("WriteAt: %v", err)
 		}
@@ -138,5 +133,41 @@ func TestHydrateAfterTruncateIsDropped(t *testing.T) {
 	}
 	if !bytes.Equal(got, make([]byte, len(data))) {
 		t.Fatal("hydrate resurrected bytes a truncate removed")
+	}
+}
+
+func TestHydrateZeroBoundFencesTruncateAndDelete(t *testing.T) {
+	for _, mutation := range []string{"truncate", "delete"} {
+		t.Run(mutation, func(t *testing.T) {
+			s, _ := evictStore(t, Config{})
+			ctx := context.Background()
+			mark := s.WriteVersion()
+			if mark != 0 {
+				t.Fatalf("fresh journal version = %d, want zero", mark)
+			}
+			data := bytes.Repeat([]byte{0xAB}, 4096)
+			if err := s.WriteAt(ctx, "f", 0, data); err != nil {
+				t.Fatalf("WriteAt: %v", err)
+			}
+			var err error
+			if mutation == "truncate" {
+				err = s.Truncate(ctx, "f", 0)
+			} else {
+				err = s.Delete(ctx, "f")
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", mutation, err)
+			}
+			if err := s.Hydrate(ctx, "f", 0, data, mark); err != nil {
+				t.Fatalf("Hydrate: %v", err)
+			}
+			got := make([]byte, len(data))
+			if _, _, err := s.ReadAt(ctx, "f", 0, got); err != nil {
+				t.Fatalf("ReadAt: %v", err)
+			}
+			if bytes.Count(got, []byte{0}) != len(got) {
+				t.Fatalf("hydrate bounded at zero resurrected bytes after %s", mutation)
+			}
+		})
 	}
 }

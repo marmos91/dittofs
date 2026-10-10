@@ -37,6 +37,9 @@ type PendingWritesTracker struct {
 	// Stable, bounded stripes serialize pop -> metadata commit -> restore/cache.
 	// Removing a lock when its pending entry is popped would let a new flush
 	// overtake the still-running commit that owns the old lock.
+	// ponytail: a fixed bank bounds memory but can serialize unrelated files.
+	// Replace it with reference-counted per-inode locks if collision wait shows
+	// up in durable-flush profiles; active owners and waiters must share a lock.
 	flushLocks [256]sync.Mutex
 }
 
@@ -181,6 +184,25 @@ func (t *PendingWritesTracker) GetCachedFile(handle FileHandle) *File {
 	return &fileCopy
 }
 
+// CachedPayloadID returns only immutable routing identity, without copying
+// attributes that the operation must revalidate after admission.
+func (t *PendingWritesTracker) CachedPayloadID(handle FileHandle) (PayloadID, bool) {
+	key := pendingWriteKey(handle)
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	state := t.pending[key]
+	if state == nil {
+		return "", false
+	}
+	if state.PayloadID != "" {
+		return state.PayloadID, true
+	}
+	if state.CachedFile != nil && state.CachedFile.PayloadID != "" {
+		return state.CachedFile.PayloadID, true
+	}
+	return "", false
+}
+
 // SetCachedFile stores file metadata for fast-path PrepareWrite.
 func (t *PendingWritesTracker) SetCachedFile(handle FileHandle, file *File) {
 	key := pendingWriteKey(handle)
@@ -252,30 +274,6 @@ func (t *PendingWritesTracker) RestorePending(handle FileHandle, state *PendingW
 	if cur.CachedFile == nil {
 		cur.CachedFile = state.CachedFile
 	}
-}
-
-// PendingEntry pairs a handle with its pending state.
-type PendingEntry struct {
-	Handle FileHandle
-	State  *PendingWriteState
-}
-
-// PopAllPending removes and returns all pending states.
-// Used for bulk flush operations.
-func (t *PendingWritesTracker) PopAllPending() []PendingEntry {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	result := make([]PendingEntry, 0, len(t.pending))
-	for key, state := range t.pending {
-		result = append(result, PendingEntry{
-			Handle: FileHandle(key),
-			State:  state,
-		})
-	}
-	t.pending = make(map[string]*PendingWriteState)
-
-	return result
 }
 
 // PendingHandles snapshots the handles without taking their pending state.

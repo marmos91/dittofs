@@ -135,6 +135,33 @@ func (s *Store) Extents(ctx context.Context, id FileID) ([]Extent, error) {
 	return out, nil
 }
 
+// HasDirty reports dirty intervals or a flush still publishing its manifest.
+// The publication guard includes AfterFile, and reported bytes stay dirty until
+// that callback succeeds. Failed publication and writes newer than the flush
+// snapshot remain dirty after the pass ends and are included in the answer.
+func (s *Store) HasDirty(ctx context.Context, id FileID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if s.closed.Load() {
+		return false, errClosed
+	}
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if sh.flushing && sh.flushingID == id {
+		return true, nil
+	}
+	if fi := sh.index[id]; fi != nil {
+		for _, iv := range fi.ivs {
+			if !iv.synced && !iv.cold {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // demote is the one residency-loss chokepoint: it persists the cold markers to
 // stable storage and only then runs flip, which takes the intervals
 // resident→remote. appendCold fsyncs before returning, so by the time flip

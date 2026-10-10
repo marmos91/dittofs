@@ -6,13 +6,28 @@ import (
 	"testing"
 	"time"
 
+	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
-// A read or write queued behind an exclusive payload scope, the scope a CLONE
-// holds across its source's upload, must give up at the request deadline
-// instead of waiting for as long as the CLONE holds the scope.
+func TestWithFilePayloadScopeCancelledRoutingMapsToIO(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := WithFilePayloadScope(&metadata.AuthContext{Context: ctx}, metadata.New(), newTestEngine(t), nil, func(*metadata.AuthContext) (struct{}, error) {
+		t.Fatal("cancelled routing entered the payload operation")
+		return struct{}{}, nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost cancellation cause: %v", err)
+	}
+	if got := nfs4types.StatusForErr(err); got != nfs4types.NFS4ERR_IO {
+		t.Fatalf("cancelled routing status = %d, want IO", got)
+	}
+}
+
+// A read or write queued behind an exclusive payload scope must give up at the
+// request deadline instead of waiting for a local copy or metadata commit.
 func TestWithFilePayloadScopeWaitEndsAtRequestDeadline(t *testing.T) {
 	shortRequestDeadline(t, 200*time.Millisecond)
 

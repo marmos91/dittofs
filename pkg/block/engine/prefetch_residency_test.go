@@ -93,7 +93,7 @@ func (f *residencyFixture) seed(t testing.TB, off int64, data []byte, warm bool)
 	t.Helper()
 	seedSyncedRemoteChunk(t, f.md, f.remote, f.md, residentPayload, uint64(off), data)
 	if warm {
-		if err := f.j.Hydrate(context.Background(), journal.FileID(residentPayload), off, data, 0); err != nil {
+		if err := f.j.Hydrate(context.Background(), journal.FileID(residentPayload), off, data, f.j.WriteVersion()); err != nil {
 			t.Fatal(err)
 		}
 	} else {

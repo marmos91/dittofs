@@ -160,7 +160,7 @@ func TestTransition_HydrateTakesRemoteToResident(t *testing.T) {
 		t.Fatalf("Invalidate: %v", err)
 	}
 	// Hydrate fills the cold range: Remote → Resident.
-	if err := s.Hydrate(ctx, "f", 0, buf, 0); err != nil {
+	if err := s.Hydrate(ctx, "f", 0, buf, s.WriteVersion()); err != nil {
 		t.Fatalf("Hydrate: %v", err)
 	}
 	wantStates(t, s, "f", StateResident)
@@ -371,7 +371,7 @@ func TestModel_RandomOperationsAgainstNaiveOracle(t *testing.T) {
 			}
 			ops++
 		case 2: // hydrate (a fill: only Absent/Remote ranges take it)
-			if err := s.Hydrate(ctx, "f", off, buf, 0); err != nil {
+			if err := s.Hydrate(ctx, "f", off, buf, s.WriteVersion()); err != nil {
 				t.Fatalf("Hydrate: %v", err)
 			}
 			oracle.apply("hydrate", off)

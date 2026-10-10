@@ -441,7 +441,7 @@ func TestRestoreToVersion_RefusesSeededRangeOverwrittenOnRemote(t *testing.T) {
 	}
 	target := f.commitAll()
 
-	if err := f.Hydrate(ctx, id, 0, bytes.Repeat([]byte("post"), span/4), 0); err != nil {
+	if err := f.Hydrate(ctx, id, 0, bytes.Repeat([]byte("post"), span/4), f.WriteVersion()); err != nil {
 		t.Fatalf("Hydrate post-V: %v", err)
 	}
 	f.commitAll()

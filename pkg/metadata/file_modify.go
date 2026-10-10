@@ -1092,7 +1092,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			}
 			// Invalidate cached file in pending writes to ensure subsequent
 			// writes use fresh attributes (e.g., mode changes for SUID/SGID clearing)
-			s.pendingWrites.InvalidateCache(handle)
+			s.InvalidateWriteCache(handle)
 		}
 	}
 

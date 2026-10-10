@@ -524,6 +524,11 @@ func (h *Handler) executeCopyChunks(
 		}
 		data = data[:n]
 
+		// decision: COPYCHUNK commits chunks independently and reports the
+		// completed prefix on failure. Admit each destination write through its
+		// metadata commit; the source read finishes first so opposite cross-share
+		// copies cannot hold engine ownership in reverse order. Whole-request
+		// atomicity would require a staged-copy contract rather than a wider lock.
 		partial, scopeErr := common.WithFilePayloadScope(authCtx, metaSvc, dstBlockStore, dstOpen.MetadataHandle, func(authCtx *metadata.AuthContext) (*HandlerResult, error) {
 			scopedHandler := *ctx
 			scopedHandler.Context = authCtx.Context

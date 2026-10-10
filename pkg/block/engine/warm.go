@@ -6,231 +6,356 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"sync"
 	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
+// warmRegistry lets shutdown cancel warm work before waiting for lifecycle
+// readers. A progress callback may itself call Close while another worker is
+// downloading under a lifecycle pin, so cancellation cannot wait for that pin.
+// Only warm runs register here; ordinary data operations still drain normally.
+type warmRegistry struct {
+	mu      sync.Mutex
+	closing bool
+	runs    map[*warmRun]struct{}
+}
+
+type warmRun struct {
+	cancel context.CancelCauseFunc
+}
+
+// Distinguish shutdown from a caller cancelling with its own error cause.
+var errWarmShutdown = errors.New("engine: warm stopped by shutdown")
+
+func (r *warmRegistry) begin(ctx context.Context) (context.Context, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return ctx, nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closing {
+		return ctx, nil, ErrStoreClosed
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	run := &warmRun{cancel: cancel}
+	if r.runs == nil {
+		r.runs = make(map[*warmRun]struct{})
+	}
+	r.runs[run] = struct{}{}
+	return ctx, func() {
+		r.mu.Lock()
+		delete(r.runs, run)
+		r.mu.Unlock()
+		cancel(nil)
+	}, nil
+}
+
+func (r *warmRegistry) stop() {
+	r.mu.Lock()
+	r.closing = true
+	runs := make([]*warmRun, 0, len(r.runs))
+	for run := range r.runs {
+		runs = append(runs, run)
+	}
+	r.mu.Unlock()
+	for _, run := range runs {
+		run.cancel(errWarmShutdown)
+	}
+}
+
 // WarmResult summarizes a WarmAll run: how many chunks came back from the
-// remote tier and how many bytes they moved. Every enumerated chunk is
-// attempted, but a chunk that is sparse or not yet synced returns no data and
-// is not counted, so BlocksFetched is what landed, not the size of the work
-// list — callers that need the enumerated total read it from the progress
-// callback. See WarmAll for why there is no already-local count.
+// remote tier and how many bytes they moved. Sparse, removed and unsynced rows
+// count toward progress but not BlocksFetched. See WarmAll for why there is no
+// already-local count.
 type WarmResult struct {
 	BlocksFetched int64 `json:"blocks_fetched"`
 	BytesFetched  int64 `json:"bytes_fetched"`
 }
 
-// warmTarget identifies one FileChunk row that must be fetched. It carries the
-// resolved *block.FileChunk from enumeration so the worker fetches by the row
-// in hand rather than round-tripping through a blockIdx lookup — FastCDC chunks
-// start at arbitrary, non-BlockSize-aligned offsets, so a blockIdx lookup would
-// miss every non-aligned chunk and silently skip it (#1374).
-type warmTarget struct {
-	payloadID string
-	fb        *block.FileChunk
-	span      hydrateSpan
+type warmChunk struct {
+	fb   *block.FileChunk
+	span hydrateSpan
 }
 
-// WarmAll proactively materializes every block of every payload in this share
-// onto the local CAS tier by reusing the per-block fetch primitive
-// (fetchResolvedBlock). It enumerates payloads from the authoritative metadata
-// (fileChunkStore.EnumeratePayloads) and the per-payload FileChunk rows, and
-// fetches every one of them with bounded concurrency
-// (RemoteSyncConfig.ParallelDownloads). Enumerating the metadata rather than the
-// local store's ListFiles is what lets warm materialize payloads whose append
-// log was discarded after rollup — their FileChunk rows survive, but
-// local.ListFiles no longer reports them, so the old surface made warm a silent
-// no-op on rolled-up shares (#1374).
-//
-// Already-local chunks are re-fetched rather than skipped. The local tier is
-// keyed by (payloadID, offset) and exposes no per-range residency probe: its
-// DataExtents reports evicted ranges as data, so using it to decide "already
-// local" would skip exactly the cold chunks warm exists to fetch. Re-hydrating a
-// warm chunk is idempotent, so the cost of not knowing is a redundant GET, while
-// the cost of guessing wrong is a warm run that silently does nothing.
-//
-// progress (may be nil) is invoked after each block is processed with the
-// running (done, total) counts so callers can drive a poll/UI. total is the
-// number of enumerated chunks, which is what this run will fetch. Callbacks are
-// serialized independently of downloads, and payload admission is released
-// before waiting for callbacks to finish. They may inspect or mutate files;
-// they must not close the engine whose lifecycle pins this operation.
-//
-// A nil remote tier is an error: there is nothing to warm from. A fetch that
-// fails with fs.ErrDiskFull is terminal — the bounded local tier cannot hold
-// the working set — so the whole run is cancelled and the error surfaced.
-// Context cancellation stops the run promptly.
-func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {
-	if err := m.checkReady(ctx); err != nil {
-		return WarmResult{}, err
-	}
-	if m.remoteStore == nil {
-		return WarmResult{}, errors.New("warm: share has no remote tier to warm from")
-	}
+// warmFile retains a manifest snapshot without retaining payload admission.
+// The observer pins only the admission entry's identity, so a replacement can
+// advance its epoch even between the planning pass and the first download.
+// Workers share one refreshed snapshot per epoch instead of rescanning the
+// whole manifest to find the successor of every chunk.
+type warmFile struct {
+	payloadID string
+	version   func() uint64
+	mu        sync.Mutex
+	epoch     uint64
+	chunks    map[string]warmChunk
+}
 
-	// Enumerate all FileChunk rows into the work list. The enumeration walks the
-	// same surface as populateBlockCounts: fileChunkStore.EnumeratePayloads ->
-	// per-payload ListFileChunks (the authoritative metadata, which survives
-	// rollup). Each target carries the resolved row so the worker fetches by the
-	// row in hand (fetchResolvedBlock) instead of round-tripping through a
-	// BlockSize-aligned blockIdx lookup, which would miss every non-aligned
-	// FastCDC chunk (#1374).
-	var payloadIDs []string
-	if err := m.fileChunkStore.EnumeratePayloads(ctx, func(payloadID string) error {
-		payloadIDs = append(payloadIDs, payloadID)
-		return nil
-	}); err != nil {
-		return WarmResult{}, fmt.Errorf("warm: enumerate payloads: %w", err)
-	}
+// warmTarget keeps the originally enumerated row ID, not its content. An
+// exclusive replacement at that ID is resolved under admission when the worker
+// runs; removed IDs become processed skips and new IDs wait for the next run.
+type warmTarget struct {
+	file *warmFile
+	id   string
+}
 
-	// Acquire before resolving any rows, and retain every guard until the last
-	// hydrate completes. Guarding already-resolved targets would still let a
-	// replacement finish before a worker writes the old manifest's bytes back.
-	// Sort and deduplicate exactly as clone does so reverse source/destination
-	// operations cannot form an admission cycle.
-	slices.Sort(payloadIDs)
-	payloadIDs = slices.Compact(payloadIDs)
-	var releases []func()
-	releaseAdmissions := func() {
-		for i := len(releases) - 1; i >= 0; i-- {
-			releases[i]()
-		}
-		releases = nil
-	}
-	defer releaseAdmissions()
-	for _, id := range payloadIDs {
-		release, err := m.admission.enter(ctx, id)
-		if err != nil {
-			return WarmResult{}, err
-		}
-		releases = append(releases, release)
-	}
+type warmEnter func(context.Context, ...string) (context.Context, func(), error)
+type warmObserve func(context.Context, string) (func() uint64, func(), error)
 
-	var targets []warmTarget
-	for _, payloadID := range payloadIDs {
-		if err := ctx.Err(); err != nil {
-			return WarmResult{}, err
-		}
-		// Sampled before this payload's rows are read, so a warm fetch cannot
-		// write back over bytes written while it was running (see hydrateSpan).
-		at := m.local.WriteVersion()
-		rows, err := m.listFileChunksSnapshot(ctx, payloadID)
-		if err != nil {
-			return WarmResult{}, fmt.Errorf("warm: list blocks for %s: %w", payloadID, err)
-		}
-		// Every placeable row start, ascending, so each row's claim end is a
-		// binary search rather than another walk of the manifest.
-		starts := make([]uint64, 0, len(rows))
-		for _, fb := range rows {
-			if fb == nil {
-				continue
-			}
+// snapshot resolves all rows and their overlap bounds while the caller owns
+// shared payload admission. Its returned IDs define this run's fixed work list.
+func (f *warmFile) snapshot(ctx context.Context, m *RemoteSync) ([]string, error) {
+	// A write arriving after the dirty check must be newer than this bound.
+	at := m.local.WriteVersion()
+	dirty, err := m.local.HasDirty(ctx, journal.FileID(f.payloadID))
+	if err != nil {
+		return nil, fmt.Errorf("warm: inspect dirty data for %s: %w", f.payloadID, err)
+	}
+	if dirty {
+		// decision: dirty bytes or an unfinished reap can predate this snapshot
+		// while manifest rows still describe old contents. Carving and eviction
+		// keep their version, so the initial bound excludes every recorded cold
+		// interval. Fetch/count every planned row, but leave this dirty file's
+		// cold ranges for demand reads or a later warm run. Range-level dirty
+		// provenance would let a future warmer fill its unchanged cold ranges.
+		at = 0
+	}
+	rows, err := m.listFileChunksSnapshot(ctx, f.payloadID)
+	if err != nil {
+		return nil, fmt.Errorf("warm: list blocks for %s: %w", f.payloadID, err)
+	}
+	starts := make([]uint64, 0, len(rows))
+	for _, fb := range rows {
+		if fb != nil {
 			if absOff, ok := block.ParseChunkOffset(fb.ID); ok {
 				starts = append(starts, absOff)
 			}
 		}
-		slices.Sort(starts)
+	}
+	slices.Sort(starts)
 
-		for _, fb := range rows {
-			if fb == nil {
-				continue
+	chunks := make(map[string]warmChunk, len(rows))
+	ids := make([]string, 0, len(rows))
+	for _, fb := range rows {
+		if fb == nil {
+			continue
+		}
+		absOff, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			continue
+		}
+		// A row gives up its claim at the next row's start. Hydrating its
+		// whole extent would overwrite the newer row's head; any remainder
+		// after the overlap is left for the demand reader to resolve.
+		span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize), At: at}
+		if i := sort.Search(len(starts), func(i int) bool { return starts[i] > absOff }); i < len(starts) && starts[i] < span.To {
+			span.To = starts[i]
+		}
+		row := *fb
+		chunks[fb.ID] = warmChunk{fb: &row, span: span}
+		ids = append(ids, fb.ID)
+	}
+	f.chunks, f.epoch = chunks, f.version()
+	return ids, nil
+}
+
+// resolve runs inside a worker's payload scope. Exclusive replacements cannot
+// change the epoch until that worker finishes hydrating, while the journal's
+// sampled write version protects against ordinary concurrent writes/truncates.
+func (f *warmFile) resolve(ctx context.Context, m *RemoteSync, id string) (warmChunk, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.version() != f.epoch {
+		if _, err := f.snapshot(ctx, m); err != nil {
+			return warmChunk{}, err
+		}
+	}
+	return f.chunks[id], nil
+}
+
+// WarmAll proactively fetches this share's planned remote chunks and fills
+// eligible ranges in the local tier. Authoritative FileChunk metadata also finds
+// payloads whose local journal has been discarded after upload. Downloads are
+// bounded by ParallelDownloads; admission covers only a worker's current file.
+//
+// decision: warm attempts every planned row, including already-resident
+// ranges, so progress describes the manifest walk and fetched counts describe
+// successful remote downloads. Rehydration is idempotent. A residency-based
+// skip should explicitly define how skipped ranges contribute to these counts.
+//
+// progress (may be nil) receives ordered (done, total) counts, starting at zero.
+// total counts the valid row IDs found during planning. Removed rows are
+// processed skips, exclusive replacements at the same ID use current content,
+// and newly added IDs wait for another run. Ordinary writes after planning are
+// fenced by the sampled journal version. Files with dirty or unpublished data
+// at planning use the initial zero bound: their manifest can predate writes or
+// still hold rows awaiting reap. Either case can leave cold ranges for a demand
+// read or another warm run. Callbacks run synchronously on the caller, outside
+// all lifecycle and payload pins, and may inspect or mutate the engine.
+// Every worker is joined and every callback has finished before return. A
+// callback panic propagates after active workers are cancelled and joined.
+//
+// A missing remote tier is an error. A full local tier or any fetch error
+// cancels the remaining work; the result still counts successful downloads.
+func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {
+	return m.warmAll(ctx, progress, m.enterWarmScope, m.admission.observe)
+}
+
+// enterWarmScope is the standalone syncer's admission path. The engine supplies
+// enterPayload instead, pinning its lifecycle for each short scope as well.
+func (m *RemoteSync) enterWarmScope(ctx context.Context, ids ...string) (context.Context, func(), error) {
+	if err := m.checkReady(ctx); err != nil {
+		return ctx, nil, err
+	}
+	if len(ids) == 0 {
+		return ctx, func() {}, nil
+	}
+	release, err := m.admission.enter(ctx, ids[0])
+	return ctx, release, err
+}
+
+func (m *RemoteSync) warmAll(ctx context.Context, progress func(done, total int64), enter warmEnter, observe warmObserve) (WarmResult, error) {
+	var payloadIDs []string
+	if err := func() error {
+		ctx, release, err := enter(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+		if err := m.checkReady(ctx); err != nil {
+			return err
+		}
+		if m.remoteStore == nil {
+			return errors.New("warm: share has no remote tier to warm from")
+		}
+		if err := m.fileChunkStore.EnumeratePayloads(ctx, func(id string) error {
+			payloadIDs = append(payloadIDs, id)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("warm: enumerate payloads: %w", err)
+		}
+		return nil
+	}(); err != nil {
+		return WarmResult{}, err
+	}
+	slices.Sort(payloadIDs)
+	payloadIDs = slices.Compact(payloadIDs)
+
+	var observers []func()
+	defer func() {
+		for _, release := range observers {
+			release()
+		}
+	}()
+	var targets []warmTarget
+	for _, id := range payloadIDs {
+		if err := func() error {
+			ctx, release, err := enter(ctx, id)
+			if err != nil {
+				return err
 			}
-			absOff, ok := block.ParseChunkOffset(fb.ID)
-			if !ok {
-				continue
+			defer release()
+			version, unobserve, err := observe(ctx, id)
+			if err != nil {
+				return err
 			}
-			// A row is warmed only over the bytes it still holds: a row
-			// straddling a later row's start hands them over at that start, and
-			// hydrating its full extent would leave its older bytes over the
-			// newer row's head (see hydrateSpan). A row overlapped in its middle
-			// therefore warms only up to that later row, and the remainder past
-			// it is left for the demand read to fetch — one row here means one
-			// range, and filling the gap with the older bytes is the outcome
-			// this clamp exists to prevent.
-			span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize), At: at}
-			if i := sort.Search(len(starts), func(i int) bool { return starts[i] > absOff }); i < len(starts) && starts[i] < span.To {
-				span.To = starts[i]
+			observers = append(observers, unobserve)
+			file := &warmFile{payloadID: id, version: version}
+			ids, err := file.snapshot(ctx, m)
+			if err != nil {
+				return err
 			}
-			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb, span: span})
+			for _, rowID := range ids {
+				targets = append(targets, warmTarget{file: file, id: rowID})
+			}
+			return nil
+		}(); err != nil {
+			return WarmResult{}, err
 		}
 	}
 
 	total := int64(len(targets))
-	var (
-		blocksFetched    atomic.Int64
-		bytesFetched     atomic.Int64
-		progressEvents   chan struct{}
-		progressFinished chan struct{}
-	)
 	if progress != nil {
-		// At most one event per target. The buffer lets every worker finish even
-		// when the callback is waiting for exclusive admission on a warmed file.
-		// The dispatcher owns the counter, so callbacks remain strictly ordered.
-		progressEvents = make(chan struct{}, len(targets))
-		progressFinished = make(chan struct{})
-		go func() {
-			defer close(progressFinished)
-			progress(0, total)
-			var done int64
-			for range progressEvents {
-				done++
-				progress(done, total)
-			}
-		}()
-	}
-	emitProgress := func() {
-		if progressEvents != nil {
-			progressEvents <- struct{}{}
-		}
-	}
-	finish := func() {
-		releaseAdmissions()
-		if progressEvents != nil {
-			close(progressEvents)
-			<-progressFinished
-		}
+		progress(0, total)
 	}
 	if total == 0 {
-		finish()
 		return WarmResult{}, nil
 	}
 
-	// Bound remote-download concurrency via the shared fetchGroup helper (same
-	// ParallelDownloads limit the cold-read demand loop uses). g.Go blocks once
-	// the limit is reached and the first error cancels the rest via gctx.
-	g, gctx := m.fetchGroup(ctx)
-
-	for _, t := range targets {
-		if gctx.Err() != nil {
-			break // first error/cancel: stop scheduling the remaining fetches
-		}
+	workers := min(len(targets), max(1, m.config.ParallelDownloads))
+	type completion struct {
+		fetched bool
+		bytes   int64
+	}
+	completed := make(chan completion, workers)
+	var next atomic.Int64
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	g, gctx := m.fetchGroup(workerCtx)
+	for range workers {
 		g.Go(func() error {
-			data, err := m.fetchResolvedBlock(gctx, t.fb, t.span)
-			if err != nil {
-				if errors.Is(err, journal.ErrLocalStoreFull) {
-					return fmt.Errorf("warm: local tier full while fetching %s (raise journal_size or evict): %w",
-						t.fb.ID, err)
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(targets) {
+					return nil // A final callback may close a fully completed run.
 				}
-				return fmt.Errorf("warm: fetch %s: %w", t.fb.ID, err)
+				if err := gctx.Err(); err != nil {
+					return err
+				}
+				target := targets[i]
+				data, err := func() ([]byte, error) {
+					ctx, release, err := enter(gctx, target.file.payloadID)
+					if err != nil {
+						return nil, err
+					}
+					defer release()
+					chunk, err := target.file.resolve(ctx, m, target.id)
+					if err != nil {
+						return nil, err
+					}
+					return m.fetchResolvedBlock(ctx, chunk.fb, chunk.span)
+				}()
+				if err != nil {
+					if errors.Is(err, journal.ErrLocalStoreFull) {
+						return fmt.Errorf("warm: local tier full while fetching %s (raise journal_size or evict): %w", target.id, err)
+					}
+					return fmt.Errorf("warm: fetch %s: %w", target.id, err)
+				}
+				// Never send while holding admission or a lifecycle pin. Even
+				// a callback waiting for Close or a replacement can let all
+				// active scopes drain when this bounded buffer fills.
+				completed <- completion{fetched: data != nil, bytes: int64(len(data))}
 			}
-			if data != nil {
-				blocksFetched.Add(1)
-				bytesFetched.Add(int64(len(data)))
-			}
-			emitProgress()
-			return nil
 		})
 	}
-
-	// Counts are read after Wait so both the success and failure returns report
-	// everything that actually landed.
-	err := g.Wait()
-	finish()
-	return WarmResult{
-		BlocksFetched: blocksFetched.Load(),
-		BytesFetched:  bytesFetched.Load(),
-	}, err
+	finished := make(chan struct{})
+	var fetchErr error
+	go func() {
+		fetchErr = g.Wait()
+		close(completed)
+		close(finished)
+	}()
+	defer func() {
+		// A callback can panic after workers start. Cancel remote operations
+		// and drain successful completions so no sender remains blocked, then
+		// join before the earlier defer releases the manifest observers.
+		cancelWorkers()
+		for range completed {
+		}
+		<-finished
+	}()
+	var result WarmResult
+	var done int64
+	for event := range completed {
+		if event.fetched {
+			result.BlocksFetched++
+			result.BytesFetched += event.bytes
+		}
+		done++
+		if progress != nil {
+			progress(done, total)
+		}
+	}
+	return result, fetchErr
 }

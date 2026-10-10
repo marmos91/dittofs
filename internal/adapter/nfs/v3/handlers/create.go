@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -301,23 +302,22 @@ func (h *Handler) Create(
 		}, nil
 	}
 
-	// This eliminates cold-start penalty on the first WRITE to this file.
-	// We already have the file metadata and auth context, so caching is free.
-
 	// Pre-warm auth context cache (avoids registry lookups on WRITE)
 	_, _ = h.GetCachedAuthContext(ctx)
 
 	// Publish current attributes under payload admission so a completed clone
 	// cannot be followed by a pre-create snapshot entering the write cache.
 	if fileAttr.Type == metadata.FileTypeRegular {
-		_, warmErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(scoped *metadata.AuthContext) (struct{}, error) {
-			fresh, err := metaSvc.GetFileForRead(scoped.Context, fileHandle)
+		warmCtx, cancelWarm := common.WithRequestDeadline(authCtx.Context)
+		warmErr := blockStore.WithPayloadScope(warmCtx, []string{string(fileAttr.PayloadID)}, false, func(scoped context.Context) error {
+			fresh, err := metaSvc.GetFileForRead(scoped, fileHandle)
 			if err != nil {
-				return struct{}{}, err
+				return err
 			}
 			metaSvc.PrewarmWriteCache(fileHandle, fresh)
-			return struct{}{}, nil
+			return nil
 		})
+		cancelWarm()
 		if warmErr != nil {
 			logger.DebugCtx(ctx.Context, "CREATE: write cache warm failed", "error", warmErr)
 		}

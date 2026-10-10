@@ -15,12 +15,14 @@ import (
 // CloneWholeFile clones the entire source into the destination at offset zero.
 // A zero count uses the source's current size; otherwise count must still match
 // that size after draining pending rollups. Destinations with an existing tail
-// beyond the source are unsupported. Source and destination are exclusive for
-// the full operation, so a concurrent tail write waits until it can survive.
+// beyond the source are unsupported. Remote-backed clones upload the source
+// before exclusive admission; reconciliation and replacement exclude concurrent
+// operations. A source written during its upload is drained again first.
 //
 // Remote-backed copies replace the manifest and update refcounts in one
 // metadata transaction, then discard the destination's replaced local content.
-// Local-only copies materialize bytes into the destination's own journal.
+// Local-only copies materialize bytes into the destination's own journal while
+// holding exclusive admission for the duration of the byte copy.
 // Both stores must belong to the same share; callers check handles, types,
 // stateids and permissions before entering this helper. metaSvc is the service
 // owning deferred write metadata; nil is only valid when the caller has none.
@@ -33,44 +35,80 @@ func CloneWholeFile(
 	dstPayloadID metadata.PayloadID,
 	count uint64,
 	metaSvc *metadata.Service,
-) error {
+) (err error) {
+	defer func() {
+		if err != nil {
+			err = normalizeBlockStoreError(err)
+		}
+	}()
+	ctx, cancel := WithRequestDeadline(ctx)
+	defer cancel()
 	// Payload identity is stable for a file handle. Resolve it before admission,
 	// then re-read sizes and manifests only after both payloads are exclusive.
 	srcFile, err := metadataStore.GetFile(ctx, srcHandle)
 	if err != nil {
 		return fmt.Errorf("fetch source payload: %w", err)
 	}
-	return blockStore.WithPayloadScope(ctx, []string{string(srcFile.PayloadID), string(dstPayloadID)}, true, func(ctx context.Context) error {
-		if srcFile.PayloadID == dstPayloadID {
-			return nil
-		}
-		// Pending metadata is bounded by the journal's durable extent. Commit both
-		// journals before publishing sizes so a destination tail cannot be hidden
-		// by deferred metadata when the replacement transaction validates it.
-		for _, id := range []metadata.PayloadID{srcFile.PayloadID, dstPayloadID} {
-			if _, err := blockStore.Flush(ctx, string(id)); err != nil {
-				return fmt.Errorf("commit clone payload: %w", err)
+	if srcFile.PayloadID == dstPayloadID {
+		return nil
+	}
+	ids := []string{string(srcFile.PayloadID), string(dstPayloadID)}
+	drain := true
+	for {
+		if drain {
+			if err := blockStore.DrainPayload(ctx, string(srcFile.PayloadID)); err != nil {
+				return fmt.Errorf("drain source payload: %w", err)
 			}
+			drain = false
 		}
-		if metaSvc != nil {
-			authCtx := &metadata.AuthContext{Context: ctx}
-			for _, handle := range []metadata.FileHandle{srcHandle, dstHandle} {
-				if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle, true); err != nil {
-					return fmt.Errorf("flush clone metadata: %w", err)
+		entered, err := blockStore.TryWithPayloadScope(ctx, ids, true, func(ctx context.Context) error {
+			if blockStore.HasRemoteStore() {
+				// Flush credits only its snapshot. A write arriving during an upload
+				// remains dirty; retry outside admission rather than cloning stale rows.
+				var err error
+				drain, err = blockStore.HasDirty(ctx, string(srcFile.PayloadID))
+				if err != nil || drain {
+					return err
 				}
 			}
+			// Pending metadata is bounded by the journal's durable extent. Commit both
+			// journals before publishing sizes so a destination tail cannot be hidden
+			// by deferred metadata when the replacement transaction validates it.
+			for _, id := range []metadata.PayloadID{srcFile.PayloadID, dstPayloadID} {
+				if err := blockStore.CommitLocal(ctx, string(id)); err != nil {
+					return fmt.Errorf("commit clone payload: %w", err)
+				}
+			}
+			if metaSvc != nil {
+				authCtx := &metadata.AuthContext{Context: ctx}
+				for _, handle := range []metadata.FileHandle{srcHandle, dstHandle} {
+					if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle, true); err != nil {
+						return fmt.Errorf("flush clone metadata: %w", err)
+					}
+				}
+			}
+			err := cloneWholeFileScoped(ctx, blockStore, metadataStore, cache, srcHandle, dstHandle, dstPayloadID, count)
+			// Also invalidate on a post-commit local error: the manifest may already
+			// have changed, and a retry must not reuse pre-clone write attributes.
+			if metaSvc != nil {
+				metaSvc.InvalidateWriteCache(dstHandle)
+			}
+			return err
+		})
+		if err != nil || (entered && !drain) {
+			return err
 		}
-		if err := blockStore.DrainPayload(ctx, string(srcFile.PayloadID)); err != nil {
-			return fmt.Errorf("drain source payload: %w", err)
+		// Never queue an exclusive waiter behind a shared upload: the semaphore's
+		// writer preference would also park every later READ and WRITE. Failed
+		// tries own nothing, and churn is bounded by the request deadline.
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
-		err := cloneWholeFileScoped(ctx, blockStore, metadataStore, cache, srcHandle, dstHandle, dstPayloadID, count)
-		// Also invalidate on a post-commit local error: the manifest may already
-		// have changed, and a retry must not reuse pre-clone write attributes.
-		if metaSvc != nil {
-			metaSvc.InvalidateWriteCache(dstHandle)
-		}
-		return err
-	})
+	}
 }
 
 // cloneWholeFileScoped owns source and destination until the destination's

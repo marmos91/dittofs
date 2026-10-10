@@ -39,7 +39,7 @@ type flushClosure struct {
 	disp *uploadChain
 
 	// Pass-end reap state, written by fn (sequential) and read by AfterFile
-	// after the last flip, all within the Flush call that owns this closure.
+	// before durable credit, all within the Flush call that owns this closure.
 	committed  []journal.Extent   // durable extents reported to journal, in order
 	newOffsets map[int64]struct{} // chunk offsets the pass tiled
 }
@@ -165,12 +165,12 @@ func (c *flushClosure) fn(ctx context.Context, r journal.Run) (out []journal.Ext
 	// the first failure stops the chain (its own extents — committed or not —
 	// and everything after it go unreported).
 	extents, cerr := c.disp.collect()
+	// A failed later flight can accompany a successfully committed prefix.
+	// Publish that prefix too, before journal makes its bytes evictable.
+	c.committed = append(c.committed, extents...)
 	if cerr != nil {
 		return extents, cerr
 	}
-	// Deferred credit from earlier runs rides here; record everything the
-	// chain has resolved so the reap spans exactly the committed ranges.
-	c.committed = append(c.committed, extents...)
 	return extents, nil
 }
 
@@ -302,9 +302,9 @@ func contiguousRanges(chunks []carver.Chunk) [][]carver.Chunk {
 	return out
 }
 
-// afterFile runs once per file after the last flip, still under the shard's
+// afterFile runs once per file before durable credit, still under the shard's
 // flush lock: it reaps the manifest rows the committed tiling superseded. The
-// reap cannot move outside the lock — a second pass entering between the flip
+// reap cannot move outside the lock — a second pass entering between commits
 // and a deferred reap commits rows inside the first pass's about-to-be-reaped
 // span, and the delayed reap then deletes a load-bearing row.
 func (c *flushClosure) afterFile(ctx context.Context, id journal.FileID) error {

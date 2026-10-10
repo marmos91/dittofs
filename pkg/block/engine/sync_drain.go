@@ -99,7 +99,7 @@ func (m *RemoteSync) DrainAllUploads(ctx context.Context) error {
 // carver assembly (fresh per call — the C9 caller obligation), the dedup Skip
 // hook, the sink that seals/frames/uploads/commits, and the pass-end manifest
 // reap (passed as FlushOptions.AfterFile, which journal calls under the
-// shard's flush lock after the last flip). Built from the syncer's wired
+// shard's flush lock before durable credit). Built from the syncer's wired
 // remote/committer/synced deps; the chunking profile is the engine's own
 // config (the local store's seam is content-agnostic).
 func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal.FileID) error) {

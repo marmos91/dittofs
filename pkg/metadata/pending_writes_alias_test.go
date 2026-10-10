@@ -57,10 +57,12 @@ func TestPendingWritesHandleAliasesShareState(t *testing.T) {
 				require.True(t, ok, "cache invalidation must retain actual pending writes")
 				require.Equal(t, uint64(128), size)
 			}
-			all := tr.PopAllPending()
+			all := tr.PendingHandles()
 			require.Len(t, all, 1)
-			require.Equal(t, aliases[0], all[0].Handle)
-			require.Equal(t, uint64(128), all[0].State.MaxSize)
+			require.Equal(t, aliases[0], all[0])
+			drained, ok := tr.PopPending(all[0])
+			require.True(t, ok)
+			require.Equal(t, uint64(128), drained.MaxSize)
 			require.Zero(t, tr.Count())
 
 			tr.SetCachedFile(writer, file)

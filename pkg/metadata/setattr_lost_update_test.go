@@ -1,6 +1,8 @@
 package metadata_test
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +36,51 @@ func windowPeer(t *testing.T, ws *windowStore, peer func()) func() {
 		require.True(t, fired,
 			"the window hook never fired: SetFileAttributes opened no transaction through the wrapper")
 	}
+}
+
+type windowPeerCommitKey struct{}
+
+// A size change owns the write-flush stripe before opening its transaction.
+// Let a concurrent peer finish its transaction in that window, then let the
+// outer operation release the stripe before joining the peer's invalidation.
+func windowConcurrentPeer(t *testing.T, ws *windowStore, peer func(context.Context) error) func() {
+	t.Helper()
+	fired := false
+	committed, done := make(chan struct{}), make(chan struct{})
+	var commitOnce sync.Once
+	var peerErr error
+	ws.afterCommit = func(ctx context.Context) {
+		if ctx.Value(windowPeerCommitKey{}) != nil {
+			commitOnce.Do(func() { close(committed) })
+		}
+	}
+	ws.beforeTx = func() {
+		fired = true
+		go func() {
+			peerErr = peer(context.WithValue(t.Context(), windowPeerCommitKey{}, true))
+			close(done)
+		}()
+		select {
+		case <-committed:
+		case <-time.After(5 * time.Second):
+			t.Error("peer did not commit before the outer transaction opened")
+		}
+	}
+	join := func() {
+		t.Helper()
+		if !fired {
+			t.Error("the window hook never fired")
+			return
+		}
+		select {
+		case <-done:
+			require.NoError(t, peerErr)
+		case <-time.After(5 * time.Second):
+			t.Error("peer did not finish after the outer operation released its stripe")
+		}
+	}
+	t.Cleanup(join)
+	return join
 }
 
 // lostUpdateFixture builds a Service whose transaction entry is
@@ -312,10 +359,12 @@ func TestSetFileAttributes_WritePermittedOpSurvivesConcurrentChown(t *testing.T)
 			_, err := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &owner})
 			require.NoError(t, err)
 
-			assertFired := windowPeer(t, ws, func() {
+			joinPeer := windowConcurrentPeer(t, ws, func(ctx context.Context) error {
 				next := uint32(3000)
-				_, hookErr := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &next})
-				require.NoError(t, hookErr)
+				peerAuth := *root
+				peerAuth.Context = ctx
+				_, hookErr := svc.SetFileAttributes(&peerAuth, handle, &metadata.SetAttrs{UID: &next})
+				return hookErr
 			})
 
 			caller := nonRootAuth(1000, 1000)
@@ -323,10 +372,13 @@ func TestSetFileAttributes_WritePermittedOpSurvivesConcurrentChown(t *testing.T)
 				caller = tc.auth()
 			}
 			_, err = svc.SetFileAttributes(caller, handle, tc.attrs())
+			joinPeer()
 			require.NoError(t, err,
 				"a peer chown turned a write-permission-gated %s into EPERM; its authorization "+
 					"never read the file's owner", tc.name)
-			assertFired()
+			after, err := svc.GetFile(root.Context, handle)
+			require.NoError(t, err)
+			require.Equal(t, uint32(3000), after.UID, "the peer's committed chown must survive")
 		})
 	}
 }
@@ -385,10 +437,12 @@ func TestSetFileAttributes_OwnerAuthorizedOpRefusedAfterConcurrentChown(t *testi
 			_, err := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &owner})
 			require.NoError(t, err)
 
-			assertFired := windowPeer(t, ws, func() {
+			joinPeer := windowConcurrentPeer(t, ws, func(ctx context.Context) error {
 				next := uint32(3000)
-				_, hookErr := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{UID: &next})
-				require.NoError(t, hookErr)
+				peerAuth := *root
+				peerAuth.Context = ctx
+				_, hookErr := svc.SetFileAttributes(&peerAuth, handle, &metadata.SetAttrs{UID: &next})
+				return hookErr
 			})
 
 			caller := nonRootAuth(1000, 1000)
@@ -396,14 +450,17 @@ func TestSetFileAttributes_OwnerAuthorizedOpRefusedAfterConcurrentChown(t *testi
 				caller = tc.auth()
 			}
 			_, err = svc.SetFileAttributes(caller, handle, tc.attrs())
+			joinPeer()
 			require.Error(t, err,
 				"%s was authorized by ownership a peer chown has since moved, and mode 0600 grants "+
 					"uid 1000 nothing on the new owner's file", tc.name)
-			assertFired()
 
 			var storeErr *metadata.StoreError
 			require.ErrorAs(t, err, &storeErr)
 			require.Equal(t, metadata.ErrPermissionDenied, storeErr.Code)
+			after, err := svc.GetFile(root.Context, handle)
+			require.NoError(t, err)
+			require.Equal(t, uint32(3000), after.UID, "the peer's committed chown must survive")
 		})
 	}
 }

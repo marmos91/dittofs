@@ -60,7 +60,7 @@ func TestColdExtents_HydrateClearsIt(t *testing.T) {
 	// Re-hydrate every cold range, which is what a warm does.
 	for _, iv := range coldIntervals(s) {
 		buf := make([]byte, iv.length)
-		if err := s.Hydrate(ctx, "f", iv.fileOff, buf, 0); err != nil {
+		if err := s.Hydrate(ctx, "f", iv.fileOff, buf, s.WriteVersion()); err != nil {
 			t.Fatalf("Hydrate(%d, %d): %v", iv.fileOff, iv.length, err)
 		}
 	}

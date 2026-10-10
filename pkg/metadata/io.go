@@ -267,7 +267,7 @@ func (s *Service) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) 
 					"error", txErr)
 			}
 			// Update the cached file to reflect the cleared mode
-			s.pendingWrites.InvalidateCache(intent.Handle)
+			s.InvalidateWriteCache(intent.Handle)
 			// Update PreWriteAttr so the synthetic response below is correct
 			intent.PreWriteAttr.Mode &= ^uint32(0o6000)
 		} else {

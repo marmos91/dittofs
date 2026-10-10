@@ -797,6 +797,29 @@ func (bs *Store) ResetLocalState(ctx context.Context) error {
 	return nil
 }
 
+// CommitLocal makes buffered journal writes durable without uploading them.
+// Replacement uses this barrier before publishing deferred metadata while it
+// owns payload admission, including on shares requiring remote WRITE durability.
+func (bs *Store) CommitLocal(ctx context.Context, payloadID string) error {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return bs.local.Commit(ctx, journal.FileID(payloadID))
+}
+
+// HasDirty reports dirty bytes or unfinished manifest publication/reaping. An
+// exclusive payload scope keeps the answer stable through replacement.
+func (bs *Store) HasDirty(ctx context.Context, payloadID string) (bool, error) {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	return bs.local.HasDirty(ctx, journal.FileID(payloadID))
+}
+
 // DrainPayload commits and carves one payload synchronously, including the
 // manifest projection and reap. It joins an owned clone scope directly rather
 // than waiting for a background worker that would need that same scope.

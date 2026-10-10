@@ -145,8 +145,8 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 
 // TestFlushCommittedPrefixFlipsAndReapsDespiteError pins C5: fn returns
 // a non-empty durable slice TOGETHER with an error — "these committed, then I
-// failed" — and journal flips the validated extents, still calls AfterFile
-// (the committed prefix must be reaped) and returns the error.
+// failed" — and journal calls AfterFile, flips the validated extents after
+// successful publication, and returns the error.
 //
 // Scope: this is C5 at the seam, and nothing more. It asserts that AfterFile
 // runs and that the reported prefix flips, NOT which span AfterFile receives —
