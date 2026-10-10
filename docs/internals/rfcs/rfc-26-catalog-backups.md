@@ -896,7 +896,7 @@ header   = (sealed) prefix, key scope and every other bound setting ‖
            source installation ‖ share and snapshot ids ‖ cuts ‖ base digest
            (move-delta only) ‖ (material ID, fingerprint) of every census
            material ‖ record counts per section ‖ header MAC
-section* = type ‖ frame* ‖ section MAC ‖ record count
+section* = type (1 byte, RFC 5 Appendix B.1) ‖ frame* ‖ section MAC ‖ record count
 frame    = length ‖ sealed records ‖ frame index      (frames of at most 4 MiB)
 trailer  = end marker ‖ trailer MAC
 ```

@@ -496,12 +496,12 @@ a definition:
 - **Unkeyed table.** `G` is 256 little-endian 64-bit words: the first 2,048
   bytes of BLAKE3's extendable output in key-derivation mode, context
   `dittofs gear table v1`, over the empty input.
-- **Keyed table** ([§6](#6.%20Boundaries%20are%20public)). The same 2,048 bytes, from BLAKE3's keyed mode under
-  the namespace's chunking key, over the ASCII input `dittofs chunking key v1`. Only
+- **Keyed table** ([§6](#6.%20Boundaries%20are%20public)). The same 2,048 bytes, the first 2,048 of BLAKE3's
+  extendable output in keyed mode under the namespace's 32-byte chunking key, over the ASCII input `dittofs chunking key v1`. Only
   an encrypting namespace has a chunking key ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)); every
   other namespace cuts under the unkeyed table, and a cutter **MUST** refuse a
   keyed table for one.
-- **Chunk ID** ([§4.1](#4.1%20A%20chunk)). BLAKE3's keyed mode under the namespace's chunk-ID key,
+- **Chunk ID** ([§4.1](#4.1%20A%20chunk)). BLAKE3's keyed mode under the namespace's 32-byte chunk-ID key,
   32 bytes of output, over the chunk's bytes.
 
 ### 3.3 Why a large minimum smothers the search
@@ -694,9 +694,12 @@ nonce drawn for one put attempt:
   for each **put attempt**, and written into the block header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) so
   a whole-block read can still recompute the name and check it.
 - `len(chain)` is one byte, the length of `chain`; `chain` is the block's
-  **chain ID** ([RFC 5](rfc-5-transforms.md)): it covers everything that decides an encoded body's
+  **chain ID** ([RFC 5 §2.8](rfc-5-transforms.md#2.8%20The%20chain%20ID)): it covers everything that decides an encoded body's
   length — the transforms, their versions, their length-affecting settings, and
-  the IDs of the material in use.
+  the IDs of the material in use. It is always 32 bytes, so `len(chain)` is
+  `0x20`; its byte encoding is RFC 5 §2.8's table.
+- `‖` is plain concatenation; `h₁ … hₙ` carry no count, since each is 32 bytes and
+  they end the input.
 - `h₁ … hₙ` are the 32-byte chunk IDs as the block header records them, in
   block order: the chunk IDs ([§4.1](#4.1%20A%20chunk)), or their sealed form when the namespace
   encrypts ([RFC 5](rfc-5-transforms.md)). In an encrypting namespace neither is a value a bucket
@@ -1092,7 +1095,7 @@ rows need no reader and no hash at all.
 | chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) derivation golden | Derive the unkeyed table, a keyed table under a fixed key, and one chunk ID; assert each against committed bytes computed from [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)'s text by an independent implementation, and that the test uses *t* + 1 and *t* − 3 top bits. |
 | consumer | [§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration) adopted chunks within `Max` | Re-home content cut at a 1 MiB `Target` into a namespace with a 256 KiB `Target` ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); assert every chunk longer than 1 MiB is re-cut or the move refused, and none is admitted. A path that adopts chunks as stored admits 4 MiB chunks into a namespace whose readers hold 1 MiB. |
 | carver | [§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) artificial end | Cut random input as one stretch with a real end, and again as a series of offers ending at arbitrary limits, each re-offered from the previous `consumed`; assert both emit identical chunks, and no call emits a byte past its last content-chosen boundary. |
-| name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, the nonce or the chain ID; assert each gives a different name. Encode the scope with a different length byte; assert the name changes. |
+| name | [§4.2](#4.2%20A%20block) golden name | Derive the name of the golden vector; assert the committed bytes. Change the order of two hashes, the scope, the nonce or the chain ID; assert each gives a different name. Encode the scope with a different length byte; assert the name changes. The vector's chain ID is itself computed from [RFC 5 §2.8](rfc-5-transforms.md#2.8%20The%20chain%20ID)'s byte table by the independent implementation, not supplied as opaque bytes, and its length byte is `0x20`. |
 | carver | [§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed) borrowed bytes | Hold on to the slice passed to `emit` and assert it is seen to change. The check exists to prove the contract is real, so a caller that copies is not doing it out of superstition. |
 | carver | [§7](#7.%20Errors) no short chunk on error | Fail `emit` mid-stretch, and fail the reader mid-chunk; assert no delivered chunk is a truncated prefix of one the clean path would produce. |
 

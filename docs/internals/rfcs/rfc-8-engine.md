@@ -411,7 +411,7 @@ and **MUST** report a change to them as a migration rather than apply it
    registration and open reference, copies, sync, phase 1 — before either file
    is served ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)); applied as a removal it would leave the destination
    reading zeros. A synced loss record above `applied`, which `Since` also
-   yields, has the dropped write's existence committed from it, so the range reads **Lost**, not as
+   yields, has the dropped write's existence committed from it, so the extent reads **Lost**, not as
    the file was before the write ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). The existence commit syncs the file first, like every existence
    commit ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). Once it commits, call `Settle(id, applied)` with the new
    `applied`, so the journal drops the markers it covers.
@@ -419,7 +419,7 @@ and **MUST** report a change to them as a migration rather than apply it
    and every unfinished clone ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation), [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)); a clone's
    source extent registration and open reference are rebuilt from the clone spec
    its `Removal` record carries before either file is served, and its
-   destination range is not served until its clone is done. Then prune every done removal: no pass
+   destination extent is not served until its clone is done. Then prune every done removal: no pass
    is in flight.
 5. **Rebuild the work queue** ([§6.1](#6.1%20The%20work%20queue)): a `Dirty` event for every file the
    journal holds with an extent whose offloaded bit is unset.
@@ -570,7 +570,7 @@ state.
   uncommitted operations of the file over committed existence.
 - The reply carries the **write verifier** (below).
 - A write the caller marks **stable** ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)) is a stability point for its
-  own range: it is answered once the journal has synced it and, when it
+  own extent: it is answered once the journal has synced it and, when it
   overwrites committed content, once its existence has committed
   ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 
@@ -647,9 +647,9 @@ after a loss, each client resends its recent unstable writes once.
   point** and reaches the facade as `Commit`; a stable write reaches it as a
   `Write` marked stable ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
 - `Commit` **MUST** call the journal's `Sync` on the file — at the primary and every replica,
-  where replication is composed ([RFC 10](rfc-10-journal-replication.md)) — over the range the caller names (the
+  where replication is composed ([RFC 10](rfc-10-journal-replication.md)) — over the extent the caller names (the
   whole file when it names none), and answer once the sync is done **and** the
-  existence of every pending write in that range that **overwrites committed
+  existence of every pending write in that extent that **overwrites committed
   content** has committed. A pending write overwrites committed content where it
   covers an offset below the committed `size` and outside the committed holes:
   exactly the runs whose existence commit writes an overwrite record
@@ -747,7 +747,7 @@ after a loss, each client resends its recent unstable writes once.
 **Steps.**
 
 1. `Sync(file)` in the journal.
-2. If a pending write in the range, at or below the version the sync reached,
+2. If a pending write in the extent, at or below the version the sync reached,
    overwrites committed content (`Existence.Overwrites`), join the group
    commit and wait for the transaction that covers the file.
 3. Answer, with the verifier and the loss sequence, both sampled now.
@@ -768,13 +768,13 @@ outage into client write errors.
 
 **Why an overwrite waits and an append does not.** An overwrite of committed
 content needs an overwrite record before the journal can lose it: without one,
-the old ref still covers the range, and a record that fails its checksum or a
-device that dies before the group commit leaves the range reading the
+the old ref still covers the extent, and a record that fails its checksum or a
+device that dies before the group commit leaves the extent reading the
 superseded chunk as current, with no error — the silent loss existence is
 recorded to prevent. An append or a hole fill whose synced record a loss event
 drops before its existence commit is not left to read as zeros: the engine
 commits that write's existence from the loss record, which names the file,
-extent, version and synced flag ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), so the range is uncarved
+extent, version and synced flag ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), so the extent is uncarved
 with nothing held and reads **Lost**. An unsynced one, dropped with a failed
 window, was never answered as stable and reads as the file did before the write.
 Either is reported through the loss generation and the loss sequence, never
@@ -1086,7 +1086,7 @@ offered while its hold stands; its commit writes the ref straight to history, wi
 
 - **A held version commits first.** The pipeline **MUST** commit a held superseded
   version no later than, and in version order before, any newer version over the
-  same range, so the newer one's commit finds it and takes its `born` as `died`.
+  same extent, so the newer one's commit finds it and takes its `born` as `died`.
 - **A run splits at a live hold mark.** Carve **MUST NOT** let one run span a live
   hold mark of its file: the run is split there, so no ref holds versions from both
   sides of it, since a ref takes the highest `born` of its versions.
@@ -1447,7 +1447,7 @@ large-file workload.
 >   fill until repack frees space: reads are served, and writes keep the
 >   capacity.
 > - A fetch for `[0, 1 MiB)` starts at `asOf` version 10; a client writes the same
->   range at version 11 before the fetch returns. The fill is refused, and the
+>   extent at version 11 before the fetch returns. The fill is refused, and the
 >   written bytes stay ([§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)).
 
 ### 7.4 The speculator
@@ -1532,9 +1532,9 @@ churns less.
 | S1 | Saturate the fetcher with read-ahead for one file; issue a demand read of another. Assert the demand read's latency stays within its unloaded bound. |
 | S2 | Pre-warm more than free capacity while writing. Assert no write is refused, and the pre-warm pauses at the low-water mark. |
 | S3 | Read 10³ files sequentially at once. Assert speculative bytes in flight never exceed the share's budget. |
-| read-ahead window | Replay a sequential read, a random read and a strided read. Assert the window opens only for the sequential one, and a random read cancels queued hints. |
-| S5 | Write a file larger than the read-ahead window and keep it held; read it sequentially twice, then pre-warm it. Assert the remote sees zero requests. Release one block's extents; read again; assert exactly that block's chunks are fetched. A speculator that always asks for whole blocks refetches the held file. |
+| S3, read-ahead window | Replay a sequential read, a random read and a strided read. Assert the window opens only for the sequential one, and a random read cancels queued hints. |
 | S4, pre-warm resume | Restart during a read-ahead and a pre-warm; re-issue the pre-warm. Assert no speculative state was persisted, the window reopens from the next reads, and the pre-warm skips files already held and completes. |
+| S5 | Write a file larger than the read-ahead window and keep it held; read it sequentially twice, then pre-warm it. Assert the remote sees zero requests. Release one block's extents; read again; assert exactly that block's chunks are fetched. A speculator that always asks for whole blocks refetches the held file. |
 
 ### 7.5 An unreachable remote fails the read, distinguishably
 
@@ -1549,7 +1549,7 @@ answered from block metadata's hole set and zero refs, with the journal's
 uncommitted operations applied ([RFC 7 §9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)). They **MUST NOT** be answered from what the journal holds,
 which cannot tell a hole from an evicted extent. A zero ref under a newer
 overwrite record **MUST** count as data ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)): the overwrite wrote bytes
-there that are not yet offloaded, and reporting the range as a hole would make a
+there that are not yet offloaded, and reporting the extent as a hole would make a
 sparse-aware copy skip them.
 
 ### 7.7 An absent object is re-resolved while its location moves
@@ -1629,7 +1629,7 @@ Truncate down, deallocate, release and a clone's destination are **removals**
 **Steps.**
 
 1. Take the file's guard.
-2. The journal removes the range, and assigns the removal its version *v*
+2. The journal removes the extent, and assigns the removal its version *v*
    ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)). A release is `Delete`, a removal of `[0, ∞)`.
 3. Phase 1: one transaction commits pending existence, the existence change and
    `Removal(file, v)`, and checks and writes the file's fences. For a release it
@@ -1637,7 +1637,7 @@ Truncate down, deallocate, release and a clone's destination are **removals**
    pending release, aborting if an open has arrived ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)); writes a pending
    release for each of the file's named streams; and deletes its File record,
    FileData fields included ([RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)). Phase 1 writes no ref and drops
-   none, whatever the range's size: every ref over the range is dropped or
+   none, whatever the extent's size: every ref over the extent is dropped or
    narrowed in phase 2 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)).
 4. Release the guard, `Settle(id, v)`, post `RemovalPending(file, v)` ([§6.1](#6.1%20The%20work%20queue)),
    and return.
@@ -1646,11 +1646,11 @@ Truncate down, deallocate, release and a clone's destination are **removals**
 
 ### 8.2 Deallocate records a hole; it does not write zeros
 
-The journal stops holding the range at a new version, then phase 1 records the
-removal, whose mask reads the range as a hole at once; phase 2's batches drop or
+The journal stops holding the extent at a new version, then phase 1 records the
+removal, whose mask reads the extent as a hole at once; phase 2's batches drop or
 narrow the refs and holes inside it, and the last writes the merged hole
 ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). It **MUST NOT** stage zeros through the write path:
-zeros staged as data consume journal capacity in proportion to the range, so a
+zeros staged as data consume journal capacity in proportion to the extent, so a
 large deallocation could refuse writes.
 
 ### 8.3 A pass in flight survives a removal under it
@@ -1685,17 +1685,17 @@ Then, by F2, one of two cases:
    those refs at once, and phase 2 drops them, since their `newest` is below *v*
    (F1).
 2. **Phase 1 runs first.** The commit finds `Removal(file, v)` (F3), and drops each
-   of its refs that overlaps the range (F1). For a release it finds no FileData,
+   of its refs that overlaps the extent (F1). For a release it finds no FileData,
    and drops all of the file's refs. A report naming a removed extent marks
    nothing in the journal ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)).
 
-Either way no ref older than *v* survives inside the range, so a later truncate up
+Either way no ref older than *v* survives inside the extent, so a later truncate up
 reads zeros where the user was promised zeros, and the upload read stable bytes
 throughout (F4). What the pass carried only for dropped refs is dead weight in its
 block, for GC to reclaim; a block with nothing live commits as a sweep candidate.
 
 **A straddling ref is dropped whole.** A ref that crosses the removal's edge
-overlaps it, so the commit drops all of it, including the part outside the range.
+overlaps it, so the commit drops all of it, including the part outside the extent.
 That part is not reported, stays **Dirty** in the journal, and is offered again:
 it costs at most one chunk's re-upload per edge, and loses nothing.
 
@@ -2152,7 +2152,7 @@ var (
 ### 12.2 A retried call is recognised, not re-applied
 
 A mutation repeated after a lost reply is **not** safe to apply twice: if write A's
-reply is lost and write B lands on the same range, a re-applied A overwrites B.
+reply is lost and write B lands on the same extent, a re-applied A overwrites B.
 So every routed mutation (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) carries a request ID, unique across
 the cluster, in [RFC 15](rfc-15-topology.md)'s route envelope, and the primary keeps a short table of
 recent results keyed by **request ID alone**, handed over with the shard
@@ -2210,10 +2210,10 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E25 | Speculation never delays a demand read, never causes a write to be refused, and never fetches a block whose every byte the journal holds. |
 | E26 | A routed mutation retried with the same request ID is answered with its original result, never applied twice; the table is keyed by request ID alone and handed over with the shard. |
 | E27 | The write verifier changes on a restart, on a change of the node serving the shard as primary, on every rise of the shard's incarnation — every start, which raises every shard's in its start transaction, a journal attach, the shard's return to a process that served it — and on every rise of the file's journal's loss generation — a loss of unoffloaded content or a failed sync window — and on nothing else; a `Write` samples its inputs before staging and a `Commit` after its sync, and the loss generation never repeats within a process. |
-| E28 | A clone changes only its destination range; every acknowledged write outside it survives, and no fill resolved before the clone installs inside it. An overlapping clone within one file and a `CLONE` over `clone_max_len` are refused with `ErrInvalid`, a clone or copy across namespaces with `ErrCrossNamespace`; a clone resolves its source at one `asOf` while an extent registration answers writes, truncates, deallocates and clones into the source extent `ErrDelay` and an open reference defers its release; its spec is durable on the journal's marker and the `Removal` record, so a restart finishes it; it fails only before its journal step, and is answered only when done. A copy runs as bounded clones and may answer a short count. |
+| E28 | A clone changes only its destination extent; every acknowledged write outside it survives, and no fill resolved before the clone installs inside it. An overlapping clone within one file and a `CLONE` over `clone_max_len` are refused with `ErrInvalid`, a clone or copy across namespaces with `ErrCrossNamespace`; a clone resolves its source at one `asOf` while an extent registration answers writes, truncates, deallocates and clones into the source extent `ErrDelay` and an open reference defers its release; its spec is durable on the journal's marker and the `Removal` record, so a restart finishes it; it fails only before its journal step, and is answered only when done. A copy runs as bounded clones and may answer a short count. |
 | E29 | Before a journal serves a share it did not serve at open, its version counter is raised above the share's version floor. |
 | E30 | A file is offered and evicted after a restart only once the reseed has run for it; the reseed marks what refs justify and unmarks what none does. |
-| E31 | A stability point and a stable write are answered after the journal sync and, for every pending write in their range that overwrites committed content, after its existence commit, joining the group commit and never issuing one; under a store that commits nothing such a reply is `ErrDelay` at its deadline, never success; other existence follows within a bounded age; every metadata commit the engine acts on is durable when reported. |
+| E31 | A stability point and a stable write are answered after the journal sync and, for every pending write in their extent that overwrites committed content, after its existence commit, joining the group commit and never issuing one; under a store that commits nothing such a reply is `ErrDelay` at its deadline, never success; other existence follows within a bounded age; every metadata commit the engine acts on is durable when reported. |
 | E32 | A read whose covering lookup returns uncarved runs in a file whose `applied`, or whose run's overwrite version, is above its `asOf` asks the journal again for them; an allocation answer counts a zero ref under a newer overwrite as data. |
 | E33 | Eviction is triggered by allocated occupancy and writes are paced on dirty plus unreclaimed bytes; repack, scoped to a share or a segment set and drawing on a reserve outside share limits, is how space returns; a full journal or share limit answers `ErrDelay` while space can still be freed — a remote outage included — and `ErrNoSpace` only when the store's cause or an operator says none will be, by one table ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)). |
 | E34 | A clone never waits on the remote tier: unoffloaded source bytes are copied through the journal and synced before phase 1 commits their existence, carved refs are adopted by metadata-only batches, and a source run uncarved and not held at `asOf`, or whose chunk record is gone, is carried into the destination as uncarved, reading **Lost** there, never zeros and never a stale ref. |
@@ -2282,17 +2282,17 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) verifier inputs | Hand a shard away and back to the same process: assert the verifier changed. Close and reopen the journal in the same process after a loss: assert the loss generation continued and no verifier repeats an earlier one. Lose an extent already offloaded: assert the verifier unchanged. Inject a loss between staging a write and its reply: assert that write's verifier differs from the next `Commit`'s. A verifier sampled after staging returns equal ones. |
 | [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) verifier after a loss | Write unstable, then, in the same process and epoch, drop the extent as corrupt before its stability point; write again. Assert the verifiers differ. Repeat with a failed sync resolved by failing its window. Resolve a failed sync by re-appending; assert the verifier did not change. A verifier built from epoch and instance alone keeps the first two equal, and the client never resends the lost write. |
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard across a removal | Stall a truncate between its journal step and its transaction; trigger an offload. Assert the offer waits, and no ref lies past `size` after both finish. |
-| [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfer survives a removal | Stall a pass's upload; truncate the file below the offered range; release the upload. Assert the upload completes, the commit drops the refs past the new size, drops a straddler whole and re-offers its outside part, applies the rest, and the truncated range reads as past end of file. Run both commit orders. Repeat with deallocate, release and a clone onto the file. |
+| [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfer survives a removal | Stall a pass's upload; truncate the file below the offered extent; release the upload. Assert the upload completes, the commit drops the refs past the new size, drops a straddler whole and re-offers its outside part, applies the rest, and the truncated extent reads as past end of file. Run both commit orders. Repeat with deallocate, release and a clone onto the file. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) restart re-offer | Crash after a put and before its commit; restart. Assert the extents are offered again under a new name, the first object stays unrecorded with its intent, collection removes both once the epoch is superseded, and reads are correct. Crash after a commit, before `report`; assert the re-offer carries every chunk, its commit finds every ref already committed and writes none, its block is born dead, and the extents become evictable. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) journal gone | Write to two shares on one device journal without offloading; stop; delete the journal directory; start. Assert both shares are refused, each named, and no journal is created. Acknowledge the loss; assert the shares serve, and a read of the unoffloaded range fails as **Lost**, never zeros. Repeat with the shard's journal replicated (cluster): assert it rejoins from a replica with no operator action. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach above the floor | Move a share whose refs reach version 9·10⁸ onto a node whose journal's counter is near 2·10⁶; write over a range the imported refs cover, offload, evict, read. Assert the new write's version exceeds 9·10⁸ and the read returns the new bytes. Repeat for a clone and a restore into the node. Remove the raise: the read returns the imported content. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) journal gone | Write to two shares on one device journal without offloading; stop; delete the journal directory; start. Assert both shares are refused, each named, and no journal is created. Acknowledge the loss; assert the shares serve, and a read of the unoffloaded extent fails as **Lost**, never zeros. Repeat with the shard's journal replicated (cluster): assert it rejoins from a replica with no operator action. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach above the floor | Move a share whose refs reach version 9·10⁸ onto a node whose journal's counter is near 2·10⁶; write over an extent the imported refs cover, offload, evict, read. Assert the new write's version exceeds 9·10⁸ and the read returns the new bytes. Repeat for a clone and a restore into the node. Remove the raise: the read returns the imported content. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed gates offer and eviction | Crash after an offload commit with its durable record unsynced, with the journal full; restart. Assert the block is not put again, and no extent of a file is evicted before the reseed has visited that file. Restart with a bit whose ref was deleted behind the journal: assert a ledger mismatch is reported, the bit is cleared with `Unmark`, the extent is offered again and never evicted before that offer commits. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) recovery through `Since` | Crash after a truncate's journal step, before its removal record. Restart; assert `Since` yields the marker, existence applies it before the file is served, and `Settle` drops it. Crash a removal between batches; assert it resumes and the range reads as removed throughout. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) recovery through `Since` | Crash after a truncate's journal step, before its removal record. Restart; assert `Since` yields the marker, existence applies it before the file is served, and `Settle` drops it. Crash a removal between batches; assert it resumes and the extent reads as removed throughout. |
 | [§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put) minted names and intents | Retry a put with an unknown outcome; assert the same name and bytes. Re-offer the same content in a new pass; assert a new name. Remove the intent before the commit; assert the commit fails and the content is re-offered. Delete an object once record and intent are gone, then land a delayed delete of it; assert no committed block is touched. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) widening | Widen a run over an offloaded neighbour and release the neighbour mid-pass; assert the release waits for the pass and the new refs read correctly. |
 | [§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile) stretch ends | Stream a file across passes cut by `limit`. Assert no pass reports bytes past `consumed`, the next pass starts at a content boundary, and the chunking equals one pass over the whole file. Stop writing: assert the tail is cut and offloaded within the age ceiling. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone keeps writes outside its range | Clone a range onto `F` while a writer writes `F` past the cloned range; stall the clone before phase 1, between the phases and between two batches, writing at each stall. Assert every acknowledged write outside the range reads back from the journal, and again after it is offloaded and evicted. A clone that drops refs by file rather than by range loses them cold. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) no pre-clone fill | Evict `F`; pre-warm it and stall the fetches; clone onto `F`; release the fetches. Assert no fill installs, and the range reads the source's bytes. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone keeps writes outside its extent | Clone an extent onto `F` while a writer writes `F` past the cloned extent; stall the clone before phase 1, between the phases and between two batches, writing at each stall. Assert every acknowledged write outside the extent reads back from the journal, and again after it is offloaded and evicted. A clone that drops refs by file rather than by extent loses them cold. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) no pre-clone fill | Evict `F`; pre-warm it and stall the fetches; clone onto `F`; release the fetches. Assert no fill installs, and the extent reads the source's bytes. |
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard is not a fence | Run two engines, each believing it is primary for one file, with separate guards. Assert the store refuses the stale primary's commits on both paths. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) the join | Drive every row of [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata), including an uncarved extent the journal lost. Assert **Lost** fails — a check of the other rows passes a build that serves zeros. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) stale ref | Offload `[0, 4 MiB)`, overwrite `[1, 2 MiB)` and `Commit`, then drop the journal's extent before the overwrite is offloaded. Assert the read of `[1, 2 MiB)` fails as **Lost**, no get is issued for it, and the rest reads the first write. A design whose metadata records only holes serves the old chunk here as **Remote**. |
@@ -2300,24 +2300,24 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time) streaming, verified | Corrupt the fifth chunk of a cold read. Assert the first four chunks' bytes reach the writer, no byte of the fifth does, and the read fails as corrupt. |
 | [§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time) fill cannot fail a read | Make `Fill` fail. Assert the read returns the fetched bytes. |
 | [§7.2](#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time) fill loses to a write | Stall a fetch; write the extent; release the stall. Assert the written bytes survive. |
-| [§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves) re-resolution | Relocate a chunk twice between a reader's resolution and its gets, sweeping each old block. Assert the read succeeds. Truncate the range between resolution and get; assert past end of file, not **Lost**. Make a ranged read fail verification; assert a corruption error and no re-resolution. |
-| [§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate | Deallocate a range larger than free journal capacity. Assert it succeeds, reads as zeros, and consumes no journal capacity. |
+| [§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves) re-resolution | Relocate a chunk twice between a reader's resolution and its gets, sweeping each old block. Assert the read succeeds. Truncate the extent between resolution and get; assert past end of file, not **Lost**. Make a ranged read fail verification; assert a corruption error and no re-resolution. |
+| [§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate | Deallocate an extent larger than free journal capacity. Assert it succeeds, reads as zeros, and consumes no journal capacity. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) sync before existence | Write, then `Commit`, a truncate and an offer capture, each with the storage seam dropping unsynced records at a host crash injected right after the existence commit. Assert every committed `size` is backed by synced records: no read of committed existence fails as **Lost**. Remove the `Sync`: the check fails. |
-| [§12.2](#12.2%20A%20retried%20call%20is%20recognised%2C%20not%20re-applied) retried mutation | Forward write A and drop its reply; land write B on the same range; retry A with its request ID. Assert A is answered with its original version and B's bytes survive. Repeat with the shard handed to another primary before the retry (cluster): assert the same. A table keyed by request ID and epoch re-applies A after the handover. |
+| [§12.2](#12.2%20A%20retried%20call%20is%20recognised%2C%20not%20re-applied) retried mutation | Forward write A and drop its reply; land write B on the same extent; retry A with its request ID. Assert A is answered with its original version and B's bytes survive. Repeat with the shard handed to another primary before the retry (cluster): assert the same. A table keyed by request ID and epoch re-applies A after the handover. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) stable write, lazy existence | Append stable, and append then `Commit`, counting metadata transactions: assert each reply follows the journal sync and precedes any transaction. Crash before the group commit; restart; assert `size` and `mtime` are the written ones before the file is served, and existence committed within the bound once serving. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) overwrite waits for existence | Offload `[0, 4 MiB)`, overwrite 64 KiB inside it and `Commit`; then, right after the reply and before the existence age passes, drop the journal's record as corrupt. Assert the reply came after an existence commit that wrote the overwrite record, and the 64 KiB read fails as **Lost**, never the offloaded bytes. Issue `Commit` on 64 files with overwrites at once; assert one transaction covers them. A design that answers after the sync alone serves the superseded chunk with no error. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) cut points | Write and flush A in one file, then write B in another, both unstable and uncommitted; request a cut. Assert the snapshot holds A and B; write C after the cut point and before the gate reopens, and assert the snapshot lacks C and no existence above the cut point committed while the gate was closed. A cut that commits nothing misses A and B. Write and flush `~tmp1`, then rename it over `report.docx`, racing the close; assert the snapshot shows the old `report.docx` or the new one with its bytes, never a zero-length one. Start a primary with its gate closed and a pre-cut commit pending; assert its own commits pass the gate. A cut that takes its points before closing the gate admits the rename against content above them. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) stalled store | Stall the metadata store. Assert a `Commit` over an append is answered after its sync, and one over an overwrite of committed content is answered `ErrDelay` at its deadline, never success, until the store commits. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) failed window | Fail one sync window under writes to a file. Assert its stability point fails, the verifier changes, and the file's next `Commit` succeeds without a restart. Fail the timer's sync with no `Commit` waiting: assert the file's next `Commit` fails once and the one after succeeds, another file's `Commit` is unaffected, and an SMB flush through an open across the loss fails once with `ErrLost` from the returned loss sequence. Fail a window over an overwrite of a flushed write: assert the flushed write reads back. A journal that keeps the window pending fails every later `Commit` of the file; one that reports only to a waiting `Sync` lets the next flush succeed over the loss. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) durable commits | Crash the metadata store's host right after an offload commit is reported and the journal marked it; restart both. Assert every extent the journal marks is covered by a committed ref. |
-| [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) existence above `asOf` | Between a read's journal step and its metadata step, stage and commit an overwrite of the range without offloading it. Assert the read returns the old bytes or the new ones and never fails as **Lost**. Repeat with a write that fills a hole the read saw, and with one that grows the file past the end the read saw: assert the same. A build that keys the re-ask on overwrite records alone fails the last two as **Lost**. |
-| [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) zero ref under an overwrite | Offload a range of zeros, write data over it and commit without offloading; ask `SEEK_HOLE` and an allocated-range query from its start. Assert data. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone never waits | Make the remote unavailable; write a source range without offloading; clone it. Assert the clone completes, the destination reads the source's bytes, and no put was issued during it. Write into the destination range, and into the source range, during a clone: assert `ErrDelay` for both until it is done. Cut power right after the clone is answered: assert the destination reads the source's bytes after restart, never **Lost**. |
+| [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) existence above `asOf` | Between a read's journal step and its metadata step, stage and commit an overwrite of the extent without offloading it. Assert the read returns the old bytes or the new ones and never fails as **Lost**. Repeat with a write that fills a hole the read saw, and with one that grows the file past the end the read saw: assert the same. A build that keys the re-ask on overwrite records alone fails the last two as **Lost**. |
+| [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) zero ref under an overwrite | Offload an extent of zeros, write data over it and commit without offloading; ask `SEEK_HOLE` and an allocated-range query from its start. Assert data. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone never waits | Make the remote unavailable; write a source extent without offloading; clone it. Assert the clone completes, the destination reads the source's bytes, and no put was issued during it. Write into the destination extent, and into the source extent, during a clone: assert `ErrDelay` for both until it is done. Cut power right after the clone is answered: assert the destination reads the source's bytes after restart, never **Lost**. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) Lost source run carried | Offload `[0, 4 MiB)` of a source, overwrite `[1, 2 MiB)` and `Commit`, drop the journal's copy, clone `[0, 4 MiB)` onto a destination holding other data. Assert the clone completes, the destination's `[1, 2 MiB)` fails as **Lost**, and the rest reads the source. A clone that zeroes the run reads zeros; one that adopts the stale ref reads the first write. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) one source state | With `K` forced small, clone 1 GiB, `clone_max_len` raised to allow it; between batch 1 and batch 2, try to write the source at `[0, 1 MiB)` and `[900, 901 MiB)`. Assert both answer `ErrDelay`, and the destination equals the source as it was at the clone's start, while an offload of the source commits during the clone. Clone `f[0, 4 MiB)` onto `f[8, 12 MiB)`; assert it completes. Unlink the source and close its last handle mid-clone; assert the clone completes and the source is released after it. A clone without the registration yields a destination the source never was; one under the source's guard wedges the offload. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) overlapping clone | Clone `f[0, 8 MiB)` onto `f[1, 9 MiB)`. Assert `ErrInvalid`, and `f` reads exactly as before. A design that runs it fails it as **Lost** or zeroes the range. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) failure leaves the destination | Make the clone's capacity reservation fail. Assert the clone fails and the destination reads its prior content. Clone a range part dirty, part carved; crash after the journal step, after the copies, after phase 1 and between two batches, writing the source at each restart before it is served. Assert every restart finishes the clone from its spec, the destination equals the source at `asOf`, and the write answers `ErrDelay` until done. A restart that applies the marker as a plain removal leaves the destination zeroed; one that keeps the freeze in memory only clones a source written since. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) snapshot between batches | With `K` forced small, clone a range whose source is partly dirty; take a snapshot between two batches. Assert the snapshot reads the whole clone or none of it, never **Lost** for the copied runs. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) overlapping clone | Clone `f[0, 8 MiB)` onto `f[1, 9 MiB)`. Assert `ErrInvalid`, and `f` reads exactly as before. A design that runs it fails it as **Lost** or zeroes the extent. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) failure leaves the destination | Make the clone's capacity reservation fail. Assert the clone fails and the destination reads its prior content. Clone an extent part dirty, part carved; crash after the journal step, after the copies, after phase 1 and between two batches, writing the source at each restart before it is served. Assert every restart finishes the clone from its spec, the destination equals the source at `asOf`, and the write answers `ErrDelay` until done. A restart that applies the marker as a plain removal leaves the destination zeroed; one that keeps the freeze in memory only clones a source written since. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) snapshot between batches | With `K` forced small, clone an extent whose source is partly dirty; take a snapshot between two batches. Assert the snapshot reads the whole clone or none of it, never **Lost** for the copied runs. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) refusals | Clone between shares of two namespaces: assert `ErrCrossNamespace` and nothing changed. `CLONE` one byte over `clone_max_len`: assert `ErrInvalid`. `COPY` 1 GiB while a writer writes the source: assert each source write waits at most one chunk, and a deadline mid-copy answers a short count that a continuing copy completes. |
 | [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) retry later | Fill the journal with dirty bytes, the remote reachable: assert a write returns `ErrDelay`, never `ErrNoSpace`, and succeeds once offload and repack free space. Repeat with the remote unreachable past the caller's deadline: assert `ErrDelay` throughout, never `ErrNoSpace`, and success once it returns. Fill one share to its journal limit: assert `ErrDelay`, not `ErrNoSpace`. Make the store refuse puts with a quota error (storage full, bucket quota exceeded): assert `ErrNoSpace` at once, and that the store error reached the engine as `ErrDenied`, not `ErrInvalid`. An engine reading a bare healthy flag answers the outage and the full store alike. |
 | [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. |
@@ -2422,5 +2422,5 @@ One line per requirement.
 | [§12.1](#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service) no component returned | the facade returns its journal and remote store |
 | [§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros) deallocate records a hole | writes zeros through the journal |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) commit answered by the journal | a per-share setting makes commit wait for an inline offload |
-| [§12.3](#12.3%20The%20facade%20writes%20no%20residency) no residency writes | the facade marks ranges remote and pins journal versions |
+| [§12.3](#12.3%20The%20facade%20writes%20no%20residency) no residency writes | the facade marks extents remote and pins journal versions |
 | E1 no dead state | a read cache is started and never consulted |

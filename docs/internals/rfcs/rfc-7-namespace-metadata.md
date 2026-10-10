@@ -424,6 +424,8 @@ directory's `Group` when the parent has the setgid bit, and otherwise to the
 credential's group: the group the request's credential names, where the
 protocol's credential carries one (NFS's primary gid, resolved to its principal),
 and the principal's primary group ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)) where it does not, as for SMB. A
+credential group that resolves to no principal counts as no group on the
+credential, so the primary group applies. A
 principal with neither — no group on the credential and no primary group — gets
 its own principal as `Group`, a group of one, so the file is shared with nobody
 the owner did not choose; the create is not refused. A
@@ -790,6 +792,19 @@ itself. A listing returns the stored names in the order of [§3.5](#3.5%20A%20co
 case-sensitive share the key is the name. What the fold rule is, and which names
 a share accepts, is [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use).
 
+**A share never changes its fold rule.** Case sensitivity, and the fold rule
+with it, is bound once the share holds content ([RFC 13](rfc-13-configuration.md)), so no key is ever
+re-folded and no existing name is merged or split. A later upcase table is a new
+rule ID that only shares created under it use ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)). Names reach a
+share of another rule only by copy — a client's, or a copy into a new share —
+and each is a create under the destination's rule: a name that folds onto one
+already in the directory **MUST** fail as existing, as any create does
+(`EEXIST`, `STATUS_OBJECT_NAME_COLLISION`), and is never merged into the other
+entry or renamed. An import keeps each share's own rule and digest key, so its
+keys and cookies arrive unchanged ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)); a store whose binary does not
+implement an imported share's rule **MUST** refuse the import before publishing
+it, and an import never re-folds a share into another rule.
+
 Two adapters disagreeing about case on one share is not a cosmetic difference.
 Under SMB semantics `README` and `readme` are one entry and the second create
 fails; under POSIX semantics they are two, and a client that made both then
@@ -863,20 +878,27 @@ depend on has to be made a conflict explicitly:
 
 - **Create, link and rename-into** **MUST** guard the parent directory's File
   record ([RFC 16](rfc-16-metadata-store.md)'s `Guard`), in their own transaction. A guard is **shared**:
-  guards do not conflict with each other, only with a write of the guarded
-  record. Parallel creates in one directory therefore do not serialise.
-- **Removing a directory** **MUST** write the directory's File record in the
-  transaction that proves it empty. That write conflicts with every concurrent
-  guard of it, so a create racing the removal either commits first — and the
-  emptiness scan sees its entry, or the removal's write conflicts with its guard
-  — or aborts.
+  guards do not conflict with each other in either commit order, and a guard
+  aborts only its own transaction, when the guarded record was written after
+  its snapshot. Parallel creates in one directory therefore do not serialise.
+- **Removing a directory** **MUST**, in the transaction that proves it empty,
+  range-guard the directory's entries (`GuardRange(F‖dir‖e‖)`, [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend))
+  and write the directory's File record. Each side then tracks a key the other
+  writes, so whichever commits second aborts: if the create commits first, its
+  entry lands under the guarded range after the removal's snapshot, and the
+  removal retries and fails as not empty; if the removal commits first, it has
+  written the record the create guards, and the create retries and finds the
+  directory gone.
 - **The rename loop check** guards every ancestor it reads ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)).
 
-A read inside the transaction is not enough. A range scan is not conflict-tracked
-on every backend, and one backend validates no reads at all ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)). On
-it, a removal that only scanned for entries commits beside a create that only
-wrote one, and leaves an entry, and a file with `Nlink` 1, under a deleted
-directory.
+Neither half is enough alone, because a guard binds only its own transaction: it
+aborts the guarding side for a write committed before it, and never the writer
+([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)). With only the create's guard, a create that commits between the
+removal's snapshot and its commit is missed by the removal's scan — a scan is
+not conflict-tracked — and the removal's write does not abort a guard that has
+already committed; both commit, and leave an entry, and a file with `Nlink` 1,
+under a removed directory. The range guard is paid only by the rare removal;
+creates keep a shared point guard and stay parallel.
 
 ### 3.7 No short names
 
@@ -1067,21 +1089,26 @@ acted on the earlier observation would delete a file an open now holds.
 - The release transaction **MUST** verify, inside itself, that the file's
   `Nlink` is zero, that its pending-release record exists, and that no durable
   open record names the file or one of its streams, and **MUST** abort, releasing
-  nothing, if any check fails. It deletes the File record, so it conflicts with
-  every transaction that guards that record.
+  nothing, if any check fails. It finds the durable opens by a scan, so it also
+  **MUST** range-guard the durable open records of the file and of each of its
+  streams (`GuardRange(F‖id‖op‖)`, [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), and it deletes the File
+  record.
 - An open of a file that has lost its last entry — `Nlink` zero, not a share
   root; for a named stream, an open whose base file has lost its last entry,
   guarding the base's File record — **MUST** guard the File record
   ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)) in the transaction that writes its durable open record, and **MUST**
-  fail as stale when the File is gone. Either the open commits first and the
-  release sees its record, or the release's delete conflicts with the open's guard
-  and one of them retries.
+  fail as stale when the File is gone. Each side tracks a key the other writes:
+  if the open commits first, its record lands under the release's range guard
+  and the release aborts; if the release commits first, it has deleted the
+  record the open guards, and the open aborts and fails as stale.
 - `Link` **MUST** refuse, as stale, a target whose `Nlink` is zero: a released
   file cannot be given a name back through a handle, and a link racing the release
   would name a deleted file.
 
-The guard is needed, not only the check, for the reason [§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on) gives: a scan
-of open records is not conflict-tracked on every backend.
+Both guards are needed, not only the check, for the reason [§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on) gives: a scan
+of open records is not conflict-tracked, and a guard binds only its own
+transaction, so with one side guarding the race is closed in one commit order
+only.
 
 ## 5. Rename
 
@@ -1116,9 +1143,10 @@ guard every ancestor it reads ([§3.6](#3.6%20A%20structural%20change%20guards%2
 
 Guarding is what makes the check hold concurrently. Renaming A under B writes
 A's record and reads B's ancestors; renaming B under A writes B's and reads A's.
-The write sets are disjoint, and on a backend that validates no reads both
-would commit and leave a cycle. With the ancestors guarded, each rename's write
-conflicts with the other's guard, and one of them retries and is refused.
+The write sets are disjoint, so with the reads untracked both would commit and
+leave a cycle. With the ancestors guarded, each rename tracks a record the other
+writes, so whichever commits second finds a guarded record written after its
+snapshot, retries, and is refused — in either commit order.
 
 A check made before the transaction is vacuous: it walks the ancestors of the
 destination, finds the source absent, and by the time the rename applies a
@@ -1148,24 +1176,27 @@ it in its own transaction:
 - a directory **MAY** replace only an empty directory, and a non-directory only a
   non-directory; any other pairing fails, as "is a directory" or "not a
   directory";
-- replacing a directory **MUST** prove it empty and write its File record in the
-  rename's transaction, exactly as removing it does ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)): a create racing
-  into it either commits first, and the rename fails as not empty, or conflicts
-  with that write and retries. The replaced directory's `Nlink` falls to zero and
-  its pending release is written ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees));
+- replacing a directory **MUST** prove it empty, range-guard its entries and
+  write its File record in the rename's transaction, exactly as removing it does
+  ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)): if a create racing into it commits first, the range guard aborts
+  the rename, which retries and fails as not empty; if the rename commits first,
+  the create, which guards the record the rename wrote, aborts and finds the
+  directory gone. The replaced directory's `Nlink` falls to zero and its pending
+  release is written ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees));
 - a rename whose source and destination are entries of one file **MUST** succeed
   and change nothing, as POSIX requires.
 
-Without the write, a create that only guarded the replaced directory commits
-beside a rename that only scanned it, and leaves a file with `Nlink` 1 under a
-released directory.
+Without the write, a create that commits after the rename is not stopped;
+without the range guard, one that commits between the rename's snapshot and its
+commit is not. Either leaves a file with `Nlink` 1 under a released directory.
 
 ### 5.5 A recycle bin is a rename, and keeps three constraints
 
 A recycle bin turns an unlink into a rename into a bin directory, stamping a
 deletion time, an original path and a deleting user. Nothing below the namespace
-has to know a file is in one. Where a bin is offered, wherever it is built
-([§13](#13.%20Open%20questions)), three constraints hold:
+has to know a file is in one. No bin is required, and whether one is built
+here or above this component is open ([§13](#13.%20Open%20questions)). **If** a bin is built,
+wherever it sits, it keeps three constraints:
 
 - a bin directory **MUST NOT** be owned by whichever user deletes into it first,
   so one user's deletion never decides who may read another's;
@@ -1563,12 +1594,12 @@ applies any not yet folded ([RFC 16](rfc-16-metadata-store.md)).
 
 **A fold does not race the creates it folds.** A fold rewrites the directory's
 record, and that record is what every create, link and rename-into guards, so a
-fold committing beside one would abort it. The directory's primary, where every
+fold that commits after a create's snapshot and before its commit aborts it. The directory's primary, where every
 structural change of the directory runs ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)), therefore **MUST** serialise a
 fold against them in memory: it starts a fold only when no such change of that
 directory is in flight, and admits none until the fold has committed. Only a
-removal of the directory, which writes the record itself, still conflicts with
-the guards.
+removal of the directory, which writes the record itself, still aborts a
+guarding create.
 
 > decision: the fold pauses the directory's creates for one transaction; folds
 > are taken by backlog, not per create, so the pause is rare. Move the folded
@@ -1741,12 +1772,12 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 | N1 | A file's `Nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. |
 | N2 | A file is released when, and only when, it has a pending-release record, `Nlink` is zero and no open state references it; only the removal of its last entry, or its base's release for a named stream, writes that record, so a share root and a live file's streams are never released. Nothing else keeps a file alive. |
 | N3 | The transaction that removes a file's last entry writes its pending release, always, holding no holder list; only the release transaction — the engine's `Release`, which drops the refs — deletes it, so a restart or a new primary resumes it. Holders of an unlinked file are its durable opens ([RFC 14](rfc-14-open-state.md)); open state of a linked file is never written. |
-| N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction and guards every ancestor it reads. Create, link and rename-into guard the parent; removing a directory writes it. |
+| N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction and guards every ancestor it reads. Create, link and rename-into guard the parent; removing a directory, or replacing it by rename, range-guards its entries and writes its record in the transaction that proves it empty, so a create racing it fails in either commit order. |
 | N5 | A handle names a file and a share, is stable across restart, and resolves to stale — never to another file and never to "not found" — when its file is gone. A `FileID` is unguessable and never reissued; so is a principal's ID. |
 | N6 | No name, path or parent appears in a handle, a lock, a ref or a journal key. |
 | N7 | Every permission decision is made in this component, against the file the operation will act on, and a grant made at open is computed and evaluated here rather than in an adapter. |
 | N8 | A cached authorisation or identity is keyed by every field it was derived from, the share grant included; the grant is evaluated on every call. |
-| N9 | A release verifies inside its transaction that `Nlink` is zero, its pending release exists and no durable open names the file or a stream of it; an open of a file that has lost its last entry (for a stream, whose base has) guards that File record; a file's streams are released with it, each as a file. |
+| N9 | A release verifies inside its transaction that `Nlink` is zero, its pending release exists and no durable open names the file or a stream of it, range-guarding their durable open records; an open of a file that has lost its last entry (for a stream, whose base has) guards that File record; a file's streams are released with it, each as a file. |
 | N10 | Every wait in this component ends without operator action. |
 | N11 | A listing is ordered by a 63-bit keyed digest of each entry's key; its cookie is that digest, at least 3 with the top bit clear, and resolves with no stored state; no page ends inside a collision chain. |
 | N12 | `Size`, `Charged`, `Applied`, a file's `Modify` and its write `Change` are fields of the File, stored once, written only by an existence commit, which also advances `Version`; a directory's `Modify`, `Change` and `Version` advance instead by entry deltas folded into its record (§9.2); `GETATTR` is `Files.Get` with the engine's overlay applied by the filesystem service. This component calls no other component. |
@@ -1754,7 +1785,7 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 | N14 | Residency is not an attribute. |
 | N15 | `Mode` and the ACL agree after every transaction; `chmod` merges into the ACL as [RFC 8881 §6.4.1.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.4.1.1) specifies and never replaces it. |
 | N16 | A principal's usage is the sum of its files' `Charged`: each file's logical bytes, holes excluded, in full whether shared or not, unchanged by deduplication, compression or GC. |
-| N17 | On a case-insensitive share an entry is keyed by its folded name under the share's recorded fold rule, and stores the name as given. |
+| N17 | On a case-insensitive share an entry is keyed by its folded name under the share's recorded fold rule, and stores the name as given. A share's fold rule never changes; names entering a share of another rule are creates under its rule, and one that folds onto an existing name fails as existing. |
 | N18 | A file's numeric id is its stored `Number`: allocated at create, never changed, never reused in its share; every protocol's numeric id is derived from it and nothing resolves a number to a file. |
 | N19 | An exclusive create stores its verifier in `CreateVerifier`, never in a time; a retry with the same verifier succeeds until the first `SetAttrs` clears it. |
 | N20 | A file has only the names its entries hold: no short name is generated. |
@@ -1798,7 +1829,7 @@ type Namespace interface {
 	// Unlink and Rename report a file whose last entry they removed; its
 	// pending release is already written (§4.3), and the filesystem service
 	// runs the release once no open holds it.
-	Unlink(ctx context.Context, id Identity, dir Handle, name []byte) (Orphaned, error)                                // §4
+	Unlink(ctx context.Context, id Identity, dir Handle, name []byte) (Orphaned, error)                                // §4; of a directory, range-guards its entries (§3.6)
 	Rename(ctx context.Context, id Identity, from Handle, fromName []byte, to Handle, toName []byte) (Orphaned, error) // §5
 	PendingReleases(ctx context.Context, share ShareID) iter.Seq2[FileID, error] // recovery (§4.3)
 }
@@ -1894,8 +1925,8 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§4.2](#4.2%20Open%20state%20is%20the%20second%20holder) open-unlinked | Open a file, unlink it, read through the handle. Assert the content is served and the refs are still counted. Close, assert release. |
 | [§4.4](#4.4%20There%20is%20no%20third%20holder) no third holder | Delete every hold list. Assert the open-unlinked and snapshot checks still pass. A suite that passes only with the list present is testing the list. |
 | [§5.1](#5.1%20One%20transaction) rename atomicity | Crash between the two entry writes. Assert the file is visible at exactly one name. |
-| [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop check | Rename A under B and B under A concurrently, on the backend that validates no reads. Assert one fails and no unreachable cycle exists. Remove the ancestor guards: the check fails. |
-| [§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on) rmdir against create | Remove directory D while creating in it, repeatedly, on the backend that validates no reads. Assert exactly one commits and no entry or file is left under a deleted directory. Remove the rmdir's write of D: the check fails. |
+| [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop check | Rename A under B and B under A concurrently, on every backend, in both commit orders. Assert one fails and no unreachable cycle exists. Remove the ancestor guards: the check fails. |
+| [§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on) rmdir against create | Remove directory D while creating in it, on every backend, holding each between its snapshot and its commit so both commit orders run: the create first, then the removal; the removal first, then the create. Assert in each order exactly one commits and no entry or file is left under a removed directory. Remove the removal's range guard: the create-first order commits both and the check fails. Remove its write of D: the removal-first order commits both. A test that asserts the later writer fails in the create-first order tests a promise no backend makes. |
 | [§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed) staleness | Release a file, create 10⁶ more, resolve the old handle. Assert stale, not another file and not "not found". |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) restore does not alias | Restore a share into a new share. Assert no handle from the original resolves in the restored one, and a handle from the restored one is refused by the original. |
 | [§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always) grant ownership | Grant an open through one adapter, then reach the same file through the other. Assert the other adapter observes the grant. A single-adapter rig cannot fail this. |
@@ -1915,6 +1946,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) soft quota | Exceed `Soft`, write within `Grace`, then after it. Assert the first succeeds, the second is refused, and an event was emitted at each crossing. |
 | [§7.4](#7.4%20The%20identity%20arrives%20resolved) share grant | Remove a principal's grant while it holds cached handles and a cached authorisation. Assert its next call on each handle is refused. |
 | [§3.3](#3.3%20Case) case | On a case-insensitive share, create `README`, then `readme`. Assert the second conflicts, a lookup of `ReadMe` reads one key, and a listing returns `README` as given. |
+| [§3.3](#3.3%20Case) fold rule fixed | Change the case sensitivity of a share holding a file: assert refused. Copy a case-sensitive share's directory holding `a.txt` and `A.txt` into a case-insensitive share: assert the second create fails as existing, the first file is intact, and nothing was renamed. Import a share whose fold rule this binary does not implement: assert refused before anything is published. Import a case-insensitive share: assert every name found by lookup and a cookie taken before the export resumes in the import. |
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie | Delete an entry before the cursor mid-listing. Assert no untouched entry is skipped or repeated. Then evict every cached cookie and assert the listing resumes rather than restarting. |
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused) file id | Create and release 10⁶ files across two shards, failing one primary over mid-range and restarting. Assert no number was issued twice, released ones included, and that a surviving file reports the same NFS and SMB ids after the restart, the failover and a move to another shard. A derivation from the `FileID` or the handle fails the first assertion; a counter held in memory fails the second. |
 | [§2.10](#2.10%20Exclusive%20create) exclusive create | Create exclusively, drop the reply, retry with the same verifier: assert success and the same file. Retry with another verifier: assert "exists". `SETATTR`, retry with the first: assert "exists". Assert no time attribute ever read back as the verifier. Repeat the first retry across a failover. |
@@ -1922,10 +1954,10 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§9.2](#9.2%20Timestamps) change info | 64 clients create in one directory. Assert every reply's change info has `atomic` false and `after` greater than `before`. |
 | [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) loop, sequential | Rename a directory under its own child with no concurrency at all. Assert refusal. This is the one check that fails a build with no loop check on every backend, independent of how the backend detects conflicts. |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) one spelling | For each handle, derive every other byte form the decoder's underlying parser accepts. Assert each is refused, or resolves to the same file and compares equal, and that rename and locking through the alias behave as through the original. |
-| [§4.5](#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction) release race | Unlink a closed file; between the release's decision and its transaction, open the file by handle. Assert the release aborts, the open reads the content, and the release runs at the open's close. On the backend that validates no reads, remove the open's guard: the check fails. Link the unlinked file by handle: assert stale. |
+| [§4.5](#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction) release race | Unlink a closed file; between the release's decision and its transaction, open the file by handle. Assert the release aborts, the open reads the content, and the release runs at the open's close. Run both commit orders. Remove the open's guard: the release-first order releases an opened file. Remove the release's range guard: the open-first order does. Link the unlinked file by handle: assert stale. |
 | [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees) streams released | Give a file two streams with content; open one stream; unlink the base. Assert nothing is released. Close the stream: assert the base and both streams are released, every one of their refs dropped, and no stream's File remains. A release that drops only the base's refs leaks the streams'. |
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie resolves | List a directory of 10⁵ entries in pages, deleting between pages the entry each cookie came from, and sending each page's request to a different node. Assert every untouched entry is returned once, every cookie is at least 3 with its top bit clear, and no cookie state was stored. With a test hash key forcing a chain of three, assert no page ends inside it. |
-| [§5.4](#5.4%20Rename%20over%20an%20existing%20entry) rename over an entry | Rename a directory over an empty directory: assert success and the target released. Over a non-empty one, a directory over a file, a file over a directory: assert each refused. On the backend that validates no reads, race a create into the target with the rename; assert one fails and no entry survives under a released directory. Rename a file onto another link of itself: assert nothing changes. |
+| [§5.4](#5.4%20Rename%20over%20an%20existing%20entry) rename over an entry | Rename a directory over an empty directory: assert success and the target released. Over a non-empty one, a directory over a file, a file over a directory: assert each refused. Race a create into the target with the rename, on every backend and in both commit orders; assert one fails and no entry survives under a released directory. Rename a file onto another link of itself: assert nothing changes. |
 | [§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs) removal rights | Over NFS and over SMB: remove a file with delete-a-child on its directory and no right on the file, and with delete on the file and no right on the directory; assert both allowed and refused with neither. In a sticky directory governed by mode, remove another's file in another's directory: assert refused. Move a directory to another parent without write on it: assert refused. A build that authorises removal with one `Authorize` on the directory fails the second case. |
 | [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.` over NFS: assert each refused as an invalid name. On a `posix` share assert each is created. On a case-insensitive share create `Straße.docx`, then `STRASSE.docx`: assert two entries; create `ǅ` and look up `ǆ`: assert one entry, found with one read, listed as given. Create `K.txt` and look up the same name spelled with the Kelvin sign U+212A: assert not found, as NTFS answers; a build that applies Unicode case folding finds it. Create `café` decomposed over NFS and composed over SMB: assert two entries. A build that folds fully or normalises the key fails the first assertion. |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) no shard, no `FileID` | Mint a file's handle, move the file to another shard, look it up again: assert the two handles are byte-identical. Read every identifier each protocol reports for the file; assert none contains its `FileID`. |
@@ -1939,7 +1971,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§9.5](#9.5%20An%20explicit%20time%20outlives%20the%20writes%20staged%20before%20it) explicit time | Stage a write, `SETATTR` `mtime` to a past time over NFS, then `COMMIT`; repeat over SMB with set-information on a second handle. Assert `GETATTR` returns the set time after the commit and after a crash and recovery; write again, assert `Modify` advanced. A build that writes the set time to the File directly returns the staged write's time after the commit. |
 | [§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) setuid cleared | Make a file mode 6755 owned by alice; write to it as bob. Assert both bits are clear before the write's reply. Repeat with mode 2745: assert setgid kept. `chown` a 4755 file: assert setuid cleared. Write as alice, the owner: assert both bits cleared. Truncate, deallocate, clone into and server-side copy into a 6755 file as alice: assert each clears them. Write as a privileged caller: assert the bits kept. A build that exempts the owner fails the alice write; one that clears in the existence commit shows the bits set between the reply and the commit. |
 | [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) setgid for a non-member | In `/srv/drop`, mode 3777, group `finance`, create a file with mode 2755 as a user outside `finance`: assert the file's group is `finance` and setgid clear. Repeat as a member: assert setgid kept. Create a directory there as the non-member: assert it is setgid. `chmod 2755` a file of group `finance` as its non-member owner: assert setgid clear. A build that inherits the bit unchecked fails the first assertion. |
-| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) no group at all | Create a file over SMB as a principal with no primary group, and over NFS as one whose credential gid maps to no principal and who has no primary group. Assert both creates succeed and the file's `Group` is the creator's own principal. |
+| [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) no group at all | Create a file over SMB as a principal with no primary group, and over NFS as one whose credential gid maps to no principal and who has no primary group. Assert both creates succeed and the file's `Group` is the creator's own principal. Give the NFS principal a primary group and repeat: assert the file's `Group` is that primary group. |
 | [§7.8](#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint) flags | Set immutable on a file as a privileged caller; as its owner, over NFS and SMB, write, truncate, `chmod`, rename, link and unlink it, and write through an open taken before the flag was set: assert each refused with a permission error. Set append-only: assert an append succeeds and an overwrite, a truncate and an unlink are refused. Clear either flag as the unprivileged owner: assert refused. A build that stores the flags without checking them fails every assertion. |
 | [§9.2](#9.2%20Timestamps) file pre-operation attributes | Two NFSv3 clients write one file in a loop at its primary. Assert every reply that carries pre-operation attributes has `before` equal to the attributes after the change immediately preceding it in the file's `Version` order. Capture under the commit serialisation only: the check fails. |
 | [§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later) delete-pending directory | Mark a directory delete on close over SMB; while the mark stands, create in it over SMB and over NFS, and rename a file into it. Assert each refused, and the directory removed at close. Race a create past the check: assert the close-time unlink fails as not empty and is reported. |
@@ -1964,10 +1996,11 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
   clients on one directory at once.
 - **A single-adapter rig MUST NOT stand in for [§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always).** A grant that only one
   protocol can see passes every test that only speaks that protocol.
-- **A read-validating backend MUST NOT stand in for [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) or [§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on).** There,
-  the ancestor reads and the emptiness scan already conflict, so a build that
-  forgot the guards passes. The concurrent checks run on the backend that
-  validates no reads, where only a guard makes the conflict.
+- **A race run in one commit order MUST NOT stand in for [§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on), [§4.5](#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction), [§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction) or [§5.4](#5.4%20Rename%20over%20an%20existing%20entry).**
+  A guard binds only its own transaction, so each order is stopped by a
+  different side's guard, and a build missing one of them passes the order the
+  other covers. Each race holds one transaction between its snapshot and its
+  commit with a test hook, and runs both orders.
 - **A concurrent rig MUST NOT stand in for the sequential loop check.** The
   concurrent case exercises the guards; only the sequential one isolates the
   check itself.

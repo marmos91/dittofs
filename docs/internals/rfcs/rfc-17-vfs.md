@@ -301,7 +301,7 @@ type Data interface {
 	Commit(ctx context.Context, o OpenRef, off, length int64) (WriteVerifier, error) // NFS COMMIT, SMB FLUSH (§5.8); through an SMB open, ErrLost once after a loss (RFC 14 §8.1)
 	Deallocate(ctx context.Context, o OpenRef, off, length int64) error // punch a hole; ordered as a write (§5.5)
 	Seek(ctx context.Context, o OpenRef, off int64, what SeekWhat) (int64, error) // SEEK_DATA, SEEK_HOLE
-	Copy(ctx context.Context, src OpenRef, srcOff int64, dst OpenRef, dstOff, length int64) (int64, error) // server-side copy and clone (§5.9); ErrInvalid for overlapping ranges of one file or a clone over clone_max_len; ErrCrossNamespace across namespaces
+	Copy(ctx context.Context, src OpenRef, srcOff int64, dst OpenRef, dstOff, length int64) (int64, error) // server-side copy and clone (§5.9); ErrInvalid for overlapping extents of one file or a clone over clone_max_len; ErrCrossNamespace across namespaces
 	PreWarm(ctx context.Context, id Identity, dir Handle, recursive bool) (Progress, error) // the service enumerates the files it may read, the engine fetches them
 }
 
@@ -517,7 +517,7 @@ The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrStale`,
 `ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrBlocked`, `ErrNotYours`, `ErrBadLayout`, `ErrWrongSecurity`, `ErrInvalid`, `ErrCrossNamespace`, `ErrClientInUse`, `ErrSeqMisordered`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2), a clone
-holds the range (§5.9), or a share's journal limit or the journal's capacity
+holds the extent (§5.9), or a share's journal limit or the journal's capacity
 refuses the write while offload or repack can drain it
 ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)),
 which owns the one table of these refusals. Adapters map it to `NFS4ERR_DELAY`
@@ -924,7 +924,7 @@ writes never resent.
 
 **SMB learns through its flush.** SMB has no verifier. A `Commit` through an SMB
 open (SMB `FLUSH`) takes the file's loss sequence from the engine's `Commit`
-over the flushed range, which returns it with the verifier, both read once the
+over the flushed extent, which returns it with the verifier, both read once the
 sync completes ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), and
 passes it to open state, which fails the flush with `ErrLost` once for each open
 that was open across a loss of an acknowledged, unoffloaded write of the file
@@ -939,7 +939,7 @@ duplicate-extents requests, and runs as the engine's clone
 journal-held runs copied and synced, then its carved refs adopted, all resolved
 at one point in the source's history. The two kinds differ in atomicity:
 
-- **`CLONE` and duplicate-extents are atomic.** The whole range is one clone,
+- **`CLONE` and duplicate-extents are atomic.** The whole extent is one clone,
   answered only when it is done; a request longer than `clone_max_len`
   ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) is refused with `ErrInvalid`, so the client copies it itself.
 - **`COPY` and copychunk are not atomic.** The engine runs them as bounded
@@ -952,15 +952,15 @@ at one point in the source's history. The two kinds differ in atomicity:
    the destination, as §5.1 steps 1–3 do for each; a copy between files of two
    shards is ordered by one coordinator (§4.8);
 2. refuse with `ErrInvalid` a copy whose source and destination are one file and
-   whose ranges overlap, as Linux and RFC 7862 refuse it, or a clone over
+   whose extents overlap, as Linux and RFC 7862 refuse it, or a clone over
    `clone_max_len`; refuse with `ErrCrossNamespace` one whose destination's
    share is in a namespace other than the source's, since no chunk can be
    adopted across namespaces; nothing is changed;
 3. reserve the destination's charge (§5.6), and clear setuid and setgid on the
    destination as a write does (§5.1 step 5);
 4. call the engine. While a clone or a copy's current chunk runs, a write,
-   truncate, deallocate or clone into its source range, or a write into its
-   destination range, returns `ErrDelay` (§4.3), so each clone reads one
+   truncate, deallocate or clone into its source extent, or a write into its
+   destination extent, returns `ErrDelay` (§4.3), so each clone reads one
    consistent source; the clone holds the source open, so a last close or unlink
    does not release it mid-clone. A source run the engine reads as Lost — a
    source ref whose chunk record is gone included — is carried to the
@@ -997,7 +997,7 @@ at one point in the source's history. The two kinds differ in atomicity:
 | V23 | A blocked lock holds no worker and has no deadline: NFSv4 waiters are polled, NLM and SMB waiters are answered through `LockWaitOver`, and no adapter answers one other than as granted before `CancelLock` returns. |
 | V24 | I/O under a delegation is served only to the client holding it and is authorised for the caller's own principal, as anonymous I/O is. |
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush through an open that was open across a loss of the file's acknowledged unoffloaded writes fails once with `ErrLost`. |
-| V26 | A copy or clone of overlapping ranges within one file, or a clone over `clone_max_len`, is refused with `ErrInvalid`, and one across namespaces with `ErrCrossNamespace`, each changing nothing; writes to a running clone's ranges return `ErrDelay`; a Lost source run is copied as Lost; a clone is atomic and answered only when done, and a copy runs as bounded chunks and may answer a short count. |
+| V26 | A copy or clone of overlapping extents within one file, or a clone over `clone_max_len`, is refused with `ErrInvalid`, and one across namespaces with `ErrCrossNamespace`, each changing nothing; writes to a running clone's extents return `ErrDelay`; a Lost source run is copied as Lost; a clone is atomic and answered only when done, and a copy runs as bounded chunks and may answer a short count. |
 | V27 | A request an adapter holds pending after `ErrGrace` outlives the grace period, and one held while its share is quiesced or frozen outlives the freeze, bounded by `migration.freeze_timeout` plus 35 s. |
 | V28 | A create, link or rename into a directory marked delete on close is refused, over every protocol. |
 
@@ -1107,13 +1107,13 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
   - a `Commit` that waits on a sync window that fails returns a verifier other
     than its writes'; an SMB flush through each of two opens of a file that lost
     an unstable write in the running process fails once and then succeeds (V25);
-  - a copy and a clone of overlapping ranges within one file each return
-    `ErrInvalid` and leave the file unchanged; a write to the source range of a
+  - a copy and a clone of overlapping extents within one file each return
+    `ErrInvalid` and leave the file unchanged; a write to the source extent of a
     running clone returns `ErrDelay`; a clone of a source with a Lost run reads
     Lost there at the destination, never zeros; a `CLONE` over `clone_max_len`
     returns `ErrInvalid`, and a copy or clone between shares of two namespaces
     returns `ErrCrossNamespace`, each changing nothing; a `COPY` whose deadline
-    passes mid-range answers a short count, and the destination holds exactly
+    passes partway answers a short count, and the destination holds exactly
     that many bytes of the source (V26);
   - with a share at its journal limit and offload able to drain it, a write
     returns `ErrDelay` and succeeds on retry; with the store unreachable past the

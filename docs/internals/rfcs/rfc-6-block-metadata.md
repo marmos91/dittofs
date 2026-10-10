@@ -263,7 +263,7 @@ type (
 	SnapshotCut    uint64   // numbers a share's snapshots in order (§6.5); defined here only
 )
 
-// ChunkRef: these bytes of this file are that range of that chunk (§2.1).
+// ChunkRef: these bytes of this file are that run of that chunk's bytes (§2.1).
 // Died is zero for a live ref; a ref a snapshot still sees after it was
 // superseded has Died set to its successor's Born — that is a
 // History record (§6.5).
@@ -873,7 +873,7 @@ The rules:
 - Existence **MUST NOT** be committed for a version the journal does not yet hold
   durably. The one exception is a synced write a loss event dropped: its
   existence is committed from the journal's durable loss record, which makes the
-  range uncarved with nothing held, so it reads **Lost** rather than as zeros or
+  extent uncarved with nothing held, so it reads **Lost** rather than as zeros or
   older content ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 - **A stability reply MUST NOT precede the existence commit of any pending write
   in its extent that overwrites committed content** — any write covering an
@@ -1146,11 +1146,24 @@ which no single transaction may do: every backend bounds a transaction's size,
 and a large one also conflicts with everything it spans. Each **MUST** run as one
 O(1) transaction that records its durable intent, followed by sub-transactions
 each writing or deleting at most **K** keys ([§6.2](#6.2%20Truncation%20and%20deallocation)). K is the **key budget**,
-derived at open from the backend's per-transaction limits — entry count and byte
-size — as the largest number of keys, each at its worst-case encoding, for which
-a transaction stays within both once the sub-transaction's fixed records — the
-removal or intent record, both fences, `Cut` and the `LiveCut` reads — have come
-off. K **MUST NOT** be configured.
+derived at open from the transaction limits the backend reports
+([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): the largest value, the largest key, the
+largest transaction — counted the way the backend counts it, conflict ranges
+included — and, where the backend has one, the number of entries per
+transaction. With *T* the transaction size limit and *E* the entry limit, *b*
+the cost of one key at its worst-case encoding — key bytes, value bytes and the
+conflict-range bytes the backend charges for writing or guarding it — and *F*
+and *e* the cost and entry count of the sub-transaction's fixed records (the
+removal or intent record, both fences, `Cut` and the `LiveCut` reads, with
+their conflict ranges):
+
+    K = min( ⌊(T − F) / b⌋ , E − e )
+
+K **MUST NOT** be configured. The other two limits bound records, not K: every
+record's worst-case key and value **MUST** fit the backend's key and value limits,
+or the store refuses to open. The transaction age limit bounds a batch's wall
+time, not its size: a batch reads only its own items and holds no transaction
+across an upload or a fetch, so a K-key batch commits far inside it.
 
 A batch takes its work in offset order and stops before the next item whose keys
 would pass K. Its cursor is a **byte offset**, which may fall inside a ref: the
@@ -1247,15 +1260,38 @@ chunk's is not.
 
 **A read whose result decides whether a commit may apply MUST conflict with
 every concurrent write that would change that result.** Such a read is a
-**guard read**, a point read registered for conflict checking ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), and a guard is **shared**: it conflicts with a
-write of its key, never with another guard of it. So the many transactions that
-gate on one key — every create in one directory, every namespace transaction on
-one file — run concurrently, and only the write that changes the key serialises
-against them. A scan over a key range
-is not such a read: the backends this set targets detect conflicts on point keys,
-not on key ranges. A rule that
-needs "nothing in this key range changed" **MUST** be restated as a point key that
-every writer of the key range also writes.
+**guard read**, a tracked read that returns no value ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): the
+gated transaction aborts if a write to the key committed after its snapshot. A
+guard is **shared**: two guards of one key never conflict, whatever order they
+commit in. So the many transactions that gate on one key — every create in one
+directory, every namespace transaction on one file — run concurrently, and only
+the write that changes the key serialises against them.
+
+**A guard binds only its own transaction.** It refuses the gated commit when the
+write committed first; a write that commits after the gated commit is ordered
+after it and is not refused. Every gate **MUST** therefore be correct in both
+orders: either both sides write the key, or the write ordered second is correct
+after the gated commit. Every row below meets this. A takeover's fence or lease
+mark committed after an old primary's commit only orders that commit before the
+takeover, which is what the fence means. A removal ordered after an existence
+commit masks that commit's refs by version and drops them in batches that read
+after it ([§6.2](#6.2%20Truncation%20and%20deallocation)). An adoption ordered after the deleter's move writes
+`Block(name)`, which the move also wrote, so it aborts and re-reads the block as
+`deleted`. A guard also binds only a transaction that writes: a read-only commit
+is not checked, and no gate here is read-only.
+
+> decision: guards are specified one-sided — a guard refuses its own commit
+> when the write came first, and nothing refuses a later writer. The optimistic
+> backends this set targets check a committing transaction's reads against
+> earlier commits only, and a symmetric guard needs an anti-dependency check none
+> of them offers. Each gate is argued in both orders instead. Revisit if a gate
+> is added whose writer, ordered after the guarded commit, would act on a stale
+> premise without writing a key the guarded side wrote.
+
+An untracked scan is not such a read. A rule that needs "nothing in this key
+range changed" **MUST** either guard the range itself (`GuardRange`, [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend))
+in the transaction that relies on it, or be restated as a point key that every
+writer of the key range also writes. This document uses the second form.
 
 The gating reads in this document, and the key each conflicts on:
 
@@ -1322,11 +1358,18 @@ conflicting; it is an optimisation, and no rule here depends on it.
 **Backend notes (non-normative).** Every supported backend gives snapshot
 isolation, detects write-write conflicts on every key including blind writes,
 and tracks point reads ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). On a backend that tracks reads
-natively, a conflict-tracked read is a plain get. On one that implements
-tracking with key locks, it is a lock (optimistic or pessimistic; pessimistic
-suits a contended key), a guard is a shared lock and a write the exclusive one,
-and a transaction locking several files takes them in file-identity order. Per-
-transaction entry and size limits give K ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A long read transaction holds
+natively, a conflict-tracked read is a plain get and a guard a read conflict on
+the key. On one that implements tracking with key locks, a shared lock meets the
+guard rule only if it stays shared whatever the commit order: a lock store that
+fails a transaction's guard because another guard of the same key committed
+after its start does not meet it, and the KV conformance suite's guard-order
+cases (two guards committing in each order, a guard and a write in each order)
+are the test. A guard binds only its own writing transaction; a backend need not
+refuse a writer that commits after a guarded commit. A backend that detects no
+blind write-write conflict adds a read conflict on every key a transaction
+writes, which costs no extra request. A transaction locking several files takes
+them in file-identity order. The backend's value, key, transaction-size and
+transaction-age limits give K ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A long read transaction holds
 back the store's version garbage collection, so no transaction spans an upload.
 The key layout that keeps one file's records together ([§1.2](#1.2%20Why%20it%20is%20a%20separate%20RFC%20from%20the%20namespace)) is
 [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed): per-file records under `F‖ShareID‖FileID`, chunks, blocks, intents
@@ -2132,7 +2175,7 @@ the highest key of each bucket: *B* point lookups per share.
 | M16 | A name is minted once, put only by its attempt, and committed only by the transaction that consumes its put intent, which names its domain, its epoch and, for a shard, its primary's node and node epoch. An object is deleted only when no block record not yet `deleted` and no intent names it. On a single node, every start abandons the intents of the node's own shards before its first offload. |
 | M17 | No zero chunk is stored or counted. |
 | M18 | A removal drops only refs whose `newest` is below its version, masks what it has not yet dropped, and `applied` never moves backwards. |
-| M19 | Every read that gates a commit conflicts with every concurrent write that would change it; no gate depends on a range scan or on an in-process guard. |
+| M19 | Every read that gates a commit refuses the commit when a write that would change it committed first, and every gate is correct when that write commits after it instead; two guards of one key never conflict, in either commit order; no gate depends on an untracked scan or on an in-process guard. |
 | M20 | A ref never makes an offset carved while an overwrite record of higher version than the ref's `newest` covers it; every write over content whose existence was committed records one at its stability point, and no offload commit writes one. A record is pruned only where refs at or above its version actually cover it, or where its extent lies in a hole or past `size`; every allocated-range answer counts its extent as data. |
 | M21 | A removal records the cut it read. A ref it drops dies at that cut, except a part an earlier overwrite superseded, which dies at the `born` of the lowest-version overwrite above the ref's `newest`, history records included; a snapshot after the cut applies its mask while it is not done; a history key is written once, and a second write of it fails as an inconsistency. |
 | M22 | Offload commits of one file serialise on a point key each of them writes, never on an in-process guard. |
@@ -2310,7 +2353,7 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§4.3](#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge) reseed after a crash | Commit an offload and crash before the journal records its report. Restart. Assert the extent is reported offloaded from its ref, no put is issued for it, and no born-dead block appears. Skip the check; assert the rig sees the second put and its born-dead block. |
 | [§4.1](#4.1%20What%20one%20commit%20records) partial adoption failure | Once deduplication is added: delete an adopted chunk's block before the commit. Assert the carried chunks and their refs apply and only the adopting refs fail. |
 | [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) offload never resurrects | Commit chunk A in K1, release its file so K1 retires, then offload another file carrying A. Assert K1 stays `retired`, Chunk(A) names the new block, and `MarkDeleted` on K1 then succeeds. A build that lets offload adopt instead resurrects K1 and uploads nothing for A. |
-| [§5.4](#5.4%20Reads%20that%20gate%20a%20commit) gating reads | For each row of §5.4's table, run the gated commit and the conflicting write concurrently on each backend. Assert one fails or retries. Then replace the gating read with a range scan or a plain snapshot read. Assert the check fails, so the rig sees the defect. |
+| [§5.4](#5.4%20Reads%20that%20gate%20a%20commit) gating reads | For each row of §5.4's table, run the gated commit and the conflicting write concurrently on each backend, forcing each commit order. With the write first, assert the gated commit fails or retries; with the gated commit first, assert the writer is ordered after it and every invariant of §9 holds. Commit two guards of one key in each order and assert neither aborts. Then replace the gating read with an untracked scan or a plain snapshot read. Assert the check fails, so the rig sees the defect. |
 | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount | Over random interleavings of commit, truncate, deallocate, clone, snapshot, snapshot deletion and delete, with phase 2 batches interleaved, assert after every transaction that each refcount equals its reverse keys and its live plus history refs, and that a block is `retired` exactly when its `live` is zero. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation) versioned removal | Offer at versions ≤ 3, truncate at 4, commit. Assert refs past the new size are dropped, others apply, and no ref lies past `size`. Then offer, deallocate an extent the pass did not carve, commit. Assert every ref applies. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation) batching and masking | With K forced to 2, truncate a file of 100 refs. Between every sub-transaction, read the removed extent and assert it reads as existence says, never the removed content; write into the extent and assert the write survives phase 2. Crash at every sub-transaction; assert restart resumes from the cursor and counts end exact. |
@@ -2384,12 +2427,12 @@ these. Shrink every failing sequence to a minimal one and keep it.
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) amplification | Write a file of *N* chunks for several *N*. Assert records **written** per commit are constant in *N*. A correctness assertion on the refs passes a quadratic implementation. |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) read side | Same files, appended sequentially so every commit extends the tail. Assert records **read and decoded** per commit grow at most logarithmically in *N*, counting a record that packs many refs as the refs it decodes. A commit that loads the file's whole ref list writes one record and passes the check above. |
 | [§3.3](#3.3%20Holes%2C%20not%20written%20extents) out-of-order writes | Write a file of *N* MiB as shuffled 1 MiB writes, for several *N*. Assert no hole records remain and records written per write are constant in *N*. |
-| [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite records | Append *N* MiB with a stability point per MiB; assert no overwrite record is written. Overwrite one 1 MiB run per stability point at random offsets; assert each existence commit writes at most three overwrite records, and that after offload and pruning none remains. Stream overwrites of one range while its offload commits; assert no offload commit retries because of the writer. |
+| [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite records | Append *N* MiB with a stability point per MiB; assert no overwrite record is written. Overwrite one 1 MiB run per stability point at random offsets; assert each existence commit writes at most three overwrite records, and that after offload and pruning none remains. Stream overwrites of one extent while its offload commits; assert no offload commit retries because of the writer. |
 | [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) write sets | Stream appends to one file while its offload commits. Assert no commit retries because of the writer. A single-writer rig cannot fail this. |
 | [§8.1](#8.1%20Covering%20lookup) lookup | Assert records **read** per covering lookup grow at most logarithmically in *N*, counting index iterator steps as well as row loads. |
 | [§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor) floor index | Assert `VersionFloor` reads *B* records per share, that no commit writes a per-share record, that no offload commit writes a floor entry, and that a File holds exactly one entry. Commit to many files of one share at once on a range-splitting backend; assert the index writes spread over the *B* buckets' key ranges, not one. |
 | [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) | Store a file's refs across a range of sizes. Assert no stored value reaches the storage engine's inline threshold at the refs' worst-case encoding, not a fixture's. |
-| [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) K | Truncate, release, clone and delete a snapshot of files of 10³ to 10⁷ refs. Assert every transaction stays within the backend's limits and writes at most K keys, and K is not a configuration key. Repeat at the worst case: every ref on its own block that the batch retires, every ref moved to history under a live snapshot, and an overwrite record over every ref. Then rewrite one 1 MiB ref with 256 scattered 4 KiB writes between offloads, and a 64 MiB ref with 10⁵, and truncate the file to 0: assert every batch commits within K keys, a batch's cursor falls inside the ref, and the removal completes. A budget counted in refs exceeds the limits on that ref and never commits. Overwrite one file at 10⁵ scattered runs between existence commits: assert its existence commit spans several transactions within K and `applied` ends at the newest version. |
+| [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) K | Truncate, release, clone and delete a snapshot of files of 10³ to 10⁷ refs. Assert every transaction stays within the backend's limits and writes at most K keys, and K is not a configuration key. Open the store against backends reporting different value, key, transaction-size and entry limits, and assert K equals `min(⌊(T − F)/b⌋, E − e)` for each, that a batch of K keys at worst-case encoding with its conflict ranges commits and one of K + 1 exceeds the size limit, and that a backend whose key or value limit is below a record's worst case is refused at open. Repeat at the worst case: every ref on its own block that the batch retires, every ref moved to history under a live snapshot, and an overwrite record over every ref. Then rewrite one 1 MiB ref with 256 scattered 4 KiB writes between offloads, and a 64 MiB ref with 10⁵, and truncate the file to 0: assert every batch commits within K keys, a batch's cursor falls inside the ref, and the removal completes. A budget counted in refs exceeds the limits on that ref and never commits. Overwrite one file at 10⁵ scattered runs between existence commits: assert its existence commit spans several transactions within K and `applied` ends at the newest version. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation), [§6.5](#6.5%20Who%20owns%20a%20ref) overwrite record across batches | With K forced small, offload `[0, 4M)` as one ref, snapshot 1, overwrite `[0, 3M)` and commit existence, snapshot 2, truncate to 0 before the overwrite is offloaded, so phase 2's batches split the overwrite record. Assert snapshot 2 reads the overwrite throughout `[0, 3M)` and every history piece under the record dies at its `born`. A batch that drops the record whole when it reaches its start dates the later pieces at the removal's cut. |
 | [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite records under a removal | Overwrite one file at 10⁵ distinct runs between offloads, then truncate it to 0. Assert phase 1 writes O(1) records whatever the count, and every phase-2 transaction stays within K. |
 | [§5.3](#5.3%20Hot%20records%20that%20are%20not%20per-file) hot refcount | Commit one chunk from many writers at once, each carrying it, and clone one file many times at once. Report commit latency and conflict retries; the release gate reads this. |

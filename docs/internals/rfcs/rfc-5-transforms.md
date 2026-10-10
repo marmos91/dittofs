@@ -452,6 +452,30 @@ configured transform, in order, it covers:
 
 The stage order is fixed ([§2.3](#2.3%20The%20chain%20order%20is%20fixed)), so order is not an input of its own.
 
+**Its bytes.** The chain ID is 32 bytes:
+
+    chain ID = BLAKE3-derive-key("transform chain id v1", encoded chain), 32 bytes of output
+
+where `context` is that ASCII string exactly, and `encoded chain` is:
+
+| Field | Bytes | Encoding |
+| --- | --- | --- |
+| transform count | 1 | number of configured transforms, 0 to 3; an empty chain is count 0 and still has a chain ID |
+| then, per transform, in stage order: | | |
+| transform ID | 2 | big-endian |
+| format version | 1 | the version its `Encode` writes |
+| length key | 4 + *k* | *k* as 4 bytes big-endian, then `LengthKey()`'s *k* bytes ([§3.1](#3.1%20Interfaces)) |
+| material count | 1 | number of current materials the transform uses for the namespace |
+| then, per material, ordered by kind then ID, bytewise ascending: | | |
+| kind | 4 + *k* | length as 4 bytes big-endian, then the kind's ASCII bytes |
+| ID | 4 + *k* | length as 4 bytes big-endian, then the ID's bytes |
+| fingerprint | 32 | `HMAC-SHA256(material, "dittofs key check v1")` ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) |
+
+Integers are unsigned and big-endian. A block name always carries a 32-byte
+chain ID ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). Each transform's `LengthKey` is
+its own canonical encoding and its own golden vector; the format version and the
+material are encoded here, not in it.
+
 A block's name is not derived from its content alone: it also carries a
 nonce minted fresh for each put attempt ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so two writers of the
 same chunks produce two names and two objects. The chain ID stays in the name
@@ -508,8 +532,9 @@ type Transform interface {
 	// without encoding. A declined chunk is never known in advance.
 	LengthOf(n int) (int, bool)
 
-	// LengthKey encodes, canonically, the format version and the settings
-	// that decide the body's length: this transform's part of the chain ID.
+	// LengthKey encodes, canonically, the settings that decide the body's
+	// length: this transform's part of the chain ID. The chain ID adds the
+	// transform ID, format version and material itself (§2.8).
 	LengthKey() []byte
 
 	// Encode transforms plain, deterministically (§2.1), for namespace ns.
@@ -866,6 +891,7 @@ alike. A new transform gets it by registering.
 | T9 | Encode every fixture input with its recorded settings and material: exactly the recorded body. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Every derivation label of Appendix B.1 is distinct, and each is pinned by a golden vector. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt and chunk key for a fixed data key and plaintext hash; one chunk body with its AAD; the header hash and index key for a fixed header key; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` or prefixing `info` gets a different one. |
 | T22 | Golden vectors, from an independent implementation, for the frame key, MAC key and state key derivations, one sealed frame, each of the four export MACs, one state MAC and one key wrap. Write an export of two sections of three frames each: all six nonces differ. Move a frame to the other section at the same frame index, or swap two sections: the read fails. A design whose nonce is the frame index alone gives two equal nonces here. |
 | T18 | Unwrap a wrapped key record after changing its namespace ID, its kind or its key ID in the AAD: each fails. Copy one namespace's wrapped data key into another namespace's key records: it does not unwrap there. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | Replace a key under its ID with different bytes: the provider refuses it (`ErrMaterialUnavailable`, availability gauge 0), and no body is decoded or written with it. |
@@ -892,6 +918,7 @@ alike. A new transform gets it by registering.
 | [§3.1](#3.1%20Interfaces) | Write parity-protected bodies, remove parity from the chain, restart: the read-side bound still admits them and they decode. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census each put returns, and the block records it reaches, list exactly the transform IDs, versions and material IDs used. Retire one key: every block naming it is relocated to a new name, fully live ones included, and the census then shows none. |
 | T10 | Build chains that differ in a transform's version, in a length-affecting setting and in current material: three different IDs. Change only a setting that is not length-affecting: the same ID. |
+| [§2.8](#2.8%20The%20chain%20ID) | Golden vectors, from an independent implementation working from [§2.8](#2.8%20The%20chain%20ID)'s byte table alone: the chain ID of the empty chain, of the default encrypting chain with one data key, and of a compress-then-encrypt chain with two materials. Swap the order of two materials, change one byte of a fingerprint, or encode a length prefix as 2 bytes or little-endian: each gives a different ID than the vector. |
 | T5 | Make a transform's factory fail: the store does not open, and no body is written. |
 | T6 | A fake transform that decodes to wrong bytes: every read through the codec fails. |
 | T7 | A decode that returns `ErrMaterialUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. One that returns `ErrMaterialDestroyed` is not retried and reports the chunk Lost. |
@@ -998,10 +1025,10 @@ namespace's current data key and a salt derived from the chunk's hash, with
 AES-256-GCM-SIV (IETF RFC 8452), a deterministic, nonce-misuse-resistant AEAD:
 
 ```
-salt key  = HKDF-SHA256(data key, info = "dittofs chunk salt v2")
-salt      = HMAC-SHA256(salt key, plaintext hash)
-chunk key = HKDF-SHA256(data key, salt, info = "dittofs chunk key v2")
-body      = AES-256-GCM-SIV(chunk key, nonce = 0, input,
+salt key  = HKDF-SHA256(data key, salt = none, info = "dittofs chunk salt v2"), 32 bytes
+salt      = HMAC-SHA256(salt key, plaintext hash), 32 bytes
+chunk key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk key v2"), 32 bytes
+body      = AES-256-GCM-SIV(chunk key, nonce = 12 zero bytes, input,
                             AAD = transform ID ‖ version ‖ data key ID ‖ plaintext hash)
 ```
 
@@ -1051,13 +1078,44 @@ progress MAC = HMAC-SHA256(progress key, backup ID ‖ batch ‖ sequence ‖ SH
 ```
 
 **Every joined field is length-prefixed.** In every AAD and MAC input of this
-appendix, a field of variable length — a label, a backup ID, a state name, a key
-ID, a namespace ID, a digest, a sealed header, the clear part's bytes — is
-preceded by its length as 4 bytes, big-endian; an integer is big-endian at the
+appendix, every field that is not an integer — a label, a backup ID, a state
+name, a key ID, a namespace ID, a hash or digest, a salt, a sealed header, the
+clear part's bytes — is preceded by its length as 4 bytes, big-endian, even
+where that length is fixed; an integer is big-endian at the
 width stated (section index 4 bytes; frame index, batch, sequence and record
 count 8 bytes; a time as 8 bytes of Unix nanoseconds). Without the prefix, two
 different field lists can join to one byte string and share one tag. The golden
-vectors fix the encoding.
+vectors check the encoding this text defines; they do not define it.
+
+**Lengths and encodings, exactly.** Every key and every derived value of this
+appendix is fixed here, so two implementations agree before either runs a
+vector:
+
+| Value | Bytes | How |
+| --- | --- | --- |
+| master key, data key, header key, chunking key, chunk-ID key, export key | 32 | drawn from a cryptographic random source when created or rotated; never derived |
+| every HKDF-SHA256 output: salt key, chunk key, index key, frame key, mac key, state key, progress key | 32 | IETF RFC 5869 with `L = 32`; `salt = none` means RFC 5869's default, 32 zero bytes; `info` is the label's ASCII bytes alone, with no length prefix and no terminator |
+| salt, header hash, every MAC, fingerprint | 32 | HMAC-SHA256, full output, never truncated |
+| plaintext hash, chunk ID | 32 | the keyed BLAKE3 chunk ID ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)) |
+| keyed gear table | 2,048 | BLAKE3 keyed mode under the chunking key, over the ASCII label `dittofs chunking key v1` ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) |
+| AES-256-GCM-SIV nonce | 12 | the chunk's is 12 zero bytes; a frame's and the header's as below; a key wrap's random |
+| AES-256-GCM-SIV tag | 16 | appended to the ciphertext |
+
+A value computed over **one** field — the salt over the plaintext hash, a
+fingerprint over its label — takes that field's bytes alone, with no prefix;
+the prefix rule above applies wherever two or more fields are joined. The
+joined inputs are, field by field:
+
+| Input | Fields, in order |
+| --- | --- |
+| chunk AAD | transform ID (2 bytes, big-endian) ‖ version (1 byte) ‖ data key ID (4-byte length, bytes) ‖ plaintext hash (4-byte length, 32 bytes) |
+| header hash ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | label (4-byte length, ASCII) ‖ chunk ID (4-byte length, 32 bytes) |
+| frame AAD | export salt (4-byte length, 32 bytes) ‖ section index (4 bytes) ‖ section type (1 byte) ‖ frame index (8 bytes) |
+| header AAD | export salt (4-byte length, 32 bytes) ‖ `header` (4-byte length, ASCII) |
+| each MAC | its literal label (`clear`, `header`, `section`, `trailer`; 4-byte length, ASCII) first, then its fields as listed, each integer at its stated width and each other field length-prefixed |
+| key wrap AAD | namespace ID ‖ kind (ASCII) ‖ key ID, each with a 4-byte length |
+
+Integers are big-endian at the width stated.
 
 **The header is sealed like a frame.** Section index 2³² − 1 is reserved for the
 header and names no section, so the header's nonce never meets a frame's.

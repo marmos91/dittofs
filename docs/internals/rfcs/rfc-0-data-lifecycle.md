@@ -385,9 +385,9 @@ Two families of unit. The **bytes** units say where content is; the
 | --- | --- | --- |
 | **entity** | a plain value a metadata read returns, such as a File, an Entry or a Share; one entity is not one stored record | [RFC 16 §2.1](rfc-16-metadata-store.md#2.1%20The%20entity%20map) |
 | **record** (metadata) | one key and its value in the KV. Not a journal record | [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed) |
-| **guard** | a transaction's claim on a key it does not write; it conflicts with a concurrent write of that key, never with another guard | [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend) |
+| **guard** | a transaction's claim on a key it does not write, or on every key under a prefix; it aborts its own transaction if the key was written after that transaction's snapshot, never stops the writer, and never conflicts with another guard | [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend) |
 | **file** | an object with an identity and attributes, named by zero or more entries; its content is the refs block metadata keeps against its ID, not a list it holds. Its identity is a random ID, never reused, that survives rename | [§2.1](#2.1%20Entities), [RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File) |
-| **FileAttr** | a file's size, owner and group, mode, timestamps and identifiers. At create, the owner is the caller's principal and the group is the credential's group — the NFS AUTH_SYS gid, or an SMB principal's primary group — or the parent directory's group when the parent has setgid | [§2.1](#2.1%20Entities) |
+| **FileAttr** | a file's size, owner and group, mode, timestamps and identifiers. At create, the owner is the caller's principal and the group is the credential's group — the NFS AUTH_SYS gid, or an SMB principal's primary group, and with neither the caller's own principal — or the parent directory's group when the parent has setgid | [§2.1](#2.1%20Entities) |
 | **FileData** | the fields of a file that only the write path sets — size, the newest version whose existence is recorded, write-time timestamps — named as a group; not a record of its own | [RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes) |
 | **entry** | one name in one directory, pointing at a file; a file with two hard links has two entries | [RFC 7 §2.2](rfc-7-namespace-metadata.md#2.2%20Entry) |
 | **nlink** | the number of entries naming a file, kept exact in the transaction of every entry change | [RFC 7 §4.1](rfc-7-namespace-metadata.md#4.1%20%60nlink%60%20is%20exactly%20its%20entries) |
@@ -623,10 +623,11 @@ cases, and where the two differ for one node, this section wins:
   [RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%20work) and the composition
   [RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role); the cluster's roles and
   ordering are [RFC 15 §2](rfc-15-topology.md#2.%20Roles).
-- **Checks that gate a commit are made on point records.** A read that decides
-  whether a commit may proceed is a point read of a record that the conflicting
-  writer also writes, never a range scan ([§9.2](#9.2%20Conflicts%20and%20their%20retries)); the fence records are such
-  points ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)). The cluster's use of them is
+- **Checks that gate a commit are tracked reads, made in both commit orders.** A
+  read that decides whether a commit may proceed is a point read, a guard or a
+  range guard of what the conflicting writer writes, never a range scan, and
+  where both sides decide, both sides make one ([§9.2](#9.2%20Conflicts%20and%20their%20retries)); the fence records are
+  such points ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)). The cluster's use of them is
   [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency).
 - **The clock bound.** A wait that outlasts a timeout another clock measured
   waits *T* × (1 + ρ) + σ on its own clock, where *T* is the timeout, ρ the
@@ -650,7 +651,7 @@ cases, and where the two differ for one node, this section wins:
 | Concern | Single node: binds the first release | Cluster only |
 | --- | --- | --- |
 | composition | one process with both roles, built by the composition root above; every arrow in [§1.3](#1.3%20The%20layers) is a local call | protocol-only nodes, the route envelope, forwarding, floating addresses |
-| shards | each share is one shard, and the node is its primary ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20primary%20per%20shard)) | subtree and per-child shards, the slot table, moves ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)–[§4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
+| shards | each share is one shard, and the node is its primary; a shard is held in exactly one journal, on one device, while the node keeps one journal per device, so a share writes at one journal device's rate however many devices the node has ([RFC 11 §2.1](rfc-11-ownership.md#2.1%20One%20primary%20per%20shard), [RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) | subtree and per-child shards, the slot table, moves ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)–[§4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | shard record | one per share, naming the node as primary with the journal that serves the share. **Every start raises every shard's incarnation, in the transaction that records the start**, and every journal attach raises the attached share's; so every restart opens a new grace instance ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | replicas, replica count and floor, epoch changes by handover and takeover |
 | node epoch | raised by one at every start, in the same transaction; no lease is renewed | the node lease, its renewal, takeover, grace after takeover |
 | fence records | read and written exactly as in a cluster: every commit of a path reads its fence record and the commits that conflict with it write it ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)), so two concurrent commits of one file — two offload passes, an offload and a removal — conflict and one retries. Only the epoch comparison is moot: the shard's epoch does not change on one node | the epoch carried in the records changes with the primary ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)) |
@@ -1399,12 +1400,27 @@ makes every loser of one conflict collide again on the next attempt.
 Conformance drives concurrent writers at one deliberately shared key and asserts
 two things together: conflicts **occur**, and **none** reaches the caller.
 
-**A read that gates a commit MUST conflict with every concurrent write that would
-change its result.** Every supported store tracks point reads and detects
-write-write conflicts, blind writes included, but none is required to track a
-range scan ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). A scan over a key range is therefore
-never such a read, and a check that must hold under any supported store is made
-on point records written by both sides ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)).
+**A read that gates a commit MUST hold in both commit orders.** Every supported
+store tracks point reads and range guards and detects write-write conflicts,
+blind writes included, but none is required to track a range scan, and a tracked
+read binds only its own transaction: it aborts that transaction for a write
+committed after its snapshot, and never stops the writer
+([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). A store aborts only whichever side commits second, and only if that side
+tracked a key the other wrote. So:
+
+- Where only the reader decides — a commit gated on a fence, which a later fence
+  raise simply orders after it — the reader tracking the record the writer
+  writes is enough.
+- Where both sides decide from what the other changes — a removal that needs a
+  directory empty and a create that needs it present — **each** side **MUST**
+  track, by a point read, a guard or a range guard, a key the other writes: the
+  create guards the directory's record that the removal writes, and the removal
+  range-guards the entries the create writes into
+  ([RFC 7 §3.6](rfc-7-namespace-metadata.md#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)). A check made on one side alone holds in one commit
+  order and fails silently in the other.
+
+A scan over a key range is never a gating read; a range guard over the same
+prefix is ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)).
 
 ### 9.3 Where each invariant is tested and observed
 
@@ -1421,7 +1437,7 @@ it break.
 | **I5** | RFC 1: marking follows reports only; RFC 8: reports follow durable commits | RFC 1: bytes offered against bytes marked offloaded |
 | **I6** | every RFC: its own import test | the build |
 | **I7** | RFC 6, RFC 7, RFC 9: each stored record at its maximum size | the owning RFC: store size under rewrite |
-| **I8** | RFC 6, RFC 7: concurrent writers on one key | the owning RFC: conflicts retried, and conflicts surfaced (which must stay zero) |
+| **I8** | RFC 6, RFC 7: concurrent writers on one key; every gate that both sides decide, raced in both commit orders ([RFC 7 §12.1](rfc-7-namespace-metadata.md#12.1%20Group%20A%20%E2%80%94%20wrong%20file%2C%20lost%20file%2C%20wrong%20caller), [RFC 16 §6.1](rfc-16-metadata-store.md#6.1%20Two%20suites%2C%20layered%20like%20the%20code)) | the owning RFC: conflicts retried, and conflicts surfaced (which must stay zero) |
 | **I9** | RFC 9: deletion racing a put and a delayed delete landing after a retry; [RFC 8](rfc-8-engine.md): a crashed attempt's intent is collected | RFC 9: intents abandoned and collected, objects collected by listing (which should stay near zero) |
 | **I10** | RFC 6: the model test crashes a removal between batches and reads through it; RFC 8: reads during a partly applied truncate | RFC 6: removals not yet done, and their age |
 

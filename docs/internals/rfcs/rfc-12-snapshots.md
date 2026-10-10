@@ -148,7 +148,7 @@ and re-homing a share out of a shared one are
 - **A snapshot** is a read-only view of a share as it was at one moment. Taking
   one writes a few records whatever the share's size, and copies nothing.
 - **After a snapshot, nothing it can see is overwritten in place.** The first
-  change to a record or to a range of content keeps the old version as
+  change to a record or to an extent of content keeps the old version as
   **history**. A history ref counts its chunk in the remote store like a live
   ref, so GC keeps that content for as long as a snapshot can read it.
 - **Content still in the journal at the snapshot needs one extra step.** If it
@@ -360,9 +360,9 @@ part was superseded when the overwrite's existence committed, so it dies at the
 moved to history as its own piece (RFC 6 §6.2's exception). A held version
 offloaded straight to history is dated by the same rule. Stamping
 `died` from whichever transaction happens to write it instead would let two
-versions of one range both look alive at one cut ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) shows how).
+versions of one extent both look alive at one cut ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) shows how).
 
-**What a snapshot sees.** Snapshot *k* sees, for each key or range, the version
+**What a snapshot sees.** Snapshot *k* sees, for each key or extent, the version
 with `born < k ≤ died`, where a live version has `died = ∞`.
 
 **A superseded version is kept only if a live cut sees it.** The transaction that
@@ -642,7 +642,7 @@ which the offload's normal pace bounds.
 ![A snapshot hold](img/rfc12-hold.svg)
 
 **Worked example: an overwrite after the cut** — `S-snap-hold-overwrite`. One
-file range, one shard.
+file extent, one shard.
 
 | t | journal (primary and replicas) | metadata store | remote store |
 | --- | --- | --- | --- |
@@ -655,10 +655,10 @@ file range, one shard.
 
 Snapshot 1 reads h2 (0 < 1 ≤ 1); the share reads r3. Had v3 committed first, r1
 would have taken `died` 1 from it and been kept in history beside h2 — two
-versions of one range visible to snapshot 1. The ordering rule below forbids it.
+versions of one extent visible to snapshot 1. The ordering rule below forbids it.
 
 **Worked example: a successor appended before the cut** —
-`S-snap-hold-uncommitted-successor`. One file range, one shard.
+`S-snap-hold-uncommitted-successor`. One file extent, one shard.
 
 | t | journal (primary and replicas) | metadata store | remote store |
 | --- | --- | --- | --- |
@@ -700,7 +700,7 @@ have read r1, content the share had already replaced before the cut.
   record only by the completion rule below.
 - **A held version commits first.** An offload **MUST** commit a held superseded
   version no later than, and in version order before, any newer version over the
-  same range, so that each version's successor is the one that really replaced
+  same extent, so that each version's successor is the one that really replaced
   it.
 - **A ref never straddles a live cut.** An offload **MUST NOT** place, in one
   ref, versions on both sides of the hold mark of a live cut; the carver's run
@@ -828,9 +828,9 @@ Share `prod` holds one ref r on chunk c.
 | 0 | — | r (prod, live, `born` 2) | 1 |
 | 1 | snapshot 7 of prod | r | 1 |
 | 2 | clone `dev` from 7: use record; r' staged (dev, `born` 0) with its reverse key; publish; use record deleted | r, r' | 2 |
-| 3 | prod overwrites the range | r → history (`born` 2, `died` 7); new ref on c2 | 2 |
+| 3 | prod overwrites the extent | r → history (`born` 2, `died` 7); new ref on c2 | 2 |
 | 4 | prod is deleted with its snapshots: 7's history dropped, prod's live refs released | r' | 1 |
-| 5 | dev reads the range | r' resolves c | 1 |
+| 5 | dev reads the extent | r' resolves c | 1 |
 
 > ponytail: a clone copies every ref, O(refs) records. Upgrade to files that
 > read through their source snapshot until first written, when clone latency on
@@ -1249,7 +1249,7 @@ What other components gain:
   receiving shard's hold records; a cross-shard transaction admitted at all its
   shards' gates or at none.
 - **The offload** ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)): held versions committed straight to history and
-  before newer versions of their range; runs split at live hold marks.
+  before newer versions of their extent; runs split at live hold marks.
 - **Subtree snapshots** ([§2.10](#2.10%20Subtree%20snapshots)): `LiveCut` records a cut's kind and covered
   set; `SubCut(share, shard)`; the history test by coverage; the died index
   carrying each version's shard; moves of files refused on a covered shard
@@ -1418,7 +1418,7 @@ scenarios add.
 | S3 | Model-based run above; then kill the process at every step between the cut and `complete`, and inside every transaction that moves a record to history; restart. Each snapshot completes and equals the model. |
 | S3 | Give a file mode 0644 and an ACL denying principal X; snapshot; replace the ACL, then release the file. Browsing the snapshot as X is refused both times. Leave the ACL unversioned: the check fails. |
 | S4 | `S-snap-cut-failover` and `S-snap-shard-move-mid-cut`. Remove the epoch check from the cut transaction: a post-cut `chmod` appears in the snapshot. `S-snap-cross-shard-gate`: admit per gate instead of all-or-nothing, and cuts abort at their deadline. |
-| S5 | Acknowledge a write after the cut points, before the gate reopens: its existence commits after the cut and the snapshot does not show it. `S-snap-carve-straddle`: remove the split, and the snapshot reads post-cut bytes. `S-snap-stamp-takeover`: leave stamps unreplicated, and more than one version per file needs a rebuilt stamp. Two overwrites of one range between snapshots, then a truncate over it (a model-test seed): the superseded piece dies at the lower overwrite's `born`, no history key collides, and the truncate commits. |
+| S5 | Acknowledge a write after the cut points, before the gate reopens: its existence commits after the cut and the snapshot does not show it. `S-snap-carve-straddle`: remove the split, and the snapshot reads post-cut bytes. `S-snap-stamp-takeover`: leave stamps unreplicated, and more than one version per file needs a rebuilt stamp. Two overwrites of one extent between snapshots, then a truncate over it (a model-test seed): the superseded piece dies at the lower overwrite's `born`, no history key collides, and the truncate commits. |
 | S6 | `S-snap-hold-overwrite` with v3 committed first: the check fails on two versions visible at cut 1. `S-snap-offload-after-drop`: remove the live-cut test, and the audit reports an orphan history ref. `S-snap-delete-vs-history`: read `LiveCut` untracked, and the audit reports an orphan history ref. |
 | S7 | `S-snap-hold-takeover` and `S-snap-hold-lost`. Keep holds unreplicated: the first reads the wrong bytes. `S-snap-hold-uncommitted-successor`: let the uncommitted successor supersede, and the snapshot reads r1. `S-snap-hold-shard-move`: leave the receiving hold record out of the move's commit, and the snapshot completes reading the wrong bytes. |
 | S8 | `S-snap-remote-down` and `S-snap-journal-bound`: each cut commits within the gate target, writes never stall, snapshots stay `holding`, refused cuts return `ErrHoldBacklog`; restore the tier and every snapshot completes. `S-snap-hold-bound-dirty`: count held bytes only, and the journal fills. |

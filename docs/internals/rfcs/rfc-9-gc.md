@@ -1559,6 +1559,7 @@ type Config struct {
 	TrashRetention time.Duration // default 48 h (§3.7)
 	SpaceAmpTarget float64       // proposed 1.25; 0 turns compaction off (§4.4)
 	AuditPeriod    time.Duration // default 7 days (§6.1)
+	ForwardPeriod  time.Duration // full forward pass; proposed 90 days (§6.1)
 }
 
 func New(b Blocks, r Remote, t Transfers, l Lease, s *sched.Scheduler, cfg Config) (*GC, error)

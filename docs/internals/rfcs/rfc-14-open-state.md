@@ -730,8 +730,12 @@ How each protocol waits:
   notification is optional and the poll decides.
 - **NLM:** a blocking `NLM_LOCK` asks to wait, answered `NLM_BLOCKED`. When the
   range frees, the primary grants the lock in the step that frees it and sends
-  `NLM_GRANTED`. If the host does not acknowledge by the callback's deadline,
-  the lock is released and the next waiter considered.
+  `NLM_GRANTED`. The callback's deadline is **30 s** from the grant: the
+  primary **MUST** resend `NLM_GRANTED` until the host acknowledges or 30 s
+  pass, and if the host has not acknowledged by then it **MUST** release the
+  lock and consider the next waiter. 30 s is the default per-call deadline of
+  [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values); the
+  resend schedule within it is the NLM adapter's.
 - **SMB:** a lock request without the fail-immediately flag asks to wait; with
   it, a conflict is refused at once. The waiter is answered pending, and when
   the range frees the primary grants it in the step that frees it and completes
@@ -867,7 +871,7 @@ layout — whether or not it appears to conflict: the state it would be checked
 against is what was lost, so a conflict cannot be decided. For the same reason
 it **MUST** refuse, with `ErrGrace`, every read or write through an anonymous
 or unreclaimed open that a lost mandatory lock or deny mode might have
-forbidden; without that, an NFSv3 write lands in a range an SMB client is about
+forbidden; without that, an NFSv3 write lands in an extent an SMB client is about
 to reclaim a lock on. A client reclaiming what it held
 then finds it available, and a client that did not hold it cannot take it first.
 Without that window, two clients that were correctly serialised before the
@@ -1206,7 +1210,7 @@ given exactly this, whatever their protocols, and nothing more:
 
 - **Each write request is applied whole.** One `WRITE` is one engine write
   ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) and one journal version ([RFC 1 §3.1](rfc-1-journal.md#3.1%20Write)), so its bytes are never
-  interleaved with another write's within its range.
+  interleaved with another write's within its extent.
 - **Overlap resolves by arrival at the primary.** Every write to a file runs at
   the file's primary ([RFC 17 §4.8](rfc-17-vfs.md#4.8%20One%20primary%20per%20file)), which assigns versions in one serialised
   order; where two writes overlap, the later one's bytes win, byte by byte, and
@@ -1642,7 +1646,7 @@ var (
 | L36 | An open of a named stream is an open of its base file for deny modes, delete and keeping the file alive; no open suspends the change time. |
 | L37 | (cluster) A layout stateid's seqid rises with every grant, return and recall of the layout, in the step that applies it, and a recall carries it. |
 | L38 | An NFSv4.0 `SETCLIENTID` changes no state until its `SETCLIENTID_CONFIRM`, and an NFSv4.1 `EXCHANGE_ID` none until its first `CREATE_SESSION`; the unconfirmed proposal is volatile at the answering node and confirmed only by its principal within one lease period. |
-| L39 | No worker waits on a blocked lock: a waiting request leaves a volatile waiter, waiters overlapping one range are served first in, first out, and every waiter ends on grant, cancel, close, disconnect, its client's expiry, its host's restart, or for NFSv4 a missed poll, and on nothing else; no adapter answers a waiting request other than as granted before `CancelLock` has returned. |
+| L39 | No worker waits on a blocked lock: a waiting request leaves a volatile waiter, waiters overlapping one range are served first in, first out, and every waiter ends on grant, cancel, close, disconnect, its client's expiry, its host's restart, or for NFSv4 a missed poll, and on nothing else; an NLM grant its host has not acknowledged 30 s after the grant is released; no adapter answers a waiting request other than as granted before `CancelLock` has returned. |
 | L40 | Each primary holds at most 4096 caching grants per client; a client at the budget is offered none and is asked to return down to 2048, its least recently used grants first. |
 | L41 | A client record's `Expires` is volatile; its `CREATE_SESSION` sequence and cached reply are durable and written once per `CREATE_SESSION`, so a replay anywhere gets the first reply. |
 | L42 | I/O under a delegation stateid is served only to the client holding the delegation, and authorised as anonymous I/O is, for the caller's own principal. |
@@ -1697,7 +1701,7 @@ index's tiers.
 | [§4.5](#4.5%20NLM%20locks%20and%20restart%20notification) NLM restart | Hold NLM locks from two hosts, fail the shard over. Assert the NSM state number rose before grace, both hosts were notified, their reclaims are granted and a non-reclaim lock is refused `ErrGrace`. Then send a restart notification from one host: assert its locks are released at once. |
 | [§2.7](#2.7%20Copy) lost copy | Start an asynchronous copy, fail the destination's shard over mid-copy, ask its status. Assert `ErrNoCopy`, never done. |
 | [§2.1](#2.1%20Client) server owner | Send `EXCHANGE_ID` through two `protocol` nodes. Assert one major ID and one scope, two minor IDs, and that the client ID from one is accepted by the other. |
-| [§7.1](#7.1%20Writers%20that%20do%20not%20coordinate) unlocked writers | Two clients, one per protocol, write overlapping 1 MiB ranges of distinct patterns concurrently, 10⁴ times, with commits and offloads between. Assert after each round the overlap holds exactly one writer's pattern, whole, and that it is the one the primary acknowledged last. A design that splits one request across versions fails this. |
+| [§7.1](#7.1%20Writers%20that%20do%20not%20coordinate) unlocked writers | Two clients, one per protocol, write overlapping 1 MiB extents of distinct patterns concurrently, 10⁴ times, with commits and offloads between. Assert after each round the overlap holds exactly one writer's pattern, whole, and that it is the one the primary acknowledged last. A design that splits one request across versions fails this. |
 | [§2.2](#2.2%20Open) suspended time | Open a file twice over SMB; set `Modify` to -1 on the first. Write through the first; assert `Modify` unchanged after the existence commit. Write through the second; assert it advanced. Set -2 on the first, write through it; assert it advanced. Repeat on a persistent open across a failover. |
 | [§2.8](#2.8%20NFSv4.0%20owner%20sequences) owner sequence | Over NFSv4.0, one open-owner opens files in two shards with consecutive seqids; assert both accepted. Send a stale seqid to the second shard's file; assert `ErrBadSeqID` and no state change. Refuse an `OPEN` with `ErrDelay`, and a `LOCK` at the second shard's primary with `ErrLocked`; assert each advanced its owner's sequence and that owner's next seqid is accepted. Fail the home shard over; assert the owner's next sequenced request is accepted in grace as a new owner's. |
 | [§2.1](#2.1%20Client) owner index | `EXCHANGE_ID` with an owner string, then again with the same verifier from another node: assert the same client ID. Again with a new verifier: assert a new ID and the old one's state released. Again from another principal: assert refused. Restart the node and repeat the first: assert the same ID, found by the index. |
@@ -1716,7 +1720,7 @@ index's tiers.
 | [§9.5](#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory) open children | Open a file in directory D over SMB; rename D over SMB: assert `ErrShareViolation`. Rename D over NFS: assert it succeeds and the open still reads. Open a file two levels below D; assert an SMB rename of D succeeds. |
 | [§2.6](#2.6%20Layout) layout seqid | `LAYOUTGET` a range, then recall the layout while a second `LAYOUTGET` reply is in flight. Assert the recall's seqid is above the first reply's and below or equal to the second's, so the client can order them, and that a `LAYOUTRETURN` naming a seqid above the current one is refused. A layout without a seqid gives the client nothing to order by. Guess a layout ID by changing one bit; assert it names nothing. |
 | [§2.9](#2.9%20NFSv4.0%20unconfirmed%20clients) unconfirmed client | A confirmed NFSv4.0 client holds a lock. Send `SETCLIENTID` with its owner and a new verifier; assert the lock still held and no client record written. Confirm from another principal, with a wrong confirm verifier, and after one lease period: assert each `NFS4ERR_STALE_CLIENTID`. Repeat and confirm correctly within the period: assert the old client ID expired and its lock released. Restart the answering node between the two calls: assert the confirm is `NFS4ERR_STALE_CLIENTID` and a new `SETCLIENTID` succeeds. A design that acts at `SETCLIENTID` releases the lock at the first step. |
-| [§2.10](#2.10%20Lock%20waiters) lock waiters | Hold an exclusive lock; from three owners request overlapping blocking locks in order exclusive A, shared B, exclusive C, while a fourth owner keeps taking and releasing non-waiting shared locks. Release the holder. Assert A is granted (NLM, SMB) or reserved (NFSv4) first, B only after A, C last, that the fourth owner is refused while A waits, and that no worker was held during the wait. Over NFSv4, stop polling for A: assert its reservation ends after one lease period and B proceeds. Expire a waiting client's lease: assert its waiter is gone. Over NLM, assert `NLM_BLOCKED` then `NLM_GRANTED`; over SMB with the fail-immediately flag, assert refusal at once. |
+| [§2.10](#2.10%20Lock%20waiters) lock waiters | Hold an exclusive lock; from three owners request overlapping blocking locks in order exclusive A, shared B, exclusive C, while a fourth owner keeps taking and releasing non-waiting shared locks. Release the holder. Assert A is granted (NLM, SMB) or reserved (NFSv4) first, B only after A, C last, that the fourth owner is refused while A waits, and that no worker was held during the wait. Over NFSv4, stop polling for A: assert its reservation ends after one lease period and B proceeds. Expire a waiting client's lease: assert its waiter is gone. Over NLM, assert `NLM_BLOCKED` then `NLM_GRANTED`; drop every acknowledgement of the `NLM_GRANTED`: assert it is resent, the lock is released 30 s after the grant and not before, and the next waiter is granted. Over SMB with the fail-immediately flag, assert refusal at once. |
 | [§5.5](#5.5%20A%20client%27s%20grants%20are%20bounded) grant budget | One NFSv4.1 client opens 5000 files at one primary with no other client. Assert grants stop at 4096, a `CB_RECALL_ANY` names 2048 to keep, and a client that ignores it is recalled one by one down to 2048 within one lease period plus the recall deadline. Repeat over SMB, writing every few seconds through the first lease granted: assert breaks of the least recently used leases down to 2048, and that the first lease is not broken. A design with no budget grants all 5000; one that evicts oldest first breaks the first lease. |
 | [§2.1](#2.1%20Client) SMB machine record | Two principals negotiate with one `ClientGuid` on two connections, as a multi-session host does. Assert both are admitted to one client record that holds no principal. Each opens a file; assert the second principal presenting the first's FileId is refused, and a reconnect of the first's open by the second is refused. A record that binds the `ClientGuid` to its first principal refuses the second negotiate. |
 | [§2.1](#2.1%20Client) create-session sequence | Confirm an NFSv4.1 client with `CREATE_SESSION` at the answered sequence; drop the reply; restart the node and replay it through another. Assert the cached reply is returned and no second session or record write. Send sequence + 2: assert `NFS4ERR_SEQ_MISORDERED`. A design without `CSSeq` in the record creates a second session. |

@@ -623,7 +623,7 @@ and writing the bytes.
        GC counts it. It is filed under N, not under the share's prefix, and owned
        by N's installation, so moving the share out later carries none of it and
        leaves none of N's counts behind;
-     - rewrites each ref at *g* + 1, naming its N' chunk ID, with the same range,
+     - rewrites each ref at *g* + 1, naming its N' chunk ID, with the same extent,
        version, `born` and `died`; a ref that was re-cut becomes its pieces,
        each with those same values;
      - lowers `old_refs` and advances the cursor.
@@ -806,7 +806,7 @@ stated in the one that owns its subject; the numbers missing here are theirs.
 | S13 | A move never releases refs at the old installation and never deletes a remote object on its behalf. |
 | S17 | A move keeps FileIDs and refuses a collision; a clone, a restore and a detached snapshot get new ones. A move's drop `Forget`s the namespace's shares' tags in every journal at the old installation — every record of each tag below the forget record's sequence number, by sequence number, not by version — leaving no extent or removal marker of them, and attaching an imported share's tag finds none of its extents. |
 | S20 | After a move, the base plus the delta equal the source's records at the freeze; the base is exported only once its cuts are `complete`, and the delta is every record whose change sequence is above the base's. |
-| S26 | During a re-home every ref of the share names the namespace its chunk is counted in, by that namespace's chunk ID. A switch adopts in the new namespace and drops from the old in one transaction, keeping range, version, `born` and `died`, so no snapshot's or live read's bytes change. The re-home finishes only when no ref names the old namespace, decided from a folded counter that cannot rise once the re-home is closing. |
+| S26 | During a re-home every ref of the share names the namespace its chunk is counted in, by that namespace's chunk ID. A switch adopts in the new namespace and drops from the old in one transaction, keeping extent, version, `born` and `died`, so no snapshot's or live read's bytes change. The re-home finishes only when no ref names the old namespace, decided from a folded counter that cannot rise once the re-home is closing. |
 | S32 | A claim carries the holder's instance nonce; a holder reads the claim before it rewrites it and records the new nonce before it puts it; a process that reads its own identity with a nonce it did not record stops writing and deleting at once, and an installation started on a copy holds no namespace until an operator states which copy it is. |
 | S38 | An offer uses the namespace and keys it captured when carved; no put lands N-keyed chunk IDs in another namespace. A copy taken mid-re-home carries both namespaces, puts every block into the new namespace's folder, and is honoured by that folder's sweep; a ref the re-home drops from N stays counted there while a catalog backup taken before the re-home finished is unexpired. |
 | S39 | After a move's drop, no journal of the old installation holds an extent or removal marker of the moved shares, and a journal attaching an imported share holds none of its tag's extents before it serves. B's work after A's release is one publish and the claim. |
