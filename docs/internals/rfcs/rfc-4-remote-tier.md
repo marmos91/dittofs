@@ -340,9 +340,13 @@ verification) inherits it.
 byte sequence ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)), so the position block metadata records for a chunk
 ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)) stays right for the life of the block. A ranged read that fails
 verification, or runs past the end, is corrupt: the codec does not re-read the
-header to look for the chunk elsewhere. When the store rejects a recorded range
+header to look for the chunk elsewhere. A ranged get carries no service
+checksum ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)), so a byte flipped in transit fails verification exactly as one
+flipped at rest; the syncer therefore gets a chunk that failed verification once
+more before it reports it corrupt
+([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The codec itself never re-reads. When the store rejects a recorded range
 as past the end (`ErrInvalid`), the codec reports `ErrCorrupt` of kind
-`malformed`: the range came from a record, not from a caller's mistake, so the
+`malformed`, which is not re-got: the range came from a record, not from a caller's mistake, so the
 stored block is shorter than its record says. `ErrNotFound` passes through
 unchanged, for the engine to re-resolve ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)).
 
@@ -681,8 +685,12 @@ the codec can, and reports a recorded range the store rejects as corrupt
 
 The caller merges ranges that are adjacent in the block into one request, which
 is why a get takes one range and not a list. Where the service returns a checksum
-for what it sent, the store **SHOULD** check it. The codec's hash check ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec))
-remains the one that decides.
+covering exactly the bytes it sent, the store **SHOULD** ask for it and check it,
+and a mismatch is `ErrTransient`. A whole-object checksum covers only a
+whole-block get; a ranged get usually has none, so a byte flipped in transit on
+one reaches the codec as a hash mismatch. The codec's hash check ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec))
+remains the one that decides, and a mismatch is re-got once by the syncer before
+it is reported corrupt ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
 
 ### 4.5 Delete is batched and idempotent
 
@@ -804,14 +812,29 @@ invalid request say, would never count toward health at all. A profile **MUST**
 list the replies its service uses for a reached quota or a full store, and map
 each to `ErrDenied` of cause `quota`.
 
+**A size refusal is a denial.** No put is larger than the largest encoded block
+([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), a few MiB at the defaults and below any admitted service's single-put
+limit, so a reply refusing a put for its size — an entity-too-large status from
+the service or from a proxy in front of it — is a policy that will refuse every
+block of that size, not a malformed request. A profile **MUST** map such replies
+to `ErrDenied` of cause `access`, so that they count toward put health and back
+off as a denial ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)), and **MUST NOT** map them to `ErrInvalid`, which
+health never counts.
+
+> decision: a size refusal is `access`, not `quota`, because nothing is full:
+> an operator fixes a body limit, and writes do not answer as out of space. The
+> rule leans on the block-size cap; withdraw it, and treat a size refusal as
+> `ErrInvalid` for that put alone, if a put can ever exceed a service's
+> documented single-put limit.
+
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
 | `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
-| `ErrInvalid` | the request was wrong: a range past the end, or an operation the service does not support | fails the call; not retried |
-| `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket (cause `access`); or a quota or storage limit of the service is reached (cause `quota`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| `ErrInvalid` | the request was wrong: a range past the end, or an operation the service does not support; never a quota or size refusal | fails the call; not retried |
+| `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket, a body-size limit (cause `access`); or a quota or storage limit of the service is reached (cause `quota`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrThrottled` (wraps `ErrTransient`) | the service asked to be sent less: a throttling or slow-down reply | the syncer holds the flow and retries after backoff; it is backpressure and **MUST NOT** count toward health ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed, including a recorded range the store rejected ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is corrupt and is not retried |
+| `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed, including a recorded range the store rejected ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is re-got once, then reported corrupt; a recorded range the store rejected is reported at once ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
 A local failure (the context cancelled, the body's reader failing) is returned
 as itself. It is not the service's fault and does not count against the store's
@@ -1206,7 +1229,7 @@ S3-compatible object storage, the primary backend, is profiled in
 | R18 | An immutable store issues no delete and no put probe, reads by recorded version, sets a retain-until on every put, at a generation's end and under the location's cap, only ever raises one, and extends its health object's version at every open. |
 | R19 | Stores opened from one store configuration share one client, whose limits are derived once from the callers' total concurrency. |
 | R20 | A backup location's exports, state and progress objects are reached by fixed kind, put whole and verified, read by version at an immutable location, and listed by version, never by current object only. |
-| R21 | Every `ErrDenied` carries its cause, and a service's quota or storage-full reply is `ErrDenied` of cause `quota`. |
+| R21 | Every `ErrDenied` carries its cause; a service's quota or storage-full reply is `ErrDenied` of cause `quota`, and a size refusal `ErrDenied` of cause `access`, never `ErrInvalid`. |
 
 ## 7. Test plan and benchmarks
 
@@ -1255,7 +1278,8 @@ in-memory store).
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store: every `PutVersion` and `PutObject` request carries a compliance-mode retain-until at a generation's end; `Health(DirPut)` returns `ErrInvalid` and the transport sees no request; `ExtendRetention` to a time at or before the current retain-until returns `nil` after one retention read and sends no retention write. Advance a virtual clock past the lifecycle age with opens in between, and again with one process left up and only its `Recheck`s running: the location still opens and the get probe passes. A store that never extends the health object, or extends it only at open, stops opening here. | T |
 | [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | At an immutable location put one backup's state object three times, then have the transport add a delete marker over it as an expiring lifecycle rule would: `ListObjects` yields all three versions, `GetObject` by each returns its bytes, and a get of the current object is refused. At a mutable location a second put replaces the first, and `DeleteObjects` removes it. A block listing yields no versioned object. Re-put an older authentic state version on top of a newer one: the caller still takes the newer by its sequence. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Lower a backup location's lock or suspend its versioning between two copies: the folder record's holder runs `Recheck` before the next copy, finds the drift, and the copy fails before any put; the location's put direction is unhealthy until a `Recheck` passes. A design whose only `Recheck` caller is GC copies into the drifted folder. | T |
-| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer puts with each quota or storage-full reply the profile lists, and with `507`: each is `ErrDenied` of cause `quota`. Answer with `403`: `ErrDenied` of cause `access`. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer puts with each quota or storage-full reply the profile lists, and with `507`: each is `ErrDenied` of cause `quota`. Answer with `403`: `ErrDenied` of cause `access`. Answer with `413` with and without an error code, and with `400 EntityTooLarge`: each is `ErrDenied` of cause `access`, never `ErrInvalid`. | T |
+| [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | Flip one byte of a ranged get's body: the codec reports `ErrCorrupt`, and the syncer's single re-get returns the chunk ([RFC 3 §7.1](rfc-3-syncer.md#7.1%20Group%20A%20%E2%80%94%20silent%20data%20loss)). Flip a byte of a whole-block get on a service that returns a response checksum: the get fails `ErrTransient` before the codec sees it. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store, `Delete` returns `ErrInvalid` for every name and the transport sees no request; `PutVersion` twice under one name returns two versions, and `GetVersion` of the first returns the first bytes; `ExtendRetention` to an earlier time is refused without a request. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Open a mutable store on a bucket configured for an immutable location: open fails. Open an immutable store over a bucket with no versioning: open fails. | T |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | The capability check provokes a conditional put and reports `conditional_put`; no other call of the suite sends a conditional header. | T |
@@ -1364,6 +1388,16 @@ Settled in this revision, with the evidence in [Appendix B](#Appendix%20B%20%E2%
    Every setting either mode depends on is re-read by `Recheck`
    ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
 
+   > decision: refusing versioning and object lock on every namespace store also
+   > rules out the service's own bucket replication wherever that replication
+   > requires versioning, as it does on the S3 protocol. A namespace's bucket is
+   > therefore protected against its own loss, and against a holder of its
+   > credential, only by a copying backup to another location, immutable where
+   > that holder is the threat ([RFC 26 §2.4](rfc-26-catalog-backups.md#2.4%20Copying%20backups)), not by the bucket. Admit
+   > versioning on a namespace store — and teach sweep to delete versions — if a
+   > deployment needs a replica kept in step with the bucket, which a copying
+   > backup taken per snapshot is not.
+
 Settled with them:
 
 5. **Request latency does not change the design.** A slow service needs more
@@ -1382,7 +1416,7 @@ Settled with them:
    ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)).
 
 7. **What "stored" means is cited per service**, since no check can provoke a
-   loss after acknowledgement ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). [Appendix C.1](#C.1%20Required%20service%20features) records, per measured service, when a
+   loss after acknowledgement ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) records, per measured service, when a
    put is acknowledged and across which failure domains. A storage class that
    keeps data in one failure domain is allowed: the capability check reports the
    class's failure domain at open and through health, and a deployment that
@@ -1458,9 +1492,25 @@ request, 64 workers for 5 s each, 64 KiB responses)
 | idle 64, cap 64 | 2,826 | 64 | 22 ms | 31 ms |
 | idle 16, cap 16 | 695 | 16 | 91 ms | 118 ms |
 
+Against these services the capability check's step 1 ([Appendix C.4](#C.4%20The%20capability%20check)) chooses
+CRC32C on Scaleway and LocalStack 4.13.1, `Content-MD5` on LocalStack 3.0, and the
+ETag on Cubbit DS3. Scaleway rejects a wrong CRC32C with `400 InvalidRequest`,
+not `BadDigest`, which is why the check records the rejection's code.
+
 On loopback a new TLS handshake is nearly free, which is why the default's churn
 does not cost throughput here. The AWS SDK's own client keeps 10 idle
 connections per host, not 2. The churn's cost over a WAN is not measured.
+
+**When a put is stored, per service.** Cited from each service's own
+statement, not measured ([§8](#8.%20Decisions%20and%20open%20questions), item 7):
+
+| Service | A `200` on put means | Failure domains |
+| --- | --- | --- |
+| Cubbit DS3 | every fragment of the object's erasure code (N+K per site, across the redundancy class's sites) is stored | the sites of the bucket's redundancy class |
+| Scaleway, Standard Multi-AZ | stored under the service's multi-zone redundancy | three availability zones, in regions that offer it |
+| Scaleway, One Zone | stored under the service's single-zone redundancy | one availability zone: allowed, reported at open |
+
+A service is added to this table before it is supported.
 
 **Service notes, not measured.** From each service's documentation, to be
 confirmed by the capability check before the service is supported:
@@ -1470,12 +1520,13 @@ confirmed by the capability check before the service is supported:
 | Backblaze B2 | keeps versions of every object on its native API, so the versioning check is expected to refuse it; how its S3-compatible API reports versioning is unverified |
 | Wasabi | bills a minimum storage duration per object, so a block deleted early is still paid for until it expires: sweep and relocation churn cost money there that they do not elsewhere |
 | Google Cloud Storage (XML API) | has no batch delete, so the store deletes one key per request ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) |
-| MinIO | not measured: it could not be pulled in the measurement environment |
+| MinIO | not measured: it could not be pulled in the measurement environment. Its documented error table names `XMinioAdminBucketQuotaExceeded` (a `400`) for a reached bucket quota, which the profile's quota list carries ([Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3)) |
 | AWS S3 | not measured; documents honouring `If-None-Match` and `If-Match` on puts, which changes nothing here, since no rule uses a conditional put ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) |
-| Ceph RGW | not measured |
-| Cloudflare R2 | not measured |
+| Ceph RGW | unsupported: not measured, and absent from the service semantics table above |
+| Cloudflare R2 | unsupported: not measured, and absent from the service semantics table above |
 
-No service in this table is supported until it passes the nightly row of
+No service in this table is supported until it has a column in the service
+semantics table above and passes the nightly row of
 [§7.4](#7.4%20Services), whatever its documentation or compatibility claims say. The two most
 deployed, AWS S3 and MinIO, are the first to measure; until then a deployment on
 either runs on a service this set has not checked.
@@ -1526,16 +1577,9 @@ feature cannot have it enabled), and `403` refuses: the credential must be
 allowed to read both settings, or the check cannot tell. `Recheck` re-reads the
 same two settings under the same rules.
 
-**When a put is stored, per service.** Cited from each service's own
-statement, not measured ([§8](#8.%20Decisions%20and%20open%20questions), item 7):
-
-| Service | A `200` on put means | Failure domains |
-| --- | --- | --- |
-| Cubbit DS3 | every fragment of the object's erasure code (N+K per site, across the redundancy class's sites) is stored | the sites of the bucket's redundancy class |
-| Scaleway, Standard Multi-AZ | stored under the service's multi-zone redundancy | three availability zones, in regions that offer it |
-| Scaleway, One Zone | stored under the service's single-zone redundancy | one availability zone: allowed, reported at open |
-
-A service is added to this table before it is supported.
+**When a put is stored** is cited per service from each service's own
+statement, and recorded in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) ([§8](#8.%20Decisions%20and%20open%20questions), item 7). A service is added there
+before it is supported.
 
 Not required: conditional put, multipart upload ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block) rules it out), trailing checksums,
 `HeadObject`, `HeadBucket`, `CopyObject`, bucket creation.
@@ -1563,14 +1607,14 @@ Several stores may share a bucket under different prefixes, never one prefix
 | Contract | S3 |
 | --- | --- |
 | one attempt per call ([§4.9](#4.9%20No%20state%20across%20calls)) | SDK retries off (maximum attempts 1) |
-| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. The capability check runs with this same configuration |
+| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. A whole-block get sends `x-amz-checksum-mode: ENABLED`, and the store compares a returned checksum of the object with the bytes received ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)); a ranged get asks for none, since an object checksum does not cover a range. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. The capability check runs with this same configuration |
 | connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit |
 | put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |
 | `ErrNotFound` | `404 NoSuchKey`; `404 NoSuchVersion` on `GetVersion` |
 | `ErrInvalid` | `416`; a `Content-Range` that differs from the request (a clamp); `400` codes not listed elsewhere; `501` |
-| `ErrDenied`, cause `access` | `401`, `403`, `404 NoSuchBucket`, `400 ExpiredToken`, `400 InvalidToken`; any `3xx`, which on this service means the endpoint or region is wrong, never a block's state |
-| `ErrDenied`, cause `quota` | `507` with any code; and any reply whose error code the profile's quota list names — each service's own bucket-quota-exceeded and storage-full codes, recorded per service in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) as they are measured; for MinIO, `XMinioAdminBucketQuotaExceeded` (a `400`), taken from its documented error table and not yet measured. Such a reply is matched before the rows below, so a quota answered with `400` or `403` is never `ErrInvalid` |
+| `ErrDenied`, cause `access` | `401`, `403`, `404 NoSuchBucket`, `400 ExpiredToken`, `400 InvalidToken`; `413` with any code, and `EntityTooLarge` with any status, a size refusal ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); any `3xx`, which on this service means the endpoint or region is wrong, never a block's state |
+| `ErrDenied`, cause `quota` | `507` with any code; and any reply whose error code the profile's quota list names — each service's own bucket-quota-exceeded and storage-full codes, recorded per service in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements), measured or taken from the service's documented error table. Such a reply is matched first, and a size refusal next, before the rows below, so a quota or size refusal answered with `400` or `403` is never `ErrInvalid` |
 | `ErrThrottled` | `429`, `503 SlowDown` |
 | `ErrTransient` | `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request, a mismatching response checksum on a get ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)), a response body that does not parse |
 | `ErrCorrupt` | `400 BadDigest`, `400 InvalidDigest`, `400 XAmzContentSHA256Mismatch`; the exact status and code the check recorded for its chosen checksum, only on puts that carried that checksum; an ETag mismatch on a put |
@@ -1595,8 +1639,8 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
    object with the correct value and expect success, then put another with a
    wrong value and expect a rejection with nothing stored. The first that passes
    both is the one the store sends, and the status and error code of its rejection
-   are recorded for [§4.8](#4.8%20Errors%20are%20a%20closed%20set)'s `ErrCorrupt`. Scaleway, for one, rejects a wrong
-   CRC32C with `400 InvalidRequest`, not `BadDigest`. If neither is enforced, put
+   are recorded for [§4.8](#4.8%20Errors%20are%20a%20closed%20set)'s `ErrCorrupt`, since services differ in the code they
+   use ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)). If neither is enforced, put
    a known body with a wrong `Content-MD5` and expect `200` with an ETag equal to
    the MD5 of the body actually sent; that proves the ETag is computed from the
    stored bytes, not echoed. If that fails too, refuse. Whichever mechanism was
@@ -1632,6 +1676,3 @@ retain-until ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20t
 refused delete of the location health object. It adds no version at open. The
 location health object itself is put once, at `<location>control/health`, when
 the location record is created, and its version is stored in that record.
-
-Against the services of [Appendix B](#Appendix%20B%20%E2%80%94%20measurements), step 1 chooses CRC32C on Scaleway and LocalStack
-4.13.1, `Content-MD5` on LocalStack 3.0, and the ETag on Cubbit DS3.

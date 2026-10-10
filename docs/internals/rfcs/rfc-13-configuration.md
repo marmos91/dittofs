@@ -759,18 +759,22 @@ because the rule stands here alone, or marked not yet applied:
    the scopes of Appendix B: `snapshots.hold_bound` and `snapshots.directory`,
    which Appendix B scopes per share, sit under the share. *Applied.*
 5. **RFC 7 §3.3:** case sensitivity is fixed at the share's creation. *Applied.*
-6. **RFC 9 §8:** GC's `Config` holds four namespace fields. *Applied.*
+6. **RFC 9 §8:** GC's `Config` holds the five namespace `gc.*` settings of
+   Appendix B. *Applied.*
 7. **RFC 2 §5:** the block target is a remote-store setting, next write, 4 MiB,
    settable from 1 MiB to 64 MiB. *Applied.*
 8. **RFC 5 §3.2 and §5.1:** whether the chain encrypts is fixed when the
    namespace is created. *Applied.*
-9. **RFC 26 §2.4 and RFC 12 §3.2:** a policy names a backup location by its record
+9. **RFC 26 §4.2 and RFC 12 §3.2:** a policy names a backup location by its record
    ([§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record)). *Applied.*
-10. **RFC 16:** the node record holds its registered version ranges, the
-    installation record the active versions, a `Secret` its version and the
-    wrapping key it is sealed under, and keytabs are `Secret` records.
-    The installation-wide settings generation of [§5](#5.%20Binding%20classes) is RFC 16's `CFGGEN`
-    record. *Applied.*
+10. **RFC 16:** the node record holds its registered version ranges; the store
+    format's active version is in the store's format record and every other
+    active version in the installation record; a `Secret` holds its version and
+    the wrapping key it is sealed under, and keytabs are `Secret` records.
+    *Applied* ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities), [§4.6](rfc-16-metadata-store.md#4.6%20Store%20format)).
+11. **RFC 16:** the installation-wide settings generation of [§5](#5.%20Binding%20classes) is
+    RFC 16's `CFGGEN` record, raised in the transaction of every `Setting` or
+    `Secret` change. *Applied.*
 
 ## 11. Open questions
 

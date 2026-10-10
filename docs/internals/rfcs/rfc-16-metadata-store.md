@@ -65,8 +65,8 @@ disk `ODFC_alice.vhdx` is file `f7`. Follow two operations into the database.
    waits for that transaction, since it overwrites committed content; an append
    would have been left to the next group commit. It also
    *guards* `f7`'s fence record and N1's node record: claims on keys it does
-   not write, which fail the transaction if another node has taken the file
-   over.
+   not write, which fail the transaction if another node took the file over
+   after the transaction's snapshot.
 2. **Minutes later the range is uploaded.** A put intent naming the new block
    is recorded before the put. After the put, the offload commit writes a ref
    ("these bytes are chunk C"), the chunk record, the block record and the
@@ -126,8 +126,10 @@ lists every key.
   table ([§4.2](#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)).
 - **KV**: the small interface a backend implements — run a transaction, read,
   scan, set, delete, guard ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
-- **Guard**: a transaction's claim on a key it does not write. It conflicts
-  with a concurrent write of that key, never with another guard.
+- **Guard**: a transaction's claim on a key it does not write, or on every key
+  under a prefix (a range guard). It aborts its own transaction if the key was
+  written after that transaction's snapshot; it never stops the writer, and
+  never conflicts with another guard.
 - **Delta and fold**: a counter changed by many writers is never read and
   rewritten; each transaction adds a delta record and the shard's primary folds
   them in later ([§4.4](#4.4%20Counters%20that%20many%20writers%20change)).
@@ -763,23 +765,34 @@ type KV interface {
 	// conflict under ctx's deadline (RFC 0 §9.2). fn may run more than once.
 	Update(ctx context.Context, fn func(Txn) error) error
 	View(ctx context.Context, fn func(Reader) error) error
-	Limits() TxnLimits // entries and bytes per transaction: derives RFC 6's K
+	Limits() TxnLimits // value, key, transaction size with conflict ranges, transaction age: derive RFC 6's K
+}
+
+type TxnLimits struct {
+	Key, Value int           // largest key, largest value, in bytes
+	TxnBytes   int           // one transaction: keys, values and conflict ranges
+	TxnEntries int           // keys written or deleted in one transaction; 0 if unbounded
+	Age        time.Duration // a transaction older than this, from its snapshot, aborts
 }
 
 type Reader interface {
 	Get(key []byte) ([]byte, error) // ErrNotFound
-	Scan(prefix, after []byte) iter.Seq2[KeyValue, error]
+	Scan(prefix, after []byte) iter.Seq2[KeyValue, error] // untracked
+	// Versions returns each key's change sequence, in one batched read
+	// (§4.1, "Every committed write carries a change sequence").
+	Versions(keys [][]byte) ([]uint64, error)
 }
 
 type Txn interface {
 	Reader
 	Set(key, value []byte) error
 	Delete(key []byte) error
-	// Guard makes the transaction conflict with any concurrent write to key,
-	// whether or not the transaction writes it. Guards are SHARED: two
-	// transactions guarding one key do not conflict with each other, only
-	// with a transaction that writes it. A gating read uses it (RFC 6 §5.4).
+	// Guard is a tracked read that returns no value: this transaction aborts
+	// at commit if another committed a write to key after its snapshot. It
+	// binds only this transaction, and two guards never conflict (§4.1).
 	Guard(key []byte) error
+	// GuardRange is Guard for every key under prefix, present or not.
+	GuardRange(prefix []byte) error
 	// Now is store time for this transaction (§4.1, "Now is store time").
 	Now() time.Time
 }
@@ -796,13 +809,47 @@ journal release the bytes it recorded, and a removal commit lets GC act. An
 `Update` that returns an error **MAY** still have committed, and callers handle
 that as an unknown outcome, never as a refusal.
 
-**`Guard` is shared.** A transaction that guards a key **MUST** conflict with
-every concurrent transaction that writes that key, and **MUST NOT** conflict
-with one that only guards it. Creates in one directory each guard the parent
-(`Guard(F‖parent)`, [RFC 7](rfc-7-namespace-metadata.md)) and every namespace transaction guards its file's
-fence (RFC 6 §5.4); an exclusive guard would serialise both, which is the
-one-directory create rate of Appendix A again. A guard is a conflict-tracked
-read that returns no value.
+**The embedded store shares one sync among concurrent commits.** Synced one
+commit at a time, a store reaches only as many commits per second as its device
+completes syncs — a few hundred on consumer NVMe — for the whole installation.
+The embedded backend **MUST** therefore group the `Update`s that are ready to
+commit together into one sync (group commit), and **MUST NOT** acknowledge any
+of them before that sync completes. A mode that acknowledges before the sync and
+syncs in the background is not supported, under any setting: the rule above has
+no loss window to configure, because what the journal releases and GC deletes on
+the strength of an `Update` cannot be put back. A flush that waits on a metadata
+commit — an overwrite's existence commit included — waits for that shared sync.
+The benchmark of §7.1 holds the rate.
+
+**Guards bind their own transaction, and are shared.** A guard — `Guard(key)`,
+or `GuardRange(prefix)` for every key under a prefix — is a conflict-tracked
+read that returns no value:
+
+- A transaction that guards a key **MUST** abort at commit if another
+  transaction committed a write to that key after its snapshot. `GuardRange`
+  **MUST** do the same for every key under its prefix, keys absent at the
+  snapshot included, so a key created under the prefix aborts it.
+- A guard binds **only** its own transaction. If a transaction G that guards a
+  key commits before a transaction W that writes it, both commit, and W is
+  ordered after G; no rule may assume W fails. That is harmless where W decides
+  nothing from what G wrote — a fence raised after a commit that read it is
+  simply later than that commit. Where W does decide from G's writes, W must
+  itself track a key G writes ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)): a directory's removal
+  `GuardRange`s its entries for exactly this reason ([RFC 7 §3.6](rfc-7-namespace-metadata.md#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)).
+- Two guards **MUST NOT** conflict, point or range, **whatever their commit
+  order**. Two transactions that guard one key, and write nothing the other
+  tracks, both commit — including when one commits between the other's
+  snapshot and its guard. A backend whose guard is a shared lock that holds
+  only while both are held, so that a guard taken after another guarding
+  transaction has committed fails, does not meet this rule; the KV conformance
+  suite commits two guards of one key in both orders (§6.1). Creates in one
+  directory each guard the parent (`Guard(F‖parent)`, [RFC 7](rfc-7-namespace-metadata.md)) and every
+  namespace transaction guards its file's fence (RFC 6 §5.4); a guard that
+  serialised them would bring back the one-directory create rate of Appendix A.
+- A guard constrains only a transaction that writes. A backend **MAY** skip the
+  conflict check of a transaction that writes nothing, and a caller **MUST
+  NOT** rely on a guard in one: every check this set makes with a guard is made
+  in the transaction that writes what the check permits.
 
 **`Now` is store time.** Every time a record stores to be compared later — GC's
 `not_before`, a delete's completion, a `Recheck`, a node lease's expiry — is taken
@@ -815,25 +862,37 @@ the transaction that claims the shard, so a paused primary's commit in flight
 conflicts and aborts before its successor has fenced any file. The guard holds
 whenever the store chooses a commit's timestamp, which a check of `Now` against
 an expiry would not. `Now` **MUST** be
-monotonic across transactions that commit in order, and within a stated bound of
+monotonic across transactions that commit in order (on a backend without an
+oracle, those of one node: below), and within a stated bound of
 real time, and reading it writes no key. A backend with a timestamp oracle
 returns the timestamp the oracle issued for the transaction's snapshot; its
-commit timestamp, chosen later, is at or above it. A backend without one — the
-embedded single-node store — returns the node's clock clamped monotone: never
+commit timestamp, chosen later, is at or above it. A backend without one, or
+whose versions are not time — the embedded single-node store, or a replicated
+store whose read version is a counter that stands still on an idle store and
+races ahead under load — returns the node's clock clamped monotone: never
 below the last value it returned, and never past a ceiling held in the node's
 clock record (`N‖node‖clk`, §4.2), which a background write raises one second
 ahead before `Now` reaches it; a start resumes from that ceiling, so a clock stepped back across a restart
 cannot carry `Now` backward. That costs one write per second per node, never one
 per transaction: a clock kept in a key that every transaction read and rewrote
-would be the hot counter §4.4 forbids.
+would be the hot counter §4.4 forbids. Clamped this way, `Now` is monotonic
+across the transactions of one node; across nodes of a cluster on such a store,
+two transactions in commit order may read `Now` apart by up to the clock-offset
+bound σ ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), and a time one node stored is compared with
+another node's `Now` allowing σ, as every cross-host wait already does.
 
-**Every committed write carries a change sequence.** Its source is the commit
-timestamp the store keeps with each key version — the oracle's on a replicated
-store, the store's own commit version on the embedded one — so it orders writes
-like their commits and no transaction writes a counter to get it. `Scan` returns it in each `KeyValue`;
-nothing stores it in a value. A move's delta is the records whose change
-sequence is above its base cut's, under a share's prefixes and its namespace's
-content-addressed ones ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)).
+**Every committed write carries a change sequence.** Its source is the version
+the store assigns at commit — an oracle's commit timestamp, or the store's own
+commit version — so it orders writes like their commits, and no transaction
+writes a counter to get it. `Versions` returns it for a batch of keys in one
+read, and a backend **MUST** answer it in one of two ways, or both: keep the
+version with the key and read it back, or have the store write the commit's
+version into the stored value at commit — filled by the store, never by the
+transaction, and stripped by the backend before `Get` or `Scan` returns the
+value. A scan that returns a version per key is not required. A move's delta is
+the records whose change sequence is above its base cut's, under a share's
+prefixes and its namespace's content-addressed ones, found by a scan and one
+`Versions` call per page of it ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)).
 
 Two backends with identical semantics differ only here, and one conformance
 suite over `KV` plus one over the entity layer covers both.
@@ -841,16 +900,42 @@ suite over `KV` plus one over the entity layer covers both.
 **Isolation: snapshot isolation plus conflict-tracked reads.** A backend
 **MUST** run each `Update` against one consistent snapshot, **MUST** detect a
 write-write conflict on every key, a blind write included, and **MUST** track
-point reads: every `Get` inside `Update`, and every `Guard`, registers its key,
-and the commit aborts if another transaction committed a write to that key after
-the snapshot was taken. Each abort is retried under I8 ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)). Two
-tracked reads of one key never conflict with each other. So a lost update
-(both read *k* and write *k*) and write skew over point keys (each reads the key
-the other writes) both abort one side. `Scan` is not tracked: a range read
-detects no phantom, and every invariant over a range — "the count is zero, so
-delete", "the directory is empty, so remove" — **MUST** follow RFC 0 §9.2 and
-gate on a point record both sides read or write. A backend that offers less is
-unsupported; the KV conformance suite (§6.1) is the test.
+point reads: every `Get` inside `Update`, every `Guard`, and every key under a
+`GuardRange`, registers itself, and the commit aborts if another transaction
+committed a write to it after the snapshot was taken. A backend whose own check
+does not cover a blind write — one that checks only reads — **MUST** add a read
+conflict on each key the transaction writes, at commit and with no extra
+request, so a blind write is checked like a read. Each abort is retried under
+I8 ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)). Two tracked reads of one key never conflict with each other.
+So a lost update (both read *k* and write *k*) and write skew over point keys
+(each reads the key the other writes) both abort whichever side commits second.
+`Scan` is not tracked: a range read detects no phantom, and every invariant over
+a range — "the count is zero, so delete", "the directory is empty, so remove" —
+**MUST** follow RFC 0 §9.2: each side tracks, by `Get`, `Guard` or `GuardRange`,
+a key the other writes. A backend that offers less is unsupported; the KV
+conformance suite (§6.1) is the test.
+
+**Transaction limits are the backend's, and RFC 6's key budget comes from
+them.** `Limits` reports what one transaction may hold: the largest key and
+value, the bytes of one transaction counted with its conflict ranges — every
+key it reads, guards or writes, and every guarded prefix — the keys it may write
+or delete, and the age from its snapshot past which the store aborts it. They
+are properties of the backend, never settings. They bind three ways:
+
+- **Values and keys.** No codec may produce a value or a key past them: a record
+  whose value could grow past `Value` is split into keys of its own (§1.2 rule
+  2), and §4.2.1's longest key is checked against `Key` when a store opens.
+- **The key budget.** [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) owns *K* and derives it from `Limits`: the
+  largest *n* for which a batch's fixed records plus *n* items, each at its
+  worst-case encoded key, value and conflict-range bytes, stay within
+  `TxnBytes` and, where it is bounded, `TxnEntries`. Conflict ranges count
+  because on some backends they are charged against the same budget as the
+  writes; a derivation from written bytes alone overruns it.
+- **Age.** No transaction holds a snapshot across remote I/O or a wait
+  ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)): everything a batch writes is computed before its transaction or
+  inside it from the store alone, so a batch of *K* items commits well inside
+  `Age`. A transaction that outlives `Age` aborts and is retried like a
+  conflict.
 
 ### 4.2 Keys: per-file, per-share, content-addressed
 
@@ -1130,7 +1215,8 @@ whatever the file layout. Directory time changes are therefore delta records
 under the directory (`F‖id‖t‖unique`), folded by the primary of the directory's shard the
 same way, and a directory's `Get` applies any unfolded ones — usually none. A
 delta does not replace the conflict the old rewrite gave for free: the
-structural operations guard the parent instead ([RFC 7 §3.6](rfc-7-namespace-metadata.md#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)). The
+structural operations guard the parent instead, and a directory's removal
+range-guards its entries ([RFC 7 §3.6](rfc-7-namespace-metadata.md#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)). The
 directory's primary starts a fold only while no create, link or rename-into of
 that directory is in flight, and admits none until the fold commits, so a fold
 never aborts the creates it folds ([RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps)).
@@ -1223,6 +1309,7 @@ it, to a benchmark (Appendix A). Sources are linked once per system.
 | 7 | Nested groups? | **Walk with a depth cap and cache.** Kerberos and AD already deliver the flattened list in the ticket, so no walk for them. Local groups are walked at login, depth ≤ 8 with cycle detection, cached under a key naming every membership it read (RFC 7 §7.5). No stored closure table. | Kerberos PAC; SSSD nesting level; Zanzibar's flattened index shows the closure's write cost |
 | 8 | Deleted principals? | Deleting a user removes the User, its memberships and grants, the grants found through their reverse keys (`GR‖principal`, §4.2) without a scan of every share; the principal stays in ownership, ACLs and usage. An admin **reassign** job moves files and their charge through `chown`. A deleted principal's ID is never reissued, because IDs are minted, not derived from a UID or SID (§2.2); a new account reusing the UID gets a new principal. | ONTAP shows raw SIDs in quota reports; NTFS refuses to drop a quota entry while the SID owns files; MS-SMB2 returns zeroed entries for unknown SIDs |
 | 9 | Where credentials live? | **In the KV, as `Secret` records** (§2.3), envelope-encrypted under a key held outside it (a file or a KMS), never dumped or exported. Password hashes use a slow hash; an NT hash exists only when NTLM is enabled. A keytab is a `Secret` of kind keytab, sealed under the `protocol` role's key like every authentication secret ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), so every `protocol` node reads the one keytab from the store; a node whose Kerberos library needs a path writes it at start to a file only that node's process can read, and never back. | Samba `tdbsam`, TrueNAS and ONTAP all keep credentials in their replicated config store; Samba warns NT hashes are cleartext-equivalent |
+| 10 | What must a guard promise, and must the embedded store sync every commit? | **A guard binds only its own transaction, is shared in every commit order, and has a range form; the embedded store group-commits and never acknowledges before its sync** (§4.1). No optimistic store checks a later writer against an earlier guard, so a rule that needs the writer to fail tracks a key on both sides; a removal uses `GuardRange`. Relaxed background sync is unsupported, because a released journal extent or a GC deletion cannot be undone. | Measured against §4.1: FoundationDB 7.3.77 and Badger both commit a writer after an earlier-committed guard of its key, and both leave an entry under a removed directory without a range guard; TiKV 8.5.8's shared locks fail a guard taken after another guarding transaction committed, queuing one-directory creates at 26–85/s; Badger with every commit synced and little sharing of syncs reached ~400 commits/s (6.2 ms per sync, consumer NVMe); FoundationDB refuses a value over 100,000 B, a key over 10,000 B and a transaction over ~10 MB counted with conflict ranges, and aborts one older than 5 s; its read version is not time, and it detects no blind write-write conflict without an added read conflict |
 
 > ponytail: nested local groups are walked at login, depth ≤ 8, and cached
 > (decision 7). The walk costs one read per membership edge; add a stored
@@ -1249,7 +1336,7 @@ tiers are the [index](rfc-index.md)'s.
 
 | Suite | Runs against | Proves |
 | --- | --- | --- |
-| **KV conformance** | every `KV` implementation (embedded, replicated, and an in-memory fake used only by this suite's own tests) | `Update` is atomic and retried; `Guard` conflicts with a concurrent write of its key and never with a concurrent `Guard` of it (§4.1, [RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)); **lost update**: two transactions each `Get` one key and `Set` it to the value read plus one, from one snapshot — exactly one commits first and the other retries, so the key ends two higher; **write skew**: two transactions each `Get` the key the other `Set`s, from one snapshot — one aborts; a blind `Set` of one key by two transactions conflicts; a `Scan` registers nothing, and a range invariant gated on a point record holds (§4.1); `Now` never runs backward across commits in order, nor across a restart with the clock stepped back; `Scan` sees a transaction's own writes and nothing uncommitted; `Limits` is honest (a transaction at the limit commits, one past it is refused); a returned `Update` survives a power loss of the store's node, and on the replicated store the loss of its leader (§4.1, §6.4) |
+| **KV conformance** | every `KV` implementation (embedded, replicated, and an in-memory fake used only by this suite's own tests) | `Update` is atomic and retried; **writer first**: G guards *k* and writes *j*, W writes *k*, both from snapshots taken before either commits; W commits, then G — assert G aborts; **guard first**: the same, G committing first — assert both commit, and that W is ordered after G (a suite asserting W aborts rejects every conforming backend, and no rule may rely on it); **two guards, either order**: T1 and T2 each guard *k* and write a key of their own; commit T1 then T2, then T2 then T1, and once with T1 committing between T2's snapshot and T2's `Guard` — assert all commit; repeat with `GuardRange` over a prefix holding *k*; **range guard**: T guards prefix *P* with no key under it, another transaction creates *P*‖*x* and commits, T commits — assert T aborts; a key created outside *P* does not abort it; **removal against create**, at the KV level: R scans *P* and finds it empty, `GuardRange(P)` and writes *d*; C guards *d* and writes *P*‖*x*; run both commit orders from snapshots taken before either commits — assert exactly one commits and never both, so no key is left under *P* beside a written *d*; drop R's `GuardRange` and the guard-first order commits both; **read-only**: no caller's transaction that calls `Guard` or `GuardRange` writes nothing — the counting wrapper of §6.3 asserts it over the entity suite;  **lost update**: two transactions each `Get` one key and `Set` it to the value read plus one, from one snapshot — exactly one commits first and the other retries, so the key ends two higher; **write skew**: two transactions each `Get` the key the other `Set`s, from one snapshot — one aborts; a blind `Set` of one key by two transactions conflicts, on a backend that checks only reads too; a `Scan` registers nothing, and a range invariant gated on a point record holds (§4.1); `Now` never runs backward across commits in order on one node, nor across a restart with the clock stepped back, and on an idle store it advances with real time; `Versions` returns, for one key written by commits in order, increasing sequences, and none a transaction wrote itself; `Scan` sees a transaction's own writes and nothing uncommitted; `Limits` is honest (a transaction at each limit commits, one past it is refused, a transaction whose writes fit but whose guards and reads take it past `TxnBytes` is refused, one held open past `Age` aborts); a returned `Update` survives a power loss of the store's node, and on the replicated store the loss of its leader (§4.1, §6.4) |
 | **Entity conformance** | the store over each real `KV` | every rule in §1.2 and every invariant of RFC 6 §9 and RFC 7 §10, through the §3 interfaces only |
 
 Routing conformance and the partition-and-kill harness are stated once, in
@@ -1308,7 +1395,7 @@ serial order of the committed operations.
   assert it is answered from `CSReply`. Negotiate one SMB `ClientGuid` under two
   principals: assert one record, with no principal.
 - **Import collisions:** import a share whose name differs from an existing
-  share's only in case, one whose path is under an existing share's, a principal
+  share's only in case, one whose path equals an existing share's, one whose path is under an existing share's and one whose path is above one, a principal
   whose name another principal holds, and a netgroup of the same name with other
   members. Assert each refused before anything is published, naming the
   collision, and each accepted with a new name or path in the request.
@@ -1325,6 +1412,7 @@ serial order of the committed operations.
 
 A fault-injecting `KV` wrapper fails, delays or reorders at every call:
 
+- concurrent `Update`s on the embedded store, with power cut after some return: assert every returned `Update` survives, and that the commits shared syncs (fewer syncs than commits);
 - a conflict on the Nth `Update` attempt (retry must converge, never apply twice);
 - a lost commit reply (the operation must be idempotent from the caller's side);
 - a power loss immediately after `Update` returns, on the embedded store's real
@@ -1342,6 +1430,7 @@ A fault-injecting `KV` wrapper fails, delays or reorders at every call:
 | Level | Tool | Measures |
 | --- | --- | --- |
 | **KV** | Go benchmarks over `KV` | per-call latency and throughput, conflict rate under contention, on each backend |
+| **KV, durability** | Go benchmark over the embedded `KV` on the reference box | 1, 16 and 64 writers each committing single-key `Update`s, every one synced: commits/s, syncs/s, p99 latency. Gate: at 64 writers commits/s at least 10× the device's measured syncs/s, and p99 within three sync times; a backend syncing per commit fails it (§4.1) |
 | **Entity** | Go benchmarks over §3 | per-operation latency, keys read and written, allocations, for: create, lookup, getattr, readdir and readdirplus (10, 10⁴, 10⁶ entries), rename, unlink, set-ACL, commit of an offload, removal of a large file |
 | **Protocol** | standard metadata workloads over NFS and SMB mounts | `mdtest` (create, stat, remove, per directory and shared directory), a small-file build tree (untar, compile, `rm -rf`), `ls -l` of a large directory, and a profile-container sign-in storm over SMB: many users at once each opening one large container file with a durable handle and lease and reading then releasing a small metadata file ([Reference workloads](rfc-index.md#Reference%20workloads)) |
 | **Scale** | a synthetic namespace | 10⁸ files, 10⁴ shares, 10⁵ principals: operation latency must not grow with total size, only with what each operation touches |
@@ -1482,7 +1571,12 @@ median of three 2 s runs. Parallel rows varied about ±30% between runs, so only
 differences of 2× or more are claimed. The replicated store was not measured:
 it adds a network round trip per read and a two-phase commit across regions,
 and it conflicts on concurrent writes to one key even when neither read it,
-which the embedded store does not. The benchmark is kept outside the
+which the embedded store natively does not: under §4.1 its backend adds a read
+conflict on each key it writes, so the one-directory rows below, which write
+only unique keys, are unchanged by it. The "sync on" row is not evidence of the
+rate with every commit synced: a later measurement on consumer NVMe, syncing
+every commit, reached about 400 commits/s (§5, decision 10), and the gap is
+unexplained. The §7.1 durability benchmark, not this row, gates group commit. The benchmark is kept outside the
 repository; its code and full results go with the fold.
 
 | Create | 1 key (inlined) | 2 keys (File + Entry) | 3 keys (File a + d + Entry) |

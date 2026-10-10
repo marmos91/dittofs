@@ -1390,7 +1390,7 @@ for them exists until this appendix is promoted.
 - **Per-file shard.** A file split from its enclosing shard into its own, recorded
   with the file, so shard records still do not grow per file. For a file whose
   contention — many writers, a hot lock — no coarser shard absorbs.
-- **Range shard.** A contiguous byte range of one file split off with its own
+- **Range shard.** A contiguous extent of one file split off with its own
   primary, epoch, replicas and fence records keyed by (file, range start). The
   file's own shard — its **base shard** — keeps its namespace record, open state
   and every range not split off. A pNFS layout then names one data server per
