@@ -132,6 +132,49 @@ func MountNFSWithVersion(t *testing.T, port int, version string) *Mount {
 // exportPath is the NFS export path (e.g., "/export", "/archive").
 func MountNFSExportWithVersion(t *testing.T, port int, exportPath string, version string) *Mount {
 	t.Helper()
+	return mountNFSExportWithVersionAt(t, "localhost", port, exportPath, version)
+}
+
+// MountNFSWithVersionAt is MountNFSWithVersion against the server at host
+// instead of localhost. An NFSv4.0 client advertises the local address of its
+// connection as its callback address, and the server refuses to dial a
+// loopback one, so a v4.0 mount needs a non-loopback host (see
+// NonLoopbackIPv4) for the server to grant it delegations.
+func MountNFSWithVersionAt(t *testing.T, host string, port int, version string) *Mount {
+	t.Helper()
+	return mountNFSExportWithVersionAt(t, host, port, "/export", version)
+}
+
+// NonLoopbackIPv4 returns an IPv4 address of an up, non-loopback interface on
+// this host, skipping the test when there is none.
+func NonLoopbackIPv4(t *testing.T) string {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatalf("list network interfaces: %v", err)
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if ipn, ok := a.(*net.IPNet); ok {
+				if ip4 := ipn.IP.To4(); ip4 != nil && !ip4.IsLinkLocalUnicast() {
+					return ip4.String()
+				}
+			}
+		}
+	}
+	t.Skip("no non-loopback IPv4 address on this host")
+	return ""
+}
+
+func mountNFSExportWithVersionAt(t *testing.T, host string, port int, exportPath string, version string) *Mount {
+	t.Helper()
 
 	// Give the NFS server a moment to fully initialize
 	time.Sleep(500 * time.Millisecond)
@@ -205,7 +248,7 @@ func MountNFSExportWithVersion(t *testing.T, port int, exportPath string, versio
 		t.Fatalf("Unsupported NFS version: %q (expected \"3\", \"4.0\", \"4.1\", or \"4.2\")", version)
 	}
 
-	mountArgs = []string{"-t", "nfs", "-o", mountOptions, fmt.Sprintf("localhost:%s", exportPath), mountPath}
+	mountArgs = []string{"-t", "nfs", "-o", mountOptions, fmt.Sprintf("%s:%s", host, exportPath), mountPath}
 
 	// Execute mount command with retries (up to 3 times with 1s sleep)
 	var output []byte

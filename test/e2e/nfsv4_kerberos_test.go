@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -64,7 +65,11 @@ func mountNFSv40WithKerberos(t *testing.T, port int, export, secFlavor string) *
 		export = "/export"
 	}
 
-	mountPoint := t.TempDir()
+	// File operations run as non-root uids, which cannot traverse the 0700
+	// directories t.TempDir creates.
+	mountPoint, err := os.MkdirTemp("/tmp", "dittofs-e2e-krb-v4-")
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(mountPoint, 0o755))
 
 	// CRITICAL: Use vers=4.0 explicitly, never vers=4
 	opts := fmt.Sprintf("vers=4.0,port=%d,sec=%s,actimeo=0", port, secFlavor)
@@ -91,39 +96,6 @@ func mountNFSv40WithKerberos(t *testing.T, port int, export, secFlavor string) *
 
 	require.NoError(t, lastErr, "failed to mount NFS with Kerberos (vers=4.0, sec=%s) after retries", secFlavor)
 	return nil
-}
-
-// mountNFSv40WithKerberosAndError mounts with vers=4.0 and returns error instead of failing.
-func mountNFSv40WithKerberosAndError(t *testing.T, port int, export, secFlavor string) (*krbV4Mount, error) {
-	t.Helper()
-
-	if export == "" {
-		export = "/export"
-	}
-
-	mountPoint := t.TempDir()
-
-	// CRITICAL: Use vers=4.0 explicitly, never vers=4
-	opts := fmt.Sprintf("vers=4.0,port=%d,sec=%s,actimeo=0", port, secFlavor)
-
-	var lastErr error
-	for i := 0; i < 3; i++ {
-		cmd := exec.Command("mount", "-t", "nfs", "-o", opts,
-			fmt.Sprintf("localhost:%s", export), mountPoint)
-		output, err := cmd.CombinedOutput()
-		if err == nil {
-			return &krbV4Mount{
-				t:         t,
-				path:      mountPoint,
-				port:      port,
-				secFlavor: secFlavor,
-			}, nil
-		}
-		lastErr = fmt.Errorf("mount failed: %s: %w", string(output), err)
-		time.Sleep(time.Second)
-	}
-
-	return nil, lastErr
 }
 
 // =============================================================================
@@ -184,10 +156,23 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 	// Login and create shares
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// /krb-v4: Kerberos-protected share
-	setupKerberosV4Share(t, runner, "/krb-v4")
+	// /krb-v4: Kerberos-protected share. The server resolves a principal to the
+	// DittoFS user of the same name, so alice and bob get the uids created here
+	// and their read-write grants. A principal with no such user resolves to
+	// nobody (65534), which only the share's "read" default covers. The mount
+	// itself runs on the client's machine credential, which also resolves to
+	// nobody, so "read" is what lets it traverse the root.
+	setupKerberosV4Share(t, runner, "/krb-v4", helpers.WithShareDefaultPermission("read"))
+	for _, u := range []krbV4User{krbAlice, krbBob} {
+		// The DittoFS password is never used: these users authenticate to the
+		// KDC. It only has to satisfy the server's password policy.
+		_, err = runner.CreateUser(u.principal, "kerberos-only-user", helpers.WithUID(u.uid))
+		require.NoError(t, err, "create user %s", u.principal)
+		require.NoError(t, runner.GrantUserPermission("/krb-v4", u.principal, "read-write"),
+			"grant read-write to %s", u.principal)
+	}
 	// /auth-sys-v4: allows AUTH_SYS (for fallback test)
-	setupKerberosV4Share(t, runner, "/auth-sys-v4")
+	setupKerberosV4Share(t, runner, "/auth-sys-v4", helpers.WithShareDefaultPermission("read-write"))
 
 	// Enable NFS adapter
 	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
@@ -208,62 +193,46 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 	// --- Subtests ---
 
 	t.Run("AuthorizationDenial", func(t *testing.T) {
-		// kinit as unauthorized_user (not in identity mapping -> maps to nobody uid 65534)
-		kdc.Kinit(t, "unauthorized_user", "unauth123")
-		defer kdc.Kdestroy(t)
+		// unauthorized_user has no DittoFS user, so the server resolves it to
+		// nobody, which holds only the "read" default.
+		kinitAsLocalUID(t, kdc, krbAlice)
+		kinitAsLocalUID(t, kdc, krbUnauthorized)
 
-		// Attempt to mount with sec=krb5 vers=4.0
-		// The mount may succeed (Kerberos auth passes) but file ops may fail
-		// since user maps to nobody (uid 65534) which may have restricted access.
-		// Or the mount itself may fail if the server rejects the principal.
-		mount, mountErr := mountNFSv40WithKerberosAndError(t, nfsPort, "/krb-v4", "krb5")
+		mount := mountNFSv40WithKerberos(t, nfsPort, "/krb-v4", "krb5")
 
-		if mountErr != nil {
-			// Mount failed - this is one valid outcome (server rejected unmapped user)
-			t.Logf("Authorization denial: mount failed for unauthorized_user (expected): %v", mountErr)
-			return
-		}
-		defer mount.Cleanup()
+		// alice's grant opens the share, so the denial below is about the
+		// principal and not about a share nobody can write.
+		controlFile := mount.FilePath("authz_control.txt")
+		require.NoError(t, framework.WriteFileAsUID(t, krbAlice.uid, krbAlice.uid, controlFile, []byte("ok")),
+			"alice (granted read-write) should write")
 
-		// Mount succeeded - try file operations
-		testFile := mount.FilePath("unauthorized_test.txt")
-		writeErr := os.WriteFile(testFile, []byte("should fail"), 0644)
+		// A read that succeeds proves unauthorized_user holds a working GSS
+		// context; a missing ticket would also surface as "permission denied".
+		got, err := framework.ReadFileAsUID(t, krbUnauthorized.uid, krbUnauthorized.uid, controlFile)
+		require.NoError(t, err, "unauthorized_user should read under the share's read default")
+		assert.Equal(t, "ok", string(got))
 
-		if writeErr != nil {
-			t.Logf("Authorization denial: write failed for unauthorized_user (expected): %v", writeErr)
-			// This is the expected behavior - EACCES/EPERM
-			assert.Error(t, writeErr, "Unauthorized user should get error on write")
-		} else {
-			// Write succeeded - the user mapped to nobody but still had write access
-			// This can happen if the share allows ALL users to write
-			t.Log("Authorization denial: write succeeded (share may allow all users)")
-			_ = os.Remove(testFile)
-		}
+		err = framework.WriteFileAsUID(t, krbUnauthorized.uid, krbUnauthorized.uid,
+			mount.FilePath("unauthorized_test.txt"), []byte("should fail"))
+		requireAccessDenied(t, err, "unmapped principal write")
 	})
 
 	t.Run("FileOwnershipMapping", func(t *testing.T) {
-		// kinit as alice (mapped to uid 1001 in config)
-		kdc.Kinit(t, "alice", "alice123")
-		defer kdc.Kdestroy(t)
+		kinitAsLocalUID(t, kdc, krbAlice)
 
-		// Mount with sec=krb5 vers=4.0
 		mount := mountNFSv40WithKerberos(t, nfsPort, "/krb-v4", "krb5")
 
-		// Create a file
 		testFile := mount.FilePath("alice_ownership.txt")
-		err := os.WriteFile(testFile, []byte("Alice's file"), 0644)
-		require.NoError(t, err, "Alice should be able to create file")
+		require.NoError(t, framework.WriteFileAsUID(t, krbAlice.uid, krbAlice.uid, testFile, []byte("Alice's file")),
+			"alice should be able to create a file")
 
-		// Stat the file
+		// alice@REALM resolves to the DittoFS user alice, uid 1001; the file the
+		// server created must carry that owner.
 		info, err := os.Stat(testFile)
-		require.NoError(t, err, "Should stat alice's file")
-
-		t.Logf("File info: name=%s, size=%d, mode=%v", info.Name(), info.Size(), info.Mode())
-
-		// Note: On Linux, we could check sys.Stat_t.Uid == 1001, but this requires
-		// platform-specific code. The key verification is that alice can create files
-		// and they persist correctly.
-		t.Log("File ownership mapping: alice created file successfully via vers=4.0 krb5")
+		require.NoError(t, err, "should stat alice's file")
+		st, ok := info.Sys().(*syscall.Stat_t)
+		require.True(t, ok, "stat should expose syscall.Stat_t")
+		assert.Equal(t, krbAlice.uid, st.Uid, "file should be owned by alice's mapped uid")
 	})
 
 	t.Run("MultiFlavorV4", func(t *testing.T) {
@@ -274,9 +243,7 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 		for _, flavor := range flavors {
 			flavor := flavor
 			t.Run(flavor, func(t *testing.T) {
-				// kinit as alice
-				kdc.Kinit(t, "alice", "alice123")
-				defer kdc.Kdestroy(t)
+				kinitAsLocalUID(t, kdc, krbAlice)
 
 				// Mount with this flavor and vers=4.0
 				mount := mountNFSv40WithKerberos(t, nfsPort, "/krb-v4", flavor)
@@ -284,11 +251,11 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 				// Create file
 				testFile := mount.FilePath(fmt.Sprintf("multi_flavor_%s.txt", flavor))
 				testData := fmt.Sprintf("Data protected by %s with vers=4.0", flavor)
-				err := os.WriteFile(testFile, []byte(testData), 0644)
+				err := framework.WriteFileAsUID(t, krbAlice.uid, krbAlice.uid, testFile, []byte(testData))
 				require.NoError(t, err, "%s: should create file", flavor)
 
 				// Read back and verify
-				content, err := os.ReadFile(testFile)
+				content, err := framework.ReadFileAsUID(t, krbAlice.uid, krbAlice.uid, testFile)
 				require.NoError(t, err, "%s: should read file", flavor)
 				assert.Equal(t, testData, string(content),
 					"%s: content should round-trip correctly", flavor)
@@ -343,43 +310,27 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 	})
 
 	t.Run("ConcurrentKerberosV4Users", func(t *testing.T) {
-		// Two users (alice, bob) mount same share with vers=4.0
-		aliceCC := filepath.Join(t.TempDir(), "alice_cc")
-		bobCC := filepath.Join(t.TempDir(), "bob_cc")
+		// alice and bob act through one mount, each on their own GSS context.
+		kinitAsLocalUID(t, kdc, krbAlice)
+		kinitAsLocalUID(t, kdc, krbBob)
 
-		// Get tickets for both users using separate credential caches
-		kinitWithCCV4(t, kdc, "alice", "alice123", aliceCC)
-		kinitWithCCV4(t, kdc, "bob", "bob123", bobCC)
+		mount := mountNFSv40WithKerberos(t, nfsPort, "/krb-v4", "krb5")
 
-		// Mount as alice
-		os.Setenv("KRB5CCNAME", aliceCC)
-		aliceMount := mountNFSv40WithKerberos(t, nfsPort, "/krb-v4", "krb5")
+		aliceFile := mount.FilePath("concurrent_v4_alice.txt")
+		require.NoError(t, framework.WriteFileAsUID(t, krbAlice.uid, krbAlice.uid, aliceFile, []byte("From Alice (vers=4.0)")),
+			"alice should create file")
 
-		// Create file as alice
-		aliceFile := aliceMount.FilePath("concurrent_v4_alice.txt")
-		err := os.WriteFile(aliceFile, []byte("From Alice (vers=4.0)"), 0644)
-		require.NoError(t, err, "Alice should create file")
+		bobFile := mount.FilePath("concurrent_v4_bob.txt")
+		require.NoError(t, framework.WriteFileAsUID(t, krbBob.uid, krbBob.uid, bobFile, []byte("From Bob (vers=4.0)")),
+			"bob should create file")
 
-		// Mount as bob
-		os.Setenv("KRB5CCNAME", bobCC)
-		bobMount := mountNFSv40WithKerberos(t, nfsPort, "/krb-v4", "krb5")
+		got, err := framework.ReadFileAsUID(t, krbAlice.uid, krbAlice.uid, bobFile)
+		require.NoError(t, err, "alice should read bob's file")
+		assert.Equal(t, "From Bob (vers=4.0)", string(got))
 
-		// Create file as bob
-		bobFile := bobMount.FilePath("concurrent_v4_bob.txt")
-		err = os.WriteFile(bobFile, []byte("From Bob (vers=4.0)"), 0644)
-		require.NoError(t, err, "Bob should create file")
-
-		// Verify cross-visibility
-		_, err = os.Stat(aliceMount.FilePath("concurrent_v4_bob.txt"))
-		require.NoError(t, err, "Alice should see Bob's file")
-
-		_, err = os.Stat(bobMount.FilePath("concurrent_v4_alice.txt"))
-		require.NoError(t, err, "Bob should see Alice's file")
-
-		// Cleanup
-		kdc.Kdestroy(t)
-
-		t.Log("Concurrent Kerberos v4 users test passed")
+		got, err = framework.ReadFileAsUID(t, krbBob.uid, krbBob.uid, aliceFile)
+		require.NoError(t, err, "bob should read alice's file")
+		assert.Equal(t, "From Alice (vers=4.0)", string(got))
 	})
 }
 
@@ -475,7 +426,7 @@ adapters:
 }
 
 // setupKerberosV4Share creates a memory/memory share for Kerberos v4 tests.
-func setupKerberosV4Share(t *testing.T, runner *helpers.CLIRunner, shareName string) {
+func setupKerberosV4Share(t *testing.T, runner *helpers.CLIRunner, shareName string, opts ...helpers.ShareOption) {
 	t.Helper()
 
 	metaStore := fmt.Sprintf("meta-%s", strings.TrimPrefix(shareName, "/"))
@@ -485,7 +436,7 @@ func setupKerberosV4Share(t *testing.T, runner *helpers.CLIRunner, shareName str
 	require.NoError(t, err)
 	_, err = runner.CreateBlockStore(blockStore, "memory")
 	require.NoError(t, err)
-	_, err = runner.CreateShare(shareName, metaStore, blockStore)
+	_, err = runner.CreateShare(shareName, metaStore, blockStore, opts...)
 	require.NoError(t, err)
 }
 
@@ -541,16 +492,35 @@ func installSystemKeytabV4(t *testing.T, kdc *framework.KDCHelper) {
 	kdc.KinitWithKeytab(t, fmt.Sprintf("nfs/%s", hostname), kdc.KeytabPath())
 }
 
-// kinitWithCCV4 obtains a Kerberos ticket using a specific credential cache path.
-func kinitWithCCV4(t *testing.T, kdc *framework.KDCHelper, principal, password, ccPath string) {
+// krbV4User is a test principal paired with the local uid whose processes act
+// as it. The uid doubles as the gid.
+type krbV4User struct {
+	principal string
+	password  string
+	uid       uint32
+}
+
+var (
+	krbAlice = krbV4User{"alice", "alice123", 1001}
+	krbBob   = krbV4User{"bob", "bob123", 1002}
+	// No DittoFS user of this name: the server resolves it to nobody.
+	krbUnauthorized = krbV4User{"unauthorized_user", "unauth123", 4002}
+)
+
+// kinitAsLocalUID gets u a ticket in the credential cache rpc.gssd consults for
+// u.uid. rpc.gssd serves root from the machine keytab and every other uid from
+// a FILE cache named krb5cc_<uid> under /tmp that the uid owns, so only file
+// operations run as u.uid (framework.*AsUID) act as u's principal.
+func kinitAsLocalUID(t *testing.T, kdc *framework.KDCHelper, u krbV4User) {
 	t.Helper()
 
-	fullPrincipal := fmt.Sprintf("%s@%s", principal, kdc.Realm())
-
-	cmd := exec.Command("kinit", "-c", ccPath, fullPrincipal)
+	ccPath := fmt.Sprintf("/tmp/krb5cc_%d", u.uid)
+	cmd := exec.Command("kinit", "-c", ccPath, fmt.Sprintf("%s@%s", u.principal, kdc.Realm()))
 	cmd.Env = append(os.Environ(), "KRB5_CONFIG="+kdc.Krb5ConfigPath())
-	cmd.Stdin = strings.NewReader(password + "\n")
-
+	cmd.Stdin = strings.NewReader(u.password + "\n")
 	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "kinit failed: %s", string(output))
+	require.NoError(t, err, "kinit %s failed: %s", u.principal, string(output))
+	t.Cleanup(func() { _ = os.Remove(ccPath) })
+
+	require.NoError(t, os.Chown(ccPath, int(u.uid), int(u.uid)), "chown credential cache for uid %d", u.uid)
 }
