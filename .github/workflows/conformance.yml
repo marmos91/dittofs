@@ -53,6 +53,8 @@ on:
           - smbtorture
           - pjdfstest
           - nfs-kerberos
+          - cthon04
+          - nfstest
         default: ''
 
 permissions:
@@ -87,6 +89,9 @@ jobs:
       # property with dot notation.
       nfs_kerberos: ${{ steps.resolve.outputs.nfs_kerberos }}
       pynfs: ${{ steps.resolve.outputs.pynfs }}
+      # cthon04 and nfstest share one job, so their cells are also published
+      # together; the per-suite outputs above still exist for both.
+      nfs_mount: ${{ steps.resolve.outputs.nfs_mount }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -94,11 +99,14 @@ jobs:
       - name: Resolve the matrix from the manifest
         id: resolve
         env:
-          # workflow_dispatch has no tier of its own; treat a manual run like a
-          # postsubmit one so a dispatch covers every profile.
+          # workflow_dispatch has no tier of its own. A blank dispatch runs like
+          # a postsubmit one. A dispatch naming one suite runs that suite's
+          # nightly set instead: a nightly-only suite has an empty push tier,
+          # and asking for it by name would otherwise run nothing.
           EVENT: >-
             ${{ github.event_name == 'pull_request' && 'pull_request'
                 || github.event_name == 'schedule' && 'schedule'
+                || (github.event_name == 'workflow_dispatch' && inputs.suite != '') && 'schedule'
                 || 'push' }}
           ONLY: ${{ inputs.suite }}
         run: |
@@ -113,6 +121,10 @@ jobs:
             cells="$(jq -c --arg s "$suite" '[.include[] | select(.suite == $s)]' <<<"$FULL")"
             echo "${suite//-/_}=${cells}" >> "$GITHUB_OUTPUT"
           done
+          cells="$(jq -c --arg only "$ONLY" '[.include[]
+            | select(.suite == "cthon04" or .suite == "nfstest")
+            | select($only == "" or .suite == $only)]' <<<"$FULL")"
+          echo "nfs_mount=${cells}" >> "$GITHUB_OUTPUT"
 
   # The graders decide whether a suite is red at all, so they are guarded on
   # their own in about a second rather than only through a 40-minute run that
@@ -136,6 +148,12 @@ jobs:
 
       - name: Test the smbtorture grader
         run: ./test/smb-conformance/smbtorture/parse-results_test.sh
+
+      - name: Test the cthon04 grader
+        run: ./test/nfs-mount/cthon04/parse-results_test.sh
+
+      - name: Test the nfstest grader
+        run: ./test/nfs-mount/nfstest/parse-results_test.sh
 
       - name: Install the TRX parser
         run: sudo apt-get update && sudo apt-get install -y xmlstarlet
@@ -367,6 +385,92 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
+  # NFS mount-option suites — cthon04 and nfstest against a kernel mount with
+  # each named option set in test/nfs-mount/option-sets.sh. Same shape as
+  # pjdfstest: a dfs on the host adapter, sudo for the mount. Both suites run
+  # in this one job; the matrix cell names which. Mostly nightly: PRs get
+  # cthon04 on memory only, merges get nothing (tiers in suites.json).
+  # ---------------------------------------------------------------------------
+  nfs-mount:
+    name: ${{ matrix.suite }} ${{ matrix.variant }} / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    needs: matrix
+    if: needs.matrix.outputs.nfs_mount != '[]'
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.nfs_mount) }}
+
+    services:
+      localstack:
+        image: ${{ endsWith(matrix.profile, '-s3') && 'localstack/localstack:4.13.1' || '' }}
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # cthon04 builds against libtirpc and its general group shells out to
+      # time(1); nfstest captures packets with tcpdump.
+      - name: Install NFS client and suite dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common libtirpc-dev pkg-config time tcpdump
+
+      # The suites come from git.linux-nfs.org over git://. Caching them keys
+      # on fetch.sh, which holds the pinned revisions, so a re-pin refetches
+      # and an unchanged pin never touches the network.
+      - name: Cache the upstream suites
+        uses: actions/cache@v6
+        with:
+          path: test/nfs-mount/.cache
+          key: nfs-mount-suites-${{ hashFiles('test/nfs-mount/fetch.sh') }}
+
+      # setup-posix.sh builds both binaries from the checkout before starting
+      # the server, so no prebuilt artifact is needed.
+      - name: Run ${{ matrix.suite }}
+        run: |
+          ./test/conformance/run.sh \
+            --suite ${{ matrix.suite }} \
+            --profile ${{ matrix.profile }} \
+            --variant ${{ matrix.variant }}
+
+      - name: Show the server log on failure
+        if: failure()
+        run: |
+          echo "=== Server log ==="
+          cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "no server log"
+
+      - name: Upload results
+        if: always()
+        # A lost diagnostics zip must not invert a verdict the suite has already
+        # produced: the run step above decides pass or fail, this upload only
+        # preserves the evidence.
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.suite }}-${{ matrix.variant }}-${{ matrix.profile }}
+          path: |
+            test/conformance/results/
+            /tmp/dittofs-posix-server.log
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
   # NFS Kerberos — path-scoped on PRs. Kerberos is expensive and rarely
   # regresses from unrelated work, so an ordinary PR skips it; a PR that touches
   # the Kerberos or NFS adapter trees still gets presubmit feedback.
@@ -559,7 +663,7 @@ jobs:
     name: Conformance summary
     runs-on: ubuntu-latest
     if: always()
-    needs: [wpts, smbtorture, pjdfstest, nfs-kerberos]
+    needs: [wpts, smbtorture, pjdfstest, nfs-mount, nfs-kerberos]
     steps:
       - name: Checkout
         uses: actions/checkout@v7

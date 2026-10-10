@@ -73,6 +73,8 @@ cat >"${FAKE_TEST}/fake/pass.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "ran pass.sh results=$(basename "${DITTOFS_RESULTS_DIR:-none}")"
 echo "args: $*"
+IFS=: read -ra tables <<<"${DITTOFS_KNOWN_FAILURES:-}"
+echo "tables: ${tables[*]##*/}"
 exit 0
 EOF
 
@@ -311,6 +313,21 @@ cat >"$FAKE_MANIFEST" <<'EOF'
         { "name": "teardown", "cmd": "fake/teardown.sh", "args": [], "root": false, "always": true }
       ]
     },
+    "overlay": {
+      "description": "one variant graded against two tables together",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "variant": { "name": "set", "values": ["one", "both", "missing"] },
+      "known_failures": {
+        "one": "fake/KNOWN_FAILURES_A.md",
+        "both": ["fake/KNOWN_FAILURES_A.md", "fake/KNOWN_FAILURES_B.md"],
+        "missing": ["fake/KNOWN_FAILURES_A.md", "fake/KNOWN_FAILURES_NONE.md"]
+      },
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "run", "cmd": "fake/pass.sh", "args": [], "root": false }
+      ]
+    },
     "privileged": {
       "description": "one step needs root, one does not",
       "runner_dir": "fake",
@@ -394,7 +411,9 @@ assert_eq "no suite marks its graded step always" "" "$ALWAYS_GRADED"
 MISSING=""
 while IFS= read -r kf; do
     [[ -f "${SCRIPT_DIR}/../${kf}" ]] || MISSING="${MISSING} ${kf}"
-done < <(jq -r '[.suites[].known_failures | select(. != null) | if type == "string" then . else .[] end] | unique[]' "${SCRIPT_DIR}/suites.json")
+done < <(jq -r '[.suites[].known_failures | select(. != null)
+    | if type == "string" then . elif type == "array" then .[] else .[] end
+    | if type == "array" then .[] else . end] | unique[]' "${SCRIPT_DIR}/suites.json")
 assert_eq "every declared blacklist exists" "" "$MISSING"
 
 # A profile the manifest declares but bootstrap.sh's case arms do not match
@@ -449,7 +468,7 @@ assert_eq "no suite runner writes the common runner's step log" "" "$CLASH"
 # adapter port. nfs-kerberos is the trap here: it speaks NFS but runs entirely
 # in Docker and publishes no host port, so keying this off `protocol` would fail
 # it for something that is none of its business.
-assert_eq "suites owning the host adapter port" "pjdfstest pynfs" \
+assert_eq "suites owning the host adapter port" "pjdfstest pynfs cthon04 nfstest" \
     "$(jq -r '[.suites | to_entries[] | select(.value.host_adapter == true) | .key] | join(" ")' "${SCRIPT_DIR}/suites.json")"
 
 # The CI matrix is the manifest's cross product, not a hand-kept list.
@@ -590,6 +609,19 @@ OUT="$(run_fake --suite graded --profile memory --variant 4.1)"
 assert_contains "4.1 grades against its own table" "KNOWN_FAILURES_B.md" "$OUT"
 OUT="$(run_fake --suite graded --profile memory --variant 4.0)"
 assert_contains "4.0 grades against its own table" "KNOWN_FAILURES_A.md" "$OUT"
+
+# A list of tables reaches the suite whole, in order, so the manifest alone
+# says which tables grade a variant.
+OUT="$(run_fake --suite overlay --profile memory --variant both)"
+assert_contains "a listed overlay is logged with its base" \
+    "blacklist: test/fake/KNOWN_FAILURES_A.md, test/fake/KNOWN_FAILURES_B.md" "$OUT"
+assert_contains "the suite receives every listed table" \
+    "tables: KNOWN_FAILURES_A.md KNOWN_FAILURES_B.md" "$OUT"
+OUT="$(run_fake --suite overlay --profile memory --variant one)"
+assert_contains "a single table still reaches the suite alone" "tables: KNOWN_FAILURES_A.md" "$OUT"
+OUT="$(run_fake --suite overlay --profile memory --variant missing)"
+assert_contains "a missing table in a list is refused" \
+    "blacklist declared but missing: test/fake/KNOWN_FAILURES_NONE.md" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Privilege is a property of a step, not of a run. pynfs is its own NFSv4

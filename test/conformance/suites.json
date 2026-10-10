@@ -14,7 +14,10 @@
     "  variant        second axis (NFS minor version, SMB auth), or absent",
     "  known_failures blacklist path relative to test/; a string when there is one",
     "                 table, or an object keyed by variant value when a suite",
-    "                 grades each variant against its own table",
+    "                 grades each variant against its own table. A value may",
+    "                 be a list of tables graded together (a shared table plus",
+    "                 a per-variant overlay); run.sh passes them to the suite",
+    "                 in DITTOFS_KNOWN_FAILURES, colon-separated.",
     "  tiers          profiles to run per GitHub event, defaulting to \"defaults\";",
     "                 \"all\" means every profile the suite has",
     "  timeout_minutes  the CI job timeout for one cell of this suite",
@@ -143,6 +146,88 @@
           "cmd": "nfs-conformance/pynfs/run-pynfs.sh",
           "args": ["--profile", "{profile}", "--minor-version", "{variant}"],
           "root": false
+        }
+      ]
+    },
+    "cthon04": {
+      "description": "Connectathon basic/general/special/lock over named NFS mount option sets",
+      "host_adapter": true,
+      "protocol": "NFS",
+      "profiles": ["memory", "badger", "badger-s3"],
+      "variant": {
+        "name": "mount-options",
+        "values": ["default", "v3", "v4.0", "v4.1", "v4.1-noac", "v4.1-smallio"]
+      },
+      "known_failures": {
+        "default": "nfs-mount/cthon04/KNOWN_FAILURES.md",
+        "v3": ["nfs-mount/cthon04/KNOWN_FAILURES.md", "nfs-mount/cthon04/KNOWN_FAILURES_V3.md"],
+        "v4.0": "nfs-mount/cthon04/KNOWN_FAILURES.md",
+        "v4.1": "nfs-mount/cthon04/KNOWN_FAILURES.md",
+        "v4.1-noac": "nfs-mount/cthon04/KNOWN_FAILURES.md",
+        "v4.1-smallio": "nfs-mount/cthon04/KNOWN_FAILURES.md"
+      },
+      "tiers": { "pull_request": ["memory"], "push": [] },
+      "timeout_minutes": 30,
+      "steps": [
+        {
+          "name": "setup",
+          "cmd": "posix/setup-posix.sh",
+          "args": ["{profile}", "--no-mount"],
+          "root": true
+        },
+        {
+          "name": "run",
+          "cmd": "nfs-mount/cthon04/run.sh",
+          "args": ["--variant", "{variant}"],
+          "root": true
+        },
+        {
+          "name": "teardown",
+          "cmd": "posix/teardown-posix.sh",
+          "args": [],
+          "root": true,
+          "always": true
+        }
+      ]
+    },
+    "nfstest": {
+      "description": "NetApp nfstest modules over named NFS mount option sets",
+      "host_adapter": true,
+      "protocol": "NFS",
+      "profiles": ["memory"],
+      "variant": {
+        "name": "mount-options",
+        "values": ["default", "v3", "v4.0", "v4.1", "v4.1-noac", "v4.1-smallio"]
+      },
+      "known_failures": {
+        "default": ["nfs-mount/nfstest/KNOWN_FAILURES.md", "nfs-mount/nfstest/KNOWN_FAILURES_V4.md"],
+        "v3": ["nfs-mount/nfstest/KNOWN_FAILURES.md", "nfs-mount/nfstest/KNOWN_FAILURES_V3.md"],
+        "v4.0": ["nfs-mount/nfstest/KNOWN_FAILURES.md", "nfs-mount/nfstest/KNOWN_FAILURES_V4.md", "nfs-mount/nfstest/KNOWN_FAILURES_V40.md"],
+        "v4.1": ["nfs-mount/nfstest/KNOWN_FAILURES.md", "nfs-mount/nfstest/KNOWN_FAILURES_V4.md"],
+        "v4.1-noac": ["nfs-mount/nfstest/KNOWN_FAILURES.md", "nfs-mount/nfstest/KNOWN_FAILURES_V4.md"],
+        "v4.1-smallio": ["nfs-mount/nfstest/KNOWN_FAILURES.md", "nfs-mount/nfstest/KNOWN_FAILURES_V4.md"]
+      },
+      "tiers": { "pull_request": [], "push": [] },
+      "timeout_minutes": 60,
+      "steps": [
+        {
+          "name": "setup",
+          "cmd": "posix/setup-posix.sh",
+          "args": ["{profile}", "--no-mount"],
+          "root": true
+        },
+        {
+          "name": "run",
+          "cmd": "nfs-mount/nfstest/run.sh",
+          "args": ["--variant", "{variant}"],
+          "root": true
+        },
+        {
+          "name": "teardown",
+          "cmd": "posix/teardown-posix.sh",
+          "args": [],
+          "root": true,
+          "always": true
         }
       ]
     }
