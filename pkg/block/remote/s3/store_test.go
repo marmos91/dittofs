@@ -42,12 +42,12 @@ func TestNormalizeEndpoint(t *testing.T) {
 //
 // Skipped unless DITTOFS_S3_ENDPOINT (and the credential pair
 // DITTOFS_S3_ACCESS_KEY / DITTOFS_S3_SECRET_KEY) are set in the
-// environment. CI wires Localstack; local developers may run with `make
-// e2e-s3` or by exporting the env directly.
+// environment. Export them to run against an S3 emulator such as SeaweedFS or
+// Localstack.
 func TestS3_RemoteBlockStoreConformance_Endpoint(t *testing.T) {
 	endpoint := os.Getenv("DITTOFS_S3_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("DITTOFS_S3_ENDPOINT not set; skipping S3 conformance suite. Set the env var (with DITTOFS_S3_ACCESS_KEY/DITTOFS_S3_SECRET_KEY/DITTOFS_S3_BUCKET) to run against Localstack or MinIO.")
+		t.Skip("DITTOFS_S3_ENDPOINT not set; skipping S3 conformance suite. Set the env var (with DITTOFS_S3_ACCESS_KEY/DITTOFS_S3_SECRET_KEY/DITTOFS_S3_BUCKET) to run against a local S3 emulator.")
 	}
 	bucket := os.Getenv("DITTOFS_S3_BUCKET")
 	if bucket == "" {
@@ -77,6 +77,9 @@ func TestS3_RemoteBlockStoreConformance_Endpoint(t *testing.T) {
 			SecretKey:      secretKey,
 			KeyPrefix:      "conformance/" + t.Name() + "/",
 			ForcePathStyle: forcePathStyle,
+			// The endpoint under test is one the developer chose, usually a
+			// local emulator on loopback. Link-local stays refused either way.
+			AllowPrivate: true,
 		}
 		store, err := NewFromConfig(context.Background(), cfg)
 		if err != nil {

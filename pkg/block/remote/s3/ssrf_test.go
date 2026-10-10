@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -8,6 +9,9 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // localhostURL rewrites a test server's URL to reach it through the DNS name
@@ -213,5 +217,39 @@ func TestValidateEndpoint_SSRF(t *testing.T) {
 				t.Fatalf("ValidateEndpoint(%q, allowPrivate=%v): want nil, got %v", tc.endpoint, tc.allowPrivate, err)
 			}
 		})
+	}
+}
+
+// The endpoint guard's verdict is permanent, so the SDK must not retry it: a
+// refused dial used to be retried 10 times with backoff, minutes per call.
+func TestDialGuard_RefusalIsNotRetried(t *testing.T) {
+	store, err := NewFromConfig(context.Background(), Config{
+		Bucket:         "bucket",
+		Region:         "us-east-1",
+		Endpoint:       "http://127.0.0.1:1",
+		AccessKey:      "key",
+		SecretKey:      "secret",
+		ForcePathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err = store.WalkBlocks(ctx, func(string, block.Meta) error { return nil })
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrUnsafeEndpoint) {
+		t.Fatalf("WalkBlocks error = %v, want ErrUnsafeEndpoint", err)
+	}
+
+	if elapsed > time.Second {
+		t.Fatalf("refused dial took %v, want under 1s: the refusal was retried", elapsed)
 	}
 }
