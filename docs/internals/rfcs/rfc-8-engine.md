@@ -15,6 +15,7 @@ depends_on:
   - "[[rfc-9-gc]]"
   - "[[rfc-4-remote-tier]]"
   - "[[rfc-5-transforms]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 8
 tags:
@@ -218,11 +219,11 @@ from being either:
   shared by more than one file, or by more than one share, across I/O or a wait
   on the path of a write, a read or a commit. The request path shares exactly
   three things, each bounded: the device journal's append stream and its sync,
-  which every file of the journal uses by design ([RFC 1 §6](rfc-1-journal.md#6.%20Durability%20and%20ordering)); the
+  which every file of the journal uses by design ([RFC 1 §5](rfc-1-journal.md#5.%20Durability%20and%20ordering)); the
   journal's group existence commit, bounded at `G` files and split on conflict,
   which only a stability point covering an overwrite waits on, and joins rather
   than issues ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); and the
-  capacity reservation, an atomic counter taken without a lock ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)).
+  capacity reservation, an atomic counter taken without a lock ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)).
   Per-file state is keyed by file and per-share state by share ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)).
   Background work runs per journal ([§6.1](#6.1%20The%20work%20queue)), and the events that feed it
   never block the request that posts them. The table of share contexts is read
@@ -305,7 +306,7 @@ interface:
 
 | Declared by | Component | What the engine calls |
 | --- | --- | --- |
-| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal, through a share's handle | `WriteAt`, passed the write's modification time ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Records)), `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Forget` (drops a tag's extents, markers and index entries through one header-only record `Since` never yields, refused while a handle of the tag is open, for a namespace moved away or an import attach, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `Repack` with its scope, `Hold`, `Stamp`, `Files`, `DirtyFiles`, `Stats`, and the journal's `Share`, passed the share's version floor ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); `Init`, only from the explicit initialisation step |
+| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal, through a share's handle | `WriteAt`, passed the write's modification time ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Forget` (drops a tag's extents, markers and index entries through one header-only record `Since` never yields, refused while a handle of the tag is open, for a namespace moved away or an import attach, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `Repack` with its scope, `Hold`, `Stamp`, `Files`, `DirtyFiles`, `Stats`, and the journal's `Share`, passed the share's version floor ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); `Init`, only from the explicit initialisation step |
 | [RFC 2 §2](rfc-2-carver.md#2.%20What%20one%20call%20covers), [§5](rfc-2-carver.md#5.%20The%20block%20assembler) | the carver and the block assembler | the carver's `Cut`; the assembler's fold |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota or access, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views | every method of both, except `Offloaded` while deduplication is deferred |
@@ -341,7 +342,7 @@ type ShareContext struct {
 ```
 
 Everything below the engine is already shared: the journal is per device and
-accounts capacity per share ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)), the syncer's pools are shared and schedule
+accounts capacity per share ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), the syncer's pools are shared and schedule
 by class ([RFC 3](rfc-3-syncer.md)), and the remote store and the metadata store **MAY** serve many
 shares. What is truly per share is small — settings, policy state, lifecycle,
 health and budgets — and the context holds exactly that.
@@ -379,10 +380,10 @@ and **MUST** report a change to them as a migration rather than apply it
 1. **Open the journal.** Read the version floor for every share the device
    journal may serve ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)), and the journal identity the metadata store
    records for the device ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and open the journal with both
-   ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding), [§9.4](rfc-1-journal.md#9.4%20Unattachable%20files)). The journal recovers its index and its
+   ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). The journal recovers its index and its
    offloaded-bit ledger alone, re-appending and syncing, with the directory,
    every record past the point a sync is proven to have reached before it
-   serves ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). Start never creates a journal: only the explicit
+   serves ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). Start never creates a journal: only the explicit
    initialisation step calls `Init`, and its identity is recorded before
    anything written to it is acknowledged ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). An `Open` that finds an
    existing journal with nothing recorded for it reports the metadata store lost. If the open finds no journal where
@@ -425,14 +426,14 @@ and **MUST** report a change to them as a migration rather than apply it
    journal holds with an extent whose offloaded bit is unset.
 6. **Start background work**: the work queue's consumer, eviction and the
    **reseed**. The reseed reads each held file's refs ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) and marks,
-   through `MarkOffloaded` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)), every held extent a committed ref covers, at
+   through `MarkOffloaded` ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), every held extent a committed ref covers, at
    the ref's versions. **A file is offered and evicted only once the reseed has
    run for it.** Offered earlier, an extent whose offloaded record a crash lost
    unsynced is uploaded again and its block swept; evicted earlier, a bit no ref
    backs would drop the only copy. The reseed visits first the files offload or
    eviction asks for, so a journal full at restart frees space at the reseed's
    pace. A bit no ref justifies — metadata lost a commit the journal was told
-   of — is reported as a ledger mismatch and cleared with `Unmark` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)), so
+   of — is reported as a ledger mismatch and cleared with `Unmark` ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so
    the extent is offered again; `MarkOffloaded` only ever sets bits.
 7. **Serve.** No file is served before step 3 has run for it.
 
@@ -477,7 +478,7 @@ point ([RFC 10](rfc-10-journal-replication.md)) and runs steps 3 to 5 for it bef
 3. Cancel in-flight passes and background loops, then join them.
 4. Close the components in the reverse of the order they were built — only after
    every join has completed. A component **MUST NOT** be closed while any work
-   that uses it is still running ([RFC 1 §10.7](rfc-1-journal.md#10.7%20Shutdown)).
+   that uses it is still running ([RFC 1 §8.7](rfc-1-journal.md#8.7%20Shutdown)).
 5. A join that does not complete within its bound **MUST** leave the components
    it depends on open and report the failure, rather than close them under a
    live loop.
@@ -513,8 +514,8 @@ the engine passes it in.
 | Whether to fill | `FillPolicy` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | journal `Fill` ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)) |
 | What to read ahead, pre-warm | the speculator ([§7.4](#7.4%20The%20speculator)) | syncer fetcher ([RFC 3 §4.5](rfc-3-syncer.md#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere)) |
 | What to evict, and when | `EvictionPolicy` ([§10.1](#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)) | journal `Release` ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)) |
-| When to repack | `EvictionPolicy` ([§10.3](#10.3%20Repack%20is%20triggered%20here)) | journal repack ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)) |
-| Whether to keep accepting writes | `CapacityGovernor` ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | journal capacity ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)) |
+| When to repack | `EvictionPolicy` ([§10.3](#10.3%20Repack%20is%20triggered%20here)) | journal repack ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) |
+| Whether to keep accepting writes | `CapacityGovernor` ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | journal capacity ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) |
 | What follows from ill health | `HealthTracker` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)) | — |
 
 A threshold that lives in a component's configuration is engine policy absorbed
@@ -615,7 +616,7 @@ inputs:
   did;
 - the **loss generation** of the journal holding the file ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), which the
   journal raises on every loss of an extent not yet offloaded and on every sync
-  window it fails ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)), and on nothing else: a loss of content the remote
+  window it fails ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), and on nothing else: a loss of content the remote
   tier already holds makes no client resend.
 
 It changes whenever an acknowledged but unstable write might have been lost —
@@ -698,7 +699,7 @@ after a loss, each client resends its recent unstable writes once.
 - **Every existence commit** — a group commit, an offer's capture, a removal's
   or a clone's first transaction, a cut's close, recovery — **MUST** `Sync` the file first. The journal
   publishes an extent once its record is written, not once it is durable
-  ([RFC 1 §10.4](rfc-1-journal.md#10.4%20What%20must%20be%20atomic)), so existence committed over unsynced records could outlive them.
+  ([RFC 1 §8.4](rfc-1-journal.md#8.4%20What%20must%20be%20atomic)), so existence committed over unsynced records could outlive them.
 - **A store that commits nothing fails only the replies that wait on it.** While
   the metadata store commits no write transaction, a stability point that covers
   an overwrite of committed content waits for its existence commit until the
@@ -707,7 +708,7 @@ after a loss, each client resends its recent unstable writes once.
   after its sync. This is
   [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)'s one rule for a stalled store, stated there once.
 - **A failed sync window is reported once per file.** When the journal resolves a
-  failed sync by failing its window ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)), it drops exactly the window's
+  failed sync by failing its window ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), it drops exactly the window's
   data records, named by sequence number, as loss events — the header-only
   records in it, a truncate's, release's, clone's or unmark's, are re-appended
   from memory, never failed — holds again the content
@@ -761,7 +762,7 @@ after a loss, each client resends its recent unstable writes once.
    failure can leave at most the latest stamp to rebuild.
 
 This is the only acknowledgement policy: the journal is required to be durable
-([RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy)), so what it has synced survives a crash, recovery rebuilds
+([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so what it has synced survives a crash, recovery rebuilds
 existence from it, and offload carries it to the remote on its own schedule. A
 remote-acknowledged commit would bound every `fsync` by a put and turn a remote
 outage into client write errors.
@@ -1679,7 +1680,7 @@ entirely removed **MAY** abort before uploading.
 - **F1 — the pass's refs are older than the removal.** A pass's refs carry the
   offer's `Newest` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The offer was captured under the guard, and the
   removal's journal step ran under the guard afterwards, so the journal assigned
-  the removal a version *v* above every version offered ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)).
+  the removal a version *v* above every version offered ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)).
 - **F2 — the commit and phase 1 are ordered.** Both take the guard, and, whatever
   the guard does, both write the file's fence `F_o` ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)), so they
   conflict in the store. The commit serialises either before phase 1 or after it.
@@ -1865,14 +1866,14 @@ and duplicate-extents stay one atomic clone, capped by `clone_max_len`
 ![The life of a held extent: Dirty, offered, offloaded, released; a fill brings it back held, clean and offloaded; a write over any of them starts a new Dirty version](img/rfc8-extent-lifecycle.svg)
 
 Capacity is the device journal's, shared by the shares on it with per-share
-accounting and fair limits ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)). The engine decides per share, from each share
+accounting and fair limits ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). The engine decides per share, from each share
 context's budgets ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)); pressure on the journal is pressure on every share using it. An
 upload holds one chunk per worker in memory and needs no local space.
 
 **Space returns only through repack.** A release frees nothing until its segment
-holds nothing live ([RFC 1 §8.1](rfc-1-journal.md#8.1%20Releasing%20storage)). Eviction turns held bytes into **unreclaimed**
+holds nothing live ([RFC 1 §7.1](rfc-1-journal.md#7.1%20Releasing%20storage)). Eviction turns held bytes into **unreclaimed**
 bytes — released or superseded, still on disk — and repack turns those into free
-space, copying what the segment still holds forward ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)). Capacity has
+space, copying what the segment still holds forward ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)). Capacity has
 two measures, each with one use:
 
 - **Eviction is triggered by allocated occupancy** — the journal's `UsedBytes`,
@@ -1911,10 +1912,10 @@ resolves to **Remote**. Eviction therefore writes nothing to metadata.
 ### 10.2 A capacity refusal comes back here
 
 The journal refuses a write it cannot reserve for, and does not evict for itself
-([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)). `CapacityGovernor` decides, and the engine answers:
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). `CapacityGovernor` decides, and the engine answers:
 
 1. repack the refused share's segments — `Repack` with the share as its scope
-   ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)) — or, for the journal's own capacity, the segments with the most
+   ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) — or, for the journal's own capacity, the segments with the most
    unreclaimed bytes ([§10.3](#10.3%20Repack%20is%20triggered%20here)), then retry;
 2. evict offloaded extents by segment ([§10.1](#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)), repack exactly those
    segments — `Repack` with them as its scope — then retry;
@@ -1981,7 +1982,7 @@ over a 10 s window, and *r*₀ is 1 MiB/s.
 `EvictionPolicy` requests a repack when the journal's `UnreclaimedBytes`
 ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) pass the `eviction.repack_threshold` fraction of its capacity
 ([RFC 13](rfc-13-configuration.md); proposal: 10 %), and the engine
-runs it through the journal's `Repack(budget, scope)` ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)), which chooses
+runs it through the journal's `Repack(budget, scope)` ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), which chooses
 segments within the scope by unreclaimed bytes over held bytes and returns the
 bytes it freed. The scope aims a pass: a share at its limit repacks the segments
 holding its records, eviction repacks the segments it just evicted from, and an
@@ -1989,14 +1990,14 @@ unscoped pass lets the journal choose among all. A journal-wide pass alone would
 pick other shares' segments and leave a share at its limit with its unreclaimed
 bytes where they were. `Release`
 frees nothing itself, so every capacity measure here reads `UnreclaimedBytes` and
-`DirtyBytes`, never a release's result ([RFC 1 §8.3](rfc-1-journal.md#8.3%20Accounting), [§8.4](rfc-1-journal.md#8.4%20Open%20descriptors), [§5.2](rfc-1-journal.md#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). It **MUST**
-request one when the journal is at capacity ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)).
+`DirtyBytes`, never a release's result ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting), [§7.4](rfc-1-journal.md#7.4%20Open%20descriptors), [§4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). It **MUST**
+request one when the journal is at capacity ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)).
 
 **Repack draws on the journal's repack reserve, outside every share's limit**
-([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)), sized to at least one segment's live payload. A share at its limit
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), sized to at least one segment's live payload. A share at its limit
 therefore never blocks the repack that frees space for every share on the device.
 Repack verifies each source record's whole payload before copying any part of it
-([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)), so a rotted byte never becomes part of a valid record.
+([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), so a rotted byte never becomes part of a valid record.
 
 ### 10.4 Nothing but dirty content makes an extent unevictable
 

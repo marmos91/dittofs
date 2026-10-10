@@ -1296,7 +1296,7 @@ What the server keeps, and for how long, is set per open by its create request:
 **Writes that survive a restart are stable.** Every write through a persistent
 open, and every write through any open on a share that offers continuous
 availability, **MUST** be stable: synced to the journal before it is acknowledged
-([RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy)), as if the client had asked for write-through. SMB has no
+([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), as if the client had asked for write-through. SMB has no
 write verifier, so a handle that survives the loss of acknowledged unstable
 writes would reconnect over the gap and the client would never resend them: a
 profile container would be silently corrupt. A durable v1 or v2 open does not

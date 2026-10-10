@@ -21,6 +21,7 @@ depends_on:
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-26-catalog-backups]]"
   - "[[rfc-27-namespace-migration]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 13
 tags:
@@ -363,7 +364,7 @@ A setting has exactly one scope, the smallest thing it must be the same across:
 | Scope | Holds | Examples |
 | --- | --- | --- |
 | **installation** | what every node and namespace shares | the syncer's pool sizes' defaults, GC's schedule |
-| **node** | what describes one host's resources | its journals, one per device, and each one's maximum footprint ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)) |
+| **node** | what describes one host's resources | its journals, one per device, and each one's maximum footprint ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) |
 | **namespace** | what decides stored bytes and their identity, and where they sit | prefix, key scope, chunk-ID key, chunking key, header and data keys, `Target`, whether the chain encrypts, the counting domain |
 | **remote store** | the store configuration every namespace created on it shares: how blocks reach and sit on a service ([RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20locations%20kept%20inside)) | endpoint, bucket, credential reference, storage class, transform chain, block target, material provider, master keys |
 | **share** | what a client sees | case sensitivity, name length, `atime`, per-share journal limit, snapshot policy |
@@ -522,7 +523,7 @@ still serving, would refuse.
 ### 5.5 A node joins only where its versions overlap
 
 Every format and protocol a node shares with others is versioned: the metadata
-store format ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)), the journal format ([RFC 1 §4](rfc-1-journal.md#4.%20On-disk%20format)), the block
+store format ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)), the journal format ([RFC 28 §2](rfc-28-journal-format.md#2.%20On-disk%20format)), the block
 format ([§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it)), the settings record schema ([§2.3](#2.3%20A%20record%20is%20versioned)), and **(cluster)** the
 messages nodes exchange. For each, the installation records one **active
 version**, the one written, and each node registers the range it can read and
@@ -787,7 +788,7 @@ because the rule stands here alone, or marked not yet applied:
    capacity weight. Each stands until a measurement on the reference box
    replaces it.
 2. **Values open in their own RFCs.** The segment size, a fixed constant
-   ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions)), the GC interval ([RFC 9](rfc-9-gc.md)), the speculation budget and read-ahead cap ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)),
+   ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)), the GC interval ([RFC 9](rfc-9-gc.md)), the speculation budget and read-ahead cap ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)),
    the quota slack ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)); and **(cluster)** the failure domain, gather
    interval, replica removal triggers, mark persistence, re-read period and
    repair pacing ([RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)). Each takes a default here only once its
@@ -824,15 +825,15 @@ rather than restating its number as one.
 | Setting | Defined in | Scope | Class | Default |
 | --- | --- | --- | --- | --- |
 | journal devices and paths | [RFC 1](rfc-1-journal.md) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required |
-| journal maximum footprint | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | live | proposed: 80% of the device |
-| per-share journal limit | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | share | live | proposed: the journal's maximum |
-| segment size | [RFC 1 §4.2](rfc-1-journal.md#4.2%20Segments) | — | fixed: a constant of the implementation, never a setting | value open in RFC 1 |
-| sync bound: longest a written record waits for a sync | [RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy) | — | fixed | proposed in RFC 1: 1 s |
-| `ExtentLimit`: placement-index entries per journal | [RFC 1 §5.2](rfc-1-journal.md#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) | node, per journal | restart | sized against a memory budget at about 51 bytes per entry; open in RFC 1 |
+| journal maximum footprint | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | node, per journal | live | proposed: 80% of the device |
+| per-share journal limit | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | share | live | proposed: the journal's maximum |
+| segment size | [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments) | — | fixed: a constant of the implementation, never a setting | value open in RFC 1 |
+| sync bound: longest a written record waits for a sync | [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy) | — | fixed | proposed in RFC 1: 1 s |
+| `ExtentLimit`: placement-index entries per journal | [RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) | node, per journal | restart | sized against a memory budget at about 51 bytes per entry; open in RFC 1 |
 | segments one offer may pin; segments all offers may pin together | [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload) | — | fixed | proposed in RFC 1: 64; 256 |
-| `journal.headroom_records`: header-only records reserved for removal and offloaded records | [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) | node, per journal | restart | proposed: 65,536 (about 6 MiB at 96 bytes per header-only record); settled by: a journal held at its limit under a removal-heavy load, `headroom_draws` against the headroom's size, and whether removals ever reach the refusal ([RFC 1 §12](rfc-1-journal.md#12.%20Open%20questions), question 8) |
-| `journal.idle_seal_bytes`: idle-seal threshold | [RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding) | node, per journal | restart | proposed: 16 MiB; settled by: J6, the share of time to first read spent scanning active-segment tails, against footer writes from early seals under a trickle load |
-| repack reserve: journal space outside every share's limit for repack's copies | [RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack) | — | fixed | at least one segment's live payload ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)) |
+| `journal.headroom_records`: header-only records reserved for removal and offloaded records | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | node, per journal | restart | proposed: 65,536 (about 6 MiB at 96 bytes per header-only record); settled by: a journal held at its limit under a removal-heavy load, `headroom_draws` against the headroom's size, and whether removals ever reach the refusal ([RFC 1 §10](rfc-1-journal.md#10.%20Open%20questions), question 4) |
+| `journal.idle_seal_bytes`: idle-seal threshold | [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding) | node, per journal | restart | proposed: 16 MiB; settled by: J6, the share of time to first read spent scanning active-segment tails, against footer writes from early seals under a trickle load |
+| repack reserve: journal space outside every share's limit for repack's copies | [RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack) | — | fixed | at least one segment's live payload ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)) |
 | `Target` | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) | namespace | bound | 256 KiB |
 | key scope | [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | namespace | bound | required |
 | chunk-ID key (material kind `chunk-id-key`) | [RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities), [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | bound | created with the namespace, never configured; wrapped under a master key when the namespace encrypts, in the clear beside its blocks when it does not ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
@@ -906,7 +907,7 @@ rather than restating its number as one.
 | `backups.copy_rate`: copying backups' transfer rate | [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | installation | live | proposed: 200 MiB/s; settled by: [RFC 26 §6.5](rfc-26-catalog-backups.md#6.5%20Benchmarks%20and%20targets)'s daily copying backup, against the location's put throughput and live p99 latency |
 | `rehome.rate`: a re-home's copy rate; 0 pauses it | [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace) | installation default, share override while its re-home runs | live | proposed: 100 MiB/s; settled by: [RFC 27 §5.5](rfc-27-namespace-migration.md#5.5%20Benchmarks%20and%20targets)'s re-home under 64 writers, p99 write latency at that rate |
 | `snapshots.hold_bound`: held journal bytes per share before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | share | live | proposed: 64 GiB; settled by: dirty bytes a share carries at a cut in [RFC 12 §5.5](rfc-12-snapshots.md#5.5%20Benchmarks%20and%20targets)'s cut-to-`complete` benchmark |
-| `snapshots.hold_journal_fraction`: held share of one journal's capacity, summed over every share it carries, before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | installation | live | proposed: 0.25; settled by: the same benchmark, against the journal headroom [RFC 1 §7](rfc-1-journal.md#7.%20Capacity) leaves for live writes |
+| `snapshots.hold_journal_fraction`: held share of one journal's capacity, summed over every share it carries, before a cut is refused | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) | installation | live | proposed: 0.25; settled by: the same benchmark, against the journal headroom [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) leaves for live writes |
 | `snapshots.reserve`: history bytes per share before a new cut is refused | [RFC 12 §2.9](rfc-12-snapshots.md#2.9%20Space%20is%20reported%2C%20not%20charged) | share | live | none |
 | `snapshots.gate_max`: longest a cut gate stays closed, its drain included | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | installation | live | proposed: 1 s; settled by: [RFC 12 §5.5](rfc-12-snapshots.md#5.5%20Benchmarks%20and%20targets)'s cut under a sustained writer, the gate's p99 at one shard and 64 shards under sustained offload |
 | `snapshots.cut_deadline`: a cut not committed this long after its announce is aborted | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | installation | live | proposed: 5 s; settled by: announce-to-commit time of a cut across many shards, from the same benchmark |

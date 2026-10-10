@@ -10,6 +10,7 @@ depends_on:
   - "[[rfc-8-engine]]"
   - "[[rfc-11-ownership]]"
   - "[[rfc-16-metadata-store]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 10
 tags:
@@ -31,7 +32,7 @@ loss of the node that accepted it.
 > Until the cluster is built only these hooks are implemented:
 >
 > - the 128-bit content version, with its epoch half held at zero
->   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions));
+>   ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions));
 > - the node epoch and the shard incarnation carried in the NFS write verifier
 >   ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), rule 3);
 > - one binary, with roles chosen by configuration ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
@@ -219,7 +220,7 @@ does not replicate.
 | **replica** | a storage node whose journal receives a copy of every operation the primary assigns for the shard |
 | **replica set** | the primary and its replicas |
 | **learner** | a replica that joined at a **join point** and has not yet been given the shard's older content ([§7.3](#7.3%20Joining)) |
-| **holds durably** | a node holds an operation durably once its journal has synced the record of it to the journal's device ([RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy)), so the operation survives a crash or power loss of that node. It says nothing of the remote tier: content synced there is *offloaded* |
+| **holds durably** | a node holds an operation durably once its journal has synced the record of it to the journal's device ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so the operation survives a crash or power loss of that node. It says nothing of the remote tier: content synced there is *offloaded* |
 | **acknowledged** | answered to the client as done — a write's reply, a stable write, a flush or a synchronous metadata operation. Only what the client was told counts; an operation the primary assigned but did not answer is not acknowledged |
 | **epoch** | the shard's **ownership epoch**: a number in the shard record, carried by every version and message ([§6](#6.%20Fencing)). **This is the one statement of what raises it; every other RFC cites it.** It is raised by every change to the record that must fence a sender: a takeover, a handover, a replica joining or removed, a learner cleared, and the raise before a move. Two record changes raise none, because nothing else can hold the shard: a node's re-claim of a shard with no replica ([§10](#10.%20A%20single%20node)) and a journal attach on one node ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)); both raise the shard incarnation only |
 | **shard incarnation** | a second number in the shard record, raised every time a node or journal begins serving the shard as primary, the re-claim included, and by nothing else. It fences nothing; it is an input of the write verifier ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)) and names a grace instance ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
@@ -231,7 +232,7 @@ does not replicate.
 ![Primary, replicas and the shard record](img/rfc10-replica-set.svg)
 
 **What the epoch buys.** A version is an epoch and a counter, compared as one
-number ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)): after a takeover to epoch 4, `v(4,1)` outranks `v(3,90)`, and a
+number ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)): after a takeover to epoch 4, `v(4,1)` outranks `v(3,90)`, and a
 late `v(3,95)` from the old primary loses to it in every journal it reaches.
 
 **Each number does one job.** The ownership epoch fences: it orders versions,
@@ -265,10 +266,10 @@ the node is primary or replica of. Nothing in this layer is per journal:
 - the node keeps, per shard, an **install record** — the installed epoch, the
   committed point and its own join incarnation — durably and on the device of the
   journal it describes, so losing the device loses both;
-- capacity is the journal's, shared under its per-share limits ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity));
+- capacity is the journal's, shared under its per-share limits ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity));
   [§5](#5.%20Offload%20and%20release) says how pressure reaches primaries;
 - a replica is identified by its node, the **journal identity** of the journal
-  holding the shard ([RFC 1 §4.1](rfc-1-journal.md#4.1%20Layout)) and a join incarnation, and so is the primary,
+  holding the shard ([RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)) and a join incarnation, and so is the primary,
   whose entry in the shard record adds its node epoch. A lost device therefore
   loses the node's place in every shard that journal held;
 - each journal has a **generation**, kept in its `format` file and in the
@@ -302,7 +303,7 @@ the node is primary or replica of. Nothing in this layer is per journal:
 The journal of [RFC 1](rfc-1-journal.md) assigns every version itself. Replication needs a journal
 that also takes versions assigned elsewhere, raises a file's epoch, and forgets a
 file on command. That is a **later journal format version**, added as
-[RFC 1 §4.3](rfc-1-journal.md#4.3%20Records) prescribes: a binary that knows it opens a journal of RFC 1's
+[RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records) prescribes: a binary that knows it opens a journal of RFC 1's
 version and upgrades it on its first extension record; a binary that does not
 refuses the newer journal.
 
@@ -343,7 +344,7 @@ Discard(s ShardID, id FileID) error
 ```
 
 It adds two record kinds, **epoch** and **discard**, lifts RFC 1's rule that a
-version's epoch half is zero ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), and gives `Offload` a **ceiling**:
+version's epoch half is zero ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), and gives `Offload` a **ceiling**:
 an offer includes only content at or below the version the caller passes. This
 layer passes the shard's committed point ([§5](#5.%20Offload%20and%20release)).
 
@@ -388,7 +389,7 @@ bring back anything it discarded. **Discarding dirty content destroys it unless
 another journal holds it**; the caller **MUST** know that one does.
 
 **Retention.** A file's newest epoch record is live, and carried forward by
-repack ([RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack)), only while the file has a held extent or a removal marker. A
+repack ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), only while the file has a held extent or a removal marker. A
 journal that has forgotten a file's epoch treats it as having none, and the
 primary's `SetEpoch` before the next assignment re-establishes it. A discard record
 is live while it still covers a record of its file in another segment.
@@ -536,7 +537,7 @@ committed content is committed; appends and hole fills keep the bounded age of
 in its install record, never lowers it, and then settles to it ([§2.3](#2.3%20The%20journal%20extension)).
 
 **Batching.** The primary **SHOULD** batch operations to a replica and group their
-syncs, as the journal groups its own ([RFC 1 §6.2](rfc-1-journal.md#6.2%20Sync%20policy)). The unit of
+syncs, as the journal groups its own ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)). The unit of
 acknowledgement stays the operation.
 
 ## 5. Offload and release
@@ -549,7 +550,7 @@ durable. Replicas never offload.
 
 **Replicas release by being told.** After an offload commit lands, the primary
 sends each replica the extents it covered with the commit's `oldest` and
-`newest`. The replica calls `MarkOffloaded` ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and evicts under its own
+`newest`. The replica calls `MarkOffloaded` ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) and evicts under its own
 capacity policy. The notice also raises the replica's committed point to at least
 `newest`, since the primary offloaded nothing above its own point: a replica that
 evicted content therefore never reports a point below it ([§9.2](#9.2%20Takeover)). A replica
@@ -601,7 +602,7 @@ under. **The receiver enforces it:**
   new journal matches nothing listed;
 - when its journal loses operations it had acknowledged — a failed sync window
   or a torn record raises the journal's loss generation
-  ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)) — it **MUST** record, durably in its
+  ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) — it **MUST** record, durably in its
   install record, the lowest version it lost for the shard, its **loss point**,
   and report it with its committed point in every answer from then on. A replica
   with a loss point is lagging: the primary removes it ([§7.2](#7.2%20Removal)), and a gather
@@ -1407,7 +1408,7 @@ set and an epoch, and every message is fenced by it.
 | `S-move-during-failover` | files moving between shards when either shard's primary fails mid-batch |
 | `S-replica-journal-full` | one replica's shared journal fills: backpressure first, then rate-limited removals across its shards |
 | `S-gray-replica` | a replica answers but slowly; it is removed on lag, and acknowledgement latency recovers |
-| `S-fsync-error` | a replica's sync fails; it must not acknowledge ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)) |
+| `S-fsync-error` | a replica's sync fails; it must not acknowledge ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) |
 | `S-torn-write` | a torn record on a replica is found at recovery; the replica reports a lower point and is removed |
 | `S-disk-loss` | a replica's device is lost while it is primary of some shards and replica of others |
 | `S-rollback-replica` | a replica's journal is restored from an older copy with the same identity: amnesiac by its lost generation swap at open, lease acquisition or renewal; a torn one is removed by its mark |
@@ -1444,7 +1445,7 @@ compare-and-swap outcome was resolved by re-reading.
 | One shard's install, discard, lag or pressure never changes or refuses another shard's files | R12 | a discard by journal, one share's backlog refusing another's writes |
 | Nothing is offered above the committed point | R4 | an offer ahead of an operation still in flight |
 
-**Journal extension checks**, run against the journal alone as [RFC 1 §11](rfc-1-journal.md#11.%20Conformance) runs
+**Journal extension checks**, run against the journal alone as [RFC 1 §9](rfc-1-journal.md#9.%20Conformance) runs
 its own:
 
 | Checks | How |

@@ -20,6 +20,7 @@ depends_on:
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-17-vfs]]"
   - "[[rfc-26-catalog-backups]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 27
 tags:
@@ -505,7 +506,7 @@ makes this the rare case of a crash, not the rule.
 
 **Versions.** A version B's journal assigns to an imported file **MUST** exceed
 every version imported for it, or a new write loses precedence to older content
-and is dropped at its commit ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). The journals at B were opened
+and is dropped at its commit ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)). The journals at B were opened
 before the share existed there, so the floor they opened with does not cover it.
 So before a journal serves a share it did not serve when it opened — an imported
 share of a move, a recovery, a clone or a restore — it **MUST** raise its version
@@ -513,7 +514,7 @@ counter above that share's version floor: the highest version B's metadata now
 records for any file of the share, every ref's `newest` and every FileData's
 `applied` ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)). The publish makes that floor readable; the
 share's first write waits for the raise. Journals opened later include the
-share in their floor at open, as for any share ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). The export
+share in their floor at open, as for any share ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). The export
 needs no version field of its own: the floor is computed from the records it
 imported. A move keeps every `born` and `died`, each snapshot's cut number and
 each share's `Cut` record: they are share-local and involve no journal version.

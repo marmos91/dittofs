@@ -13,6 +13,7 @@ depends_on:
   - "[[rfc-14-open-state]]"
   - "[[rfc-15-topology]]"
   - "[[rfc-16-metadata-store]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 11
 tags:
@@ -36,7 +37,7 @@ tags:
 > Until the cluster is built only these hooks are implemented:
 >
 > - the 128-bit content version, with its epoch half held at zero
->   ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions));
+>   ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions));
 > - the node epoch and the shard incarnation carried in the NFS write verifier
 >   ([§7](#7.%20Protocol%20state), rule 3);
 > - one binary, with roles chosen by configuration ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
@@ -810,7 +811,7 @@ forward the read.** Metadata
 alone cannot tell it: the primary acknowledges a write before offloading it, so
 the current ref ([RFC 6 §2.1](rfc-6-block-metadata.md#2.1%20ChunkRef)) can be older than an acknowledged write, and a
 replica's copy can be older than one the primary holds. A cached copy older than
-the named version is dropped ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)) and filled again. The question costs
+the named version is dropped ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) and filled again. The question costs
 one round trip and no bytes.
 
 **Attributes follow the same line.** A file's size and times after an
@@ -846,7 +847,7 @@ fenced by its epoch, moved with it, and recovered through grace
    shard again after another did — a handover there and back, with no restart —
    never repeats the verifier it gave before. The loss generation is monotonic per
    process across journal reopens, and rises only when the journal loses extents
-   not yet offloaded or fails a sync window ([RFC 1 §6.3](rfc-1-journal.md#6.3%20A%20failed%20sync)), so a loss
+   not yet offloaded or fails a sync window ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), so a loss
    that costs nothing does not make every client resend. The shard epoch is not an
    input, so the raise before a move does not make every client resend its
    unstable writes.

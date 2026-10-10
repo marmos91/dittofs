@@ -18,7 +18,8 @@ order: each part builds on the ones before it.
 | **Foundations** | | | |
 | [RFC 0](rfc-0-data-lifecycle.md) | data lifecycle | draft | terms, data model, residency, invariants, failure model |
 | **Content**, in write-path order | | | |
-| [RFC 1](rfc-1-journal.md) | journal | draft | local bytes, one journal per device: on-disk format, placement, crash safety, capacity |
+| [RFC 1](rfc-1-journal.md) | journal | draft | local bytes, one journal per device: the model and interface, placement, durability, capacity, reclamation, concurrency |
+| [RFC 28](rfc-28-journal-format.md) | journal format | draft | the journal's files: the `format` file, segments, records and catalog byte layouts, segments or staging files by benchmark, recovery after a crash |
 | [RFC 2](rfc-2-carver.md) | carver | draft | bytes → chunks → blocks: boundaries, identity, packing |
 | [RFC 3](rfc-3-syncer.md) | syncer | draft | transferring blocks to and from the remote tier |
 | [RFC 4](rfc-4-remote-tier.md) | remote tier | draft | object format and backend contract |
@@ -47,15 +48,16 @@ order: each part builds on the ones before it.
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
 | RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
-| RFC 21 | NFS | draft (on its own branch) | decisions the NFS standards leave open; drafted on the `docs/rfc-21-22-protocols` branch and not yet rebased on this set, so its error table, stable-write and grace rules still predate RFC 8, RFC 14 and RFC 17 |
-| RFC 22 | SMB | draft (on its own branch) | decisions the SMB standards leave open; drafted beside RFC 21 on the same branch, with the same rebase pending |
+| RFC 21 | NFS | planned | decisions the NFS standards leave open; drafted on the `docs/rfc-21-22-protocols` branch and not yet rebased on this set, so its error table, stable-write and grace rules still predate RFC 8, RFC 14 and RFC 17 |
+| RFC 22 | SMB | planned | decisions the SMB standards leave open; drafted beside RFC 21 on the same branch, with the same rebase pending |
 | **Operations** | | | |
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
 | RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
 
 RFC 26 and RFC 27 were split out of RFC 12. They sit with it under data management but are numbered after the
-planned RFC 18–25, whose numbers were already reserved, so the numbering is out of order there.
+planned RFC 18–25, whose numbers were already reserved, so the numbering is out of order there. RFC 28 was split out of RFC 1 the same way and sits
+with it under content.
 
 [The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
@@ -69,31 +71,32 @@ together, and neither is marked reviewed before the other.
 
 ```mermaid
 graph LR
-  R1["1 journal"]
+  R1["1 journal"] --> R28
   R2["2 carver"] --> R1
   R3["3 syncer"] --> R1 & R2 & R4 & R5
   R4["4 remote tier"] --> R2 & R3 & R5 & R6 & R8 & R9 & R12 & R13 & R26 & R27
   R5["5 transforms"] --> R2 & R4
-  R6["6 block metadata"] --> R2 & R3 & R4 & R5
+  R6["6 block metadata"] --> R2 & R3 & R4 & R5 & R28
   R7["7 namespace metadata"] --> R6 & R16
-  R8["8 engine"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R15 & R16
+  R8["8 engine"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R15 & R16 & R28
   R9["9 GC"] --> R2 & R3 & R4 & R5 & R6 & R8
-  R10["10 journal replication"] --> R1 & R6 & R8 & R11 & R16
-  R11["11 shards"] --> R1 & R6 & R7 & R8 & R10 & R14 & R15 & R16
+  R10["10 journal replication"] --> R1 & R6 & R8 & R11 & R16 & R28
+  R11["11 shards"] --> R1 & R6 & R7 & R8 & R10 & R14 & R15 & R16 & R28
   R12["12 snapshots"] --> R1 & R2 & R4 & R6 & R7 & R8 & R9 & R10 & R11 & R13 & R16
-  R13["13 configuration"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R15 & R16 & R26 & R27
+  R13["13 configuration"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R15 & R16 & R26 & R27 & R28
   R14["14 open state"] --> R7 & R11 & R15 & R16
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
-  R26["26 catalog backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27
-  R27["27 namespace migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26
+  R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
+  R27["27 migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26 & R28
+  R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R10 & R14
   style R10 stroke-dasharray: 5 5
   style R11 stroke-dasharray: 5 5
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
+Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 10 ↔ RFC 28, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
 
 ## Conventions
 
@@ -113,7 +116,7 @@ every RFC of this set are to be interpreted as in RFC 2119.
   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). An RFC is never marked `reviewed` or `frozen` while an RFC
   it builds on is `draft`: a reviewed rule resting on a moving one is not
   reviewed. The pairwise cycles under the graph join into one strongly
-  connected component, RFC 3 to RFC 17 together with RFC 26 and RFC 27, with the deferred RFC 10, 11 and 15
+  connected component, RFC 1 to RFC 17 together with RFC 26 to RFC 28, with the deferred RFC 10, 11 and 15
   inside it, so that component is reviewed as one: none of its members is marked
   `reviewed` before all of its non-deferred members are. A deferred member holds
   the review back only through the rules a first-release RFC cites from it; one
@@ -209,7 +212,7 @@ failures. The model tests the set specifies:
 
 | RFC | Model test | Drives |
 | --- | --- | --- |
-| [RFC 1 §11.1](rfc-1-journal.md#11.1%20Kinds%20of%20test) | the journal | writes, fills, offloads, releases, truncates, deallocates, deletes, settles, repack, crash and reopen |
+| [RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test) | the journal | writes, fills, offloads, releases, truncates, deallocates, deletes, settles, repack, crash and reopen |
 | [RFC 6 §11.1](rfc-6-block-metadata.md#11.1%20Group%20A%20%E2%80%94%20wrong%20content%2C%20lost%20content) | block metadata | commits, truncates, deallocates, clones, snapshots and their deletion, with removal batches interleaved; a removal must mask what it has not yet dropped, and a count must never fall below its refs. It must also drive overwrite records and their pruning against offloads in flight |
 | [RFC 9 §11.2](rfc-9-gc.md#11.2%20Group%20B%20%E2%80%94%20model-based%2C%20with%20crashes) | GC | retirement, resurrection, deletion and compaction, with crashes |
 | [RFC 16 §6.2](rfc-16-metadata-store.md#6.2%20Model-based%20and%20property%20tests) | the metadata store | transactions, conflicts and the KV contract |
@@ -250,7 +253,7 @@ measurements **MUST** be recorded there:
    throughput, recovery time after a crash with the journal full, and space
    amplification (bytes on the device over bytes held) — at the median and at
    p99, on every workload. Better on some and more than 5% worse on any one keeps
-   A ([RFC 1 §4.6](rfc-1-journal.md#4.6%20Segments%20or%20staging%20files%2C%20chosen%20by%20benchmark)).
+   A ([RFC 28 §2.6](rfc-28-journal-format.md#2.6%20Segments%20or%20staging%20files%2C%20chosen%20by%20benchmark)).
 
 **A regression blocks until explained.** A row more than 10% worse on a measured
 path, against the last recorded result on the reference box, blocks the change
