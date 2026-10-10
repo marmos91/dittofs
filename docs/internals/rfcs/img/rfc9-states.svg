@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .ada{fill:#eceff2;stroke:#9aa4b2;stroke-width:1.2}
+      .vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}
+      .meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+      .data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}
+      .ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+      .gone{fill:#f8e3e3;stroke:#b04a4a;stroke-width:1.4}
+      .role{font-size:11px;font-weight:700;fill:#5b6472;letter-spacing:.04em}
+      .arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .back{stroke:#4c8a58;stroke-width:1.5;fill:none;marker-end:url(#g)}
+    </style>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6472"/></marker>
+    <marker id="g" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4c8a58"/></marker>
+  </defs>
+  <rect width="900" height="470" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A block record is its own GC state. Only the deleter's verified step cannot be undone.</text>
+
+  <!-- entry -->
+  <text x="20" y="62" class="role">ENTRY</text>
+  <rect x="20" y="72" width="170" height="62" rx="5" class="ext"/>
+  <text x="32" y="92" class="h">offload commit</text>
+  <text x="32" y="110" class="s">creates the block record</text>
+  <text x="32" y="125" class="s">with its carried list</text>
+
+  <rect x="20" y="300" width="170" height="104" rx="5" class="ext"/>
+  <text x="32" y="320" class="h">enters retired</text>
+  <text x="32" y="338" class="s">born dead, or a compaction</text>
+  <text x="32" y="353" class="s">source: no chunk record</text>
+  <text x="32" y="368" class="s">names it: due now</text>
+  <text x="32" y="383" class="s">abandoned intent: due after</text>
+  <text x="32" y="398" class="s">the put bound; listed: now</text>
+
+  <!-- states -->
+  <text x="220" y="62" class="role">STATES</text>
+  <rect x="220" y="72" width="190" height="80" rx="5" class="data"/>
+  <text x="234" y="94" class="h">live</text>
+  <text x="234" y="112" class="s">live &gt; 0 chunk records</text>
+  <text x="234" y="127" class="s">index: BC by dead ratio,</text>
+  <text x="234" y="142" class="s">while it has dead bytes</text>
+
+  <rect x="220" y="200" width="190" height="96" rx="5" class="meta"/>
+  <text x="234" y="222" class="h">retired{not_before}</text>
+  <text x="234" y="240" class="s">live = 0; chunk records kept,</text>
+  <text x="234" y="255" class="s">still naming it</text>
+  <text x="234" y="270" class="s">index: BR by not_before</text>
+  <text x="234" y="285" class="s">not_before in store time</text>
+
+  <rect x="480" y="200" width="190" height="96" rx="5" class="gone"/>
+  <text x="494" y="222" class="h">deleted</text>
+  <text x="494" y="240" class="s">final: no resurrection</text>
+  <text x="494" y="255" class="s">delete issued in a batch</text>
+  <text x="494" y="270" class="s">index: BD, with the time</text>
+  <text x="494" y="285" class="s">the delete succeeded</text>
+
+  <rect x="720" y="200" width="160" height="96" rx="5" class="ada"/>
+  <text x="734" y="222" class="h">pruned</text>
+  <text x="734" y="240" class="s">block record and the</text>
+  <text x="734" y="255" class="s">chunk records still</text>
+  <text x="734" y="270" class="s">naming it removed</text>
+
+  <!-- arrows -->
+  <path d="M191,103 L218,103" class="arr"/>
+  <path d="M191,350 L260,350 L260,298" class="arr"/>
+
+  <path d="M290,154 L290,198" class="arr"/>
+  <text x="140" y="172" class="s">retire: the txn that</text>
+  <text x="140" y="186" class="s">leaves live at 0</text>
+
+  <path d="M350,198 L350,154" class="back"/>
+  <text x="360" y="172" class="s" style="fill:#4c8a58">resurrect: adoption,</text>
+  <text x="360" y="186" class="s" style="fill:#4c8a58">audit raise, refused verify</text>
+
+  <path d="M411,248 L478,248" class="arr"/>
+  <path d="M671,248 L718,248" class="arr"/>
+
+  <!-- step notes -->
+  <rect x="480" y="72" width="190" height="96" rx="5" class="vfs"/>
+  <text x="494" y="92" class="h">deleter: verify</text>
+  <text x="494" y="110" class="s">not_before ≤ store time</text>
+  <text x="494" y="125" class="s">hold not set</text>
+  <text x="494" y="140" class="s">for each chunk still naming</text>
+  <text x="494" y="155" class="s">it: CR prefix empty</text>
+  <path d="M575,170 L575,198" class="arr"/>
+
+  <rect x="720" y="72" width="160" height="96" rx="5" class="vfs"/>
+  <text x="734" y="92" class="h">delete, then prune</text>
+  <text x="734" y="110" class="s">claim owned, Recheck</text>
+  <text x="734" y="125" class="s">fresh; prune only after</text>
+  <text x="734" y="140" class="s">a later Recheck passes</text>
+  <path d="M800,170 L800,198" class="arr"/>
+
+  <!-- footer -->
+  <text x="220" y="340" class="l">Resurrection and the deleter both write the block record, so at most one commits.</text>
+  <text x="220" y="360" class="l">A found ref makes the deleter raise the count instead, which resurrects the block.</text>
+  <text x="220" y="380" class="l">Every arrow is one transaction; up to K arrows may share one.</text>
+  <text x="220" y="420" class="s">A carrying commit that meets a chunk record naming a retired or deleted block repoints it to itself;</text>
+  <text x="220" y="438" class="s">the old block's prune then skips that record.</text>
+</svg>

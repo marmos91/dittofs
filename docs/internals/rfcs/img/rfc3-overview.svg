@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .rl { font-size: 12px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .why  { font-size: 11px; fill: #b04a4a }
+      .ok   { font-size: 11px; font-weight: 600; fill: #2f6f4f }
+      .bx { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.4 }
+      .bg { fill: #eaf4ec; stroke: #2f6f4f; stroke-width: 1.4 }
+      .br { fill: #fbecec; stroke: #b04a4a; stroke-width: 1.4 }
+      .bn { fill: #f4f6f8; stroke: #8b95a3; stroke-width: 1.2 }
+    </style>
+    <marker id="a3o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+    <marker id="a3or" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="470" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">One syncer: a queue per flow, one scheduler, one pool per direction.</text>
+  <text x="16" y="46" class="s">The engine opens one flow per share. The syncer sees flows, stores and blocks; it never learns what a flow stands for.</text>
+  <text x="16" y="78" class="rl">flows</text>
+  <text x="212" y="78" class="rl">queue per flow</text>
+  <text x="424" y="78" class="rl">scheduler</text>
+  <text x="604" y="78" class="rl">pools</text>
+  <text x="770" y="78" class="rl">stores</text>
+  <rect x="16" y="100" width="150" height="40" rx="3" class="bx"/>
+  <text x="28" y="117" class="m">flow A</text>
+  <text x="28" y="132" class="s">bound to s3-main</text>
+  <rect x="16" y="170" width="150" height="40" rx="3" class="bx"/>
+  <text x="28" y="187" class="m">flow B</text>
+  <text x="28" y="202" class="s">bound to s3-main</text>
+  <rect x="16" y="240" width="150" height="40" rx="3" class="bx"/>
+  <text x="28" y="257" class="m">flow C</text>
+  <text x="28" y="272" class="s">bound to minio</text>
+  <line x1="166" y1="120" x2="208" y2="120" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <rect x="212" y="100" width="170" height="40" rx="3" class="bn"/>
+  <rect x="222" y="110" width="20" height="20" rx="2" class="bx"/>
+  <rect x="248" y="110" width="20" height="20" rx="2" class="bx"/>
+  <rect x="274" y="110" width="20" height="20" rx="2" class="bx"/>
+  <text x="306" y="125" class="s">demand first</text>
+  <line x1="166" y1="190" x2="208" y2="190" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <rect x="212" y="170" width="170" height="40" rx="3" class="bn"/>
+  <rect x="222" y="180" width="20" height="20" rx="2" class="bx"/>
+  <rect x="248" y="180" width="20" height="20" rx="2" class="bx"/>
+  <text x="280" y="195" class="s">demand first</text>
+  <path d="M166,260 L190,260 L190,312 L208,312" fill="none" stroke="#b04a4a" stroke-width="1.4" marker-end="url(#a3or)"/>
+  <rect x="212" y="296" width="170" height="32" rx="3" class="br"/>
+  <text x="222" y="316" class="why">refused at once: store unhealthy</text>
+  <rect x="420" y="100" width="150" height="110" rx="3" class="bg"/>
+  <text x="432" y="122" class="rl">DRR over flows</text>
+  <text x="432" y="142" class="s">turns counted in bytes</text>
+  <text x="432" y="160" class="s">no flow above ¾ of a pool</text>
+  <text x="432" y="178" class="s">queue length bounded</text>
+  <text x="432" y="196" class="s">head waits ≤ one round</text>
+  <line x1="382" y1="120" x2="418" y2="130" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <line x1="382" y1="190" x2="418" y2="180" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <rect x="600" y="100" width="150" height="40" rx="3" class="bx"/>
+  <text x="612" y="117" class="m">uploader</text>
+  <text x="612" y="132" class="s">upload_workers</text>
+  <rect x="600" y="170" width="150" height="40" rx="3" class="bx"/>
+  <text x="612" y="187" class="m">fetcher</text>
+  <text x="612" y="202" class="s">fetch_workers</text>
+  <line x1="570" y1="135" x2="598" y2="120" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <line x1="570" y1="175" x2="598" y2="190" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <rect x="770" y="100" width="114" height="40" rx="3" class="bg"/>
+  <text x="780" y="117" class="m">s3-main</text>
+  <text x="780" y="132" class="ok">healthy</text>
+  <rect x="770" y="240" width="114" height="40" rx="3" class="br"/>
+  <text x="780" y="257" class="m">minio</text>
+  <text x="780" y="272" class="why">unhealthy</text>
+  <line x1="750" y1="120" x2="768" y2="120" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <line x1="750" y1="190" x2="768" y2="125" stroke="#5b6472" stroke-width="1.4" marker-end="url(#a3o)"/>
+  <path d="M827,142 L827,162 L850,162 L850,144" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3o)"/>
+  <text x="790" y="176" class="s">probe, every 5 s</text>
+  <path d="M827,282 L827,302 L850,302 L850,284" fill="none" stroke="#5b6472" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3o)"/>
+  <text x="790" y="316" class="s">probe keeps running</text>
+  <path d="M770,260 L720,260 L720,312 L384,312" fill="none" stroke="#b04a4a" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3or)"/>
+  <text x="560" y="302" class="why">health gates admission</text>
+  <line x1="16" y1="340" x2="884" y2="340" stroke="#c3cad3"/>
+  <text x="16" y="364" class="l">Memory is bounded where the workers are, not where the waiting is: a waiting transfer holds a plan and a reference, never</text>
+  <text x="16" y="382" class="l">bytes, so peak memory is pool size × one chunk per direction, whatever the queues hold.</text>
+  <text x="16" y="410" class="l">Fairness is bounded where the turns are: a flow with a million queued uploads delays another flow by at most one round,</text>
+  <text x="16" y="428" class="l">and never by more than the quarter of the pool the cap keeps free.</text>
+  <text x="16" y="456" class="why">Nothing in the path is a second concurrency limit: the pools are the only one, and the cap is a fraction of them.</text>
+</svg>
