@@ -17,6 +17,9 @@
 #   cache-s3       - In-memory BadgerDB metadata + S3 block store (requires localstack)
 #   badger-s3      - On-disk BadgerDB metadata + S3 block store (requires localstack)
 #
+# The S3 profiles expect a localstack on localhost:4566 and create their bucket
+# there; setup fails if it cannot.
+#
 # NFS versions:
 #   3   - NFSv3 (default, backward compatible)
 #   4   - NFSv4.0
@@ -118,6 +121,8 @@ MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 API_PORT=8080
 NFS_PORT="${NFS_PORT:-12049}"
 TEST_PASSWORD="posix-test-password-123"
+S3_ENDPOINT="http://localhost:4566"
+S3_BUCKET="dittofs-posix-test"
 
 # Colors for output
 RED='\033[0;31m'
@@ -237,6 +242,27 @@ start_server() {
     wait_for_api
 }
 
+# The S3 block store never creates its bucket. Without one, every request 404s,
+# the remote stays unhealthy, and an S3 profile silently exercises only the local
+# tier — so a missing bucket is a setup failure, not something to run through.
+# localstack accepts unsigned requests, so curl needs no AWS CLI on the host.
+create_s3_bucket() {
+    log_info "Creating S3 bucket ${S3_BUCKET} at ${S3_ENDPOINT}..."
+    local code=""
+    for _ in $(seq 1 15); do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "${S3_ENDPOINT}/${S3_BUCKET}" || true)
+        # 409 is BucketAlreadyOwnedByYou from a previous run.
+        [[ "$code" == 200 || "$code" == 409 ]] && break
+        sleep 2
+    done
+
+    if ! curl -sf -o /dev/null -I "${S3_ENDPOINT}/${S3_BUCKET}"; then
+        log_error "Bucket ${S3_BUCKET} does not exist at ${S3_ENDPOINT} (last create returned HTTP ${code:-none})."
+        log_error "Start localstack first, e.g.: docker run -d -p 4566:4566 -e SERVICES=s3 localstack/localstack:4.13.1"
+        return 1
+    fi
+}
+
 # Login and configure via API
 configure_via_api() {
     log_info "Configuring DittoFS via API..."
@@ -279,7 +305,18 @@ configure_via_api() {
     case "$CONFIG_TYPE" in
         cache-s3|badger-s3)
             "$DITTOFSCTL_BIN" store block add --name default --type s3 \
-                --config '{"bucket":"dittofs-posix-test","region":"us-east-1","endpoint":"http://localhost:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
+                --config "{\"bucket\":\"${S3_BUCKET}\",\"region\":\"us-east-1\",\"endpoint\":\"${S3_ENDPOINT}\",\"force_path_style\":true,\"access_key_id\":\"test\",\"secret_access_key\":\"test\",\"allow_private_endpoint\":true}"
+            # decision: this proves the server can reach the bucket with this
+            # store config, not that the suite's data is ever uploaded — a suite
+            # that unlinks its files before the upload delay sends no PutObject
+            # at all. It catches a missing or unreachable bucket, which otherwise
+            # leaves the suite silently grading the local tier only.
+            log_info "Checking that the server can reach the S3 bucket..."
+            "$DITTOFSCTL_BIN" store block health --name default || {
+                log_error "Block store 'default' cannot reach bucket ${S3_BUCKET} at ${S3_ENDPOINT}."
+                "$DITTOFS_BIN" stop --force 2>/dev/null || pkill -f "dfs start" || true
+                exit 1
+            }
             ;;
         *)
             # Default: memory block store
@@ -411,6 +448,11 @@ mount_nfs() {
 # Main
 main() {
     log_info "Setting up POSIX tests with config type: $CONFIG_TYPE, NFS version: $NFS_VERSION"
+
+    # Before the server starts, so a missing localstack leaves no server behind.
+    case "$CONFIG_TYPE" in
+        cache-s3|badger-s3) create_s3_bucket ;;
+    esac
 
     cleanup_existing
     start_server
