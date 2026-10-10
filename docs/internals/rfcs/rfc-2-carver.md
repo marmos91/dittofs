@@ -847,11 +847,18 @@ passes, and **MUST NOT** survive its pass. A lookup error carries the chunk
 ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)): **default 4 MiB, allowed from 1 MiB to 64 MiB**. A value outside that
 range **MUST** be refused at startup, like a bad chunking setting ([§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)), never
 clamped. Below 1 MiB, puts per byte stored multiply on object stores that are
-slow on small objects; above 64 MiB, a block outgrows what P4's cap holds of
-`Min`-sized chunks at the default `Target`, and every put and whole-block fetch
-holds a worker for longer. Unlike `Target`, it changes no chunk and no stored
+slow on small objects; above 64 MiB — P4's 1,024 chunks × the 64 KiB `Min` of
+the default `Target` — a block outgrows what P4's cap holds of `Min`-sized
+chunks, and every put and whole-block fetch holds a worker for longer.
+Unlike `Target`, it changes no chunk and no stored
 name, so it applies to the next block assembled and needs no migration
 ([§5.6](#5.6%20Assembly%20is%20sequential%2C%20and%20may%20change%20without%20migration)). The 4 MiB that sizes the syncer's pool ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) is this default.
+
+> decision: the upper bound is derived from P4 and the default `Target`; the
+> 4 MiB default and the 1 MiB floor are proposals, not measurements. The default
+> is confirmed per service by the block-size benchmark
+> ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)); lower the floor if that benchmark finds a supported
+> service whose put cost per byte is flat below 1 MiB.
 
 P1 is [RFC 0 §2.2](rfc-0-data-lifecycle.md#2.2%20How%20a%20file%20relates%20to%20its%20chunks). A chunk split across two blocks would have one hash naming
 content in two places, so the hash would stop being a locator and a refcount would

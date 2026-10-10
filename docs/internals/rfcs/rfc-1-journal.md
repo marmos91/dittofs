@@ -508,7 +508,7 @@ record stays on disk, unmoved, until `fn` returns ([§3.3](#3.3%20Offload), [§8
 extents can come from a different segment each: a 64 MiB pass over 64 KiB random
 overwrites can touch a thousand segments, none of which repack can retire while
 a slow upload runs. So the journal stops adding extents to an offer once the next
-would bring the segments it pins above a configured bound (proposal: 64), as it
+would bring the segments it pins above a fixed bound (proposal: 64), as it
 stops at `limit`, and offers the rest in a later call. An extent in a segment
 the offer already pins never counts against the bound. **Pins are bounded across
 offers too**: the journal counts each pinned segment once, however many running
@@ -520,6 +520,14 @@ otherwise leaves it to a later call, so an offer never pins a segment repack has
 started on. The first extent always fits, so an offer is never empty while dirty
 extents outside segments under repack remain, and pinned segments are bounded by
 the journal-wide bound plus one per running offer.
+
+> [!note] decision
+> Both bounds are constants of the implementation, not settings, and neither is
+> measured. 64 lets one offer gather a default 4 MiB block of 64 KiB extents
+> even when every extent sits in its own segment; 256 lets four such offers run
+> at once. Overturned by a journal held at its limit ([§12](#12.%20Open%20questions), question 8)
+> where pins keep repack from retiring segments, or where offers end at the
+> bound often enough that blocks fall short of their target.
 
 **`Oldest` and `Newest`** bound the content versions of the records in the offer
 ([§5.3](#5.3%20Versions)). The engine records both on the refs the pass commits ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)) and
@@ -1822,9 +1830,11 @@ for a stable write gets one because the engine calls `Sync` before replying
 ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); that is cheap, because one sync covers every writer waiting on the
 stream (group commit).
 
-**Proposal:** a bound of 1 s. Overturned by a measurement showing that the
-timer's syncs cost throughput a longer bound would recover, or that host loss
-within the bound is unacceptable to a deployment.
+> [!note] decision
+> The bound is a constant of the implementation (proposal: 1 s), not measured.
+> Overturned by a measurement showing that the timer's syncs cost throughput a
+> longer bound would recover, or that host loss within the bound is unacceptable
+> to a deployment.
 
 Whatever the bound :
 
@@ -1954,8 +1964,9 @@ truncate, deallocate, delete, clone target, offloaded, unmark, loss, hold, unhol
 stamp and forget records, seal markers and footers are what frees space or keeps
 it accounted; refusing them at the limit would wedge a full journal. They draw on
 a **reserved headroom** the journal sets aside at open, outside every share's
-limit: at least one seal marker and footer per open stream plus a configured
-number of header-only records (proposal: 65,536, about 6 MiB). `ErrNoSpace` is
+limit: at least one seal marker and footer per open stream plus
+`journal.headroom_records` header-only records (proposal: 65,536; at 96 bytes
+each ([§4.3](#4.3%20Records)), about 6 MiB). `ErrNoSpace` is
 never returned for them. Their one refusal is the exhausted headroom below, and
 only removals of content the journal does not hold can bring it about.
 
@@ -1985,6 +1996,10 @@ headroom exhausted fails with the transient refusal rather than overrunning.
 > returns space. Then those removals, and only they, are refused until it does.
 > Overturned by a workload that reaches `headroom_draws` near the headroom's size
 > while repack has candidates it is not running.
+> The half kept for space-returning records and the default of
+> `journal.headroom_records` are unmeasured: overturned by a journal held at its
+> limit ([§12](#12.%20Open%20questions), question 8) whose removals reach the refusal, or whose
+> headroom sits mostly undrawn.
 
 **Repack has a reserve of its own.** Repack copies live records before it can
 unlink their segment ([§8.2](#8.2%20Repack)). Its copies draw on a **repack reserve** at journal
@@ -2314,12 +2329,20 @@ packed small records approaches reading everything the journal holds.
 
 **The active segments are always scanned**, because they carry no footer. An
 active segment that has taken no append for 30 s **MUST** be sealed once the
-bytes it holds beyond its last catalogued point pass a configured threshold
-(proposal: 16 MiB), so the unavoidable scan stays bounded — with eight streams,
+bytes it holds beyond its last catalogued point pass
+`journal.idle_seal_bytes` (proposal: 16 MiB), so the unavoidable scan stays bounded — with eight streams,
 at most eight segments' tails. The seal returns the segment's unwritten tail
 ([§8.3](#8.3%20Accounting)), so an early seal strands no space. An idle segment below the
 threshold stays open: sealing it would cost a footer and a new segment every
 30 s for a trickle of writes, and scanning it costs little.
+
+> [!note] decision
+> The 30 s idle time is a constant of the implementation and, like the default
+> of `journal.idle_seal_bytes`, unmeasured: long enough that a stream taking
+> steady writes never seals early, short enough that an idle tail is usually
+> catalogued before a restart. Overturned by J6 showing active-segment scans
+> dominating time to first read, or by a trickle workload whose early seals
+> show up in footer writes.
 
 **Recovery does not trust a tail it cannot prove synced.** After the process
 died but the host did not, records written and never synced are still in the
@@ -2972,16 +2995,21 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
 - **syncs per write**: 16 concurrent writers on one append stream,
   every writer calling `Sync` after each write ([§6.2](#6.2%20Sync%20policy)); the storage seam counts syncs and holds each
   one until all 16 are waiting, so scheduling cannot decide the result. They
-  **MUST** issue at most one sync per four writes;
+  **MUST** issue at most one sync per four writes. A design without group commit
+  issues one per write; one that groups all 16 issues one per 16. The check sits
+  a factor of four from each, so neither scheduling nor a leader handing off
+  mid-round moves a correct design across it;
 - **index cost**: the placement index counts comparisons per lookup and per
-  insertion; going from 10^3 to 10^6 extents **MUST** at most double them;
+  insertion; going from 10^3 to 10^6 extents **MUST** at most double them, the
+  ratio log(10^6) / log(10^3) an `O(log n)` structure gives;
 - **allocations per operation**: `WriteAt`, `ReadAt` and `Stats` are measured
   in allocations per call, and an increase fails the check;
 - **index memory**: bytes per entry at 10^6 extents **MUST** stay at or below 56,
   the estimate of [§5.2](#5.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) plus a tenth.
 - **report cost**: a pass that offloads a file of 10^3 and of 10^6 extents, written
   sequentially so none merge, reports block by block; comparisons per reported
-  extent **MUST** at most double between the two ([§3.3](#3.3%20Offload)).
+  extent **MUST** at most double between the two, the same logarithmic ratio
+  ([§3.3](#3.3%20Offload)).
 
 ## 12. Open questions
 
@@ -3012,8 +3040,9 @@ lost group commit, an index that stopped being `O(log n)` — are counted instea
 7. **Journal shape** ([§4.6](#4.6%20Segments%20or%20staging%20files%2C%20chosen%20by%20benchmark)). Segments or one staging file per dirty slice,
    decided by J9.
 8. **Headroom, reserves and thresholds** ([§7](#7.%20Capacity), [§3.3](#3.3%20Offload), [§9.1](#9.1%20Rebuilding)). The headroom's
-   size, the repack reserve of one segment, the bound of 64 pinned segments per
-   offer and of 256 across offers, and the 16 MiB idle-seal threshold are proposals; none has been measured
+   size (`journal.headroom_records`), the repack reserve of one segment, the bound
+   of 64 pinned segments per offer and of 256 across offers, and the 16 MiB
+   `journal.idle_seal_bytes` are proposals; none has been measured
    against a journal held at its limit or against recovery time.
 
 ---

@@ -57,9 +57,9 @@ can then move alone.
 `ns-photos`, with share `photos` (10⁷ files), from installation A to
 installation B; both reach the bucket `dfs-data`.
 
-1. **Pre-seed, while A serves.** A takes a base snapshot of the share, held by a
-   use record, and writes the namespace's **GC pause** record, so A relocates
-   and deletes nothing there from now on. A exports everything the base sees as
+1. **Pre-seed, while A serves.** A writes the namespace's **GC pause** record,
+   so A relocates and deletes nothing there from now on, and takes a base
+   snapshot of the share, held by a use record. A exports everything the base sees as
    a `move-base`; B stages it, rebuilds its indexes and recomputes its counts,
    and publishes nothing. This takes hours; clients keep writing to A.
 2. **Freeze.** A closes the share's gates, offloads everything dirty, and stops
@@ -73,7 +73,7 @@ installation B; both reach the bucket `dfs-data`.
    deleting a remote object: the blocks are B's now.
 
 ```text
- A:  serve ── base cut, GC pause ── move-base ──► │ freeze ── move-delta ──► claim released ── drop
+ A:  serve ── GC pause, base cut ── move-base ──► │ freeze ── move-delta ──► claim released ── drop
  B:                                 stage, index  │          stage, ready     publish, claim owned, serve
  bucket dfs-data: untouched throughout — no block is copied
 ```
@@ -269,32 +269,62 @@ freeze carries only what changed since.
    and material against it ([§2.4](#2.4%20Key%20scope%20and%20material)), and that it configures every backup
    location a use record or a folder record ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) of the namespace
    names, whose expiry and sweeps it will run.
-2. **Pre-seed, while A serves.** A takes a **base cut** of every share in the
-   namespace: an ordinary snapshot held by a use record of kind `move`
-   ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), not by a lock, so the move can delete it. A then writes the
-   namespace's **GC pause** record, which GC reads before every pass and every
-   batch and which survives a restart: a paused namespace gets no relocation,
-   delete or collection. Every relocation commit, every transaction that marks a
-   block deleted, and every retirement of an unrecorded object a listing found
-   reads the pause record with conflict tracking, so writing it aborts each one
-   not yet committed; one already committed is in the records the export reads,
-   its old block's delete waiting with every other delete to become B's
-   backlog. A cooperative move therefore needs no clock: the claim's self-fence
+2. **Pre-seed, while A serves.** A first writes the namespace's **GC pause**
+   record, naming the move, which GC reads before every pass and every batch and
+   which survives a restart: a paused namespace gets no relocation, delete or
+   collection. A guard binds only its own transaction
+   ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), so the pause is stated for each commit order of a
+   relocation commit, a transaction that marks a block deleted, or a retirement
+   of an unrecorded object a listing found ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)):
+   - **one that commits after the pause** aborts: it reads the pause record with
+     conflict tracking, and the pause was written after its snapshot;
+   - **one that commits before the pause** still commits, and nothing here
+     assumes it fails. Its records are in the base, since the base export reads
+     only after the pause has committed, and an old block's delete waits with
+     every other delete to become B's backlog;
+   - **one that starts after the pause** reads the pause record with a tracked
+     `Get` and does nothing while it exists. A `Guard` returns no value, so it
+     cannot be that check.
+
+   A cooperative move therefore needs no clock: the claim's self-fence
    ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) is only the backstop for a process that does not see the pause. Retirement is not
    paused: it is decided where a count reaches zero
    ([RFC 9 §2.2](rfc-9-gc.md#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero)), an adoption undoes it, and the delta carries the
-   records it changes. Once every base cut is `complete`, so that no offload can
-   still write a ref a base cut sees, A writes an export of kind `move-base`: every
-   record the base cuts see, all history, every chunk and block record, and the
-   principals they name. B stages it, rebuilds its derived indexes — reverse ref
-   keys, the died index, the version-floor index, the GC index — and recomputes
-   its counts as it stages, and publishes nothing. From here until the
-   move ends, the namespace refuses share creation, share deletion, clones,
-   backups of either kind and re-homes ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) with `ErrMoving`, and defers snapshot deletion and pruning; a deletion,
-   clone or backup already running finishes first.
+   records it changes.
+
+   **The pause is also the move's gate.** From its commit until the move ends,
+   the namespace refuses share creation, share deletion, clones, backups of
+   either kind and re-homes ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) with `ErrMoving`, and defers snapshot deletion
+   and pruning. Each of those operations reads the pause record with a tracked
+   `Get` in the transaction that starts it, and refuses while the record names a
+   move. The move decides from what those operations write — which shares get a
+   base cut, which running operation it waits for — so it tracks those keys
+   itself ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)): the transaction that writes the pause finds the
+   namespace's shares by a scan of the share records, and reads with conflict
+   tracking the `ShareList` record, which every share creation and deletion
+   raises ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and, for each of those shares, its state, its
+   re-home record, its `Cut` record and, by `GuardRange`, its use records. So
+   whichever side commits second aborts, in either order: an operation that
+   commits first aborts the pause's transaction, whose retry sees it — a
+   running re-home refuses the move with `ErrRehoming`, and a running deletion,
+   clone or backup is waited for; a pause that commits first aborts the
+   operation, whose retry is refused.
+
+   A then takes a **base cut** of every share the pause's transaction found: an
+   ordinary snapshot held by a use record of kind `move`
+   ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), not by a lock, so the move can delete it. Once every base
+   cut is `complete`, so that no offload can still write a ref a base cut sees,
+   A writes an export of kind `move-base`: every record the base cuts see, all
+   history, every chunk and block record, and the principals they name. B stages
+   it, rebuilds its derived indexes — reverse ref keys, the died index, the
+   version-floor index, the GC index — and recomputes its counts as it stages,
+   and publishes nothing.
 3. **Pre-drain.** A expedites offload until the namespace's dirty and held bytes
    would drain within half of `migration.freeze_timeout` at the measured offload
-   rate.
+   rate, leaving the other half for the delta and B's ready (step 7).
+
+   > decision: the even split is chosen, not measured. Move it when the move
+   > benchmark ([§5.5](#5.5%20Benchmarks%20and%20targets)) shows the delta and ready taking a stable share of the freeze.
 4. **Freeze, durably.** A records the namespace as `moving`, which keeps it closed
    across a restart; closes every shard's cut gate on every share and keeps it
    closed; pauses removal batches; and offloads everything dirty or held, since B
@@ -304,7 +334,7 @@ freeze carries only what changed since.
    `NFS3ERR_JUKEBOX` and retry. An SMB request is kept pending with an interim
    response instead, under the same hold an adapter keeps for a request refused
    `ErrGrace` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)), bounded by `migration.freeze_timeout` plus
-   35 s; if the namespace has moved when the freeze ends, the connection is
+   the 35 s SMB break deadline that hold adds ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); if the namespace has moved when the freeze ends, the connection is
    dropped so durable handles reconnect at the new owner. No NFS call is held for
    the whole freeze, and none is failed outright. The freeze **MUST** be bounded by
    `migration.freeze_timeout`; one that cannot finish in time aborts the move.
@@ -376,7 +406,7 @@ and FileIDs ([§2.5](#2.5%20Versions%20and%20FileIDs%20on%20import)), so clients
 | t | A | B | clients |
 | --- | --- | --- | --- |
 | 0 | pre-flight header | checks scope, prefix, material: ok | writing to A |
-| 1 | base cut 20, held by a move use record; GC pause record written, one relocation in flight aborts; 20 `complete` after 40 s; `move-base` export, 10⁷ files, 3 h | stages it | writing to A throughout |
+| 1 | GC pause record written: a relocation in flight aborts, one that committed just before is in the base; base cut 20, held by a move use record; 20 `complete` after 40 s; `move-base` export, 10⁷ files, 3 h | stages it | writing to A throughout |
 | 2 | pre-drain: 40 GiB dirty down to 2 GiB | — | writing to A, slower |
 | 3 | `moving`; gates closed; drains 2 GiB in 20 s; joins writers and GC | — | calls answered retry-later after 1 s, and retried |
 | 4 | `move-delta`: 3×10⁴ records with change sequence above cut 20's — among them the kept part of a ref a truncate narrowed at t1, still `born` 12 — all share-prefix records, intents; 5 s | stages it over the base, applies it to the indexes and counts built at t1, verifies; ready | calls wait |
@@ -785,6 +815,11 @@ Moves and re-homes are control-plane records, set through the API
 class [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) gives each: `migration.*` per installation, and
 a re-home's rate. The shape below is how a provisioning file declares them
 ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+Its three numbers are proposals, not measurements: `freeze_timeout` is settled
+by the move benchmark of [§5.5](#5.5%20Benchmarks%20and%20targets) (freeze to B serving, against the
+namespace's key count), `hold_reply` by the longest wait an NFS client tolerates
+before its own retry, and `rehome.rate` by the re-home benchmark's p99 write
+latency at that rate. The 35 s is the SMB break deadline, not a setting here.
 
 ```yaml
 migration:
@@ -802,7 +837,7 @@ stated in the one that owns its subject; the numbers missing here are theirs.
 
 | # | Invariant |
 | --- | --- |
-| S12 | One installation holds a namespace's claim. Only it puts, sweeps, relocates or collects there, only its store holds the namespace's records, and it writes only while the claim names it `owned` and its record says `serving`. A namespace being moved has no relocation, delete or collection from the pre-seed on, across restarts. |
+| S12 | One installation holds a namespace's claim. Only it puts, sweeps, relocates or collects there, only its store holds the namespace's records, and it writes only while the claim names it `owned` and its record says `serving`. A namespace being moved has no relocation, delete or collection that commits after its pause record, across restarts, and starts no share creation or deletion, clone, backup, re-home or snapshot deletion after it; such an operation that commits before the pause is waited for or carried in the base, in either commit order. |
 | S13 | A move never releases refs at the old installation and never deletes a remote object on its behalf. |
 | S17 | A move keeps FileIDs and refuses a collision; a clone, a restore and a detached snapshot get new ones. A move's drop `Forget`s the namespace's shares' tags in every journal at the old installation — every record of each tag below the forget record's sequence number, by sequence number, not by version — leaving no extent or removal marker of them, and attaching an imported share's tag finds none of its extents. |
 | S20 | After a move, the base plus the delta equal the source's records at the freeze; the base is exported only once its cuts are `complete`, and the delta is every record whose change sequence is above the base's. |
@@ -829,7 +864,7 @@ in a model checker before they are implemented, with S12, S13, S20 and S26 as
 properties, and kept in step with this document.
 
 **Coverage.** Seed search **MUST** also reach each of these or fail: a stale GC
-process stopped by its claim fence; a relocation aborted by the GC pause record;
+process stopped by its claim fence; a relocation aborted by the GC pause record; one committed before it and carried in the base; an operation committed before the move's gate, aborting the gate's transaction;
 a re-home batch retried on a changed ref; a catch-up pass switching a ref written
 behind the cursor; a parked ref dropped when the last pre-re-home catalog backup
 expired; a claim read that stopped a stale image before its put.
@@ -842,8 +877,8 @@ expired; a claim read that stopped a stale image before its put.
 | `S-snap-move-crash-<step>` | A or B crashes after each of [§2.2](#2.2%20The%20move%2C%20step%20by%20step)'s steps; a restart during `moving` stays closed |
 | `S-snap-move-stale-gc` | A is partitioned, not dead, during a recovery import; its GC stops on its claim fence |
 | `S-snap-move-delta-seq` | during the pre-seed an offload lands late with `born` below the base, a truncate narrows a ref keeping its `born`, and a count reaches zero and retires a block; the delta carries all three by change sequence and B reads back A's bytes |
-| `S-snap-move-gc-pause` | a relocation is in flight when the pause record is written; it aborts, A restarts during the pre-seed, and no relocation, delete or collection runs until B publishes |
-| `S-snap-move-refuses` | a clone, a backup, a share creation and a share deletion requested during a move are refused `ErrMoving`; one already running finishes first |
+| `S-snap-move-gc-pause` | a relocation, a `MarkDeleted` and a listing retirement each race the pause record's write, from snapshots taken before it commits: (a) committed after the pause, each aborts; (b) committed before it, each commits and B reads its records from the base; (c) started after it, each reads the pause by a tracked `Get` and does nothing. A restarts during the pre-seed, and no relocation, delete or collection runs until B publishes |
+| `S-snap-move-refuses` | a clone, a backup, a share creation, a share deletion, a re-home and a snapshot deletion requested during a move are refused `ErrMoving` (the deletion deferred); one already running finishes first. Each is also started from a snapshot taken before the pause's transaction commits and committed in both orders: committed after it, it aborts and its retry is refused; committed before it, the pause's transaction aborts and its retry sees it — the created share gets a base cut and reaches B, the re-home refuses the move `ErrRehoming`, the clone, backup and deletion are waited for |
 | `S-snap-rehome` | [§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)'s example: a re-home under writes, a cross-share copy caught by a second pass, and snapshot reads before and after |
 | `S-snap-rehome-crash-<step>` | the re-home crashes after each step and between a batch's puts and its switch; it resumes at its cursor, and N''s GC collects the orphaned puts |
 | `S-snap-rehome-straddle` | an offload carved under N mints names and puts after the write namespace changed: it puts into N with N-keyed IDs, the primary's join makes it commit before the acknowledgement, and every read of it verifies; hand the intent step a plan keyed under N for a put into N': refused `ErrScopeMismatch` |
@@ -860,7 +895,7 @@ expired; a claim read that stopped a stale image before its put.
 | S12 | Two installations on one bucket, each holding one namespace, both running GC, relocation and collection for a day-tier run: neither deletes an object the other's records name. Configure both to hold one namespace: GC stops on the claim check. `S-snap-move-stale-gc`. |
 | S13 | Move a namespace while A's GC has retired blocks in the trash, deleted blocks awaiting their delete, and intents in flight. After the drop, A issues no delete; B resumes them, and deletes no retired block before its `not_before`. |
 | S17 | Move a namespace to B, back to A, and to B again: FileIDs preserved. Restore one backup twice: two shares, disjoint FileIDs. Move A→B, overwrite a file at B, move back: A reads B's bytes, and A's journals held no extent of the share between the drop and the return. Skip step 9's `Forget`: A serves its stale extent. Give an old record of the tag a version above the forget's: it is still dropped, since `Forget` covers by sequence number. Replace it with a per-file `Delete`: after A→B→A a restart's `Since` yields the markers and an untouched file loses its content. Crash A between the `Forget` calls and the record drop, and plant a stale extent of the tag: the attach `Forget`s it or refuses, and never serves it. |
-| S20 | `S-snap-move-preseed` under the model-based run on A during the pre-seed: after the move B's records equal A's at the freeze, and the delta holds no record unchanged since the base. `S-snap-move-delta-seq`: select the delta by `born` and `died`, and B misses the narrowed ref. `S-snap-move-gc-pause`: pause in memory only, and B maps a relocated chunk to its deleted block. |
+| S20 | `S-snap-move-preseed` under the model-based run on A during the pre-seed: after the move B's records equal A's at the freeze, and the delta holds no record unchanged since the base. `S-snap-move-delta-seq`: select the delta by `born` and `died`, and B misses the narrowed ref. `S-snap-move-gc-pause`: pause in memory only, and B maps a relocated chunk to its deleted block. `S-snap-move-refuses` with a share created before the pause commits: drop the pause transaction's tracked reads of `ShareList`, and the move ends with no base cut of the share and B without it. |
 | S26 | `S-snap-rehome` and `S-snap-rehome-crash-<step>` under the model-based run: every snapshot and the live share read back their model copies at every step, and after the finish no ref names N and the audit of both namespaces is clean. Skip the catch-up passes: finish refuses, since `old_refs` is not zero. |
 | S32 | `S-snap-cloned-vm`: start two copies of one installation's disk, on a platform that reports a clone and on one that does not. With the report, the copy holds no namespace. Without it, within one `Recheck` period exactly one copy writes and deletes, and the other has alerted. Restore a day-old image of a running installation, on a platform that reports nothing: it stops at its first start, before any put, and the original keeps writing; rewrite the claim before reading it, and the original is the one fenced. Crash the holder between its put and recording the nonce: at restart it recognises its own claim. |
 
@@ -876,7 +911,7 @@ expired; a claim read that stopped a stale image before its put.
 Recorded on the reference box ([the RFC index](rfc-index.md#Test%20tiers)); the
 10⁷-file rows run daily.
 
-| Benchmark | Measures | Target |
+| Benchmark | Measures | Proposed target |
 | --- | --- | --- |
 | Move of a 10⁷-file namespace with 1% changed during the pre-seed | freeze to B serving | under `freeze_timeout`; no block transferred |
 | Re-home of a 10⁶-file share under 64 writers | MB/s against `rehome.rate`; p99 write latency | within 10% of the rate; p99 within 2× of no re-home |

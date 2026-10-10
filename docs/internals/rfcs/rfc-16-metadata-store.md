@@ -521,7 +521,8 @@ and are left out of this list; neither changes a file or content key.
 #### 2.3.1 Share names, paths and state
 
 - **Names** are compared case-insensitively and are unique under that fold,
-  because SMB clients compare them so. A name is at most 80 characters, has no
+  because SMB clients compare them so. A name is at most 80 characters, the
+SMB share-name limit (MS-SRVS `NNLEN`), has no
   `\ / : * ? " < > |` or control character, and is not `IPC$`. A name ending in
   `$` is still reachable by name but left out of share enumeration.
 - **Paths** are absolute, with no empty, `.` or `..` component, each component a
@@ -986,7 +987,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `NS‖ns‖gc‖lease‖shard`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per prefix shard with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
 | | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, and the last one it wrote; a `Recheck` reads the claim and compares it with these before any rewrite. Every claim put on any path — start, `Recheck`, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
-| | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; GC reads it before every pass and batch, and every relocation commit guards it ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
+| | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; its value names the move that wrote it; GC reads it before every pass and batch, and every relocation, delete or collection commit reads it with a tracked `Get` and refuses while it exists ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
 | | `NS‖ns‖gc‖cursor‖walk‖shard` | walk cursor per kind of walk (audit, block walk, index rebuild) and shard, so a restarted walk resumes; derived |
 | | `NS‖ns‖pk‖ShareID‖FileID‖offset‖died` | parked ref: a ref a re-home dropped from namespace `ns` while an unexpired catalog backup taken before the re-home finished still needs it, filed under `ns`'s prefix and owned by `ns`'s installation, so moving the re-homed share neither carries nor drops it; it keeps its chunk count and reverse key in `ns`, is seen by no read, snapshot or listing, only by `ns`'s GC, and is dropped when the last such backup expires ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `NS‖ns‖key‖kind‖keyID` | namespace key record: kind (`chunk-id-key`, `chunking-key`, `header-key`, `export-key`, `data-key`), ID, fingerprint, the ID of the master key that wraps it, the wrapped bytes, and state — `current`, `retired` or `destroyed`; a destroyed key keeps only ID, fingerprint and state. Every key is wrapped but one: a non-encrypting namespace's chunk-ID key, held in the clear, with no master key ID. Each record reaches the namespace's `keys` control object and every backup location its policies write to before it becomes current. Not a secret: a wrapped key is useless without the master key, which is never here, and the one clear key hides nothing its plaintext blocks do not already show ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
@@ -1439,6 +1440,11 @@ Every benchmark states its backend, machine, and whether the KV was local or
 over a network. A number from the embedded KV says nothing about the
 replicated one, which adds a network round trip per read and a two-phase commit
 per multi-region transaction; each is measured on its own.
+
+> decision: the durability gate's 10× and three sync times are not measured;
+> they are what grouping 64 ready commits into a few syncs must reach if it
+> works at all, and a per-commit sync sits near 1×. Tighten them from the first
+> measured run on the reference box.
 
 ### 7.2 Targets, gates and regressions
 

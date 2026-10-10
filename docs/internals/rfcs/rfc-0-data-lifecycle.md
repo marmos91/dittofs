@@ -397,7 +397,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **chunk record** | one per chunk ID per namespace: which block holds the chunk, where in it, and the chunk's refcount. Two files that carried identical bytes name one record, located in the first carrier's block ([§3.1](#3.1%20Deduplication)) | [RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk) |
 | **block record** | one per block: how many of its chunks are still referenced, and its state — `live`, `retired` or `deleted`. It exists only once the block is stored | [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block) |
 | **reverse ref index** | one key per ref, ordered by chunk hash; the deleter reads it before every delete, and the counts are a cache of it | [RFC 9 §2.1](rfc-9-gc.md#2.1%20References%20are%20the%20only%20authority) |
-| **existence** | a file's size, holes, overwrite set and modification time: that a write happened, recorded apart from its content. Group-committed across files within a bounded age (1 s proposed); a stability point waits for the existence commit of every pending write it covers that overwrites committed content, and a snapshot cut, once its gate is closed and its cut points taken, commits its share's pending existence behind the gate; until committed, the journal is its authority | [§5.1](#5.1%20Write), [RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence) |
+| **existence** | a file's size, holes, overwrite set and modification time: that a write happened, recorded apart from its content. Group-committed across files within a bounded age (`existence_age`, proposal: 1 s); a stability point waits for the existence commit of every pending write it covers that overwrites committed content, and a snapshot cut, once its gate is closed and its cut points taken, commits its share's pending existence behind the gate; until committed, the journal is its authority | [§5.1](#5.1%20Write), [RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence) |
 | **hole** | an extent of a file below its size that was never written, or was deallocated; it reads as zeros with no fetch. Recorded as its own record, never inferred from gaps between refs | [RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents) |
 | **hole** / **uncarved** / **carved** | metadata's three answers for an offset below the size: never written; written but with no current chunk; covered by a current chunk | [RFC 6 §3.2](rfc-6-block-metadata.md#3.2%20Every%20offset%20is%20in%20exactly%20one%20class) |
 | **overwrite set** | per file, one overwrite record for each run of a committed write that overlapped content whose existence was committed before it, with the newest version covering the run; an offset under a record newer than its ref is uncarved, so a lost overwrite reads as Lost, never as the old chunk. A record leaves only where refs at or above its version cover its whole extent, or the extent became a hole | [RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents) |
@@ -432,7 +432,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **repack reserve** | journal space set aside outside every share's limit for repack's copies, at least one segment's live payload, so space recovery never waits on a share at its limit | [§8.2](#8.2%20Reclaim), [RFC 1 §8.2](rfc-1-journal.md#8.2%20Repack) |
 | **sweep** | delete a remote block that nothing references; the only operation that destroys a last copy, carried out by retirement and the deleter. [RFC 26](rfc-26-catalog-backups.md) also uses it for deleting unlisted blocks at a backup's block folder | [§8.3](#8.3%20Sweep) |
 | **retire** / **resurrect** | move a block record to `retired` in the transaction that leaves its count of referenced chunks at zero / bring it back to `live` when a clone, copy or restore references one of its chunks again | [RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses) |
-| **trash** | the wait between a block's retirement and its deletion, 48 hours by default; it postpones a delete the refs already allow and never allows one | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) |
+| **trash** | the wait between a block's retirement and its deletion, `gc.trash_retention`, 48 hours by default; it postpones a delete the refs already allow and never allows one | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) |
 | **delete** | (file) remove its last entry; its refs go at release, and nothing leaves the remote tier / (block) `retired` to `deleted`, done only by the deleter after checking the reverse ref index, then the object is deleted | [§7](#7.%20Mutation%20and%20removal), [RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes) |
 | **loss event** | an extent the journal stopped holding without being asked — dropped as corrupt or stale, or in a failed sync window — recorded by the exact records lost, by sequence number; what else a loss reaches — whether content a lost record superseded is held again — is RFC 1 §3.8's rule, which this row defers to; a loss of content not yet offloaded raises the loss generation | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
 
@@ -646,7 +646,11 @@ cases, and where the two differ for one node, this section wins:
 > there is no second clock in the store to check against, so the bound rests on
 > the host's time synchronisation. Overturned by a deployment without it, which
 > must raise σ to the offset it can bound, or by a measured offset between an
-> importer and the installation it replaces above 1 s.
+> importer and the installation it replaces above 1 s. ρ = 0.05 is unmeasured
+> too, and sits far above the rate error of an ordinary host clock, so a wait
+> pays 5% for slack no clock is expected to use. Overturned by a measured rate
+> difference near it, which must raise it, or by waits long enough that the 5%
+> shows up in recovery or import time.
 
 | Concern | Single node: binds the first release | Cluster only |
 | --- | --- | --- |
@@ -1008,7 +1012,7 @@ existence before serving.
 
 An append or a hole fill keeps its lazy existence commit past the stability
 point. If the journal loses a synced record of one after the stability point and
-before the bounded-age group commit (1 s proposed), the engine commits that
+before the bounded-age group commit (`existence_age`, proposal: 1 s), the engine commits that
 write's existence from the journal's loss record, which names the file, the
 extent and the version dropped ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events), [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)), so the extent reads as
 **Lost** — never as zeros, and never as older content, since it replaced none.
@@ -1097,7 +1101,7 @@ The resulting extent is **Dirty**.
 The write's **existence** — the file's size, its holes, its overwrite records
 and its mtime — is not written to metadata per write. It is group-committed
 across files within a bounded age of the sync that made the write recoverable
-(1 s proposed), and **a stability point** (a commit, a flush, a stable write, or
+(`existence_age`, proposal: 1 s), and **a stability point** (a commit, a flush, a stable write, or
 a close where the protocol requires one) **waits for the existence commit of
 every pending write it covers that overwrites committed content**, the writes
 that need an overwrite record. The flush joins the next group commit rather than

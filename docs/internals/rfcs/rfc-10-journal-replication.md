@@ -81,7 +81,7 @@ With this layer, step 2 changes:
    release their copies.
 
 Now S1 crashes. S1 renews one lease in the metadata store every 3 s, valid for
-10 s. Once it has lapsed, plus 0.5 s allowed for clock drift, S2 and S3 compare
+10 s (the proposed defaults). Once it has lapsed, plus 0.5 s allowed for clock drift, S2 and S3 compare
 how much each is sure the whole group holds. The one ahead claims shard A in one
 metadata-store transaction, which raises the shard's **epoch** from 5 to 6.
 Before serving, it pulls from the other anything it lacks and re-issues the
@@ -274,7 +274,7 @@ the node is primary or replica of. Nothing in this layer is per journal:
 - each journal has a **generation**, kept in its `format` file and in the
   metadata store under its journal identity ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). At every open of
   the journal, every acquisition of its node's lease and every renewal of it
-  (every 3 s), and every resume of a lapsed lease ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3), the node reads the generation `g` in `format`, writes `g + 1`
+  (once per renewal period), and every resume of a lapsed lease ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3), the node reads the generation `g` in `format`, writes `g + 1`
   there and syncs it, then raises the store's to `g + 1` by compare-and-swap,
   conditional on the store's being at most `g` — a crash, or a failed renewal,
   between the sync and the swap leaves the store one behind. At a renewal the
@@ -422,14 +422,15 @@ every late operation below it out.
    primary or the replica set changes, never on lease renewal.
 2. **A file's epoch never decreases**, including when it moves between shards
    ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
-3. **One node lease per storage node**, with a node epoch. The lease lasts 10 s
-   and is renewed every 3 s, and the drift bound is 500 ms, all installation
-   settings ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)). The node record holds the node epoch and
+3. **One node lease per storage node**, with a node epoch. The node lease
+   duration, the renewal interval and the drift bound are installation settings
+   ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) (proposals: 10 s, 3 s and 500 ms; the
+   ratios are [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)'s decision). The node record holds the node epoch and
    whether a takeover has marked it lapsed; renewals write only the lease's own
    expiry record and its journals' generations ([§2.2](#2.2%20One%20journal%20carries%20many%20shards)), never the node record ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)). Losing the lease fences all of the node's shards.
    A node **MUST** stop acknowledging and serving — open state included — when its
-   lease runs out by its own clock less the drift bound (9.5 s of the 10 s), and
-   when it has not reached the store for half its lease (5 s). A renewal returns
+   lease runs out by its own clock less the drift bound (9.5 s of 10 s at the
+   proposed defaults), and when it has not reached the store for half its lease. A renewal returns
    the store's time ([RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses)); a node whose clock differs from it by more than half
    the drift bound, less half the renewal's round trip, self-fences. A drift
    beyond the bound can break open-state exclusivity, which only the lease
@@ -462,12 +463,19 @@ every late operation below it out.
    self-fence at `L − δ` by its own clock falls by `(L − δ) × (1 + ρ)` in store
    time after it sent the renewal, and a successor serves no sooner than `L + δ`
    after it; the design **MUST** keep `(L − δ) × (1 + ρ) < L + δ`, and a start
-   **MUST** refuse settings that break it. At the defaults that holds for any ρ
-   below 10%. It assumes nothing of
-   wall-clock offset — the clock check above is a sanity check, not a premise —
-   nor of how long a process pause lasts: a pause of any length is answered by
-   the receivers' fences, never by the paused node's own check. Store time is the
-   store's `Now` ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), monotonic across commits.
+   **MUST** refuse settings that break it. At the proposed defaults that holds
+   for any ρ below 10%. Store time is the store's `Now`
+   ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). On a store with one time source, every node
+   reads the same `Now`, and the design assumes nothing of wall-clock offset —
+   the clock check above is a sanity check, not a premise. On a store whose `Now`
+   is each node's own clock, clamped by its clock record, two nodes' `Now` may
+   differ by up to the clock-offset bound σ
+   ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)); there the successor waits
+   until its own `Now` passes the old expiry plus δ plus σ, so the old primary's
+   self-fence still falls before `L + δ` in the old primary's store time
+   ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). Neither assumes anything of how long a process
+   pause lasts: a pause of any length is answered by the receivers' fences,
+   never by the paused node's own check.
 4. **A shard whose primary's lease lapsed is taken over, never plainly claimed**,
    and only by a replica that is not a learner ([§9.2](#9.2%20Takeover)); a claim by any other
    node would leave the replicas outside the record ([RFC 11 §3.2](rfc-11-ownership.md#3.2%20The%20primary%20stays%20until%20another%20node%20needs%20it)).
@@ -479,8 +487,10 @@ every late operation below it out.
    primary's node record, which the commit guards, holds that node epoch
    unmarked ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)). The fence records order epochs per file; the guard
    fences the files a new primary has not yet touched, because a takeover marks
-   the old primary's node record lapsed as it claims ([§9.2](#9.2%20Takeover)), and every commit
-   still in flight under the old node epoch then conflicts and aborts.
+   the old primary's node record lapsed as it claims ([§9.2](#9.2%20Takeover)): a commit still
+   in flight under the old node epoch aborts on its guard if the claim commits
+   first, and one that commits first is ordered before the claim, under fences
+   that still held.
 
 **An unknown compare-and-swap outcome** — a claim, a join, a removal, clearing a
 learner, a handover — is resolved by re-reading the shard record and acting on
@@ -631,8 +641,9 @@ for, and discard those that no longer list it.
 Each shard has a **replica count** and a **floor**, both in its shard record and
 both counting the acknowledgement set — the primary and every replica, learners
 included, since a learner durably holds every operation from its join point. The
-default is a count of 3, the primary and two replicas, and a floor of 2; a single
-node is 1 and 1. Below the floor the primary **MUST** refuse writes and report
+defaults are installation settings, the replica count (proposal: 3, the primary
+and two replicas) and the replica floor (proposal: 2), each overridable in a
+shard's record; a single node is 1 and 1. Below the floor the primary **MUST** refuse writes and report
 the shard through share health rather than only in a log
 ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A shard is **under-replicated** while its replica set has fewer
 members that are not learners than the count; it keeps writing, and its primary
@@ -797,8 +808,9 @@ primary, for the extent it reads, the newest version the whole replica set holds
 read can span bytes written at many versions — and the answer carries the primary's epoch
 and node lease expiry. It serves its own bytes only if every extent it serves
 carries exactly the version named for it, the answer's epoch is the one it has
-installed for the shard, it has not fenced itself, and its own clock reads before
-that expiry less the drift bound; otherwise it forwards the read. The checks are
+installed for the shard, it has not fenced itself, and its own clock reads
+before that expiry less the drift bound — less σ too on a store whose `Now` is
+each node's clock, since the expiry is the primary's ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3); otherwise it forwards the read. The checks are
 the asking node's own, since a primary that pauses between checking its lease and
 answering sends an answer that is already stale. A learner serves none. A node
 never serves un-offloaded content it does not hold.
@@ -841,7 +853,8 @@ When the primary's node lease lapses, a replica takes over:
    every learner removed. It is conditional on the record being the one it read;
    on listing the claimant — node, journal identity and join incarnation — as primary
    or as a replica that is not a learner; and on the old primary's lease having
-   lapsed: store time past its expiry plus the drift bound, or its node epoch
+   lapsed: the claimant's store time past its expiry plus the drift bound — plus
+   σ on a store whose `Now` is each node's clock ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3) — or its node epoch
    superseded, which implies it ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3) — or on the record
    marking the primary relinquished ([§7.2](#7.2%20Removal)), in which case the claim does not
    mark its node record and is further conditional on the claimant not being the
@@ -1216,7 +1229,7 @@ Each invariant is stated where its rule lives; the model checks them as properti
 | R20 | The ownership epoch fences, the node epoch guards commits and supersedes put intents, and the shard incarnation drives the write verifier and the grace instance; no rule reads one for another's job | [§2.1](#2.1%20Terms) |
 | R21 | A primary removes a replica for silence only while another that is not a learner answers it within the removal bound, and removes one that refused or reported lag regardless; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by another node's takeover or operator acknowledgement, never by the relinquishing node's own claim | [§7.2](#7.2%20Removal) |
 | R22 | An operation's request ID and result survive its eviction, settling and repack, on every member, until the retry window has passed | [§2.3](#2.3%20The%20journal%20extension) |
-| R23 | A node's self-fence by its own clock falls before a successor may serve, at the clock-rate bound ρ: `(L − δ) × (1 + ρ) < L + δ` | [§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3 |
+| R23 | A node's self-fence by its own clock falls before a successor may serve, at the clock-rate bound ρ: `(L − δ) × (1 + ρ) < L + δ`; on a store whose `Now` is each node's clock, the successor's wait adds the clock-offset bound σ | [§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3, [§9.2](#9.2%20Takeover) step 1 |
 
 ## 14. Observability
 
@@ -1286,12 +1299,19 @@ box ([Test tiers](rfc-index.md#Test%20tiers)):
 | Acknowledgement overhead | p50 and p99 write latency against a single node | ≤ one network round trip + one replica sync |
 | p99 with one degraded replica | write p99 while one replica's disk is 10× slower, until it is removed | ≤ the lag trigger, then back to the row above |
 | Write stall on replica loss | longest acknowledgement gap when a replica dies | ≤ the removal bound + one compare-and-swap |
-| Takeover time | lease expiry to writable, 64 MiB uncertain, 10³ files | ≤ drift bound + gather interval + 1 s |
-| Lost node, many shards | lease expiry to every shard writable, a node primary of 10³ shards with nothing uncertain | ≤ drift bound + gather interval + 2 s; store transactions per shard ≤ 1 |
+| Takeover time | lease expiry to writable, 64 MiB uncertain, 10³ files | ≤ drift bound (+ σ on a store whose `Now` is each node's clock) + gather interval + 1 s |
+| Lost node, many shards | lease expiry to every shard writable, a node primary of 10³ shards with nothing uncertain | ≤ drift bound (+ σ, as above) + gather interval + 2 s; store transactions per shard ≤ 1 |
 | Seal duration | seconds per uncertain GiB | report; ≤ 1 s for 64 MiB |
 | Handover time | shard with 64 MiB un-offloaded | ≤ 2 s at 10 Gb/s |
 | Join time | join to counting for writes; join to learner flag cleared | ≤ one metadata transaction + one round trip; report, tail ≥ 80% of the link |
 | Whole-cluster restart | all node leases lapsed to 10⁴ shards writable | report ([§16](#16.%20Open%20questions) item 3) |
+
+> decision: the fixed terms in these targets — 2 ms over a sync interval, 1 s
+> and 2 s of takeover work, 1 s per 64 MiB sealed, 2 s per 64 MiB handed over at
+> 10 Gb/s, a tail copy at 80% of the link — are proposals sized from line rate
+> and one sync, not measured. The first run on the reference box replaces each
+> with its measured value and a stated margin; the terms derived from settings
+> (drift bound, σ, gather interval, removal bound, lag trigger) stay.
 
 ## 16. Open questions
 
@@ -1357,7 +1377,7 @@ set and an epoch, and every message is fenced by it.
 
 | ID | Scenario |
 | --- | --- |
-| `S-stale-commit-node-guard` | a paused primary's existence commit for a file the new primary never touched is in flight while the claim commits; it aborts on the node record, and one started after the claim is refused |
+| `S-stale-commit-node-guard` | a paused primary's existence commit for a file the new primary never touched is in flight while the claim commits first; it aborts on the node record, and one started after the claim is refused. In the other order the commit lands before the claim and is a write the old primary still owned |
 | `S-restart-own-shard` | a primary restarts and acquires a new node epoch before any replica claims; it claims its own shard at once |
 | `S-seal-of-seal` | a claimant dies mid-seal; the next claimant's union includes its partial re-issues |
 | `S-claimant-crash-<step>` | the claimant crashes after each of [§9.2](#9.2%20Takeover)'s six steps, and after each replica's install |
@@ -1380,6 +1400,7 @@ set and an epoch, and every message is fenced by it.
 | `S-retry-after-eviction` | a write is acknowledged, offloaded and evicted on every member, its reply lost; the primary fails over; a second write lands on the same bytes; the first is retried within the window. Assert the retry is answered from the request entry and the second write's bytes survive |
 | `S-resume-rollback` | a primary's VM is imaged while it holds its lease and restored after the lease lapsed, with no takeover between; assert its resume's generation swap loses and it serves nothing from that journal |
 | `S-clock-rate-bound` | a node's clock runs slow at exactly ρ; assert its self-fence falls before a successor serves. A start with settings that break `(L − δ) × (1 + ρ) < L + δ` is refused |
+| `S-clock-offset-takeover` | on a store whose `Now` is each node's clock, the claimant's clock reads σ ahead of the old primary's, which runs slow at ρ; assert the claim commits no sooner than the old primary's self-fence in its own store time. A claim conditional on expiry plus δ alone commits first ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | `S-removal-vs-takeover` | a primary's removal and a replica's claim race on one record |
 | `S-learner-orphaned` | the primary dies before a learner's tail is covered; the claim drops the learner, which discards and joins again |
 | `S-join-during-takeover` | a join and a claim race; the loser re-reads |

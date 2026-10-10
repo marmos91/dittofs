@@ -1188,8 +1188,8 @@ The syncer exposes exactly two settings, both process-wide:
 
 | Setting | Sizes | Default |
 | --- | --- | --- |
-| `upload_workers` | the uploader's pool | 128 |
-| `fetch_workers` | the fetcher's pool | 128 |
+| `upload_workers` | the uploader's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
+| `fetch_workers` | the fetcher's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
@@ -1233,6 +1233,21 @@ setting:
 | verification re-get | one per fetch transfer, of the chunk that failed verification | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | denial backoff | one probe interval at a denial count of one, doubling per count, up to 15 min; the count reset by a successful transfer in that direction | a store that keeps refusing is re-admitted ever more rarely, never latched ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | retry backoff | full jitter: uniform in [0, min(5 s, 100 ms × 2^attempt)] | transfers that failed together do not retry together ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+
+> decision: the time and rate values above — probe interval, hold-down, failure
+> window, throughput floor, first-byte and detach bounds, log interval, the two
+> backoffs — and the counts and ratios — the three-quarter cap, the queue and
+> waiter multiples, four attempts, the 0.1 refund, the 90th percentile — were
+> chosen from round-trip arithmetic for a 4 MiB block on a working link, not
+> measured on a service. Each is fixed because a store or link it is wrong for
+> is a bug to fix here, not a knob to hand an operator. What would move them: a
+> healthy store's p99.9 first byte or stall under B5 nearing the first-byte
+> bound or the floor (raise the bound); a measured outage seen later than one
+> probe interval plus the bound, or a flap the hold-down lets through, in the
+> fault runs of [§8.3](#8.3%20Faults%20and%20outside%20interference) (shorten or lengthen the interval or hold-down); B3's
+> queue wait above one round (revisit the cap and multiples); the scripted
+> all-failing and partly failing runs of S21 spending the budget below a 9% failure rate (revisit
+> the refund and the bound).
 
 Each fixed value becomes a setting only when a measurement shows the fixed value
 is wrong for a workload an operator can name. A setting nobody can reason about

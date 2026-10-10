@@ -510,7 +510,11 @@ a failover, and its clients reclaim their state in its shards
 lease like a `storage` node ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)), and every call it forwards carries
 its node epoch ([§4.3](#4.3%20The%20route%20envelope)). A surviving node **MUST NOT** take over a lost
 node's addresses until, first, the lost node's lease has lapsed plus the drift
-bound in store time and its node record is marked lapsed, and second, every
+bound in store time — plus the clock-offset bound σ on a store whose `Now` is
+each node's own clamped clock, since the expiry was taken from the lost node's
+`Now` and is compared with the marking node's
+([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)) —
+and its node record is marked lapsed, and second, every
 `storage` node has acknowledged that mark — from then on refusing any call that
 carries the fenced node epoch — or has itself lost its lease. Without it, a
 write the lost node forwarded before a partition can arrive after the client has
@@ -567,7 +571,7 @@ store gives no high availability, whatever the roles.
 | T4 | Every interface call is value-only and cursor-resumable, collocated or routed. |
 | T5 | A stale route costs a refusal and a retry, never a wrong result. |
 | T6 | A pNFS layout names one data server, the primary of the file's shard, is bound to its (shard, epoch), and is recalled when the shard changes primary or the file moves; `LAYOUTCOMMIT` on a stale layout fails with `NFS4ERR_BADLAYOUT`. |
-| T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost, and only after that node's lease has lapsed, the marking node has held the claim hold, and every `storage` node refuses its node epoch. |
+| T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost, and only after that node's lease has lapsed by the margins of [§5.3](#5.3%20Client%20addressing), the marking node has held the claim hold, and every `storage` node refuses its node epoch. |
 | T8 | A coordinator that is not the primary of a file it leaves without entries writes its pending release; only the file's primary releases it. |
 | T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
 | T10 | An NFS request ID is the protocol's retry identity — (client address, XID, procedure, argument checksum) for NFSv3 and NFSv4.0, (session, slot, sequence ID) for NFSv4.1 — so a retry on a new connection or through another front-end carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or the channel sequence and outstanding counts in its `Open`, durable for a persistent open. |
@@ -611,8 +615,8 @@ store gives no high availability, whatever the roles.
   is still refused (T10).
 - **No pNFS on one node:** against a single node, assert `EXCHANGE_ID` does not
   advertise a pNFS metadata server and `LAYOUTGET` answers `NFS4ERR_NOTSUPP` (T11).
-- **Marking after a stall:** stall the store for 15 s under two `protocol`
-  nodes; assert neither marks the other lapsed, both resume, and no address
+- **Marking after a stall:** stall the store for longer than a node lease
+  (15 s at the 10 s default) under two `protocol` nodes; assert neither marks the other lapsed, both resume, and no address
   moves (T7). A takeover with no claim hold fails this.
 
 **Split-mode tests are stated here once**, and run from the first release that

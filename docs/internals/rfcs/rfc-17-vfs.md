@@ -397,21 +397,24 @@ does not retry a request answered with an interim (pending) response, the
 adapter sends the interim response and re-drives the call itself, within the
 call's deadline, answering the client once the call completes or the deadline
 passes. A request the adapter holds pending this way **MAY** carry a deadline
-longer than the 30 s default of [§4.3](#4.3%20Errors%20are%20neutral%20values), up to 60 s, so that it outlives a
-recall's own deadline (35 s for an SMB break) and completes when the break
-resolves rather than failing just before it does. One answered `ErrGrace` **MUST**
-be held until the shard's grace ends plus 35 s, so that a new open made during
+longer than the default of [§4.3](#4.3%20Errors%20are%20neutral%20values), up to
+`smb_pending_deadline` (proposal: 60 s), which **MUST** exceed the SMB break
+deadline of [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)
+(35 s; called the **break deadline** below), so that the request outlives the
+recall it waits on and completes when the break resolves rather than failing
+just before it does. One answered `ErrGrace` **MUST**
+be held until the shard's grace ends plus the break deadline, so that a new open made during
 grace is granted when grace ends rather than failed while grace still refuses it
 ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
 One answered `ErrDelay` because its share is quiesced or frozen for a move
-**MUST** be held the same way, until the freeze ends plus 35 s and never longer
-than `migration.freeze_timeout` plus 35 s
-([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)), rather than failed at 60 s while
+**MUST** be held the same way, until the freeze ends plus the break deadline and never longer
+than `migration.freeze_timeout` plus the break deadline
+([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)), rather than failed at `smb_pending_deadline` while
 the freeze still holds; if the share's namespace has moved when the freeze ends,
 the adapter drops the connection, so the client's durable handles reconnect at
 the new owner. One answered `ErrDelay` for a transient capacity refusal is held
-up to `smb_pending_cap` ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings), 10 min by default, longer than a move's
-freeze), and only there answered `STATUS_DISK_FULL` (§4.3).
+up to `smb_pending_cap` ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings); proposal: 10 min), which **MUST** exceed
+`migration.freeze_timeout` plus the break deadline, and only there answered `STATUS_DISK_FULL` (§4.3).
 A lock request answered `ErrBlocked` has no deadline at all: it holds no worker,
 and it ends only as its waiter does
 ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)); an adapter that
@@ -527,7 +530,7 @@ request pending and re-drives it (§3.2). **A transient refusal never becomes
 the caller's deadline passes is answered `ErrDelay` — the NFS client retries, for
 as long as the outage lasts — and an SMB request held pending for it is answered
 `STATUS_DISK_FULL` only once it has been held for `smb_pending_cap`
-([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings); 10 min by default, longer than a move's 5-minute freeze plus 35 s).
+([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings); longer than `migration.freeze_timeout` plus the break deadline, §3.2).
 `ErrNoSpace` is answered at once, and only for a permanent cause: the store
 refuses puts as denied (quota, access) or drifted, an operator's retention pin
 holds the bytes, or the device itself is full ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). `ErrBlocked` means a lock
@@ -550,12 +553,20 @@ to `NFS4ERR_WRONGSEC`, NFSv3 and SMB to an access error. A routing refusal — w
 adapter: the service re-routes and retries within the caller's deadline ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)).
 
 An operation that arrives with no deadline is given one of 30 s from its
-arrival at the service — up to 60 s for a request an adapter holds pending, until
-grace's end plus 35 s for one refused `ErrGrace`, until a freeze's end plus 35 s
+arrival at the service — up to `smb_pending_deadline` for a request an adapter holds pending, until
+grace's end plus the break deadline for one refused `ErrGrace`, until a freeze's end plus the break deadline
 for one refused because its share is quiesced or frozen, up to `smb_pending_cap`
 for an SMB request held on a transient capacity refusal, and none for a lock
 request answered `ErrBlocked` (§3.2) — fixed rather than a setting ([RFC 13](rfc-13-configuration.md)), so every wait below
 it ends ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)).
+
+> decision: the default deadline is fixed at 30 s, not measured. It is a
+> backstop for calls that name no deadline of their own, and every internal wait
+> is sized below it, so a setting would let an operator break bounds other RFCs
+> derive from it (the single-node self-fence of
+> [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) is
+> one). Revisit it if a measured operation class completes correctly but past
+> 30 s under load, or if a client is shown to give up on a call sooner.
 
 ### 4.4 Handles are opaque
 
@@ -864,7 +875,11 @@ engine refuses a write for quota.
   advisory threshold or the soft limit emits a quota event (§3.3) and refuses
   nothing; the metadata store records when the soft limit was first exceeded,
   and once the grace time has run from then the soft limit is enforced as the
-  hard one. Falling back under it clears the record.
+  hard one. Falling back under it clears the record. The time is taken from
+  the store's `Now` and compared with a later `Now`, which on a store whose
+  `Now` is each node's own clamped clock may be another primary's, so the
+  grace time ends up to the clock-offset bound σ early or late
+  ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)); a quota's grace is not a fence and tolerates it.
 
 ### 5.7 GetAttr
 
@@ -998,7 +1013,7 @@ at one point in the source's history. The two kinds differ in atomicity:
 | V24 | I/O under a delegation is served only to the client holding it and is authorised for the caller's own principal, as anonymous I/O is. |
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush through an open that was open across a loss of the file's acknowledged unoffloaded writes fails once with `ErrLost`. |
 | V26 | A copy or clone of overlapping extents within one file, or a clone over `clone_max_len`, is refused with `ErrInvalid`, and one across namespaces with `ErrCrossNamespace`, each changing nothing; writes to a running clone's extents return `ErrDelay`; a Lost source run is copied as Lost; a clone is atomic and answered only when done, and a copy runs as bounded chunks and may answer a short count. |
-| V27 | A request an adapter holds pending after `ErrGrace` outlives the grace period, and one held while its share is quiesced or frozen outlives the freeze, bounded by `migration.freeze_timeout` plus 35 s. |
+| V27 | A request an adapter holds pending after `ErrGrace` outlives the grace period, and one held while its share is quiesced or frozen outlives the freeze, bounded by `migration.freeze_timeout` plus the break deadline (§3.2). |
 | V28 | A create, link or rename into a directory marked delete on close is refused, over every protocol. |
 
 ## 7. Observability
@@ -1130,9 +1145,9 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
   - an SMB open of a new file during a grace period that lasts its full lease
     period is held pending and granted when grace ends; an SMB write to a share
     frozen for two minutes by a move is held pending and completes when the
-    freeze ends, not failed at 60 s (V27);
-  - a pending SMB request whose recall takes 35 s completes rather than failing
-    at 30 s (§3.2);
+    freeze ends, not failed at `smb_pending_deadline` (V27);
+  - a pending SMB request whose recall takes the full break deadline completes
+    rather than failing at the 30 s default deadline (§3.2);
   - 16 readers `GetAttr` a file while its writes commit in a loop; none sees a
     `Version` lower than one it saw before (V16).
 - **Import test:** no adapter package imports the metadata store, open state or
