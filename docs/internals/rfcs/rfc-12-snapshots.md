@@ -436,7 +436,7 @@ deltas it sees: a delta folded before *k* is inside that version and has
 is applied twice or missed.
 
 **Journal versions do not order a share.** Each journal numbers its own files
-([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), and a share's files sit in several nodes' journals; the cut
+([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), and a share's files sit in several nodes' journals; the cut
 number, one record every committing transaction reads, orders them.
 
 **Nothing else keeps a snapshot's blocks alive** — no manifest, hold list or extra
@@ -620,7 +620,7 @@ show it. Two cases:
 - **It is overwritten, truncated, deallocated or released after the cut, before
   its offload.** Now the journal alone holds the bytes snapshot *k* needs, and by
   its own precedence rule it would let the newer version replace them
-  ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)): the offload would ship only the newer bytes, and the
+  ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)): the offload would ship only the newer bytes, and the
   snapshot's would exist nowhere. The **snapshot hold** prevents that. The
   journal keeps every version at or below the cut's hold mark until an offload
   has committed it, and the offload writes a superseded one **straight to
@@ -729,7 +729,7 @@ have read r1, content the share had already replaced before the cut.
   bytes not yet offloaded. A cut **MUST** be refused with `ErrHoldBacklog` when
   that sum for the share exceeds `snapshots.hold_bound`, or for any journal
   holding the share's files, summed over every share the journal carries
-  ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)), exceeds `snapshots.hold_journal_fraction` of its capacity.
+  ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), exceeds `snapshots.hold_journal_fraction` of its capacity.
   Each primary evaluates the journal bound at step 2 for its own journal and for
   each replica's, from the held and dirty bytes every replica returns when it
   acknowledges `Hold` ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)); the coordinator sums the share

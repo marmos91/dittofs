@@ -9,6 +9,7 @@ depends_on:
   - "[[rfc-3-syncer]]"
   - "[[rfc-4-remote-tier]]"
   - "[[rfc-5-transforms]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 6
 tags:
@@ -259,7 +260,7 @@ to `Allocation`.
 type (
 	ChunkHash      [32]byte // keyed hash of a chunk's plaintext under its namespace's chunk-ID key (RFC 2 §4)
 	BlockName      [32]byte // one remote object, minted per put attempt (§7.6)
-	JournalVersion [16]byte // orders content writes inside one journal (RFC 1 §5.3)
+	JournalVersion [16]byte // orders content writes inside one journal (RFC 1 §4.3)
 	SnapshotCut    uint64   // numbers a share's snapshots in order (§6.5); defined here only
 )
 
@@ -423,11 +424,11 @@ it with different `skip`. Refs of one file **MUST NOT** overlap: in offset order
 they tile the parts of the file that have been carved and committed.
 
 **Why a ref carries content versions.** Every operation the journal stages gets a
-version higher than any before it for that file ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)). An offload pass is
+version higher than any before it for that file ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)). An offload pass is
 offered extents whose versions lie in `[Oldest, Newest]` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and the
 commit records that version range on every ref the pass writes. It has three uses:
 ordering commits ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)), dropping refs a removal covers ([§6.2](#6.2%20Truncation%20and%20deallocation)), and checking
-the journal's offloaded bits after a crash ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)). The last is why position
+the journal's offloaded bits after a crash ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)). The last is why position
 alone is not enough:
 
 1. Write version 1 over `[0, 4M)` and offload it. The ref `(f, 0)` records
@@ -1054,7 +1055,7 @@ share's content reaches a commit ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20
 The extents a commit covers are the extents the offload callback returns as
 offloaded ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)). The callback **MUST NOT** return an extent whose commit has not
 succeeded, so an offloaded bit is never set for content that metadata does not
-hold ([RFC 1 §9.2](rfc-1-journal.md#9.2%20Offload%20state%20after%20recovery)).
+hold ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)).
 
 **After a restart, a file is reseeded before its first offer.** A crash can land
 between a commit and the journal's offloaded record of its report: the refs are
@@ -1723,7 +1724,7 @@ contends on, on either kind of backend ([§5.4](#5.4%20Reads%20that%20gate%20a%2
 
 Journal versions keep only their per-file roles — ordering commits for one file
 ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)), the removal checks of [§6.2](#6.2%20Truncation%20and%20deallocation), and reseeding the journal after a crash. They
-do not order a share: versions are per journal ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), and a share's
+do not order a share: versions are per journal ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), and a share's
 files may live in the journals of several nodes.
 
 > ponytail: a snapshot read resolves each offset by scanning that file's history
@@ -2127,7 +2128,7 @@ floor read from refs and `applied` alone lets a `chmod` that drew 100 over a
 file applied at 90 be followed, after a restart, by a write at a version below
 100, and the change attribute does not move. The journal is
 opened with it, over every share it may serve, so that a journal restored from an
-old copy cannot reissue a version metadata already holds ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)). A
+old copy cannot reissue a version metadata already holds ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). A
 journal that begins to serve a share it did not serve when it opened — a share
 moved to it, recovered onto it, or created by a clone or a restore — **MUST**
 read the share's floor and raise its version counter above it before it serves

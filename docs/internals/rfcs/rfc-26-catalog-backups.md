@@ -17,6 +17,7 @@ depends_on:
   - "[[rfc-13-configuration]]"
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-27-namespace-migration]]"
+  - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 26
 tags:
@@ -1042,7 +1043,7 @@ What other components gain:
 - **Copying backups** ([§2.4](#2.4%20Copying%20backups)): the folder record with its census; material
   removal checking every folder census ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); a use record of kind
   `copy`; the block folder opened as a remote store of its own.
-- **The journal at import** ([RFC 1 §9.1](rfc-1-journal.md#9.1%20Rebuilding)): a raise of its version counter above a
+- **The journal at import** ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)): a raise of its version counter above a
   share's version floor before it serves a share it did not open with.
 
 ### 4.2 Configuration

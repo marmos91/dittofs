@@ -160,7 +160,7 @@ another's:
 
 | Space | Reclaimed by | When | Destroys |
 | --- | --- | --- | --- |
-| **Local journal space** | the journal's release and repack ([RFC 1 §8.1](rfc-1-journal.md#8.1%20Releasing%20storage), [§8.2](rfc-1-journal.md#8.2%20Repack)) | when the engine's `EvictionPolicy` and `CapacityGovernor` decide ([RFC 8 §10](rfc-8-engine.md#10.%20Local%20space)) | only local copies of content already offloaded ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)) |
+| **Local journal space** | the journal's release and repack ([RFC 1 §7.1](rfc-1-journal.md#7.1%20Releasing%20storage), [§7.2](rfc-1-journal.md#7.2%20Repack)) | when the engine's `EvictionPolicy` and `CapacityGovernor` decide ([RFC 8 §10](rfc-8-engine.md#10.%20Local%20space)) | only local copies of content already offloaded ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)) |
 | **Metadata records** | removals, releases and snapshot deletion ([RFC 6 §6](rfc-6-block-metadata.md#6.%20Reference%20counting)) | when a file is truncated or released or a snapshot deleted, in batches of at most K keys (the key budget); the batch that leaves a block unreferenced also retires it ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | refs and counts; never an object |
 | **Remote objects** | this RFC | once a block is retired, its trash delay has passed, and a check of the reverse ref index finds no ref to any chunk it still holds | the object |
 

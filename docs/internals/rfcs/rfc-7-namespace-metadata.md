@@ -247,7 +247,7 @@ type File struct {
 	// every existence commit advances it, as every attribute change does.
 	// It is the NFSv4 change attribute and what SMB change detection compares.
 	// It is not a journal version: those order content writes inside one
-	// journal (RFC 1 §5.3).
+	// journal (RFC 1 §4.3).
 	Version uint64
 
 	// Size, Charged, Applied, Modify and the Change a write sets are owned by
@@ -1677,7 +1677,7 @@ that moves backward, or repeats, keeps a stale cache alive.
 - **`Version` is drawn, not counted.** Every change to a file — an attribute,
   flag, ACL, xattr or link change, an accepted write, a directory delta — takes
   its `Version` from the version counter of the journal at the file's primary,
-  the counter that orders content writes ([RFC 1 §5.3](rfc-1-journal.md#5.3%20Versions)), when the primary accepts
+  the counter that orders content writes ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), when the primary accepts
   the change, holding the file's accept lock ([§9.2](#9.2%20Timestamps)). That lock is the one
   rule for capturing NFSv3 pre-operation attributes; the layers above cite it
   rather than restating it. The counter only rises. Every time a journal opens, and before it
