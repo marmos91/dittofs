@@ -1,0 +1,49 @@
+; 04-search-reindex.fio
+; Windows Search rebuilding a user's index (catalog stored in the container).
+; The indexer walks items in folder order, not file order, so the OST is
+; read randomly across the whole file, while the ESE catalog takes random
+; page writes and its log takes sequential writes.
+; Metric: ost-read MB/s -> time to re-index = mailbox size / throughput.
+; USERS>1 models a host pool rebuilding indexes at the same time.
+; Region placement (offset/size) is arbitrary; only proportions matter.
+; 32k is an assumed catalog page size; adjust if your trace says otherwise.
+
+[global]
+ioengine=${IOENGINE}
+directory=${TARGET_DIR}
+filename_format=user.$jobnum.vhdx
+allow_file_create=0
+direct=1
+sync=1
+refill_buffers=1
+buffer_compress_percentage=${COMPRESS_PCT}
+time_based=1
+runtime=${RUNTIME}
+lat_percentiles=1
+percentile_list=50:90:99:99.9
+
+[ost-read]
+numjobs=${USERS}
+size=${VHDX_SIZE}
+rw=randread
+bssplit=8k/30:16k/20:32k/20:64k/30
+iodepth=2
+
+[catalog-pages]
+numjobs=${USERS}
+offset=80%
+size=10%
+rw=randrw
+rwmixread=40
+bs=32k
+iodepth=1
+rate_iops=${CATALOG_IOPS}
+
+[catalog-log]
+numjobs=${USERS}
+offset=90%
+size=2%
+rw=write
+bs=64k
+iodepth=1
+rate_iops=${CATALOG_LOG_IOPS}

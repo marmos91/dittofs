@@ -1,0 +1,33 @@
+; 03-folder-resort.fio
+; One user re-sorts a large folder (e.g. Inbox by sender, ~200k items).
+; Phase 1: read every contents-table row (and per-message properties if the
+;          sort column isn't in the table) -> scattered small reads, QD1.
+; Phase 2: write the new view index -> small random write-through writes.
+; Metric: runtime of both phases = time Outlook appears frozen.
+; Run it alone, then again while 02-mail-flow.fio loads the backend.
+; SORT_READ ~150m is the "column not in table" bad case; ~20m if it is.
+
+[global]
+ioengine=${IOENGINE}
+directory=${TARGET_DIR}
+filename=user.0.vhdx
+size=${VHDX_SIZE}
+allow_file_create=0
+direct=1
+sync=1
+refill_buffers=1
+buffer_compress_percentage=${COMPRESS_PCT}
+iodepth=1
+lat_percentiles=1
+percentile_list=50:90:99:99.9
+
+[read-contents-table]
+rw=randread
+bssplit=4k/50:8k/50
+io_size=${SORT_READ}
+
+[write-new-index]
+stonewall
+rw=randwrite
+bssplit=4k/70:8k/30
+io_size=${SORT_WRITE}
