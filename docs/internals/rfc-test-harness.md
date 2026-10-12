@@ -12,7 +12,7 @@ reliable way to tell what they found.
   glue scripts (about 8,900 lines) between CI and the test tools.
 - **Green doesn't always mean tested.** A check of every test workflow's latest green runs found
   14 cases that pass without testing what they claim. S3 cells never reach S3, Kerberos tests skip,
-  and 70 WPTS tests never execute. All are filed (#2986 to #3000).
+  and 70 WPTS tests never execute. All are filed (#2986 to #3000); #2986, #2990 and #2998 are fixed.
 - **Red goes unnoticed.** The nightly conformance run has failed every night since 2026-09-10,
   and the AD-DC suite failed on every develop run after #2914. Nobody was told.
 - **Most tests don't decide merges, and PRs are slow.** A PR waits 25–40 minutes, and only unit,
@@ -105,7 +105,7 @@ Every suite has its own entry point, its own setup and its own way of saying how
 
   | What reports green | What actually happens | Issue |
   |---|---|---|
-  | pjdfstest and pynfs `badger-s3` cells | Nothing creates their bucket. Localstack answers every request with `NoSuchBucket` and receives no upload; the NFSv4 pjdfstest cell graded 8,789 tests green this way | #2986 |
+  | pjdfstest and pynfs `badger-s3` cells | Nothing creates their bucket. Localstack answers every request with `NoSuchBucket` and receives no upload; the NFSv4 pjdfstest cell graded 8,789 tests green this way | #2986, fixed by #3013 |
   | NFS `sec=krb5` conformance | The client can't load the NFS module in its container, prints "skipping test", exits 0, and has done so on every retrievable run | #2987 |
   | SMB Kerberos e2e | 11 subtests skip on every run (`mount error(126)`), at least since July, while their parents report PASS | #2989 |
   | `TestRealKDC` (tag `kerberos`) | No job built the tag, so it fell behind three server changes and neither compiled nor passed | #2990, fixed by #3002 |
@@ -113,7 +113,7 @@ Every suite has its own entry point, its own setup and its own way of saying how
   | pynfs | Only the `all` flag runs: 601 of 689 tests in 4.0, 184 of 266 in 4.1; delegations, reboot and blocking locks never run | #2996 |
   | e2e | The NFSv4 ACL, nightly dedup and stress tests skip on every run; 19 cross-protocol error cases skip; several tests can't fail on what they're named for | #2991, #2992, #2993 |
   | smb-client-compat, Windows | The `net use` step has skipped on most runs since mid-September, because port 445 is taken on hosted runners, and the job still passes | #2994 |
-  | portmap system test | Its result is replayed from the Go test cache | #2998 |
+  | portmap system test | Its result is replayed from the Go test cache | #2998, fixed by #3024 |
   | performance and allocation gates | They skip under `-race` and `-short`, and no job runs them otherwise | #2999 |
 
   In each, a setup problem, a missing tool or a skip reads as a pass.
@@ -615,9 +615,9 @@ Each tier contains the one below it: a quick run on every PR, the full set after
 the long and heavy suites each night.
 
 **PRs run the production profile only.** On PRs, pjdfstest, pynfs, WPTS and smbtorture run only
-`badger-s3`, the profile production uses. They need the bucket fix (#2986) first, or they test
-nothing more than `badger`. `memory` and `badger` run after merge and nightly. smbtorture gains a
-`badger-s3` profile for this.
+`badger-s3`, the profile production uses. Since the bucket fix (#3013, for #2986) they reach S3;
+before it they tested nothing more than `badger`. `memory` and `badger` run after merge and
+nightly. smbtorture gains a `badger-s3` profile for this.
 
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate. That's the place
@@ -1093,7 +1093,9 @@ Each step ships on its own and has an exit criterion. `dt` is Go from the first 
 suite, whoever takes them. They don't wait for the harness, and each fix makes a suite's first
 `dt` results honest. Done so far:
 - #2980: the AD-DC suite;
-- #3002: `TestRealKDC`, now in CI, and the vet of every build-tagged test.
+- #3002: `TestRealKDC`, now in CI, and the vet of every build-tagged test;
+- #3013: the bucket for the pjdfstest and pynfs `-s3` cells (#2986);
+- #3024: the portmap system test runs with `-count=1` (#2998).
 
 1. **Registry and runner.** `test/suites.yaml` with groups and options, and `dt list`, `plan`,
    `run` and `docs` in Go, for the `exit` and `go-json` formats. `lint.yml`'s steps become the
@@ -1192,14 +1194,14 @@ this. Where the assumption was wrong, the design follows what was found.
 | Enable the merge queue | Not available on a user-owned repository; up-to-date branches are required instead | GitHub docs, ruleset |
 | `smb-client-compat` tests the Windows client | Mostly not: its `net use` step skips because port 445 is owned by the runner's kernel, and the job passes, on most runs since mid-September (#2994). Its Linux job mounts SMB 2.1 while its summary says 3.1.1. The hosted Windows runner is Windows Server 2025, whose SMB client supports `net use /TCPPORT` | `smb-client-compat.yml:104, 114, 149-164` |
 | Tool versions are pinned once | Go is pinned four different ways; pjdfstest and pynfs revisions are copied from `flake.lock` | `go.mod:3`, `lint.yml:56`, `dev.Dockerfile:12, 24, 54` |
-| The conformance `-s3` cells exercise S3 | No: the bucket they name is never created. pjdfstest (v3, v4, v4.1) and pynfs (4.0, 4.1) all graded green with localstack answering `NoSuchBucket`, and no upload accepted (#2986) | `setup-posix.sh:282`, run 37661151652 and 37661151773 |
+| The conformance `-s3` cells exercise S3 | No: the bucket they name is never created. pjdfstest (v3, v4, v4.1) and pynfs (4.0, 4.1) all graded green with localstack answering `NoSuchBucket`, and no upload accepted (#2986, fixed in #3013) | `setup-posix.sh:282`, run 37661151652 and 37661151773 |
 | The NFS `sec=krb5` job mounts with Kerberos | No: it exits 0 when the client container can't load the NFS module, on every retrievable run; its bootstrap also calls two `dfsctl` commands that don't exist (#2987) | `test-nfs-krb5.sh:52-56`, `nfs-conformance/bootstrap.sh:54, 63` |
 | The Kerberos e2e tests test Kerberos | NFS: yes, 12/12 and 7/7 with kernel mounts. SMB: no, 11 subtests skip on every run since at least July with `mount error(126)`, while their parents pass (#2989) | `smb_kerberos_test.go`, `smb3_kerberos_test.go`, `cross_protocol_kerberos_test.go` |
 | Every test in the repository builds somewhere | No: the `kerberos` tag was built by no job, and `TestRealKDC` fell behind three server changes, the header MIC (#883), the RFC 1964 token ID and sealed krb5p tokens (#2686) (#2990, fixed in #3002) | `kerberos_integration_test.go` |
 | A green WPTS cell ran its tests | 70 of 335 never execute, and the grader counts each as a skip with no expected list; the config also marks the implemented `FSCTL_SET_ZERO_DATA` and AppInstanceId as unsupported (#2995) | TRX counters, `ptfconfig/CommonTestSuite.deployment.ptfconfig.template:143, 146` |
 | pynfs runs its whole suite | Only the `all` flag: 601 of 689 tests (4.0), 184 of 266 (4.1). Its delegation tests can't get a delegation on loopback, because DittoFS refuses loopback callbacks (#2996) | pynfs output, `v4/state/callback.go:136` |
 | Green e2e tests test what they're named for | Not all: some can't fail (authorization denial, permission enforcement, delegation, replay; #2991); the ACL, nightly dedup and stress groups skip on every run (#2992); 19 cross-protocol error cases skip (#2993) | e2e logs, run 37674324486 |
-| Go test results are fresh | Not for the portmap system test: its result is replayed from Go's test cache (#2998) | `integration-tests.yml:210` |
+| Go test results are fresh | Not for the portmap system test: its result is replayed from Go's test cache (#2998, fixed in #3024) | `integration-tests.yml:210` |
 | The performance gates run | No: they skip under `-race` and `-short`, and the Phase 19 gate has a 0.0 baseline and returns without asserting (#2999) | `hash_bench_test.go`, `phase19_test.go:51, 94-104` |
 | Known failures each name an issue | Most don't: 19 of 20 and 13 of 14 POSIX rows, 4 of 10 pynfs rows; the WPTS list has no issue column | `test/posix/KNOWN_FAILURES*.md`, `smb-conformance/KNOWN_FAILURES.md` |
 | The suite scripts can be reused as they are | No: the server setup is written five times; the Kerberos bootstrap calls commands that don't exist; the POSIX teardown kills every `dfs start` on the machine; five workflow steps find results with `ls -td`; the WPTS password is written in six places | `nfs-conformance/bootstrap.sh:54, 63`, `teardown-posix.sh:64`, `conformance.yml:176, 244, 477, 530` |
