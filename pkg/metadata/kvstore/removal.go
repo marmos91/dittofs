@@ -324,7 +324,11 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	if err != nil {
 		return false, err
 	}
-	n := max(1, (s.k-4)/(3*batchItemKeys)) // up to n of each kind
+	kinds := 3 // refs, holes and overwrite records, up to n of each
+	if m.Kind == entity.RemoveClone {
+		kinds++ // and the source's refs a batch adopts
+	}
+	n := max(1, (s.k-4)/(kinds*batchItemKeys))
 	from, end := m.Cursor, m.Extent.End()
 
 	refs, refEnd, err := firstStarting(tx, refsPrefix(share, file), from, end, n, func(start int64, v []byte) (entity.ChunkRef, int64, error) {
@@ -349,6 +353,17 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 		return false, err
 	}
 	batchEnd := min(refEnd, holeEnd, ovEnd)
+	if sp := m.Clone; sp != nil {
+		srcFrom := from - sp.DstOff + sp.SrcOff
+		_, srcEnd, err := firstStarting(tx, refsPrefix(sp.SrcShare, sp.Src), srcFrom, sp.SrcOff+sp.Len, n, func(start int64, v []byte) (entity.ChunkRef, int64, error) {
+			c, err := decodeRef(sp.Src, start, v)
+			return c, c.End(), err
+		})
+		if err != nil {
+			return false, err
+		}
+		batchEnd = min(batchEnd, srcEnd-sp.SrcOff+sp.DstOff)
+	}
 	batch := entity.ExtentOf(from, batchEnd)
 	reaches := func(start int64, e entity.Extent) bool {
 		return e.Overlaps(m.Extent) && (start >= from && start < batchEnd || start < from && from == m.Extent.Offset)
@@ -391,6 +406,11 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 			}
 		}
 	}
+	if m.Kind == entity.RemoveClone {
+		if err := adopt(tx, share, file, m, batch, ms, nss, deltas); err != nil {
+			return false, err
+		}
+	}
 	for gen, d := range deltas {
 		ns, _ := nss.namespace(gen)
 		blocks := map[entity.BlockName]*entity.Block{}
@@ -405,8 +425,13 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	m.Cursor = batch.End()
 	if m.Cursor >= end {
 		m.Done = true
-		if m.Kind == entity.RemoveDeallocate {
+		if m.Kind == entity.RemoveDeallocate || m.Kind == entity.RemoveClone {
 			if err := joinHoles(tx, share, file, f, ms[1:], m.Extent); err != nil {
+				return false, err
+			}
+		}
+		if m.Kind == entity.RemoveClone {
+			if err := tx.Delete(cloneOpenKey(share, file, m.Version, *m.Clone)); err != nil {
 				return false, err
 			}
 		}

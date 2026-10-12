@@ -160,6 +160,11 @@ func covering(r kv.Reader, share entity.ShareID, file entity.FileID, want entity
 	if err != nil {
 		return nil, err
 	}
+	for _, m := range ms {
+		if m.Kind == entity.RemoveClone && m.Extent.Overlaps(e) {
+			return nil, entity.ErrDelay // a half-copied extent is never served
+		}
+	}
 	holes, err := holesOver(r, share, file, e, ms.span(f))
 	if err != nil {
 		return nil, err
