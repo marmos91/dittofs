@@ -42,6 +42,52 @@ func resolveIn(r kv.Reader, share entity.ShareID, h entity.Handle) (entity.FileI
 	return id, file, err
 }
 
+// Get is a file's attributes, GETATTR's answer from the store: one read for
+// a file, and for a directory its record with the time deltas not yet folded
+// into it applied.
+func (f Files) Get(ctx context.Context, id entity.Identity, h entity.Handle) (entity.File, error) {
+	var file entity.File
+	err := f.s.kv.View(ctx, func(r kv.Reader) error {
+		share, _, err := h.Parse()
+		if err != nil {
+			return err
+		}
+		if _, file, err = resolveIn(r, share, h); err != nil {
+			return err
+		}
+		if err := authorize(r, id, file, entity.ReadAttributes); err != nil {
+			return err
+		}
+		if file.IsDir() {
+			file, err = withDeltas(r, file)
+		}
+		return err
+	})
+	return file, err
+}
+
+// withDeltas applies a directory's unfolded time deltas to its record: the
+// latest times and the highest version win.
+func withDeltas(r kv.Reader, d entity.File) (entity.File, error) {
+	for row, err := range r.Scan(deltasPrefix(d.Share, d.ID), nil) {
+		if err != nil {
+			return d, err
+		}
+		x, err := decodeDelta(row.Value)
+		if err != nil {
+			return d, err
+		}
+		if x.Modify.After(d.Modify) {
+			d.Modify = x.Modify
+		}
+		if x.Change.After(d.Change) {
+			d.Change = x.Change
+		}
+		d.Version = max(d.Version, x.Version)
+	}
+	return d, nil
+}
+
 // fileIn reads a file's record, reporting a missing one as stale.
 func fileIn(r kv.Reader, share entity.ShareID, id entity.FileID) (entity.File, error) {
 	b, ok, err := get(r, fileKey(share, id))

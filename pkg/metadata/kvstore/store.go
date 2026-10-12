@@ -72,6 +72,7 @@ type Store struct {
 	kv      kv.KV
 	format  uint64
 	numbers numbers
+	bounds  boundCache
 }
 
 // Init creates the store: the format record at the newest format, the
