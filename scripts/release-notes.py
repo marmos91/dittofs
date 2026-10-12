@@ -42,7 +42,7 @@ for line in section:
         lines.append(line)
 
 notes = "\n".join(lines).strip()
-notes = notes.replace("\n### ", "\n#### ")
+notes = re.sub(r"(?m)^### ", "#### ", notes)
 # Repo-relative links do not resolve on the release page.
 notes = re.sub(r"\]\(((?:docs|cmd|pkg|internal)/[^)]+)\)",
                rf"](https://github.com/marmos91/dittofs/blob/{tag}/\1)", notes)
