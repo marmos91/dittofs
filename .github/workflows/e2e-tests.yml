@@ -17,6 +17,10 @@ name: E2E Tests
 # gate. A red develop run fires the ci-health email + P0 develop-red issue, and
 # warn-on-pr flags open PRs, forcing a fix-forward. Run manually on a PR with
 # workflow_dispatch when needed.
+#
+# The exception is Kerberos: a PR that touches Kerberos code runs only the
+# Kerberos tests (NFS krb5/krb5i/krb5p over v3 and v4, SMB, cross-protocol),
+# about 5 minutes, with a failed Kerberos mount failing the test.
 
 on:
   push:
@@ -29,6 +33,21 @@ on:
       - '**.png'
       - '**.jpg'
       - '**.svg'
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - 'internal/auth/kerberos/**'
+      - 'pkg/auth/kerberos/**'
+      - 'pkg/identity/kerberos/**'
+      - 'internal/adapter/nfs/rpc/gss/**'
+      - 'internal/adapter/nfs/auth/**'
+      - 'internal/adapter/smb/auth/**'
+      - 'internal/adapter/smb/handlers/kerberos_auth.go'
+      - 'internal/adapter/smb/handlers/session_setup.go'
+      - 'test/e2e/*kerberos*'
+      - 'test/e2e/framework/kerberos.go'
+      - 'test/integration/kerberos/**'
+      - '.github/workflows/e2e-tests.yml'
   schedule:
     # Nightly at 04:07 UTC, staggered from the other protocol suites.
     - cron: '7 4 * * *'
@@ -118,6 +137,7 @@ jobs:
           # wedge roughly 15m past a legitimately slow run rather than letting
           # it run out the job.
           E2E_WALL: 45m
+          EVENT: ${{ github.event_name }}
         run: |
           # sudo resolves commands via secure_path (which omits the Nix
           # profile), so `nix` was "command not found" under sudo and go test
@@ -133,9 +153,16 @@ jobs:
           #
           # The harness owns redirection and grading — see the header of
           # run-e2e.sh for why the output must not go through a pipe.
+          #
+          # A pull request is here because it touched Kerberos code (the paths
+          # under on.pull_request), so it runs only the Kerberos tests.
+          tests=(./test/e2e/...)
+          if [ "$EVENT" = pull_request ]; then
+            tests=(-run Kerberos ./test/e2e/)
+          fi
           .github/scripts/run-e2e.sh \
             sudo -E env "PATH=$PATH" "DITTOFS_E2E_REQUIRE_NLM=1" "DITTOFS_E2E_REQUIRE_KERBEROS=1" nix develop .#ci --command \
-            go test -tags=e2e -v -timeout 30m ./test/e2e/...
+            go test -tags=e2e -v -timeout 30m "${tests[@]}"
 
       - name: Generate summary
         if: always()

@@ -351,7 +351,7 @@ run_fake() {
 # The real manifest describes the repo it ships with.
 # ---------------------------------------------------------------------------
 REAL_LIST="$("$RUNNER" --list 2>&1)"
-for suite in wpts smbtorture pjdfstest nfs-kerberos pynfs; do
+for suite in wpts smbtorture pjdfstest pynfs; do
     assert_contains "manifest lists ${suite}" "$suite" "$REAL_LIST"
 done
 
@@ -465,9 +465,8 @@ done < <(jq -r '.suites[].steps[] | [.cmd, .name] | @tsv' "${SCRIPT_DIR}/suites.
 assert_eq "no suite runner writes the common runner's step log" "" "$CLASH"
 
 # Only the suites that put a dfs on the host may be failed by a listener on the
-# adapter port. nfs-kerberos is the trap here: it speaks NFS but runs entirely
-# in Docker and publishes no host port, so keying this off `protocol` would fail
-# it for something that is none of its business.
+# adapter port. A suite that runs entirely in Docker publishes no host port, so
+# this keys off `host_adapter`, not `protocol`.
 assert_eq "suites owning the host adapter port" "pjdfstest pynfs cthon04 nfstest" \
     "$(jq -r '[.suites | to_entries[] | select(.value.host_adapter == true) | .key] | join(" ")' "${SCRIPT_DIR}/suites.json")"
 
