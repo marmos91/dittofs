@@ -85,6 +85,11 @@ func dirIn(r kv.Reader, h entity.Handle) (entity.ShareID, entity.File, error) {
 	if !dir.IsDir() {
 		return share, dir, merrs.NewNotDirectoryError(dir.ID.String())
 	}
+	// A removed directory keeps its record until its release: no name may
+	// be added to it, and it resolves as gone.
+	if dir.Nlink == 0 && !dir.IsRoot() {
+		return share, dir, entity.ErrStale
+	}
 	return share, dir, nil
 }
 

@@ -23,6 +23,17 @@ type fs struct {
 
 func newFS(t *testing.T, fold entity.FoldRule) *fs {
 	s, c := newStore(t)
+	return setupFS(t, s, c, fold)
+}
+
+// newHeldFS is newFS over a store whose next Update can be held between its
+// snapshot and its commit, on the given backend.
+func newHeldFS(t *testing.T, b backend, fold entity.FoldRule) (*fs, *holding) {
+	s, h := heldStore(t, b)
+	return setupFS(t, s, nil, fold), h
+}
+
+func setupFS(t *testing.T, s *kvstore.Store, c *kv.Counting, fold entity.FoldRule) *fs {
 	cp := s.ControlPlane()
 	sh := share("data", "/data")
 	sh.Fold = fold

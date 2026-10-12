@@ -32,11 +32,35 @@ func authorize(r kv.Reader, id entity.Identity, f entity.File, want entity.Acces
 	case access == entity.AccessRead && want&writeRights != 0:
 		return merrs.NewAccessDeniedError("the share grant is read-only")
 	}
-	if id.Privileged {
-		return nil
-	}
-	if missing := want &^ modeAllows(id, f); missing != 0 {
+	if !allows(id, f, want) {
 		return merrs.NewAccessDeniedError("mode denies the access asked")
+	}
+	return nil
+}
+
+// allows is the file's own answer, after the share grant: whether its mode
+// gives the caller every right in want.
+func allows(id entity.Identity, f entity.File, want entity.AccessMask) bool {
+	return id.Privileged || want&^modeAllows(id, f) == 0
+}
+
+// mayRemove decides whether the caller may remove the entry naming child
+// from d, a decision about two files: delete on the file or delete-a-child
+// on the directory, as RFC 8881 has it. In a sticky directory only the
+// file's owner, the directory's owner or a privileged caller may.
+func mayRemove(r kv.Reader, id entity.Identity, d, child entity.File) error {
+	access, err := grantFor(r, d.Share, id)
+	if err != nil {
+		return err
+	}
+	if access < entity.AccessReadWrite {
+		return merrs.NewAccessDeniedError("the share grant does not allow removal")
+	}
+	if !allows(id, d, entity.DeleteChild) && !allows(id, child, entity.Delete) {
+		return merrs.NewAccessDeniedError("neither delete on the file nor delete-a-child on the directory")
+	}
+	if d.Mode&entity.ModeSticky != 0 && !id.Privileged && id.Principal != child.Owner && id.Principal != d.Owner {
+		return merrs.NewAccessDeniedError("sticky directory: only an owner removes")
 	}
 	return nil
 }

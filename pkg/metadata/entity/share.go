@@ -15,6 +15,11 @@ var (
 	ErrStale = errors.New("entity: stale handle")
 	// ErrWrongShare is a handle of another share than the one asked.
 	ErrWrongShare = errors.New("entity: handle of another share")
+	// ErrInconsistent is an Nlink that would fall below zero: something else
+	// still names the file, so the count was already wrong.
+	ErrInconsistent = errors.New("entity: nlink underflow")
+	// ErrCrossProject is a rename or link between two tree quotas.
+	ErrCrossProject = errors.New("entity: rename or link across tree quotas")
 )
 
 // MaxShareName is the SMB share-name limit, in characters.
