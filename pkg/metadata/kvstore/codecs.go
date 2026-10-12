@@ -94,8 +94,7 @@ func decodeKind(b []byte) (entity.PrincipalKind, error) {
 	return k, r.Done()
 }
 
-// encodeID is an index row's value: the ID the indexed name, path or
-// protocol ID names.
+// encodeID is a name or path index row's value: the ID it names.
 func encodeID(id [16]byte) []byte { return codec.NewWriter(v1).Fixed(id[:]).Encode() }
 
 func decodeID(b []byte) ([16]byte, error) {
@@ -106,6 +105,19 @@ func decodeID(b []byte) ([16]byte, error) {
 	}
 	copy(id[:], r.Fixed(16))
 	return id, r.Done()
+}
+
+// encodePrincipal is a protocol-ID row's value: a SID names a user or a
+// group, so the row carries the kind as well as the ID.
+func encodePrincipal(p entity.Principal) []byte { return putPrincipal(codec.NewWriter(v1), p).Encode() }
+
+func decodePrincipal(b []byte) (entity.Principal, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Principal{}, err
+	}
+	p := readPrincipal(r)
+	return p, r.Done()
 }
 
 // encodeShareInfo writes the fields a share put owns; State is its own record.

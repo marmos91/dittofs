@@ -65,6 +65,8 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeKind(b) }},
 		{"id", [16]byte(sid), encodeID(sid), "01" + "cc000000000000000000000000000003",
 			func(b []byte) (any, error) { return decodeID(b) }},
+		{"principal", group, encodePrincipal(group), "01" + "02" + "bb000000000000000000000000000002",
+			func(b []byte) (any, error) { return decodePrincipal(b) }},
 		{"share", share, encodeShareInfo(share),
 			"01" + "0650686f746f73" + "072f70686f746f73" + "00000000000000000000000000000007",
 			func(b []byte) (any, error) { return decodeShareInfo(sid, b) }},
