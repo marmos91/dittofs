@@ -19,9 +19,12 @@ const (
 	FoldIdentity FoldRule = 1
 	// FoldUpcase maps each UTF-16 code unit of a name through one frozen
 	// 16-bit upcase table, unit for unit, with no normalisation: how NTFS
-	// and Samba compare names. It is not Unicode case folding: a letter
-	// outside the BMP is compared as given, and ß, the capital sharp s and
-	// the Kelvin, Ohm and Angstrom signs upcase to themselves.
+	// compares names. The table folds exactly what the Windows table folds,
+	// so no two names Windows keeps apart become one entry. It is not Unicode
+	// case folding: a letter outside the BMP is compared as given; ß, the
+	// capital sharp s and the Kelvin, Ohm and Angstrom signs upcase to
+	// themselves; and so do dotless ı, long ſ, final ς, the micro sign and
+	// the titlecase digraphs such as ǅ.
 	FoldUpcase FoldRule = 2
 )
 

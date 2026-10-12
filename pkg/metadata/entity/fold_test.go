@@ -20,7 +20,7 @@ func TestUpcaseTablePinned(t *testing.T) {
 	}
 }
 
-const upcaseTableHash = "877290289bbd13e6832cc6b990a788f20ec0e60d092c6f51e50e357853a3c008"
+const upcaseTableHash = "ef3afc2ef80306f33ab22613219fa1ad074ce73db455a448775bf471139f5a9a"
 
 // RFC 7 §12.1's case-insensitive name cases.
 func TestFoldUpcase(t *testing.T) {
@@ -33,7 +33,13 @@ func TestFoldUpcase(t *testing.T) {
 	}{
 		{"README", "readme", true},
 		{"ReadMe.TXT", "README.txt", true},
-		{"ǅ", "ǆ", true},
+		{"Ǆ", "ǆ", true},
+		{"ǅ", "ǆ", false}, // the titlecase digraph is its own name, as on Windows
+		{"ı", "I", false}, // dotless i
+		{"ſ", "S", false}, // long s
+		{"ς", "σ", false}, // final sigma
+		{"µ", "Μ", false}, // micro sign and capital mu
+		{"Ꭰ", "ꭰ", false}, // a Cherokee pair newer than the Windows table
 		{"Straße.docx", "STRASSE.docx", false},
 		{"K.txt", "K.txt", false}, // the Kelvin sign upcases to itself
 		{"ß", "ẞ", false},
