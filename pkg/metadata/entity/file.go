@@ -277,3 +277,12 @@ type Entry struct {
 // into it. Entry does not implement io/fs.DirEntry: its Name and Type fields
 // would collide with that interface's methods.
 func (e Entry) IsDir() bool { return e.Type == Directory }
+
+// Xattr is one small named value on a file, its own record: a share setting
+// bounds its size and how many a file may have, and larger data is a named
+// stream.
+type Xattr struct {
+	File  FileID
+	Name  []byte
+	Value []byte
+}

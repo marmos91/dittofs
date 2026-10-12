@@ -53,3 +53,38 @@ func TestPathsBelow(t *testing.T) {
 		}
 	}
 }
+
+func TestFileKeyGolden(t *testing.T) {
+	s, f := "cc000000000000000000000000000003", "f1000000000000000000000000000001"
+	for _, c := range []struct {
+		name string
+		key  []byte
+		want string
+	}{
+		{"file", fileKey(sid, fid), "01" + s + f},
+		{"acl", aclKey(sid, fid), "01" + s + f + "01"},
+		{"xattr", xattrKey(sid, fid, []byte("user.k")), "01" + s + f + "02" + "757365722e6b" + "0001"},
+		{"entry", entryKey(sid, fid, 7, []byte("A")), "01" + s + f + "04" + "0000000000000007" + "41" + "0001"},
+		{"delta", deltaKey(sid, fid, [32]byte{31: 1}), "01" + s + f + "05" + "0000000000000000000000000000000000000000000000000000000000000001"},
+		{"release", releaseKey(sid, fid), "01" + s + f + "0d"},
+		{"numbers", numberKey(sid), "02" + s + "16"},
+	} {
+		if got := hex.EncodeToString(c.key); got != c.want {
+			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
+		}
+	}
+}
+
+// The cursor after a digest sorts after every entry at that digest, whatever
+// its name, and before every entry at the next.
+func TestEntriesAfter(t *testing.T) {
+	after := entriesAfter(sid, fid, 7)
+	for _, name := range [][]byte{{}, {0}, {0xFF}, {0xFF, 0xFF, 0xFF}, []byte("zzz")} {
+		if k := entryKey(sid, fid, 7, name); bytes.Compare(k, after) >= 0 {
+			t.Errorf("digest 7, name %x sorts at or after the cursor", name)
+		}
+		if k := entryKey(sid, fid, 8, name); bytes.Compare(k, after) <= 0 {
+			t.Errorf("digest 8, name %x sorts at or before the cursor", name)
+		}
+	}
+}

@@ -98,3 +98,56 @@ var (
 	installationKey = []byte{keys.KindIN}
 	cfgGenKey       = []byte{keys.KindCFGGEN}
 )
+
+// Keys of a file's records, all under F‖share‖file.
+
+func fileKey(share entity.ShareID, id entity.FileID) []byte {
+	return keys.ID(keys.ID([]byte{keys.KindF}, share[:]), id[:])
+}
+
+func fileSub(share entity.ShareID, id entity.FileID, sub byte) []byte {
+	return append(fileKey(share, id), sub)
+}
+
+func aclKey(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FAcl) }
+
+func xattrKey(share entity.ShareID, id entity.FileID, name []byte) []byte {
+	return keys.String(fileSub(share, id, keys.FX), name)
+}
+
+func xattrsPrefix(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FX) }
+
+// entryKey is one entry of dir, ordered by the digest of its folded key and
+// then by the key.
+func entryKey(share entity.ShareID, dir entity.FileID, digest uint64, folded []byte) []byte {
+	return keys.String(keys.Uint64(fileSub(share, dir, keys.FE), digest), folded)
+}
+
+func entriesPrefix(share entity.ShareID, dir entity.FileID) []byte {
+	return fileSub(share, dir, keys.FE)
+}
+
+// entriesAfter is the scan cursor that resumes a listing after every entry
+// whose digest is cookie or below: the bare digest cookie+1 sorts before
+// every entry key at that digest, which all carry a name after it, and after
+// every key of a lower digest.
+func entriesAfter(share entity.ShareID, dir entity.FileID, cookie uint64) []byte {
+	return keys.Uint64(entriesPrefix(share, dir), cookie+1)
+}
+
+// deltaKey is one directory time delta, unique to the transaction that
+// wrote it.
+func deltaKey(share entity.ShareID, dir entity.FileID, unique [32]byte) []byte {
+	return append(fileSub(share, dir, keys.FT), unique[:]...)
+}
+
+func deltasPrefix(share entity.ShareID, dir entity.FileID) []byte {
+	return fileSub(share, dir, keys.FT)
+}
+
+func releaseKey(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FRel) }
+
+// filesPrefix covers every file record of a share.
+func filesPrefix(share entity.ShareID) []byte { return keys.ID([]byte{keys.KindF}, share[:]) }
+
+func numberKey(share entity.ShareID) []byte { return shareKey(share, keys.SFnc) }
