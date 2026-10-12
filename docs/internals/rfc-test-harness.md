@@ -1,6 +1,6 @@
 # RFC: one test harness, with a suite registry, one runner and one result format
 
-**Status:** proposed, revision 4. Nothing here is implemented yet; §8 orders the work.
+**Status:** proposed, revision 4.1. Nothing here is implemented yet; §8 orders the work.
 **Discussion:** the pull request that adds this file.
 
 ## Summary
@@ -266,6 +266,12 @@ user (`go test -c`), and only the test binary runs under `sudo -n`. So the Go bu
 results stay the user's, and the `root` need (§4.5) means passwordless sudo, not running `dt`
 under sudo.
 
+`sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
+by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
+the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the fixture's
+variables (`KRB5CCNAME`, the server's address and ports) and `PATH`. Today's e2e job does the same
+by hand, with `sudo -E env "PATH=$PATH" ...`.
+
 ## 4. Design
 
 ```mermaid
@@ -476,7 +482,7 @@ suites:
     needs: [linux, podman]
     needs_by_test:                      # the long runs only fit the dedicated host (§4.5)
       "9?-*.sh": ["host:dedicated", "disk:110"]
-    timeout: { test: size }             # from the size in the file name (below)
+    timeout: { test: size, cell: 90m }  # test: from the size in the file name; cell: per shard (below)
     shards: 4                           # split over 4 CI jobs
   fio-verify:
     cmd: "fio --output-format=json --output={out}/{test}.json {test}"
@@ -500,7 +506,7 @@ suites:
 | `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json` (§4.6) | none |
 | `tier` | The smallest tier that runs the suite (§4.3) | `merge` |
 | `blocking` | `false`: results are recorded and reported, but never fail the gate. May be per tier | `true` |
-| `timeout` | `test`: each test's limit; `cell`: the whole cell's, including the fixture. `test: size` takes it from a scenario's size class (below). A `.txt` test list may give a test its own | `{ test: 30m, cell: 60m }` |
+| `timeout` | `test`: each test's limit; `cell`: the whole cell's, including the fixture. The two keys are set separately: an option, suite or default that sets one keeps the other from the level above. `test: size` takes it from a scenario's size class (below). A `.txt` test list may give a test its own | `{ test: 30m, cell: 60m }` |
 | `needs` | What the machine must offer (§4.5) | none |
 | `needs_by_test` | Extra needs for the tests matching a glob; `dt plan` puts those tests in cells of their own, on a place that meets them (§4.5) | none |
 | `tests` | A glob, one test per matching file; a list of names; or a `.txt` file of names, one per line, each with an optional timeout | none: the suite is one test, or finds its own |
@@ -548,6 +554,11 @@ runs: pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --maketree
 timeout is twice its class's bound plus 2 minutes for the container's setup, so 32 minutes for an
 `l`. An `xxl` scenario has no bound, so only the cell's timeout applies to it.
 
+**A cell outlasts its tests.** `dt plan` never gives a cell a limit shorter than its longest test's
+limit plus the fixture's 5 minutes (§4.2); it raises the cell's limit and says so. So a 9x cell,
+which `needs_by_test` gives the dedicated host, gets 2 h 7 min for an `xl` scenario whatever
+`cell` says, and an `xxl` one gets the cell limit it sets.
+
 Rules `dt` enforces when it loads the file:
 - names are `[a-z0-9-]+`;
 - unknown fields are refused, so a misspelt field fails rather than being ignored;
@@ -555,7 +566,8 @@ Rules `dt` enforces when it loads the file:
 - every `known`, `shares` and `templates` path exists;
 - every `{test}` has a `tests`;
 - every group names existing suites;
-- a `go-json` command begins with `go test`, so `dt` can add `-json -count=1` after it;
+- a `go-json` command begins with `go test`, so `dt` can add `-json -count=1` after it, or build it
+  with `-c` and run the binary through `go tool test2json` when it needs root (§4.6);
 - every `matrix` axis is used by the cell's command, fixture or `env`, so an axis an option doesn't
   need can't multiply identical cells.
 
@@ -833,7 +845,7 @@ There are six, each read by one reader in `dt`:
 | Format | Read from | Test case | Suites |
 |---|---|---|---|
 | `exit` | the exit status | the command, or each file in `tests` | lint, operator, system, fio-verify, bench-smoke, one-line suites |
-| `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache | each test and subtest, with skips and their reasons | unit, integration, e2e |
+| `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache. A suite whose tests need root (e2e) is built with `go test -c` and its binary run under `sudo` as `go tool test2json -t ./e2e.test -test.v=test2json`, which gives the same events and never replays a cached result | each test and subtest, with skips and their reasons | unit, integration, e2e |
 | `junit` | a JUnit XML file the tool writes | each test case | pynfs (`--xml`) |
 | `tap` | the TAP each test file prints | each test file, as the known-failure lists name them | pjdfstest |
 | `subunit` | smbtorture's `test:`, `success:`, `failure:`, `error:` and `skip:` lines | each smbtorture test | smbtorture; its connection-failure filter and truncation handling move into Go with their test cases |
@@ -1049,8 +1061,9 @@ outside it:
   issue (§4.4). It's rewritten, not commented, so watchers get one notification per change, not per
   run. A comment is added only when the set of failing tests changes.
 - It closes once every test in its failing set has passed again on develop, in whichever tier
-  runs it. A green run of another tier doesn't close it: a merge-tier run doesn't include the
-  nightly suites, so it would close a nightly failure that reopens the next night.
+  runs it, been listed as a known failure or quarantined, or no longer exists (renamed or deleted).
+  A green run of another tier doesn't close it: a merge-tier run doesn't include the nightly
+  suites, so it would close a nightly failure that reopens the next night.
 - Exit 2 (an environment problem or lost coverage) alerts only after two consecutive runs.
 - Known failures, expected skips and quarantined tests never alert.
 - E-mail comes from GitHub's own issue notifications: repository watchers, and anyone the issue
