@@ -1,0 +1,292 @@
+package kvstore
+
+import (
+	"bytes"
+	"context"
+	"iter"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+)
+
+// Shares lists every share with its state, in folded-name order.
+func (c ControlPlane) Shares(ctx context.Context) iter.Seq2[entity.Share, error] {
+	return pages(ctx, c.s.kv, []byte{keys.KindNX, keys.NXShare}, nil,
+		func(r kv.Reader, row kv.KeyValue) (entity.Share, error) {
+			id, err := decodeID(row.Value)
+			if err != nil {
+				return entity.Share{}, err
+			}
+			return shareIn(r, id)
+		})
+}
+
+func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
+	b, err := r.Get(shareKey(id, keys.SInfo))
+	if err != nil {
+		return entity.Share{}, err
+	}
+	s, err := decodeShareInfo(id, b)
+	if err != nil {
+		return s, err
+	}
+	if b, err = r.Get(shareKey(id, keys.SSt)); err != nil {
+		return s, err
+	}
+	s.State, err = decodeState(b)
+	return s, err
+}
+
+// PutShare creates a share or changes its name or path; its root never
+// changes. It writes the share's info record and its name and path rows, and
+// raises ShareList. State is not its to write: a new share starts enabled,
+// and only SetShareState changes it after.
+//
+// No share's path is an ancestor of another's. An ancestor is found by a
+// point read of each of the path's prefixes, a descendant by a guarded scan
+// of the rows below it, so two shares created at once on nested paths cannot
+// both commit, in either order.
+func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
+	if s.ID.IsZero() || s.Root.IsZero() {
+		return merrs.NewInvalidArgumentError("a share needs an ID and a root")
+	}
+	if !entity.ValidShareName(s.Name) {
+		return merrs.NewInvalidArgumentError("share name " + s.Name + " not valid")
+	}
+	if !entity.ValidSharePath(s.Path) {
+		return merrs.NewInvalidArgumentError("share path " + s.Path + " not valid")
+	}
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		info := shareKey(s.ID, keys.SInfo)
+		b, existed, err := get(tx, info)
+		if err != nil {
+			return err
+		}
+		var old entity.Share
+		if existed {
+			if old, err = decodeShareInfo(s.ID, b); err != nil {
+				return err
+			}
+			if old.Root != s.Root {
+				return merrs.NewInvalidArgumentError("a share's root never changes")
+			}
+			if old.Name == s.Name && old.Path == s.Path {
+				return nil
+			}
+		}
+		if err := c.claimShareName(tx, s, existed, old.Name); err != nil {
+			return err
+		}
+		if err := c.claimSharePath(tx, s, existed, old.Path); err != nil {
+			return err
+		}
+		if !existed {
+			if err := tx.Set(shareKey(s.ID, keys.SSt), encodeState(entity.ShareEnabled)); err != nil {
+				return err
+			}
+		}
+		if err := tx.Set(info, encodeShareInfo(s)); err != nil {
+			return err
+		}
+		return raise(tx, shareListKey)
+	})
+}
+
+func (c ControlPlane) claimShareName(tx kv.Txn, s entity.Share, existed bool, oldName string) error {
+	key := nameKey(keys.NXShare, s.Name)
+	if existed && bytes.Equal(key, nameKey(keys.NXShare, oldName)) {
+		return nil // a change of case only: the row stays
+	}
+	if err := claimShare(tx, key, s.ID, "share name "+s.Name+" taken"); err != nil {
+		return err
+	}
+	if existed {
+		return tx.Delete(nameKey(keys.NXShare, oldName))
+	}
+	return nil
+}
+
+func (c ControlPlane) claimSharePath(tx kv.Txn, s entity.Share, existed bool, oldPath string) error {
+	if existed && s.Path == oldPath {
+		return nil
+	}
+	if err := claimShare(tx, pathKey(s.Path), s.ID, "share path "+s.Path+" taken"); err != nil {
+		return err
+	}
+	for _, a := range entity.PathAncestors(s.Path) {
+		if b, ok, err := get(tx, pathKey(a)); err != nil {
+			return err
+		} else if ok && !holds(b, s.ID) {
+			return merrs.NewAlreadyExistsError("share path " + s.Path + " is inside share path " + a)
+		}
+	}
+	below := pathsBelow(s.Path)
+	if err := tx.GuardRange(below); err != nil {
+		return err
+	}
+	for row, err := range tx.Scan(below, nil) {
+		if err != nil {
+			return err
+		}
+		if !holds(row.Value, s.ID) {
+			return merrs.NewAlreadyExistsError("share path " + s.Path + " contains another share")
+		}
+	}
+	if existed {
+		return tx.Delete(pathKey(oldPath))
+	}
+	return nil
+}
+
+// holds reports whether an index row's value names id. A row that does not
+// decode names nobody this caller can be.
+func holds(b []byte, id entity.ShareID) bool {
+	got, err := decodeID(b)
+	return err == nil && got == [16]byte(id)
+}
+
+func claimShare(tx kv.Txn, key []byte, id entity.ShareID, taken string) error {
+	b, ok, err := get(tx, key)
+	if err != nil {
+		return err
+	}
+	if ok {
+		if !holds(b, id) {
+			return merrs.NewAlreadyExistsError(taken)
+		}
+		return nil
+	}
+	return tx.Set(key, encodeID(id))
+}
+
+// SetShareState moves a share from one state to another, refusing when it is
+// not in from: the read is tracked, so of two changes racing from one state,
+// one conflicts and then finds the state moved. It raises ShareList.
+func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, from, to entity.ShareState) error {
+	if to.String() == "" {
+		return merrs.NewInvalidArgumentError("unknown share state")
+	}
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		key := shareKey(share, keys.SSt)
+		b, ok, err := get(tx, key)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return merrs.NewNotFoundError(share.String(), "share")
+		}
+		cur, err := decodeState(b)
+		if err != nil {
+			return err
+		}
+		if cur != from {
+			return merrs.NewConflictError("set share state", "share is "+cur.String()+", not "+from.String())
+		}
+		if from == to {
+			return nil
+		}
+		if err := tx.Set(key, encodeState(to)); err != nil {
+			return err
+		}
+		return raise(tx, shareListKey)
+	})
+}
+
+// SetGrant sets a principal's access to a share, raising the grant's
+// version. A grant of none removes it, with its reverse row; the principal's
+// groups then decide its access. Share and principal must exist, read so that
+// a deletion of either conflicts.
+func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
+	if g.Access > entity.AccessAdmin || (g.Principal.Kind != entity.PrincipalUser && g.Principal.Kind != entity.PrincipalGroup) {
+		return merrs.NewInvalidArgumentError("a grant names a user or group and a known access")
+	}
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if _, ok, err := get(tx, shareKey(g.Share, keys.SInfo)); err != nil || !ok {
+			if err == nil {
+				err = merrs.NewNotFoundError(g.Share.String(), "share")
+			}
+			return err
+		}
+		if _, ok, err := get(tx, principalKey(g.Principal)); err != nil || !ok {
+			return notFound(err, g.Principal)
+		}
+		key, rev := grantKey(g.Share, g.Principal.ID), grantRevKey(g.Principal.ID, g.Share)
+		old, _, err := grantIn(tx, g.Share, g.Principal.ID)
+		if err != nil {
+			return err
+		}
+		if g.Access == entity.AccessNone {
+			if err := tx.Delete(key); err != nil {
+				return err
+			}
+			return tx.Delete(rev)
+		}
+		g.Version = nextVersion(tx, old.Version)
+		if err := tx.Set(key, encodeGrant(g)); err != nil {
+			return err
+		}
+		return tx.Set(rev, nil)
+	})
+}
+
+// ExportPolicy reads a share's export policy; a share without one has the
+// zero policy, which admits every client with no flavour named.
+func (c ControlPlane) ExportPolicy(ctx context.Context, share entity.ShareID) (entity.ExportPolicy, error) {
+	p := entity.ExportPolicy{Share: share}
+	err := c.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, shareKey(share, keys.SXp))
+		if err != nil || !ok {
+			return err
+		}
+		p, err = decodePolicy(share, b)
+		return err
+	})
+	return p, err
+}
+
+// PutExportPolicy replaces a share's export policy, raising its version.
+func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy) error {
+	for _, f := range p.Flavors {
+		if f.String() == "" {
+			return merrs.NewInvalidArgumentError("unknown auth flavor")
+		}
+	}
+	for _, r := range p.Clients {
+		if !r.Valid() {
+			return merrs.NewInvalidArgumentError("a client rule names one CIDR or netgroup, and at most read-write")
+		}
+	}
+	if p.MinKerberos.String() == "" || p.Squash.String() == "" {
+		return merrs.NewInvalidArgumentError("unknown Kerberos level or squash")
+	}
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if _, ok, err := get(tx, shareKey(p.Share, keys.SInfo)); err != nil || !ok {
+			if err == nil {
+				err = merrs.NewNotFoundError(p.Share.String(), "share")
+			}
+			return err
+		}
+		key := shareKey(p.Share, keys.SXp)
+		b, ok, err := get(tx, key)
+		if err != nil {
+			return err
+		}
+		var old entity.ExportPolicy
+		if ok {
+			if old, err = decodePolicy(p.Share, b); err != nil {
+				return err
+			}
+		}
+		p.Version = nextVersion(tx, old.Version)
+		return tx.Set(key, encodePolicy(p))
+	})
+}
+
+// ShareList is raised by every share create, rename, path change and state
+// change: the pseudo-filesystem's change attribute.
+func (c ControlPlane) ShareList(ctx context.Context) (entity.ShareList, error) {
+	v, err := counter(ctx, c.s.kv, shareListKey)
+	return entity.ShareList{Version: v}, err
+}
