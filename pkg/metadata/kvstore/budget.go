@@ -50,12 +50,12 @@ func worstCosts() (perKey []cost, fixed []cost) {
 		keyCost(retiredKey(ns, time.Unix(1<<40, 0), name), encodeEmpty()),
 		keyCost(deletedKey(ns, name), encodeDeletedAt(time.Unix(1<<40, 0))),
 		keyCost(overwriteKey(share, file, big), encodeOverwrite(overwrite{Extent: entity.Extent{Offset: big}, Version: v, Born: math.MaxUint64})),
-		keyCost(holeKey(share, file, big), encodeHole(big)),
+		keyCost(holeKey(share, file, big), encodeHole(hole{Extent: entity.Extent{Offset: big}, Version: v})),
 	}
 	removal := entity.Removal{Version: v, Extent: entity.Extent{Offset: big, Length: 0}, Kind: entity.RemoveClone, Cut: math.MaxUint64,
 		Cursor: big, Clone: &entity.CloneSpec{SrcOff: big, DstOff: big, Len: big, AsOf: v}}
 	fixed = []cost{
-		{key: len(removalsPrefix(share, file)) + 16, value: len(encodeRemoval(removal))},
+		keyCost(removalKey(share, file, v), encodeRemoval(removal)),
 		keyCost(existenceFenceKey(share, file), encodeFence(fence{math.MaxUint64, math.MaxUint64})),
 		keyCost(offloadFenceKey(share, file), encodeFence(fence{math.MaxUint64, math.MaxUint64})),
 		{key: len(fileKey(share, file)), value: 1 << 10}, // the File record a batch may rewrite

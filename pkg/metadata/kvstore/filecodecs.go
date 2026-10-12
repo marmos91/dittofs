@@ -42,7 +42,8 @@ func encodeFile(f entity.File) []byte {
 	for _, t := range []time.Time{f.Birth, f.Access, f.Modify, f.Change} {
 		putTime(w, t)
 	}
-	return w.Uint64(f.Version).Uint64(uint64(f.Size)).Uint64(uint64(f.Charged)).Uint64(f.Applied).
+	return w.Fixed(f.Version[:]).Uint64(uint64(f.Size)).Uint64(uint64(f.Charged)).Fixed(f.Applied[:]).
+		Uint64(uint64(f.MaxSpan)).
 		Uint32(f.Nlink).Fixed(f.Parent[:]).Uint64(f.Shard).Uint64(f.Project).Uint64(f.Number).
 		Bytes(f.CreateVerifier).Bytes(f.Target).Uint32(f.Device.Major).Uint32(f.Device.Minor).
 		Fixed(f.StreamOf[:]).Encode()
@@ -59,10 +60,11 @@ func decodeFile(share entity.ShareID, id entity.FileID, b []byte) (entity.File, 
 	f.Mode = r.Uint32()
 	f.Flags = entity.FileFlags(r.Uint32())
 	f.Birth, f.Access, f.Modify, f.Change = readTime(r), readTime(r), readTime(r), readTime(r)
-	f.Version = r.Uint64()
+	f.Version = readVersion(r)
 	f.Size = int64(r.Uint64())
 	f.Charged = int64(r.Uint64())
-	f.Applied = r.Uint64()
+	f.Applied = readVersion(r)
+	f.MaxSpan = int64(r.Uint64())
 	f.Nlink = r.Uint32()
 	f.Parent = readFileID(r)
 	f.Shard, f.Project, f.Number = r.Uint64(), r.Uint64(), r.Uint64()
@@ -70,7 +72,7 @@ func decodeFile(share entity.ShareID, id entity.FileID, b []byte) (entity.File, 
 	f.Target = cloneOrNil(r.Bytes())
 	f.Device = entity.DeviceID{Major: r.Uint32(), Minor: r.Uint32()}
 	f.StreamOf = readFileID(r)
-	return f, r.Done()
+	return f, checkEpochs(r, f.Version, f.Applied)
 }
 
 func cloneOrNil(b []byte) []byte {
@@ -151,7 +153,7 @@ func decodeXattr(file entity.FileID, name, b []byte) (entity.Xattr, error) {
 // after.
 type delta struct {
 	Modify, Change time.Time
-	Version        uint64
+	Version        entity.JournalVersion
 	Cut            uint64
 }
 
@@ -159,7 +161,7 @@ func encodeDelta(d delta) []byte {
 	w := codec.NewWriter(v1)
 	putTime(w, d.Modify)
 	putTime(w, d.Change)
-	return w.Uint64(d.Version).Uint64(d.Cut).Encode()
+	return w.Fixed(d.Version[:]).Uint64(d.Cut).Encode()
 }
 
 func decodeDelta(b []byte) (delta, error) {
@@ -168,8 +170,8 @@ func decodeDelta(b []byte) (delta, error) {
 		return delta{}, err
 	}
 	d := delta{Modify: readTime(r), Change: readTime(r)}
-	d.Version, d.Cut = r.Uint64(), r.Uint64()
-	return d, r.Done()
+	d.Version, d.Cut = readVersion(r), r.Uint64()
+	return d, checkEpochs(r, d.Version)
 }
 
 // A pending release holds nothing but its existence.

@@ -83,7 +83,7 @@ func withDeltas(r kv.Reader, d entity.File) (entity.File, error) {
 		if x.Change.After(d.Change) {
 			d.Change = x.Change
 		}
-		d.Version = max(d.Version, x.Version)
+		d.Version = entity.MaxVersion(d.Version, x.Version)
 	}
 	return d, nil
 }
@@ -167,6 +167,6 @@ func newRoot(tx kv.Txn, s entity.Share) entity.File {
 	return entity.File{
 		ID: s.Root, Share: s.ID, Type: entity.Directory, Parent: s.Root,
 		Mode: 0o755, Birth: now, Modify: now, Change: now,
-		Version: nextVersion(tx, 0), Number: rootNumber,
+		Version: nextFileVersion(tx, entity.JournalVersion{}), Number: rootNumber,
 	}
 }

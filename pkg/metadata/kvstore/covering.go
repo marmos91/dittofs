@@ -81,12 +81,12 @@ func refsOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Ex
 	return out, err
 }
 
-func holesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) ([]entity.Extent, error) {
-	recs, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), func(start int64, v []byte) (entity.Extent, int64, error) {
+func holesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) ([]hole, error) {
+	recs, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), func(start int64, v []byte) (hole, int64, error) {
 		h, err := decodeHole(start, v)
 		return h, h.End(), err
 	})
-	out := make([]entity.Extent, len(recs))
+	out := make([]hole, len(recs))
 	for i, rec := range recs {
 		out[i] = rec.value
 	}
@@ -143,7 +143,7 @@ func covering(r kv.Reader, share entity.ShareID, file entity.FileID, want entity
 	if e.IsEmpty() {
 		return nil, nil
 	}
-	applied := entity.VersionOf(f.Applied)
+	applied := f.Applied
 	holes, err := holesOver(r, share, file, e)
 	if err != nil {
 		return nil, err
@@ -162,7 +162,7 @@ func covering(r kv.Reader, share entity.ShareID, file entity.FileID, want entity
 // classify cuts e at every record edge and classes each piece: a hole, else
 // a carved ref no newer overwrite covers, else uncarved. Adjacent pieces of
 // one class, ref and overwrite version merge.
-func classify(e entity.Extent, applied entity.JournalVersion, holes []entity.Extent, refs []entity.ChunkRef, ovs []overwrite) []entity.Span {
+func classify(e entity.Extent, applied entity.JournalVersion, holes []hole, refs []entity.ChunkRef, ovs []overwrite) []entity.Span {
 	cuts := []int64{e.Offset, e.End()}
 	add := func(x entity.Extent) {
 		for _, p := range []int64{x.Offset, x.End()} {
@@ -172,7 +172,7 @@ func classify(e entity.Extent, applied entity.JournalVersion, holes []entity.Ext
 		}
 	}
 	for _, h := range holes {
-		add(h)
+		add(h.Extent)
 	}
 	for _, c := range refs {
 		add(c.Extent())

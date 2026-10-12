@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/hex"
+	"errors"
 	"math/rand/v2"
 	"slices"
 	"testing"
@@ -44,11 +45,11 @@ func TestCodesUnique(t *testing.T) {
 	for name, codes := range map[string][]byte{
 		"kind": {KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
 			KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
-			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO},
-		"F": {FAcl, FX, FS, FE, FT, FH, FRm, FOv, FRef, FHis, FFx, FFo, FRel, FOp, FDp},
+			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP},
+		"F": {FAcl, FX, FS, FE, FT, FH, FRm, FOv, FRef, FHis, FFx, FFo, FRel, FOp, FDp, HisFile},
 		"S": {SInfo, SSt, SNsg, SG, SXp, SSnap, SCut, SLive, SSc, SHd, SHr, SUse, SRh, SOr, SUt, SPu,
-			SPj, SUd, SQt, SQx, SVf, SFnc},
-		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk},
+			SPj, SUd, SQt, SQx, SVf, SFnc, SVl},
+		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk, NSDrain},
 		"gc": {GcLease, GcRecheck, GcHold, GcSuspect, GcForward, GcPause, GcCursor},
 	} {
 		seen := map[byte]bool{}
@@ -106,5 +107,27 @@ func TestReadStringRefusesMalformed(t *testing.T) {
 		if _, _, err := ReadString(raw); err != ErrMalformed {
 			t.Errorf("%s: got %v, want ErrMalformed", b, err)
 		}
+	}
+}
+
+// A journal version round-trips and sorts as a 128-bit number; one with a
+// nonzero epoch half is refused, never read as a smaller number.
+func TestVersion(t *testing.T) {
+	var lo, hi [16]byte
+	lo[15], hi[14] = 0xFF, 0x01
+	a, b := Version(nil, lo), Version(nil, hi)
+	if bytes.Compare(a, b) >= 0 {
+		t.Errorf("%x does not sort below %x", a, b)
+	}
+	if v, rest, err := ReadVersion(append(b, 7)); err != nil || v != hi || !bytes.Equal(rest, []byte{7}) {
+		t.Errorf("ReadVersion = %x, %x, %v", v, rest, err)
+	}
+	var epoch [16]byte
+	epoch[7] = 1
+	if _, _, err := ReadVersion(Version(nil, epoch)); !errors.Is(err, ErrEpoch) {
+		t.Errorf("nonzero epoch: %v, want ErrEpoch", err)
+	}
+	if _, _, err := ReadVersion(a[:15]); !errors.Is(err, ErrMalformed) {
+		t.Errorf("short: %v, want ErrMalformed", err)
 	}
 }

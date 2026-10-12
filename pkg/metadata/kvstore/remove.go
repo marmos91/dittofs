@@ -76,7 +76,7 @@ func dropEntry(tx kv.Txn, key []byte, child entity.File) (Orphaned, error) {
 	}
 	child.Nlink--
 	child.Change = tx.Now()
-	child.Version = nextVersion(tx, child.Version)
+	child.Version = nextFileVersion(tx, child.Version)
 	if err := tx.Delete(key); err != nil {
 		return Orphaned{}, err
 	}
@@ -146,7 +146,7 @@ func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Hand
 		}
 		f.Nlink++
 		f.Change = tx.Now()
-		f.Version = nextVersion(tx, f.Version)
+		f.Version = nextFileVersion(tx, f.Version)
 		if err := tx.Set(key, encodeEntry(entity.Entry{Parent: d.ID, Name: name, Child: f.ID, Type: f.Type})); err != nil {
 			return err
 		}

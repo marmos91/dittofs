@@ -109,8 +109,8 @@ func testCreateAndLookup(t *testing.T, kvo Opener) {
 	f.create(f.admin, f.root, "other", regular(0o644))
 	after, err := f.s.Files().Get(ctx, f.admin, f.root)
 	must(t, err)
-	if after.Version <= before.Version || after.Modify.Before(before.Modify) {
-		t.Errorf("root version %d -> %d", before.Version, after.Version)
+	if !before.Version.Less(after.Version) || after.Modify.Before(before.Modify) {
+		t.Errorf("root version %d -> %d", before.Version.Counter(), after.Version.Counter())
 	}
 }
 

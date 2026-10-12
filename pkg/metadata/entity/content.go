@@ -250,8 +250,9 @@ func (r Removal) Masks(v JournalVersion, e Extent) bool {
 // CloneSpec is what a clone adopts from, carried on its destination's
 // removal so the clone resumes from that record alone.
 type CloneSpec struct {
+	SrcShare       ShareID
 	Src            FileID
 	SrcOff, DstOff int64
 	Len            int64
-	AsOf           JournalVersion // the source journal position the source was read at
+	AsOf           JournalVersion // the source's change version it was read at
 }

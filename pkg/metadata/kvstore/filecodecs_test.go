@@ -21,7 +21,7 @@ func fileCodecCases() []codecCase {
 		Owner: entity.Principal{Kind: entity.PrincipalUser, ID: pid}, Group: group,
 		Mode: 0o4755, Flags: entity.FlagHidden | entity.FlagImmutable,
 		Birth: old, Modify: t0, Change: t0, // Access left zero
-		Version: 9, Size: 5, Charged: 4096, Applied: 7, Nlink: 2,
+		Version: entity.VersionOf(9), Size: 5, Charged: 4096, Applied: entity.VersionOf(7), MaxSpan: 6, Nlink: 2,
 		Shard: 3, Project: 4, Number: 42,
 		CreateVerifier: []byte("verifier"), Target: []byte("/a"),
 	}
@@ -31,14 +31,15 @@ func fileCodecCases() []codecCase {
 		Audit:   []entity.ACE{{Type: entity.ACEAudit, Flags: entity.ACEFailedAccess, Mask: entity.Delete, Who: group}},
 	}
 	e := entity.Entry{Parent: fid, Name: []byte("README"), Child: entity.FileID{15: 2}, Type: entity.Regular}
-	d := delta{Modify: t0, Change: t0, Version: 11, Cut: 1}
+	d := delta{Modify: t0, Change: t0, Version: entity.VersionOf(11), Cut: 1}
 	return []codecCase{
 		{"file", f, encodeFile(f),
 			"01" + "03" + "01aa000000000000000000000000000001" + "02bb000000000000000000000000000002" +
 				"000009ed" + "00000011" +
 				"fffffffd49ef6f00" + "00000000" + "8000000000000000" + "00000000" + // birth 1601, access zero
 				"000000006b49d200" + "0000007b" + "000000006b49d200" + "0000007b" +
-				"0000000000000009" + "0000000000000005" + "0000000000001000" + "0000000000000007" + "00000002" +
+				"00000000000000000000000000000009" + "0000000000000005" + "0000000000001000" +
+				"00000000000000000000000000000007" + "0000000000000006" + "00000002" +
 				"00000000000000000000000000000000" + "0000000000000003" + "0000000000000004" + "000000000000002a" +
 				"087665726966696572" + "022f61" + "00000000" + "00000000" + "00000000000000000000000000000000",
 			func(b []byte) (any, error) { return decodeFile(sid, fid, b) }},
@@ -53,7 +54,7 @@ func fileCodecCases() []codecCase {
 		{"xattr", entity.Xattr{File: fid, Name: []byte("user.k"), Value: []byte("v")}, encodeXattr([]byte("v")), "01" + "0176",
 			func(b []byte) (any, error) { return decodeXattr(fid, []byte("user.k"), b) }},
 		{"delta", d, encodeDelta(d),
-			"01" + "000000006b49d200" + "0000007b" + "000000006b49d200" + "0000007b" + "000000000000000b" + "0000000000000001",
+			"01" + "000000006b49d200" + "0000007b" + "000000006b49d200" + "0000007b" + "0000000000000000000000000000000b" + "0000000000000001",
 			func(b []byte) (any, error) { return decodeDelta(b) }},
 	}
 }

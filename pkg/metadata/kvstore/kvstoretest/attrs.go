@@ -65,11 +65,11 @@ func testTimes(t *testing.T, kvo Opener) {
 	if !got.Modify.Equal(past) || !got.Access.Equal(past) {
 		t.Errorf("times %v %v, want %v", got.Modify, got.Access, past)
 	}
-	if !got.Change.After(made.Change) || got.Version <= made.Version {
-		t.Errorf("Change %v -> %v, Version %d -> %d", made.Change, got.Change, made.Version, got.Version)
+	if !got.Change.After(made.Change) || !made.Version.Less(got.Version) {
+		t.Errorf("Change %v -> %v, Version %d -> %d", made.Change, got.Change, made.Version.Counter(), got.Version.Counter())
 	}
 	again, _ := files.SetAttrs(ctx, f.admin, h, entity.Attrs{}.WithMode(0o600))
-	if !again.Change.After(got.Change) || again.Version <= got.Version {
+	if !again.Change.After(got.Change) || !got.Version.Less(again.Version) {
 		t.Error("a second change did not advance Change and Version")
 	}
 }
@@ -136,7 +136,7 @@ func testXattrs(t *testing.T, kvo Opener) {
 	if len(got) != 2 || got[0] != "user.a=one" || got[1] != "user.b=2" {
 		t.Errorf("xattrs %v", got)
 	}
-	if after, _ := files.Get(ctx, f.admin, h); after.Version <= made.Version {
+	if after, _ := files.Get(ctx, f.admin, h); !made.Version.Less(after.Version) {
 		t.Error("an xattr change did not advance Version")
 	}
 	must(t, files.RemoveXattr(ctx, f.admin, h, []byte("user.a")))

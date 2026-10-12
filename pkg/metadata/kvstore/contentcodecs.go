@@ -47,15 +47,26 @@ func decodeRef(file entity.FileID, offset int64, b []byte) (entity.ChunkRef, err
 	return c, checkEpochs(r, c.Oldest, c.Newest)
 }
 
-func encodeHole(end int64) []byte { return codec.NewWriter(v1).Uint64(uint64(end)).Encode() }
+// hole is one extent below size never written, or deallocated, and the
+// version of the operation that made it, which tells a removal not done the
+// holes it removes from the ones made after it.
+type hole struct {
+	entity.Extent
+	Version entity.JournalVersion
+}
 
-func decodeHole(start int64, b []byte) (entity.Extent, error) {
+func encodeHole(h hole) []byte {
+	return codec.NewWriter(v1).Uint64(uint64(h.End())).Fixed(h.Version[:]).Encode()
+}
+
+func decodeHole(start int64, b []byte) (hole, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Extent{}, err
+		return hole{}, err
 	}
-	e := entity.ExtentOf(start, int64(r.Uint64()))
-	return e, r.Done()
+	h := hole{Extent: entity.ExtentOf(start, int64(r.Uint64()))}
+	h.Version = readVersion(r)
+	return h, checkEpochs(r, h.Version)
 }
 
 // overwrite is one extent a committed write replaced committed content over,
@@ -86,7 +97,7 @@ func encodeRemoval(m entity.Removal) []byte {
 	w := codec.NewWriter(v1).Uint64(uint64(m.Extent.Offset)).Uint64(uint64(m.Extent.End())).
 		Uint8(uint8(m.Kind)).Uint64(uint64(m.Cut)).Uint64(uint64(m.Cursor)).Bool(m.Done).Bool(m.Clone != nil)
 	if c := m.Clone; c != nil {
-		w.Fixed(c.Src[:]).Uint64(uint64(c.SrcOff)).Uint64(uint64(c.DstOff)).Uint64(uint64(c.Len)).Fixed(c.AsOf[:])
+		w.Fixed(c.SrcShare[:]).Fixed(c.Src[:]).Uint64(uint64(c.SrcOff)).Uint64(uint64(c.DstOff)).Uint64(uint64(c.Len)).Fixed(c.AsOf[:])
 	}
 	return w.Encode()
 }
@@ -104,7 +115,7 @@ func decodeRemoval(version entity.JournalVersion, b []byte) (entity.Removal, err
 	m.Cursor = int64(r.Uint64())
 	m.Done = r.Bool()
 	if r.Bool() {
-		c := &entity.CloneSpec{Src: readFileID(r)}
+		c := &entity.CloneSpec{SrcShare: entity.ShareID(readFileID(r)), Src: readFileID(r)}
 		c.SrcOff, c.DstOff, c.Len = int64(r.Uint64()), int64(r.Uint64()), int64(r.Uint64())
 		c.AsOf = readVersion(r)
 		m.Clone = c

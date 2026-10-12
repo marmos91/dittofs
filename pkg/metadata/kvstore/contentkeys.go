@@ -34,6 +34,10 @@ func refsPrefix(share entity.ShareID, file entity.FileID) []byte {
 	return fileSub(share, file, keys.FRef)
 }
 
+func removalKey(share entity.ShareID, file entity.FileID, version entity.JournalVersion) []byte {
+	return keys.Version(fileSub(share, file, keys.FRm), version)
+}
+
 func removalsPrefix(share entity.ShareID, file entity.FileID) []byte {
 	return fileSub(share, file, keys.FRm)
 }

@@ -34,14 +34,15 @@ func contentCodecCases() []codecCase {
 		Oldest: entity.VersionOf(1), Newest: entity.VersionOf(2), Born: 3, NSGen: 1}
 	rm := entity.Removal{Version: entity.VersionOf(4), Extent: entity.Extent{Offset: 3 << 20, Length: entity.EndOfFile - 3<<20},
 		Kind: entity.RemoveClone, Cut: 2, Cursor: 3 << 20,
-		Clone: &entity.CloneSpec{Src: fid, SrcOff: 0, DstOff: 3 << 20, Len: 1 << 20, AsOf: entity.VersionOf(9)}}
+		Clone: &entity.CloneSpec{SrcShare: sid, Src: fid, SrcOff: 0, DstOff: 3 << 20, Len: 1 << 20, AsOf: entity.VersionOf(9)}}
 	blk := entity.Block{Name: bname, State: entity.BlockRetired, NotBefore: t0, Live: 0, Dead: 10, DeadAt: t0,
 		Size: 4 << 20, Generation: 1, Carried: []entity.Carried{{Hash: hash, Length: 100}}}
 	return []codecCase{
 		{"ref", ref, encodeRef(ref),
 			"01" + hex.EncodeToString(hash[:]) + "00000001" + hexU64(512) + hexU64(1<<20) + v16(1) + v16(2) + hexU64(3),
 			func(b []byte) (any, error) { return decodeRef(fid, 4096, b) }},
-		{"hole", entity.ExtentOf(10, 20), encodeHole(20), "01" + hexU64(20),
+		{"hole", hole{entity.ExtentOf(10, 20), entity.VersionOf(5)}, encodeHole(hole{entity.ExtentOf(10, 20), entity.VersionOf(5)}),
+			"01" + hexU64(20) + v16(5),
 			func(b []byte) (any, error) { return decodeHole(10, b) }},
 		{"overwrite", overwrite{Extent: entity.ExtentOf(1<<20, 2<<20), Version: entity.VersionOf(3), Born: 1},
 			encodeOverwrite(overwrite{Extent: entity.ExtentOf(1<<20, 2<<20), Version: entity.VersionOf(3), Born: 1}),
@@ -49,7 +50,7 @@ func contentCodecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeOverwrite(1<<20, b) }},
 		{"removal", rm, encodeRemoval(rm),
 			"01" + hexU64(3<<20) + hexU64(uint64(entity.EndOfFile)) + "04" + hexU64(2) + hexU64(3<<20) + "00" + "01" +
-				hex.EncodeToString(fid[:]) + hexU64(0) + hexU64(3<<20) + hexU64(1<<20) + v16(9),
+				hex.EncodeToString(sid[:]) + hex.EncodeToString(fid[:]) + hexU64(0) + hexU64(3<<20) + hexU64(1<<20) + v16(9),
 			func(b []byte) (any, error) { return decodeRemoval(entity.VersionOf(4), b) }},
 		{"fence", fence{Shard: 0, Epoch: 7}, encodeFence(fence{Epoch: 7}), "01" + hexU64(0) + hexU64(7),
 			func(b []byte) (any, error) { return decodeFence(b) }},
@@ -116,6 +117,7 @@ func TestContentKeyGolden(t *testing.T) {
 	}{
 		{"hole", holeKey(sid, fid, 7), "01" + s + f + "06" + hexU64(7)},
 		{"overwrite", overwriteKey(sid, fid, 7), "01" + s + f + "08" + hexU64(7)},
+		{"removal", removalKey(sid, fid, entity.VersionOf(7)), "01" + s + f + "07" + v16(7)},
 		{"ref", refKey(sid, fid, 7), "01" + s + f + "09" + hexU64(7)},
 		{"existence fence", existenceFenceKey(sid, fid), "01" + s + f + "0b"},
 		{"offload fence", offloadFenceKey(sid, fid), "01" + s + f + "0c"},

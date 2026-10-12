@@ -6,6 +6,7 @@ import (
 	"errors"
 	"iter"
 
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
 )
 
@@ -42,6 +43,16 @@ func raise(tx kv.Txn, key []byte) error {
 // cache keyed by version cannot serve the old record's decision for the new.
 func nextVersion(tx kv.Txn, old uint64) uint64 {
 	return max(old+1, uint64(tx.Now().UnixNano()))
+}
+
+// nextFileVersion is nextVersion for a File's Version, a journal version with
+// the epoch half zero.
+//
+// ponytail: the counter half is store time, standing in for the journal's
+// version counter, which the engine draws below the share's version limit.
+// Take the version from the caller once the engine passes one in.
+func nextFileVersion(tx kv.Txn, old entity.JournalVersion) entity.JournalVersion {
+	return entity.VersionOf(nextVersion(tx, old.Counter()))
 }
 
 const pageSize = 256

@@ -27,7 +27,7 @@ const (
 // moves it back, and Version is drawn above the file's.
 func changed(tx kv.Txn, f *entity.File) {
 	f.Change = laterOf(tx.Now(), f.Change)
-	f.Version = nextVersion(tx, f.Version)
+	f.Version = nextFileVersion(tx, f.Version)
 }
 
 func laterOf(now, prev time.Time) time.Time {

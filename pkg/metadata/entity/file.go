@@ -23,15 +23,20 @@ type File struct {
 	// only on a content change.
 	Birth, Access, Modify, Change time.Time
 
-	// Version advances on every change, metadata or content: the NFSv4
-	// change attribute and what SMB change detection compares.
-	Version uint64
+	// Version rises on every change, metadata or content. It is drawn from
+	// the journal's version counter, so it is a journal version; the NFSv4
+	// change attribute and SMB change detection report its counter half.
+	Version JournalVersion
 
-	// Size, Charged and Applied are the write path's: only an existence
-	// commit sets them.
+	// Size, Charged, Applied and MaxSpan are the write path's: only an
+	// existence commit and a removal set them.
 	Size    int64
 	Charged int64 // logical bytes charged to Owner, Group and Project, holes excluded
-	Applied uint64
+	Applied JournalVersion
+	// MaxSpan is the length of the longest hole or overwrite record the file
+	// has ever had, never lowered, so every such record over an offset, live
+	// or in history, starts within MaxSpan below it.
+	MaxSpan int64
 
 	// Nlink is the number of entries naming the file. A share's root and a
 	// named stream have none.

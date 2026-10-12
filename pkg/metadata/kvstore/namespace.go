@@ -246,7 +246,7 @@ func newFile(tx kv.Txn, id entity.Identity, d entity.File, fileID entity.FileID,
 		ID: fileID, Share: d.Share, Type: nf.Type,
 		Owner: id.Principal, Mode: nf.Mode & entity.ModePerm,
 		Birth: now, Access: now, Modify: now, Change: now,
-		Version: nextVersion(tx, 0), Nlink: 1,
+		Version: nextFileVersion(tx, entity.JournalVersion{}), Nlink: 1,
 		Shard: d.Shard, Project: d.Project, Number: number,
 		CreateVerifier: cloneOrNil(nf.Verifier), Target: cloneOrNil(nf.Target), Device: nf.Device,
 	}
@@ -326,6 +326,6 @@ func touchDir(tx kv.Txn, share entity.ShareID, d entity.File) error {
 	rand.Read(unique[:])
 	now := tx.Now()
 	return tx.Set(deltaKey(share, d.ID, unique), encodeDelta(delta{
-		Modify: now, Change: now, Version: nextVersion(tx, d.Version),
+		Modify: now, Change: now, Version: nextFileVersion(tx, d.Version),
 	}))
 }

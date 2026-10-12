@@ -53,6 +53,8 @@ const (
 	KindSEC    byte = 0x34
 	KindCL     byte = 0x35
 	KindCLO    byte = 0x36
+	KindTG     byte = 0x37
+	KindMKP    byte = 0x38
 )
 
 // Sub-kinds under F‖id. The File itself has none.
@@ -72,6 +74,10 @@ const (
 	FRel byte = 0x0D
 	FOp  byte = 0x0E
 	FDp  byte = 0x0F
+
+	// HisFile is the File's own suffix in a history key, where its live
+	// suffix is empty; no sub-kind uses it, so its died cannot read as one.
+	HisFile byte = 0x00
 
 	OpL byte = 0x01 // under F‖id‖op‖openID
 )
@@ -100,6 +106,7 @@ const (
 	SQx   byte = 0x14
 	SVf   byte = 0x15
 	SFnc  byte = 0x16
+	SVl   byte = 0x17 // version limit
 )
 
 // Sub-kinds under NS‖ns, and under NS‖ns‖gc.
@@ -109,6 +116,7 @@ const (
 	NSPk    byte = 0x03
 	NSKey   byte = 0x04
 	NSBk    byte = 0x05
+	NSDrain byte = 0x06
 
 	GcLease   byte = 0x01
 	GcRecheck byte = 0x02
@@ -127,6 +135,7 @@ const (
 	SHRq byte = 0x01
 	SHXh byte = 0x02
 	SHHw byte = 0x03
+	SHRm byte = 0x04
 
 	CLSh byte = 0x01
 )
@@ -144,9 +153,9 @@ const (
 
 	KeyChunkID  byte = 0x01
 	KeyChunking byte = 0x02
-	KeyHeader   byte = 0x03
-	KeyExport   byte = 0x04
-	KeyData     byte = 0x05
+	// 0x03 is unassigned: it named the header key, which is gone.
+	KeyExport byte = 0x04
+	KeyData   byte = 0x05
 )
 
 // IDLen is the length of every minted identifier.
@@ -165,6 +174,10 @@ func Uint64(dst []byte, v uint64) []byte { return binary.BigEndian.AppendUint64(
 // ID appends a fixed-length identifier raw. Its length is the caller's to
 // hold fixed, IDLen for every minted ID.
 func ID(dst, id []byte) []byte { return append(dst, id...) }
+
+// Version appends a journal version: 16 bytes big-endian, the epoch half
+// then the counter half, so it sorts as one 128-bit number.
+func Version(dst []byte, v [16]byte) []byte { return append(dst, v[:]...) }
 
 // String appends a byte string with each 0x00 written as 0x00 0xFF, then the
 // terminator 0x00 0x01. The terminator cannot occur inside a string, so no
@@ -194,6 +207,22 @@ func ReadID(b []byte, n int) ([]byte, []byte, error) {
 		return nil, nil, ErrMalformed
 	}
 	return b[:n:n], b[n:], nil
+}
+
+// ErrEpoch is a journal version whose epoch half is set, which this format
+// refuses rather than read as a smaller number.
+var ErrEpoch = errors.New("keys: journal version with a nonzero epoch")
+
+// ReadVersion decodes a journal version from the front of b.
+func ReadVersion(b []byte) (v [16]byte, rest []byte, err error) {
+	if len(b) < 16 {
+		return v, nil, ErrMalformed
+	}
+	copy(v[:], b)
+	if binary.BigEndian.Uint64(v[:8]) != 0 {
+		return v, nil, ErrEpoch
+	}
+	return v, b[16:], nil
 }
 
 // ReadString decodes a byte string from the front of b into a new slice.

@@ -139,7 +139,7 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 		child.Parent = dd.ID
 	}
 	child.Change = tx.Now()
-	child.Version = nextVersion(tx, child.Version)
+	child.Version = nextFileVersion(tx, child.Version)
 	if err := tx.Set(fileKey(share, child.ID), encodeFile(child)); err != nil {
 		return Orphaned{}, err
 	}
