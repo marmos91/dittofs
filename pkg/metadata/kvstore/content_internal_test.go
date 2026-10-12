@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"sync"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func newContentFix(t *testing.T, wrap func(kv.KV) kv.KV) *cfix {
 		store = wrap(db)
 	}
 	ctx := context.Background()
-	if err := Init(ctx, store); err != nil {
+	if err := Init(ctx, store, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Open(ctx, store)

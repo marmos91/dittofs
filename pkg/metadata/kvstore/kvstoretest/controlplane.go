@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"iter"
 	"net/netip"
 	"slices"
@@ -22,7 +23,7 @@ var ctx = context.Background()
 func newStore(t *testing.T, kvo Opener) (*kvstore.Store, *kv.Counting) {
 	t.Helper()
 	c := &kv.Counting{KV: kvo(t)}
-	if err := kvstore.Init(ctx, c); err != nil {
+	if err := kvstore.Init(ctx, c, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	s, err := kvstore.Open(ctx, c)
@@ -251,7 +252,7 @@ func testSetShareState(t *testing.T, kvo Opener) {
 	must(t, cp.PutShare(ctx, sh))
 	v, _ := cp.ShareList(ctx)
 	must(t, cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced))
-	if err := cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareFrozen); !merrs.IsConflictError(err) {
+	if err := cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced); !merrs.IsConflictError(err) {
 		t.Errorf("stale from: %v", err)
 	}
 	if w, _ := cp.ShareList(ctx); w.Version != v.Version+1 {
@@ -396,5 +397,39 @@ func testShareBoundSettings(t *testing.T, kvo Opener) {
 		if err := cp.PutShare(ctx, changed); err == nil {
 			t.Errorf("changing the %s was accepted", name)
 		}
+	}
+}
+
+// Every share gets a journal tag of its own, from 1: a put keeps it, and a
+// share created after another's removal never gets the removed one's.
+func testShareTags(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	a, b := share("a", "/a"), share("b", "/b")
+	must(t, cp.PutShare(ctx, a))
+	must(t, cp.PutShare(ctx, b))
+	tags := func() map[entity.ShareID]uint32 {
+		m := map[entity.ShareID]uint32{}
+		for _, sh := range all(t, cp.Shares(ctx)) {
+			m[sh.ID] = sh.Tag
+		}
+		return m
+	}
+	before := tags()
+	if before[a.ID] == 0 || before[b.ID] == 0 || before[a.ID] == before[b.ID] {
+		t.Fatalf("tags %v", before)
+	}
+	a.Name = "renamed"
+	a.Tag = 77 // a put never writes the tag
+	must(t, cp.PutShare(ctx, a))
+	must(t, cp.DeleteShare(ctx, b.ID, entity.SnapshotsRefuse))
+	c := share("c", "/c")
+	must(t, cp.PutShare(ctx, c))
+	after := tags()
+	if after[a.ID] != before[a.ID] {
+		t.Errorf("a put changed the tag %d -> %d", before[a.ID], after[a.ID])
+	}
+	if after[c.ID] <= before[b.ID] {
+		t.Errorf("new share's tag %d does not follow the removed one's %d", after[c.ID], before[b.ID])
 	}
 }

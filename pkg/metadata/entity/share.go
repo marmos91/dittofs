@@ -83,11 +83,11 @@ func PathAncestors(path string) []string {
 
 // Gate is the share state's answer to every call: nil when it admits,
 // ErrDelay while quiesced, ErrStale while being removed or once retired. A
-// cut's own gate holds writes, so a frozen share admits here. An unknown
-// state refuses as stale rather than admit.
+// cut is not a state: its own gate holds writes. An unknown state refuses as
+// stale rather than admit.
 func (s ShareState) Gate() error {
 	switch s {
-	case ShareEnabled, ShareFrozen:
+	case ShareEnabled:
 		return nil
 	case ShareQuiesced:
 		return ErrDelay

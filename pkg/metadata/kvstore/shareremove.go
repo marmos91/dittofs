@@ -59,11 +59,11 @@ func (c ControlPlane) DeleteShare(ctx context.Context, share entity.ShareID, sna
 		if err != nil {
 			return err
 		}
-		switch st.State {
-		case entity.ShareRemoving, entity.ShareRetired:
+		// ponytail: a running cut does not refuse the removal with ErrDelay,
+		// because no cut is recorded yet. Read the share's cut record here
+		// when snapshots land.
+		if st.State == entity.ShareRemoving || st.State == entity.ShareRetired {
 			return entity.ErrStale
-		case entity.ShareFrozen:
-			return entity.ErrDelay // a cut is running
 		}
 		if err := noPausedNamespace(tx, share); err != nil {
 			return err

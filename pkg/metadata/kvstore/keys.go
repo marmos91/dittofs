@@ -97,6 +97,7 @@ var (
 	shareListKey    = []byte{keys.KindSL}
 	installationKey = []byte{keys.KindIN}
 	cfgGenKey       = []byte{keys.KindCFGGEN}
+	tagKey          = []byte{keys.KindTG}
 )
 
 // Keys of a file's records, all under F‖share‖file.

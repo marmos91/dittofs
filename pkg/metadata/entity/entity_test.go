@@ -138,7 +138,7 @@ func TestSharePaths(t *testing.T) {
 
 func TestShareStateGate(t *testing.T) {
 	for s, want := range map[ShareState]error{
-		ShareEnabled: nil, ShareFrozen: nil, ShareQuiesced: ErrDelay,
+		ShareEnabled: nil, ShareQuiesced: ErrDelay,
 		ShareRemoving: ErrStale, ShareRetired: ErrStale, 0: ErrStale,
 	} {
 		if got := s.Gate(); got != want {

@@ -77,17 +77,18 @@ type Store struct {
 }
 
 // Init creates the store: the format record at the newest format, the
-// Installation record with a fresh identity, and ShareList at zero, in one
+// Installation record with the ID the initialisation step minted and a fresh
+// instance, and ShareList at zero, in one
 // transaction. It refuses a store that already has a format record, so two
 // racing initialisations cannot both commit. Opening never initialises.
-func Init(ctx context.Context, db kv.KV) error {
+func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 	return db.Update(ctx, func(tx kv.Txn) error {
 		if _, err := tx.Get(keys.Format); err == nil {
 			return ErrInitialised
 		} else if !errors.Is(err, kv.ErrNotFound) {
 			return err
 		}
-		in := entity.Installation{ID: uuid.New(), Instance: uuid.New()}
+		in := entity.Installation{ID: install, Instance: uuid.New()}
 		for _, kvs := range [][2][]byte{
 			{keys.Format, encodeFormat(format{Version: maxFormat, Folds: knownFolds})},
 			{installationKey, encodeInstallation(in)},

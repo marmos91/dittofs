@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/google/uuid"
 	"os"
 	"slices"
 	"strconv"
@@ -79,7 +80,7 @@ func newBenchFS(b *testing.B, open Opener) *bfs {
 	b.Helper()
 	c := &kv.Counting{KV: open(b)}
 	ctx := context.Background()
-	if err := kvstore.Init(ctx, c); err != nil {
+	if err := kvstore.Init(ctx, c, uuid.New()); err != nil {
 		b.Fatal(err)
 	}
 	s, err := kvstore.Open(ctx, c)

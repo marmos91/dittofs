@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"iter"
+	"math"
 	"slices"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -111,7 +113,7 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 			return err
 		}
 		if !existed {
-			if err := createShareRecords(tx, s); err != nil {
+			if err := createShareRecords(tx, &s); err != nil {
 				return err
 			}
 		}
@@ -132,7 +134,12 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 // configuration makes; take the namespace from the share's settings once
 // they name one. The root's key must be free, so a root ID that
 // already names a file is refused rather than overwritten.
-func createShareRecords(tx kv.Txn, s entity.Share) error {
+func createShareRecords(tx kv.Txn, s *entity.Share) error {
+	tag, err := nextTag(tx)
+	if err != nil {
+		return err
+	}
+	s.Tag = tag
 	root := fileKey(s.ID, s.Root)
 	if _, ok, err := get(tx, root); err != nil {
 		return err
@@ -141,7 +148,7 @@ func createShareRecords(tx kv.Txn, s entity.Share) error {
 	}
 	for _, kvs := range [][2][]byte{
 		{shareKey(s.ID, keys.SSt), encodeState(shareState{State: entity.ShareEnabled})},
-		{root, encodeFile(newRoot(tx, s))},
+		{root, encodeFile(newRoot(tx, *s))},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
 		{namespacesKey(s.ID), encodeNamespaces(shareNamespaces{
 			Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: entity.NewNamespaceID()}}, Write: 1})},
@@ -151,6 +158,28 @@ func createShareRecords(tx kv.Txn, s entity.Share) error {
 		}
 	}
 	return nil
+}
+
+// ErrTagsExhausted is an installation that has given every journal tag.
+var ErrTagsExhausted = errors.New("kvstore: installation has no share tags left")
+
+// nextTag mints a journal tag no share of the installation has had: the
+// tag counter's next value, from 1, since a zero tag names no share.
+func nextTag(tx kv.Txn) (uint32, error) {
+	b, ok, err := get(tx, tagKey)
+	if err != nil {
+		return 0, err
+	}
+	var v uint64
+	if ok {
+		if v, err = decodeCounter(b); err != nil {
+			return 0, err
+		}
+	}
+	if v >= math.MaxUint32 {
+		return 0, ErrTagsExhausted
+	}
+	return uint32(v + 1), tx.Set(tagKey, encodeCounter(v+1))
 }
 
 // liveShare refuses a share being removed or retired, which is stale to
@@ -194,7 +223,7 @@ func keepBound(s *entity.Share, old entity.Share) error {
 		s.DigestKey != ([entity.DigestKeyLen]byte{}) && s.DigestKey != old.DigestKey {
 		return merrs.NewInvalidArgumentError("a share's fold rule, name rule and digest key never change")
 	}
-	s.Fold, s.Names, s.DigestKey = old.Fold, old.Names, old.DigestKey
+	s.Fold, s.Names, s.DigestKey, s.Tag = old.Fold, old.Names, old.DigestKey, old.Tag
 	return nil
 }
 

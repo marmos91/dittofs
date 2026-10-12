@@ -65,8 +65,8 @@ func Run(t *testing.T, open Opener) {
 		{"RenameLoopRace", testRenameLoopRace},
 		{"RenameOverRacesCreate", testRenameOverRacesCreate},
 		{"DeleteShareMark", testDeleteShareMark},
-		{"DeleteShareDuringCut", testDeleteShareDuringCut},
 		{"DeleteShareRacesRename", testDeleteShareRacesRename},
+		{"ShareTags", testShareTags},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

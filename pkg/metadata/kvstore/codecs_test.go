@@ -37,7 +37,7 @@ func codecCases() []codecCase {
 		Secret:    entity.SecretRef{15: 9},
 	}
 	grp := entity.Group{Principal: group, Name: "staff"}
-	share := entity.Share{ID: sid, Name: "Photos", Path: "/photos", Root: entity.FileID{15: 7},
+	share := entity.Share{ID: sid, Name: "Photos", Path: "/photos", Root: entity.FileID{15: 7}, Tag: 9,
 		Fold: entity.FoldUpcase, Names: entity.NamesWindows, DigestKey: [32]byte{31: 0x5A}}
 	grant := entity.ShareGrant{Share: sid, Principal: group, Access: entity.AccessReadWrite, Version: 3}
 	policy := entity.ExportPolicy{
@@ -70,10 +70,10 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodePrincipal(b) }},
 		{"share", share, encodeShareInfo(share),
 			"01" + "0650686f746f73" + "072f70686f746f73" + "00000000000000000000000000000007" +
-				"00000002" + "02" + "000000000000000000000000000000000000000000000000000000000000005a",
+				"00000002" + "02" + "000000000000000000000000000000000000000000000000000000000000005a" + "00000009",
 			func(b []byte) (any, error) { return decodeShareInfo(sid, b) }},
 		{"state", shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach},
-			encodeState(shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach}), "01" + "04" + "01" + "02",
+			encodeState(shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach}), "01" + "03" + "01" + "02",
 			func(b []byte) (any, error) { return decodeState(b) }},
 		{"grant", grant, encodeGrant(grant), "01" + "02" + "02" + "0000000000000003",
 			func(b []byte) (any, error) { return decodeGrant(sid, gid, b) }},

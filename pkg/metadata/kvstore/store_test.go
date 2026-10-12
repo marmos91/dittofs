@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"sync"
 	"testing"
 
@@ -40,10 +41,11 @@ func TestOpenRefusesUninitialised(t *testing.T) {
 func TestInitThenOpen(t *testing.T) {
 	ctx := context.Background()
 	db := memKV(t)
-	if err := Init(ctx, db); err != nil {
+	install := uuid.New()
+	if err := Init(ctx, db, install); err != nil {
 		t.Fatal(err)
 	}
-	if err := Init(ctx, db); !errors.Is(err, ErrInitialised) {
+	if err := Init(ctx, db, uuid.New()); !errors.Is(err, ErrInitialised) {
 		t.Fatalf("second Init: %v", err)
 	}
 	// Open reads the format record and nothing else.
@@ -65,7 +67,7 @@ func TestInitThenOpen(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := decodeInstallation(in); err != nil || got.ID == ([16]byte{}) || got.Instance == got.ID {
+	if got, err := decodeInstallation(in); err != nil || got.ID != install || got.Instance == got.ID {
 		t.Errorf("installation %+v, %v", got, err)
 	}
 	if v, err := decodeCounter(sl); err != nil || v != 0 {
@@ -82,7 +84,7 @@ func TestInitRace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = Init(context.Background(), db)
+			errs[i] = Init(context.Background(), db, uuid.New())
 		}()
 	}
 	wg.Wait()

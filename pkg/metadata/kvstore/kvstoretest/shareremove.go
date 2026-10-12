@@ -46,16 +46,6 @@ func testDeleteShareMark(t *testing.T, kvo Opener) {
 
 func errOf2(_ entity.Handle, _ entity.File, err error) error { return err }
 
-// A cut freezing the share refuses the removal, which the client retries.
-func testDeleteShareDuringCut(t *testing.T, kvo Opener) {
-	f := newFS(t, kvo, entity.FoldIdentity)
-	cp := f.s.ControlPlane()
-	must(t, cp.SetShareState(ctx, f.share.ID, entity.ShareEnabled, entity.ShareFrozen))
-	if err := cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsDelete); !errors.Is(err, entity.ErrDelay) {
-		t.Errorf("removal during a cut: %v", err)
-	}
-}
-
 // The mark and a rename of the same share, in both commit orders: whichever
 // commits second sees the other, so a removed share is never renamed back
 // into the index.

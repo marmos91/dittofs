@@ -67,6 +67,10 @@ type Share struct {
 	Fold      FoldRule
 	Names     NameRule
 	DigestKey [DigestKeyLen]byte
+	// Tag is the share's journal tag, minted from the installation's tag
+	// counter when the share arrives and never given to another share; a
+	// share put never changes it. Zero names no share.
+	Tag uint32
 	// State is its own record, not part of the one a share put writes: a cut
 	// and a deletion change it as well as the management API.
 	State ShareState
@@ -84,14 +88,12 @@ type ShareState uint8
 const (
 	ShareEnabled ShareState = iota + 1
 	ShareQuiesced
-	ShareFrozen // frozen for a cut
 	ShareRemoving
 	ShareRetired
 )
 
 var shareStates = []string{
-	ShareEnabled: "enabled", ShareQuiesced: "quiesced", ShareFrozen: "frozen",
-	ShareRemoving: "removing", ShareRetired: "retired",
+	ShareEnabled: "enabled", ShareQuiesced: "quiesced", ShareRemoving: "removing", ShareRetired: "retired",
 }
 
 func (s ShareState) String() string                { return enumString(shareStates, s) }

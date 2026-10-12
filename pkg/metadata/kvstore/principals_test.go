@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"context"
+	"github.com/google/uuid"
 	"slices"
 	"testing"
 
@@ -14,7 +15,7 @@ import (
 func openStore(t *testing.T) *Store {
 	t.Helper()
 	db := memKV(t)
-	if err := Init(context.Background(), db); err != nil {
+	if err := Init(context.Background(), db, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Open(context.Background(), db)

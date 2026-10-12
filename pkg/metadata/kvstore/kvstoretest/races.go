@@ -2,6 +2,7 @@ package kvstoretest
 
 import (
 	"context"
+	"github.com/google/uuid"
 	"sync"
 	"testing"
 
@@ -45,7 +46,7 @@ type backend struct {
 func heldStore(t *testing.T, b backend) (*kvstore.Store, *holding) {
 	t.Helper()
 	h := &holding{KV: b.open(t)}
-	must(t, kvstore.Init(ctx, h))
+	must(t, kvstore.Init(ctx, h, uuid.New()))
 	s, err := kvstore.Open(ctx, h)
 	must(t, err)
 	return s, h
@@ -164,7 +165,7 @@ func testShareStateRace(t *testing.T, kvo Opener) {
 	sh := share("photos", "/photos")
 	must(t, cp.PutShare(ctx, sh))
 	outer, inner := race(h,
-		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareFrozen) },
+		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced) },
 		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced) })
 	must(t, inner)
 	if !merrs.IsConflictError(outer) {
