@@ -91,6 +91,27 @@ func (s ShareState) String() string                { return enumString(shareStat
 func (s ShareState) MarshalText() ([]byte, error)  { return enumMarshal(shareStates, s) }
 func (s *ShareState) UnmarshalText(b []byte) error { return enumUnmarshal(shareStates, s, b) }
 
+// SnapshotDisposition is what a share's removal does with its snapshots:
+// refuse to start while any exist, the default; delete them; or detach them,
+// keeping what they see after the share is gone.
+type SnapshotDisposition uint8
+
+const (
+	SnapshotsRefuse SnapshotDisposition = iota
+	SnapshotsDelete
+	SnapshotsDetach
+)
+
+var snapshotDispositions = []string{SnapshotsRefuse: "refuse", SnapshotsDelete: "delete", SnapshotsDetach: "detach"}
+
+func (d SnapshotDisposition) String() string { return enumString(snapshotDispositions, d) }
+func (d SnapshotDisposition) MarshalText() ([]byte, error) {
+	return enumMarshal(snapshotDispositions, d)
+}
+func (d *SnapshotDisposition) UnmarshalText(b []byte) error {
+	return enumUnmarshal(snapshotDispositions, d, b)
+}
+
 // ShareGrant is one principal's access to one share, evaluated on every call
 // before any file ACL.
 type ShareGrant struct {

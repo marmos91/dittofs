@@ -72,7 +72,8 @@ func codecCases() []codecCase {
 			"01" + "0650686f746f73" + "072f70686f746f73" + "00000000000000000000000000000007" +
 				"00000002" + "02" + "000000000000000000000000000000000000000000000000000000000000005a",
 			func(b []byte) (any, error) { return decodeShareInfo(sid, b) }},
-		{"state", entity.ShareQuiesced, encodeState(entity.ShareQuiesced), "0102",
+		{"state", shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach},
+			encodeState(shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach}), "01" + "04" + "01" + "02",
 			func(b []byte) (any, error) { return decodeState(b) }},
 		{"grant", grant, encodeGrant(grant), "01" + "02" + "02" + "0000000000000003",
 			func(b []byte) (any, error) { return decodeGrant(sid, gid, b) }},

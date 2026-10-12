@@ -139,14 +139,25 @@ func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
 	return s, r.Done()
 }
 
-func encodeState(s entity.ShareState) []byte { return codec.NewWriter(v1).Uint8(uint8(s)).Encode() }
+// shareState is a share's state record: its state and, while it is being
+// removed, how far the removal has got and what it does with snapshots, so
+// a crash resumes the removal where it stopped.
+type shareState struct {
+	State     entity.ShareState
+	Step      uint8
+	Snapshots entity.SnapshotDisposition
+}
 
-func decodeState(b []byte) (entity.ShareState, error) {
+func encodeState(s shareState) []byte {
+	return codec.NewWriter(v1).Uint8(uint8(s.State)).Uint8(s.Step).Uint8(uint8(s.Snapshots)).Encode()
+}
+
+func decodeState(b []byte) (shareState, error) {
 	r, err := open(b)
 	if err != nil {
-		return 0, err
+		return shareState{}, err
 	}
-	s := entity.ShareState(r.Uint8())
+	s := shareState{State: entity.ShareState(r.Uint8()), Step: r.Uint8(), Snapshots: entity.SnapshotDisposition(r.Uint8())}
 	return s, r.Done()
 }
 

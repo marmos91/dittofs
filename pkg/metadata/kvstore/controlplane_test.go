@@ -255,7 +255,7 @@ func TestSetShareState(t *testing.T) {
 	must(t, cp.PutShare(ctx, sh))
 	v, _ := cp.ShareList(ctx)
 	must(t, cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced))
-	if err := cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareRemoving); !merrs.IsConflictError(err) {
+	if err := cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareFrozen); !merrs.IsConflictError(err) {
 		t.Errorf("stale from: %v", err)
 	}
 	if w, _ := cp.ShareList(ctx); w.Version != v.Version+1 {

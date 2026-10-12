@@ -116,6 +116,9 @@ func (f Files) Root(ctx context.Context, id entity.Identity, share entity.ShareI
 		if err != nil {
 			return err
 		}
+		if err := liveShare(r, share); err != nil {
+			return err
+		}
 		access, err := grantFor(r, share, id)
 		if err != nil {
 			return err

@@ -26,14 +26,16 @@ func TestCosts(t *testing.T) {
 
 	sh.Name = "pictures"
 	must(t, cp.PutShare(ctx, sh))
-	// Read the info record, the new name row and ShareList; write all three;
-	// delete the old name row. The path did not change, so no path row is read.
-	if got, want := c.Take(), (kv.Counts{Gets: 3, Sets: 3, Deletes: 1}); got != want {
+	// Read the info and state records, the new name row and ShareList; write
+	// the info, the name row and ShareList; delete the old name row. The path
+	// did not change, so no path row is read.
+	if got, want := c.Take(), (kv.Counts{Gets: 4, Sets: 3, Deletes: 1}); got != want {
 		t.Errorf("share rename: %+v, want %+v", got, want)
 	}
 
 	must(t, cp.PutShare(ctx, sh))
-	if got, want := c.Take(), (kv.Counts{Gets: 1}); got != want {
+	// The info and state records only.
+	if got, want := c.Take(), (kv.Counts{Gets: 2}); got != want {
 		t.Errorf("unchanged share put: %+v, want %+v", got, want)
 	}
 }

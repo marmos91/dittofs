@@ -37,7 +37,8 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 	if b, err = r.Get(shareKey(id, keys.SSt)); err != nil {
 		return s, err
 	}
-	s.State, err = decodeState(b)
+	st, err := decodeState(b)
+	s.State = st.State
 	return s, err
 }
 
@@ -76,6 +77,9 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 		var old entity.Share
 		if existed {
 			if old, err = decodeShareInfo(s.ID, b); err != nil {
+				return err
+			}
+			if err := liveShare(tx, s.ID); err != nil {
 				return err
 			}
 			if old.Root != s.Root {
@@ -120,13 +124,31 @@ func createShareRecords(tx kv.Txn, s entity.Share) error {
 		return merrs.NewAlreadyExistsError("root " + s.Root.String())
 	}
 	for _, kvs := range [][2][]byte{
-		{shareKey(s.ID, keys.SSt), encodeState(entity.ShareEnabled)},
+		{shareKey(s.ID, keys.SSt), encodeState(shareState{State: entity.ShareEnabled})},
 		{root, encodeFile(newRoot(tx, s))},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
 	} {
 		if err := tx.Set(kvs[0], kvs[1]); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// liveShare refuses a share being removed or retired, which is stale to
+// every caller. The read is tracked, so a write that passed it conflicts with
+// a removal that marks the share before it commits.
+func liveShare(r kv.Reader, share entity.ShareID) error {
+	b, ok, err := get(r, shareKey(share, keys.SSt))
+	if err != nil || !ok {
+		return err
+	}
+	st, err := decodeState(b)
+	if err != nil {
+		return err
+	}
+	if st.State == entity.ShareRemoving || st.State == entity.ShareRetired {
+		return entity.ErrStale
 	}
 	return nil
 }
@@ -230,9 +252,15 @@ func claimShare(tx kv.Txn, key []byte, id entity.ShareID, taken string) error {
 // SetShareState moves a share from one state to another, refusing when it is
 // not in from: the read is tracked, so of two changes racing from one state,
 // one conflicts and then finds the state moved. It raises ShareList.
+//
+// Removal is one-way and not this call's: only DeleteShare moves a share to
+// being removed, and a share being removed or retired is stale to it.
 func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, from, to entity.ShareState) error {
-	if to.String() == "" {
+	switch {
+	case to.String() == "":
 		return merrs.NewInvalidArgumentError("unknown share state")
+	case to == entity.ShareRemoving || to == entity.ShareRetired:
+		return merrs.NewInvalidArgumentError("only DeleteShare removes a share")
 	}
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		key := shareKey(share, keys.SSt)
@@ -243,9 +271,13 @@ func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, f
 		if !ok {
 			return merrs.NewNotFoundError(share.String(), "share")
 		}
-		cur, err := decodeState(b)
+		st, err := decodeState(b)
 		if err != nil {
 			return err
+		}
+		cur := st.State
+		if cur == entity.ShareRemoving || cur == entity.ShareRetired {
+			return entity.ErrStale
 		}
 		if cur != from {
 			return merrs.NewConflictError("set share state", "share is "+cur.String()+", not "+from.String())
@@ -253,7 +285,7 @@ func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, f
 		if from == to {
 			return nil
 		}
-		if err := tx.Set(key, encodeState(to)); err != nil {
+		if err := tx.Set(key, encodeState(shareState{State: to})); err != nil {
 			return err
 		}
 		return raise(tx, shareListKey)
@@ -273,6 +305,9 @@ func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
 			if err == nil {
 				err = merrs.NewNotFoundError(g.Share.String(), "share")
 			}
+			return err
+		}
+		if err := liveShare(tx, g.Share); err != nil {
 			return err
 		}
 		if _, ok, err := get(tx, principalKey(g.Principal)); err != nil || !ok {
@@ -332,6 +367,9 @@ func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy
 			if err == nil {
 				err = merrs.NewNotFoundError(p.Share.String(), "share")
 			}
+			return err
+		}
+		if err := liveShare(tx, p.Share); err != nil {
 			return err
 		}
 		key := shareKey(p.Share, keys.SXp)

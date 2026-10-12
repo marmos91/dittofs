@@ -179,7 +179,7 @@ func TestShareStateRace(t *testing.T) {
 	sh := share("photos", "/photos")
 	must(t, cp.PutShare(ctx, sh))
 	outer, inner := race(h,
-		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareRemoving) },
+		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareFrozen) },
 		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced) })
 	must(t, inner)
 	if !merrs.IsConflictError(outer) {
