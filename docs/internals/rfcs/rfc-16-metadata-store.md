@@ -1054,7 +1054,10 @@ read, and a backend **MUST** answer it in one of two ways, or both: keep the
 version with the key and read it back, or have the store write the commit's
 version into the stored value at commit — filled by the store, never by the
 transaction, and stripped by the backend before `Get` or `Scan` returns the
-value. A scan that returns a version per key is not required. A move's delta is
+value. Either way a transaction's `Get` and `Scan` of a key it wrote return
+the value it wrote, as KV conformance requires; only `Versions` of such a key
+has no version to answer until the commit. A scan that returns a version per
+key is not required. A move's delta is
 the records whose change sequence is above its base cut's, under a share's
 prefixes and its namespace's content-addressed ones, found by a scan and one
 `Versions` call per page of it ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)).
