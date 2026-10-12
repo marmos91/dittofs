@@ -138,9 +138,10 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 	if moved {
 		child.Parent = dd.ID
 	}
+	was := child.Version
 	child.Change = tx.Now()
 	child.Version = nextFileVersion(tx, child.Version)
-	if err := tx.Set(fileKey(share, child.ID), encodeFile(child)); err != nil {
+	if err := putFile(tx, was, child); err != nil {
 		return Orphaned{}, err
 	}
 	if err := touchDir(tx, share, sd); err != nil {

@@ -216,8 +216,9 @@ func testCreateCost(t *testing.T, kvo Opener) {
 	for i := range 300 {
 		f.c.Take()
 		f.create(f.admin, f.root, "f"+string(rune('a'+i%26))+string(rune('a'+i/26)), regular(0o644))
-		// The file, its entry and the directory's delta.
-		if n := f.c.Take(); n.Sets != 3 || n.Deletes != 0 || n.Scanned != 0 {
+		// The file, its entry and the directory's delta, and the
+		// version-index entries of the file and the delta.
+		if n := f.c.Take(); n.Sets != 5 || n.Deletes != 0 || n.Scanned != 0 {
 			t.Fatalf("create %d wrote %+v", i, n)
 		}
 	}

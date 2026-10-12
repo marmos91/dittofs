@@ -75,6 +75,11 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 			return err
 		}
 	}
+	// The file's version-index entry moves to the release's version, which
+	// its removal record holds until pruning deletes both.
+	if err := moveFloor(tx, share, file, f.Version, op.Version); err != nil {
+		return err
+	}
 	m := entity.Removal{Version: op.Version, Extent: entity.ExtentOf(0, entity.EndOfFile), Kind: entity.RemoveRelease}
 	return tx.Set(removalKey(share, file, op.Version), encodeRemoval(m))
 }
@@ -115,21 +120,27 @@ func deleteUnder(tx kv.Txn, prefix []byte) error {
 }
 
 // dropReleased deletes every key of a released file left under its prefix
-// but its history: the fences, the removal records, a removed directory's
-// leftover time deltas. Its pruned release removal is the last thing that
-// needed them, so no key of the file outlives it.
-//
-// ponytail: the file's version-floor entries are not deleted, because the
-// version index is not written yet. Delete them here when it is.
-func dropReleased(tx kv.Txn, share entity.ShareID, file entity.FileID) error {
-	his := historyPrefix(share, file)
-	var ks [][]byte
+// but its history — the fences, the removal records, a removed directory's
+// leftover time deltas — and its version-index entries: the one at the
+// release's version and each leftover delta's. Its pruned release removal
+// is the last thing that needed them, so no key of the file outlives it.
+func dropReleased(tx kv.Txn, share entity.ShareID, file entity.FileID, v entity.JournalVersion) error {
+	his, deltas := historyPrefix(share, file), deltasPrefix(share, file)
+	ks := [][]byte{floorKey(share, file, v)}
 	for row, err := range tx.Scan(fileKey(share, file), nil) {
 		if err != nil {
 			return err
 		}
-		if !bytes.HasPrefix(row.Key, his) {
-			ks = append(ks, bytes.Clone(row.Key))
+		if bytes.HasPrefix(row.Key, his) {
+			continue
+		}
+		ks = append(ks, bytes.Clone(row.Key))
+		if bytes.HasPrefix(row.Key, deltas) {
+			d, err := decodeDelta(row.Value)
+			if err != nil {
+				return err
+			}
+			ks = append(ks, deltaFloorKey(share, file, d.Version, [32]byte(row.Key[len(deltas):])))
 		}
 	}
 	for _, k := range ks {

@@ -74,13 +74,14 @@ func dropEntry(tx kv.Txn, key []byte, child entity.File) (Orphaned, error) {
 	if child.Nlink == 0 {
 		return Orphaned{}, entity.ErrInconsistent
 	}
+	was := child.Version
 	child.Nlink--
 	child.Change = tx.Now()
 	child.Version = nextFileVersion(tx, child.Version)
 	if err := tx.Delete(key); err != nil {
 		return Orphaned{}, err
 	}
-	if err := tx.Set(fileKey(child.Share, child.ID), encodeFile(child)); err != nil {
+	if err := putFile(tx, was, child); err != nil {
 		return Orphaned{}, err
 	}
 	if child.Nlink > 0 {
@@ -144,13 +145,14 @@ func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Hand
 		} else if ok {
 			return merrs.NewAlreadyExistsError(string(name))
 		}
+		was := f.Version
 		f.Nlink++
 		f.Change = tx.Now()
 		f.Version = nextFileVersion(tx, f.Version)
 		if err := tx.Set(key, encodeEntry(entity.Entry{Parent: d.ID, Name: name, Child: f.ID, Type: f.Type})); err != nil {
 			return err
 		}
-		if err := tx.Set(fileKey(share, f.ID), encodeFile(f)); err != nil {
+		if err := putFile(tx, was, f); err != nil {
 			return err
 		}
 		return touchDir(tx, share, d)

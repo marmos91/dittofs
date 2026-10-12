@@ -148,7 +148,7 @@ func commitExistence(tx kv.Txn, p PendingExistence, first, budget int, fresh boo
 	if err != nil {
 		return 0, 0, err
 	}
-	st := &existState{tx: tx, share: p.Share, file: p.File, size: f.Size, f: f, fenced: fenced, epoch: p.Epoch, ms: ms,
+	st := &existState{tx: tx, share: p.Share, file: p.File, size: f.Size, f: f, was: f.Version, fenced: fenced, epoch: p.Epoch, ms: ms,
 		holes: map[int64]hole{}, stored: map[int64]hole{}, ovs: map[int64]overwrite{},
 		dirtyH: map[int64]bool{}, dirtyO: map[int64]bool{}}
 	i := first
@@ -193,7 +193,8 @@ type existState struct {
 	share       entity.ShareID
 	file        entity.FileID
 	f           entity.File
-	fenced      bool // the file has an existence fence
+	fenced      bool                  // the file has an existence fence
+	was         entity.JournalVersion // the Version stored before the commit
 	ms          masks
 	epoch       uint64
 	size        int64          // size before the commit: below it, outside stored holes, is committed content
@@ -439,7 +440,7 @@ func (s *existState) flush() error {
 		}
 	}
 	s.f.Version = nextFileVersion(s.tx, entity.MaxVersion(s.f.Version, s.f.Applied))
-	if err := s.tx.Set(fileKey(s.share, s.file), encodeFile(s.f)); err != nil {
+	if err := putFile(s.tx, s.was, s.f); err != nil {
 		return err
 	}
 	for start := range s.dirtyH {

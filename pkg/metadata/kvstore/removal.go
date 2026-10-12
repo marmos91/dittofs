@@ -173,10 +173,11 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 		}
 		f.MaxSpan = max(f.MaxSpan, ext.Length)
 	}
+	was := f.Version
 	f.Applied = op.Version
 	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
 	f.Version = nextFileVersion(tx, entity.MaxVersion(f.Version, f.Applied))
-	if err := tx.Set(fileKey(share, file), encodeFile(f)); err != nil {
+	if err := putFile(tx, was, f); err != nil {
 		return err
 	}
 	if live.IsEmpty() {
@@ -548,7 +549,7 @@ func (c Content) PruneRemovals(ctx context.Context, share entity.ShareID, file e
 				continue
 			}
 			if m.Kind == entity.RemoveRelease {
-				return dropReleased(tx, share, file)
+				return dropReleased(tx, share, file, m.Version)
 			}
 			if err := tx.Delete(removalKey(share, file, m.Version)); err != nil {
 				return err

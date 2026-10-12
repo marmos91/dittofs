@@ -147,3 +147,31 @@ func testXattrs(t *testing.T, kvo Opener) {
 		t.Error("an oversized xattr was accepted")
 	}
 }
+
+// RFC 6 §8.3 and RFC 7 §9.4: the version floor is the highest Version any
+// file of the share reports, a directory's deltas and a chmod included, so a
+// journal opened above it never reissues a change attribute.
+func testVersionFloor(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	dir, _ := f.create(f.admin, f.root, "d", directory(0o755))
+	var hs []entity.Handle
+	for _, name := range []string{"a", "b", "c", "e", "g"} {
+		h, _ := f.create(f.admin, dir, name, regular(0o644))
+		hs = append(hs, h)
+	}
+	must(t, errOf(files.SetAttrs(ctx, f.admin, hs[2], entity.Attrs{}.WithMode(0o600))))
+	_, err := f.s.Namespace().Rename(ctx, f.admin, dir, []byte("a"), f.root, []byte("a"))
+	must(t, err)
+	var top entity.JournalVersion
+	for _, h := range append(hs, dir, f.root) {
+		got, err := files.Get(ctx, f.admin, h)
+		must(t, err)
+		top = entity.MaxVersion(top, got.Version)
+	}
+	floor, err := f.s.VersionFloor(ctx, []entity.ShareID{f.share.ID})
+	must(t, err)
+	if floor != top {
+		t.Errorf("floor %d, highest Version reported %d", floor.Counter(), top.Counter())
+	}
+}

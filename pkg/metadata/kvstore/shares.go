@@ -141,6 +141,7 @@ func createShareRecords(tx kv.Txn, s *entity.Share) error {
 	}
 	s.Tag = tag
 	root := fileKey(s.ID, s.Root)
+	rf := newRoot(tx, *s)
 	if _, ok, err := get(tx, root); err != nil {
 		return err
 	} else if ok {
@@ -148,7 +149,8 @@ func createShareRecords(tx kv.Txn, s *entity.Share) error {
 	}
 	for _, kvs := range [][2][]byte{
 		{shareKey(s.ID, keys.SSt), encodeState(shareState{State: entity.ShareEnabled})},
-		{root, encodeFile(newRoot(tx, *s))},
+		{root, encodeFile(rf)},
+		{floorKey(s.ID, s.Root, rf.Version), encodeEmpty()},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
 		{namespacesKey(s.ID), encodeNamespaces(shareNamespaces{
 			Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: entity.NewNamespaceID()}}, Write: 1})},

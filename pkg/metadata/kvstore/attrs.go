@@ -84,7 +84,7 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 		}
 		changed(tx, &next)
 		out = next
-		return tx.Set(fileKey(share, file.ID), encodeFile(next))
+		return putFile(tx, file.Version, next)
 	})
 	return out, err
 }
@@ -172,13 +172,14 @@ func (f Files) SetACL(ctx context.Context, id entity.Identity, h entity.Handle, 
 		if err := authorize(tx, id, file, entity.WriteACL); err != nil {
 			return err
 		}
+		was := file.Version
 		file.Mode = file.Mode&^0o777 | acl.Mode()
 		changed(tx, &file)
 		if err := tx.Set(aclKey(share, file.ID), encodeACL(acl)); err != nil {
 			return err
 		}
 		out = file
-		return tx.Set(fileKey(share, file.ID), encodeFile(file))
+		return putFile(tx, was, file)
 	})
 	return out, err
 }
@@ -291,7 +292,8 @@ func (f Files) changeXattr(ctx context.Context, id entity.Identity, h entity.Han
 		if err := change(tx, file); err != nil {
 			return err
 		}
+		was := file.Version
 		changed(tx, &file)
-		return tx.Set(fileKey(share, file.ID), encodeFile(file))
+		return putFile(tx, was, file)
 	})
 }

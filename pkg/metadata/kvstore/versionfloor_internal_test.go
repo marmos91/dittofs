@@ -1,0 +1,131 @@
+package kvstore
+
+import (
+	"context"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
+)
+
+// checkFloor asserts RFC 6 §8.3's index over the fixture's share: every
+// File has exactly one entry, at its stored Version and in its bucket; every
+// unfolded delta has one at its version; a released file not yet pruned has
+// one at its release's version; and there is no other entry.
+func (f *cfix) checkFloor() {
+	f.t.Helper()
+	want := map[string]bool{}
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		pre := filesPrefix(f.share)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			id := entity.FileID(row.Key[len(pre) : len(pre)+keys.IDLen])
+			sub := row.Key[len(pre)+keys.IDLen:]
+			switch {
+			case len(sub) == 0:
+				x, err := decodeFile(f.share, id, row.Value)
+				if err != nil {
+					return err
+				}
+				want[string(floorKey(f.share, id, x.Version))] = true
+			case sub[0] == keys.FT:
+				d, err := decodeDelta(row.Value)
+				if err != nil {
+					return err
+				}
+				want[string(deltaFloorKey(f.share, id, d.Version, [32]byte(sub[1:])))] = true
+			case sub[0] == keys.FRm:
+				v, _, err := keys.ReadVersion(sub[1:])
+				if err != nil {
+					return err
+				}
+				if m, err := decodeRemoval(v, row.Value); err == nil && m.Kind == entity.RemoveRelease {
+					want[string(floorKey(f.share, id, v))] = true
+				}
+			}
+		}
+		got := 0
+		for row, err := range r.Scan(shareKey(f.share, keys.SVf), nil) {
+			if err != nil {
+				return err
+			}
+			got++
+			if !want[string(row.Key)] {
+				f.t.Errorf("stray version-index entry %x", row.Key)
+			}
+		}
+		if got != len(want) {
+			f.t.Errorf("%d version-index entries, want %d", got, len(want))
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// The floor is the highest Version any file or delta of the share stores,
+// whichever bucket it is in; it follows a removal and a release.
+func TestVersionFloor(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	floor := func() entity.JournalVersion {
+		v, err := f.s.VersionFloor(ctx, []entity.ShareID{f.share})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	var files []entity.FileID
+	for range 40 { // enough to reach most buckets
+		files = append(files, f.file(0))
+	}
+	for i, file := range files {
+		f.exist(file, write(uint64(i+1), 0, mib))
+	}
+	f.checkFloor()
+	highest := func() (top entity.JournalVersion) {
+		for _, file := range files {
+			top = entity.MaxVersion(top, f.get(file).Version)
+		}
+		return top
+	}
+	if got, want := floor(), highest(); got.Less(want) {
+		t.Errorf("floor %d below the highest Version %d", got.Counter(), want.Counter())
+	}
+	f.remove(files[3], truncate(100, 0))
+	f.checkFloor()
+	if got, want := floor(), f.get(files[3]).Version; got.Less(want) {
+		t.Errorf("floor %d below a truncate's Version %d", got.Counter(), want.Counter())
+	}
+	f.unlinked(files[5])
+	f.remove(files[5], release(101))
+	f.checkFloor()
+	f.resume(files[5])
+	if err := f.s.Content().PruneRemovals(ctx, f.share, files[5], entity.VersionOf(200)); err != nil {
+		t.Fatal(err)
+	}
+	f.checkFloor()
+	if other, err := f.s.VersionFloor(ctx, []entity.ShareID{entity.NewShareID()}); err != nil || !other.IsZero() {
+		t.Errorf("an empty share's floor %v %v", other, err)
+	}
+}
+
+// A share's version limit is only ever raised.
+func TestVersionLimit(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	for _, c := range []struct{ raise, want uint64 }{{1 << 20, 1 << 20}, {1 << 10, 1 << 20}, {1 << 21, 1 << 21}} {
+		if err := f.s.RaiseVersionLimit(ctx, f.share, entity.VersionOf(c.raise)); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := f.s.VersionLimit(ctx, f.share); err != nil || got != entity.VersionOf(c.want) {
+			t.Errorf("after raising to %d: %d %v", c.raise, got.Counter(), err)
+		}
+	}
+	if err := f.s.RaiseVersionLimit(ctx, entity.NewShareID(), entity.VersionOf(1)); err == nil {
+		t.Error("raised the limit of a share that does not exist")
+	}
+}

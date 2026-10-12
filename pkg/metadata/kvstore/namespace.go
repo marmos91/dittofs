@@ -199,7 +199,7 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 		if err != nil {
 			return err
 		}
-		if err := tx.Set(fileKey(share, f.ID), encodeFile(f)); err != nil {
+		if err := putFile(tx, entity.JournalVersion{}, f); err != nil {
 			return err
 		}
 		if err := tx.Set(key, encodeEntry(entity.Entry{Parent: d.ID, Name: name, Child: f.ID, Type: f.Type})); err != nil {
@@ -316,7 +316,8 @@ func applyRequested(id entity.Identity, f entity.File, a entity.Attrs) (entity.F
 
 // touchDir records that d's entries changed: a delta under d with the new
 // times and a version above d's, written without reading or rewriting d's
-// record beyond the read the caller already made.
+// record beyond the read the caller already made. The delta has its own
+// version-index entry, which the fold that absorbs it will replace.
 //
 // ponytail: the delta's unique part is 32 random bytes rather than the
 // writer's node ID, epoch and sequence, since the store has no node identity
@@ -325,7 +326,9 @@ func touchDir(tx kv.Txn, share entity.ShareID, d entity.File) error {
 	var unique [32]byte
 	rand.Read(unique[:])
 	now := tx.Now()
-	return tx.Set(deltaKey(share, d.ID, unique), encodeDelta(delta{
-		Modify: now, Change: now, Version: nextFileVersion(tx, d.Version),
-	}))
+	v := nextFileVersion(tx, d.Version)
+	if err := tx.Set(deltaFloorKey(share, d.ID, v, unique), encodeEmpty()); err != nil {
+		return err
+	}
+	return tx.Set(deltaKey(share, d.ID, unique), encodeDelta(delta{Modify: now, Change: now, Version: v}))
 }
