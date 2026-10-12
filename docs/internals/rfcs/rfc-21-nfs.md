@@ -934,6 +934,7 @@ NLM codes are for NFSv3 locking (§6).
 | --- | --- | --- |
 | `ErrDelay` — a recall or break in progress, a clone holding the range, the journal's capacity or the share's journal limit refusing a write while offload or repack can drain it, or a stability reply waiting on a stalled store (§9.1) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrBlocked` — a blocking NLM lock left waiting (§6.1) | — | NLM: `NLM4_BLOCKED` |
+| `ErrStale` — the share is being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | `NFS4ERR_STALE` for every handle into it; a pseudo-filesystem `LOOKUP` of its path, gone from the pseudo-filesystem, is `NFS4ERR_NOENT`; a stateid of the share in an operation with no handle (`TEST_STATEID`, `FREE_STATEID`) is `NFS4ERR_ADMIN_REVOKED`, and `SEQUENCE` sets `SEQ4_STATUS_ADMIN_STATE_REVOKED` until the client frees them | `NFS3ERR_STALE`; `MOUNT` of its path is `MNT3ERR_NOENT`; NLM: `NLM4_STALE_FH` |
 | `ErrNoSpace` — a permanent capacity refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here) names as no space: the store denies or has drifted, a retention pin holds the bytes, or the device is full | `NFS4ERR_NOSPC`, at once | `NFS3ERR_NOSPC` |
 | `ErrQuota` — a logical quota | `NFS4ERR_DQUOT` | `NFS3ERR_DQUOT` |
 | `ErrInvalid` — a `COPY` or `CLONE` of overlapping ranges of one file, or a `CLONE` longer than `clone_max_len` (§9.3) | `NFS4ERR_INVAL` | — |
@@ -1246,6 +1247,17 @@ each gets and why.
 > policy, which is a security claim this server makes nowhere else. Revisit for
 > a customer running SELinux-labeled home directories, storing the label as an
 > xattr.
+
+> decision: no named attributes. `OPENATTR` opens a hidden directory of
+> attribute files. Solaris and illumos clients use it; macOS uses it for
+> extended attributes and resource forks only when the server advertises
+> `named_attr`, and otherwise keeps them in AppleDouble `._` files beside each
+> file; Linux never sends it. A Linux home directory's extended attributes (desktop
+> metadata, `user.*` tags) travel as RFC 8276 xattrs, which are served
+> ([§9.3](#9.3%20NFSv4.2%20operations)). Revisit for a deployment whose clients are Solaris
+> or illumos, or macOS clients whose `._` files are not acceptable, and depend
+> on named attributes, mapping them onto the named
+> streams SMB already uses ([RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams)).
 
 ## 9. Data
 
@@ -1614,7 +1626,7 @@ Not supported:
 | Feature | Answer | Why |
 | --- | --- | --- |
 | Labeled NFS (`sec_label`, RFC 7204) | not in `supported_attrs` | no mandatory-access-control policy exists to label for |
-| Named attributes (`OPENATTR`, `named_attr` false) | `NFS4ERR_NOTSUPP` | named streams exist for SMB; NFS clients use RFC 8276 xattrs, and no common client uses `OPENATTR` |
+| Named attributes (`OPENATTR`, `named_attr` false) | `NFS4ERR_NOTSUPP` | named streams exist for SMB; NFS clients use RFC 8276 xattrs, and Linux never uses `OPENATTR`, and macOS falls back to `._` files without it |
 | `retention_*`, `retentevt_*`, `mimetype`, `time_backup`, `dir_notif_delay`, `dirent_notif_delay`, `fs_status`, `fs_locations_info`, `mdsthreshold`, `space_freed` | not in `supported_attrs` | no record holds them; `space_freed` cannot be computed cheaply where content is shared |
 
 ## Appendix C — NFSv4.2 operations

@@ -333,8 +333,10 @@ prefer the strongest algorithms.
 > decision: old dialects are refused. SMB1 has no unbroken signing, no durable
 > handles and no leases; SMB 2.0.2 has no leases and no client identifier
 > (`ClientGuid`), which is how [RFC 14](rfc-14-open-state.md#2.1%20Client) knows a client.
-> Only clients older than any supported Windows release lose out. Revisit 2.0.2
-> only for a client population that cannot negotiate 2.1.
+> Only clients older than any supported Windows release lose out: Windows Vista
+> and Windows Server 2008 (not R2), whose highest dialect is 2.0.2, cannot
+> connect; Windows 7 and Server 2008 R2 negotiate 2.1. Revisit 2.0.2 only for a
+> client population that cannot negotiate 2.1.
 
 ### 3.2 Algorithms, and what is not offered
 
@@ -918,6 +920,7 @@ backoff of §6.3, and the final answer by the request's deadline: 60 s for
 | `ErrDelay` — the journal's capacity or the share's journal limit refusing a write while offload or repack can drain it, a remote outage included ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | held pending and re-run for as long as the cause lasts, up to `smb_pending_cap` (10 min by default); `STATUS_DISK_FULL` only at that cap, or at once if the cause turns permanent |
 | `ErrDelay` — a stability reply waiting on a stalled store (§9.4) | held pending; at the deadline, the failure [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) names |
 | `ErrBlocked` — a lock left waiting (§7) | pending, with no deadline; completed on grant, or after `CancelLock` |
+| `ErrStale` — the share is being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | `STATUS_NETWORK_NAME_DELETED` for every request on a tree connected to it, so the client drops the tree; a new `TREE_CONNECT` to its name, now free, is `STATUS_BAD_NETWORK_NAME`; a durable handle's reconnect is `STATUS_OBJECT_NAME_NOT_FOUND` |
 | `ErrNoSpace` — a permanent capacity refusal RFC 8 §10.2 names as no space: the store denies or has drifted, a retention pin holds the bytes, or the device is full | `STATUS_DISK_FULL` at once |
 | `ErrQuota` — a logical quota | `STATUS_DISK_QUOTA_EXCEEDED` at once |
 | `ErrGrace` — a new open or lock in a shard in grace | held pending until grace ends, then re-run; at grace's end plus 35 s, `STATUS_FILE_NOT_AVAILABLE` |
