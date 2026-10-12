@@ -154,7 +154,7 @@ func testSMB3_Kerberos_SessionSetup(t *testing.T, kdc *framework.KDCHelper, smbP
 	}
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	// Verify ticket was obtained
@@ -185,7 +185,7 @@ func testSMB3_Kerberos_SessionSetup(t *testing.T, kdc *framework.KDCHelper, smbP
 	}
 
 	if lastErr != nil {
-		t.Skipf("SMB Kerberos mount failed (may need kernel CIFS Kerberos support): %v", lastErr)
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed (may need kernel CIFS Kerberos support): %v", lastErr)
 	}
 
 	defer func() {
@@ -211,7 +211,7 @@ func testSMB3_Kerberos_FileOps(t *testing.T, kdc *framework.KDCHelper, smbPort i
 	}
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	// Mount SMB with Kerberos
@@ -226,7 +226,7 @@ func testSMB3_Kerberos_FileOps(t *testing.T, kdc *framework.KDCHelper, smbPort i
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Skipf("SMB Kerberos mount failed: %s", string(output))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed: %s", string(output))
 	}
 
 	defer func() {
@@ -296,7 +296,7 @@ func testSMB3_Kerberos_WithEncryption(t *testing.T, kdc *framework.KDCHelper, sm
 	}
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	// Mount SMB with Kerberos + encryption requested
@@ -313,7 +313,7 @@ func testSMB3_Kerberos_WithEncryption(t *testing.T, kdc *framework.KDCHelper, sm
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Encryption may not be supported by all CIFS clients or kernel versions
-		t.Skipf("SMB Kerberos+encryption mount failed (kernel may not support SMB3 encryption): %s", string(output))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos+encryption mount failed (kernel may not support SMB3 encryption): %s", string(output))
 	}
 
 	defer func() {
@@ -349,7 +349,7 @@ func testSMB3_Kerberos_WithSigning(t *testing.T, kdc *framework.KDCHelper, smbPo
 	}
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	// Mount SMB with Kerberos and signing explicitly required
@@ -377,7 +377,7 @@ func testSMB3_Kerberos_WithSigning(t *testing.T, kdc *framework.KDCHelper, smbPo
 		)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
-			t.Skipf("SMB Kerberos+signing mount failed: %s", string(output))
+			framework.SkipOrFailKerberosMount(t, "SMB Kerberos+signing mount failed: %s", string(output))
 		}
 	}
 
@@ -513,13 +513,13 @@ func testSMB3_Kerberos_CrossProtocol(t *testing.T, kdc *framework.KDCHelper, nfs
 	}
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	// Mount NFS with Kerberos
 	nfsMount, nfsErr := framework.MountNFSWithKerberosAndError(t, nfsPort, "/export", "krb5", 4)
 	if nfsErr != nil {
-		t.Skipf("NFS Kerberos mount failed: %v", nfsErr)
+		framework.SkipOrFailKerberosMount(t, "NFS Kerberos mount failed: %v", nfsErr)
 	}
 	defer nfsMount.Cleanup()
 
@@ -534,7 +534,7 @@ func testSMB3_Kerberos_CrossProtocol(t *testing.T, kdc *framework.KDCHelper, nfs
 	)
 	smbOutput, smbErr := smbCmd.CombinedOutput()
 	if smbErr != nil {
-		t.Skipf("SMB Kerberos mount failed: %s", string(smbOutput))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed: %s", string(smbOutput))
 	}
 	defer func() {
 		_ = exec.Command("umount", smbMountPoint).Run()
@@ -730,4 +730,5 @@ func installSMB3KerberosSystemConfig(t *testing.T, kdc *framework.KDCHelper) {
 	if err := os.WriteFile("/etc/krb5.keytab", keytabData, 0600); err != nil {
 		t.Logf("Warning: cannot install test keytab (need root): %v", err)
 	}
+	framework.RestartGSSD(t)
 }
