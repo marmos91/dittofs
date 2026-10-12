@@ -23,7 +23,8 @@ type KV interface {
 	Update(ctx context.Context, fn func(Txn) error) error
 	// View runs fn in one read-only transaction.
 	View(ctx context.Context, fn func(Reader) error) error
-	// Limits is the largest transaction the backend commits.
+	// Limits is what one transaction may hold. The limits are the backend's,
+	// never settings, and the entity layer derives its batch sizes from them.
 	Limits() TxnLimits
 	Close() error
 }
@@ -40,22 +41,32 @@ type Reader interface {
 	// on a point record.
 	// Inside Update it sees the transaction's own writes.
 	Scan(prefix, after []byte) iter.Seq2[KeyValue, error]
+	// Versions returns each key's change sequence, in one batched read: the
+	// version the store assigned the commit that last wrote the key, ordering
+	// the writes of one key as their commits were ordered. A key absent from
+	// the snapshot has 0. Inside Update it reports what the snapshot holds,
+	// never a version for the transaction's own writes, and it is not tracked.
+	Versions(keys [][]byte) ([]uint64, error)
 }
 
 // Txn is a read-write transaction.
 type Txn interface {
 	Reader
 	// Set and Delete conflict with any concurrent write of key, a blind one
-	// included. A transaction that writes past Limits gets ErrTooLarge.
+	// included. A transaction that goes past Limits gets ErrTooLarge, from the
+	// call that took it there: a Set or Delete, or a Get, Guard or GuardRange,
+	// whose conflict ranges count toward TxnBytes.
 	Set(key, value []byte) error
 	Delete(key []byte) error
 	// Guard is a tracked read that returns no value: the commit aborts if
 	// another transaction committed a write of key after the snapshot, key
-	// absent or not. Guards are shared: two transactions that only guard one
-	// key never conflict. A guard binds only its own transaction: a write of
-	// key that commits after the guarding transaction did is not refused,
-	// since it is then simply ordered after it. A writer whose decision rests
-	// on a range must therefore guard the range itself (GuardRange).
+	// absent or not. A guard binds only its own transaction: a write of key
+	// that commits after the guarding transaction did is not refused, since it
+	// is then simply ordered after it, so a writer whose decision rests on
+	// what the guarding transaction wrote must track a key it writes. Two
+	// guards never conflict, point or range, whatever their commit order. A
+	// guard constrains only a transaction that writes: a backend may skip the
+	// check of one that writes nothing, so no caller may rely on a guard there.
 	Guard(key []byte) error
 	// GuardRange is Guard for every key under prefix, present or not: the
 	// commit aborts if another transaction committed a write of any key under
@@ -73,19 +84,21 @@ type Txn interface {
 // the iteration moves on.
 type KeyValue struct {
 	Key, Value []byte
-	// Seq is the record's change sequence: the commit version the store keeps
-	// with the record, ordering records as their commits were ordered when
-	// compared with bytes.Compare. It is nil for the transaction's own writes,
-	// which have not committed.
-	Seq []byte
 }
 
-// TxnLimits bounds one transaction. Entries and Bytes bound the whole
-// transaction, Bytes counting key and value bytes of every Set and the key
-// bytes of every Delete; Key and Value bound one entry.
+// TxnLimits bounds one transaction.
 type TxnLimits struct {
-	Entries, Bytes int
-	Key, Value     int
+	Key, Value int // the largest key and the largest value, in bytes
+	// TxnBytes bounds one transaction counted with its conflict ranges: the
+	// key and value bytes of every Set, the key bytes of every Delete, Get and
+	// Guard, and the prefix bytes of every GuardRange.
+	TxnBytes int
+	// TxnEntries bounds the keys one transaction sets or deletes; 0 if
+	// unbounded.
+	TxnEntries int
+	// Age bounds a transaction from its snapshot to its commit: an older one
+	// aborts and is retried like a conflict.
+	Age time.Duration
 }
 
 var (

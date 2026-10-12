@@ -4,10 +4,10 @@ package badgerkv
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -31,16 +31,15 @@ type Options struct {
 }
 
 // Store is a kv.KV on Badger. Every commit is synced to the device before
-// Update returns.
-//
-// ponytail: a commit costs one device sync of its own, and Badger shares a
-// sync between concurrent commits only by chance, so the store commits about
-// 1/sync-latency transactions per second in all (~400 on consumer NVMe).
-// Group concurrent Updates into one sync when a profile shows commits queued
-// on the sync.
+// Update returns, and concurrent commits share one sync (syncer): Badger's
+// own sync is off, because it syncs its memtable WAL once per transaction even
+// when it writes several in one batch. No snapshot sees a commit before it is
+// durable either: a View, or an Update that returns having read one, waits for
+// its sync.
 type Store struct {
 	db     *badger.DB
-	clk    []byte // this node's clock-ceiling key
+	sync   *syncer // nil in memory
+	clk    []byte  // this node's clock-ceiling key
 	clock  func() time.Time
 	limits kv.TxnLimits
 
@@ -67,18 +66,24 @@ const (
 // Open opens or creates the store and raises its clock ceiling before
 // returning, so no Now precedes a durable ceiling.
 func Open(opts Options) (*Store, error) {
-	bo := badger.DefaultOptions(opts.Dir).WithLogger(nil)
+	bo := badger.DefaultOptions(opts.Dir).WithLogger(nil).WithSyncWrites(false)
 	if opts.Dir == "" {
 		bo = bo.WithInMemory(true)
-	} else {
-		bo = bo.WithSyncWrites(true)
 	}
 	db, err := badger.Open(bo)
 	if err != nil {
 		return nil, err
 	}
+	var y *syncer
+	if !bo.InMemory {
+		if y, err = newSyncer(db, opts.Dir); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	s := &Store{
 		db:    db,
+		sync:  y,
 		clk:   append(keys.ID([]byte{keys.KindN}, opts.NodeID[:]), keys.NClk),
 		clock: opts.Clock,
 		stop:  make(chan struct{}),
@@ -92,10 +97,13 @@ func Open(opts Options) (*Store, error) {
 	// and estimating each entry at no more than its key and value plus
 	// entryOverhead bytes. Declaring the limits net of that overhead keeps
 	// every transaction Limits admits inside Badger's.
-	s.limits.Entries = int(db.MaxBatchCount()) - 2
-	s.limits.Bytes = int(db.MaxBatchSize()) - 1 - markerSize - entryOverhead*s.limits.Entries
+	// TxnBytes counts conflict ranges too, which Badger does not, so it only
+	// adds to what Badger's own estimate counts.
+	s.limits.TxnEntries = int(db.MaxBatchCount()) - 2
+	s.limits.TxnBytes = int(db.MaxBatchSize()) - 1 - markerSize - entryOverhead*s.limits.TxnEntries
 	s.limits.Key = maxKeySize
-	s.limits.Value = min(int(bo.ValueLogFileSize), s.limits.Bytes-1)
+	s.limits.Value = min(int(bo.ValueLogFileSize), s.limits.TxnBytes-1)
+	s.limits.Age = maxAge
 	if bo.InMemory {
 		// Badger admits a value of exactly ValueThreshold in memory, then
 		// panics writing it, since only a smaller one skips the value log.
@@ -109,10 +117,12 @@ func Open(opts Options) (*Store, error) {
 		s.last, s.ceiling = c, c
 		return err
 	}); err != nil {
+		s.closeSync()
 		db.Close()
 		return nil, err
 	}
 	if err := s.raiseCeiling(); err != nil {
+		s.closeSync()
 		db.Close()
 		return nil, err
 	}
@@ -126,12 +136,33 @@ const (
 	markerSize    = 64
 )
 
+// decision: Badger holds a snapshot for as long as a transaction lives, so it
+// sets no age of its own; this one is the replicated store's five seconds, so
+// a batch sized and timed on the embedded store also commits on that one.
+// Raise it only together with that backend's.
+const maxAge = 5 * time.Second
+
 func (s *Store) Limits() kv.TxnLimits { return s.limits }
 
 func (s *Store) Close() error {
 	close(s.stop)
 	<-s.done
+	s.closeSync()
 	return s.db.Close()
+}
+
+func (s *Store) closeSync() {
+	if s.sync != nil {
+		s.sync.close()
+	}
+}
+
+// durable returns once every commit at or below version ts is durable.
+func (s *Store) durable(ts uint64) error {
+	if s.sync == nil || ts <= s.sync.synced.Load() {
+		return nil
+	}
+	return s.sync.wait()
 }
 
 func (s *Store) Update(ctx context.Context, fn func(kv.Txn) error) error {
@@ -141,16 +172,27 @@ func (s *Store) Update(ctx context.Context, fn func(kv.Txn) error) error {
 func (s *Store) View(_ context.Context, fn func(kv.Reader) error) error {
 	r := s.db.NewTransaction(false)
 	defer r.Discard()
+	if err := s.durable(r.ReadTs()); err != nil {
+		return err
+	}
 	return fn(&reader{snap: r})
 }
 
 func (s *Store) attempt(fn func(kv.Txn) error) error {
 	t := &txn{s: s, reader: reader{own: map[string]write{}}, now: s.now()}
 	t.w, t.snap = s.snapshotPair()
+	start := time.Now()
 	defer t.w.Discard()
 	defer t.snap.Discard()
 	if err := fn(t); err != nil {
+		// What fn read decided its error, so the error waits as a result would.
+		if derr := s.durable(t.snap.ReadTs()); derr != nil {
+			return errors.Join(err, derr)
+		}
 		return err
+	}
+	if age := time.Since(start); age > s.limits.Age {
+		return fmt.Errorf("%w: transaction open %v, past its age limit of %v", kv.ErrConflict, age, s.limits.Age)
 	}
 	done := make(chan error, 1)
 	s.commitMu.Lock()
@@ -159,7 +201,7 @@ func (s *Store) attempt(fn func(kv.Txn) error) error {
 		return err
 	}
 	// CommitWith checks conflicts and takes the commit timestamp before it
-	// returns, then syncs in the background, so the lock covers no sync.
+	// returns, then writes in the background, so the lock covers no write.
 	t.w.CommitWith(func(err error) { done <- err })
 	s.commitMu.Unlock()
 	if err := <-done; err != nil {
@@ -168,7 +210,11 @@ func (s *Store) attempt(fn func(kv.Txn) error) error {
 		}
 		return err
 	}
-	return nil
+	if t.count == 0 {
+		return s.durable(t.snap.ReadTs())
+	}
+	// Written, not yet durable: the next shared sync covers it.
+	return s.durable(math.MaxUint64)
 }
 
 // checkRanges fails with kv.ErrConflict if any transaction committed a write
@@ -375,13 +421,29 @@ func (r *reader) Scan(prefix, after []byte) iter.Seq2[kv.KeyValue, error] {
 				yield(kv.KeyValue{}, err)
 				return
 			}
-			seq := binary.BigEndian.AppendUint64(nil, item.Version())
-			if !yield(kv.KeyValue{Key: item.Key(), Value: v, Seq: seq}, nil) {
+			if !yield(kv.KeyValue{Key: item.Key(), Value: v}, nil) {
 				return
 			}
 			it.Next()
 		}
 	}
+}
+
+// Versions reads the snapshot, so inside Update it reports no version for the
+// transaction's own writes, and Badger does not track it.
+func (r *reader) Versions(keys [][]byte) ([]uint64, error) {
+	vs := make([]uint64, len(keys))
+	for i, k := range keys {
+		item, err := r.snap.Get(k)
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		vs[i] = item.Version()
+	}
+	return vs, nil
 }
 
 // txn is one attempt of an Update.
@@ -396,7 +458,21 @@ type txn struct {
 
 // Get reads through the read-write transaction, which tracks the key and
 // sees the transaction's own writes.
-func (t *txn) Get(key []byte) ([]byte, error) { return get(t.w, key) }
+func (t *txn) Get(key []byte) ([]byte, error) {
+	if err := t.track(len(key)); err != nil {
+		return nil, err
+	}
+	return get(t.w, key)
+}
+
+// track counts n bytes of conflict range toward TxnBytes.
+func (t *txn) track(n int) error {
+	if t.bytes+n > t.s.limits.TxnBytes {
+		return kv.ErrTooLarge
+	}
+	t.bytes += n
+	return nil
+}
 
 // Guard is a tracked read whose value is dropped. Badger tracks a key read
 // even when it is absent, so a guard of a missing key conflicts with its
@@ -404,9 +480,9 @@ func (t *txn) Get(key []byte) ([]byte, error) { return get(t.w, key) }
 //
 // decision: a transaction that guards but writes nothing is not checked:
 // Badger commits a read-only transaction without a conflict check, as
-// FoundationDB does. Such a transaction changes nothing a guard protects, but
-// its guard is a snapshot read, not a check at commit. Write a key in the same
-// transaction if a caller ever has to act on a guard that only reads.
+// FoundationDB does, and the interface lets a backend skip that check. Such a
+// transaction changes nothing a guard protects. Check it at commit if a caller
+// ever has to act on a guard in a transaction that only reads.
 func (t *txn) Guard(key []byte) error {
 	_, err := t.Get(key)
 	if errors.Is(err, kv.ErrNotFound) {
@@ -416,6 +492,9 @@ func (t *txn) Guard(key []byte) error {
 }
 
 func (t *txn) GuardRange(prefix []byte) error {
+	if err := t.track(len(prefix)); err != nil {
+		return err
+	}
 	t.ranges = append(t.ranges, bytes.Clone(prefix))
 	return nil
 }
@@ -430,15 +509,16 @@ func (t *txn) Delete(key []byte) error {
 
 // write reads the key first: Badger checks only read keys against later
 // commits, so without the read two blind writers of one key would both commit
-// and one write would be lost.
+// and one write would be lost. That read is the write's own conflict range,
+// counted once with the write.
 func (t *txn) write(key, value []byte, deleted bool) error {
-	if err := t.Guard(key); err != nil {
-		return err
-	}
 	l := t.s.limits
 	if len(key) > l.Key || len(value) > l.Value ||
-		t.count+1 > l.Entries || t.bytes+len(key)+len(value) > l.Bytes {
+		t.count+1 > l.TxnEntries || t.bytes+len(key)+len(value) > l.TxnBytes {
 		return kv.ErrTooLarge
+	}
+	if _, err := get(t.w, key); err != nil && !errors.Is(err, kv.ErrNotFound) {
+		return err
 	}
 	key, value = bytes.Clone(key), bytes.Clone(value)
 	var err error

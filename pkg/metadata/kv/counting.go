@@ -6,19 +6,24 @@ import (
 	"sync"
 )
 
-// Counts is what transactions read and wrote: keys asked for by Get and
-// Guard, ranges guarded, records a Scan yielded, keys written by Set and Delete.
+// Counts is what transactions read and wrote: keys asked for by Get, Guard and
+// Versions, ranges guarded, records a Scan yielded, keys written by Set and
+// Delete. GuardOnly counts the Updates that guarded and wrote nothing: a
+// backend may skip such a transaction's check, so no caller may make one.
 type Counts struct {
-	Gets, Guards, RangeGuards, Scanned, Sets, Deletes int
+	Gets, Guards, RangeGuards, Versions, Scanned, Sets, Deletes int
+	GuardOnly                                                   int
 }
 
 func (c *Counts) add(o Counts) {
 	c.Gets += o.Gets
 	c.Guards += o.Guards
 	c.RangeGuards += o.RangeGuards
+	c.Versions += o.Versions
 	c.Scanned += o.Scanned
 	c.Sets += o.Sets
 	c.Deletes += o.Deletes
+	c.GuardOnly += o.GuardOnly
 }
 
 // Counting wraps a KV and counts the keys each transaction touches, so a test
@@ -36,6 +41,9 @@ func (c *Counting) Update(ctx context.Context, fn func(Txn) error) error {
 		last = Counts{}
 		return fn(&countingTxn{Txn: t, c: &last})
 	})
+	if last.Guards+last.RangeGuards > 0 && last.Sets+last.Deletes == 0 {
+		last.GuardOnly = 1
+	}
 	c.record(last)
 	return err
 }
@@ -74,6 +82,11 @@ func (r *countingReader) Get(key []byte) ([]byte, error) {
 	return r.Reader.Get(key)
 }
 
+func (r *countingReader) Versions(keys [][]byte) ([]uint64, error) {
+	r.c.Versions += len(keys)
+	return r.Reader.Versions(keys)
+}
+
 func (r *countingReader) Scan(prefix, after []byte) iter.Seq2[KeyValue, error] {
 	return countScan(r.Reader.Scan(prefix, after), r.c)
 }
@@ -90,6 +103,11 @@ func (t *countingTxn) Get(key []byte) ([]byte, error) {
 
 func (t *countingTxn) Scan(prefix, after []byte) iter.Seq2[KeyValue, error] {
 	return countScan(t.Txn.Scan(prefix, after), t.c)
+}
+
+func (t *countingTxn) Versions(keys [][]byte) ([]uint64, error) {
+	t.c.Versions += len(keys)
+	return t.Txn.Versions(keys)
 }
 
 func (t *countingTxn) Guard(key []byte) error {

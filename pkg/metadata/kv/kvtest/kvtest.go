@@ -5,7 +5,6 @@
 package kvtest
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -31,7 +30,8 @@ func Run(t *testing.T, open func(t *testing.T) kv.KV) {
 		{"LostUpdate", testLostUpdate},
 		{"WriteSkew", testWriteSkew},
 		{"BlindWrites", testBlindWrites},
-		{"GuardConflictsWithWrite", testGuardVsWrite},
+		{"GuardWriterFirst", testGuardVsWrite},
+		{"GuardFirst", testGuardFirst},
 		{"GuardOfAbsentKey", testGuardOfAbsentKey},
 		{"GuardsShared", testGuardsShared},
 		{"GuardRangeConflictsWithInsert", testGuardRangeVsInsert},
@@ -41,7 +41,7 @@ func Run(t *testing.T, open func(t *testing.T) kv.KV) {
 		{"EmptyDirectoryRemoval", testEmptyDirectoryRemoval},
 		{"Scan", testScan},
 		{"ScanSeesNothingUncommitted", testScanUncommitted},
-		{"ChangeSequence", testChangeSequence},
+		{"Versions", testVersions},
 		{"Now", testNow},
 		{"Limits", testLimits},
 	} {
@@ -320,10 +320,94 @@ func guardThenSet(guard, key string) func(kv.Txn) error {
 	}
 }
 
+// versions reads the change sequences of keys in a View.
+func versions(t *testing.T, s kv.KV, keys ...string) []uint64 {
+	t.Helper()
+	var vs []uint64
+	if err := s.View(ctx(t), func(r kv.Reader) error {
+		var err error
+		vs, err = r.Versions(byteKeys(keys))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return vs
+}
+
+func byteKeys(keys []string) [][]byte {
+	b := make([][]byte, len(keys))
+	for i, k := range keys {
+		b[i] = []byte(k)
+	}
+	return b
+}
+
+// Writer first: a write committed after the guard's snapshot aborts the guard.
 func testGuardVsWrite(t *testing.T, s kv.KV) {
 	set(t, s, "parent", "dir")
 	if _, got := ordered(t, s, setter("parent", "changed"), guardThenSet("parent", "child")); got != 2 {
 		t.Errorf("guard took %d attempts, want 2: a write committed after its snapshot must abort it", got)
+	}
+}
+
+// Guard first: a guard binds only its own transaction. The guard commits, then
+// the writer of the guarded key commits too, ordered after it.
+func testGuardFirst(t *testing.T, s kv.KV) {
+	set(t, s, "parent", "dir")
+	g, w := ordered(t, s, guardThenSet("parent", "child"), setter("parent", "changed"))
+	if g != 1 || w != 1 {
+		t.Fatalf("guard took %d attempts and writer %d, want 1 and 1: a guard binds only its own transaction", g, w)
+	}
+	if vs := versions(t, s, "child", "parent"); vs[1] <= vs[0] {
+		t.Errorf("the writer committed second but has version %d, not above the guard's %d", vs[1], vs[0])
+	}
+}
+
+// guardAfter runs second as an Update that takes its snapshot, waits for first
+// to commit, then runs its body and commits. It returns second's attempts.
+func guardAfter(t *testing.T, s kv.KV, first, second func(kv.Txn) error) int {
+	t.Helper()
+	snapped, resume := make(chan struct{}), make(chan struct{})
+	attempts := 0
+	done := make(chan error, 1)
+	go func() {
+		done <- s.Update(ctx(t), func(tx kv.Txn) error {
+			attempts++
+			// A read pins the snapshot on a backend that takes it lazily.
+			if _, err := tx.Get([]byte("snapshot")); err != nil && !errors.Is(err, kv.ErrNotFound) {
+				return err
+			}
+			if attempts == 1 {
+				close(snapped)
+				<-resume
+			}
+			return second(tx)
+		})
+	}()
+	<-snapped
+	if err := s.Update(ctx(t), first); err != nil {
+		t.Fatal(err)
+	}
+	close(resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	return attempts
+}
+
+// sharedGuards checks that two transactions guarding one key or range, each
+// writing a key of its own, both commit in either commit order, and when one
+// commits between the other's snapshot and its guard.
+func sharedGuards(t *testing.T, s kv.KV, a, b func(kv.Txn) error) {
+	t.Helper()
+	if x, y := ordered(t, s, a, b); x != 1 || y != 1 {
+		t.Errorf("a then b: %d and %d attempts, want 1 and 1: two guards must not conflict", x, y)
+	}
+	if x, y := ordered(t, s, b, a); x != 1 || y != 1 {
+		t.Errorf("b then a: %d and %d attempts, want 1 and 1: two guards must not conflict", x, y)
+	}
+	if got := guardAfter(t, s, a, b); got != 1 {
+		t.Errorf("a committing between b's snapshot and its guard: b took %d attempts, want 1", got)
 	}
 }
 
@@ -337,9 +421,7 @@ func testGuardOfAbsentKey(t *testing.T, s kv.KV) {
 
 func testGuardsShared(t *testing.T, s kv.KV) {
 	set(t, s, "parent", "dir")
-	if got := race(t, s, guardThenSet("parent", "a"), guardThenSet("parent", "b")); got != 2 {
-		t.Errorf("%d attempts, want 2: two guards of one key must not conflict", got)
-	}
+	sharedGuards(t, s, guardThenSet("parent", "a"), guardThenSet("parent", "b"))
 }
 
 func testScanUntracked(t *testing.T, s kv.KV) {
@@ -367,6 +449,9 @@ func rangeGuardThenSet(prefix, key string) func(kv.Txn) error {
 }
 
 func testGuardRangeVsInsert(t *testing.T, s kv.KV) {
+	if _, got := ordered(t, s, setter("e/1", "y"), rangeGuardThenSet("e/", "elsewhere")); got != 2 {
+		t.Errorf("range guard of an empty prefix took %d attempts, want 2: a create under it must abort it", got)
+	}
 	set(t, s, "p/1", "x")
 	if _, got := ordered(t, s, setter("p/2", "y"), rangeGuardThenSet("p/", "elsewhere")); got != 2 {
 		t.Errorf("range guard took %d attempts, want 2: an insert under its prefix must abort it", got)
@@ -384,25 +469,30 @@ func testGuardRangeOnlyPrefix(t *testing.T, s kv.KV) {
 }
 
 func testGuardRangesShared(t *testing.T, s kv.KV) {
-	if got := race(t, s, rangeGuardThenSet("p/", "a"), rangeGuardThenSet("p/", "b")); got != 2 {
-		t.Errorf("%d attempts, want 2: two range guards of one prefix must not conflict", got)
-	}
+	set(t, s, "p/k", "x")
+	sharedGuards(t, s, rangeGuardThenSet("p/", "a"), rangeGuardThenSet("p/", "b"))
 }
 
 // "The directory is empty, so remove it", in both commit orders: a create
 // guards the directory's record and writes its entry; the removal guards the
 // entries' range, finds it empty and deletes the record. Whichever commits
-// second retries, and no entry is left under a removed directory.
+// second retries, and no entry is left under a removed directory. Without the
+// removal's range guard, the create committing first lets both commit.
 func testEmptyDirectoryRemoval(t *testing.T, s kv.KV) {
-	for _, createFirst := range []bool{true, false} {
-		t.Run(fmt.Sprintf("createFirst=%v", createFirst), func(t *testing.T) {
-			dir, entry := "d"+strconv.FormatBool(createFirst), "d"+strconv.FormatBool(createFirst)+"/f"
+	for _, c := range []struct {
+		createFirst, rangeGuard bool
+	}{{true, true}, {false, true}, {true, false}} {
+		t.Run(fmt.Sprintf("createFirst=%v,rangeGuard=%v", c.createFirst, c.rangeGuard), func(t *testing.T) {
+			dir := fmt.Sprintf("d-%v-%v", c.createFirst, c.rangeGuard)
+			entry := dir + "/f"
 			set(t, s, dir, "dir")
 			removed, created := false, false
 			rmdir := func(tx kv.Txn) error {
 				removed = false
-				if err := tx.GuardRange([]byte(dir + "/")); err != nil {
-					return err
+				if c.rangeGuard {
+					if err := tx.GuardRange([]byte(dir + "/")); err != nil {
+						return err
+					}
 				}
 				for _, err := range tx.Scan([]byte(dir+"/"), nil) {
 					return err // not empty: nothing to remove
@@ -424,8 +514,15 @@ func testEmptyDirectoryRemoval(t *testing.T, s kv.KV) {
 				return tx.Set([]byte(entry), []byte("1"))
 			}
 			first, second := rmdir, create
-			if createFirst {
+			if c.createFirst {
 				first, second = create, rmdir
+			}
+			if !c.rangeGuard {
+				ordered(t, s, first, second)
+				if !removed || !created {
+					t.Errorf("removed %v, created %v: without the range guard both should commit, or this case proves nothing", removed, created)
+				}
+				return
 			}
 			if _, got := ordered(t, s, first, second); got != 2 {
 				t.Errorf("the second to commit took %d attempts, want 2", got)
@@ -521,43 +618,39 @@ func testScanUncommitted(t *testing.T, s kv.KV) {
 	}
 }
 
-func testChangeSequence(t *testing.T, s kv.KV) {
-	set(t, s, "p/a", "1")
-	set(t, s, "p/b", "1")
-	set(t, s, "p/a", "2")
-	seqs := map[string][]byte{}
-	if err := s.View(ctx(t), func(r kv.Reader) error {
-		for e, err := range r.Scan([]byte("p/"), nil) {
-			if err != nil {
-				return err
-			}
-			if e.Seq == nil {
-				return fmt.Errorf("%s: committed record has no change sequence", e.Key)
-			}
-			seqs[string(e.Key)] = bytes.Clone(e.Seq)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+// Versions orders one key's writes as their commits, reports 0 for an absent
+// key, and inside Update reports the snapshot's version, never one for the
+// transaction's own write.
+func testVersions(t *testing.T, s kv.KV) {
+	var seen []uint64
+	for _, v := range []string{"1", "2", "3"} {
+		set(t, s, "k", v)
+		set(t, s, "other", v)
+		seen = append(seen, versions(t, s, "k")[0])
 	}
-	if bytes.Compare(seqs["p/a"], seqs["p/b"]) <= 0 {
-		t.Errorf("p/a rewritten after p/b has sequence %x, not above %x", seqs["p/a"], seqs["p/b"])
+	if seen[0] == 0 || seen[1] <= seen[0] || seen[2] <= seen[1] {
+		t.Errorf("versions of k across commits in order: %v, want increasing and above 0", seen)
+	}
+	if vs := versions(t, s, "k", "absent"); vs[1] != 0 {
+		t.Errorf("absent key has version %d, want 0", vs[1])
 	}
 	if err := s.Update(ctx(t), func(tx kv.Txn) error {
-		if err := tx.Set([]byte("p/c"), []byte("1")); err != nil {
+		if err := tx.Set([]byte("k"), []byte("4")); err != nil {
 			return err
 		}
-		for e, err := range tx.Scan([]byte("p/c"), nil) {
-			if err != nil {
-				return err
-			}
-			if e.Seq != nil {
-				return fmt.Errorf("own uncommitted write has sequence %x", e.Seq)
-			}
+		vs, err := tx.Versions(byteKeys([]string{"k"}))
+		if err != nil {
+			return err
+		}
+		if vs[0] != seen[2] {
+			return fmt.Errorf("k after its own Set has version %d, want the snapshot's %d", vs[0], seen[2])
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if v := versions(t, s, "k")[0]; v <= seen[2] {
+		t.Errorf("k committed again has version %d, not above %d", v, seen[2])
 	}
 }
 
@@ -582,77 +675,150 @@ func testNow(t *testing.T, s kv.KV) {
 	if d := time.Since(prev); d > 5*time.Second || d < -5*time.Second {
 		t.Errorf("Now is %v from real time", d)
 	}
+	// On an idle store it still advances with real time.
+	now := func() time.Time {
+		var n time.Time
+		if err := s.Update(ctx(t), func(tx kv.Txn) error { n = tx.Now(); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := now()
+	time.Sleep(1500 * time.Millisecond)
+	if d := now().Sub(before); d < time.Second {
+		t.Errorf("Now advanced %v over 1.5s of an idle store", d)
+	}
 }
 
-// A transaction at the limit commits, and one past it is refused. Skipped
-// for a backend whose limits are too large to reach in a test.
+// A transaction at each limit commits, and one past it is refused; conflict
+// ranges count toward TxnBytes; one held open past Age aborts and is retried.
+// The parts whose limits are too large to reach in a test are skipped.
 func testLimits(t *testing.T, s kv.KV) {
 	l := s.Limits()
-	if l.Entries <= 0 || l.Bytes <= 0 || l.Key <= 0 || l.Value <= 0 {
+	if l.TxnEntries < 0 || l.TxnBytes <= 0 || l.Key <= 0 || l.Value <= 0 || l.Age <= 0 {
 		t.Fatalf("limits %+v", l)
 	}
-	if l.Entries > 1<<20 || l.Bytes > 64<<20 {
-		t.Skipf("limits %+v too large to reach", l)
-	}
 	key := func(i int) []byte { return fmt.Appendf(nil, "e/%08d", i) }
-	if err := s.Update(ctx(t), func(tx kv.Txn) error {
-		for i := range l.Entries {
-			if err := tx.Set(key(i), nil); err != nil {
-				return fmt.Errorf("entry %d of %d: %w", i+1, l.Entries, err)
-			}
+	t.Run("TxnEntries", func(t *testing.T) {
+		if l.TxnEntries == 0 || l.TxnEntries > 1<<20 {
+			t.Skipf("TxnEntries %d unbounded or too large to reach", l.TxnEntries)
 		}
-		return nil
-	}); err != nil {
-		t.Fatalf("a transaction at the entry limit: %v", err)
-	}
-	if err := s.Update(ctx(t), func(tx kv.Txn) error {
-		for i := range l.Entries + 1 {
-			if err := tx.Set(key(i), nil); err != nil {
+		if err := s.Update(ctx(t), func(tx kv.Txn) error {
+			for i := range l.TxnEntries {
+				if err := tx.Set(key(i), nil); err != nil {
+					return fmt.Errorf("entry %d of %d: %w", i+1, l.TxnEntries, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("a transaction at the entry limit: %v", err)
+		}
+		if err := s.Update(ctx(t), func(tx kv.Txn) error {
+			for i := range l.TxnEntries + 1 {
+				if err := tx.Set(key(i), nil); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); !errors.Is(err, kv.ErrTooLarge) {
+			t.Fatalf("a transaction past the entry limit: got %v, want ErrTooLarge", err)
+		}
+	})
+
+	t.Run("TxnBytes", func(t *testing.T) {
+		if l.TxnBytes > 64<<20 {
+			t.Skipf("TxnBytes %d too large to reach", l.TxnBytes)
+		}
+		// fill writes exactly total bytes, in entries no larger than Value
+		// allows; the last key is cut short when fewer bytes are left.
+		fill := func(tx kv.Txn, total int) error {
+			for i := 0; total > 0; i++ {
+				k := key(i)
+				if total < len(k) {
+					k = k[:total]
+				}
+				n := min(total-len(k), l.Value)
+				if err := tx.Set(k, make([]byte, n)); err != nil {
+					return fmt.Errorf("%d bytes left: %w", total, err)
+				}
+				total -= len(k) + n
+			}
+			return nil
+		}
+		if err := s.Update(ctx(t), func(tx kv.Txn) error { return fill(tx, l.TxnBytes) }); err != nil {
+			t.Fatalf("a transaction at the byte limit: %v", err)
+		}
+		if err := s.Update(ctx(t), func(tx kv.Txn) error { return fill(tx, l.TxnBytes+1) }); !errors.Is(err, kv.ErrTooLarge) {
+			t.Fatalf("a transaction past the byte limit: got %v, want ErrTooLarge", err)
+		}
+		// Writes that fit, with the guard that brings them to the limit.
+		guard := []byte("guarded/")
+		if err := s.Update(ctx(t), func(tx kv.Txn) error {
+			if err := fill(tx, l.TxnBytes-len(guard)); err != nil {
 				return err
 			}
-		}
-		return nil
-	}); !errors.Is(err, kv.ErrTooLarge) {
-		t.Fatalf("a transaction past the entry limit: got %v, want ErrTooLarge", err)
-	}
-
-	// Bytes, filled with entries no larger than Value allows.
-	fill := func(tx kv.Txn, total int) error {
-		for i := 0; total > 0; i++ {
-			k := key(i)
-			n := min(total-len(k), l.Value)
-			if err := tx.Set(k, make([]byte, n)); err != nil {
-				return fmt.Errorf("%d bytes left: %w", total, err)
-			}
-			total -= len(k) + n
-		}
-		return nil
-	}
-	if err := s.Update(ctx(t), func(tx kv.Txn) error { return fill(tx, l.Bytes) }); err != nil {
-		t.Fatalf("a transaction at the byte limit: %v", err)
-	}
-	if err := s.Update(ctx(t), func(tx kv.Txn) error { return fill(tx, l.Bytes+1) }); !errors.Is(err, kv.ErrTooLarge) {
-		t.Fatalf("a transaction past the byte limit: got %v, want ErrTooLarge", err)
-	}
-
-	for _, c := range []struct {
-		name       string
-		key, value int // at the limit; one more byte of the limited part is past it
-		pastKey    bool
-	}{{"key", l.Key, 0, true}, {"value", 1, l.Value, false}} {
-		if err := s.Update(ctx(t), func(tx kv.Txn) error {
-			return tx.Set(make([]byte, c.key), make([]byte, c.value))
+			return tx.Guard(guard)
 		}); err != nil {
-			t.Errorf("a %s at its limit: %v", c.name, err)
+			t.Fatalf("writes and a guard at the byte limit: %v", err)
 		}
-		k, v := c.key, c.value+1
-		if c.pastKey {
-			k, v = c.key+1, c.value
+		for name, past := range map[string]func(kv.Txn) error{
+			"Guard":      func(tx kv.Txn) error { return tx.Guard(append(guard, 'x')) },
+			"GuardRange": func(tx kv.Txn) error { return tx.GuardRange(append(guard, 'x')) },
+			"Get": func(tx kv.Txn) error {
+				_, err := tx.Get(append(guard, 'x'))
+				return err
+			},
+		} {
+			if err := s.Update(ctx(t), func(tx kv.Txn) error {
+				if err := fill(tx, l.TxnBytes-len(guard)); err != nil {
+					return err
+				}
+				return past(tx)
+			}); !errors.Is(err, kv.ErrTooLarge) {
+				t.Errorf("writes that fit and a %s past the byte limit: got %v, want ErrTooLarge", name, err)
+			}
 		}
+	})
+
+	t.Run("KeyAndValue", func(t *testing.T) {
+		for _, c := range []struct {
+			name       string
+			key, value int // at the limit; one more byte of the limited part is past it
+			pastKey    bool
+		}{{"key", l.Key, 0, true}, {"value", 1, l.Value, false}} {
+			if err := s.Update(ctx(t), func(tx kv.Txn) error {
+				return tx.Set(make([]byte, c.key), make([]byte, c.value))
+			}); err != nil {
+				t.Errorf("a %s at its limit: %v", c.name, err)
+			}
+			k, v := c.key, c.value+1
+			if c.pastKey {
+				k, v = c.key+1, c.value
+			}
+			if err := s.Update(ctx(t), func(tx kv.Txn) error {
+				return tx.Set(make([]byte, k), make([]byte, v))
+			}); !errors.Is(err, kv.ErrTooLarge) {
+				t.Errorf("a %s past its limit: got %v, want ErrTooLarge", c.name, err)
+			}
+		}
+	})
+
+	t.Run("Age", func(t *testing.T) {
+		if l.Age > 10*time.Second {
+			t.Skipf("Age %v too long to wait out", l.Age)
+		}
+		attempts := 0
 		if err := s.Update(ctx(t), func(tx kv.Txn) error {
-			return tx.Set(make([]byte, k), make([]byte, v))
-		}); !errors.Is(err, kv.ErrTooLarge) {
-			t.Errorf("a %s past its limit: got %v, want ErrTooLarge", c.name, err)
+			attempts++
+			if attempts == 1 {
+				time.Sleep(l.Age + 100*time.Millisecond)
+			}
+			return tx.Set([]byte("aged"), []byte("1"))
+		}); err != nil {
+			t.Fatal(err)
 		}
-	}
+		if attempts != 2 {
+			t.Errorf("%d attempts, want 2: a transaction held open past Age must abort and be retried", attempts)
+		}
+	})
 }

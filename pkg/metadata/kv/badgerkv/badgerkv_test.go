@@ -129,3 +129,32 @@ func TestNowStaysUnderCeiling(t *testing.T) {
 		t.Fatalf("Now %v after the raise, want the clock's %v", now, start.Add(time.Hour))
 	}
 }
+
+// Concurrent commits share syncs: fewer syncs run than commits.
+func TestConcurrentCommitsShareSyncs(t *testing.T) {
+	s := open(t, Options{Dir: t.TempDir()})
+	defer s.Close()
+	before := s.sync.syncs.Load()
+	const writers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for w := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- s.Update(context.Background(), func(tx kv.Txn) error {
+				return tx.Set([]byte{byte(w)}, []byte("v"))
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := s.sync.syncs.Load() - before; n >= writers {
+		t.Errorf("%d syncs for %d concurrent commits: they did not share syncs", n, writers)
+	}
+}
