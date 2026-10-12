@@ -41,6 +41,12 @@ type Reader interface {
 	// on a point record.
 	// Inside Update it sees the transaction's own writes.
 	Scan(prefix, after []byte) iter.Seq2[KeyValue, error]
+	// Before returns the last record under prefix whose key sorts below key;
+	// ok is false when there is none. It finds the record covering an
+	// offset — the one starting at or before it — in one seek, whatever the
+	// distance. Like Scan it is never tracked, and inside Update it sees the
+	// transaction's own writes, deletions included.
+	Before(prefix, key []byte) (kv KeyValue, ok bool, err error)
 	// Versions returns each key's change sequence, in one batched read: the
 	// version the store assigned the commit that last wrote the key, ordering
 	// the writes of one key as their commits were ordered. A key absent from

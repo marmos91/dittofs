@@ -7,11 +7,12 @@ import (
 )
 
 // Counts is what transactions read and wrote: keys asked for by Get, Guard and
-// Versions, ranges guarded, records a Scan yielded, keys written by Set and
-// Delete. GuardOnly counts the Updates that guarded and wrote nothing: a
+// Versions, seeks by Before, ranges guarded, records a Scan yielded, keys
+// written by Set and Delete. GuardOnly counts the Updates that guarded and wrote nothing: a
 // backend may skip such a transaction's check, so no caller may make one.
 type Counts struct {
 	Gets, Guards, RangeGuards, Versions, Scanned, Sets, Deletes int
+	Befores                                                     int
 	GuardOnly                                                   int
 }
 
@@ -23,6 +24,7 @@ func (c *Counts) add(o Counts) {
 	c.Scanned += o.Scanned
 	c.Sets += o.Sets
 	c.Deletes += o.Deletes
+	c.Befores += o.Befores
 	c.GuardOnly += o.GuardOnly
 }
 
@@ -91,6 +93,11 @@ func (r *countingReader) Scan(prefix, after []byte) iter.Seq2[KeyValue, error] {
 	return countScan(r.Reader.Scan(prefix, after), r.c)
 }
 
+func (r *countingReader) Before(prefix, key []byte) (KeyValue, bool, error) {
+	r.c.Befores++
+	return r.Reader.Before(prefix, key)
+}
+
 type countingTxn struct {
 	Txn
 	c *Counts
@@ -103,6 +110,11 @@ func (t *countingTxn) Get(key []byte) ([]byte, error) {
 
 func (t *countingTxn) Scan(prefix, after []byte) iter.Seq2[KeyValue, error] {
 	return countScan(t.Txn.Scan(prefix, after), t.c)
+}
+
+func (t *countingTxn) Before(prefix, key []byte) (KeyValue, bool, error) {
+	t.c.Befores++
+	return t.Txn.Before(prefix, key)
 }
 
 func (t *countingTxn) Versions(keys [][]byte) ([]uint64, error) {

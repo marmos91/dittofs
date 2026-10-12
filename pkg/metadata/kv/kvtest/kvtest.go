@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,6 +41,9 @@ func Run(t *testing.T, open func(t *testing.T) kv.KV) {
 		{"ScanUntracked", testScanUntracked},
 		{"EmptyDirectoryRemoval", testEmptyDirectoryRemoval},
 		{"Scan", testScan},
+		{"Before", testBefore},
+		{"BeforeSeesOwnWrites", testBeforeOwnWrites},
+		{"BeforeUntracked", testBeforeUntracked},
 		{"ScanSeesNothingUncommitted", testScanUncommitted},
 		{"Versions", testVersions},
 		{"Now", testNow},
@@ -821,4 +825,86 @@ func testLimits(t *testing.T, s kv.KV) {
 			t.Errorf("%d attempts, want 2: a transaction held open past Age must abort and be retried", attempts)
 		}
 	})
+}
+
+func before(r kv.Reader, prefix, key string) (string, error) {
+	got, ok, err := r.Before([]byte(prefix), []byte(key))
+	if err != nil || !ok {
+		return "", err
+	}
+	return string(got.Key) + "=" + string(got.Value), nil
+}
+
+func testBefore(t *testing.T, s kv.KV) {
+	set(t, s, "a/1", "x", "a/3", "y", "a/5", "z", "b/1", "w", "a", "outside")
+	if err := s.View(ctx(t), func(r kv.Reader) error {
+		for _, c := range []struct{ prefix, key, want string }{
+			{"a/", "a/4", "a/3=y"}, // the record below, not at, the key
+			{"a/", "a/3", "a/1=x"}, // strictly below
+			{"a/", "a/1", ""},      // nothing under the prefix below it
+			{"a/", "a/9", "a/5=z"}, // past the last record
+			{"a/", "b/0", "a/5=z"}, // a key past the prefix's range
+			{"a/", "a/", ""},       // the prefix itself: nothing sorts below it in range
+			{"c/", "c/9", ""},      // an empty prefix
+			{"b/", "b/2", "b/1=w"}, // never a record of another prefix
+		} {
+			got, err := before(r, c.prefix, c.key)
+			if err != nil {
+				return err
+			}
+			if got != c.want {
+				t.Errorf("Before(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testBeforeOwnWrites(t *testing.T, s kv.KV) {
+	set(t, s, "a/1", "x", "a/3", "y", "a/5", "z")
+	if err := s.Update(ctx(t), func(tx kv.Txn) error {
+		for _, step := range []struct {
+			op, key, want string
+		}{
+			{"set", "a/4", "a/4=new"},   // its own insert is the nearest below a/5
+			{"del", "a/4", "a/3=y"},     // and its own delete of it uncovers a/3
+			{"del", "a/3", "a/1=x"},     // a delete hides a stored record
+			{"set", "a/3", "a/3=again"}, // and a later set brings it back
+		} {
+			var err error
+			if step.op == "set" {
+				err = tx.Set([]byte(step.key), []byte(strings.TrimPrefix(step.want, step.key+"=")))
+			} else {
+				err = tx.Delete([]byte(step.key))
+			}
+			if err != nil {
+				return err
+			}
+			got, err := before(tx, "a/", "a/5")
+			if err != nil {
+				return err
+			}
+			if got != step.want {
+				t.Errorf("after %s %s: Before = %q, want %q", step.op, step.key, got, step.want)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testBeforeUntracked(t *testing.T, s kv.KV) {
+	set(t, s, "p/1", "x")
+	seekThenSet := func(tx kv.Txn) error {
+		if _, _, err := tx.Before([]byte("p/"), []byte("p/9")); err != nil {
+			return err
+		}
+		return tx.Set([]byte("elsewhere"), []byte("1"))
+	}
+	if got := race(t, s, seekThenSet, setter("p/2", "y")); got != 2 {
+		t.Errorf("%d attempts, want 2: a Before must register nothing", got)
+	}
 }

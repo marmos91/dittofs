@@ -429,6 +429,58 @@ func (r *reader) Scan(prefix, after []byte) iter.Seq2[kv.KeyValue, error] {
 	}
 }
 
+// Before merges a reverse walk of the snapshot with the transaction's own
+// writes below key: the larger key wins, and an own deletion hides the
+// stored key it names.
+//
+// ponytail: inside Update it sorts the transaction's own writes under prefix
+// on every call, as Scan does. Keep them ordered when a transaction that
+// writes and seeks many keys shows it in a profile.
+func (r *reader) Before(prefix, key []byte) (kv.KeyValue, bool, error) {
+	var mine []string
+	for k := range r.own {
+		if bytes.HasPrefix([]byte(k), prefix) && k < string(key) {
+			mine = append(mine, k)
+		}
+	}
+	slices.Sort(mine)
+
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = prefix
+	opts.Reverse = true
+	opts.PrefetchValues = false
+	it := r.snap.NewIterator(opts)
+	defer it.Close()
+	it.Seek(key)
+	if it.Valid() && bytes.Equal(it.Item().Key(), key) {
+		it.Next()
+	}
+	for it.Valid() || len(mine) > 0 {
+		var stored []byte
+		if it.Valid() {
+			stored = it.Item().Key()
+		}
+		if n := len(mine); n > 0 && (stored == nil || mine[n-1] >= string(stored)) {
+			k := mine[n-1]
+			mine = mine[:n-1]
+			if stored != nil && k == string(stored) {
+				it.Next()
+			}
+			if w := r.own[k]; !w.deleted {
+				return kv.KeyValue{Key: []byte(k), Value: w.value}, true, nil
+			}
+			continue
+		}
+		item := it.Item()
+		v, err := item.ValueCopy(nil)
+		if err != nil {
+			return kv.KeyValue{}, false, err
+		}
+		return kv.KeyValue{Key: item.KeyCopy(nil), Value: v}, true, nil
+	}
+	return kv.KeyValue{}, false, nil
+}
+
 // Versions reads the snapshot, so inside Update it reports no version for the
 // transaction's own writes, and Badger does not track it.
 func (r *reader) Versions(keys [][]byte) ([]uint64, error) {
