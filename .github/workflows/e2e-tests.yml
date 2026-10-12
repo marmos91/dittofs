@@ -128,7 +128,7 @@ jobs:
           # misconfigured runner can't silently drop that coverage.
           # DITTOFS_E2E_REQUIRE_KERBEROS=1: a failed Kerberos mount in the
           # SMB and cross-protocol Kerberos tests fails the test instead of
-          # skipping it (#2989).
+          # skipping it.
           # Full mode: all configurations including Docker-based stores.
           #
           # The harness owns redirection and grading — see the header of

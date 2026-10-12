@@ -365,20 +365,9 @@ func testSMB3_Kerberos_WithSigning(t *testing.T, kdc *framework.KDCHelper, smbPo
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// sec=krb5i includes integrity protection (signing)
-		// Fall back to sec=krb5 if krb5i is not supported
-		t.Logf("sec=krb5i mount failed, trying sec=krb5: %s", string(output))
-		mountOpts = fmt.Sprintf("sec=krb5,port=%d,vers=2.1,cache=none", smbPort)
-		cmd = exec.Command("mount", "-t", "cifs", "//localhost/export", mountPoint,
-			"-o", mountOpts)
-		cmd.Env = append(os.Environ(),
-			"KRB5_CONFIG="+kdc.Krb5ConfigPath(),
-			"KRB5CCNAME="+kdc.CCachePath(),
-		)
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			framework.SkipOrFailKerberosMount(t, "SMB Kerberos+signing mount failed: %s", string(output))
-		}
+		// No fallback to sec=krb5: an unsigned mount would pass a test that
+		// exists to check signing.
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos+signing (sec=krb5i) mount failed: %s", string(output))
 	}
 
 	defer func() {
@@ -707,6 +696,9 @@ func installSMB3KerberosSystemConfig(t *testing.T, kdc *framework.KDCHelper) {
 		} else {
 			_ = os.Remove("/etc/krb5.keytab")
 		}
+		// rpc.gssd was restarted onto the test files below; restart it again
+		// so it doesn't keep running on configuration that is gone.
+		framework.RestartGSSD(t)
 	})
 
 	// Install test krb5.conf

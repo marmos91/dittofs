@@ -4,7 +4,9 @@ package framework
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -198,9 +200,8 @@ func (k *KDCHelper) Kinit(t *testing.T, principal, password string) {
 // (cifs-utils cifs.upcall.c: "We can't reasonably do this for root"), so a
 // root mount only finds a ticket in root's default cache, FILE:/tmp/krb5cc_0
 // (the test krb5.conf sets no default_ccache_name). With the ticket only in
-// the per-test cache, every mount failed with ENOKEY. mount.cifs then retries
-// with cruid=$SUDO_UID, which cannot open the root-owned per-test cache
-// either (#2989).
+// the per-test cache, the mount fails with ENOKEY, and mount.cifs's retry with
+// cruid=$SUDO_UID cannot open the root-owned per-test cache either.
 //
 // Whatever was at that path before is restored when the test ends.
 func (k *KDCHelper) KinitForCIFSMount(t *testing.T, principal, password string) {
@@ -209,6 +210,9 @@ func (k *KDCHelper) KinitForCIFSMount(t *testing.T, principal, password string) 
 
 	upcallCache := fmt.Sprintf("/tmp/krb5cc_%d", os.Getuid())
 	orig, readErr := os.ReadFile(upcallCache)
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		require.NoError(t, readErr, "read %s before replacing it", upcallCache)
+	}
 	t.Cleanup(func() {
 		if readErr == nil {
 			_ = os.WriteFile(upcallCache, orig, 0600)
@@ -242,7 +246,7 @@ func (k *KDCHelper) kinit(t *testing.T, principal, password, ccachePath string) 
 // test has just installed. The unit only starts once /etc/krb5.keytab exists
 // (ConditionPathExists), so on a host without a keytab it isn't running until
 // a test installs one and restarts it. Without it, a sec=krb5 NFS mount fails
-// with "an incorrect mount option was specified" (#2989).
+// with "an incorrect mount option was specified".
 func RestartGSSD(t *testing.T) {
 	t.Helper()
 	if err := exec.Command("systemctl", "restart", "rpc-gssd").Run(); err != nil {
@@ -252,8 +256,8 @@ func RestartGSSD(t *testing.T) {
 }
 
 // SkipOrFailKerberosMount skips a test whose Kerberos mount failed. With
-// DITTOFS_E2E_REQUIRE_KERBEROS=1 (CI sets it) it fails the test instead, so a
-// broken runner setup or a server-side Kerberos failure can't pass as a skip.
+// DITTOFS_E2E_REQUIRE_KERBEROS=1 it fails the test instead, so a broken host
+// setup or a server-side Kerberos failure can't pass as a skip.
 func SkipOrFailKerberosMount(t *testing.T, format string, args ...any) {
 	t.Helper()
 	if os.Getenv("DITTOFS_E2E_REQUIRE_KERBEROS") == "1" {
