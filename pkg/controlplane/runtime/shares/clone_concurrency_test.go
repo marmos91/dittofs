@@ -289,7 +289,7 @@ func TestCloneWaitsForOldDestinationCarve(t *testing.T) {
 }
 
 // The source's dirty data is uploaded before the clone takes its payloads
-// exclusively, so a read of the source is not held up by that upload (#3006).
+// exclusively, so a read of the source is not held up by that upload.
 func TestCloneUploadsSourceBeforeExclusiveAdmission(t *testing.T) {
 	f := newCloneConcurrencyFixture(t, true)
 	ctx := context.Background()

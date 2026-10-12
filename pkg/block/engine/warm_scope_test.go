@@ -223,7 +223,7 @@ func TestWarmScopeCancellationReleasesAdmission(t *testing.T) {
 }
 
 // A payload is admitted only while it is warmed, so exclusive admission on one
-// the warm has finished does not wait for the rest of the share (#3006).
+// the warm has finished does not wait for the rest of the share.
 func TestWarmScopeReleasesEachPayloadWhenWarmed(t *testing.T) {
 	f := newWarmScopeFixture(t)
 	f.remote.gateHash = f.dstRow.Hash

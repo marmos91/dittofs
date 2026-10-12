@@ -44,7 +44,7 @@ func CloneWholeFile(
 	// Upload the source's dirty data before taking the payloads exclusively. The
 	// drain needs only the shared admission reads and writes use, so they keep
 	// running while it uploads, and the drain inside the scope below has only
-	// what arrived in between (#3006). Its error is left to that drain, which
+	// what arrived in between. Its error is left to that drain, which
 	// decides the clone.
 	if srcFile.PayloadID != dstPayloadID {
 		if err := blockStore.DrainPayload(ctx, string(srcFile.PayloadID)); err != nil && ctx.Err() != nil {

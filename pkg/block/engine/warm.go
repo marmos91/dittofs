@@ -92,7 +92,7 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 	// has written its bytes back. Guarding already-resolved targets would still
 	// let a replacement finish before a worker writes the old manifest's bytes
 	// back; releasing each payload once it is warmed means a clone of one file
-	// waits for that file's warm, not the whole share's (#3006). Sorting and
+	// waits for that file's warm, not the whole share's. Sorting and
 	// deduplicating exactly as clone does keeps reverse source/destination
 	// operations from forming an admission cycle with a warm that holds several.
 	slices.Sort(payloadIDs)
