@@ -76,7 +76,7 @@ func (ms masks) span(f entity.File) int64 {
 }
 
 // RemoveOp is a removal the write path makes: a truncate down to Extent's
-// offset, or a deallocate of Extent.
+// offset, a deallocate of Extent, or a release of the whole file.
 type RemoveOp struct {
 	Version entity.JournalVersion
 	Kind    entity.RemovalKind // RemoveTruncate or RemoveDeallocate
@@ -84,9 +84,9 @@ type RemoveOp struct {
 	Time    time.Time
 }
 
-// Remove applies phase 1 of a truncate down or a deallocate, after the
-// file's pending existence below it. In one transaction it sets size for a
-// truncate, cuts the at most two holes and two overwrite records crossing
+// Remove applies phase 1 of a removal, after the file's pending existence
+// below it; releasePhase1 says what a release's does. For a truncate or a
+// deallocate, in one transaction it sets size for a truncate, cuts the at most two holes and two overwrite records crossing
 // the extent's edges there,
 // makes a deallocated extent one hole at the removal's version, lowers
 // Charged, advances applied, and writes the removal record, which masks the
@@ -110,8 +110,8 @@ type RemoveOp struct {
 // still writes O(1) keys. Carry the bytes holes cover on the File when that
 // read shows in the truncate profile.
 func (e Existence) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op RemoveOp, pending []PendingOp) error {
-	if op.Kind != entity.RemoveTruncate && op.Kind != entity.RemoveDeallocate {
-		return merrs.NewInvalidArgumentError("Remove takes a truncate or a deallocate")
+	if op.Kind != entity.RemoveTruncate && op.Kind != entity.RemoveDeallocate && op.Kind != entity.RemoveRelease {
+		return merrs.NewInvalidArgumentError("Remove takes a truncate, a deallocate or a release")
 	}
 	if len(pending) > 0 {
 		failed, err := e.Commit(ctx, []PendingExistence{{Share: share, File: file, Epoch: epoch, Ops: pending}})
@@ -123,6 +123,9 @@ func (e Existence) Remove(ctx context.Context, share entity.ShareID, file entity
 		}
 	}
 	return e.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if op.Kind == entity.RemoveRelease {
+			return releasePhase1(tx, share, file, epoch, op)
+		}
 		return removePhase1(tx, share, file, epoch, op)
 	})
 }
@@ -323,22 +326,21 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	n := max(1, (s.k-4)/(3*batchItemKeys)) // up to n of each kind
 	from, end := m.Cursor, m.Extent.End()
 
-	refs, refEnd, err := firstStarting(tx, refsPrefix(share, file), from, end, n, 0, func(start int64, v []byte) (entity.ChunkRef, int64, error) {
+	refs, refEnd, err := firstStarting(tx, refsPrefix(share, file), from, end, n, func(start int64, v []byte) (entity.ChunkRef, int64, error) {
 		c, err := decodeRef(file, start, v)
 		return c, c.End(), err
 	})
 	if err != nil {
 		return false, err
 	}
-	span := ms.span(f)
-	holes, holeEnd, err := firstStarting(tx, holesPrefix(share, file), from, end, n, span, func(start int64, v []byte) (hole, int64, error) {
+	holes, holeEnd, err := firstStarting(tx, holesPrefix(share, file), from, end, n, func(start int64, v []byte) (hole, int64, error) {
 		h, err := decodeHole(start, v)
 		return h, h.End(), err
 	})
 	if err != nil {
 		return false, err
 	}
-	ovs, ovEnd, err := firstStarting(tx, overwritesPrefix(share, file), from, end, n, span, func(start int64, v []byte) (overwrite, int64, error) {
+	ovs, ovEnd, err := firstStarting(tx, overwritesPrefix(share, file), from, end, n, func(start int64, v []byte) (overwrite, int64, error) {
 		o, err := decodeOverwrite(start, v)
 		return o, o.End(), err
 	})
@@ -428,34 +430,32 @@ func fileOrGone(r kv.Reader, share entity.ShareID, file entity.FileID) (entity.F
 // firstStarting reads, in start order, the records under prefix that
 // overlap [from, end) and start before the n+1th record starting at or
 // after from, and reports where that one starts, end when there is none: a
-// batch reaching up to there holds at most n records starting in it. A
-// record crossing from is included, found as recordsOver finds it.
-func firstStarting[T any](r kv.Reader, prefix []byte, from, end int64, n int, span int64, decode func(start int64, v []byte) (T, int64, error)) ([]startedRecord[T], int64, error) {
+// batch reaching up to there holds at most n records starting in it. The
+// record crossing from is found with one seek. That is exact for phase 2:
+// refs never overlap, and phase 1 cut every hole and overwrite record
+// crossing the removal's edges, so none that a batch drops crosses its
+// start, whatever masked records of other removals overlap.
+func firstStarting[T any](r kv.Reader, prefix []byte, from, end int64, n int, decode func(start int64, v []byte) (T, int64, error)) ([]startedRecord[T], int64, error) {
 	at := func(start int64) []byte { return keys.Uint64(slices.Clip(prefix), uint64(start)) }
 	var out []startedRecord[T]
-	var after []byte // Scan resumes after its key
-	switch {
-	case span > 0 && from >= span:
-		after = at(from - span)
-	case span == 0:
-		if prev, ok, err := r.Before(prefix, at(from)); err != nil {
+	if prev, ok, err := r.Before(prefix, at(from)); err != nil {
+		return nil, 0, err
+	} else if ok {
+		start, err := startOf(prefix, prev.Key)
+		if err != nil {
 			return nil, 0, err
-		} else if ok {
-			start, err := startOf(prefix, prev.Key)
-			if err != nil {
-				return nil, 0, err
-			}
-			x, recEnd, err := decode(start, prev.Value)
-			if err != nil {
-				return nil, 0, err
-			}
-			if recEnd > from {
-				out = append(out, startedRecord[T]{start, x})
-			}
 		}
-		if from > 0 {
-			after = at(from - 1)
+		x, recEnd, err := decode(start, prev.Value)
+		if err != nil {
+			return nil, 0, err
 		}
+		if recEnd > from {
+			out = append(out, startedRecord[T]{start, x})
+		}
+	}
+	var after []byte // Scan resumes after its key
+	if from > 0 {
+		after = at(from - 1)
 	}
 	startingIn := 0
 	for row, err := range r.Scan(prefix, after) {
@@ -469,19 +469,15 @@ func firstStarting[T any](r kv.Reader, prefix []byte, from, end int64, n int, sp
 		if start >= end {
 			break
 		}
-		if start >= from {
-			if startingIn == n {
-				return out, start, nil
-			}
-			startingIn++
+		if startingIn == n {
+			return out, start, nil
 		}
-		x, recEnd, err := decode(start, row.Value)
+		startingIn++
+		x, _, err := decode(start, row.Value)
 		if err != nil {
 			return nil, 0, err
 		}
-		if start >= from || recEnd > from {
-			out = append(out, startedRecord[T]{start, x})
-		}
+		out = append(out, startedRecord[T]{start, x})
 	}
 	return out, end, nil
 }
@@ -536,7 +532,8 @@ func (n shareNamespaces) namespace(gen uint32) (entity.NamespaceID, error) {
 // PruneRemovals deletes the file's removals that are done and at or below
 // atOrBelow, the lowest newest version of the file's offload passes in
 // flight, or every done one when none is. It reads the offload fence,
-// tracked, so a pass committing meanwhile orders against it.
+// tracked, so a pass committing meanwhile orders against it. Pruning a
+// released file's removal deletes the rest of its keys, its history apart.
 func (c Content) PruneRemovals(ctx context.Context, share entity.ShareID, file entity.FileID, atOrBelow entity.JournalVersion) error {
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if _, _, err := get(tx, offloadFenceKey(share, file)); err != nil {
@@ -547,10 +544,14 @@ func (c Content) PruneRemovals(ctx context.Context, share entity.ShareID, file e
 			return err
 		}
 		for _, m := range rs {
-			if m.Done && !atOrBelow.Less(m.Version) {
-				if err := tx.Delete(removalKey(share, file, m.Version)); err != nil {
-					return err
-				}
+			if !m.Done || atOrBelow.Less(m.Version) {
+				continue
+			}
+			if m.Kind == entity.RemoveRelease {
+				return dropReleased(tx, share, file)
+			}
+			if err := tx.Delete(removalKey(share, file, m.Version)); err != nil {
+				return err
 			}
 		}
 		return nil

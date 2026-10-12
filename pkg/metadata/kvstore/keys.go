@@ -148,6 +148,21 @@ func deltasPrefix(share entity.ShareID, dir entity.FileID) []byte {
 
 func releaseKey(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FRel) }
 
+// streamsPrefix holds a file's named stream links, F‖id‖s‖streamID: each
+// stream is a file of its own, under its own ID.
+func streamsPrefix(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FS) }
+
+// opensPrefix holds a file's durable opens, F‖id‖op‖openID.
+func opensPrefix(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FOp) }
+
+func deletePendingKey(share entity.ShareID, id entity.FileID) []byte {
+	return fileSub(share, id, keys.FDp)
+}
+
+func historyPrefix(share entity.ShareID, id entity.FileID) []byte {
+	return fileSub(share, id, keys.FHis)
+}
+
 // filesPrefix covers every file record of a share.
 func filesPrefix(share entity.ShareID) []byte { return keys.ID([]byte{keys.KindF}, share[:]) }
 
