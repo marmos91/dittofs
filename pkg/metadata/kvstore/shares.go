@@ -113,8 +113,14 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 }
 
 // createShareRecords writes what a new share starts with besides its info:
-// its state, enabled; its root directory; and its numeric file id allocator,
-// above the root's number. The root's key must be free, so a root ID that
+// its state, enabled; its root directory; its numeric file id allocator,
+// above the root's number; and a namespace of its own, generation 1, that its
+// content is counted in.
+//
+// decision: every share gets a fresh namespace. Shares sharing one, so that
+// their content deduplicates and clones across them, is a choice the
+// configuration makes; take the namespace from the share's settings once
+// they name one. The root's key must be free, so a root ID that
 // already names a file is refused rather than overwritten.
 func createShareRecords(tx kv.Txn, s entity.Share) error {
 	root := fileKey(s.ID, s.Root)
@@ -127,6 +133,8 @@ func createShareRecords(tx kv.Txn, s entity.Share) error {
 		{shareKey(s.ID, keys.SSt), encodeState(shareState{State: entity.ShareEnabled})},
 		{root, encodeFile(newRoot(tx, s))},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
+		{namespacesKey(s.ID), encodeNamespaces(shareNamespaces{
+			Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: entity.NewNamespaceID()}}, Write: 1})},
 	} {
 		if err := tx.Set(kvs[0], kvs[1]); err != nil {
 			return err

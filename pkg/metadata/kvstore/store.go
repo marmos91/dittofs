@@ -73,6 +73,7 @@ type Store struct {
 	format  uint64
 	numbers numbers
 	bounds  boundCache
+	k       int // the key budget of a batch
 }
 
 // Init creates the store: the format record at the newest format, the
@@ -128,5 +129,9 @@ func Open(ctx context.Context, db kv.KV) (*Store, error) {
 			return nil, fmt.Errorf("%w: fold rule %d", ErrFormat, id)
 		}
 	}
-	return &Store{kv: db, format: f.Version}, nil
+	k, err := keyBudget(db.Limits())
+	if err != nil {
+		return nil, err
+	}
+	return &Store{kv: db, format: f.Version, k: k}, nil
 }

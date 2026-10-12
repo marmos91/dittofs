@@ -2,9 +2,11 @@ package kvstore
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
@@ -36,5 +38,30 @@ func TestDeleteShareGates(t *testing.T) {
 				t.Fatalf("DeleteShare = %v, want allowed %v", err, c.allow)
 			}
 		})
+	}
+}
+
+// A move pausing one of the share's namespaces refuses the removal.
+func TestDeleteSharePausedNamespace(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	share := newShare(t, s)
+	var nss shareNamespaces
+	if err := s.kv.View(ctx, func(r kv.Reader) error {
+		b, err := r.Get(namespacesKey(share))
+		if err != nil {
+			return err
+		}
+		nss, err = decodeNamespaces(b)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(nss.Namespaces) != 1 || nss.Write != 1 || nss.Namespaces[0].Namespace.IsZero() {
+		t.Fatalf("a new share's namespaces: %+v", nss)
+	}
+	rows(t, s, gcPauseKey(nss.Namespaces[0].Namespace), []byte{1})
+	if err := s.ControlPlane().DeleteShare(ctx, share, entity.SnapshotsDelete); !errors.Is(err, ErrMoving) {
+		t.Fatalf("DeleteShare under a pause: %v", err)
 	}
 }

@@ -10,8 +10,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
-// ErrRehoming is a share whose namespace a re-home is moving.
-var ErrRehoming = errors.New("kvstore: share is being re-homed")
+var (
+	// ErrRehoming is a share whose namespace a re-home is moving.
+	ErrRehoming = errors.New("kvstore: share is being re-homed")
+	// ErrMoving is a share one of whose namespaces a move has paused.
+	ErrMoving = errors.New("kvstore: a namespace of the share is paused by a move")
+)
 
 // The steps of a share's removal, recorded in its state record so a crash
 // resumes the removal where it stopped.
@@ -23,7 +27,8 @@ const (
 // removed: its name and path are free for a new share, ShareList moves, and
 // every call into it is stale. Removal is one-way; a second call is stale.
 //
-// The mark refuses a share a cut is freezing, one with a re-home running,
+// The mark refuses a share a cut is freezing, one with a re-home running, one
+// any of whose namespaces a move has paused,
 // one with snapshots when the call neither deletes nor detaches them, and,
 // when it deletes them, one any use record still holds. Snapshot and use
 // records are found under a range guard, and the re-home record by a tracked
@@ -36,10 +41,7 @@ const (
 // namespace — need the engine, open state, snapshots and GC, which this
 // store does not reach yet. Run them from stepMarked when those land. A share
 // left at stepMarked serves nothing and holds its records.
-//
-// ponytail: the GC pause of each namespace the share names is not read: the
-// share's namespaces are not recorded yet. Read them with the namespace
-// records.
+
 func (c ControlPlane) DeleteShare(ctx context.Context, share entity.ShareID, snapshots entity.SnapshotDisposition) error {
 	if snapshots.String() == "" {
 		return merrs.NewInvalidArgumentError("unknown snapshot disposition")
@@ -62,6 +64,9 @@ func (c ControlPlane) DeleteShare(ctx context.Context, share entity.ShareID, sna
 			return entity.ErrStale
 		case entity.ShareFrozen:
 			return entity.ErrDelay // a cut is running
+		}
+		if err := noPausedNamespace(tx, share); err != nil {
+			return err
 		}
 		if _, ok, err := get(tx, shareKey(share, keys.SRh)); err != nil {
 			return err
@@ -118,4 +123,25 @@ func guardedAny(tx kv.Txn, prefix []byte) (bool, error) {
 		return err == nil, err
 	}
 	return false, nil
+}
+
+// noPausedNamespace refuses a share any of whose namespaces a move has
+// paused, reading the share's namespaces and each pause with tracking.
+func noPausedNamespace(tx kv.Txn, share entity.ShareID) error {
+	b, ok, err := get(tx, namespacesKey(share))
+	if err != nil || !ok {
+		return err
+	}
+	nss, err := decodeNamespaces(b)
+	if err != nil {
+		return err
+	}
+	for _, g := range nss.Namespaces {
+		if _, paused, err := get(tx, gcPauseKey(g.Namespace)); err != nil {
+			return err
+		} else if paused {
+			return ErrMoving
+		}
+	}
+	return nil
 }
