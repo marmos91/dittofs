@@ -286,7 +286,7 @@ type Attributes interface {
 	SetXattr(ctx context.Context, id Identity, h Handle, x metadata.Xattr, mode XattrMode) error
 	RemoveXattr(ctx context.Context, id Identity, h Handle, name []byte) error
 	Streams(ctx context.Context, id Identity, h Handle) iter.Seq2[metadata.File, error]
-	Access(ctx context.Context, id Identity, h Handle, want Access) (Access, error) // NFS ACCESS, SMB MaximalAccess
+	Access(ctx context.Context, id Identity, h Handle, want Access) (Access, error) // NFS ACCESS, SMB MaximalAccess: Files.Granted ∩ want (RFC 7 §2.6)
 }
 
 // Data: opens, reads, writes. Every data call names an OpenRef: an open with
@@ -379,10 +379,40 @@ and against the deny modes held. The delegation lends no access.
 type Callbacks interface {
 	RecallGrant(ctx context.Context, g metadata.CachingGrant, to GrantKind) error // NFS CB_RECALL, SMB lease or oplock break
 	Notify(ctx context.Context, w metadata.WatchID, changes []Change) error      // SMB CHANGE_NOTIFY, NFS directory notifications
-	Revoked(ctx context.Context, what Revocation)                                // lease expiry, administrative revoke
-	LockWaitOver(ctx context.Context, w metadata.LockWaiter, granted bool)       // NLM_GRANTED, SMB lock completion (granted); NFSv4.1 CB_NOTIFY_LOCK, optional (reserved, not granted)
+	Revoked(ctx context.Context, what Revocation)                                // lease expiry, administrative revoke, share removed (RFC 14 DropShare): the adapter answers any request it holds pending on the revoked state
+	LockWaitOver(ctx context.Context, w metadata.LockWaiter, granted bool) (WaitAnswer, error) // NLM_GRANTED, SMB lock completion (granted); NFSv4.1 CB_NOTIFY_LOCK, optional (reserved, not granted)
 }
+
+// Revocation names state the service ended without the client asking. Share is
+// set for RevokedShareRemoved, where only that share's state ends; the other
+// reasons end every piece of state the client holds (RFC 14 §4.3).
+type Revocation struct {
+	Client metadata.ClientID
+	Share  metadata.ShareID
+	Reason RevokeReason
+}
+
+type RevokeReason uint8
+
+const (
+	RevokedLeaseExpired RevokeReason = iota // the client's lease expired
+	RevokedByAdmin                          // an administrator revoked the client
+	RevokedShareRemoved                     // RFC 14 DropShare, for the share's removal
+)
+
+// WaitAnswer is what the client said to a LockWaitOver.
+type WaitAnswer uint8
+
+const (
+	WaitAcked   WaitAnswer = iota // NLM: the host acknowledged NLM_GRANTED; SMB and NFSv4: the completion or notification was sent
+	WaitRefused                   // NLM: the host refused the grant; the primary releases the lock
+)
 ```
+
+`LockWaitOver` returns an error when the client gave no answer by the call's
+deadline. For an NLM grant the service then calls it again, and keeps the lock:
+a grant is never released for a silence, only for a refusal, a cancel, the
+host's restart, an administrator's revoke of its client, or its share's removal ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)).
 
 A callback **MUST NOT** block the service beyond its context's deadline, and a
 callback that fails or times out **MUST** be treated as the client not answering:
@@ -398,7 +428,7 @@ adapter sends the interim response and re-drives the call itself, within the
 call's deadline, answering the client once the call completes or the deadline
 passes. A request the adapter holds pending this way **MAY** carry a deadline
 longer than the default of [§4.3](#4.3%20Errors%20are%20neutral%20values), up to
-`smb_pending_deadline` (proposal: 60 s), which **MUST** exceed the SMB break
+`smb_pending_deadline` ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), which **MUST** exceed the SMB break
 deadline of [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)
 (35 s; called the **break deadline** below), so that the request outlives the
 recall it waits on and completes when the break resolves rather than failing
@@ -411,10 +441,19 @@ One answered `ErrDelay` because its share is quiesced or frozen for a move
 than `migration.freeze_timeout` plus the break deadline
 ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)), rather than failed at `smb_pending_deadline` while
 the freeze still holds; if the share's namespace has moved when the freeze ends,
-the adapter drops the connection, so the client's durable handles reconnect at
-the new owner. One answered `ErrDelay` for a transient capacity refusal is held
-up to `smb_pending_cap` ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings); proposal: 10 min), which **MUST** exceed
+the adapter drops the connection, so the client reconnects at the new owner.
+Only persistent opens, whose records the move carries, reconnect there; durable
+and resilient handles are held only at the old primary and are refused, so the
+client reopens, as after a failover ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). One answered `ErrDelay` for a transient capacity refusal is held
+up to `smb_pending_cap` ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), which **MUST** exceed
 `migration.freeze_timeout` plus the break deadline, and only there answered `STATUS_DISK_FULL` (§4.3).
+One that reaches its deadline still `ErrDelay` because the metadata store has
+stalled — its own transaction, or the existence commit a stable write waits on,
+outstanding or failing — **MUST** be held and re-driven the same way up to
+`smb_pending_cap`, and only there answered `STATUS_UNEXPECTED_IO_ERROR`, as a
+failed read is (§5.2). SMB has no retry-later status, so answering at the call's
+deadline would fail, for a stall NFS clients ride out by retrying, every write a
+Windows client had in flight.
 A lock request answered `ErrBlocked` has no deadline at all: it holds no worker,
 and it ends only as its waiter does
 ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)); an adapter that
@@ -515,9 +554,9 @@ Adapters own, and the service never sees:
 
 ### 4.3 Errors are neutral values
 
-The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrStale`,
+The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrPerm`, `ErrStale`,
 `ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`,
-`ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrBlocked`, `ErrNotYours`, `ErrBadLayout`, `ErrWrongSecurity`, `ErrInvalid`, `ErrCrossNamespace`, `ErrClientInUse`, `ErrSeqMisordered`, and the content errors of
+`ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrBlocked`, `ErrNotYours`, `ErrBadLayout`, `ErrWrongSecurity`, `ErrInvalid`, `ErrCrossNamespace`, `ErrClientInUse`, `ErrSeqMisordered`, `ErrStaleClient`, `ErrStaleState`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly": a recall is in progress (§3.2), a clone
 holds the extent (§5.9), or a share's journal limit or the journal's capacity
@@ -537,7 +576,7 @@ holds the bytes, or the device itself is full ([RFC 8 §10.2](rfc-8-engine.md#10
 request waits and will be granted through `LockWaitOver` (§3.2); NLM maps it to
 `NLM_BLOCKED`, SMB to a pending response. `ErrNoSpace` means no space will come
 without operator action; `ErrQuota` means a logical quota
-refused, and only it is answered at once. `ErrInvalid` means the arguments
+refused. Both are answered at once, and no other space refusal is. `ErrInvalid` means the arguments
 cannot be honoured as given — an overlapping copy or clone within one file, or
 a clone longer than `clone_max_len` (§5.9) — and maps to `NFS4ERR_INVAL` and
 `STATUS_INVALID_PARAMETER`, as Linux answers `EINVAL`. `ErrCrossNamespace` means
@@ -546,6 +585,18 @@ share no chunks to adopt (§5.9); it maps to `NFS4ERR_XDEV` and
 `STATUS_NOT_SUPPORTED`, so the client falls back to reading and writing. `ErrClientInUse` and `ErrSeqMisordered` are RFC 14's
 client-record refusals, mapped to `NFS4ERR_CLID_INUSE` and
 `NFS4ERR_SEQ_MISORDERED`.
+`ErrStaleClient` means the call names a client that expired, was revoked, or
+is marked by the loss of a shard's open state until it repeats `SETCLIENTID`
+([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)), and
+`ErrStaleState` a stateid or FileId whose state was lost with its shard's open
+state ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); they map to `NFS4ERR_STALE_CLIENTID` and
+`NFS4ERR_STALE_STATEID`; over SMB, where a lost open is a FileId the server no
+longer holds, `ErrStaleState` maps to `STATUS_FILE_CLOSED`.
+`ErrPerm` means the operation is refused whatever the caller's access — an
+immutable or append-only file ([RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)), or a change of owner, group or
+flags only a privileged caller or the owner may make ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)) — and maps
+to `NFS4ERR_PERM`, `NFS3ERR_PERM` and `STATUS_ACCESS_DENIED`, as Linux answers
+`EPERM`.
 `ErrGrace` means the file's shard is in grace and the request needs, or
 conflicts with, state that may still be reclaimed (§5.1). `ErrWrongSecurity`
 means the share's policy does not admit the call's flavour (§4.9); NFSv4 maps it
@@ -556,7 +607,7 @@ An operation that arrives with no deadline is given one of 30 s from its
 arrival at the service — up to `smb_pending_deadline` for a request an adapter holds pending, until
 grace's end plus the break deadline for one refused `ErrGrace`, until a freeze's end plus the break deadline
 for one refused because its share is quiesced or frozen, up to `smb_pending_cap`
-for an SMB request held on a transient capacity refusal, and none for a lock
+for an SMB request held on a transient capacity refusal or a store stall, and none for a lock
 request answered `ErrBlocked` (§3.2) — fixed rather than a setting ([RFC 13](rfc-13-configuration.md)), so every wait below
 it ends ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)).
 
@@ -750,7 +801,12 @@ Each order below is normative.
    the write verifier ([RFC 8](rfc-8-engine.md)), passing the stability the write needs and the times
    the caller's open has suspended ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A suspended `Modify` or
    `Access` is not advanced for this write, by the overlay, the existence commit or
-   a replay; `Change` and `Version` advance regardless ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward));
+   a replay; `Change` and `Version` advance regardless ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)).
+   Inside the hold of the file's accept lock in which the write is accepted,
+   the primary refuses with `ErrPerm` a write to an immutable file, and a write
+   to an append-only file at an offset below the size the overlay reports there
+   ([RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)); a truncate, deallocate, copy or clone into such a
+   file is refused in the same hold (§5.5, §5.9);
 7. reply. A stable write is answered once the journal has synced it **and**, if
    it overwrites committed content, once its existence commit has landed — the
    overwrite record that keeps a later loss reading as **Lost** rather than as
@@ -818,11 +874,14 @@ retry re-checks the deny modes against the opens that remain. Refused at once,
 it fails against handles nobody is using.
 
 **The service runs every release.** It calls the engine's `Release`
-([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) at the file's primary, at three moments: when `Unlink` or `Rename`
+([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) at the file's primary, at four moments: when `Unlink` or `Rename`
 reports a file left with no entry and no open holds it; when open state's `Close`
 reports the last close of a file with no entry, having deleted its durable open
-record ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)) — open state reports, the service releases; and in recovery, for
-every pending release, once the shard's grace has ended. The release transaction
+record ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)) — open state reports, the service releases; when a release
+commits that wrote the pending releases of its file's named streams
+([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)), for each of those streams, which no open can hold since an open of
+a stream counts as one of its base; and in recovery, for every pending release,
+once the shard's grace has ended. The release transaction
 re-checks its holders itself ([RFC 7 §4.5](rfc-7-namespace-metadata.md#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)), so a release begun on a stale view aborts
 and loses nothing. A delete on close runs as the principal of the open that set
 it ([RFC 7 §8.2](rfc-7-namespace-metadata.md#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later)).
@@ -866,7 +925,7 @@ engine refuses a write for quota.
   re-applies the writes and their charge ([RFC 8](rfc-8-engine.md)).
 - **Overshoot bound.** A primary sees its own reservations, not other primaries'.
   Each primary lets a principal or project hold at most `S` bytes reserved and
-  uncommitted (the reservation slack, a setting); a write past it waits for a
+  uncommitted (the reservation slack, a setting of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)); a write past it waits for a
   commit or returns `ErrDelay`. A principal writing through `k` primaries at once
   can therefore exceed its hard limit by at most `(k − 1) × S`, plus what
   transactions committing concurrently add. With one primary, only the latter.
@@ -961,7 +1020,9 @@ at one point in the source's history. The two kinds differ in atomicity:
   chunks, each a small atomic clone, and the reply reports the bytes copied; at
   the caller's deadline the copy stops after its current chunk and answers a
   short count (`wr_count` below the request, as RFC 7862 §15.2 allows), from which
-  the client continues.
+  the client continues. A chunk refused after others are done answers the same
+  short count; only a refusal of the first chunk returns its error
+  ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 
 1. admit and route both handles, and authorise read on the source and write on
    the destination, as §5.1 steps 1–3 do for each; a copy between files of two
@@ -975,8 +1036,11 @@ at one point in the source's history. The two kinds differ in atomicity:
    destination as a write does (§5.1 step 5);
 4. call the engine. While a clone or a copy's current chunk runs, a write,
    truncate, deallocate or clone into its source extent, or a write into its
-   destination extent, returns `ErrDelay` (§4.3), so each clone reads one
-   consistent source; the clone holds the source open, so a last close or unlink
+   destination extent, is **held** at the service until that clone or chunk
+   ends and then runs, and returns `ErrDelay` (§4.3) only if its own deadline
+   passes first, so each clone reads one consistent source. Answering
+   `ErrDelay` at once would cost an NFSv3 client its fixed retry-later pause,
+   several seconds on Linux, for a chunk that ends far sooner; the clone holds the source open, so a last close or unlink
    does not release it mid-clone. A source run the engine reads as Lost — a
    source ref whose chunk record is gone included — is carried to the
    destination as Lost, never as zeros. A clone that is refused leaves the
@@ -1012,7 +1076,7 @@ at one point in the source's history. The two kinds differ in atomicity:
 | V23 | A blocked lock holds no worker and has no deadline: NFSv4 waiters are polled, NLM and SMB waiters are answered through `LockWaitOver`, and no adapter answers one other than as granted before `CancelLock` returns. |
 | V24 | I/O under a delegation is served only to the client holding it and is authorised for the caller's own principal, as anonymous I/O is. |
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush through an open that was open across a loss of the file's acknowledged unoffloaded writes fails once with `ErrLost`. |
-| V26 | A copy or clone of overlapping extents within one file, or a clone over `clone_max_len`, is refused with `ErrInvalid`, and one across namespaces with `ErrCrossNamespace`, each changing nothing; writes to a running clone's extents return `ErrDelay`; a Lost source run is copied as Lost; a clone is atomic and answered only when done, and a copy runs as bounded chunks and may answer a short count. |
+| V26 | A copy or clone of overlapping extents within one file, or a clone over `clone_max_len`, is refused with `ErrInvalid`, and one across namespaces with `ErrCrossNamespace`, each changing nothing; writes to a running clone's extents are held until it ends, and return `ErrDelay` only past their own deadline; a Lost source run is copied as Lost; a clone is atomic and answered only when done, and a copy runs as bounded chunks and may answer a short count. |
 | V27 | A request an adapter holds pending after `ErrGrace` outlives the grace period, and one held while its share is quiesced or frozen outlives the freeze, bounded by `migration.freeze_timeout` plus the break deadline (§3.2). |
 | V28 | A create, link or rename into a directory marked delete on close is refused, over every protocol. |
 

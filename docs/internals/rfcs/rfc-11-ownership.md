@@ -115,12 +115,12 @@ store carries an **epoch**, a fencing number raised by a change of primary or
 replicas and by the raise before a move
 ([RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) states the rule).
 
-- *S1 crashes.* S1 renews one lease for all its shards every 3 s, valid for
+- *S1 crashes.* S1 renews one lease for all its shards every 3.3 s, valid for
   10 s (the proposed defaults). Once it has lapsed, plus 0.5 s allowed for clock drift, S2 — a replica —
   takes A over: one metadata-store transaction names S2 primary and raises A's
   epoch from 5 to 6 and its incarnation. Writes to A stall for up to the lease,
-  the drift allowance and the takeover's own work — about 10.5 s plus a few
-  seconds — then resume at S2. The
+  the drift allowance, the replica's read lag of up to one renewal period and the
+  takeover's own work — about 14 s plus a few seconds — then resume at S2. The
   node serving A changed, so the NFS **write verifier** for A's files changes —
   the signal that makes an NFS client resend writes it had not yet flushed — and
   clients reclaim their opens and locks during a grace period; alice-pc
@@ -299,9 +299,12 @@ This document **MUST NOT**:
 
 A **shard** is a set of files with one primary at a time. Every file belongs to
 one shard, recorded with the file ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), and the shard record names
-its primary, epoch and replicas. A share's removal is driven by the primary of
-each of its shards, resumes on that shard's next primary after a failover, and
-deletes the shard records last ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
+its primary, epoch and replicas. A share's removal drops each shard's live
+state and files under that shard's primary, which records its progress beside
+the shard record; the rest is driven by one coordinator, the primary of the
+shard holding the share's root. Each part resumes on its shard's next primary
+after a failover, and the shard records go last, the root's last of all
+([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
 
 | Policy | A file's shard is | When |
 | --- | --- | --- |
@@ -399,7 +402,14 @@ shard, and a directory renamed into it keeps its own.
   removes the lost node **MUST** name, in its place, a node already serving the
   slot's shards wherever the domain rule allows. Without it the repair and the
   later recomputation each pick a node, and a lost node costs every shard two
-  joins and two copies of its tail.
+  joins and two copies of its tail. **A lost node that returns within the
+  re-placement delay** is still in the placement set, so the table still names
+  it while the shard record names the repair's node in its place. The record
+  converges on the table: the returning node rejoins each of its slots'
+  shards as a learner ([RFC 10 §7.3](rfc-10-journal-replication.md#7.3%20Joining)), and once its tail is
+  covered the primary removes the repair's node by an ordinary record change;
+  a repair's node is never kept in place of a node the table names, and the
+  table is not recomputed for a node that came back.
 - **Rebalance.** When the placement set or a node's capacity changes, the slot
   table is recomputed to move as few slots as the new weights allow, and written
   by one compare-and-swap. Only the shards of slots whose nodes changed are
@@ -444,17 +454,20 @@ it can be fenced before its client addresses are taken over
 
 | Installation setting ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)) | Proposed default | Used by |
 | --- | --- | --- |
-| node lease | 10 s | the expiry each renewal sets; a takeover waits it out plus the drift bound, then gathers and seals, so a lost primary's shards stall for the lease, plus the drift bound, plus the gather interval, plus the seal — about 10.5 s plus a few seconds, and more when much was in flight ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)) |
-| renewal period | 3 s | how often a node renews; a failed renewal is retried at once, after a random jitter of up to a tenth of the period, then at the period, with no fixed count, until it succeeds. The self-fence falls 5 s — half the lease — after the node last reached the store and stops the node serving, not retrying: it keeps renewing at the period past the self-fence and past its lease's expiry, and resumes or is refused as the store-stall row of [§9](#9.%20Failure) says. So the first renewal after a store stall lands within a period of the store's return, not later |
+| node lease | 10 s | the expiry each renewal sets; a takeover waits it out plus the drift bound, then gathers and seals, so a lost primary's shards stall for the lease, plus the drift bound, plus the claimant's read lag of up to one renewal period, plus the gather interval, plus the seal — about 14 s plus a few seconds, and more when much was in flight ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)) |
+| renewal period | a third of the lease (3.3 s); derived, not a setting | how often a node renews, and how often a replica re-reads the expiry records of the primaries it follows (below); a failed renewal is retried at once, after a random jitter of up to a tenth of the period, then at the period, with no fixed count, until it succeeds. The self-fence falls 5 s — half the lease — after the node last reached the store and stops the node serving, not retrying: it keeps renewing at the period past the self-fence and past its lease's expiry, and resumes or is refused as the store-stall row of [§9](#9.%20Failure) says. So the first renewal after a store stall lands within a period of the store's return, not later |
 | drift bound | 500 ms | a margin in time, not a rate: the self-fence margin before expiry, the clock check (a node whose clock is off the store's by more than 250 ms fences), and the wait a successor adds |
-| clock-rate bound ρ | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | a rate: how much slower than store time a node's monotonic clock may run. A lease of `L` measured by a node's clock lasts at most `L × (1 + ρ)` in store time, and every wait this document sizes is stated that way ([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) item 3) |
+| clock-rate bound ρ | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | a rate: how much faster one node's monotonic clock may run than another's or than store time. A lease of `L` measured by a node's clock lasts at most `L × (1 + ρ)` by another's, and every wait this document sizes is stated that way ([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) item 3) |
 
 > decision: the defaults above are proposals sized against one another — the
 > self-fence on an unreachable store at half the lease, three renewals per
 > lease, a retry jitter of a tenth of the period — not measured. The ratios are
 > fixed: half the lease leaves a node that lost the store as long to stop as the
 > successor still waits, and a tenth of the period spreads a cluster's retries
-> after a store stall without delaying any past the period. Overturned by the
+> after a store stall without delaying any past the period. The renewal period
+> is therefore derived from the lease rather than set beside it: a period above
+> half the lease would leave an idle node self-fencing before every renewal, and
+> one setting cannot be set against the other. Overturned by the
 > takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) or a measured rate of
 > self-fences on store hiccups shorter than the lease.
 
@@ -492,30 +505,44 @@ state, serving reads and answering version queries ([§6](#6.%20Reads%20on%20oth
 is within the drift bound of expiry by its own clock, or once it has not reached
 the store for half its lease. Each renewal returns the store's time, and a node
 whose clock differs from it by more than half the drift bound, after allowing
-half the renewal's round trip, fences itself as if its lease had lapsed. A successor **MUST NOT** serve before the old lease has
-lapsed plus the drift bound, in store time ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)).
+half the renewal's round trip, fences itself as if its lease had lapsed. A successor **MUST NOT** serve before the old lease plus the
+drift bound has passed on its own monotonic clock since the reply to a read
+that showed the old lease's expiry record as it still stands ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)).
 
-**Store time read on two nodes.** On a store with one time source, `Now` is the
-same clock for every node. On a store whose `Now` is each node's own clock,
-clamped by its clock record ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), the old primary's expiry was
-taken from its `Now` and the successor compares it with its own, which may read
-up to the clock-offset bound σ ahead ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). There
-every wait that compares a time one node stored with another node's `Now` —
-a takeover's wait for a lapsed lease, and the mark that precedes an address
-takeover — **MUST** add σ: the successor waits until its `Now` passes the
-expiry plus the drift bound plus σ. So `(L − δ) × (1 + ρ) < L + δ`
-([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) item 3) still holds in the old primary's own store
-time. Every other lease and hold comparison here is of a time a node stored
-against that node's own `Now` — a renewal, a resume, a node's new lease after a
-mark, a participant's hold deadline ([§8.1](#8.1%20Operations%20across%20shards)) — and adds nothing.
+**A successor's wait is a duration, not a comparison of two clocks.** Every
+wait for another node's lease to lapse — a takeover's, and the mark that
+precedes an address takeover ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)) — is
+measured on the waiting node's monotonic clock from the moment the reply to a
+read of the lease's expiry record arrived — not when the read was sent, which
+may precede the renewal it returns — and the claim or mark that ends it is conditional
+on that record being unchanged since: a renewal that commits meanwhile
+changes it, and the claim conflicts. The old primary measured its lease from
+before it sent the renewal that wrote that record, which committed before the
+read's reply, so at the clock-rate bound its self-fence at `L − δ` by its clock falls before
+the waiter's `L + δ` by its own whenever `(L − δ) × (1 + ρ) < L + δ`
+([RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) item 3). No expiry one node stored is compared with
+another node's `Now`, so the wait holds on a store whose `Now` is each node's
+own clamped clock ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)) whatever the offset between them,
+and adds no clock-offset bound. A replica re-reads the expiry record of each
+primary it follows once per renewal period, one point read per node rather than
+per shard, so a takeover starts at most a period after the lease could lapse.
+Every other lease and hold comparison here is of a time a node stored against
+that node's own `Now` — a renewal, a resume, a node's new lease after a mark, a
+participant's hold deadline ([§8.1](#8.1%20Operations%20across%20shards)) — and needs no bound across clocks either.
 
-> decision: on a store whose `Now` is each node's clock, the clock check above
+> decision: no wait in the cluster's lease protocol compares one node's stored
+> time with another node's clock, so it needs no bound on the offset between
+> them, which no node checks — the clock-offset bound σ
+> ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) enters none of them. The price is up to one renewal
+> period of takeover latency, which a store with one time source would not
+> pay. On a store whose `Now` is each node's clock, the clock check above
 > compares a node's clock with that same clock clamped, so it catches only a
-> clock stepped back under its ceiling; the offset between two nodes is σ, an
-> assumption no node can check alone, as on one node
-> ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). Overturned by a store that
-> exposes one time source to every node, which makes σ zero here and the check
-> meaningful, or by a measured offset between two nodes above σ.
+> clock stepped back under its ceiling. The upgrade, should a wait ever need
+> to compare clocks, is to bound each peer's offset by round trip on the
+> authenticated node channels ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)) and fence a node
+> whose estimate exceeds half the bound; it is not designed here because no
+> wait needs it. Overturned by a wait that must compare two nodes' clocks, or by
+> a measured takeover latency in which the re-read period dominates.
 
 **Health is more than reaching the store.** A node that renews while it cannot
 do its shards' work would keep them forever. So a node **MUST** stop renewing —
@@ -675,6 +702,9 @@ one above G's by an ordinary change of R's record and installs it on R's replica
    - reads both shard records with conflict tracking, and commits only if G's
      epoch is still the one the batch was frozen under and R's is still the one
      R installed, above it;
+   - reads the share's state with conflict tracking and refuses a share that
+     is not `enabled` or `quiesced`, so no file moves into a shard a removal
+     has already emptied ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share));
    - for each file whose recorded shard is still G, rewrites it to R and writes
      its fence records as (R, R's epoch);
    - writes R's hold record for every cut whose held versions the batch shipped
@@ -751,7 +781,7 @@ never a wrong write, because the check is at the receiver.
 mutations keyed by request ID alone, which is unique across the cluster
 ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) — not by shard or epoch, so a retry that straddles an epoch raise,
 or is re-routed to the shard a file moved to, is still recognised — holding each
-result for at least the sender's retry window. The table travels with every
+result for at least the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). The table travels with every
 handover and, entry by entry, with the files of every batch. **It also survives a
 takeover (cluster):** a journal operation's record keeps its request ID and
 result, and the pair outlives the operation's eviction for the retry window
@@ -773,10 +803,23 @@ the primary from its open's own state.
 
 **A primary the front-ends cannot reach** while it still reaches the store would
 keep its lease forever. Front-ends report failed forwards to the store, which
-records a health condition on the node. If it persists for the re-placement
-delay, each of the node's shards is handed over to a replica the front-ends can
-reach; a primary that does not complete a handover within a bound is refused its
-next renewal, which turns the handover into a failover.
+records a health condition on the node. If it persists for the **unreachable
+delay** (`shard.unreachable_delay`), each of the node's shards is handed over to
+a replica the front-ends can reach; a primary that does not complete a handover
+within the **unreachable handover bound** (`shard.unreachable_handover_bound`)
+is refused its next renewal, which turns the handover into a failover. Both are
+installation settings ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), proposed at 30 s and 60 s.
+
+> decision: the unreachable delay is not the re-placement delay. That one waits
+> for a lost node to come back and is settled by node return times; here the
+> node is up, its clients stall for the whole delay, and it is settled by how
+> long clients tolerate a stall against how often front-ends lose a primary
+> briefly. The handover bound is one installation-wide time, not sized from each
+> shard's tail, because the failover it falls back to loses nothing the replicas
+> hold and costs only a grace period. Both are unmeasured. Overturned by
+> unreachable-primary handovers on the reference deployment that complete past
+> the bound often enough that the failover's grace shows up in client stalls,
+> or by brief front-end losses that trip the delay.
 
 On one node the front-end and the primary are one process, and routing is a
 function call.
@@ -907,8 +950,8 @@ that commits after it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small
 
 | Record | Read by | Written by |
 | --- | --- | --- |
-| `F_x(file)` | existence commits and namespace transactions, with conflict tracking | a new primary; a move; removals and releases |
-| `F_o(file)` | offload commits and removal pruning | a new primary; a move; removals and releases; every offload commit ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)) |
+| `F_x(file)` | existence commits and namespace transactions, with conflict tracking | a primary's first fenced transaction under a new epoch, a new primary's or one that stayed through a raise; a move; removals and releases |
+| `F_o(file)` | offload commits and removal pruning | a primary's first fenced transaction under a new epoch, as above; a move; removals and releases; every offload commit ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)) |
 
 - A primary **MUST** rewrite both, as (its shard, its current epoch), inside
   the first fenced transaction that touches the object under that epoch — a
@@ -1027,7 +1070,7 @@ it, which bounds how long it keeps a gate from closing.
 | a primary is lost | its shards fail over; clients reclaim their state in them in grace ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); layouts naming it are revoked |
 | the store is unreachable from a node | it can neither renew nor commit; it fences itself after half its lease, and its shards fail over wherever the store is reachable |
 | a partition separates nodes but not the store | who is primary does not change, since the store decides it; replication across the partition fails and [RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal) removes the unreachable replicas while one still answers; a primary cut off from every replica removes none and relinquishes the shard to them |
-| front-ends cannot reach a primary that reaches the store | a health condition; handover after the re-placement delay ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)) |
+| front-ends cannot reach a primary that reaches the store | a health condition; handover after the unreachable delay, failover past the unreachable handover bound ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)) |
 | a coordinator is lost mid-prepare | holds end at their deadline; nothing was committed ([§8.1](#8.1%20Operations%20across%20shards)) |
 
 ## 10. Worked examples
@@ -1227,7 +1270,7 @@ var (
 | O10 | Every fenced commit is refused unless each file's fence record equals the (shard, epoch) it carries and the primary's node record, which it guards, holds the node epoch it carries unmarked; no fence is one record per shard. |
 | O11 | Shard records are never per file. |
 | O12 | Removal records are pruned only by the file's primary, under its epoch. |
-| O13 | A primary acknowledges no write, grants no open state, serves no read and answers no version query once its lease is within the drift bound of expiry, or its clock differs from the store's by more than half the drift bound. A successor serves no sooner than the old expiry plus the drift bound by its own `Now`, plus σ on a store whose `Now` is each node's clock. |
+| O13 | A primary acknowledges no write, grants no open state, serves no read and answers no version query once its lease is within the drift bound of expiry, or its clock differs from the store's by more than half the drift bound. A successor serves no sooner than the lease plus the drift bound on its own monotonic clock from the reply to a read that showed the old lease's expiry record unchanged since. |
 | O14 | During a batch move, the giving primary acknowledges no write to the batch's files from freeze until it refuses them after the commit; the receiving primary re-versions what it accepts under its own epoch, accepts ships only for an open batch, and discards its entries of a batch that did not commit; `Discard` names one shard. |
 | O15 | An operation across shards commits in one transaction, only after every other primary involved has checked and held its files and committed a hold record, only while each is still at the (shard, epoch) and node epoch it answered with, and only while every participant's hold record, which the commit guards, still exists; a participant grants nothing its hold refused until the deletion of its hold record has committed. |
 | O16 | No shard's primary changes by a planned move sooner than the dwell time after its previous planned change. |
@@ -1238,9 +1281,9 @@ var (
 | O21 | A batch move's commit writes the receiving shard into every client record its open-state entries name. |
 | O22 | A retried mutation is answered from a durable record of its first result — the journal operation's record or the mutation's request record — across a takeover, a handover and a move. |
 | O23 | A put intent is superseded only once the shard record no longer names its (node, node epoch) as primary, so a re-claim after a restart supersedes the intents the earlier process left and a raise of the epoch under a live primary supersedes none. |
+| O24 | A shard is held in one journal per member, so its write bandwidth is one device's. |
 | O25 | A primary rewrites a file's or directory's fence records at its current epoch inside its first fenced transaction on the object under that epoch, whether it is new or stayed through a raise, and only over fences naming its own shard at an older epoch. |
 | O26 | A per-child shard's replacement replica after a node loss is the node its slot would name, so a lost node costs each shard one join and one tail copy. |
-| O24 | A shard is held in one journal per member, so its write bandwidth is one device's. |
 
 ## 13. Observability
 
@@ -1320,25 +1363,25 @@ a claim or address mark waited out the claim hold.
 | `S-shard-move-crash-every-batch` | a move of 10^6 files crashed after every batch resumes, each file in one shard |
 | `S-shard-mark-existing` | marking a directory per-child while files are created and hard-linked inside it |
 | `S-shard-zombie-renew` | a node paused past its lease renews: refused; it serves no shard it held |
-| `S-shard-takeover-clock-offset` | on a store whose `Now` is each node's clock, set the replica's clock σ ahead of the primary's and ρ fast, then partition the primary from the store; assert the replica serves no sooner than the primary's self-fence by the primary's own clock. A takeover that waits only the expiry plus the drift bound serves while the old primary still acknowledges |
+| `S-shard-takeover-clock-offset` | on a store whose `Now` is each node's clock, set the replica's wall clock 2 s ahead of the primary's and its monotonic clock ρ fast, then stop the primary's renewals by a journal stall that trips its watchdog (§3.1) while the store stays reachable, so it self-fences at the lease less the drift bound rather than at half the lease; assert the replica serves no sooner than that self-fence by the primary's own clock. A takeover that compares the stored expiry with its own `Now` serves while the old primary still acknowledges |
 | `S-shard-plain-claim-lapsed` | a non-replica tries to claim a shard whose primary lapsed: `ErrNeedsTakeover` |
 | `S-shard-flapping-node` | a node misses renewals repeatedly within the delay: failovers, no slot-table change |
 | `S-shard-slot-rebalance` | a node joins with twice the others' capacity: it gains about twice their slots, only those slots' shards are handed over, at the configured rate and under the dwell; no file changes shard |
 | `S-shard-slot-cas-race` | two nodes recompute the slot table at once: one compare-and-swap wins, the other recomputes from it, and no slot's shards are handed over twice |
-| `S-shard-unreachable-primary` | front-ends cannot reach a primary that reaches the store: handover after the delay |
+| `S-shard-unreachable-primary` | front-ends cannot reach a primary that reaches the store: handover after the unreachable delay; with the handover stalled, the primary is refused renewal once the unreachable handover bound passes and its shards fail over |
 | `S-shard-hop-loop` | two front-ends with crossed stale caches: refused at the hop limit, then routed |
 | `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline, each deleting its hold record; a late commit is refused |
 | `S-shard-cross-hold-release` | a participant releases an expired hold while the coordinator's commit is in flight, the release committing first, on a store that chooses the commit timestamp after the commit's reads; the commit conflicts with the deletion of the hold record and aborts, and the deny-delete open the participant then grants stands |
 | `S-shard-cross-dir-loop` | two cross-shard directory renames that together would make a cycle: one commits |
 | `S-shard-readdirplus-foreign` | a listing shows children in other shards at their flushed size, never older |
-| `S-shard-store-stall-resume` | the store stalls for 15 s with every node healthy; assert no shard fails over, no grace runs, and every write verifier is unchanged afterwards. A design where every lapsed lease is replaced fails over every shard |
+| `S-shard-store-stall-resume` | the store stalls for one and a half node leases ([RFC 13](rfc-13-configuration.md)) with every node healthy; assert no shard fails over, no grace runs, and every write verifier is unchanged afterwards. A design where every lapsed lease is replaced fails over every shard |
 | `S-shard-resume-vs-claim` | a primary's resume and a replica's claim race on one node record; assert exactly one commits, and a resumed primary serves only if the claim lost |
 | `S-shard-journal-stall` | a primary's journal device stops completing syncs while the node still reaches the store; assert it stops renewing after the stall bound and a replica takes over. A health check by store reachability alone keeps the shard stuck |
 | `S-shard-move-client-records` | fail R over immediately after a batch commits; assert every client whose open moved is told to reclaim in R. A client record updated after the commit misses them |
 | `S-shard-retry-after-takeover` | a namespace mutation and a write each lose their reply; the primary fails over after the write's content was offloaded and evicted; the client retries through the same front-end on the same connection; assert each is answered with its first result and applied once. A request entry dropped with the evicted content applies the write twice |
 | `S-shard-raise-live-primary` | a replica joins, then a learner is cleared, under a live primary with existence commits and puts in flight; assert every commit lands at the new epoch after the primary rewrites the touched files' fences, GC removes none of its intents, and no ref names a removed object. A design where only a new primary writes fences refuses every commit after the raise; one that supersedes intents by epoch leaks a dangling ref |
 | `S-shard-resume-rollback` | image a primary's VM while it holds its lease, let the lease lapse with no takeover, restore the image; assert its resume's generation swap loses, it serves nothing from that journal, and the shard fails over with every acknowledged write. A resume that skips the swap serves the rolled-back journal under the old verifier |
-| `S-shard-stall-renew-phase` | stall the store for 15 s with every node's renewal timer just past its last attempt; assert every node's first renewal after the stall lands within the jitter, no node marks another lapsed within the hold, and no shard fails over. A renewal retried only at the period, or a hold of one period, fails over shards |
+| `S-shard-stall-renew-phase` | stall the store for one and a half node leases with every node's renewal timer just past its last attempt; assert every node's first renewal after the stall lands within the jitter, no node marks another lapsed within the hold, and no shard fails over. A renewal retried only at the period, or a hold of one period, fails over shards |
 | `S-shard-repair-one-join` | lose the first replica of a per-child shard's slot; let repair restore the count, then let the node leave the placement set; assert the recomputed slot names the node repair joined, and the shard saw one join and one tail copy |
 | `S-shard-verifier-roundtrip` | hand a shard A → B → A with no restart; assert the write verifier A gives the second time differs from the first. A verifier from node, node epoch and process instance alone repeats |
 | `S-shard-slot-domains` | four nodes in two racks, replica count 2; assert every slot's nodes lie in different racks, and that a rack loss leaves every shard a replica |
@@ -1375,9 +1418,9 @@ a claim or address mark waited out the claim hold.
 > decision: the handover, forwarding and many-writers targets are proposals
 > stated before any measurement: a handover ships its tail at line rate plus a
 > drain, a hop costs one round trip plus dispatch, and 30 per-child shards over
-> three nodes should come within a sixth of three nodes' throughput. The first
-> run of each benchmark replaces its target with the measured value and a
-> margin; the claims-per-file and alternating-writer targets are derived and stay.
+> three nodes should come within a sixth of three nodes' throughput. They follow
+> [the index's rule for proposed targets](rfc-index.md#Test%20tiers): the first run replaces each, and a miss
+> on it is a design finding; the claims-per-file and alternating-writer targets are derived and stay.
 
 ## 15. Open questions
 

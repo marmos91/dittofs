@@ -23,7 +23,7 @@ redefine them. Conventions, including the RFC 2119 key words, are in
 
 ## Start here
 
-*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+*Explanatory. The rules are in [§1](#1.%20Scope) onward; where this section and a rule differ, the rule wins.*
 
 DittoFS is a file server that runs as an ordinary program, with no kernel
 module. Clients mount it over NFS (Network File System) or SMB (Server Message
@@ -167,9 +167,10 @@ seven carry this document:
   references a chunk whose record locates it there.
 - Every failure — bucket down, journal full, metadata unwritable, crash, a lost
   journal device, a lost metadata store — has one specified behaviour. Each
-  clears on its own once the cause is gone, except two that wait for an operator:
-  the loss of a journal device that held content not yet offloaded, and the
-  loss of the metadata store itself ([§10](#10.%20Failure%20model)).
+  clears on its own once the cause is gone, except three that wait for an
+  operator: the loss of a journal device on a share no other journal holds, the
+  loss of the metadata store itself, and a node started from a copied or
+  restored image ([§10](#10.%20Failure%20model)).
 - The first release is one node with both roles, an embedded metadata store and
   no replicas. [§1.4](#1.4%20The%20single-node%20profile) says which rules bind it; the rest are
   marked **(cluster)**.
@@ -180,7 +181,7 @@ seven carry this document:
 
 | To learn | Read |
 | --- | --- |
-| how writes are stored on local disk, survive a crash, and fill it | [RFC 1](rfc-1-journal.md), journal |
+| how writes are stored on local disk, survive a crash, and fill it | [RFC 1](rfc-1-journal.md), journal; its files and crash recovery, [RFC 28](rfc-28-journal-format.md) |
 | how bytes become chunks, and chunks become blocks | [RFC 2](rfc-2-carver.md), carver |
 | how blocks are uploaded and fetched, retried and paced | [RFC 3](rfc-3-syncer.md), syncer |
 | what an object in the bucket looks like, and what a backend must offer | [RFC 4](rfc-4-remote-tier.md), remote tier |
@@ -237,7 +238,7 @@ honour. [§5](#5.%20The%20write%20path) to
 [§8](#8.%20Reclamation) follow content through writes, reads, overwrites and
 deletes, and space recovery. [§9](#9.%20Invariants) lists the ten invariants
 and [§10](#10.%20Failure%20model) the failure model. On a first read, skip
-§3.1, §9.1–§9.3 and §10.3.
+[§3.1](#3.1%20Deduplication), [§9.1](#9.1%20Records%20and%20their%20reclamation)–[§9.3](#9.3%20Where%20each%20invariant%20is%20tested%20and%20observed) and [§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline).
 
 ## Glossary
 
@@ -259,15 +260,15 @@ Two families of unit. The **bytes** units say where content is; the
 | --- | --- | --- | --- | --- | --- |
 | **Bytes, local** | | | | | |
 | write | what a client sends: bytes at an offset of one file | nothing; it is the input | up to the maximum write size the protocol negotiates; 64 KiB in the examples | memory, until the journal holds it | [RFC 17](rfc-17-vfs.md), [RFC 8](rfc-8-engine.md) |
-| journal record | one write, or one piece of a write split at a segment's end, framed with a header and checksum | the bytes of one write | the write's size | local disk | [RFC 1](rfc-1-journal.md) |
+| journal record | one write, or one piece of a write split at a segment's end, framed with a header and checksum | the bytes of one write | the write's size | local disk | [RFC 1](rfc-1-journal.md); layout [RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records) |
 | extent | an `(offset, length)` region of one file's bytes; a value, never a stored thing | nothing; it names bytes | any | nowhere; components keep state *against* one | this RFC |
-| segment | an append-only local file of records, sealed when full | records of many files, in arrival order | fixed, not a setting; its value is open ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)); 256 MiB in the examples | local disk | [RFC 1](rfc-1-journal.md) |
+| segment | an append-only local file of records, sealed when full | records of many files, in arrival order | fixed, not a setting; its value is open ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions), question 2); 256 MiB in the examples | local disk | [RFC 1](rfc-1-journal.md); layout [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments) |
 | **Bytes, remote** | | | | | |
-| chunk | a run of one file's bytes cut at a content-defined boundary, named by the hash of its content | bytes | about 256 KiB; boundaries between 64 KiB and 1 MiB | bytes in a block in the bucket; its record in the metadata store | [RFC 2](rfc-2-carver.md) (identity), [RFC 6](rfc-6-block-metadata.md) (record) |
+| chunk | a run of one file's bytes cut at a content-defined boundary, named by the keyed hash of its content | bytes | about 256 KiB; boundaries between 64 KiB and 1 MiB | bytes in a block in the bucket; its record in the metadata store | [RFC 2](rfc-2-carver.md) (identity), [RFC 6](rfc-6-block-metadata.md) (record) |
 | block | one object in the bucket, written by one put | whole chunks of many files of one share | a target of 4 MiB by default, settable from 1 MiB to 64 MiB; at most 1,024 chunks; passes the target by at most one chunk, and falls short only at the chunk cap or a pass's end | bucket; its record in the metadata store | [RFC 2](rfc-2-carver.md), [RFC 4](rfc-4-remote-tier.md) |
 | namespace | one prefix (a folder) in a bucket; chunks are counted within it | blocks of one or more shares | one per share by default | bucket | [RFC 12](rfc-12-snapshots.md) |
 | **Ownership** | | | | | |
-| file | a namespace object with an identity, attributes and an ordered list of refs | refs | any size; one 30 GB file in the examples | metadata store | [RFC 7](rfc-7-namespace-metadata.md) |
+| file | a namespace object with an identity, attributes and refs keyed by offset over its carved content | refs | any size; one 30 GB file in the examples | metadata store | [RFC 7](rfc-7-namespace-metadata.md) |
 | share | one exported file tree with its own settings | files | two in the examples | metadata store | [RFC 16](rfc-16-metadata-store.md) |
 | shard | a set of files with one primary at a time | files of one share | one per share; one per child of a marked directory **(cluster)** | metadata store (its shard record) | [RFC 11](rfc-11-ownership.md), [§1.4](#1.4%20The%20single-node%20profile) |
 | slot | one of a fixed number of buckets a per-child shard's ID hashes into | per-child shards | 4,096, fixed when the installation is created; **(cluster)** | metadata store (the slot table) | [RFC 11](rfc-11-ownership.md) |
@@ -434,7 +435,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **retire** / **resurrect** | move a block record to `retired` in the transaction that leaves its count of referenced chunks at zero / bring it back to `live` when a clone, copy or restore references one of its chunks again | [RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses) |
 | **trash** | the wait between a block's retirement and its deletion, `gc.trash_retention`, 48 hours by default; it postpones a delete the refs already allow and never allows one | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) |
 | **delete** | (file) remove its last entry; its refs go at release, and nothing leaves the remote tier / (block) `retired` to `deleted`, done only by the deleter after checking the reverse ref index, then the object is deleted | [§7](#7.%20Mutation%20and%20removal), [RFC 9 §3.5](rfc-9-gc.md#3.5%20The%20deleter%20verifies%20before%20it%20deletes) |
-| **loss event** | an extent the journal stopped holding without being asked — dropped as corrupt or stale, or in a failed sync window — recorded by the exact records lost, by sequence number; what else a loss reaches — whether content a lost record superseded is held again — is RFC 1 §3.8's rule, which this row defers to; a loss of content not yet offloaded raises the loss generation | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
+| **loss event** | an extent the journal stopped holding without being asked — dropped as corrupt or stale, or in a failed sync window — recorded by the exact records lost, by sequence number; what else a loss reaches — whether content a lost record superseded is held again — is [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)'s rule, which this row defers to; a loss of content not yet offloaded raises the loss generation | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
 
 ### Clients and protocols
 
@@ -471,7 +472,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **history** / **history ref** | versions a live snapshot can still see after the share replaced them / a ref among them, counted like a live one; a ref moved whole keeps its count, and a narrowed ref whose cut part moves to history adds one, as a split does ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) | [§7](#7.%20Mutation%20and%20removal), [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref) |
 | **snapshot hold** | the journal keeping a flushed but not yet offloaded version that a cut sees, until it is offloaded | [RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history) |
 | **use record** | a durable mark on a snapshot while a clone, restore, backup or move reads it; the snapshot cannot be deleted meanwhile | [RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot) |
-| **clone** | (share) a new writable share made from a complete snapshot, in the snapshot's namespace / (file) a copy of an extent of a file made by copying refs, not bytes; a server-side copy works the same way | [RFC 12 §2.6](rfc-12-snapshots.md#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace), [RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy) |
+| **clone** | (share) a new writable share made from a complete snapshot, in the snapshot's namespace / (file) a copy of an extent of a file that adopts its carved refs and copies only the bytes still dirty in the journal; a server-side copy works the same way | [RFC 12 §2.6](rfc-12-snapshots.md#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace), [RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy) |
 | **catalog backup** | an export of one snapshot's metadata to a backup location, encrypted and authenticated under the namespace's keys; the content stays in the namespace, held by a use record on the snapshot | [RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata) |
 | **backup location** | where backups are written, described by its own configuration record: a credential reference, a lifecycle age and a **mode**, `mutable` or `immutable`. An immutable location requires versioning and compliance-mode object lock with retention at least the backup's, and is read by object version ID | [RFC 26 §2.4](rfc-26-catalog-backups.md#2.4%20Copying%20backups), [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record) |
 | **copying backup** | a catalog backup that also copies, byte for byte, every block its snapshot names into a block folder at the location, so it survives losing the namespace's bucket | [RFC 26 §2.4](rfc-26-catalog-backups.md#2.4%20Copying%20backups) |
@@ -635,17 +636,21 @@ cases, and where the two differ for one node, this section wins:
   clock that measured the timeout, as a fraction of that clock's rate, 0.05 in
   the first release — and σ the **clock-offset bound** — how far apart two hosts'
   clocks may read when the wait starts from a timestamp the other host recorded,
-  1 s in the first release, and 0 for a wait measured wholly on one monotonic
+  an installation setting of 1 s by default
+  ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), and 0 for a wait measured wholly on one monotonic
   clock. Every single-node wait on another process's or installation's timeout
   — an abandoned put's delete waiting past the longest put deadline
   ([§8.3](#8.3%20Sweep)), an importing installation waiting out an old one's
   fence ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) — is stated in these terms. The cluster's
-  drift bound is [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)'s and does not bind one node.
+  drift bound is [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)'s and does not bind one node; the
+  cluster's lease waits are durations on the waiter's own monotonic clock and
+  use no σ.
 
 > decision: σ is an assumption the node cannot verify alone: on one node
 > there is no second clock in the store to check against, so the bound rests on
-> the host's time synchronisation. Overturned by a deployment without it, which
-> must raise σ to the offset it can bound, or by a measured offset between an
+> the host's time synchronisation. It is a setting so that a deployment without
+> that synchronisation can raise σ to the offset it can bound. Overturned by a
+> measured offset between an
 > importer and the installation it replaces above 1 s. ρ = 0.05 is unmeasured
 > too, and sits far above the rate error of an ordinary host clock, so a wait
 > pays 5% for slack no clock is expected to use. Overturned by a measured rate
@@ -733,8 +738,10 @@ offload commit records a **zero ref** in its place
 answers it as carved, residency classes it **Absent** ([§4.2](#4.2%20The%20residency%20function)), a read returns zeros with no fetch, and a query of where
 data lies reports it as a hole unless a newer overwrite record covers it.
 
-**ChunkRef** — one file's use of one chunk at one offset. A file's content is
-fully described by its ordered list of chunk refs. Many refs **MAY** name one chunk.
+**ChunkRef** — one file's use of one chunk at one offset. A file's live refs,
+keyed by offset, tile the parts of it that have been carved and committed; the
+rest is held in the journal, a hole, or past the end, and the residency function
+says which ([§4.2](#4.2%20The%20residency%20function)). Many refs **MAY** name one chunk.
 
 **Version** — the content version of a file's bytes: a number that orders every
 write and removal of one file, assigned when the operation is staged by the
@@ -767,8 +774,8 @@ maximum number of chunks, whichever comes first ([RFC 2 §5](rfc-2-carver.md#5.%
 always a chunk boundary**; a block ended by the chunk count, and the last block
 of an offload pass, **MAY** fall short. A chunk **MUST NOT** span two blocks ([§2.2](#2.2%20How%20a%20file%20relates%20to%20its%20chunks)).
 
-**Segment** — a local append-only file of records, capped at a configured size,
-sealed when full and immutable thereafter.
+**Segment** — a local append-only file of records, capped at a fixed size, a
+constant of the implementation rather than a setting, sealed when full and immutable thereafter.
 
 **Record** — one framed run of bytes within a segment, carrying a header with
 its identity, length and checksum.
@@ -785,12 +792,12 @@ A **block** and a **segment** are unrelated groupings ([§2.2](#2.2%20How%20a%20
 
 ### 2.2 How a file relates to its chunks
 
-A file does not contain its content. It contains an ordered list of references to
-chunks, and the chunks are shared.
+A file does not contain its content. Its carved content is a set of references
+to chunks, keyed by offset and never overlapping, and the chunks are shared.
 
 ![A file's ordered chunk refs pointing into a shared, reference-counted chunk pool; two versions of a file share the chunks either side of an edit](img/rfc0-files-and-chunks.svg)
 
-The refs are ordered and belong to the file. The chunks are content-addressed and
+The refs are keyed by offset and belong to the file. The chunks are content-addressed and
 belong to nobody: the same chunk is named by every ref whose content hashes to
 it, and its refcount is how many refs those are. This is the whole of sharing —
 a clone, a snapshot and, once it is added, deduplication ([§3.1](#3.1%20Deduplication)) all
@@ -920,7 +927,7 @@ retire-and-resurrect protocol stays for them ([§8.3](#8.3%20Sweep)).
 > is stored nowhere — loses data rather than costing bytes
 > ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)). Content-addressed chunks and refcounts keep it
 > re-addable without a format or record change; the deferred design is
-> [RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup) and RFC 8 §6.5. Overturned by a deduplication ratio
+> [RFC 6 §8.2](rfc-6-block-metadata.md#8.2%20Deduplication%20lookup) and [RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle). Overturned by a deduplication ratio
 > measured on a real customer corpus that pays for the risk, or by customer
 > demand for it. Chunk IDs are keyed per namespace from the first release
 > ([§2.1](#2.1%20Entities)), so adding deduplication later needs no migration of any
@@ -1247,7 +1254,9 @@ at the gate; data writes never wait there
 > ponytail: committing all of a shard's pending existence behind the closed
 > gate makes the gate's close time grow with the pending set. If gate-close time
 > measures too long, bulk-commit to provisional cut points with the gate open,
-> then commit only the remainder behind it. Refs, and the namespace records — files, entries, ACLs,
+> then commit only the remainder behind it.
+
+Refs, and the namespace records — files, entries, ACLs,
 extended attributes, stream links — carry the cut they were born after and the
 cut they died after. An overwrite, removal or release that replaces
 a ref a snapshot can still see moves it into the file's history in the same
@@ -1456,9 +1465,9 @@ Every condition below has exactly one specified behaviour.
 | **Remote tier slow** | The remote accepts transfers but drains slower than writes arrive, with no error to act on. Writes are paced to the measured drain rate ([RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)); each waits at most until its deadline ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)) and is then refused with retry-later, never no space, since the drain continues. Progress is not a reason to keep waiting: a drain that frees a trickle never runs a writer out of time otherwise. |
 | **Journal at capacity, remote unavailable** | Refuse the write with retry-later (`ErrDelay`): space is coming, from repack while unreclaimed bytes remain and from offload once the remote returns, so the client retries rather than failing, for as long as the outage lasts: the caller's deadline ending does not change the answer, and only an SMB request held past its pending cap is answered no space. No space (`ErrNoSpace`) is otherwise answered, at once, only when nothing will free space without an operator — the store refuses puts as denied or drifted, a retention pin holds the bytes, or the device itself is full ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). I2 forbids evicting a **Dirty** extent, so refusal is the only behaviour that does not lose data. |
 | **Metadata unwritable** | Writes are still staged and acknowledged from the journal, until the node fences itself ([§1.4](#1.4%20The%20single-node%20profile)). A stability point that covers an overwrite of committed content waits for its existence commit until the caller's deadline and is then answered retry-later, never success; one that covers only appends and hole fills is answered after its sync ([§5.1](#5.1%20Write)). This is the one rule of [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here). Truncate, deallocate and the other synchronous operations fail. Offload fails, so extents stay **Dirty** and the journal fills until writes are refused ([§10.1](#10.1%20Capacity%20is%20a%20bound%2C%20not%20a%20target)). Reads continue while metadata is readable. |
-| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail — the records of the newest segment after the last that verifies, unless a later record proves them synced — is treated as never written: never served, never reported as damage, and never appended after ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). Records that verify but lie past the last point a sync is proven to have reached may be only in the operating system's cache after the process died, so they are re-appended and synced, with the directory, before the journal serves ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). A removal recorded but not done masks until its batches resume, and an unfinished clone resumes before its destination is served ([§7](#7.%20Mutation%20and%20removal)). A put whose attempt died leaves an intent, abandoned at the next start on a single node ([§1.4](#1.4%20The%20single-node%20profile)) and, in a cluster, once its shard's epoch or the node epoch it was written under is superseded ([§5.2](#5.2%20Offload)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
+| **Crash** | On restart the journal rebuilds its placement index from its segments; a torn tail — the records of the newest segment after the last that verifies, unless a later record proves them synced — is treated as never written: never served, never reported as damage, and never appended after ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). Records that verify but lie past the last point a sync is proven to have reached may be only in the operating system's cache after the process died, so they are re-appended and synced, with the directory, before the journal serves ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). Metadata recovers by its backend's own durability, and the engine re-applies from the journal the existence of writes not yet committed, before serving ([§5.1](#5.1%20Write)). A removal recorded but not done masks until its batches resume, and an unfinished clone resumes before its destination is served ([§7](#7.%20Mutation%20and%20removal)). A put whose attempt died leaves an intent, abandoned at the next start on a single node ([§1.4](#1.4%20The%20single-node%20profile)) and, in a cluster, once the shard record no longer names the (node, node epoch) it was written under as primary, never on an epoch raise alone ([RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms), [§5.2](#5.2%20Offload)). Otherwise the two recover independently and **MAY** disagree; [§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave) applies. |
 | **Local content corrupt** | The journal drops only the extents backed by records that fail verification ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A dropped extent that was offloaded resolves as **Remote** and is fetched again, and raises no loss generation. One that was **Dirty** resolves as **Lost** once its write's existence is committed — at its stability point for an overwrite of committed content, and, for a synced append or hole fill whose existence was still pending, from the loss record itself ([§4.2](#4.2%20The%20residency%20function)); only a write lost before its stability point reads as it did before the write. Either way the loss generation rises so the NFS write verifier changes. The journal records the loss by the exact record dropped ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)). The rest of the segment stays usable and reclaimable. |
-| **Journal device lost** | The device or its filesystem is gone, or the journal found at open is not the one recorded. Content already offloaded is unaffected and resolves as **Remote**. On a single node the engine refuses every share the journal served, naming each, and opens no new journal on the device until an operator acknowledges the loss ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); afterwards content never offloaded whose existence was committed resolves as **Lost**, never zeros; an append or hole fill whose existence was still pending when the device went leaves no trace, and the file reads as it did before that write — shorter, or a hole — not as zeros over written data ([§4.2](#4.2%20The%20residency%20function)). The shares attach to a new journal under §2.1's version-floor rule, and their incarnation rises, so the write verifier changes. **(cluster)** A shard whose content a replica's journal holds is taken over by that replica with no operator action; only a shard no other journal holds waits for the acknowledgement. |
+| **Journal device lost** | The device or its filesystem is gone, or the journal found at open is not the one recorded. Content already offloaded is unaffected and resolves as **Remote**. On a single node the engine refuses every share the journal served, naming each, and opens no new journal on the device until an operator acknowledges the loss ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); afterwards content never offloaded whose existence was committed resolves as **Lost**, never zeros; an append or hole fill whose existence was still pending when the device went leaves no trace, and the file reads as it did before that write — shorter, or a hole — not as zeros over written data ([§4.2](#4.2%20The%20residency%20function)). The shares attach to a new journal under [§2.1](#2.1%20Entities)'s version-floor rule, and their incarnation rises, so the write verifier changes. **(cluster)** A shard whose content a replica's journal holds is taken over by that replica with no operator action; only a shard no other journal holds waits for the acknowledgement. |
 | **Node lost** | On a single node, a node that restarts is **Crash**; a host that does not come back takes its journal device with it, which is **Journal device lost**. **(cluster)** A replica takes the node's shards over once its lease has lapsed plus the drift bound ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)); acknowledged writes survive in the replicas' journals. |
 | **Partition** | On a single node, a partition from the remote tier is **Remote tier unavailable**; the embedded metadata store cannot be partitioned from its node. **(cluster)** A node cut off from the metadata store fences itself at half its lease and its shards fail over where the store is reachable; a primary cut off from a replica cannot acknowledge until that replica is removed ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)). |
 | **Metadata store stalled or erroring** | The store answers nothing, or fails every write while reads complete. On a single node it is **Metadata unwritable** while it lasts, and once no write transaction has committed for 30 s the engine fences the node as a local fault, not a lease loss: writes and stability points answer retry-later, reads continue, and the node resumes with no new node epoch when a write commits ([§1.4](#1.4%20The%20single-node%20profile)). **(cluster)** A node that cannot renew fences itself at half its lease, and its shards fail over. |

@@ -33,7 +33,7 @@ This document specifies behaviour, not the current code. Where the code differs,
 
 ## Start here
 
-*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+*Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
 DittoFS keeps recent writes on a fast local disk and copies them, in the
 background, to an object store such as an S3 (Amazon Simple Storage Service)
@@ -138,7 +138,7 @@ subsection. [§5](#5.%20Backend%20profiles) and
 [Appendix C](#Appendix%20C%20%E2%80%94%20the%20S3-compatible%20block%20store)
 map it onto S3. [§6](#6.%20Invariants) lists the invariants and
 [§7](#7.%20Test%20plan%20and%20benchmarks) the tests. On a first read, skip
-§4.10, §4.12, §7 and the appendices; [Appendix B](#Appendix%20B%20%E2%80%94%20measurements)
+[§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers), [§4.12](#4.12%20What%20a%20store%20makes%20observable), [§7](#7.%20Test%20plan%20and%20benchmarks) and the appendices; [Appendix B](#Appendix%20B%20%E2%80%94%20measurements)
 holds the measurements behind the decisions in [§8](#8.%20Decisions%20and%20open%20questions).
 
 ## In short
@@ -201,7 +201,7 @@ leaving the edges out.
 
 > decision: the codec and the store share one document because the layout of
 > [§3.2](#3.2%20Layout) and the store's guarantee that one name is one byte sequence
-> ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) are read together by every implementer of either. Split §3 into its own
+> ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) are read together by every implementer of either. Split [§3](#3.%20The%20block%20format) into its own
 > document when a second block format, or a second codec, needs specifying.
 
 ## 2. The dividing line
@@ -252,8 +252,8 @@ A block is a **header** followed by the **chunk bodies**, in order.
 | Format marker and version | first bytes | a reader built for another version, or handed something that is not a block, fails loudly instead of misparsing |
 | Header length | first bytes | a reader fetches the whole header in one ranged request, rarely two |
 | Block name, nonce, chain ID | header | a block served under the wrong key is detected instead of used. The name is the block's identity in block metadata too ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so it links the stored bytes back to their record; the nonce and chain ID are the name's inputs besides the hashes and the key scope, so a whole-block read can recompute it. |
-| Chunk index | header | at most `N` entries ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4), one per chunk: its hash, and the offset and length of its body. The hash is the plaintext hash, or its sealed form — keyed under a namespace secret — when the namespace encrypts ([RFC 5](rfc-5-transforms.md)). When the namespace encrypts, the offsets and lengths are sealed too, as one AEAD value under a key derived from the header key ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)), so the header shows a bucket reader no chunk length. One chunk can be read with one ranged request at the range block metadata records ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), without reading the header or the others. |
-| Seal | header | `none`, or the ID of the header key that sealed the index's hashes and ranges ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). A reader checks the index under the key the block names, never under the namespace's current one, so a block stays checkable after the header key rotates |
+| Chunk index | header | at most `N` entries ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4), one per chunk: its chunk ID, and the offset and length of its body, in the clear in every namespace. A bucket reader therefore sees every chunk's length, as the bodies' clear envelopes would show it anyway ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). One chunk can be read with one ranged request at the range block metadata records ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), without reading the header or the others. |
+| Census | header | the distinct (transform ID, version, material ID, fingerprint) its bodies were encoded under, the set its block record's census holds ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census), [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)), so a recovery import rebuilds the census from headers alone, without reading a body ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)). A body naming material the header's census does not list is malformed |
 | Chunk bodies | after the header | each chunk's bytes, transformed if a chain is configured ([§3.3](#3.3%20Transforms)) |
 
 Five requirements on the layout:
@@ -277,11 +277,13 @@ Five requirements on the layout:
   hashes, which exist before any byte is encoded.
 
 A chunk's ID is a keyed hash of its plaintext under the namespace's chunk-ID key
-([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so no block of any namespace carries a hash a bucket
-reader can compute from a file it holds. When the namespace encrypts, the index
-holds the chunk IDs sealed once more under the header key the seal field names,
-and the name is derived from those ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). Block metadata keys
-chunks by chunk ID; only the stored header is sealed.
+([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), and the block's name is derived from those IDs
+([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), which block metadata keys chunks by too. In an encrypting
+namespace that key is wrapped, so no block carries a hash a bucket reader can
+compute from a file it holds. In a non-encrypting one the key sits in the clear
+beside the blocks, so a bucket reader computes chunk IDs as easily as it reads
+the plaintext bodies; there the keyed ID hides nothing, and nothing claims it
+does ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)).
 
 The header comes first, so every body's length is known before the first byte is
 sent: from each transform's declared length, or from a measuring pass when the
@@ -301,7 +303,7 @@ encryption ([RFC 5](rfc-5-transforms.md)). Three rules hold for any chain:
    `decode(encode(plaintext)) == plaintext`, byte for byte.
 2. **Identity is over plaintext.** A chunk's ID and a block's name are
    functions of plaintext ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk), [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)) — keyed under the namespace's
-   chunk-ID key, and sealed once more when encrypting — never of transformed bytes. If they depended on
+   chunk-ID key — never of transformed bytes. If they depended on
    transformed bytes, a compression level or key change would re-key the corpus
    and stop deduplication.
 3. **The chain travels with the block.** How a body was transformed **MUST** be
@@ -320,13 +322,11 @@ on or off, apart from these offsets and timing.
 The codec **MUST** check every chunk it returns against the plaintext hash the
 caller expects, after undoing every transform, and **MUST** return an error rather
 than unverified bytes. A whole-block read also checks each index entry against
-the chunk it decoded — the plaintext hash, sealed when the namespace encrypts —
+the chunk it decoded — its chunk ID —
 then recomputes the block's name from those entries, the header's nonce and
 chain ID, and the key scope ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), and checks it against the name it was
 fetched under. Comparing the header's name field alone would accept a header
-whose index was altered. A sealed index is checked under the header key the
-block's seal names, which **MUST** be in the block record's census like any
-other material ([RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)); a seal naming a key outside it is malformed.
+whose index was altered.
 
 The codec decodes each body with `Chain.Decode`, passing the block record's
 census ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces), [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)): a body naming material the census does not list
@@ -390,14 +390,15 @@ const (
 type ObjectKind uint8
 
 const (
-	ObjExport   ObjectKind = iota + 1 // one backup's export (RFC 26 §3.1)
-	ObjState                          // one backup's state object (RFC 26 §2.4.1)
-	ObjProgress                       // one batch of a running copy (RFC 26 §2.4.3)
-	ObjKeys                           // the namespace's key records, one object per namespace, Backup empty (RFC 5 Appendix B.2)
+	ObjExport     ObjectKind = iota + 1 // one backup's export head, listing its parts (RFC 26 §3.1)
+	ObjState                            // one backup's state object (RFC 26 §2.4.1)
+	ObjProgress                         // one batch of a running copy (RFC 26 §2.4.3)
+	ObjKeys                             // the namespace's key records, one object per namespace, Backup empty (RFC 5 Appendix B.2)
+	ObjExportPart                       // one bounded part of a backup's export stream, numbered by Batch (RFC 26 §3.1)
 )
 
 // ObjectKey names one versioned object: its kind, the backup it belongs to,
-// and for progress its batch number.
+// and for progress its batch number, for an export part its part number.
 type ObjectKey struct {
 	Kind   ObjectKind
 	Backup string
@@ -552,6 +553,7 @@ type Cause uint8
 const (
 	CauseAccess Cause = iota + 1 // credentials, permissions, a missing bucket, a wrong endpoint
 	CauseQuota                   // a quota or storage limit of the service is reached
+	CauseSize                    // a body-size limit refused a block put (§4.8)
 )
 
 // DeniedError is the error behind every ErrDenied.
@@ -656,7 +658,8 @@ carry a rule that needs one.
 > object that would gain from it is the namespace claim, which stays a check
 > fenced by clocks ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). Add a conditional control put, used only
 > where the check proved it, if a deployment runs two installations on one bucket
-> whose clocks cannot be held within the drift bound.
+> whose clocks cannot be held within the clock-offset bound σ
+> ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 
 ![A put streams: body lengths come from each transform's declared length, or from a measuring pass that encodes and discards; the header goes first, then each chunk encoded as it is sent, in one request with the profile's integrity check](img/rfc4r-put-path.svg)
 
@@ -685,12 +688,19 @@ the codec can, and reports a recorded range the store rejects as corrupt
 
 The caller merges ranges that are adjacent in the block into one request, which
 is why a get takes one range and not a list. Where the service returns a checksum
-covering exactly the bytes it sent, the store **SHOULD** ask for it and check it,
-and a mismatch is `ErrTransient`. A whole-object checksum covers only a
-whole-block get; a ranged get usually has none, so a byte flipped in transit on
-one reaches the codec as a hash mismatch. The codec's hash check ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec))
-remains the one that decides, and a mismatch is re-got once by the syncer before
-it is reported corrupt ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
+covering exactly the bytes it sent, the store **SHOULD** ask for it and check it
+once the last byte is read, and a mismatch is `ErrTransient` that **voids the
+whole response**: the bytes already read from it were not checked, and a caller
+that kept them **MUST** discard them. The store also reports the stored checksum
+with the body, so a raw copy can carry it to the destination's put
+([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). A whole-object checksum covers only a whole-block get; a ranged
+get usually has none, so a byte flipped in transit on one reaches the codec as a
+hash mismatch. On the codec's path the response checksum adds nothing: the codec
+yields each chunk only after its hash check and recomputes the name from the
+header ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)), so it remains the check that decides, and a mismatch is re-got once
+by the syncer before it is reported corrupt
+([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The response checksum matters for a raw copy, whose bytes nothing
+decodes.
 
 ### 4.5 Delete is batched and idempotent
 
@@ -803,35 +813,42 @@ NOT** need to interpret a native error. A caller that has to recognise a
 service's status codes contains a second store implementation, and gets wrong
 whichever service it was not written against.
 
-**A refusal says why.** Every `ErrDenied` carries a cause, `access` or `quota`,
-which the backend profile derives from the service's reply. The two need
-different answers above the store — a quota is the store being full, and the
-engine answers writes as out of space; an access refusal is an outage the
-operator fixes ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) — and a quota reply mapped anywhere else, as an
+**A refusal says why.** Every `ErrDenied` carries a cause, `access`, `quota`
+or `size`, which the backend profile derives from the service's reply. They
+tell an operator different things — a quota is the store being full, an access
+refusal a credential or permission to fix, a size refusal a body limit to lift.
+Each is cleared only by an operator, so the engine answers writes waiting on
+any of them as out of space, unlike an unreachable store, which comes back by
+itself ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) — and a quota reply mapped anywhere else, as an
 invalid request say, would never count toward health at all. A profile **MUST**
 list the replies its service uses for a reached quota or a full store, and map
 each to `ErrDenied` of cause `quota`.
 
-**A size refusal is a denial.** No put is larger than the largest encoded block
-([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), a few MiB at the defaults and below any admitted service's single-put
-limit, so a reply refusing a put for its size — an entity-too-large status from
-the service or from a proxy in front of it — is a policy that will refuse every
-block of that size, not a malformed request. A profile **MUST** map such replies
-to `ErrDenied` of cause `access`, so that they count toward put health and back
-off as a denial ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)), and **MUST NOT** map them to `ErrInvalid`, which
-health never counts.
+**A size refusal of a block put is a denial of its own cause.** No block put
+is larger than the largest encoded block ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), a few MiB at the defaults
+and below any admitted service's single-put limit, so a reply refusing one for
+its size — an entity-too-large status from the service or from a proxy in front
+of it — is a policy that will refuse every block of that size, not a malformed
+request. A profile **MUST** map such a reply to a block put (`Put`,
+`PutVersion`) to `ErrDenied` of cause `size`, so that it counts toward put
+health and backs off as a denial ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)), and **MUST NOT** map it to
+`ErrInvalid`, which health never counts. The rule covers block puts only: the
+same reply to any other put — a control object, a versioned object, a probe —
+is `ErrInvalid` for that put alone, since those bodies have bounds of their own
+([§4.13](#4.13%20Control%20objects), [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location)) and their size says nothing about the next block's.
 
-> decision: a size refusal is `access`, not `quota`, because nothing is full:
-> an operator fixes a body limit, and writes do not answer as out of space. The
-> rule leans on the block-size cap; withdraw it, and treat a size refusal as
-> `ErrInvalid` for that put alone, if a put can ever exceed a service's
-> documented single-put limit.
+> decision: a block put's size refusal is cause `size`, neither `access` nor
+> `quota`, because nothing is full and no credential is wrong, so the operator
+> is told which setting to change. The engine answers it as it answers the other
+> two, out of space, since only an operator clears any of them ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). The rule leans on the block-size cap; withdraw it, and
+> treat a size refusal as `ErrInvalid` for that put alone, if a block put can
+> ever exceed a service's documented single-put limit.
 
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
 | `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
-| `ErrInvalid` | the request was wrong: a range past the end, or an operation the service does not support; never a quota or size refusal | fails the call; not retried |
-| `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket, a body-size limit (cause `access`); or a quota or storage limit of the service is reached (cause `quota`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| `ErrInvalid` | the request was wrong: a range past the end, an operation the service does not support, or a size refusal of a put that is not a block's; never a quota refusal | fails the call; not retried |
+| `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket (cause `access`); a quota or storage limit of the service is reached (cause `quota`); a body-size limit refused a block put (cause `size`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrThrottled` (wraps `ErrTransient`) | the service asked to be sent less: a throttling or slow-down reply | the syncer holds the flow and retries after backoff; it is backpressure and **MUST NOT** count toward health ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed, including a recorded range the store rejected ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is re-got once, then reported corrupt; a recorded range the store rejected is reported at once ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
@@ -941,12 +958,13 @@ Nothing else calls it. On drift `Recheck` returns the drifted setting, and its
 caller does two things before its next call to the store:
 
 - it issues no delete, puts nothing at a backup location, and prunes nothing for the store;
-- it raises the store's **drift condition**, which the syncer reads as part of
+- it raises the store's **drift condition**, through the syncer's `SetDrift`
+  ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), which the syncer reads as part of
   the store's health ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)): while the condition stands, the put
   direction is unhealthy and the syncer refuses puts to the store. Gets go on,
   since drift endangers what is written and deleted, not what is read.
 
-A later `Recheck` that passes clears the condition. A folder store's holder that
+A later `Recheck` that passes clears the condition, by `SetDrift(store, nil)`. A folder store's holder that
 finds drift fails the copy or sweep it was about to start, which then follows
 [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)'s failure path. The store itself keeps
 neither the result nor the condition ([§4.9](#4.9%20No%20state%20across%20calls)). Each profile names the settings
@@ -991,7 +1009,7 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 | the last capability check, per feature: 1 if present ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | `remote_capability` | gauge |
 | chunks the codec returned verified | `codec_chunks_verified_total` | counter |
 | blocks encoded with a measuring pass ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); against blocks encoded, how often a put encodes twice | `codec_measuring_passes_total` | counter |
-| chunks that failed verification, labelled `kind` = `hash`, `name`, `version`, `malformed`. Any of these is an alert | `codec_verify_failures_total` | counter |
+| chunks that failed verification, labelled `kind` = `hash`, `name`, `version`, `malformed`. The alert is on these less the failures the syncer's single re-get recovered (`syncer_retries_total`, `reason` = `verify`, [RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable)): a byte flipped in transit that the re-get recovers is not one | `codec_verify_failures_total` | counter |
 | encode and decode time per block, by direction | `codec_seconds` | histogram |
 
 `op` also takes `recheck`, `put_control`, `get_control`, `put_version`,
@@ -1061,10 +1079,20 @@ one:
   for the location's credential — on S3, a bucket policy denying any put whose
   remaining retention exceeds the location record's retention cap
   ([Appendix C.1](#C.1%20Required%20service%20features)) — read at every open and provoked once per location record. The
-  cap is the longest retention any policy writing there may set, plus one
-  extension generation and `backups.max_copy_time` ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). Without it, a
+  cap is a whole number of days: the longest retention any policy writing
+  there may set, plus one extension generation, `backups.max_copy_time` and one
+  day of rounding margin ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). Without it, a
   stolen put credential could lock objects in compliance mode for a century,
-  which no one can undo and the bucket's owner pays for;
+  which no one can undo and the bucket's owner pays for. `PutVersion`,
+  `PutObject`, `ExtendRetention` and `ExtendObjectRetention` **MUST** refuse,
+  with `ErrInvalid` and no request, any retain-until later than now plus the
+  cap the open read less one day, naming the date and the cap. The day's margin
+  is the service's whole-day rounding (below), which could deny a date just
+  under the cap. The capability check's own provocation of the cap is the one
+  put that goes past it on purpose, and it is not sent through these calls.
+  The service would answer an over-cap put with a denial the profile maps to `ErrDenied` of cause `access`, which
+  would count toward put health, start the denial backoff
+  ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) and read as a credential fault when the cause is a date;
 - **requires the bucket's configuration out of the credential's reach.** The
   location's credential **MUST** be denied changing the bucket's policy, object
   lock configuration, lifecycle rules and versioning — on S3, `PutBucketPolicy`,
@@ -1139,17 +1167,36 @@ expiry rule removed or the current rule's age lowered is drift
 
 **The cap is provoked once per location record**, when the record is created and
 whenever its store or credential changes, with the integrity step: a put whose
-retain-until is one second above the cap, which **MUST** be refused. On a bucket
-whose cap is missing it lands and locks one small object for the cap's length
-and a second, which the record's own retention already allows. Every open then
+retain-until two days above the cap, which **MUST** be refused. The service
+counts remaining retention in whole days (on S3, the policy condition
+`s3:object-lock-remaining-retention-days`), with a rounding it does not
+specify, so the cap is a whole number of days and a put one second above it
+could land under a cap that is in force; two days clears any rounding. On a
+bucket whose cap is missing the provocation lands and locks one small object
+for the cap's length and two days, which the record's own retention already
+allows. Every open then
 reads the policy, which proves the cap is still there.
 
-> decision: a service whose cap or denies the credential cannot read — held in
-> an identity policy outside the bucket, say — cannot be verified at every open,
-> and `DeleteBucketPolicy`, which cannot be provoked without effect, not at all.
-> Such a service is refused as an immutable location rather than trusted on the
-> provoked refusals alone. Accept it once its profile can read where the denies
-> are held.
+**The settings may be read with a second credential.** Where the location's
+credential cannot read the bucket's settings — a bucket in a second account,
+whose policy only the owning account may read — the location record names an
+**inspection credential** as well ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)): a credential of the bucket's
+owner that may read the bucket's policy, versioning, lock and lifecycle
+configuration and do nothing else. Every open and every `Recheck` read the
+settings with it; every put, extension, get and provoked refusal still uses the
+location's credential. The capability check provokes, once per location
+record, a put, a delete and each configuration write with the inspection
+credential and **MUST** find every one refused, so it cannot become a second
+way to write or unlock the bucket.
+
+> decision: a service whose cap or denies neither the location's credential nor
+> an inspection credential can read — held in an identity policy outside the
+> bucket, say — cannot be verified at every open, and `DeleteBucketPolicy`,
+> which cannot be provoked without effect, not at all. Such a service is refused
+> as an immutable location rather than trusted on the provoked refusals alone.
+> A second-account bucket is accepted through an inspection credential, since
+> the owner's read is where its denies are held. Accept the rest once a
+> profile can read where their denies are held.
 
 > decision: an immutable location defends against a stolen installation
 > credential and an installation that misbehaves, not against the bucket's owner,
@@ -1164,7 +1211,7 @@ object** and the **progress objects** of a running copy ([RFC 26 §2.4.1](rfc-26
 They are not blocks, and not control objects either: there are many, one per
 backup, and at an immutable location every write of one is a version that must
 stay readable by version. So the block folder store reaches them as **versioned
-objects**, by fixed kind (`ObjExport`, `ObjState`, `ObjProgress`, and
+objects**, by fixed kind (`ObjExport`, `ObjExportPart`, `ObjState`, `ObjProgress`, and
 `ObjKeys`, the namespace's key records ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), one per namespace)
 and backup ID, through `PutObject`, `GetObject`, `ObjectRetention`,
 `ExtendObjectRetention` and `ListObjects` ([§4.1](#4.1%20Interface)):
@@ -1174,6 +1221,11 @@ and backup ID, through `PutObject`, `GetObject`, `ObjectRetention`,
   ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)); kinds are a closed set in code, like roles;
 - a put is whole, of known size, and verified in transit like a block put
   ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); a get returns the whole object;
+- **a versioned object is bounded.** `PutObject` **MUST** refuse with
+  `ErrInvalid`, sending no request, a body larger than the **object bound**,
+  64 MiB, which lies below every admitted service's single-put limit. An export
+  of any size is therefore stored as bounded parts listed by a small head object
+  ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)), never as one object a large namespace's export would outgrow;
 - at an immutable location each put adds a version and returns it, carries its
   own compliance-mode retain-until under the location's cap, and is read back by
   version only; retention is read and extended exactly as for blocks
@@ -1209,7 +1261,7 @@ S3-compatible object storage, the primary backend, is profiled in
 
 | # | Invariant |
 | --- | --- |
-| R1 | A block's structure is readable from its own bytes: marker, version, name, nonce, chain ID, seal and index are in its header, and its header and bodies are bounded before anything is allocated for them. Its name can be recomputed from its header and the namespace's key scope, with no material; in an encrypting namespace its bodies' ranges are read only with the header key its seal names, and its content can be verified only with the namespace's material. |
+| R1 | A block's structure is readable from its own bytes: marker, version, name, nonce, chain ID and index are in its header, and its header and bodies are bounded before anything is allocated for them. Its name can be recomputed from its header and the namespace's key scope, with no material; its index, every chunk's offset and length included, is readable by anyone holding the block, and in an encrypting namespace its content can be verified only with the namespace's material. |
 | R2 | Every chunk returned by the codec was verified against its plaintext hash. |
 | R3 | Decode inverts encode exactly; identity is over plaintext; the chain is recorded in the block. |
 | R4 | The store never parses a block, and nothing above the codec observes a transform. |
@@ -1222,14 +1274,14 @@ S3-compatible object storage, the primary backend, is profiled in
 | R11 | A client's limits are derived from the worker pools. |
 | R12 | A store does not open against a service missing a required feature, or with a storage class or tiering rule that can archive what it writes. A mutable store does not open on a versioned or object-locked bucket, or under an expiring lifecycle rule; an immutable store opens only with versioning, a compliance-mode lock with no default retention, a service-enforced cap on the retention a put may set, a noncurrent-version expiry rule and a credential that cannot delete ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). |
 | R13 | Within one store namespace, a name is put only by the attempt that minted it, always with the same bytes, so a recorded position never goes stale. In a backup's block folder, a name is put only by copies of the one block its source namespace stored under it; at an immutable location, every recorded version is one byte sequence whatever else is put under its name. |
-| R14 | An encrypted namespace's blocks carry no plaintext chunk hash and no unsealed body offset or length. |
+| R14 | No block carries an unkeyed chunk hash, and an encrypting namespace's chunk-ID key is never beside its blocks; every block's chunk offsets and lengths are visible to a bucket reader, and nothing claims otherwise. |
 | R15 | No block is written in a format version a reader of its namespace does not support. |
 | R16 | Control objects are reached by fixed role only and are never listed as blocks. |
 | R17 | A drifted service setting, found by the store's one `Recheck` caller — GC for a namespace's store, the folder record's holder for a backup location's — stops that caller's deletes and puts and makes the store's put direction unhealthy until a re-check passes. A suspended store with a repair proof is not listed again. |
-| R18 | An immutable store issues no delete and no put probe, reads by recorded version, sets a retain-until on every put, at a generation's end and under the location's cap, only ever raises one, and extends its health object's version at every open. |
+| R18 | An immutable store issues no delete and no put probe, reads by recorded version, sets a retain-until on every put, at a generation's end and under the location's cap, refuses locally with `ErrInvalid` any put or extension later than one day inside that cap, only ever raises one, and extends its health object's version at every open. |
 | R19 | Stores opened from one store configuration share one client, whose limits are derived once from the callers' total concurrency. |
 | R20 | A backup location's exports, state and progress objects are reached by fixed kind, put whole and verified, read by version at an immutable location, and listed by version, never by current object only. |
-| R21 | Every `ErrDenied` carries its cause; a service's quota or storage-full reply is `ErrDenied` of cause `quota`, and a size refusal `ErrDenied` of cause `access`, never `ErrInvalid`. |
+| R21 | Every `ErrDenied` carries its cause; a service's quota or storage-full reply is `ErrDenied` of cause `quota`, and a block put's size refusal `ErrDenied` of cause `size`, never `ErrInvalid`; any other put's size refusal is `ErrInvalid`. |
 
 ## 7. Test plan and benchmarks
 
@@ -1256,7 +1308,7 @@ in-memory store).
 | [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside) | After the whole suite, list the store's raw namespace: nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name. | |
 | [§4.13](#4.13%20Control%20objects) | Put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. | |
 | [§4.13](#4.13%20Control%20objects) | A control put through a transport that flips one byte fails with `ErrCorrupt`. | T |
-| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | For every failure the fault transport can produce, the error wraps exactly one sentinel and no service error type is reachable with `errors.As`. A cancelled context comes back as `context.Canceled`. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | For every failure the fault transport can produce, the error wraps exactly one sentinel and no native service error is reachable by unwrapping it. A cancelled context comes back as `context.Canceled`. | T |
 | [§4.9](#4.9%20No%20state%20across%20calls) | One failing call makes exactly one request. | T |
 | [§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers) | Construct with syncer pools of 8 and 8 and a GC bound of 4: every client limit is at least 21. | |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Against each fault profile of [§7.2](#7.2%20Fault%20transport), open fails and names the missing feature. A cleanup that fails does not fail the open. | T |
@@ -1264,7 +1316,7 @@ in-memory store).
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A transport whose listing omits new keys for the first few pages: open succeeds within the profile's re-list bound, and fails past it. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Open, then turn on versioning or add a lifecycle rule whose filter could match the prefix: `Recheck` fails naming it; turn it off: `Recheck` passes. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | The put probe fails while the namespace is read-only, and succeeds on the next call once write access returns; the get probe succeeds throughout. Revoke access to the store's own prefix only: both probes of that direction fail although a neighbouring prefix stays accessible. | |
-| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, and `errors.Is(err, ErrTransient)` holds. | |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, which also matches `ErrTransient`. | |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that answers `404` to the first get after a successful put of the name: the get fails, and the capability check of a service that does so refuses the open. | T |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599, with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A transport that reports an archive storage class for what the check wrote, or a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
@@ -1274,12 +1326,14 @@ in-memory store).
 | [§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers) | Open 1,000 stores from one store configuration: one client exists, its limit equals the callers' total concurrency, and connections opened under a steady load do not grow with the number of stores. | |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Open an immutable store against each of: no versioning, versioning without a lock, a governance-mode lock, any default retention, no retention cap or a cap above the record's, no noncurrent-version or no current-version expiry rule, either rule present under one folder's prefix but not over `exports/` or `progress/`, a current-version rule younger than the lifecycle age, a credential that may delete the health object without naming a version, and a credential allowed any of the five bucket-configuration actions: each fails naming the missing requirement. Creating the location record provokes the cap with a retain-until one second above it and each configuration put with the configuration just read, and requires every one refused. A bucket with all of them: open succeeds, sends no put request after the location record's integrity check, and extends the location health object's recorded version to the last end of its generations at or before now plus the retention cap, which the cap's policy accepts. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | Create an immutable location record: its health object exists at the location's root and its version is in the record before any namespace copies there. A first namespace's folder then opens and its get probe passes. A design whose health object sits under the folder's prefix cannot open that first folder. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Open an immutable store on a bucket whose policy the location's credential cannot read: refused. Name an inspection credential that can read it: opens, and every put still goes out under the location's credential. Give the inspection credential put or delete rights: the location record is refused. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store, call `PutVersion`, `PutObject`, `ExtendRetention` and `ExtendObjectRetention` with a retain-until one hour less than the cap the open read: each returns `ErrInvalid` naming the date, the transport sees no request, and put health is unchanged. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Put 10⁵ names reused on one day at an immutable location: their retain-untils are spread across `G` by each name's phase, no one generation end holding more than twice its share. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store: every `PutVersion` and `PutObject` request carries a compliance-mode retain-until at a generation's end; `Health(DirPut)` returns `ErrInvalid` and the transport sees no request; `ExtendRetention` to a time at or before the current retain-until returns `nil` after one retention read and sends no retention write. Advance a virtual clock past the lifecycle age with opens in between, and again with one process left up and only its `Recheck`s running: the location still opens and the get probe passes. A store that never extends the health object, or extends it only at open, stops opening here. | T |
 | [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | At an immutable location put one backup's state object three times, then have the transport add a delete marker over it as an expiring lifecycle rule would: `ListObjects` yields all three versions, `GetObject` by each returns its bytes, and a get of the current object is refused. At a mutable location a second put replaces the first, and `DeleteObjects` removes it. A block listing yields no versioned object. Re-put an older authentic state version on top of a newer one: the caller still takes the newer by its sequence. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Lower a backup location's lock or suspend its versioning between two copies: the folder record's holder runs `Recheck` before the next copy, finds the drift, and the copy fails before any put; the location's put direction is unhealthy until a `Recheck` passes. A design whose only `Recheck` caller is GC copies into the drifted folder. | T |
-| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer puts with each quota or storage-full reply the profile lists, and with `507`: each is `ErrDenied` of cause `quota`. Answer with `403`: `ErrDenied` of cause `access`. Answer with `413` with and without an error code, and with `400 EntityTooLarge`: each is `ErrDenied` of cause `access`, never `ErrInvalid`. | T |
-| [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | Flip one byte of a ranged get's body: the codec reports `ErrCorrupt`, and the syncer's single re-get returns the chunk ([RFC 3 §7.1](rfc-3-syncer.md#7.1%20Group%20A%20%E2%80%94%20silent%20data%20loss)). Flip a byte of a whole-block get on a service that returns a response checksum: the get fails `ErrTransient` before the codec sees it. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer puts with each quota or storage-full reply the profile lists, and with `507`: each is `ErrDenied` of cause `quota`. Answer with `403`: `ErrDenied` of cause `access`. Answer block puts with `413` with and without an error code, and with `400 EntityTooLarge`: each is `ErrDenied` of cause `size`, never `ErrInvalid`. Answer a `PutObject` and a `PutControl` the same way: each is `ErrInvalid`. `PutObject` a body one byte over 64 MiB: `ErrInvalid` with no request sent. | T |
+| [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | Flip one byte of a ranged get's body: the codec reports `ErrCorrupt`, and the syncer's single re-get returns the chunk ([RFC 3 §7.1](rfc-3-syncer.md#7.1%20Group%20A%20%E2%80%94%20silent%20data%20loss)). Flip a byte of a whole-block get on a service that returns a response checksum: the get yields the body and then fails `ErrTransient` at its end, and the stored checksum it reports is the one the service stored, not one of the bytes sent. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store, `Delete` returns `ErrInvalid` for every name and the transport sees no request; `PutVersion` twice under one name returns two versions, and `GetVersion` of the first returns the first bytes; `ExtendRetention` to an earlier time is refused without a request. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Open a mutable store on a bucket configured for an immutable location: open fails. Open an immutable store over a bucket with no versioning: open fails. | T |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | The capability check provokes a conditional put and reports `conditional_put`; no other call of the suite sends a conditional header. | T |
@@ -1318,14 +1372,13 @@ with those faults, so these profiles are the negative tests.
 | [§3.2](#3.2%20Layout) | Fuzz the decoder: no panic, and no allocation larger than the fixed header maximum before the header is validated. A header declaring more than `N` entries, or a body longer than `MaxDecodeLen(Max)`, is refused before allocating. Remove a transform from the current chain: a block written under it still decodes. |
 | [§3.2](#3.2%20Layout) | Get one body by range alone: its envelope's version byte is read and the chunk decodes without the header. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | Plant a material ID in a body that the block record's census does not list: the read fails as malformed and the provider is never asked for it. |
-| [§3.2](#3.2%20Layout) | Encode a block of an encrypting namespace: no plaintext chunk hash of its chunks, and no body offset or length in the clear, appears anywhere in its bytes; a whole-block read still recomputes and verifies its name without material, unseals the index under the header key, and verifies every chunk; a ranged read at block metadata's range verifies without reading the header. |
+| [§3.2](#3.2%20Layout) | Encode a block of an encrypting namespace: no unkeyed hash of its chunks appears anywhere in its bytes, and the header's chunk IDs equal block metadata's; a whole-block read still recomputes and verifies its name without material, and verifies every chunk; scanning the block for the clear envelope finds every body's offset and length, equal to the index's; a ranged read at block metadata's range verifies without reading the header. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A recorded range the store rejects as past the end: the codec returns `ErrCorrupt` of kind `malformed`. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | With the namespace's write version below the newest the codec knows, blocks are written at the namespace's version; a write version the binary does not know refuses writes and still reads. |
 | [§3.3](#3.3%20Transforms) | Run the engine's read and write tests with and without transforms: no difference observable apart from offsets and timing. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
-| [§3.2](#3.2%20Layout) | Write a block under header key H1, make H2 current, read the block: its index is checked under H1, as its seal names, and a recovery import resolves it. Plant a seal naming a key outside the block record's census: the read fails as malformed and the provider is not asked. |
 
 ### 7.4 Services
 
@@ -1336,7 +1389,12 @@ with those faults, so these profiles are the negative tests.
 | Each supported production service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) | passes the capability check and [§7.1](#7.1%20Conformance%20suite) | nightly, in a disposable namespace |
 
 A new service is supported once it passes the nightly row. Its results go into
-[Appendix B](#Appendix%20B%20%E2%80%94%20measurements).
+[Appendix B](#Appendix%20B%20%E2%80%94%20measurements). It is supported **as an immutable backup location** only once
+Appendix B also carries its measured object-lock rows — the over-cap
+retention put, the versionless delete, the configuration writes and the
+lowering of a retain-until, each refused — from a run against the service
+itself; a profile **MUST** refuse to open an immutable location on a service
+whose rows are unmeasured. No service is so supported yet.
 
 ### 7.5 Benchmarks and targets
 
@@ -1593,7 +1651,7 @@ Not required: conditional put, multipart upload ([RFC 3 §3.4](rfc-3-syncer.md#3
 | the health object (control role `health`) | `<prefix>control/health`; at a backup location, one per location, `<location>control/health`, put when the location record is created ([§4.7](#4.7%20Health%20is%20one%20probe%20call)) |
 | the key records (control role `keys`): every key record, wrapped, and a non-encrypting namespace's chunk-ID key in the clear | `<prefix>control/keys` |
 | capability-check objects | `<prefix>check/<random>/…` |
-| at a backup location: a backup's export, state object and progress objects ([§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location)) | `<location>exports/<namespace>/<backup>/export`, `<location>exports/<namespace>/<backup>/state`, `<location>progress/<namespace>/<backup>/<batch>` |
+| at a backup location: a backup's export head and parts, state object and progress objects ([§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location)) | `<location>exports/<namespace>/<backup>/export`, `<location>exports/<namespace>/<backup>/part/<n>`, `<location>exports/<namespace>/<backup>/state`, `<location>progress/<namespace>/<backup>/<batch>` |
 | at a backup location: a namespace's key records (`ObjKeys`) | `<location>keys/<namespace>/keys` |
 
 Block names are uniformly distributed hashes, so keys spread across the service's
@@ -1613,8 +1671,9 @@ Several stores may share a bucket under different prefixes, never one prefix
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |
 | `ErrNotFound` | `404 NoSuchKey`; `404 NoSuchVersion` on `GetVersion` |
 | `ErrInvalid` | `416`; a `Content-Range` that differs from the request (a clamp); `400` codes not listed elsewhere; `501` |
-| `ErrDenied`, cause `access` | `401`, `403`, `404 NoSuchBucket`, `400 ExpiredToken`, `400 InvalidToken`; `413` with any code, and `EntityTooLarge` with any status, a size refusal ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); any `3xx`, which on this service means the endpoint or region is wrong, never a block's state |
+| `ErrDenied`, cause `access` | `401`, `403`, `404 NoSuchBucket`, `400 ExpiredToken`, `400 InvalidToken`; any `3xx`, which on this service means the endpoint or region is wrong, never a block's state |
 | `ErrDenied`, cause `quota` | `507` with any code; and any reply whose error code the profile's quota list names — each service's own bucket-quota-exceeded and storage-full codes, recorded per service in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements), measured or taken from the service's documented error table. Such a reply is matched first, and a size refusal next, before the rows below, so a quota or size refusal answered with `400` or `403` is never `ErrInvalid` |
+| `ErrDenied`, cause `size` | to a block put (`Put`, `PutVersion`): `413` with any code, and `EntityTooLarge` with any status, a size refusal ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); to any other put the same replies are `ErrInvalid` |
 | `ErrThrottled` | `429`, `503 SlowDown` |
 | `ErrTransient` | `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request, a mismatching response checksum on a get ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)), a response body that does not parse |
 | `ErrCorrupt` | `400 BadDigest`, `400 InvalidDigest`, `400 XAmzContentSHA256Mismatch`; the exact status and code the check recorded for its chosen checksum, only on puts that carried that checksum; an ETag mismatch on a put |

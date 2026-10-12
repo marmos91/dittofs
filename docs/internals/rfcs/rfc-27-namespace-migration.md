@@ -159,7 +159,7 @@ adds:
 
 | Term | Means |
 | --- | --- |
-| **change sequence** | the commit timestamp the metadata store keeps with each key version a transaction writes under a share's prefixes, or its namespace's content-addressed ones, ordered like the commits and returned by a scan; no record holds it in its value ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)); a move's delta is the records stamped above the base's ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)) |
+| **change sequence** | the commit timestamp the metadata store keeps with each key version a transaction writes under a share's prefixes, or its namespace's content-addressed ones, ordered like the commits and read for a page of scanned keys by one batched `Versions` call; no record holds it in its value ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)); a move's delta is the records stamped above the base's ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)) |
 | **claim** | the control object in a namespace's folder naming the one installation that may write and collect there ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
 | **re-home** | copying one share's content from the namespace it shares into a new namespace of its own, while it serves; a ref names its namespace by **generation** during one ([§2.7](#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 
@@ -311,10 +311,27 @@ freeze carries only what changed since.
    clone or backup is waited for; a pause that commits first aborts the
    operation, whose retry is refused.
 
-   A then takes a **base cut** of every share the pause's transaction found: an
-   ordinary snapshot held by a use record of kind `move`
-   ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), not by a lock, so the move can delete it. Once every base
-   cut is `complete`, so that no offload can still write a ref a base cut sees,
+   A then takes a **base cut** of every `enabled` or `quiesced` share the pause's
+   transaction found: an ordinary snapshot held by a use record of kind `move`
+   ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), not by a lock, so the move can delete it. The use record is
+   written in the cut's announce transaction ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), the one use record
+   that names a snapshot not yet `complete`, so no base cut exists that an abort
+   cannot find. A base cut is exempt from the snapshot reserve
+   ([RFC 12 §2.9](rfc-12-snapshots.md#2.9%20Space%20is%20reported%2C%20not%20charged)): the pause defers the deletions and pruning that would bring
+   the share under it, so a refused base cut would stall the move, and the move
+   deletes the cut when it ends. A `retired` share ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)) gets no base
+   cut, since it refuses every new one; it changes nothing but its detached
+   snapshots' locks and use records, which the pause holds still, so its records,
+   detached snapshots, use records and locks go into the base whole, and the
+   delta carries whatever changed in them since.
+
+   The pause record holds the step the move has reached and a deadline A renews
+   while the move makes progress. A's start, or the scheduler finding the deadline
+   past, resumes the move from that step while B still answers for it, and
+   aborts it as below otherwise, so a crash never leaves the namespace gated
+   until an operator acts.
+
+   Once every base cut is `complete`, so that no offload can still write a ref a base cut sees,
    A writes an export of kind `move-base`: every record the base cuts see, all
    history, every chunk and block record, and the principals they name. B stages
    it, rebuilds its derived indexes — reverse ref keys, the died index, the
@@ -336,7 +353,9 @@ freeze carries only what changed since.
    response instead, under the same hold an adapter keeps for a request refused
    `ErrGrace` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)), bounded by `migration.freeze_timeout` plus
    the 35 s SMB break deadline that hold adds ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); if the namespace has moved when the freeze ends, the connection is
-   dropped so durable handles reconnect at the new owner. No NFS call is held for
+   dropped so the client reconnects at the new owner; only persistent opens,
+   whose records the delta carries, reconnect there, and durable and resilient
+   handles are refused and reopened, as after a failover ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). No NFS call is held for
    the whole freeze, and none is failed outright. The freeze **MUST** be bounded by
    `migration.freeze_timeout`; one that cannot finish in time aborts the move.
 5. **Stop A's writers and GC** for the namespace, and join them: offload loops,
@@ -470,7 +489,7 @@ IDs. An import **MUST NOT** proceed and leave reads to fail as corrupt.
 B needs no particular *current* material: its own chain writes new blocks
 ([RFC 5 §2.8](rfc-5-transforms.md#2.8%20The%20chain%20ID)).
 
-The namespace's **data keys**, **header keys**, **chunk-ID key**, **chunking
+The namespace's **data keys**, **chunk-ID key**, **chunking
 key** and **export keys** are kept as key records, each held as
 [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s table says for the namespace's kind: wrapped under a
 master key, except a non-encrypting namespace's chunk-ID key, kept in the clear
@@ -479,7 +498,7 @@ the master keys that wrap them, and never a master key. B **MUST** hold every
 master key the export names, and each key record **MUST** unwrap and match its
 fingerprint, before staging: without the
 export key it cannot read the export, without the chunk-ID key it cannot verify a
-chunk, without a header key it cannot verify A's block headers, and without the
+chunk, and without the
 chunking key its new writes chunk differently from every block A wrote.
 
 **B re-wraps what it imports; A keeps what it exported under.** At publish, B
@@ -489,7 +508,9 @@ of B's depends on a master key A may rotate away and destroy. A **MUST**, when
 it writes a move's export, record a durable **export pin** naming each master
 key the export's wrappings use, and its material provider **MUST** refuse to
 destroy a pinned master key with `ErrMaterialInUse` until an operator releases
-the pin: A cannot see B's re-wrap, and B's retained exports from before its
+the pin (`ReleasePin`, [§3.1](#3.1%20Interfaces)). The pin is the record
+`MKP‖masterKeyID‖ns‖moveID` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), server-wide so A's drop of the
+namespace's records leaves it: A cannot see B's re-wrap, and B's retained exports from before its
 re-wrap still name it. The destroy check runs per installation, against that
 installation's own key records, retained exports and pins.
 
@@ -497,10 +518,11 @@ installation's own key records, retained exports and pins.
 
 **A journal attaching an imported share holds none of its extents.** A share
 moved back to an installation that once held it — A to B and back to A — arrives
-with FileIDs A's journals may have held. Attaching a share whose tag the journal
-already knows as an import ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) **MUST** first `Forget` that tag —
-dropping its extents and markers through one header-only record — or be refused
-naming the tag; otherwise A would serve its stale,
+with FileIDs A's journals may have held, under the tag it had at A; it arrives
+with a new tag, since a tag is never given twice ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). Attaching an
+imported share to a journal that holds records under a tag no share claims
+**MUST** first `Forget` each such tag — dropping its extents and markers through
+one header-only record — or be refused naming them; otherwise A would serve its stale,
 clean extents keyed by those FileIDs over what B wrote since. Step 9's `Forget`
 makes this the rare case of a crash, not the rule.
 
@@ -602,8 +624,10 @@ and writing the bytes.
    counted in N until the last catalog backup taken before the re-home finished
    has expired. A copying backup needs no parking: it holds its own blocks.
 
-   A share that is N's only share is re-homed like any other; N is left empty
-   and is deleted once its GC has collected what the switches retired.
+   A share that is N's only share is re-homed like any other; N is left empty,
+   and the finish (step 5) starts its drain ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) unless a parked ref
+   or a retained backup still names it, or a folder record still holds a
+   non-empty census for it.
 
    One transaction then creates N', with a new ID, prefix, key scope and keys and
    its claim written `owned` by this installation. The same transaction adds N' to
@@ -661,7 +685,10 @@ and writing the bytes.
        each with those same values;
      - lowers `old_refs` and advances the cursor.
 
-     A ref that changed since it was read makes the batch retry.
+     A ref that changed since it was read makes the batch retry. The switch
+     transaction reads the share's state and `S‖id‖rh` with tracking, and stops
+     the re-home for a share that is no longer `enabled` or `quiesced` or whose
+     re-home record is gone ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
 4. **Catch-up passes.** Refs at *g* can appear behind the cursor. A server-side
    copy by reference from another share of N is one source. A version moved to
    history under a key the cursor already passed is another. When a pass ends with
@@ -670,15 +697,22 @@ and writing the bytes.
    finds.
 5. **Close, then finish.** When `old_refs` reads near zero after a pass, one
    transaction marks the re-home `closing`. From then on nothing can raise
-   `old_refs`: a server-side copy by reference from N into the share copies
+   `old_refs` from zero: a server-side copy by reference from N into the share copies
    bytes instead, as between any two namespaces, and every other transaction that touches a
-   ref at *g* only moves it to history, which keeps its count, or drops it,
-   which lowers it. The re-home then runs catch-up passes until a fold of the
-   counter ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) reads zero. Since the counter can only fall
-   once `closing` is set, a folded zero stays zero, so the finish transaction
+   ref at *g* moves it to history, which keeps its count, narrows it, whose
+   live remainder and history piece are two refs at *g* and add one, as a split
+   does ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)), or drops it, which lowers it. The re-home then runs
+   catch-up passes until a fold of the counter ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) reads zero.
+   Once `closing` is set, only a transaction that already holds a ref at *g* can
+   raise the counter, so a folded zero stays zero, and the finish transaction
    reads the folded record and the `closing` flag — two keys, never the
    counter's unfolded deltas — makes N' the share's only namespace, deletes the
-   re-home record, and lifts the refusals. A finish that had to read every
+   re-home record, and lifts the refusals. It also runs N's drain check
+   ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), reading with tracking what that check reads, so an N that no
+   share, parked ref or retained backup names, and no folder record holds a
+   non-empty census for, any longer is drained rather than
+   kept with its claim and keys — the case a re-home made to replace exposed keys
+   exists for. A finish that had to read every
    unfolded delta would scan a range every writer of the share appends to, and
    conflict with each of them.
 
@@ -741,7 +775,11 @@ backups through a long re-home is given a copying policy first.
 > correctly. Stopping there leaves the share serving correctly, and finishing is
 > the only way back to one namespace. A reverse re-home into N would bring
 > deduplication back, but it is not specified. Add it if operators start re-homes
-> they regret.
+> they regret. The one exception is the share's deletion, which ends a running
+> re-home at its first transaction ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): neither reason above holds
+> for a share that no longer serves, and the removal drops each ref at the
+> generation it names and drains both namespaces, so a paused re-home never
+> keeps a share from being deleted.
 
 > ponytail: a re-home reads each chunk with its own ranged get, even when most
 > of a block's chunks belong to the share. Upgrade to one whole-block get when
@@ -790,7 +828,13 @@ type Migration interface {
 	Import(ctx context.Context, r io.Reader) (ImportReport, error)                     // base, then delta
 	Drop(ctx context.Context, ns NamespaceID, imported Digest) error                   // step 9
 	Abort(ctx context.Context, ns NamespaceID, notPublished bool) error                // after step 7 only with notPublished
+	// ReleasePin deletes A's export pin on a master key for one move, once the
+	// operator states B holds no retained export naming it (§2.4).
+	ReleasePin(ctx context.Context, ns NamespaceID, move MoveID, masterKey MasterKeyID) error
 }
+
+type MoveID [16]byte    // minted by A when it writes a move's export; logged and reported with the move
+type MasterKeyID []byte // a master key's ID as a stored wrap carries it (RFC 5 Appendix B.2): up to 65,535 bytes
 ```
 
 Errors join RFC 12's closed set: `ErrMoving`, `ErrFreezeTimeout`,
@@ -889,7 +933,7 @@ expired; a claim read that stopped a stale image before its put.
 | `S-snap-rehome-backup` | copying backups run every day of a long re-home; each lists blocks of N′'s folder only, sealed in either namespace, and carries both namespaces' IDs and key records, a restore from one taken mid-way reads back, and N′'s sweep keeps every block it lists while N's sweep deletes none of N′'s; new catalog backups are refused and counted. A share with a 90-day catalog backup is re-homed at once: its refs are parked in N, a recovery import of that backup reads back after the re-home finished, and N empties only once the backup expires |
 | `S-snap-rehome-finish-load` | the finish runs while 64 writers write the share: it commits on the folded counter alone, without a range read; a server-side copy by reference from N after `closing` copies bytes |
 | `S-snap-cloned-vm` | two copies of one installation start from one disk image |
-| `S-snap-move-freeze-reply` | calls during a move's freeze are answered retry-later after `hold_reply` over NFS, kept pending over SMB within `freeze_timeout` plus 35 s, never answered `STATUS_DISK_FULL`, the SMB connection dropped at the move so durable handles reconnect at B, and all complete at B |
+| `S-snap-move-freeze-reply` | calls during a move's freeze are answered retry-later after `hold_reply` over NFS, kept pending over SMB within `freeze_timeout` plus 35 s, never answered `STATUS_DISK_FULL`, the SMB connection dropped at the move so persistent handles reconnect at B and durable ones are refused, and all complete at B |
 
 ### 5.3 Group A — lost or wrong content
 

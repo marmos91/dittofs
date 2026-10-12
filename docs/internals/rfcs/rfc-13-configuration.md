@@ -229,9 +229,9 @@ A provisioning file ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20pro
 control plane, and the record then says it came from the file.
 
 **An installation is created by an explicit initialisation step, never by a
-start.** The step mints the installation ID and writes it into the metadata
-store's bootstrap — the Installation record and the store format record
-([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) — and, through the journal's `Init`, into each journal's `format`
+start.** The step mints the installation ID once and passes the same ID to the
+store's `Init` ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)), which writes it into the Installation record
+beside the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)), and to each journal's `Init`, which writes it into the journal's `format`
 file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A start opens what exists and creates neither: one that
 finds journals naming an installation and no metadata store reports **metadata
 store lost**, and one that finds a store whose journals are missing, or name
@@ -266,6 +266,8 @@ validation, or whose change the API would refuse — a bound setting with conten
 behind it ([§5.1](#5.1%20A%20bound%20setting%20refuses%20change)), for instance — is refused whole: at start the node refuses to
 start, and on reload the running records stay as they were and the node reports
 a health condition naming the record and the reason. Nothing is half-applied.
+A refused prune is the exception: it is reported and the rest applied (table
+below), because a deletion's refusal can last as long as a snapshot's lock.
 
 **A declared record has one source, the file.** A file declares a **source
 name**, stable across edits, and a **revision**, a number its author raises with
@@ -296,13 +298,13 @@ giving the API a way to edit what the file owns.
 | Event | Effect |
 | --- | --- |
 | a declared record differs from the store | the file's value is written |
-| a record is removed from the file | it stays, and stops being managed; with `prune: true` in the file it is deleted instead, subject to the same refusals as an API delete (`DeleteShare` for a share, with the default disposition, [RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
+| a record is removed from the file | it stays, and stops being managed; with `prune: true` in the file it is deleted instead, subject to the same refusals as an API delete (`DeleteShare` for a share, with the snapshot disposition the file's `prune_snapshots` names — `refuse`, the default, `delete` or `detach` — [RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). A share already `being removed` or `retired` counts as deleted, so a restart during its removal applies nothing. A refused prune never refuses a start or a reload: the record stays managed and the node reports a health condition naming it and the refusal, since the file is the only source that may delete a managed record |
 | an API call edits a declared field of a managed record | refused, naming the file |
 | an operation writes a system field of a managed record, or changes a create-only field through an allowed operation | written; for a create-only field the file's differing value is reported, not applied |
 | a file declares a record managed by another source name | refused: the record changes source only after the first source stops declaring it; health condition on the refusing node |
 | a node applies its source at a revision below the one recorded | refused as stale, so a node restarted with an older copy never reverts a newer edit; health condition naming both revisions |
 | a node applies its source at the recorded revision with a different hash | refused: one revision is one content; health condition |
-| reload | `dfsctl config reload`, a signal, or at start; the node reports the applied source, revision and hash ([§8](#8.%20Observability)) |
+| reload | an explicit reload request through the control-plane API, a signal, or at start; the node reports the applied source, revision and hash ([§8](#8.%20Observability)) |
 
 **Secrets stay references.** A provisioning file **MUST NOT** hold a secret value.
 It names one by reference — an environment variable or a file on the host — and
@@ -326,10 +328,11 @@ validated once and shared by every policy that names it. It holds:
 | --- | --- | --- |
 | store | endpoint, bucket and prefix, as a remote store's | bound while any backup is held there |
 | credential reference | a `Secret` ([§7](#7.%20Secrets)), sealed under the `storage` key | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) |
+| inspection credential reference | for `immutable`, optional: a `Secret` of the bucket owner's that may only read the bucket's settings, used where the location's credential cannot read them ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) |
 | **mode** | `mutable` or `immutable`; required, no default | bound while any backup is held there |
 | lifecycle age | the age at which the service expires an object, as its expiry rule is configured; for `immutable`, the current-version expiry rule's age is at least this ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live, within the checks below |
-| retention cap | for `immutable`, the longest retention a put may set, enforced by the bucket's policy and verified at every open: at least the longest retention of any policy writing there, plus one generation and `backups.max_copy_time` ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)) | live, within the checks below |
-| generation `G` | for `immutable`, the period every retain-until is extended past its need, so a reused version is extended about once per `G` ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live; default 7 days |
+| retention cap | for `immutable`, the longest retention a put may set, enforced by the bucket's policy and verified at every open: at least the longest retention of any policy writing there, plus one generation, `backups.max_copy_time` and one day, in whole days ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)) | live, within the checks below |
+| generation `G` | for `immutable`, the period every retain-until is extended past its need, so a reused version is extended about once per `G` ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | live; proposed: 7 days ([Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings)) |
 | put-integrity outcome | for `immutable`, the result of the capability check's integrity step, run once when the record is created and whenever its store or credential changes, since check objects there cannot be deleted | system field ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)): written by the control plane, never configured |
 | health object identity | the location-level health object at `<location>control/health`, put when the record is created, before any namespace copies there: its version for `immutable`, the nonce written in it for `mutable` ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)). Every folder's get probe reads it, and a changed endpoint or credential proves the same location by it ([§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change)) | system field, written once with the record |
 
@@ -352,7 +355,7 @@ version, refused for its credential; it issues no put as a probe
 refused when its `retain` plus `backups.max_copy_time` exceeds the lifecycle age —
 `retain` starts when a copy completes, so a block put at the start of a long
 copy must outlive the copy and the retention — when its `retain` plus one
-generation and `backups.max_copy_time` exceeds the retention cap, and, with
+generation, `backups.max_copy_time` and one day exceeds the retention cap, and, with
 `ErrPolicyPeriod`, when its period is shorter than its estimated incremental
 copy at the configured copy rate ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). A first copy is not held to
 the period: it completes across attempts, each building on the last.
@@ -365,7 +368,7 @@ A setting has exactly one scope, the smallest thing it must be the same across:
 | --- | --- | --- |
 | **installation** | what every node and namespace shares | the syncer's pool sizes' defaults, GC's schedule |
 | **node** | what describes one host's resources | its journals, one per device, and each one's maximum footprint ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) |
-| **namespace** | what decides stored bytes and their identity, and where they sit | prefix, key scope, chunk-ID key, chunking key, header and data keys, `Target`, whether the chain encrypts, the counting domain |
+| **namespace** | what decides stored bytes and their identity, and where they sit | prefix, key scope, chunk-ID key, chunking key, data keys, `Target`, whether the chain encrypts, the counting domain |
 | **remote store** | the store configuration every namespace created on it shares: how blocks reach and sit on a service ([RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20locations%20kept%20inside)) | endpoint, bucket, credential reference, storage class, transform chain, block target, material provider, master keys |
 | **share** | what a client sees | case sensitivity, name length, `atime`, per-share journal limit, snapshot policy |
 
@@ -422,7 +425,7 @@ Required, because no default is safe:
 
 - a remote store's endpoint, bucket and credential reference; a namespace's
   prefix;
-- a namespace's key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)), and whether its chain encrypts;
+- whether a namespace's chain encrypts;
 - a backup location's mode ([§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record));
 - a node's journal devices;
 - every store configuration's material provider and master key, whether or not
@@ -433,7 +436,9 @@ Required, because no default is safe:
   refused with `ErrNotEscrowed`, naming the key.
 
 Everything else takes a default. [Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings) lists the settings the RFCs
-name, with the default each states or, where none does, the one proposed here.
+name, each with its default. A default marked **proposed** there is a starting
+value awaiting a measurement, whether its owning RFC or this document supplies
+it; every other default is settled.
 
 ## 5. Binding classes
 
@@ -567,6 +572,15 @@ rule, or come from a newer control plane. Both run the same rules, owned by the
 component: the control plane calls the component's validator, and has none of
 its own to drift.
 
+**A rule across settings is checked from both sides.** Some rules relate two
+settings, such as `smb_pending_cap` exceeding `migration.freeze_timeout` plus
+the break deadline ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). A write of
+either setting **MUST** be validated against the current value of every setting
+a rule relates it to, in the same transaction as the write, reading those
+values tracked so that a concurrent write of the other side conflicts. A rule
+stated in an RFC names its settings in [Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings),
+so the validator knows which writes re-check it.
+
 **Unknown fields are refused.** A field the schema does not know is most often a
 misspelling of one it does, and ignoring it silently runs the default.
 
@@ -668,10 +682,11 @@ type SecretProvider interface {
     exports are still sealed under its export key, which is wrapped under a
     master key like every other: **restoring any namespace's metadata from a
     backup needs the master key**, and the bucket alone does not suffice;
-  - every key record reaches the namespace's `keys` object in its bucket and
-    every backup location before it becomes current, so a recovery finds keys
-    rotated after the last backup ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys));
-  - **header keys, data keys and export keys rotate**: a header or data key by
+  - every key record reaches the namespace's `keys` object in its bucket before
+    it becomes current, and a backup location's before the next backup there
+    starts, so a recovery finds keys rotated after the last backup
+    ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys));
+  - **data keys and export keys rotate**: a data key by
     new material plus relocation ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), an export key by issuing a new
     current one that later exports are sealed with. Each is a **next write**
     setting, not bound. The chunk-ID and chunking keys never rotate: changing
@@ -734,7 +749,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) system fields | Provision a share and an immutable location from a file. Re-home the share: assert it runs, the share's namespace changes, and the next reload reports the file's stale namespace as a health condition without applying it. Create the location: assert its put-integrity outcome is recorded. Declare the outcome in the file: refused at validation. A design that refuses every write to a managed record fails both. |
 | [§5](#5.%20Binding%20classes) rolling restart class | **(cluster)** Raise the node lease from 10 s to 20 s and restart three nodes one at a time. Assert each restarted node waits out 20 s before taking over a lease and renews within the old interval until every node reports the new generation, and that no lease was served by two nodes at any instant. Apply the new value on each node as it restarts instead: a takeover by a restarted node falls inside a lease an old node still holds. |
 | [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) dead node | Stop one of three nodes for good and raise an active version: assert refused, naming it. Decommission it: assert the raise is accepted. On a single node, upgrade the binary without raising; assert the old binary still starts on the store. |
-| [§7](#7.%20Secrets) key table | Create a non-encrypting namespace: assert its chunk-ID key is in the clear in its key record and its key object, and that no namespace key of any namespace is wrapped under the `storage` key. Delete the host's wrapping keys and restore its catalog backup on a fresh host holding the master key: assert every file reads back. Create an encrypting namespace on a key-file master key whose escrow is not verified: refused `ErrNotEscrowed`. Rotate a header key and an export key of a namespace holding content: assert accepted, old blocks and exports still read. Destroy a master key a retained export names: refused. |
+| [§7](#7.%20Secrets) key table | Create a non-encrypting namespace: assert its chunk-ID key is in the clear in its key record and its key object, and that no namespace key of any namespace is wrapped under the `storage` key. Delete the host's wrapping keys and restore its catalog backup on a fresh host holding the master key: assert every file reads back. Create an encrypting namespace on a key-file master key whose escrow is not verified: refused `ErrNotEscrowed`. Rotate a data key and an export key of a namespace holding content: assert accepted, old blocks and exports still read. Destroy a master key a retained export names: refused. |
 | [§5](#5.%20Binding%20classes) propagation | Change a live setting on a store backend that offers no watch. Assert every node runs the new generation within 5 s. Freeze one node's reads; assert the health condition names it after 5 s. |
 | [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) version gate | Run two nodes; register a third whose range excludes an active version; assert it refuses to start, naming the format. Upgrade one node's binary; raise an active version; assert refused, naming the other node. Upgrade it; assert the raise is accepted. Start the old binary; assert it refuses. A design without a recorded active version accepts the first raise. |
 | [§7](#7.%20Secrets) rotation | Rotate a credential while two nodes use it. Assert both report the new version within 5 s, the old version stays resolvable until both do, and only then is it deleted. Rotate a wrapping key with both keys in every bootstrap; assert every `Secret` names the new key ID before the old key can be removed. |
@@ -760,8 +775,8 @@ because the rule stands here alone, or marked not yet applied:
    the scopes of Appendix B: `snapshots.hold_bound` and `snapshots.directory`,
    which Appendix B scopes per share, sit under the share. *Applied.*
 5. **RFC 7 §3.3:** case sensitivity is fixed at the share's creation. *Applied.*
-6. **RFC 9 §8:** GC's `Config` holds the five namespace `gc.*` settings of
-   Appendix B. *Applied.*
+6. **RFC 9 §8:** GC's `Config` holds the six namespace `gc.*` settings of
+   Appendix B, `gc.hold_threshold` among them. *Applied.*
 7. **RFC 2 §5:** the block target is a remote-store setting, next write, 4 MiB,
    settable from 1 MiB to 64 MiB. *Applied.*
 8. **RFC 5 §3.2 and §5.1:** whether the chain encrypts is fixed when the
@@ -779,20 +794,17 @@ because the rule stands here alone, or marked not yet applied:
 
 ## 11. Open questions
 
-1. **Proposed defaults.** Appendix B marks the defaults this document proposes
-   where the owning RFC states none: the xattr and named-stream bounds, the
-   journal's maximum footprint and the
-   per-share limit, the headroom and idle-seal threshold, `atime`, the
-   space-amplification target, the copy and re-home rates, the group-commit
-   bound, the offload backoff caps, the oldest-unoffloaded alert and the
-   capacity weight. Each stands until a measurement on the reference box
-   replaces it.
+1. **Proposed defaults.** Every default Appendix B marks proposed is a
+   starting value awaiting a measurement, and each row names the measurement
+   that settles it, or carries a decision that none will. Each stands until that
+   measurement on the reference box replaces it, under the index's rule for
+   proposed targets ([index, Test tiers](rfc-index.md#Test%20tiers)).
 2. **Values open in their own RFCs.** The segment size, a fixed constant
-   ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)), the GC interval ([RFC 9](rfc-9-gc.md)), the speculation budget and read-ahead cap ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)),
-   the quota slack ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)); and **(cluster)** the failure domain, gather
-   interval, replica removal triggers, mark persistence, re-read period and
-   repair pacing ([RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)). Each takes a default here only once its
-   RFC states one.
+   ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions), question 2), `ExtentLimit` ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)), the GC
+   partition, folder and use-record lease durations ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix), [RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)); and
+   **(cluster)** the gather interval, replica removal triggers, mark
+   persistence, re-read period and repair pacing ([RFC 10 §16](rfc-10-journal-replication.md#16.%20Open%20questions)). Each takes a
+   default here only once its RFC states one.
 3. **The settings generation read.** One point read per node per second is
    nothing on one node; whether it stays cheap with many nodes on one replicated
    store, or needs the store's own change feed, is unmeasured **(cluster)**.
@@ -818,61 +830,66 @@ Descriptive, for the refactor.
 ## Appendix B — the settings
 
 Every setting the storage RFCs name, with its scope and class. A default marked
-"proposed" is a starting value awaiting a measurement, named after "settled by" where
-the owner RFC names one; it is not a requirement, and RFC text cites the setting
-rather than restating its number as one.
+"proposed" is a starting value awaiting a measurement, which every such row names
+after "settled by"; the first reference-box run replaces it under the index's rule
+([Test tiers](rfc-index.md#Test%20tiers)). A default not marked proposed is settled,
+and where no measurement could move it the row says why. A proposed value is not a
+requirement, and RFC text cites the setting rather than restating its number as one.
+A row still reading "open in RFC n" has no starting value yet; its owning RFC
+supplies one before the setting is built.
 
 | Setting | Defined in | Scope | Class | Default |
 | --- | --- | --- | --- | --- |
 | journal devices and paths | [RFC 1](rfc-1-journal.md) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required |
-| journal maximum footprint | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | node, per journal | live | proposed: 80% of the device |
-| per-share journal limit | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | share | live | proposed: the journal's maximum |
-| segment size | [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments) | — | fixed: a constant of the implementation, never a setting | value open in RFC 1 |
-| sync bound: longest a written record waits for a sync | [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy) | — | fixed | proposed in RFC 1: 1 s |
+| journal maximum footprint | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | node, per journal | live | proposed: 80% of the device; settled by: write refusals and repack bytes per byte freed under the profile workload with the footprint at 70%, 80% and 90% of the device |
+| per-share journal limit | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | share | live | the journal's maximum: no per-share limit until an operator sets one, a policy rather than a measurement |
+| segment size | [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments) | — | fixed: a constant of the implementation, never a setting | value open in RFC 28 §5, question 2 |
+| sync bound: longest a written record waits for a sync | [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy) | — | fixed | proposed in RFC 1: 1 s; settled by: J1 without a `Sync` after each write, at 1 s and at a longer bound ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)) |
 | `ExtentLimit`: placement-index entries per journal | [RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) | node, per journal | restart | sized against a memory budget at about 51 bytes per entry; open in RFC 1 |
-| segments one offer may pin; segments all offers may pin together | [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload) | — | fixed | proposed in RFC 1: 64; 256 |
-| `journal.headroom_records`: header-only records reserved for removal and offloaded records | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | node, per journal | restart | proposed: 65,536 (about 6 MiB at 96 bytes per header-only record); settled by: a journal held at its limit under a removal-heavy load, `headroom_draws` against the headroom's size, and whether removals ever reach the refusal ([RFC 1 §10](rfc-1-journal.md#10.%20Open%20questions), question 4) |
+| segments one offer may pin; segments all offers may pin together | [RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload) | — | fixed | proposed in RFC 1: 64; 256; settled by: a journal held at its limit under offload ([RFC 1 §10](rfc-1-journal.md#10.%20Open%20questions), question 4), whether offers ever wait on the bound |
+| `journal.headroom_records`: header-only records reserved for removal, loss, hold and stamp records | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | node, per journal | restart | proposed: 65,536 (14 MiB at 224 bytes each: the largest header-only record, a clone target, with its footer entry); settled by: a journal held at its limit under a removal-heavy load, `headroom_draws` against the headroom's size, and whether removals ever reach the refusal ([RFC 1 §10](rfc-1-journal.md#10.%20Open%20questions), question 4) |
 | `journal.idle_seal_bytes`: idle-seal threshold | [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding) | node, per journal | restart | proposed: 16 MiB; settled by: J6, the share of time to first read spent scanning active-segment tails, against footer writes from early seals under a trickle load |
 | repack reserve: journal space outside every share's limit for repack's copies | [RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack) | — | fixed | at least one segment's live payload ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)) |
-| `Target` | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) | namespace | bound | 256 KiB |
-| key scope | [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | namespace | bound | required |
+| `Target` | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) | namespace | bound | proposed: 256 KiB; settled by: [RFC 2 Appendix C](rfc-2-carver.md#Appendix%20C%20%E2%80%94%20choosing%20the%20target)'s plan through the real offload path, before the first namespace binds it |
+| key scope | [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope) | namespace | bound | derived: the namespace ID's 16 raw bytes, never configured |
 | chunk-ID key (material kind `chunk-id-key`) | [RFC 0 §2.1](rfc-0-data-lifecycle.md#2.1%20Entities), [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | bound | created with the namespace, never configured; wrapped under a master key when the namespace encrypts, in the clear beside its blocks when it does not ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
 | export key (material kind `export-key`): seals and authenticates the namespace's exports and state objects | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys), [RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout) | namespace | next write: a new current key seals later exports; a retired one stays until no retained export names it | created with the namespace, never configured; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | `encrypts`: whether the namespace's chain has an encrypt stage, recorded at creation | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | namespace | bound | required |
-| chunking key | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | namespace | bound | derived at creation when the chain encrypts; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
-| header key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write: rotates by new material plus relocation ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) | derived at creation when the chain encrypts; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
+| chunking key | [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public) | namespace | bound | drawn at random at creation when the chain encrypts; wrapped under a master key, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | data key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write | created with the namespace when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | master keys | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | remote store | live: rotates by re-wrapping; never destroyed while a retained export names it | required on every store configuration, held off the host; a key file needs verified escrow first (`ErrNotEscrowed`); references only ([§7](#7.%20Secrets)) |
 | block format version to write | [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) | namespace | next write | the newest version every node reads |
 | `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | installation | restart | proposed: 128 each, or the sizing tool's figure; settled by: the sizing tool's put curve (upload) and ranged-get curve (fetch) per supported service ([RFC 4 §7.5](rfc-4-remote-tier.md#7.5%20Benchmarks%20and%20targets)), and B5 at that size |
+| slow-tail retry share: most slow-tail retries per store and direction, as a share of its transfers over a fixed window | [RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports) | — | fixed | proposed in RFC 3: 5% over 60 s; settled by: the slow-tail retry rate on each supported service under the sizing tool's load, and a store slowed fourfold, against first-attempt latency ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
+| retry budget demand reserve; throttled-attempt bound | [RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports) | — | fixed | proposed in RFC 3: a quarter of each bucket; eight throttled attempts per transfer; settled by: a copying backup and a reader's cold fetches sharing one failing path, and a throttling service's burst replies |
 | endpoint, credential reference | [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface) | remote store | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) | required |
 | bucket | [RFC 4 Appendix C](rfc-4-remote-tier.md#Appendix%20C%20%E2%80%94%20the%20S3-compatible%20block%20store) | remote store | bound | required |
 | prefix | [RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20locations%20kept%20inside) | namespace | bound | required |
 | storage class | [RFC 4 §8](rfc-4-remote-tier.md#8.%20Decisions%20and%20open%20questions) | remote store | next write | the service's default |
-| block target | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) | remote store | next write | 4 MiB; settable from 1 MiB to 64 MiB, and a value outside is refused; confirm the default by the block-size benchmark against each service before release ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)) |
+| block target | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) | remote store | next write | proposed: 4 MiB; settable from 1 MiB to 64 MiB, and a value outside is refused; settled by: the block-size benchmark against each service before release ([RFC 4 Appendix B](rfc-4-remote-tier.md#Appendix%20B%20%E2%80%94%20measurements)) |
 | transform chain but its encrypt stage: compression and its settings, `require` | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | empty |
 | material provider | [RFC 5 §2.5](rfc-5-transforms.md#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | remote store | live | required on every store configuration |
 | compress stage `with_encryption: accept`: compression in a chain that encrypts | [RFC 5 §3.2](rfc-5-transforms.md#3.2%20Configuration) | remote store | next write | absent: a chain with an encrypt stage and a compress stage without it is refused |
 | compress stage `level` | [RFC 5 Appendix A](rfc-5-transforms.md#Appendix%20A%20%E2%80%94%20compression) | remote store | next write | proposed: 3 (zstd's own default); settled by: [RFC 5 §8.3](rfc-5-transforms.md#8.3%20Benchmarks%20and%20targets)'s compression ratio and MB/s per core on the three corpora, at levels 1 to 9 |
 | case sensitivity: the share's fold rule, by ID from the store format record ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)) | [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) | share | bound; an export carries it ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) | sensitive (identity rule) |
 | entry-digest hash key: orders a directory's entries and keys its listing cookies | [RFC 7 §3.4](rfc-7-namespace-metadata.md#3.4%20Enumeration) | share | bound; an export carries it ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)) | drawn at the share's creation, never configured |
-| xattr value bound, xattrs per file, named streams per file | [RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams) | share | live: a change applies to later writes; existing ones stay readable | proposed: 64 KiB; 1024; 1024 |
-| `atime` policy | [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | share | live | proposed: relative |
-| `gc.interval`: between compaction and collection passes | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | open in RFC 9 |
+| xattr value bound, xattrs per file, named streams per file | [RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams) | share | live: a change applies to later writes; existing ones stay readable | 64 KiB, Linux's own value bound; 1024; 1024. Compatibility bounds, not tuning, so no measurement settles them |
+| `atime` policy | [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps) | share | live | relative, Linux's default; a compatibility choice, not a measurement |
+| `gc.interval`: between compaction and collection passes | [RFC 9 §8](rfc-9-gc.md#8.%20API%20surface) | namespace | live | proposed: 1 h; settled by: [RFC 9 §11.6](rfc-9-gc.md#11.6%20Benchmarks%2C%20scale%20and%20soak)'s backlog-drain and deletion-storm rows, the interval at which a pass's work stays within the deletion storm's p99 bound |
 | `gc.trash_retention`: time a retired block with recoverable chunks waits before its delete | [RFC 9 §3.7](rfc-9-gc.md#3.7%20Trash) | namespace | live | 48 h |
-| `gc.space_amp_target`: stored over referenced bytes the compactor holds the namespace under; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | proposed: 1.25 |
-| GC `Recheck` period: between re-reads of a namespace store's settings and claim | [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) | — | fixed | proposed in RFC 9: 5 min |
-| lease durations: GC partition lease, a backup folder record's lease, a snapshot use record's deadline | [RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix), [RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location), [RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot) | — | fixed: constants of the implementation | open in RFC 9 and RFC 12 |
-| `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | proposed: 7 days; settled by: the audit coverage scale benchmark of [RFC 9 §11.6](rfc-9-gc.md#11.6%20Benchmarks%2C%20scale%20and%20soak) |
-| `gc.audit.forward_period`: time within which a full forward pass covers every ref; incremental passes cover the refs changed since the last pass, and only a full pass lets a count be lowered | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | proposed: 90 days |
-| `gc.hold_threshold`: low-count mismatches within one audit period that set the namespace's hold | [RFC 9 §6.4](rfc-9-gc.md#6.4%20A%20store-wide%20trip%20holds%20the%20deleter) | namespace | live | proposed: 16 per `gc.audit.period`; settled by: mismatch counts from the audit run on a real store at steady state, the threshold sitting above the background rate of isolated defects |
+| `gc.space_amp_target`: stored over referenced bytes the compactor holds the namespace under; 0 turns compaction off | [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy) | namespace | live | proposed: 1.25; settled by: [RFC 9 §12](rfc-9-gc.md#12.%20Open%20questions) item 1, a churning workload's amplification under each target against the bytes each rewrites |
+| GC `Recheck` period: between re-reads of a namespace store's settings and claim | [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) | — | fixed | proposed in RFC 9: 5 min; settled by: the service calls one `Recheck` costs across every namespace of an installation, against how long a revoked credential may go unseen ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)'s decision) |
+| lease durations: GC partition lease, a backup folder record's lease, a snapshot use record's deadline | [RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix), [RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location), [RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot) | — | fixed: constants of the implementation | proposed: 60 s for a GC partition lease, 10 min for a folder record's lease and a use record's deadline, each renewed at a third of its length; settled by: the longest pause a holder shows in the soak runs ([RFC 9 §11.6](rfc-9-gc.md#11.6%20Benchmarks%2C%20scale%20and%20soak)), with the lease at least ten times it |
+| `gc.audit.period`: time within which the audit covers every chunk and block record; its rate is derived from it | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | proposed: 7 days; settled by: the projected time to cover 2 PB at measured audit throughput ([RFC 9 §11.6](rfc-9-gc.md#11.6%20Benchmarks%2C%20scale%20and%20soak)'s coverage row), the period set above it with headroom, against how long a defect may go unseen |
+| `gc.audit.forward_period`: time within which a full forward pass covers every ref; incremental passes cover the refs changed since the last pass, and only a full pass lets a count be lowered | [RFC 9 §6.1](rfc-9-gc.md#6.1%20Coverage) | namespace | live | proposed: 90 days; settled by: [RFC 9 §12](rfc-9-gc.md#12.%20Open%20questions) item 2, the full pass's point-read rate against how long a leaked count may hold its block |
+| `gc.hold_threshold`: low-count mismatches within one audit period that set the namespace's hold | [RFC 9 §6.4](rfc-9-gc.md#6.4%20A%20store-wide%20trip%20holds%20the%20deleter) | namespace | live | proposed: 16 per `gc.audit.period`; settable from 1 to 1,024, a value outside refused; settled by: mismatch counts from the audit run on a real store at steady state, the threshold sitting above the background rate of isolated defects |
 | replica count **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default, shard override (in its shard record) | live | proposed: 3; settled by: the durability target against measured node-loss and repair-time distributions |
 | replica floor **(cluster)** | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement) | installation default, shard override (in its shard record) | live | proposed: 2; settled by: the exposed-window length from the repair-time distribution |
 | failure domain **(cluster)**: the host, rack or zone a node lies in | [RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement), [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | node | live | the node itself |
 | replication gate **(cluster)**: opened by an operator once every node runs a binary that knows the journal extension | [RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) | installation | live, opened only under [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)'s rule; never closed again | closed |
 | stall bound **(cluster)**: how long a sync or the serving loop may make no progress before a node stops renewing; a shard whose replication stalls is relinquished instead, and stops no renewal ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) | installation | live | proposed: 5 s; settled by: the longest healthy journal-sync and serving-loop stall under load, against the takeover time it would trigger |
 | node lease duration **(cluster)** | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch), [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart ([§5](#5.%20Binding%20classes)) | proposed: 10 s; settled by: the takeover-time benchmark ([RFC 10 §15](rfc-10-journal-replication.md#15.%20Test%20plan%20and%20benchmarks)) against the rate of self-fences on store hiccups shorter than the lease |
-| node lease renewal interval **(cluster)** | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch), [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | proposed: 3 s; settled by: the store load of renewals across the node count, and renewal-latency p99 against the lease |
+| node lease renewal interval **(cluster)** | [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch), [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | — | derived | a third of the node lease (3.3 s at its proposed default), not set apart from it, so no pair of values can leave an idle node self-fencing before each renewal |
 | drift bound **(cluster)** | [RFC 10 §3](rfc-10-journal-replication.md#3.%20What%20it%20assumes%20of%20shard%20placement) | installation | restart | proposed: 500 ms; settled by: measured clock offset and rate between nodes and the store on the reference deployment |
 | gather interval: **(cluster)** how long a claimant waits for replicas' committed points | [RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
 | replica removal triggers: **(cluster)** answer bound, lag in bytes, lag in time | [RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
@@ -881,25 +898,30 @@ rather than restating its number as one.
 | repair pacing: **(cluster)** joins in flight per node and per cluster | [RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair) | installation | live | open in [RFC 10 open question 4](rfc-10-journal-replication.md#16.%20Open%20questions) |
 | repair scheduler enabled **(cluster)** | [RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair) | installation | live | on |
 | open-state lease: NFSv4 lease period, SMB durable-handle timeout | [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease) | — | fixed | NFSv4 90 s; SMB per the protocol |
-| `smb_pending_cap`: longest an SMB request refused for a transient cause — capacity, a frozen or quiesced share — is held `STATUS_PENDING` before its refusal is answered, `STATUS_DISK_FULL` for capacity; longer than a move's freeze | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values), [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here) | installation | live | proposed: 10 min, must exceed `migration.freeze_timeout` plus the SMB break deadline; settled by: the longest capacity refusal or freeze observed to clear under a fill-and-drain test, against the SMB clients' tolerance of a pending request |
+| `smb_pending_cap`: longest an SMB request refused for a transient capacity cause, or stalled on the metadata store, is held `STATUS_PENDING` before it is answered `STATUS_DISK_FULL`, or `STATUS_UNEXPECTED_IO_ERROR` for a stall; a request held for a frozen or quiesced share is bounded by `migration.freeze_timeout` plus the break deadline instead ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values), [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here) | installation | live | proposed: 10 min, must exceed `migration.freeze_timeout` plus the SMB break deadline; settled by: the longest capacity refusal or freeze observed to clear under a fill-and-drain test, against the SMB clients' tolerance of a pending request |
 | `smb_pending_deadline`: longest deadline an SMB request held `STATUS_PENDING` on a recall may carry; must exceed the SMB break deadline ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) | [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks) | installation | live | proposed: 60 s; settled by: the time each client OS (Windows, macOS, Samba) tolerates a pending request before cancelling or reconnecting, against the distribution of break-resolution times under a slow-client test |
-| `clone_max_len`: longest `CLONE` or duplicate-extents request answered as one atomic clone; a longer one is `ErrInvalid` | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | installation | live | proposed: 1 GiB; settled by: none named in RFC 8 yet |
+| `clone_max_len`: longest `CLONE` or duplicate-extents request answered as one atomic clone; a longer one is `ErrInvalid` | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | installation | live | proposed: 1 GiB; settled by: the time one atomic clone of that length takes on the reference box, against the default request deadline and the store's transaction limits ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)) |
 | copy chunk: the length one atomic clone of a `COPY` or copychunk covers; the copy runs as a series of them and may answer a short count | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | — | fixed | 64 MiB |
+| version block: versions one durable raise of a share's version limit covers; the next raise runs while half remains | [RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) | — | fixed | proposed: 2²⁰ versions; settled by: version-limit transactions per second at the reference box's peak write rate, against versions a crash skips |
+| object bound: largest versioned object put at a backup location, and so an export part | [RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location), [RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout) | — | fixed | 64 MiB, below every admitted service's single-put limit |
+| retry window **(cluster)**: how long a mutation's request ID and result are kept to answer a retry — the dedup table, a journal request entry, a request record | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) | installation | live: a change applies to entries written after it | proposed: 15 min, above a Linux hard-mount client's retransmission back-off, which starts at 60 s and caps at 600 s; settled by: retry traces of hard-mounted NFS clients across a takeover and a front-end loss |
 | default request deadline, for an operation that arrives with none | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) | — | fixed | 30 s |
 | single-node self-fence: time with a write transaction outstanding or failing and none committed before a node stops acknowledging writes | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 30 s, the default request deadline |
 | clock-rate bound ρ: how far one clock's rate may differ from another's over a wait | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 0.05 |
-| clock-offset bound σ: how far two hosts' clocks may read apart when a wait starts | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 1 s |
+| clock-offset bound σ: how far two hosts' clocks may read apart when a wait starts | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | installation | restart | 1 s; raised by a deployment whose time synchronisation cannot hold two hosts within it. The cluster's lease waits do not use it ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | grant fence: how long a client that let a recall or break time out is offered no grant | [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time) | — | fixed | 90 s, one lease period |
+| SMB break deadline: an oplock or lease break not acknowledged by it times out | [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time) | — | fixed | 35 s, Windows' value; MS-SMB2 leaves the timer to the implementation |
 | settings generation read period | [§5](#5.%20Binding%20classes) | — | fixed | 1 s |
 | active version of each shared format and protocol | [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) | installation | live, raised only under §5.5's gate | the version the installation was created with |
 | per-child shard slot count **(cluster)** | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | installation | bound, from the installation's creation | proposed: 4096; settled by: slot-table size and rebalance skew at the largest expected node count |
-| capacity weight **(cluster)** | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | node | live | proposed: 1, every node equal |
+| capacity weight **(cluster)** | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | node | live | 1, every node equal; an operator sets it for unequal hardware, so no measurement settles it |
 | shard policy: per share, or **(cluster)** subtree or per child, and the directories that start a shard | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) | share | live: a change applies to files created from then on, and existing files change shard only by a batched move ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) | per share: the whole share |
 | `shard.follow_writer`, `.window`, `.share` **(cluster)** | [RFC 11 §3.3](rfc-11-ownership.md#3.3%20The%20primary%20follows%20the%20writer) | installation | live | on; proposed: 5 min; 0.9; settled by: forwarded-byte shares observed on reference workloads |
 | `shard.dwell` **(cluster)** | [RFC 11 §3.3](rfc-11-ownership.md#3.3%20The%20primary%20follows%20the%20writer) | installation | live | proposed: 30 min; settled by: handover cost (tail shipped) against measured writer-alternation periods |
 | `shard.replace_delay`: **(cluster)** the re-placement delay | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | installation | live | proposed: 10 min; settled by: the distribution of node return times after a lapse (restarts, reboots) |
+| `shard.unreachable_delay`, `shard.unreachable_handover_bound`: **(cluster)** how long front-ends may fail to reach a primary that reaches the store before its shards are handed away, and how long that handover may take before it becomes a failover | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary) | installation | live | proposed: 30 s; 60 s; settled by: the client stall a deployment tolerates against brief front-end losses, and handover times of the share limit's tail |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
-| oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) | share | live | proposed: 1 h |
+| oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) | share | live | proposed: 1 h; settled by: the oldest-unoffloaded age's p99 under the profile workload with a healthy store, the alert set above it |
 | snapshot policy: schedule, retention and the backup location it names | [RFC 12 §3.2](rfc-12-snapshots.md#3.2%20Configuration) | share | live | none |
 | backup location: store, credential reference, mode, lifecycle age, retention cap, generation `G`; system fields put-integrity outcome and health object identity | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record), [RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes), [RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep) | installation | per field, as §2.5 states | mode required; `G` proposed: 7 days, settled by: extension calls a day against the service's request rate and bill (the immutable-location check of [RFC 26 §6.3](rfc-26-catalog-backups.md#6.3%20Group%20A%20%E2%80%94%20lost%20or%20wrong%20content)); the rest as the store's |
 | policy `backup.kind`: `catalog` or `copy`, a copying backup | [RFC 26 §2.4](rfc-26-catalog-backups.md#2.4%20Copying%20backups) | share | live | `catalog` |
@@ -916,18 +938,21 @@ rather than restating its number as one.
 | `snapshots.directory`: the browse directory's name | [RFC 12 §2.5](rfc-12-snapshots.md#2.5%20Browsing%20a%20snapshot) | share | live | `.snapshot` |
 | snapshot ordinal quarantine after a deletion | [RFC 12 §2.5](rfc-12-snapshots.md#2.5%20Browsing%20a%20snapshot) | — | fixed | 24 h |
 | consecutive skipped policy ticks before a health condition | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | — | fixed | 3 |
+| incomplete files a cut may list per shard; a shard with more refuses the close | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | — | fixed | 16 |
 | `migration.freeze_timeout`: bound on a move's freeze, through B's ready | [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step) | installation | live | proposed: 5 min; settled by: [RFC 27 §5.5](rfc-27-namespace-migration.md#5.5%20Benchmarks%20and%20targets)'s move of a 10⁷-file namespace, freeze to B serving, against key count |
 | `migration.hold_reply`: longest a call waits in a freeze before `ErrDelay` | [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step) | installation | live | proposed: 1 s; settled by: the longest wait NFS clients in the support matrix tolerate before their own retry |
 | `backups.max_copy_time`: bound on one copy attempt; a successor builds on a failed one | [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step) | installation | live | proposed: 48 h; settled by: wall time of a first copy of the largest share a location holds at `backups.copy_rate` |
-| `existence_age`: longest a synced write's existence waits for the group commit | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) | installation | live | proposed: 1 s |
+| `existence_age`: longest a synced write's existence waits for the group commit | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) | installation | live | proposed: 1 s; settled by: the sync bound it matches ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), and E5/E7's existence transactions per second at 1 s and shorter |
 | `group_commit.max_files` (`G`): files per existence batch | [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) | node, per journal | live | proposed: 256; settled by: E5/E7, transactions per stability point rising at the bound |
 | `offload.retry_min`, `offload.retry_max`, `offload.retry_max_pressure`: offload retry backoff, its floor and its caps normal and under capacity pressure | [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline) | node | live | proposed: 1 s; 60 s; 5 s; settled by: failing-store and recovered-store runs, the cap neither hammering a failing store nor leaving a recovered one idle |
-| `offload.max_age`: longest a file's dirty bytes wait below the dirty-byte threshold before it is offered | [RFC 8 §6.2](rfc-8-engine.md#6.2%20When%20a%20file%20is%20offered) | share | live | open in RFC 8: a few seconds; settled by: a streaming workload (E1/E6), whether the age bound, not the byte bound, fragments blocks |
+| `offload.max_age`: longest a file's dirty bytes wait below the dirty-byte threshold before it is offered | [RFC 8 §6.2](rfc-8-engine.md#6.2%20When%20a%20file%20is%20offered) | share | live | proposed: 5 s; settled by: a streaming workload (E1/E6), whether the age bound, not the byte bound, fragments blocks |
 | consecutive failed offload passes before a per-file health condition | [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline) | — | fixed | 5 |
-| speculation budget, bytes in flight per share | [RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator) | share | live | open in RFC 8 |
+| speculation budget, bytes in flight per share | [RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator) | share | live | proposed: 256 MiB, four readers' read-ahead caps; settled by: E4 and E8 with 1, 4 and 16 concurrent readers, against write refusals while speculation runs |
 | `readahead.max_blocks`, `readahead.max_bytes`: read-ahead cap, window ahead of one reader | [RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator) | share | live | proposed: 8 blocks or 64 MiB, whichever is smaller; settled by: E4 sequential bytes fetched per byte read and E8 first-byte latency across caps |
 | cold-read threshold between fetching chunks and fetching the block | [RFC 8 §7.8](rfc-8-engine.md#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block) | — | fixed | a quarter of the block |
 | `eviction.repack_threshold`: unreclaimed fraction of a journal's capacity that requests a repack | [RFC 8 §10.3](rfc-8-engine.md#10.3%20Repack%20is%20triggered%20here) | node, per journal | live | proposed: 10 %; settled by: repack bytes copied per byte freed, and write refusals, under the profile workload across thresholds |
+| eviction occupancy target: allocated occupancy, under the journal's maximum, that eviction frees down to | [RFC 8 §10.1](rfc-8-engine.md#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record) | node, per journal | live | proposed: 85% of the maximum footprint; settled by: repack bytes copied per byte freed under the profile workload ([RFC 8 §10.1](rfc-8-engine.md#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)), across targets |
+| fill low-water mark: free journal capacity, reserved for writes, below which a demanded extent is not filled and pre-warm pauses | [RFC 8 §7.3](rfc-8-engine.md#7.3%20Filling%20is%20a%20decision) | node, per journal | live | proposed: 10% of the maximum footprint; settled by: [RFC 8 §16](rfc-8-engine.md#16.%20Open%20questions) item 1, hit rate and write refusals for fill-always, this rule and fill-never on a large-file workload |
 | write pacing: soft threshold *S*, rate window, rate floor *r*₀ | [RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) | — | fixed | half of the limit *L*; 10 s; 1 MiB/s |
-| quota reservation slack `S`, per principal or project per primary | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | open in RFC 17 |
+| quota reservation slack `S`, per principal or project per primary | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | proposed: 1 GiB; settled by: one principal's write throughput over `existence_age` on the reference box, below which its writes wait for a commit ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
 | audit policy: which operations emit an access event | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks) | share | live | none: no access events |

@@ -24,7 +24,7 @@ and the remote tier. Conventions and test tiers are in [the RFC index](rfc-index
 
 ## Start here
 
-*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+*Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
 Clients write to DittoFS over NFS (Network File System) or SMB (Server Message
 Block). Writes land first in a local **journal** ([RFC 1](rfc-1-journal.md)); in the background
@@ -128,14 +128,14 @@ new writes still landing in the journal until it fills.
 
 ### How the rest is organised
 
-- §1: purpose, the two halves and the interface; §1.4: how it is tested alone.
-- §2: rules both halves obey. §2.1–§2.3 the pool and memory bound;
-  §2.4–§2.6 termination, retries and unknown outcomes; §2.8 health; §2.9 fair
-  scheduling; §2.10 the two settings. §2.11–§2.12 (the sizing tool, metrics)
+- [§1](#1.%20Purpose): purpose, the two halves and the interface; [§1.4](#1.4%20It%20is%20testable%20on%20its%20own): how it is tested alone.
+- [§2](#2.%20What%20both%20halves%20obey): rules both halves obey. [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control)–[§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer) the pool and memory bound;
+  [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)–[§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred) termination, retries and unknown outcomes; [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) health; [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) fair
+  scheduling; [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) the two settings. [§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)–[§2.12](#2.12%20What%20the%20syncer%20makes%20observable) (the sizing tool, metrics)
   can wait.
-- §3: the uploader; §4: the fetcher.
-- §5: what belongs to other components; §6: invariants S1–S21.
-- §7–§8: checks, benchmarks and targets; §9: settled questions; §10: where the
+- [§3](#3.%20The%20uploader): the uploader; [§4](#4.%20The%20fetcher): the fetcher.
+- [§5](#5.%20What%20belongs%20elsewhere): what belongs to other components; [§6](#6.%20Invariants): invariants S1–S28.
+- [§7](#7.%20Conformance)–[§8](#8.%20Test%20plan%20and%20performance%20targets): checks, benchmarks and targets; [§9](#9.%20Open%20questions): settled questions; [§10](#10.%20Deviations): where the
   current code differs.
 
 ## In short
@@ -277,8 +277,11 @@ type Store interface {
     PutRaw(ctx context.Context, name BlockName, src func() (io.Reader, error), size int64, sum []byte, retainUntil time.Time) (Version, error)
     // GetRaw streams the stored bytes of name, of version v when v is not
     // empty, from byte off to the end: exactly that many bytes, or an error,
-    // and nothing decoded.
-    GetRaw(ctx context.Context, name BlockName, v Version, off int64) (io.ReadCloser, int64, error)
+    // and nothing decoded. stored is the whole-object checksum the service
+    // holds, when it reports one, with its kind; a response checksum that
+    // mismatches fails the reader at its end with ErrTransient, voiding every
+    // byte it yielded (RFC 4 §4.4).
+    GetRaw(ctx context.Context, name BlockName, v Version, off int64) (body io.ReadCloser, size int64, stored Checksum, err error)
     // Health makes one probe call of the given direction against this store's
     // own namespace (RFC 4 §4.7).
     Health(ctx context.Context, d Direction) error
@@ -301,6 +304,17 @@ var (
 // of the service (RFC 4 §4.8), as opposed to an access refusal.
 type DeniedQuota interface{ Quota() bool }
 
+// DeniedSize is set on an ErrDenied whose cause is a body-size limit that
+// refused a block put (RFC 4 §4.8).
+type DeniedSize interface{ Size() bool }
+
+// Checksum is a whole-object checksum and its kind (CRC32C or MD5); empty
+// when the service reported none.
+type Checksum struct {
+    Kind string
+    Sum  []byte
+}
+
 // Probes says which probes the syncer sends for a store. A store whose put
 // probe would write what it must not, such as an immutable backup location
 // (RFC 4 §4.14), is registered with PutProbe false.
@@ -313,6 +327,10 @@ Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, erro
 // Unregister drops a store once no flow on it is open: its health state, its
 // probes and its counters end with it.
 Unregister(store StoreID) error
+// SetDrift raises the store's drift condition, err naming the drifted
+// setting, or clears it when err is nil (§2.8). The store's one Recheck
+// caller (RFC 4 §4.11) calls it after each Recheck; nothing else does.
+SetDrift(store StoreID, err error)
 // A background flow's fetches run in the background class (§2.9); GC, copying
 // backups and re-homes open one.
 OpenFlow(store StoreID, background bool) (*Flow, error)
@@ -323,9 +341,10 @@ func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRange) 
 // A raw transfer carries a block byte for byte between two stores, never
 // decoding it; a copying backup uses it (RFC 26 §2.4.2). FetchRaw writes the
 // whole stored block into the caller's writer at its offsets, a retry resuming
-// at the first byte not yet written, and returns the checksum of the bytes
-// written; UploadRaw puts exactly size bytes under that checksum and returns
-// the store's version.
+// at the first byte not yet written (at byte 0 after a response-checksum
+// mismatch), and returns the source's stored checksum when it is of the
+// destination's kind, else the checksum of the bytes written; UploadRaw puts
+// exactly size bytes under that checksum and returns the store's version.
 func (f *Flow) FetchRaw(ctx context.Context, name BlockName, v Version, size int64, dst io.WriterAt) (sum []byte, err error)
 func (f *Flow) UploadRaw(ctx context.Context, name BlockName, size int64, sum []byte, retainUntil time.Time, src func() (io.Reader, error)) (Version, error)
 // Small runs one small-object call — a backup copier's versioned-object put
@@ -461,8 +480,15 @@ namespace's material and hold plaintext, which the copier must not. So
   size block metadata or the backup's manifest recorded. Each byte is written at
   its own offset, and a retry resumes by range at the first byte not yet
   written, so a reset after 3 MiB never writes bytes 0 to 3 MiB twice into one
-  stream. It returns the checksum of the bytes as written, of the kind the
-  destination store's put needs ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). Nothing is decoded or
+  stream. A get whose response checksum mismatches voids that whole response
+  ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)): the mismatch arrives after the last byte, so the bytes it wrote
+  are suspect and the retry restarts at byte 0, not at the first byte not yet
+  written. It returns a checksum of the kind the destination store's put needs
+  ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)): the source's **stored** checksum, as its get reported it, when
+  that is of the destination's kind, and otherwise the checksum of the bytes as
+  written. The stored one makes the destination's put check the copy end to end,
+  so a byte wrong in transit on a resumed range, which carries no response
+  checksum, or in staging, fails the put instead of landing. Nothing is decoded or
   verified beyond the store's own transfer checks; the copier checks the
   block's name from its header without material ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)), and `Verify`
   checks content later;
@@ -605,9 +631,9 @@ transfers wait, not how many run.
 
 Two further limits are permitted, each with its interaction stated:
 
-- the **retry budget** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store. It limits only error retries — attempts
-  beyond the first after a failure, not a slow-tail retry or a verification
-  re-get — never first attempts, so it can never be the reason a transfer does not
+- the **retry budget** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store and direction. It limits only error retries — attempts
+  beyond the first after a failure, not a throttled retry, a slow-tail retry or a
+  verification re-get — never first attempts, so it can never be the reason a transfer does not
   start; it decides only whether a failed attempt is tried again or reported;
 - the **throttle limit** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store and direction. It is never above
   the store's cap, is lowered only by a throttling response and raised only by
@@ -700,7 +726,8 @@ reported to its caller. No transfer retries indefinitely.
 The syncer retries only `ErrTransient` ([§1.3](#1.3%20Interface)), `ErrThrottled`, which wraps
 it, a put's `ErrCorrupt`, and a fetch's `ErrCorrupt` once (below), within a bound
 per transfer: **at most four attempts**, the first and three
-retries ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). Misclassification either way is recoverable, because both
+retries, not counting attempts ended by throttling, which have their own bound
+of eight (below; [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). Misclassification either way is recoverable, because both
 paths end in a report. A put calls `src` once per pass, and the passes per
 attempt depend on what the store needs before the first byte ([§3.4](#3.4%20One%20put%20per%20block)):
 
@@ -712,36 +739,61 @@ attempt depend on what the store needs before the first byte ([§3.4](#3.4%20One
 
 Each pass reads the offered bytes again, usually from page cache.
 
-**Retries draw on a budget per store.** Every error retry — an attempt beyond
-the first after a failure — takes a token from its store's bucket; every
-transfer on that store that succeeds without an error retry returns a fraction
-of one ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). An empty bucket means the failed attempt is
-reported, not retried. A slow-tail retry and a verification re-get (below) take
-no token: neither follows a failure of the store, and a healthy store makes them
-at a steady rate. With a refill of 0.1 and a fraction `e` of first attempts
+**Retries draw on a budget per store and direction.** Every error retry — an
+attempt beyond the first after an `ErrTransient` other than `ErrThrottled`, or
+after a put's `ErrCorrupt` — takes a token from its store's bucket for that
+direction; every transfer in that direction that succeeds without an error retry
+returns a fraction of one ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). An empty bucket means the failed attempt is
+reported, not retried. **A quarter of each bucket is a reserve that only
+demand retries may spend** ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)): a background or speculation transfer
+whose bucket holds no more than the reserve is reported, not retried. So a
+copying backup's reads on a path that fails one first attempt in ten, or
+offload's put retries, cannot spend the tokens a blocked reader's cold fetch
+needs, and a fetch failure never drains the put bucket or the reverse — health
+is per direction ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)), and so is the budget.
+
+**A throttled retry takes no token, and has its own bound.** `ErrThrottled` is
+backpressure, not failure ([§1.3](#1.3%20Interface)): the attempt it ends counts toward neither
+the four-attempt bound nor the budget. A transfer instead makes at most
+**eight throttled attempts** — attempts ended by throttling: each of the first
+seven is retried after its backoff and under the store's lowered throttle limit
+(below), and the eighth throttling reply is reported, as `ErrThrottled`. A burst of throttling replies across the 96
+puts in flight therefore costs no token and fails no transfer; it lowers the
+concurrency, which is what the store asked for. Seven backoffs at the backoff's
+5 s ceiling keep a throttled transfer bounded at well under a minute of waiting.
+
+A slow-tail retry and a verification re-get (below) take
+no token either: neither follows a failure of the store. With a refill of 0.1 and a fraction `e` of first attempts
 failing, the bucket gains about `0.1 × (1 − e)` and loses about `e` per transfer,
 so it stays near full while `e` is below about 9% and caps retries near a tenth of the
-store's traffic above it. Were slow-tail retries charged, a healthy store
-retrying its slowest tenth would spend about 0.1 per transfer against a refill
-of 0.09, and a bucket of 128 would be empty after about 13,000 transfers, leaving
-the next ordinary `500` unretried.
+store's traffic above it. Were slow-tail retries charged, they would add up to
+0.05 per transfer at their 5% cap (below), and the bucket would drain once `e`
+passed about 4.5% rather than 9%: at `e` = 6% it gains about 0.094 and loses
+about 0.11 per transfer, so a bucket of 128 is empty after about 8,000
+transfers, leaving the next ordinary `500` on a store the budget was meant to
+keep retrying unretried.
 
 Without the budget, a store that fails every request turns each
 transfer into its full per-transfer retry bound, and the retries arrive exactly
-when the store can least take them. The budget is per store, not per process,
-because a failing store would otherwise drain the one bucket and leave every
-healthy store's occasional transient failure reported instead of retried. Each
+when the store can least take them. The budget is per store and direction, not
+per process, because a failing store would otherwise drain the one bucket and
+leave every healthy store's occasional transient failure reported instead of
+retried. Each
 retry waits a backoff with **full jitter** — a uniform draw between zero and an
 exponentially growing ceiling — so transfers that failed together do not retry
 together.
 
 > decision: slow-tail retries and verification re-gets are outside the retry
-> budget, bounded instead at one per transfer each. The budget exists to stop
-> retries piling onto a failing store; neither kind is a response to failure,
-> and charging them drains a healthy store's budget. The ceiling is one extra
-> request per transfer of each kind. Charge them, against a refill sized to the
-> measured slow-tail rate, if a store is seen answering slow-tail retries more
-> slowly than first attempts, which would make them load on a struggling store.
+> budget. The budget exists to stop retries piling onto a failing store;
+> neither kind is a response to failure, and charging them drains a healthy
+> store's budget. A verification re-get is bounded at one per fetch transfer.
+> A slow-tail retry is bounded at one per transfer **and** at a fixed share of
+> the store's transfers in that direction over the last 60 s (below), so a store
+> that slows past its usual tail — when most transfers pass a percentile the
+> window has not yet caught up with — is sent at most that share more requests,
+> not one more per transfer. Charge them, against a refill sized to the measured
+> slow-tail rate, if a store is seen answering slow-tail retries more slowly
+> than first attempts even within that share.
 
 **A throttled store gets fewer workers, not only a pause.** On `ErrThrottled` the
 flow's queue is dispatched nothing new until that transfer's backoff has run,
@@ -815,9 +867,13 @@ the store rejected as past the end is reported at once: a byte flipped in
 transit cannot shorten the stored object.
 
 **A slow tail is retried, not waited out.** A transfer whose first byte is
-later than a bound derived from recent latency, such as the 90th percentile,
-**SHOULD** be cancelled and retried on a new connection, within the retry bound,
-at most once per transfer and without a budget token (above).
+later than the 90th percentile of the store's first-byte times in that
+direction over the last 60 s **SHOULD** be cancelled and retried on a new
+connection, within the retry bound, at most once per transfer and without a
+budget token (above). Slow-tail retries on a store and direction **MUST NOT**
+exceed 5% of the transfers it dispatched over the same 60 s window; past that
+share a slow transfer is waited out, under the throughput floor and the
+first-byte bound like any other.
 Sending a second request alongside the first and taking whichever answers
 (hedging; Dean and Barroso, *The Tail at Scale*, 2013) cuts tail latency further
 at a few percent more requests; it is deferred until a measurement of cold-read
@@ -856,7 +912,9 @@ What makes resolving it as a failure safe depends on who retries:
   ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)); a restart does the same. An object the lost put may have
   stored is then an orphan, but not an unfindable one: the attempt recorded a put
   intent for its name before the syncer was called, and GC collects the object
-  through that intent once its epoch is superseded ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
+  through that intent once the intent is superseded — the shard record no longer
+  names the (node, node epoch) it was written under as primary, never on an
+  epoch raise alone ([RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms), [RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
 
 No name is ever put by two attempts, so no retry can land on top of a block
 that GC is deleting, and the syncer needs no idempotence beyond the retries it
@@ -951,14 +1009,17 @@ each direction on its own:
   clear the state would flap the store between unhealthy and healthy once per
   interval. Such a store is retried once per probe interval, by its own probe,
   rather than continuously, and never latched;
-- **a direction denied again backs off further.** A refusal the probe cannot
-  see — a policy denying the block prefix, a proxy refusing the body size — lets
-  the store's own probe pass and re-admit the direction, and every re-admission
-  then fails. So a direction made unhealthy with `ErrDenied` (either cause) keeps
-  a **denial count** until a transfer in that direction succeeds. While the count
-  is above zero, a re-admitted direction turns unhealthy again on its first
-  `ErrDenied` transfer, without waiting for the failure window, and the count
-  rises; and its own probe, or the expiry of an unprobed direction, may clear it
+- **a direction failed again backs off further.** A failure the probe cannot
+  see — a policy denying the block prefix, a proxy refusing the body size, a
+  path that resets every maximum-size body while the small probe passes, a
+  backup folder whose prefix is denied while the location-level health object
+  its probe reads is not ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)) — lets the probe pass and re-admit the
+  direction, and every re-admission then fails. So a direction made unhealthy
+  with `ErrDenied` (any cause), or by the failure window while its probe passed,
+  keeps a **denial count** until a transfer in that direction succeeds. While
+  the count is above zero, a re-admitted direction turns unhealthy again on its
+  first transfer failing with an error that counts toward health, without
+  waiting for the failure window, and the count rises; and its own probe, or the expiry of an unprobed direction, may clear it
   only once a **denial backoff** has run since it last turned unhealthy: one
   probe interval at a count of one, doubling per count, up to 15 minutes
   ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). A successful transfer in that direction resets the count to zero. A
@@ -982,14 +1043,15 @@ each direction on its own:
 - **a store's drift condition makes its put direction unhealthy.** GC raises the
   condition when its `Recheck` finds a service setting drifted — versioning,
   object lock, a lifecycle rule — and clears it when a later `Recheck` passes
-  ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). While it stands the syncer **MUST** treat the
+  ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), through `SetDrift` ([§1.3](#1.3%20Interface)). While it stands the syncer **MUST** treat the
   put direction as unhealthy whatever its probes say, since a put into a drifted
   store may be expired or kept as a version nothing deletes; the get direction
   is untouched, and no probe clears it. Its cause is `ErrDrift`.
 
 **Each unhealthy direction has a cause, and the syncer reports it.** A direction
 turned unhealthy keeps the error class that turned it: `ErrDenied` with its
-cause — `quota` when the service says it is full, `access` otherwise
+cause — `quota` when the service says it is full, `size` when a body limit
+refused a block put, `access` otherwise
 ([RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)) — `ErrTransient` for an unreachable or stalled store,
 `ErrCorrupt` for puts that keep failing in transit, or `ErrDrift`. Where the
 outcomes that turned it differ, the latest one counted decides. `Flow.Health(d)`
@@ -1227,9 +1289,9 @@ setting:
 | first-byte bound | 10 s: to the first body byte of a get; to the first body byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | unhealthy log interval | 60 s | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)'s summary line |
-| retry bound | four attempts per transfer: the first and three retries | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
-| retry budget | a bucket per store holding the larger pool's size in tokens; an error retry on the store takes one, a transfer on it that succeeds without an error retry returns 0.1; slow-tail retries and verification re-gets take none | stays full below about 9% failed first attempts, keeps retries near a tenth of a store's traffic when it fails everything, and one failing store cannot spend another's ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| slow-tail retry | at most one per transfer, on a first byte later than the 90th percentile of recent first-byte times | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| retry bound | four attempts per transfer: the first and three retries; attempts ended by `ErrThrottled` count apart, up to eight per transfer, and take no token | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| retry budget | a bucket per store and direction holding that half's pool size in tokens, a quarter of it a reserve only demand retries may spend; an error retry in that direction takes one, a transfer in it that succeeds without an error retry returns 0.1; throttled retries, slow-tail retries and verification re-gets take none | stays full below about 9% failed first attempts, keeps retries near a tenth of a store's traffic when it fails everything, one failing store or direction cannot spend another's, and background retries cannot spend a reader's ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| slow-tail retry | at most one per transfer, on a first byte later than the 90th percentile of the store's first-byte times in that direction over the last 60 s, and at most 5% of the store's transfers in that direction over the same window | a store slowing past its usual tail is sent at most 5% more requests, not one more per transfer ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | verification re-get | one per fetch transfer, of the chunk that failed verification | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | denial backoff | one probe interval at a denial count of one, doubling per count, up to 15 min; the count reset by a successful transfer in that direction | a store that keeps refusing is re-admitted ever more rarely, never latched ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | retry backoff | full jitter: uniform in [0, min(5 s, 100 ms × 2^attempt)] | transfers that failed together do not retry together ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
@@ -1237,7 +1299,9 @@ setting:
 > decision: the time and rate values above — probe interval, hold-down, failure
 > window, throughput floor, first-byte and detach bounds, log interval, the two
 > backoffs — and the counts and ratios — the three-quarter cap, the queue and
-> waiter multiples, four attempts, the 0.1 refund, the 90th percentile — were
+> waiter multiples, four attempts, eight throttled attempts, the 0.1 refund,
+> the quarter reserve, the 90th percentile, the 5% slow-tail share and its 60 s
+> window — were
 > chosen from round-trip arithmetic for a 4 MiB block on a working link, not
 > measured on a service. Each is fixed because a store or link it is wrong for
 > is a bug to fix here, not a knob to hand an operator. What would move them: a
@@ -1585,14 +1649,14 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | S18 | A transfer at the head of its flow's queue is dispatched within one round of the other waiting flows of its class, once no higher class has work waiting. |
 | S19 | Every `Store` error is one of the closed set; only `ErrTransient`, `ErrDenied` and a put's `ErrCorrupt` count toward health, `ErrThrottled` never does, and a floor trip only when the store's aggregate is below the floor. |
 | S20 | Waiters per half — queued transfers and joined callers — never exceed the waiter bound, whatever the number of flows, and a flow below its share of the bound is never refused for the bound being full. |
-| S21 | Error retries on a store never exceed what that store's retry budget holds; slow-tail retries and verification re-gets take no token and are at most one each per transfer; no transfer makes more than four attempts. |
+| S21 | Error retries on a store and direction never exceed what that bucket holds, and background or speculation retries never spend its demand reserve; throttled retries, slow-tail retries and verification re-gets take no token; slow-tail retries are at most one per transfer and 5% of the store's transfers in that direction over 60 s, verification re-gets at most one per transfer; no transfer makes more than four error attempts or eight throttled ones. |
 | S22 | Turns are charged in worker-time: over a round, flows of one class with work waiting hold workers for times within one quantum of each other. |
 | S23 | No transfer holds a worker while moving under a quarter of its store's mean per-transfer rate for the floor's interval. |
 | S24 | A raw transfer moves exactly the recorded size of opaque bytes, never decodes them, and an upload returns the version the store recorded. |
 | S25 | A direction registered without a probe is never probed; while unhealthy it expires to healthy after its hold-down, so it never latches. |
 | S26 | Every unhealthy direction reports the cause that turned it; a quota refusal is distinguishable from an access refusal and from an outage. |
 | S27 | Destroyed material is reported as itself, never as `ErrCorrupt`, and never counts toward health. |
-| S28 | A direction denied again before any success in it is re-admitted no sooner than its denial backoff, which doubles per denial up to 15 minutes and resets on a successful transfer; it is never latched. |
+| S28 | A direction denied again, or failed again by the failure window while its probe passed, before any success in it is re-admitted no sooner than its denial backoff, which doubles per denial up to 15 minutes and resets on a successful transfer; it is never latched. |
 
 ## 7. Conformance
 
@@ -1631,10 +1695,10 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) no starvation | Saturate flow A with uploads to a store whose puts take seconds; issue one fetch on flow B; assert it starts within one round and flow A never holds more than its cap. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) fair by worker-time | Run two flows on one store, one uploading maximum-size blocks and one small blocks; assert bytes per flow stay within one quantum of each other. Then make one flow's transfers take four times as long per byte; assert worker-time per flow, not bytes, stays within one quantum. A scheduler charging bytes gives the slow flow four times the workers. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) waiter share | Fill the half's waiter bound from two flows; issue one call on a third flow with an empty queue; assert it is accepted and the youngest waiter of the flow holding the most is refused as `displaced`. A shared bound with no share refuses the third flow. |
-| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throttling lowers concurrency | Answer puts with `ErrThrottled` whenever more than 8 are in flight on a store with a cap of 96; assert the store's in-flight count falls to 8 or below within a few responses, stays near it, and climbs back toward the cap once throttling stops. A design that only holds the flow returns to 96 after each backoff. |
-| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) budget per store | Fail every call on store A until its budget is empty; assert a transient failure on store B is still retried. |
-| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) slow tail is not charged | Run 100,000 transfers on a store whose slowest tenth trips the slow-tail bound and which fails nothing; assert its budget is full at the end and the next `500` is retried. Fail 5% of first attempts as well; assert the budget stays full. A design charging slow-tail retries empties the budget after about 13,000 transfers. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) denial backoff | Deny every put under the block prefix while the put probe passes; assert the direction turns unhealthy, then is re-admitted after one interval, two, four and so on up to 15 minutes, turning unhealthy on the first denied transfer each time, and that each re-admission sends the store only the transfers dispatched before its first denial returned. Lift the denial; assert the next re-admitted transfer succeeds and the count resets, so a later denial starts at one interval again. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throttling lowers concurrency | Answer puts with `ErrThrottled` whenever more than 8 are in flight on a store with a cap of 96; assert the store's in-flight count falls to 8 or below within a few responses, stays near it, and climbs back toward the cap once throttling stops; that no transfer is reported failed and the store's put budget is still full. A design that only holds the flow returns to 96 after each backoff; one that charges throttled retries spends 96 of 128 tokens on the first burst. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) budget per store and direction | Fail every call on store A until its budget is empty; assert a transient failure on store B is still retried. Fail every put on store C until its put bucket is empty; assert a transient fetch failure on C is still retried. Fail one first fetch in ten on C from a background flow until its get bucket reaches the reserve; assert background fetches are then reported, not retried, while a demand fetch meeting one reset is retried and succeeds. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) slow tail is not charged | Run 100,000 transfers on a store whose slowest tenth trips the slow-tail bound and which fails nothing; assert its budget is full at the end and the next `500` is retried. Fail 6% of first attempts as well, each an ordinary `500`; assert the budget stays near full and every one is retried. A design charging slow-tail retries, at their 5% cap, empties the budget after about 8,000 transfers and leaves later `500`s unretried. Assert slow-tail retries stay at or below 5% of transfers in every 60 s window. Then slow every transfer to four times its previous first-byte time; assert slow-tail retries in the next 60 s stay at or below 5% of transfers, where a per-transfer cap alone would re-send nearly all of them. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) denial backoff | Deny every put under the block prefix while the put probe passes; assert the direction turns unhealthy, then is re-admitted after one interval, two, four and so on up to 15 minutes, turning unhealthy on the first denied transfer each time, and that each re-admission sends the store only the transfers dispatched before its first denial returned. Lift the denial; assert the next re-admitted transfer succeeds and the count resets, so a later denial starts at one interval again. Repeat with every maximum-size put reset mid-body (`ErrTransient`) while the small put probe passes, and with a backup folder whose prefix is denied while the location's health object reads: each backs off the same way, rather than flapping once per hold-down. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) trickle fails | Run 32 uploads sharing a healthy link, one of them trickling at 1 KiB/s; assert it fails within the interval as `trickle`, does not count toward health, and the other 31 complete. |
 | [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) detached-buffer cap | With a fetch pool of 4, join 40 callers to fetches and stall them all past the detach bound; assert detached buffers never exceed 4 and the fetches wait rather than take a fifth. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) flap hold-down | Alternate a store's probe between pass and fail; assert it turns healthy only after two consecutive passes, and that after it flaps within a minute its hold-down doubles and its transitions per minute fall. |
@@ -1659,10 +1723,10 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first body byte, and a put after its last body byte sent; assert both fail at the first-byte bound. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) drift condition | Raise a store's drift condition with both probes passing; assert uploads to it are refused at once and fetches still run. Clear it; assert uploads resume without waiting for a probe transition. A syncer that reads only its probes keeps putting into the drifted store. |
-| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to a fake immutable store: the bytes it saw equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) drift condition | Raise a store's drift condition through `SetDrift` with both probes passing; assert uploads to it are refused at once and fetches still run. Clear it; assert uploads resume without waiting for a probe transition. A syncer that reads only its probes keeps putting into the drifted store. |
+| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to a fake immutable store: the bytes it saw equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) no put probe | Register a store with `PutProbe` false: over an hour no put probe reaches it. Fail every upload for the failure window: put-unhealthy, uploads refused; with no probe and no transfer, it turns healthy after its hold-down and the next upload is sent; fail that one too: unhealthy again with the hold-down doubled. A design that waits for a put probe here latches it unhealthy for good. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) cause per direction | Turn a store put-unhealthy with `ErrDenied` of cause quota, then another with cause access, a third with `ErrTransient`, and raise a fourth's drift condition: `Flow.Health(Put)` wraps the quota cause, the access cause, `ErrTransient` and `ErrDrift` in turn, and `Flow.Healthy(Put)` is false for all four. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) cause per direction | Turn a store put-unhealthy with `ErrDenied` of cause quota, then another with cause access, a third with cause size, a fourth with `ErrTransient`, and raise a fifth's drift condition: `Flow.Health(Put)` wraps the quota cause, the access cause, the size cause, `ErrTransient` and `ErrDrift` in turn, and `Flow.Healthy(Put)` is false for all five. |
 | [§1.3](#1.3%20Interface) destroyed material | A fake store returning `ErrMaterialDestroyed` on every fetch for the failure window: each call fails unretried with that error, never `ErrCorrupt`, and the store stays get-healthy. |
 | [§1.3](#1.3%20Interface) unregister | `Unregister` a store with an open flow: refused. Close its flows and unregister it: its probes stop and its counters leave `Stats`. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) re-home and close | Join a queued speculative fetch with a demand from another flow; assert it moves to the demanding flow in the demand class. Close the flow that owns a running joined fetch; assert the other flows' callers are detached, not failed. Detach a caller holding its chunk; assert its bytes are unchanged until its next iteration while the fetch continues. |

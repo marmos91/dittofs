@@ -38,8 +38,8 @@ order: each part builds on the ones before it.
 | [RFC 11](rfc-11-ownership.md) | shards | deferred | shards (a share by default, subtree and automatic per-child shards; per-file and range shards deferred), the primary of each, node leases, handover, batched moves, cross-shard operations, failover, forwarding |
 | [RFC 15](rfc-15-topology.md) | topology and roles | deferred | one binary, two roles chosen at deployment (`protocol` and `storage`, both by default), the composition root: what each role composes, one primary per shard, the route envelope, routing calls to the primary that serves them, split and collocated deployments, pNFS metadata and data servers |
 | **Data management** | | | |
-| [RFC 12](rfc-12-snapshots.md) | snapshots and clones | draft | snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention, subtree snapshots), the use records that hold a snapshot while it is read |
-| [RFC 26](rfc-26-catalog-backups.md) | catalog backups | draft | catalog and copying backups, backup locations, restore to a new share, recovery import, the export format and staged import |
+| [RFC 12](rfc-12-snapshots.md) | snapshots and clones | draft | snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention, subtree snapshots); a snapshot's deletion honours the use records [RFC 26](rfc-26-catalog-backups.md) defines |
+| [RFC 26](rfc-26-catalog-backups.md) | catalog backups | draft | catalog and copying backups, backup locations, the use records that hold a snapshot while it is read, restore to a new share, recovery import, the export format and staged import |
 | [RFC 27](rfc-27-namespace-migration.md) | namespace migration | draft | the namespace claim, moving a namespace between installations on one bucket, GC across installations, re-homing a share into a namespace of its own |
 | **Configuration** | | | |
 | [RFC 13](rfc-13-configuration.md) | configuration | draft | what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
@@ -90,13 +90,13 @@ graph LR
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
   R27["27 migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26 & R28
-  R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R10 & R14
+  R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R14
   style R10 stroke-dasharray: 5 5
   style R11 stroke-dasharray: 5 5
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 10 ↔ RFC 28, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
+Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
 
 ## Conventions
 
@@ -201,7 +201,7 @@ the tier.
 | Tier | Runs | Contains |
 | --- | --- | --- |
 | **Per change** | on every proposed change | unit, conformance, property and fuzz seeds, model-based tests at a fixed budget, and each RFC's counted checks; minutes, no timing, no external service |
-| **After merge** | after each merge to the integration branch | benchmarks on the reference box, recorded; a result more than 10% worse than the last is reported and blocks the next change to that path until explained (below) |
+| **After merge** | after each merge to the integration branch | the protocol conformance suites ([Test harness](#Test%20harness), item 4), and benchmarks on the reference box, recorded; a benchmark result more than 10% worse than the last is reported and blocks the next change to that path until explained (below) |
 | **Daily** | once a day on the integration branch | benchmarks that need space or hours, soaks, longer fuzz and model runs, and tests against real backends |
 
 **Model tests.** A rule whose failure needs an interleaving — work split into
@@ -236,6 +236,15 @@ time, so a change between two commits reads as a change in the code and not in
 the hardware; results from other boxes are compared only with themselves. A
 target is stated against something measured on the same box (the filesystem,
 the hash, the link), so it holds on any hardware.
+
+**A proposed target is replaced once, by measurement.** A benchmark target or a
+setting's default an RFC marks proposed is a starting value. The first run on
+the reference box replaces it with the measured value plus headroom, stated
+beside the result. A proposed target that first run misses is a design finding
+against the RFC that states it, not a number to relax: the design is changed, or
+the target is withdrawn with its reason recorded, before the measured value
+becomes the baseline. Every RFC's proposed targets follow this rule, and its
+decision notes cite it rather than restating one of their own.
 
 **The reference box.** The reference box is the pair of machines set aside for
 the benchmark series. Before any decision that depends on numbers, three
@@ -285,6 +294,8 @@ than a private one per RFC.
    Every first-release check that crosses components runs on it:
    [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s checks (an erroring store, the self-fence threshold, a lost
    metadata store, a clock 5% fast), [RFC 8 §15](rfc-8-engine.md#15.%20Conformance) and [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance).
+   RFC 0 states its checks and owns no suite, so [RFC 8 §15](rfc-8-engine.md#15.%20Conformance), which composes
+   the node, carries them.
 3. **A seeded simulator, deferred.** The only seeded deterministic simulator is
    RFC 10's, deferred with it. When it is built it gains a single-node mode, so
    the cluster and the single node share one scenario format, and

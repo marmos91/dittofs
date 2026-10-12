@@ -376,8 +376,15 @@ Every call a node forwards to a primary carries one envelope:
 - The primary **MUST** keep a dedup table of recent mutations keyed by the
   request ID alone — not by shard or epoch, so a retry that straddles an epoch
   raise, or is re-routed to the shard its file moved to, is still recognised —
-  holding each one's result for at least the sender's
-  retry window, and **MUST** answer a retry from it rather than apply it again.
+  holding each one's result for at least the **retry window**, and **MUST**
+  answer a retry from it rather than apply it again. The retry window is an
+  installation setting ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), counted from the
+  mutation's acknowledgement, and the journal's request entries and the
+  request records expire by it too. It **MUST** exceed the longest gap after an
+  answer before the client's next retransmission can arrive — on a Linux hard
+  NFS mount the retransmission back-off starts at 60 s and caps at 600 s — plus
+  a takeover; the request deadline (30 s) bounds the server's work on a call,
+  not when its client retries it, and is no bound for the window.
   The table is handed over with every handover and with the files of every
   batch move ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). A
   write whose reply was lost, retried after another write landed on the same
@@ -510,13 +517,16 @@ a failover, and its clients reclaim their state in its shards
 lease like a `storage` node ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)), and every call it forwards carries
 its node epoch ([§4.3](#4.3%20The%20route%20envelope)). A surviving node **MUST NOT** take over a lost
 node's addresses until, first, the lost node's lease has lapsed plus the drift
-bound in store time — plus the clock-offset bound σ on a store whose `Now` is
-each node's own clamped clock, since the expiry was taken from the lost node's
-`Now` and is compared with the marking node's
-([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)) —
+bound — measured as a duration on the marking node's monotonic clock from the
+reply to a read of the lease's expiry record that still stands, never by comparing the
+stored expiry with the marking node's `Now`
+([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) —
 and its node record is marked lapsed, and second, every
 `storage` node has acknowledged that mark — from then on refusing any call that
-carries the fenced node epoch — or has itself lost its lease. Without it, a
+carries the fenced node epoch, and acknowledging only once every call it
+admitted under that node epoch before the mark has ended, answered or refused —
+or has itself lost its lease. Without the join, a call admitted just before the
+mark could still apply after the acknowledgement. Without the rule, a
 write the lost node forwarded before a partition can arrive after the client has
 reconnected through the new address and written again, and land over the newer,
 acknowledged write. A drain needs none of this: the draining node stops
@@ -571,7 +581,7 @@ store gives no high availability, whatever the roles.
 | T4 | Every interface call is value-only and cursor-resumable, collocated or routed. |
 | T5 | A stale route costs a refusal and a retry, never a wrong result. |
 | T6 | A pNFS layout names one data server, the primary of the file's shard, is bound to its (shard, epoch), and is recalled when the shard changes primary or the file moves; `LAYOUTCOMMIT` on a stale layout fails with `NFS4ERR_BADLAYOUT`. |
-| T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost, and only after that node's lease has lapsed by the margins of [§5.3](#5.3%20Client%20addressing), the marking node has held the claim hold, and every `storage` node refuses its node epoch. |
+| T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost, and only after that node's lease has lapsed by the margins of [§5.3](#5.3%20Client%20addressing), the marking node has held the claim hold, and every `storage` node refuses its node epoch and has ended every call it admitted under it. |
 | T8 | A coordinator that is not the primary of a file it leaves without entries writes its pending release; only the file's primary releases it. |
 | T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
 | T10 | An NFS request ID is the protocol's retry identity — (client address, XID, procedure, argument checksum) for NFSv3 and NFSv4.0, (session, slot, sequence ID) for NFSv4.1 — so a retry on a new connection or through another front-end carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or the channel sequence and outstanding counts in its `Open`, durable for a persistent open. |

@@ -20,7 +20,7 @@ tags:
 
 ## Start here
 
-*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+*Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
 Clients write to DittoFS over NFS (Network File System) or SMB (Server Message
 Block). Writes land first in a local **journal** ([RFC 1](rfc-1-journal.md)); in the background
@@ -127,12 +127,12 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
 
 ### How the rest is organised
 
-- §1–§2: what the carver is, its two layers, and what one call covers.
-- §3: the boundary function. §3.3, §3.4 and §3.8 explain why the rules are as
+- [§1](#1.%20Purpose)–[§2](#2.%20What%20one%20call%20covers): what the carver is, its two layers, and what one call covers.
+- [§3](#3.%20The%20boundary%20function): the boundary function. [§3.3](#3.3%20Why%20a%20large%20minimum%20smothers%20the%20search), [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) and [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) explain why the rules are as
   they are, and can be skipped on a first read.
-- §4: how chunks and blocks are named; §5: the block assembler.
-- §6: what boundaries reveal about stored files; §7: errors; §8: invariants.
-- §9–§10: checks, benchmarks and targets; §11: open questions. Appendix A lists
+- [§4](#4.%20Identity): how chunks and blocks are named; [§5](#5.%20The%20block%20assembler): the block assembler.
+- [§6](#6.%20Boundaries%20are%20public): what boundaries reveal about stored files; [§7](#7.%20Errors): errors; [§8](#8.%20Invariants): invariants.
+- [§9](#9.%20Conformance)–[§10](#10.%20Test%20plan%20and%20performance%20targets): checks, benchmarks and targets; [§11](#11.%20Open%20questions): open questions. Appendix A lists
   where the current code differs, B the prior art, C how 256 KiB was chosen.
 
 ## In short
@@ -359,7 +359,7 @@ A stretch ends for one of two kinds of reason, and the caller **MUST** tell `Cut
 which (`realEnd`):
 
 - **Real**: the bytes stop there for good — a hole, the file's settled end, or a
-  neighbour already durable. The last chunk is cut at whatever length is left
+  neighbour already offloaded and committed as chunks. The last chunk is cut at whatever length is left
   ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)).
 - **Artificial**: the caller stopped reading — the offer's byte limit, or its age
   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The bytes carry on past the end; the caller just has not offered them.
@@ -450,7 +450,7 @@ chunks.
 ending at a real stretch end ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). So a file whose edits are re-cut with
 widening ([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) holds at most 1 GiB / `Min` chunks per GiB — 16,384 at the
 default, four times the random-input average — plus one per hole. Without
-widening, each isolated overwrite of `w` bytes between durable neighbours is its
+widening, each isolated overwrite of `w` bytes between offloaded neighbours is its
 own short chunk, and the ceiling is 1 GiB / `w`: 262,144 per GiB for 4 KiB pages.
 That second figure is why the engine widens.
 
@@ -684,12 +684,13 @@ nonce drawn for one put attempt:
 
     name = BLAKE3-derive-key(context, len(scope) ‖ scope ‖ nonce ‖ len(chain) ‖ chain ‖ h₁ ‖ … ‖ hₙ)
 
-- `context` is the fixed ASCII string `content-defined block name v2`. The
+- `context` is the fixed ASCII string `dittofs content-defined block name v2`. The
   key-derivation mode of BLAKE3 [2] separates this domain from a chunk's ID
   ([§4.1](#4.1%20A%20chunk)) by construction.
 - `len(scope) ‖ scope` is the scope's **canonical encoding**: one byte giving
-  the length (0–255), then the scope's bytes exactly as configured, with no
-  normalisation. `scope` is the key scope of [§4.3](#4.3%20Key%20scope): the namespace ID.
+  the length, then the scope's bytes. `scope` is the key scope of [§4.3](#4.3%20Key%20scope): the
+  namespace ID's 16 raw bytes ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)), never its text form, so
+  `len(scope)` is always `0x10`.
 - `nonce` is 16 bytes (128 bits) from a cryptographic random source, drawn fresh
   for each **put attempt**, and written into the block header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) so
   a whole-block read can still recompute the name and check it.
@@ -697,12 +698,11 @@ nonce drawn for one put attempt:
   **chain ID** ([RFC 5 §2.8](rfc-5-transforms.md#2.8%20The%20chain%20ID)): it covers everything that decides an encoded body's
   length — the transforms, their versions, their length-affecting settings, and
   the IDs of the material in use. It is always 32 bytes, so `len(chain)` is
-  `0x20`; its byte encoding is RFC 5 §2.8's table.
+  `0x20`; its byte encoding is [RFC 5 §2.8](rfc-5-transforms.md#2.8%20The%20chain%20ID)'s table.
 - `‖` is plain concatenation; `h₁ … hₙ` carry no count, since each is 32 bytes and
   they end the input.
-- `h₁ … hₙ` are the 32-byte chunk IDs as the block header records them, in
-  block order: the chunk IDs ([§4.1](#4.1%20A%20chunk)), or their sealed form when the namespace
-  encrypts ([RFC 5](rfc-5-transforms.md)). In an encrypting namespace neither is a value a bucket
+- `h₁ … hₙ` are the 32-byte chunk IDs ([§4.1](#4.1%20A%20chunk)) as the block header records them, in
+  block order. In an encrypting namespace a chunk ID is not a value a bucket
   reader who can cause no write can compute from a candidate file, so the name
   confirms nothing about one to that reader ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)).
 
@@ -983,24 +983,25 @@ header**: a block's header indexes each chunk body's offset and encoded length
 ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), and encoding changes a length by a fixed or bounded amount, so the
 plaintext lengths can be read off to within it. Its chunk IDs are keyed, but
 under a key in the clear beside the blocks ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so they hide
-nothing either. **In an encrypting namespace the header seals the IDs**, but not the
-lengths: every encrypted body starts with the same clear envelope, so one get of
-a block and a scan for it yields every body's offset and length
-([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). A bucket reader sees every chunk's length in
-either kind of namespace.
+nothing either. **In an encrypting namespace the chunk IDs are keyed under a
+wrapped key**, but the lengths are still in every header, and every encrypted
+body starts with the same clear envelope, so one get of a block yields every
+body's offset and length ([RFC 5 Appendix B.5](rfc-5-transforms.md#B.5%20What%20a%20bucket%20reader%20still%20learns)). A bucket reader sees every
+chunk's length in either kind of namespace.
 
 **Without encryption, boundaries stay public**, and an implementation **MUST NOT**
 claim otherwise.
 
-**With encryption, boundaries are keyed.** When a namespace encrypts, its header
-IDs are sealed ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
-derived from a **chunking key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so an observer without it cannot predict where
+**With encryption, boundaries are keyed.** When a namespace encrypts, its chunk
+IDs are keyed under a wrapped key ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
+expanded from a **chunking key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so an observer without it cannot predict where
 a candidate file's boundaries fall, and so cannot match the lengths it sees to
 the file. Which namespaces hold a chunking key, and how, is
 [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s; this section restates none of it:
 
 - **Scope.** Keyed boundaries follow the namespace's encryption setting at
-  creation: a namespace created encrypting derives a chunking key then, and one
+  creation: a namespace created encrypting draws a chunking key at random then,
+  and one
   created without it never has one. Like every setting of [§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration), it is fixed for
   the namespace's content.
 - **Construction.** The key is material of kind `chunking-key`, one per
@@ -1018,22 +1019,26 @@ the file. Which namespaces hold a chunking key, and how, is
   which the clear envelopes give a bucket reader. Keying hides which file the
   lengths belong to; it does not hide the lengths.
 
-**What the key protects against: passive observers only.** Recent work [5]
-recovers the keys of deployed keyed-chunking schemes, gear-table ones included,
-from the chunk lengths of content the attacker chose, and a bucket reader sees
-those lengths in the stored bodies. So anyone who can both read the bucket and
-get content of their choosing cut in the namespace can map the table: not only a
-writer of the namespace, but anyone who can cause a write into it, such as a
-sender whose mail lands in a profile container. The claim is scoped to an
-observer who can read the bucket and can cause no write into the namespace. It
+**What the key protects against: observers who know nothing stored.** Recent
+work [5] recovers the keys of deployed keyed-chunking schemes, gear-table ones
+included, from the chunk lengths of content the attacker knows or chose, and a
+bucket reader sees those lengths in the stored bodies. So anyone who can read
+the bucket and **knows some content the namespace stores** can map the table:
+a writer of the namespace, anyone who can cause a write into it, such as a
+sender whose mail lands in a profile container, and also a reader who merely
+knows a stored file — a standard installer, the fixed structures every new
+disk image starts with. Once the table is mapped, the lengths confirm any other
+known file too. The claim is scoped to an observer who can read the bucket,
+can cause no write into the namespace, and knows none of its stored content. It
 **MUST NOT** be described, here or in any summary of this document, as hiding
 which files a namespace holds from anyone else.
 
 > ponytail: a keyed gear table keeps the boundary search at K1's rate but falls to
-> chosen-content attacks [5]. Upgrade to a keyed PRF evaluated at each candidate
-> position that passes the gear test, so the boundary decision no longer exposes
-> a table that chosen content can map out, if a
-> deployment must hide content from writers of its own namespace; it costs a PRF
+> known- and chosen-content attacks [5], so in practice it hides little from a
+> bucket reader of a namespace holding any common file. Upgrade to a keyed PRF
+> evaluated at each candidate position that passes the gear test, so the boundary
+> decision no longer exposes a table that known content can map out, if a
+> deployment must hide which files it holds from a bucket reader; it costs a PRF
 > call per candidate and re-cuts every namespace that adopts it.
 
 Randomising how blocks are assembled is not a mitigation: it changes object sizes

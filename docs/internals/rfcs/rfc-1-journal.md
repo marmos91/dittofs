@@ -21,7 +21,7 @@ and its recovery after a crash are [RFC 28](rfc-28-journal-format.md).
 
 ## Start here
 
-*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+*Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
 DittoFS is a file server. Clients write to it over NFS (Network File System) or
 SMB (Server Message Block); each write lands first in a fast local **journal**
@@ -125,13 +125,13 @@ offer picks it up, and a release of it is refused until then.
 
 ### How the rest is organised
 
-- §1–§2: what the journal is for, and the model of held extents it presents.
+- [§1](#1.%20Purpose)–[§2](#2.%20The%20model%20it%20presents): what the journal is for, and the model of held extents it presents.
   Read these first.
-- §3: the interface. §3.1–§3.6 are the core; §3.7–§3.11 (statistics, loss
+- [§3](#3.%20Interface): the interface. [§3.1](#3.1%20Write)–[§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) are the core; [§3.7](#3.7%20State%20introspection)–[§3.11](#3.11%20Snapshot%20holds) (statistics, loss
   events, metrics, settling removals, snapshot holds) can wait.
-- §4: the in-memory index and versions; §5: durability and sync; §6: capacity.
-- §7: freeing space (release, repack); §8: locking.
-- §9: tests and benchmarks; §10: open questions.
+- [§4](#4.%20The%20placement%20index): the in-memory index and versions; [§5](#5.%20Durability%20and%20ordering): durability and sync; [§6](#6.%20Capacity): capacity.
+- [§7](#7.%20Reclamation%20mechanisms): freeing space (release, repack); [§8](#8.%20Concurrency): locking.
+- [§9](#9.%20Conformance): tests and benchmarks; [§10](#10.%20Open%20questions): open questions.
 - [RFC 28](rfc-28-journal-format.md) is the rest of the journal: its on-disk
   format, its recovery after a crash, their checks, and how sync works on each
   platform.
@@ -191,10 +191,14 @@ writable as: open a journal on a temporary directory, drive the interface of
 durability and whether a write survived are properties of real storage.
 
 **Storage loss is simulated beneath the journal, not by killing it.** The journal
-reaches its segment files through a narrow, package-internal seam — open,
-allocate, write at an offset, read, sync, truncate, close, unlink. A test wraps the real file and remembers every
-write since the last sync; a simulated crash discards exactly those and reopens
-the journal on the same directory. Killing the process instead leaves unsynced
+reaches its directory and files through a narrow, package-internal seam —
+create, open, allocate, write at an offset, read, read bypassing the page cache,
+sync, truncate, close, rename, unlink, and sync the directory. A test wraps the
+real files and directory and remembers every write since its file's last sync
+and every create, rename and unlink since the last directory sync; a simulated
+crash discards exactly those and reopens the journal on the same directory. The
+seam can also fail any one call, so a failed sync, a failed directory sync and
+a failed uncached read are each reachable. Killing the process instead leaves unsynced
 writes in the page cache, and proves a durability the journal does not have.
 
 **Time is virtual.** The sync timer ([§5.2](#5.2%20Sync%20policy)), write stalls and every bounded wait
@@ -289,6 +293,12 @@ Init(dir string, install InstallationID) (JournalID, error)
 Open(dir string, floor Version, expect JournalID) (*Journal, error)
 (*Journal) Share(tag ShareTag, limit int64, floor Version, imported bool) (*Handle, error)
 (*Journal) Forget(tag ShareTag) error
+(*Handle) Close() error
+(*Handle) Reserve(n int64) (*Reservation, error)  // §6
+(*Reservation) WriteAt(id FileID, off int64, p []byte, mtime int64) (Version, error)
+(*Reservation) Close() error                       // returns what is left
+
+type ShareTag uint32 // a share's tag in this installation: Share.Tag (RFC 16 §2.3), never given to another share
 ```
 
 One journal serves several shares. Each share's engine works through its own
@@ -298,8 +308,21 @@ share's accounting ([§6](#6.%20Capacity)); a file belongs to one share for its 
 the version floor of [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding); `expect` is the identity the caller has recorded for
 this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
 
+**A tag names one share, once.** The metadata store mints a share's tag from an
+installation-wide counter that is never lowered, whenever a share arrives in the
+installation — created, cloned, restored, imported or moved in — and records it
+with the share ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20control-plane%20entities)). No tag is ever given to a second share, so a record
+left under a forgotten or unclaimed tag can never be read as a later share's.
+A share keeps no tag from another installation: two installations count
+independently, so a tag carried across would collide.
+
+**`Close` ends a handle.** It refuses new calls through the handle and returns
+once every call already in flight on it has returned; the handle's extents stay
+held. `Forget` needs it, and a share's removal and a move's drop call it first.
+
 **Only an explicit initialisation step creates a journal.** `Init` creates a new
-journal in a directory that holds none, writing into its `format` file
+journal in a directory that holds none, and **MUST** refuse one that holds a
+`format` file or a segment ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)), writing into its `format` file
 ([RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)) a fresh journal identity and the **installation ID** it is given — the
 one the same initialisation step writes into the metadata store's bootstrap
 ([RFC 16](rfc-16-metadata-store.md)) — and returns the identity for the caller to record. `Open` never
@@ -320,10 +343,13 @@ older bytes are served.
 
 **A share attached as an import holds none of its old extents.** `imported` is
 set when the share arrives from another installation — a move back, a recovery
-import ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)). If the journal still holds anything under `tag`, `Share`
-**MUST** `Forget` the tag before it returns the handle, or refuse naming the tag.
-Otherwise the journal would serve its own stale, clean extents, keyed by FileIDs
-the share kept, over what the other installation wrote since.
+import ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)). Its tag is new, so nothing is held under it, but the
+journal can still hold the share's own extents under the tag it had before it
+left, if that drop's `Forget` never ran. If the journal holds any record under a
+tag no share claims, `Share` **MUST** `Forget` each such tag before it returns
+the handle, or refuse naming them. Otherwise the journal would serve its own
+stale, clean extents, keyed by FileIDs the share kept, over what the other
+installation wrote since.
 
 **`Forget` drops a tag whole, and leaves nothing to settle.** It appends one
 header-only **forget record** naming the tag, durable before it returns, and
@@ -347,11 +373,14 @@ salvage — read through a handle attached for the purpose, then `Forget` — or
 `Forget` it at once, and report every such tag with its held and dirty bytes.
 `Stats` names every tag that holds a record ([§3.7](#3.7%20State%20introspection)).
 A share's removal forgets its own tag once its handles are closed, dropping its
-dirty bytes rather than offloading them ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), step 3); a
-removal interrupted before that step resumes and forgets it. A copy of the tag
-on a journal the removal never opened — an old primary's, after a failover —
-is a tag no share claims, and the rule above resolves it at that journal's
-next start.
+dirty bytes rather than offloading them ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), step 3), in its
+primary's journal and in every replica's ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)). One exception: a
+removal that keeps snapshots first offloads what their hold marks cover, since
+`Forget` drops the marks with the bytes ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). A removal interrupted before
+that step resumes and forgets it, and one resumed on a new primary forgets it
+again in its own journal. A copy of the tag on a journal neither reached — an
+old primary's, cut off by a failover — is a tag no share claims, and the rule
+above resolves it at that journal's next start.
 
 ### 3.1 Write
 
@@ -384,7 +413,7 @@ newer bytes thereafter, and **MUST NOT** require the caller to invalidate first.
 ### 3.2 Read
 
 ```go
-ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Seq, err error)
+ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error)
 
 type Held struct {
     Extent  Extent
@@ -408,8 +437,8 @@ transfer per entry.
 `held` names the content version of each sub-extent served; whether that is
 current anywhere else is the caller's question.
 
-`asOf` is the file's change sequence at the moment of the read: the highest
-sequence number of any operation that has changed the file's extents ([§3.4](#3.4%20Fill), [§4.3](#4.3%20Versions)). A caller that fetches
+`asOf` is the file's **change version** at the moment of the read: the highest
+content version of any operation that has changed the file's extents ([§3.4](#3.4%20Fill), [§4.3](#4.3%20Versions)). A caller that fetches
 a `missing` extent passes it back to `Fill`.
 
 ### 3.3 Offload
@@ -486,8 +515,8 @@ pass.
 - `report` **MAY** be called any number of times while `fn` runs.
 - Once `fn` returns, `report` **MUST** fail: the offer is over, and its records
   may have moved or been superseded. It also returns the error of the offloaded
-  record it appends ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) — the exhausted headroom of [§6](#6.%20Capacity), or a failed
-  write — and then marks nothing; the extents stay dirty and a later offer
+  record it appends ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) — a failed write; below half the headroom it
+  appends none ([§6](#6.%20Capacity)) — and then marks nothing; the extents stay dirty and a later offer
   carries them again.
 - The error `fn` returns covers only what was not reported; it takes back nothing.
 
@@ -530,8 +559,7 @@ started on. The first extent always fits, so an offer is never empty while dirty
 extents outside segments under repack remain, and pinned segments are bounded by
 the journal-wide bound plus one per running offer.
 
-> [!note] decision
-> Both bounds are constants of the implementation, not settings, and neither is
+> decision: both bounds are constants of the implementation, not settings, and neither is
 > measured. 64 lets one offer gather a default 4 MiB block of 64 KiB extents
 > even when every extent sits in its own segment; 256 lets four such offers run
 > at once. Overturned by a journal held at its limit ([§10](#10.%20Open%20questions), question 4)
@@ -545,7 +573,11 @@ need.
 
 `OffloadMany` is the same offer over several files in one callback, so the engine
 can pack chunks of several files into one block ([RFC 2 §5.3](rfc-2-carver.md#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
-holds per file within it, and `limit` bounds the total across the files.
+holds per file within it, and `limit` bounds the total across the files. The
+segment bounds apply to the call as one offer, not per file: "the first extent
+always fits" holds for the call's first extent only, and every later file's
+first extent counts against the bounds like any other. Read per file, a call
+over a thousand small files would pin a thousand segments.
 `Offload(id, …)` is `OffloadMany` with one file, and an implementation **SHOULD**
 build it that way.
 
@@ -582,10 +614,26 @@ change what `offered` returns: the offered records stay on disk, unmoved, until
 nothing is held there. The engine drops the removed refs at commit
 ([RFC 8](rfc-8-engine.md)).
 
+**Marking outside an offer.**
+
+```go
+MarkOffloaded(id FileID, extents []Extent, oldest, newest Version) error
+Unmark(id FileID, extents []Extent) error
+```
+
+`MarkOffloaded` sets the offloaded bit of the held extents of `id` that `extents`
+names, for content whose versions lie between `oldest` and `newest`, the versions
+recorded on the ref that covers it; it never clears a bit. `Unmark` clears the
+bit. Both append a record, so the bits survive a restart, and the caller **MAY**
+call either on any file at any time. The engine uses them after a restart, to
+reseed the bits from its refs and to clear one no ref justifies
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). How the records are rebuilt, and what a version outside the range
+does, are [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)'s.
+
 ### 3.4 Fill
 
 ```go
-Fill(id FileID, off int64, p []byte, asOf Seq, v Version) error
+Fill(id FileID, off int64, p []byte, asOf Version, v Version) error
 ```
 
 Places retrieved remote bytes into local storage. This is the only path by which
@@ -596,24 +644,29 @@ an extent becomes held without a client write.
 make that determination and the write atomic with respect to concurrent
 `WriteAt` on the same file.
 
-**A Fill older than the file is refused.** `asOf` is the sequence `ReadAt` returned
+**A Fill older than the file is refused.** `asOf` is the change version `ReadAt` returned
 when the caller found the extent missing ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The journal keeps, per file, the
-highest sequence number of any operation that changed its extents — `WriteAt`, `Release`,
-`Truncate`, `Deallocate` and `Delete`. If it
+highest content version of any operation that changed its extents — `WriteAt`,
+`Truncate`, `Deallocate`, `Delete` and `CloneTarget`, each of which assigns a new
+one; a `Release` carries a version already counted. If it
 is newer than `asOf`, `Fill` **MUST** write nothing and return a distinct error.
-The per-file sequence is bounded by **floor buckets**: a fixed
-table of 4,096 sequence numbers, indexed by a hash of the `FileID`. A file's entry
+It is a version, not a sequence number, because `asOf` outlives the journal that
+issued it: a clone spec stores it in metadata ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)) and the engine compares it
+with a file's `applied` ([RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)), and only a version keeps its meaning for
+the file on another journal and in metadata.
+The per-file change version is bounded by **floor buckets**: a fixed
+table of 4,096 versions, indexed by a hash of the `FileID`. A file's entry
 is dropped when the file holds no extent and no removal marker — after a `Delete`,
 or once everything it held was released — and dropping it raises the file's
-bucket to the entry's sequence number. A file with no entry is compared against
-its bucket. At open every bucket starts at the highest sequence number on disk:
+bucket to the entry's version. A file with no entry is compared against
+its bucket. At open every bucket starts at the highest content version on disk or
+in the floor, whichever is higher:
 no read that began before the open can still fill. Without this, a fetch that
 began before a write, or before a truncate down and up, could land after it and
 put old bytes back, marked offloaded. The check is deliberately coarse: a needless
 refusal costs only a cache miss.
 
-> [!note] decision
-> Floor buckets, not one journal-wide floor. With one floor, every delete in the
+> decision: floor buckets, not one journal-wide floor. With one floor, every delete in the
 > journal refuses every in-flight fill of every file that holds nothing, so a
 > delete-heavy share — a build tree's temporary files — keeps every other share's
 > cold reads from filling. A bucket confines that to about one file in 4,096.
@@ -689,17 +742,20 @@ Delete(id FileID) (Version, error)
 CloneTarget(id FileID, spec CloneSpec) (Version, error)
 
 type CloneSpec struct {
+    SrcShare       ShareID // the source's share: a source in another share is found by both IDs
     Src            FileID
     SrcOff, DstOff int64
     Len            int64
-    AsOf           Seq // the source's change sequence the clone resolves at (§3.2)
+    AsOf           Version // the source's change version the clone resolves at (§3.2)
 }
 ```
 
 `Truncate` stops holding every extent at or beyond `size` and narrows an extent
 straddling it. `Deallocate` stops holding `e`, whatever its offloaded bit, and is
 how a punched extent stops being served ([RFC 8 §8.2](rfc-8-engine.md#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)). `Delete` stops holding every
-extent of `id`. `CloneTarget` stops holding `(spec.DstOff, spec.Len)` of `id` as
+extent of `id`. A `Deallocate` or `CloneTarget` of a zero-length extent is
+refused and appends nothing — it would remove nothing, and its record's length 0
+would read as a removal to the end of the file ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)). `CloneTarget` stops holding `(spec.DstOff, spec.Len)` of `id` as
 `Deallocate` does, and its record and marker carry `spec`: the removal phase 1 of
 a clone makes ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)). `Since` yields that marker with its spec, so a
 restart that re-applies it rebuilds the clone and resumes it, rather than applying
@@ -739,7 +795,7 @@ un-offloaded delete that a crash reverts would resurrect a removed file.
 
 ```go
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
-Files() iter.Seq[FileID]                   // files of this share with a held extent or an unsettled removal marker
+Files() iter.Seq[FileID]                   // files of this share with a held extent, an unsettled removal marker or an unsettled synced loss record
 Stats() Stats                              // journal-wide, with a per-share breakdown
 DirtyFiles() iter.Seq2[FileID, time.Time]  // files with an unset offloaded bit, each with its oldest dirty byte's write time
 ```
@@ -748,7 +804,10 @@ DirtyFiles() iter.Seq2[FileID, time.Time]  // files with an unset offloaded bit,
 exists: a caller answering where data or holes lie **MUST** combine it with
 metadata, or it will report evicted content as a hole. `Files` and `Since`
 ([§3.10](#3.10%20Settle%20and%20Since)) together are what the engine re-applies uncommitted existence from
-after a crash ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)).
+after a crash ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)). `Files` lists a file whose only record is a synced loss
+record: a synced append lost before its existence committed leaves nothing else,
+and a file left unlisted would never commit that loss, so its tail would read
+as past the end of file or as zeros rather than **Lost**.
 
 `DirtyFiles` is what the engine's age tick reads ([RFC 8 §6.1](rfc-8-engine.md#6.1%20The%20work%20queue)), so it
 **MUST** be cheap: the journal keeps a per-journal list of dirty files keyed by
@@ -780,6 +839,7 @@ walk can produce is omitted.
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Sync%20policy)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
+| `VersionLimit` / `VersionsLeft` | value / gauge | the version limit, and how many versions remain below it ([§4.3](#4.3%20Versions)) |
 | `ExtentLimit` | gauge | the configured index entry bound ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) |
 | `Counters` | counters | the cumulative counts of [§3.9](#3.9%20Metrics), since open |
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
@@ -948,6 +1008,7 @@ type Change struct {
     Kind    ChangeKind // write, truncate, deallocate, delete, clone target or loss
     Extent  Extent     // a held extent, or the extent a removal marker covers
     Version Version
+    Mtime   int64      // a write's mtime as WriteAt was given it, 0 when suspended (RFC 28 §2.3); 0 for every other kind
     Clone   *CloneSpec // a clone target's spec (§3.6); nil for every other kind
 }
 ```
@@ -993,7 +1054,7 @@ version of `id` it covered up to `through`. It is stored with those versions, no
 with each write record: a version's cut is the cut of the commit that made it
 exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each version with its
 stamp, and the offload commit copies it into the ref as `born`
-([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A `Stamp` that cannot append its record — the headroom exhausted
+([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A `Stamp` that cannot append its record — refused below half the headroom
 ([§6](#6.%20Capacity)), or a failed write — returns the error and records nothing, and the
 caller treats it as the lost stamp below. A stamp is a journal record made durable by the file's next `Sync`,
 which every existence commit takes first, and where replication is composed it is
@@ -1237,6 +1298,35 @@ the maximum observed during reconstruction, not from a separately persisted
 counter. A share attached after open raises the next content version above its
 own floor before it is served ([§3](#3.%20Interface)).
 
+```go
+(*Journal) Draw() (Version, error)  // the next content version, with no record
+(*Journal) SetVersionLimit(mark Version) // versions are issued only below mark
+```
+
+**A version for a change stored elsewhere is drawn, not appended.** An attribute,
+link or directory change takes its `Version` from this counter too
+([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)). `Draw` issues the next content version and appends nothing: the
+caller stores it, with the file's floor entry, in the change's own transaction,
+so recovery finds it in the floor rather than on disk. The journal takes no
+per-file lock for a draw or an append; the caller holds the file's accept lock
+([RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps)) across `Draw` or `WriteAt` and whatever it captures with it.
+
+**A version is issued only below a durable mark.** A version is seen before
+anything records it durably: `WriteAt` returns it before its record syncs, and
+the write overlay reports it. A crash then loses the record, the maximum found on
+disk falls below the version, and the counter would issue it again to a client
+that has already seen it. The journal therefore **MUST NOT** issue a version at or
+above its **version limit**: the smallest of the durable per-share limits the
+caller has written for every share the journal serves ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)), passed in
+with `SetVersionLimit`, and within `floor` at `Open` and `Share`, so the counter restarts
+above every version issued before a crash. The journal has no limit until the
+first `SetVersionLimit` and issues nothing before it. `Stats` reports the versions left
+below the limit, and the caller raises it, durably, while half remain; a
+`WriteAt`, `Draw` or header-only record that would reach it fails with
+`ErrNoSpace` naming the limit, which the engine answers as `ErrDelay`
+(retry-later), like the headroom's refusal ([§6](#6.%20Capacity),
+[RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+
 Because precedence is decided by the two numbers and not by position, **recovery
 MAY process segments in any order, including concurrently.** An implementation
 **MUST NOT** depend on ascending segment order for correctness.
@@ -1368,8 +1458,10 @@ sooner. A `Sync` touches one segment only, the stream's active one: the stream
 makes a segment durable when it rolls to the next, because the seal marker
 **MUST** be durable before a successor naming the segment exists
 ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). So a roll costs a
-segment sync and a directory sync (the new segment's entry, §5.1), and a `Sync`
-otherwise costs one.
+segment sync, the spare it takes having had its entry synced when it was made
+([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), and a `Sync` otherwise costs one: an append overwrites blocks
+already allocated and written ([RFC 28 Appendix A](rfc-28-journal-format.md#Appendix%20A%20%E2%80%94%20platform%20profile)), so a data-only sync commits no
+filesystem metadata with it.
 
 The time bound adds no writes either: without it, the operating system writes
 the same dirty pages back on its own schedule (about 30 s by default on Linux),
@@ -1377,9 +1469,10 @@ but without a device flush. The timer adds at most one flush per stream per
 second and shrinks what a host crash can lose, for a client that never flushes,
 to the bound.
 
-> [!note] decision
-> The bound is a constant of the implementation (proposal: 1 s), not measured.
-> Overturned by a measurement showing that the timer's syncs cost throughput a
+> decision: the bound is a constant of the implementation (proposal: 1 s), not measured.
+> It is a constant because no client can rely on it — a client that needs its
+> write durable flushes — so a setting would only let an operator trade an
+> unstated loss window for throughput nobody has measured. Overturned by a measurement showing that the timer's syncs cost throughput a
 > longer bound would recover, or that host loss within the bound is unacceptable
 > to a deployment. The measurement is J1 ([§9.6](#9.6%20Benchmarks)) without a
 > `Sync` after each write, so only the timer syncs, run at 1 s and at a longer
@@ -1412,8 +1505,13 @@ successful sync is not durable**, the segment takes no further append — not
 even a seal marker: **a failed segment is never sealed** — and the stream
 continues in a new segment whose header names no predecessor ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). The
 failed segment stays accounted at its cap to the journal until it is unlinked
-([§7.3](#7.3%20Accounting)), and is a repack candidate at once.
-For the window, the journal **MUST** do one of two things:
+([§7.3](#7.3%20Accounting)), and is a repack candidate once its window is resolved, not before:
+until then its window's records are still held from it, from pages a read may
+not reproduce, and a repack copying them would carry forward bytes no checksum
+the journal kept vouches for. Once resolved, every record it still backs was
+synced before the failure, its window's records having been re-appended
+elsewhere or failed, so repack carries those forward and unlinks the rest, as
+for a segment with unreadable records ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). For the window, the journal **MUST** do one of two things:
 
 - **re-append it.** Append those records again to the new segment and sync it;
   the writes' `Sync` calls wait for the new sync. A re-appended record keeps the
@@ -1494,6 +1592,16 @@ allocated segments, taking the next spare when the current segment cannot hold
 the record and allocating a new spare against the maximum. `ReservedBytes` is
 what these reservations hold and the records have not yet filled. The reservation
 **MUST** be atomic with respect to other reservations.
+
+**A caller can reserve ahead.** `(*Handle).Reserve(n int64) (*Reservation, error)` takes
+`n` record bytes against the share's limit and the journal's maximum at once,
+refused as above, and holds them until `(*Reservation).Close` returns what is
+left; `(*Reservation).WriteAt`, with `WriteAt`'s arguments, draws a write's
+record bytes from it and is never refused for capacity while it holds enough.
+It is how an operation that must not fail part-way — a clone's copies
+([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) — finds every refusal before it changes anything. A reservation
+is in memory: a restart drops it, and its holder reserves again before
+serving.
 An implementation that reads a counter and then decides **MUST NOT** be
 considered conformant: any number of concurrent callers can pass one such test,
 and the maximum then bounds nothing.
@@ -1507,10 +1615,11 @@ and it **MUST NOT** wait: space is freed only by the engine's own calls
 waiting on its caller. A refusal performs no I/O. The journal's refusal is the
 engine's input, not the client's answer: a refusal by the journal's maximum or a
 share's limit is **transient** while offload, release and repack can drain it, so
-the engine answers retry-later (`ErrDelay`) within the caller's deadline and no
-space (`ErrNoSpace`) only after it, by the one table of
-[RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here). A full filesystem underneath (`ENOSPC`) is reported as
-itself.
+the engine answers retry-later (`ErrDelay`) for as long as that lasts — a
+deadline ends the wait, never turns it into no space — and no space
+(`ErrNoSpace`) at once only when nothing but an operator can free space, by the
+one table of [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here). A full filesystem underneath (`ENOSPC`) is
+reported as itself.
 
 **Records without bytes are not refused by the journal's own limit.** Release,
 truncate, deallocate, delete, clone target, offloaded, unmark, loss, hold, unhold,
@@ -1518,10 +1627,14 @@ stamp and forget records, seal markers and footers are what frees space or keeps
 it accounted; refusing them at the limit would wedge a full journal. They draw on
 a **reserved headroom** the journal sets aside at open, outside every share's
 limit: at least one seal marker and footer per open stream plus
-`journal.headroom_records` header-only records (proposal: 65,536; at 96 bytes
-each ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), about 6 MiB). `ErrNoSpace` is
-never returned for them. Their one refusal is the exhausted headroom below, and
-only removals of content the journal does not hold can bring it about.
+`journal.headroom_records` header-only records (proposal: 65,536). Each is
+charged as the largest of them with its footer entry: a 96-byte header, a
+payload of at most 56 bytes (a clone target's spec) and a 72-byte footer entry
+([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records),
+[§2.5](rfc-28-journal-format.md#2.5%20Catalog%20layout)), 224 bytes, 14 MiB in all,
+since a segment cannot seal until its footer names every record in it.
+`ErrNoSpace` naming a share's limit or the journal's maximum is never returned
+for them; their one refusal is the headroom's, below.
 
 **The headroom is real storage, allocated in advance.** The journal holds it as
 spare segments, created and allocated at their cap ahead of need ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), so a
@@ -1535,20 +1648,41 @@ becomes its next segment and the journal allocates a new spare; if that
 allocation fails, content writes are refused until it succeeds, and header-only
 records go on drawing on what is allocated.
 
-**The headroom is finite, and content writes stop first.** Content writes are
-refused once the headroom falls below half its size, so what remains serves
-the records that return space. Each release, removal or loss record either
-stops holding something or records a removal the caller needs, and repack turns
-what they stopped holding into free space from its own reserve, below, so the
-headroom refills as segments are unlinked. A header-only record that finds the
-headroom exhausted fails with the transient refusal rather than overrunning.
+**The headroom is finite, and what frees nothing stops first.** Once the
+headroom falls below half its size, three classes of record are treated
+differently, so that what remains serves the records that return space:
 
-> [!note] decision
-> Header-only records can exhaust the headroom only when they free nothing:
-> removals of content the journal does not hold, issued faster than repack
-> returns space. Then those removals, and only they, are refused until it does.
-> Overturned by a workload that reaches `headroom_draws` near the headroom's size
-> while repack has candidates it is not running.
+- **Content writes, and the header-only records that free nothing and can be
+  retried** — hold, stamp and clone target records — are refused, with
+  `ErrNoSpace` naming the headroom, which the engine answers as the journal's
+  capacity ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). A refused `Stamp` is the lost stamp of [§3.11](#3.11%20Snapshot%20holds).
+- **Offloaded records are not appended.** `report` and `MarkOffloaded` still set
+  the bits in memory, so the extents become evictable at once, but persist
+  nothing; a crash loses those bits, which is the safe direction
+  ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), and the extents are offered again. An offload of a file of
+  150,000 extents at the limit therefore draws nothing, and the release records
+  its evictions append are what return the space.
+- **Everything else draws on the rest** — release, truncate, deallocate, delete,
+  loss, unhold, unmark and forget records, seal markers and footers. Each either
+  stops holding something, lets held content go, or records a removal or a
+  correction the caller needs, and repack turns what they stopped holding into
+  free space from its own reserve, below, so the headroom refills as segments
+  are unlinked.
+
+A record of the last class that finds the headroom exhausted fails with
+`ErrNoSpace` naming the headroom rather than overrunning, and the engine
+answers it as the journal's capacity: retry-later while repack can return
+space.
+
+> decision: below half, only records of the last class draw, and among them only removals
+> of content the journal does not hold free nothing; an unmark is one per
+> extent the reseed finds wrongly marked, bounded by the offloaded records
+> before it. So the headroom is exhausted only by such removals issued faster
+> than repack returns space, and then those removals, and only they, are
+> refused until it does. Offloaded records are dropped rather than refused
+> because losing one costs a redundant upload, never content. Overturned by a
+> workload that reaches `headroom_draws` near the headroom's size while repack
+> has candidates it is not running.
 > The half kept for space-returning records and the default of
 > `journal.headroom_records` are unmeasured: overturned by a journal held at its
 > limit ([§10](#10.%20Open%20questions), question 4) whose removals reach the refusal, or whose
@@ -2069,6 +2203,8 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | Requirement | Check |
 | --- | --- |
 | [§6](#6.%20Capacity) reservation | Drive concurrent writers at the limit; assert the footprint never exceeds it. |
+| [§6](#6.%20Capacity) reserve ahead | `Reserve` n bytes, then fill the share to its limit from another writer; assert `(*Reservation).WriteAt` within n succeeds while a plain `WriteAt` is refused, a `Reserve` past the limit is refused naming it, and `(*Reservation).Close` returns the unused bytes to `ReservedBytes`. Restart; assert the reservation is gone. |
+| [§3](#3.%20Interface) handle close | Hold a `WriteAt` in flight through a handle and call `Close`; assert `Close` returns only after the write does, a later call through the handle is refused, and the written extent is still held and readable through a new handle for the same tag. |
 | [§6](#6.%20Capacity) named refusal | Fill a share to its limit. Assert the next `WriteAt` fails with `ErrNoSpace` naming the share's limit and the missing bytes, issues no I/O through the storage seam, and returns without waiting; release and repack that many offloaded bytes and assert the retry succeeds. Repeat against the journal's maximum. |
 | [§6](#6.%20Capacity) share limit | Fill one share to its limit; assert its next write is refused naming the share's limit while another share still writes, and that per-share accounting is the same after reopen. |
 | [§7.2](#7.2%20Repack) repack at capacity | Fill to capacity, then repack; assert it can run and that the journal recovers space without an external write succeeding first. |
@@ -2082,6 +2218,8 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§3.4](#3.4%20Fill) floor buckets | Read file X missing, then delete 10^4 other files; `Fill` X with the read's `asOf`; assert it is accepted. Read file Y missing, delete Y and recreate it with new content; `Fill` with the first read's `asOf`; assert it is refused. One journal-wide floor refuses the first. |
 | [§4.1](#4.1%20What%20it%20must%20answer) bounds | Build a file index of 10^6 extents; assert point lookup and span query cost does not grow linearly with extent count. |
 | [§5.3](#5.3%20A%20failed%20sync) sync failure | Fail a sync; assert the caller sees it and that subsequent writes to the same stream still attempt to sync. |
+| [§4.3](#4.3%20Versions) no version repeats | Set a version limit; `WriteAt` A and read its version, then crash before A syncs; reopen with the durable limit as part of the floor; assert the next `WriteAt` and the next `Draw` each return a version above A's. Exhaust the limit; assert `WriteAt` and `Draw` fail naming it and succeed after `SetVersionLimit` raises it. Open with no `SetVersionLimit`; assert `WriteAt` and `Draw` both fail. A journal that restarts from the maximum on disk issues A's version again. |
+| [§6](#6.%20Capacity) offloaded records below half the headroom | Fill the journal to its maximum and draw the headroom below half; offload a file of 150,000 extents; assert every extent is marked and evictable, no offloaded record is appended, `headroom_draws` does not move, and after a crash the extents are dirty again. Assert a hold or stamp is refused with `ErrNoSpace` naming the headroom while releases and removals still succeed. |
 | [§6](#6.%20Capacity) records without bytes at the limit | Fill the journal to its maximum; assert truncate, deallocate, delete, release, `MarkOffloaded`, a seal and its footer all succeed without `ErrNoSpace`, and `headroom_draws` counts them. Make the filesystem return `ENOSPC` for a content write's new segment; assert that failure is reported as `ENOSPC`, not `ErrNoSpace`. |
 | [§3.5](#3.5%20Release) freed means freed | Release the last held extents of a segment whose unlink the seam holds back; assert `UsedBytes` does not move and `UnreclaimedBytes` keeps the segment until the unlink completes. Repack another segment with the unlink held back; assert `Repack` returns `freed` only once it completes. |
 | [§7.1](#7.1%20Releasing%20storage) storage returned | Release every held extent of a sealed segment; assert it is unlinked without a `Repack` call and accounted footprint falls by its size. Release part of another; assert footprint is unchanged, `UnreclaimedBytes` grows by the released bytes, and footprint falls only once repack has retired the segment. |
@@ -2148,7 +2286,9 @@ real filesystem on the kind of device a deployment uses — a RAM-backed one mak
 `fsync` free and so measures everything except what bounds a write — and in real
 time. Each target is a fraction of the filesystem underneath, measured with a raw
 I/O benchmark on the same filesystem with the same block size, queue depth and
-sync pattern. The targets are proposed, to be confirmed once J1 has run.
+sync pattern. The targets are proposed, and the first run replaces them under
+[the index's rule](rfc-index.md#Test%20tiers). J6, J7 and J9 are the format's, in
+[RFC 28 §4.3](rfc-28-journal-format.md#4.3%20Benchmarks); the numbers are shared and none is reused.
 
 | # | Measures | Setup | Proposed target |
 | --- | --- | --- | --- |
@@ -2214,8 +2354,8 @@ The open questions of the on-disk format and of recovery are
    Whether one leader may sync several streams at once, or streams should be
    fewer than writers' natural grouping suggests, is unmeasured against the
    contention more streams remove.
-4. **Headroom, reserves and thresholds** ([§6](#6.%20Capacity), [§3.3](#3.3%20Offload), [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). The headroom's
+4. **Headroom, reserves and thresholds** ([§6](#6.%20Capacity), [§3.3](#3.3%20Offload)). The headroom's
    size (`journal.headroom_records`), the repack reserve of one segment, the bound
-   of 64 pinned segments per offer and of 256 across offers, and the 16 MiB
-   `journal.idle_seal_bytes` are proposals; none has been measured
-   against a journal held at its limit or against recovery time.
+   of 64 pinned segments per offer and of 256 across offers are proposals; none
+   has been measured against a journal held at its limit. The idle-seal
+   threshold is [RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)'s.

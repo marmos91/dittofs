@@ -26,7 +26,7 @@ This document specifies behaviour, not the current code. Where the code differs,
 
 ## Start here
 
-*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+*Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
 Before a chunk of file content leaves the machine for the remote object store,
 it may be compressed, encrypted, or both. A **transform** is one such step,
@@ -64,7 +64,7 @@ the operator turned compression on with it explicitly, accepting the size leak
    what else that chunk holds ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)). This
    governs new writes only. Encryption could not be turned off the same way: a
    namespace encrypts, or not, from its creation.
-3. **April.** alice's laptop asks for the range holding `X`, which is no longer
+3. **April.** alice's laptop asks for the extent holding `X`, which is no longer
    local. If the reader followed the current configuration, it would only
    decrypt, hand back compressed bytes, fail the hash check, and every chunk
    written before March would be unreadable: a configuration change would have
@@ -139,7 +139,7 @@ covers change over time, including retiring a key. [§7](#7.%20Invariants) and
 shipped transforms are [Appendix A](#Appendix%20A%20%E2%80%94%20compression)
 and [Appendix B](#Appendix%20B%20%E2%80%94%20encryption);
 [Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) says what
-someone who can read the bucket still learns. On a first read, skip §3, §4 and
+someone who can read the bucket still learns. On a first read, skip [§3](#3.%20API%20surface), [§4](#4.%20Writing%20a%20custom%20transform) and
 [Appendix C](#Appendix%20C%20%E2%80%94%20example%2C%20a%20parity%20transform).
 
 ## In short
@@ -288,7 +288,7 @@ Each body starts with a short **envelope**: its own version, then, in order, the
 IDs of the transforms that were applied to it:
 
 ```
-body = envelope version (1 byte) ‖ count (1 byte) ‖ transform ID (2 bytes) × count ‖ output of the last applied transform
+body = envelope version (1 byte) ‖ count (1 byte) ‖ transform ID (2 bytes, big-endian) × count ‖ output of the last applied transform
 ```
 
 This is what makes the chain self-describing, per chunk, independently of
@@ -334,7 +334,7 @@ with its default settings and the store's material.
 belongs to one namespace** ([§3.2](#3.2%20Configuration)). A material provider holds it by namespace,
 kind (`data-key`, `dictionary`, whatever a transform declares) and ID. Every
 call that names material names its namespace too: two namespaces on one store
-configuration never share a data key, a header key or a chunk-ID key, so a
+configuration never share a data key or a chunk-ID key, so a
 lookup without the namespace could return another tenant's key. Removing a transform from the chain therefore stops it for new
 writes but keeps its material, and bodies written under it stay readable.
 Removing material is a separate act, allowed only once the census shows nothing
@@ -362,8 +362,7 @@ or turn a corrupt body into a remote that looks unavailable.
 namespace's **chunk-ID key** (kind `chunk-id-key`), under which every chunk ID
 is computed; in an encrypting namespace its **chunking key** (kind
 `chunking-key`), which the carver consumes for keyed boundaries
-([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)), and its **header key** (kind `header-key`), which seals the
-chunk IDs and the chunk index in block headers ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)); and its
+([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)); and its
 **export key** (kind `export-key`), which seals and authenticates the
 namespace's exports and backup state objects ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)). Which kinds
 exist in which namespace, and how each is held, is the key table of
@@ -438,7 +437,7 @@ codec's errors, so nothing above it can tell which transforms are configured.
 
 A block's name includes a **chain ID** ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)): a hash of everything in
 the chain that decides a body's bytes or length, taken under its own versioned
-domain, `transform chain id v1`, as the block name is ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). For each
+domain, `dittofs transform chain id v1`, as the block name is ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). For each
 configured transform, in order, it covers:
 
 - the transform's ID and the format version it writes;
@@ -454,7 +453,7 @@ The stage order is fixed ([§2.3](#2.3%20The%20chain%20order%20is%20fixed)), so 
 
 **Its bytes.** The chain ID is 32 bytes:
 
-    chain ID = BLAKE3-derive-key("transform chain id v1", encoded chain), 32 bytes of output
+    chain ID = BLAKE3-derive-key("dittofs transform chain id v1", encoded chain), 32 bytes of output
 
 where `context` is that ASCII string exactly, and `encoded chain` is:
 
@@ -473,8 +472,10 @@ where `context` is that ASCII string exactly, and `encoded chain` is:
 
 Integers are unsigned and big-endian. A block name always carries a 32-byte
 chain ID ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). Each transform's `LengthKey` is
-its own canonical encoding and its own golden vector; the format version and the
-material are encoded here, not in it.
+its own canonical encoding and its own golden vector, stated with the transform:
+for the shipped ones, zstd's level as one signed byte, and empty for LZ4 and
+encryption ([Appendix A](#Appendix%20A%20%E2%80%94%20compression), [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted)). The format version and the material are
+encoded here, not in it.
 
 A block's name is not derived from its content alone: it also carries a
 nonce minted fresh for each put attempt ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), so two writers of the
@@ -496,7 +497,7 @@ configuration:
 | the envelope layout | the envelope's own version byte ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)), readable from a ranged get | readers keep every envelope version they may meet |
 | one transform's output format | that transform's header ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) | the transform decodes every version it wrote |
 | the algorithm | a new transform, with a new ID ([§5.4](#5.4%20Changing%20an%20algorithm%20is%20adding%20a%20transform)) | configuration, then retirement by census |
-| how the chain ID, the block name or a key is derived | the versioned labels: `transform chain id v1`, the block name's domain ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), and each derivation label of [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | new names or keys for new blocks only; a stored block keeps its name, which is recorded, never recomputed to find it, and a body keeps the derivation its transform version names |
+| how the chain ID, the block name or a key is derived | the versioned labels: `dittofs transform chain id v1`, the block name's domain ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)), and each derivation label of [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | new names or keys for new blocks only; a stored block keeps its name, which is recorded, never recomputed to find it, and a body keeps the derivation its transform version names |
 
 A golden test vector pins each derivation, as for the block name: a changed
 vector fails the build.
@@ -779,7 +780,9 @@ and material.
   backup's manifest keeps the census of every folder block it lists
   ([RFC 26 §2.4.2](rfc-26-catalog-backups.md#2.4.2%20What%20is%20copied)). The namespace's folder record keeps their union
   ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)). So removal **MUST** also find the material in no folder
-  record's census of the namespace. Retirement cannot relocate a folder block;
+  record's census, of this namespace or any other: a copying backup taken
+  during a re-home copies the leaving namespace's blocks into the new
+  namespace's folder unchanged ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)). Retirement cannot relocate a folder block;
   a copy stops reusing one that carries retiring material, and the material
   leaves the folder as the backups that list such blocks expire.
 - **Exports hold master keys and export keys.** No census lists them: a master
@@ -797,11 +800,17 @@ and material.
   provider then reports the ID `ErrMaterialDestroyed` ([§2.7](#2.7%20Failures)). Material
   merely marked destroyed while a cache still held it would stay usable until
   that cache evicted it, which is no removal at all for a key thought exposed.
+  Erasure reaches only the installation's own copies. A wrapped copy of a
+  namespace key stays in every export and every location `keys` object written
+  before the removal, so removal is not crypto-shredding: a holder of the master
+  key that wraps it can still unwrap it. Only destroying that master key makes
+  those copies useless, and [Appendix B.2](#B.2%20Keys) refuses that while a retained export
+  names it.
 
 **A drained namespace's keys go last.** When a namespace no share names is
 drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), its keys are removed by this same rule once its
-blocks are deleted, and T19 still holds: a key a retained export names stops the
-drain rather than being destroyed.
+blocks are deleted, and T19 still holds: a key a retained export or any
+namespace's folder record names stops the drain rather than being destroyed.
 
 ### 5.4 Changing an algorithm is adding a transform
 
@@ -871,7 +880,7 @@ never moves.
 | T18 | Every key is one row of [Appendix B.2](#B.2%20Keys)'s table: a non-encrypting namespace's chunk-ID key is held in the clear beside its blocks and it has no chunking key; every other namespace key is wrapped only under a master key, with AAD naming its namespace, kind and ID, never under a host-held wrapping key; and the master key of a configuration that encrypts or takes backups lives off the host. |
 | T19 | No master key that a retained export names is destroyed, and no export key that a retained export or state object names. |
 | T20 | Destroyed material is reported as itself, never as corruption, and a chunk it covered whose bytes the journal still holds stays unevictable until a block under current material holds it. |
-| T21 | An encrypting namespace's block header holds no chunk ID unsealed. |
+| T21 | No block header holds an unkeyed chunk hash, and in an encrypting namespace the key its chunk IDs are keyed under is never in the clear; a header holds no seal and no header key, and no text claims chunk lengths hidden. |
 | T22 | An export and its state objects are sealed and authenticated as [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) states, with a nonce unique per frame within the export. |
 
 ## 8. Test plan and benchmarks
@@ -896,8 +905,8 @@ alike. A new transform gets it by registering.
 | T9 | Encode every fixture input with its recorded settings and material: exactly the recorded body. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Every derivation label of Appendix B.1 is distinct, and each is pinned by a golden vector. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt and chunk key for a fixed data key and plaintext hash; one chunk body with its AAD; the header hash and index key for a fixed header key; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` or prefixing `info` gets a different one. |
-| T22 | Golden vectors, from an independent implementation, for the frame key, MAC key and state key derivations, one sealed frame, each of the four export MACs, one state MAC and one key wrap. Write an export of two sections of three frames each: all six nonces differ. Move a frame to the other section at the same frame index, or swap two sections: the read fails. A design whose nonce is the frame index alone gives two equal nonces here. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt and chunk key for a fixed data key and plaintext hash; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
+| T22 | Golden vectors, from an independent implementation, for the frame key, MAC key and state key derivations, one sealed frame, each of the four export MACs, one state MAC, and one stored wrap per provider kind: the key file's, and a key service's against a fake service that records the authenticated data it is sent, once as bytes and once as a string map. Write an export of two sections of three frames each: all six nonces differ. Move a frame to the other section at the same frame index, or swap two sections: the read fails. A design whose nonce is the frame index alone gives two equal nonces here. |
 | T18 | Unwrap a wrapped key record after changing its namespace ID, its kind or its key ID in the AAD: each fails. Copy one namespace's wrapped data key into another namespace's key records: it does not unwrap there. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | Replace a key under its ID with different bytes: the provider refuses it (`ErrMaterialUnavailable`, availability gauge 0), and no body is decoded or written with it. |
 | [§3.1](#3.1%20Interfaces) | A transform that enlarges its input (a test transform adding 50%) before another: a chunk of exactly the maximum round-trips. |
@@ -929,16 +938,15 @@ alike. A new transform gets it by registering.
 | T7 | A decode that returns `ErrMaterialUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. One that returns `ErrMaterialDestroyed` is not retried and reports the chunk Lost. |
 | T8 | Force each decode error: the codec returns only its own errors. |
 | [§5.2](#5.2%20Relocation%20re-encodes) | Relocate a block written under an old chain: every body in the new block carries the current envelope. |
-| [Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) | With encryption on, write a known file: no chunk ID appears unsealed anywhere in the stored block, and every read still verifies. With encryption off, the header lists chunk IDs, none of which equals an unkeyed hash of the file's chunks. |
+| [Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) | With encryption on, write a known file: no unkeyed hash of its chunks appears anywhere in the stored block, the header's chunk IDs equal block metadata's, and every read still verifies. With encryption off, the header lists chunk IDs, none of which equals an unkeyed hash of the file's chunks. |
 | T19 | Rotate a master key while a retained export carries the old wrapping: destroying the old key is refused with `ErrMaterialInUse` naming the backup; expire the backup and the destroy succeeds. A design that checks only the key records destroys it and leaves the backup unopenable. Make one backup location unreachable: the destroy is refused naming it. Move the namespace to a second installation sharing the key service: the importer re-wraps every key record under its own master key before publish, and the exporter refuses to destroy the old key until an operator releases the move's pin. |
 | [Appendix B.3](#B.3%20Rotation) | Rotate the export key: the next export is sealed under the new key, names both IDs in its clear part and carries the old key wrapped; importing it alone opens an export sealed under the old key. Destroying the old export key while a retained export names it is refused. |
 | T18 | Create a non-encrypting namespace: its chunk-ID key is in its key control object in the clear, it has no chunking key, and its boundaries equal the unkeyed table's. Remove the master key and the metadata store: every chunk still verifies from the bucket alone. On a key-file provider without verified escrow, creating an encrypting namespace or a backup policy is refused with `ErrNotEscrowed`; after the escrow check passes, both succeed. A namespace key offered for wrapping under the `storage` role key is refused. |
 | T20 | Destroy a data key while the journal still holds some chunks its blocks cover: a decode of a remote-only chunk returns `ErrMaterialDestroyed`, the codec's verification-failure counter does not move, the engine reports those chunks Lost; the chunks still held locally are not evicted, are offloaded again under the current key, and read back. |
-| T21 | Encode a block of an encrypting namespace: no plaintext chunk ID appears in its bytes; the sealed index decodes under the header key its seal names, and ranged reads at block metadata's ranges still verify. Scan the block for the clear envelope: every body's offset and length is found, as [B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) states, so no test or text claims lengths hidden. |
-| [Appendix B.2](#B.2%20Keys) | Rotate the data and header keys after the last catalog backup, relocate that backup's blocks under them, then lose the metadata store: the recovery import loads the new key records from the bucket's `keys` object and every file reads back. Fail the put to one backup location during a rotation: the new key does not become current. Rotate a key-file master key without its escrow check: refused with `ErrNotEscrowed`. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Write a backup's state as `writing`, `complete`, then `damaged`; re-put the authentic `complete` version on top: the reader takes `damaged`, by sequence. Two field lists that join to the same bytes without length prefixes give different MACs. The golden vectors cover the sealed header and the progress MAC. |
+| T21 | Encode a block of an encrypting namespace: no unkeyed hash of any of its chunks appears in its bytes; its header's chunk IDs are the keyed ones block metadata records, and ranged reads at block metadata's ranges still verify. Scan the block for the clear envelope: every body's offset and length is found, as [B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) states, so no test or text claims lengths hidden. |
+| [Appendix B.2](#B.2%20Keys) | Rotate the data key after the last catalog backup, relocate that backup's blocks under it, then lose the metadata store: the recovery import loads the new key records from the bucket's `keys` object and every file reads back. Fail the put to one backup location during a rotation: the new key becomes current once the bucket's `keys` put succeeds, and the next backup to that location is refused until its `keys` object holds every key record. Fail the bucket's `keys` put: the old key stays current. Rotate a key-file master key without its escrow check: refused with `ErrNotEscrowed`. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Write a backup's state as `writing`, `complete`, then `damaged`; re-put the authentic `complete` version on top: the reader takes `damaged`, by sequence. Two field lists that join to the same bytes without length prefixes give different MACs. The golden vectors cover the sealed header, the progress MAC, and a state MAC over a nonzero expiry time. Change a `complete` version's expiry time and keep its tag: it fails to authenticate. |
 | [Appendix B.2](#B.2%20Keys) | Hand the put intent step a plan whose chunk IDs were computed under another namespace's chunk-ID key: refused, and nothing is put. |
-| [Appendix B.3](#B.3%20Rotation) | Rotate the header key: new blocks carry the new key's ID in their seal; old blocks still verify under the key their seal names; after relocation retires the old key by census, no block names it and its removal succeeds. |
 
 ### 8.3 Benchmarks and targets
 
@@ -957,8 +965,9 @@ corpus, chunk size distribution and CPU with each result.
 
 ## 9. Open questions
 
-1. **Hiding chunk hashes from the service** — closed. When encryption is on,
-   header hashes are sealed under the namespace's header key ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)).
+1. **Hiding chunk hashes from the service** — closed. Chunk IDs are keyed under
+   the namespace's chunk-ID key, wrapped when the namespace encrypts
+   ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)).
 
 2. **External key services that never release a key** — closed. A provider
    backed by a key service unwraps each namespace key through it, once per key
@@ -993,7 +1002,8 @@ and no stored overhead.
 > compression-ratio benchmark ([§8.3](#8.3%20Benchmarks%20and%20targets)) shows a corpus whose chunks
 > cluster just either side of it.
 
-**Its header.** A format version (1 byte) and the decompressed length (varint).
+**Its header.** A format version (1 byte) and the decompressed length, as an
+unsigned LEB128 integer of at most 10 bytes; a longer or non-minimal one is malformed.
 `Decode` refuses a declared length above `max` before allocating, and runs the
 decoder with its window capped at the chunk maximum, so a body cannot make it
 allocate more than one chunk however it was crafted.
@@ -1010,7 +1020,9 @@ compresses each chunk twice.
 > ([§3.2](#3.2%20Configuration)). Keep the measuring pass's bodies for the send, within the syncer's
 > memory bound, when the second compression shows in a put profile.
 
-**Settings.** `level` (proposal: 3 for zstd, zstd's own default). It changes the output,
+**Settings.** `level` (proposal: 3 for zstd, zstd's own default; LZ4 has none).
+Its `LengthKey` is the level as one signed byte, two's complement, for zstd, and
+empty (*k* = 0) for LZ4. It changes the output,
 so it is in the chain ID ([§2.8](#2.8%20The%20chain%20ID)). Changing it affects the next write only.
 
 **Leaks.** Compression makes a body's size depend on its content, and
@@ -1047,7 +1059,7 @@ body      = AES-256-GCM-SIV(chunk key, nonce = 12 zero bytes, input,
 `input` is what reaches the encrypt stage: the compressed chunk, or the chunk
 itself when compression declined or is off.
 
-![Encrypting one chunk: the master key unwraps per-namespace data, header and chunking keys; the data key seals the chunk with AES-256-GCM-SIV, the header key seals the chunk hashes in block headers, the chunking key keys boundaries](img/rfc5t-key-derivation.svg)
+![Encrypting one chunk: the master key unwraps per-namespace data and chunking keys; the data key seals the chunk with AES-256-GCM-SIV, the chunking key keys boundaries](img/rfc5t-key-derivation.svg)
 
 **Every derivation has its own versioned label.** Nothing derived from a key is
 derived under a label another derivation uses:
@@ -1056,8 +1068,6 @@ derived under a label another derivation uses:
 | --- | --- | --- |
 | `dittofs chunk salt v2` | data key | the salt key |
 | `dittofs chunk key v2` | data key and salt | the chunk key |
-| `dittofs header hash v1` | header key | sealing chunk hashes in block headers ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) |
-| `dittofs header index v1` | header key | the key sealing a block's chunk offsets and lengths ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) |
 | `dittofs chunking key v1` | chunking key | keyed boundaries, encrypting namespaces only ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) |
 | `dittofs export frame v1` | export key and the export's salt | the key sealing each frame of an export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) |
 | `dittofs export mac v1` | export key and the export's salt | the key authenticating an export's clear part, header, sections and trailer |
@@ -1084,7 +1094,7 @@ header MAC  = HMAC-SHA256(mac key, "header" ‖ clear MAC ‖ sealed header)
 section MAC = HMAC-SHA256(mac key, "section" ‖ section index ‖ section type ‖ record count ‖ each frame's tag)
 trailer MAC = HMAC-SHA256(mac key, "trailer" ‖ clear MAC ‖ header MAC ‖ every section MAC, in order)
 state key   = HKDF-SHA256(export key, salt = backup ID, info = "dittofs export state v1"), 32 bytes
-state MAC   = HMAC-SHA256(state key, backup ID ‖ state ‖ sequence ‖ export digest ‖ time)
+state MAC   = HMAC-SHA256(state key, backup ID ‖ state ‖ sequence ‖ export digest ‖ time ‖ expiry time ‖ key count ‖ each master-key ID it names, in ID order)
 progress key = HKDF-SHA256(export key, salt = backup ID, info = "dittofs export progress v1"), 32 bytes
 progress MAC = HMAC-SHA256(progress key, backup ID ‖ batch ‖ sequence ‖ SHA-256 of the progress body)
 ```
@@ -1094,8 +1104,8 @@ appendix, every field that is not an integer — a label, a backup ID, a state
 name, a key ID, a namespace ID, a hash or digest, a salt, a sealed header, the
 clear part's bytes — is preceded by its length as 4 bytes, big-endian, even
 where that length is fixed; an integer is big-endian at the
-width stated (section index 4 bytes; frame index, batch, sequence and record
-count 8 bytes; a time as 8 bytes of Unix nanoseconds). Without the prefix, two
+width stated (section index 4 bytes; frame index, batch, sequence, record
+count and key count 8 bytes; a time as 8 bytes of Unix nanoseconds). Without the prefix, two
 different field lists can join to one byte string and share one tag. The golden
 vectors check the encoding this text defines; they do not define it.
 
@@ -1105,9 +1115,9 @@ vector:
 
 | Value | Bytes | How |
 | --- | --- | --- |
-| master key, data key, header key, chunking key, chunk-ID key, export key | 32 | drawn from a cryptographic random source when created or rotated; never derived |
-| every HKDF-SHA256 output: salt key, chunk key, index key, frame key, mac key, state key, progress key | 32 | IETF RFC 5869 with `L = 32`; `salt = none` means RFC 5869's default, 32 zero bytes; `info` is the label's ASCII bytes alone, with no length prefix and no terminator |
-| salt, header hash, every MAC, fingerprint | 32 | HMAC-SHA256, full output, never truncated |
+| master key, data key, chunking key, chunk-ID key, export key | 32 | drawn from a cryptographic random source when created or rotated; never derived |
+| every HKDF-SHA256 output: salt key, chunk key, frame key, mac key, state key, progress key | 32 | IETF RFC 5869 with `L = 32`; `salt = none` means RFC 5869's default, 32 zero bytes; `info` is the label's ASCII bytes alone, with no length prefix and no terminator |
+| salt, every MAC, fingerprint | 32 | HMAC-SHA256, full output, never truncated |
 | plaintext hash, chunk ID | 32 | the keyed BLAKE3 chunk ID ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)) |
 | keyed gear table | 2,048 | BLAKE3 keyed mode under the chunking key, over the ASCII label `dittofs chunking key v1` ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) |
 | AES-256-GCM-SIV nonce | 12 | the chunk's is 12 zero bytes; a frame's and the header's as below; a key wrap's random |
@@ -1121,7 +1131,6 @@ joined inputs are, field by field:
 | Input | Fields, in order |
 | --- | --- |
 | chunk AAD | transform ID (2 bytes, big-endian) ‖ version (1 byte) ‖ data key ID (4-byte length, bytes) ‖ plaintext hash (4-byte length, 32 bytes) |
-| header hash ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | label (4-byte length, ASCII) ‖ chunk ID (4-byte length, 32 bytes) |
 | frame AAD | export salt (4-byte length, 32 bytes) ‖ section index (4 bytes) ‖ section type (1 byte) ‖ frame index (8 bytes) |
 | header AAD | export salt (4-byte length, 32 bytes) ‖ `header` (4-byte length, ASCII) |
 | each MAC | its literal label (`clear`, `header`, `section`, `trailer`; 4-byte length, ASCII) first, then its fields as listed, each integer at its stated width and each other field length-prefixed |
@@ -1131,6 +1140,14 @@ Integers are big-endian at the width stated.
 
 **The header is sealed like a frame.** Section index 2³² − 1 is reserved for the
 header and names no section, so the header's nonce never meets a frame's.
+
+**The state MAC covers the master-key IDs.** The destroy check of [B.2](#B.2%20Keys) reads
+them from the state object, so a put credential that could drop an ID from an
+unauthenticated list would let a master key a retained backup needs be destroyed.
+It covers the expiry time for the same reason: expiry runs from the time the
+state object records ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), so a put credential that could
+rewrite an unauthenticated time could expire a retained backup early. `time` is
+when the version was written; `expiry time` is zero until the backup completes.
 
 **State and progress versions are ordered by their authenticated sequence.** A
 writer raises `sequence` by one at every write of a backup's state object, and
@@ -1160,16 +1177,34 @@ wrapped = AES-256-GCM-SIV(master key, nonce = 12 bytes from a cryptographic rand
                           key bytes, AAD = namespace ID ‖ kind ‖ key ID)
 ```
 
-stored as master-key ID ‖ nonce ‖ ciphertext ‖ tag. A key-service provider sends
-the same AAD as the service's additional authenticated data, and the service
-does the wrap. The AAD binds a wrapped key to its namespace, kind and ID, so a
+That is the key-file provider's wrap. A key-service provider asks the service
+to wrap instead, and the service returns its own opaque ciphertext, with its own
+nonce and tag inside, under a key ID of its own form. Every wrapped key is
+therefore stored in one layout, whatever wrapped it:
+
+```
+stored wrap = provider kind (1 byte: 0x01 key file, 0x02 key service)
+            ‖ master-key ID length (2 bytes, big-endian) ‖ master-key ID
+            ‖ wrap length (4 bytes, big-endian) ‖ wrap bytes
+```
+
+For the key file the wrap bytes are nonce ‖ ciphertext ‖ tag and the master-key
+ID is a minted ID's bytes; for a key service they are exactly what the service
+returned, never parsed, and the master-key ID is the service's key identifier
+as its ASCII bytes. The AAD reaches each provider's input as follows: the key
+file passes the AAD bytes to AES-256-GCM-SIV; a service that takes
+authenticated data as bytes gets the same bytes; a service that takes it as a
+string map gets the one entry `dittofs-wrap-aad` → the AAD bytes in lowercase
+hex, and nothing else. A profile for a service **MUST** name which of the two it
+uses. The AAD binds a wrapped key to its namespace, kind and ID, so a
 wrapped record copied into another namespace's key records, or relabelled as
 another kind, fails to unwrap instead of serving as that key.
 
 A change to any derivation is a new label and a new transform format version; a
 golden vector pins each. The chunk-ID key is the one key used with no derivation:
 it is the key of BLAKE3's keyed mode, which computes every chunk ID
-([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)), and it serves nothing else.
+([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)), and it serves nothing else but its own fingerprint
+([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
 
 In plain terms:
 
@@ -1199,7 +1234,8 @@ In plain terms:
 the ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 273`, the worst case
 with a 255-byte key ID: 1 + 1 + 255 + 16. `LengthOf(n)` is exact: `n + 18` plus
 the current data key ID's length. The data key's (ID, fingerprint) is in the
-chain ID ([§2.8](#2.8%20The%20chain%20ID)).
+chain ID ([§2.8](#2.8%20The%20chain%20ID)) as material, and the stage has no length-affecting setting, so its
+`LengthKey` is empty (*k* = 0).
 
 ### B.2 Keys
 
@@ -1213,14 +1249,13 @@ it: [RFC 0](rfc-0-data-lifecycle.md), [RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20ch
 | --- | --- | --- | --- | --- | --- | --- |
 | `master-key` | a store configuration, one or more | in a key service, which never releases it; or in the key-file provider's memory, read from a key file | its ID only | yes, by re-wrapping; destroyed only once no key record and no retained export names it | **yes**, wherever any namespace of the configuration encrypts or takes catalog backups: a key service, or a key file whose off-host escrow was verified at setup (below) | every key it wraps is lost, and with it the rows below |
 | `data-key` | an encrypting namespace, one current at a time | wrapped under a master key | wrapped | yes, by relocation ([B.3](#B.3%20Rotation)) | through its master key | every chunk it sealed is **Lost** |
-| `header-key` | an encrypting namespace, one current at a time | wrapped under a master key | wrapped | yes, by relocation ([B.3](#B.3%20Rotation)) | through its master key | every block whose seal names it is unverifiable as a block; its chunks still read through their recorded ranges |
 | `chunking-key` | an encrypting namespace, for its life | wrapped under a master key | wrapped | never: changing it re-cuts every file | through its master key | the namespace can no longer cut new content as it cut the old; it is re-homed ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | `chunk-id-key`, encrypting namespace | the namespace, for its life | wrapped under a master key | wrapped | never: changing it renames every chunk | through its master key | no chunk of the namespace can be checked against its ID: every remote-only chunk is **Lost** |
 | `chunk-id-key`, non-encrypting namespace | the namespace, for its life | **in the clear**: in its key record, and in the namespace's key control object beside its blocks ([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)) | in the clear | never | no: the bucket holds it | cannot be lost while the bucket survives |
 | `export-key` | every namespace, one current at a time | wrapped under a master key | the current and every retired one not yet destroyed, wrapped | yes, by issuing a new current key; a retired one is destroyed once no retained export or state object names it | through its master key | every export and state object it sealed is unreadable: those backups are lost |
 
 **Every namespace has a chunk-ID key and an export key from its creation**; an
-encrypting one also gets its first data key, header key and chunking key then. A
+encrypting one also gets its first data key and chunking key then. A
 chunk ID is a keyed hash from the first write, so a namespace never migrates its
 identities when encryption or deduplication arrive later
 ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)). A non-encrypting namespace has no chunking key: its
@@ -1236,13 +1271,13 @@ table from a key there.
 > later holds no unkeyed hash. Wrap it only if non-encrypting namespaces are ever
 > required to hide content from a bucket reader, which needs encryption anyway.
 
-**What a keyed ID claims, and to whom.** A keyed chunk ID, a sealed header ID and
+**What a keyed ID claims, and to whom.** A keyed chunk ID and
 keyed boundaries stop a bucket reader confirming that a namespace holds a known
 file only **in an encrypting namespace, against a reader who can cause no write
 into it**. In a non-encrypting namespace the bodies and the chunk-ID key are both
 readable, and nothing is hidden. In an encrypting one, a reader who can also
 cause a write — a co-tenant share of the namespace, a sender whose mail lands in
-a profile container — writes a candidate and compares: chunk IDs and sealed IDs
+a profile container — writes a candidate and compares: chunk IDs and bodies
 are deterministic per namespace, so a match confirms the content
 ([B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)). No text in this set
 **MUST** claim more.
@@ -1285,12 +1320,24 @@ restore a namespace whose metadata store is gone.
 **A key record reaches the bucket before it is used.** Every new or rewritten
 key record — at the namespace's creation, at every rotation and every re-wrap —
 is written, as the metadata store holds it, to the namespace's `keys` control
-object ([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)) and to every backup location a policy of the namespace
-writes to ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), and becomes `current` only once every one of those
-puts has succeeded; a put that fails leaves the old key current and is retried.
+object ([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)), and becomes `current` only once that put has
+succeeded; a put that fails leaves the old key current and is retried. It is
+also written to the `keys` object of every backup location a policy of the
+namespace writes to ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), but those puts do not gate the rotation: a
+copy or backup to a location **MUST NOT** start until that location's object
+holds every key record the metadata store holds, so an unreachable location
+delays its own next backup and no rotation, least of all one for a key thought
+exposed. A backup already at a location carries the key records it needs in its
+export; one rotated after it is needed only where relocation re-encoded that
+backup's chunks, which is in the bucket, beside its `keys` object. The call that
+rotates or re-wraps owns these puts: it makes them through the namespace's
+remote store, retries them with backoff, and returns once the bucket's put has
+succeeded, leaving the location puts to the next copy's check.
 A recovery import loads key records from there as well as from the export
-([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), taking the union of every version it finds, each checked by its
-unwrap and its fingerprint. Without this, a key rotated after the last backup —
+([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), taking the union by key ID of every version it finds, each checked by
+its unwrap and its fingerprint. A key any source marks `destroyed` stays
+destroyed: the mark is a rewritten key record and reaches the same objects, so
+an older version elsewhere never brings a destroyed key back. Without this, a key rotated after the last backup —
 under which relocation may since have re-encoded that backup's blocks — would
 be held only by the metadata store that was lost, and the whole namespace with
 it, not only the day's writes.
@@ -1299,8 +1346,10 @@ it, not only the day's writes.
 IDs of every master key whose wrapping it carries, and so does its backup's
 state object ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)). Destroying a master key that a retained export
 names **MUST** be refused (`ErrMaterialInUse`), naming the backups. The check
-reads the state objects at every backup location a policy of the installation
-names, and the catalog backups beside the namespaces' blocks; a location that
+reads the state objects at every backup location the installation has a
+location record for ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)), whether or not a policy still names it —
+a removed share's backups outlive its policy ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)) — and the
+catalog backups beside the namespaces' blocks; a location that
 cannot be read **fails the check closed**: the destroy is refused, naming the
 location, since a backup there may name the key. Re-wrapping the key records in
 the metadata store does not rewrap an export already written, so a destroy that
@@ -1350,7 +1399,8 @@ There are four rotations, and they cost different things:
   export does and no move pins it ([B.2](#B.2%20Keys)): it stays held, retired, until the
   last backup that carries its wrapping expires. The new key becomes current only
   after its escrow check, and each re-wrapped record only once it has reached the
-  bucket and the backup locations ([B.2](#B.2%20Keys)). This is the rotation a
+  bucket's `keys` object ([B.2](#B.2%20Keys)); a backup location receives it before its next
+  backup starts. This is the rotation a
   compliance schedule usually asks for.
 - **Rotating a data key re-encrypts.** A new data key becomes current for its
   namespace: it is new material with a new ID, so the chain ID changes and new
@@ -1358,11 +1408,6 @@ There are four rotations, and they cost different things:
   as the provider holds that key. To stop holding the old one, relocate the
   blocks whose census names it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); this is the rotation for a data key
   thought exposed.
-- **Rotating a header key re-seals.** A new header key becomes current; new
-  blocks name it in their seal ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and in their census, and old blocks
-  stay checkable under the key their seal names. Relocation re-seals them under
-  the current key and mints new names, so the old key retires by census like a
-  data key. Configuration **MUST** accept it like a data-key rotation.
 - **Rotating an export key re-keys the next export.** A new export key becomes
   current and seals every export and state-object version written from then on;
   the old one is `retired`, still held, and carried, wrapped, in every later
@@ -1373,6 +1418,16 @@ There are four rotations, and they cost different things:
   holder can still forge an export or a state object under it, and nothing ties
   an export to the time its key was current. It **SHOULD** rotate with the master
   key, and **MUST** be rotatable on request when thought exposed.
+
+> decision: A retired export key still authenticates what it sealed, and what a leaked
+> copy of it forges. Refusing it would make every backup sealed before the
+> rotation unreadable, and tying each export to the time its key was current
+> needs a clock the forger does not control, which a backup location does not
+> provide. The remedy for a key thought exposed is to rotate it and let, or
+> make, the backups it sealed expire, so it can be destroyed; until then a
+> forgery under it is admitted. Revisit if a backup location gains an
+> authenticated write time, which would let a reader refuse a version sealed
+> under a key retired before that time.
 
 The chunk-ID key and the chunking key never rotate. Changing the chunk-ID key
 renames every chunk, and changing the chunking key re-cuts every file: either is
@@ -1420,54 +1475,42 @@ the reader can also cause a write into the namespace.
 
 | Who | Can | What encryption protects |
 | --- | --- | --- |
-| Someone who can read the bucket (a leaked credential, the provider's staff) and can cause no write into the namespace | read every stored byte | the content of every chunk whose content they cannot already guess, and which known files the namespace holds |
-| Someone who can read the bucket and can cause a write into the namespace (a co-tenant share, a sender whose mail lands in a profile container) | write a candidate, then compare what is stored | the content of chunks they cannot guess; **not** whether the namespace holds a candidate: the same chunk under one namespace's keys gives the same chunk ID, sealed ID and body, so a match confirms it |
+| Someone who can read the bucket (a leaked credential, the provider's staff) and can cause no write into the namespace | read every stored byte | the content of every chunk whose content they cannot already guess, and which known files the namespace holds — but only while they know none of its stored content, from which the keyed boundaries can be mapped ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) |
+| Someone who can read the bucket and can cause a write into the namespace (a co-tenant share, a sender whose mail lands in a profile container) | write a candidate, then compare what is stored | the content of chunks they cannot guess; **not** whether the namespace holds a candidate: the same chunk under one namespace's keys gives the same chunk ID and body, so a match confirms it |
 | Someone who can also write the bucket | alter, delete or replace blocks | nothing is silently corrupted: any change fails the tag or the plaintext hash. Deletion is still loss |
 | Someone on the host running the system | read memory and keys | nothing; they hold the keys |
 
-**Chunk IDs are keyed, and header IDs are sealed when encryption is on.** Each block's header lists its chunks' IDs and where each body sits
+**Chunk IDs are keyed; the header carries them, and every range, in the clear.**
+Each block's header lists its chunks' IDs and where each body sits
 ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)). An unkeyed hash would let anyone holding a file chunk it the same
 way, hash the chunks and look for them: a match proves the file is stored, and
 the same works for a chunk with few possible contents, such as a form with one
-field. A chunk ID is keyed under the namespace's chunk-ID key ([Appendix B.2](#B.2%20Keys)).
-When a namespace encrypts, the header **MUST** also list
-`HMAC-SHA256(header key, "dittofs header hash v1" ‖ chunk ID)` for each chunk,
-under the header key the block's seal names, instead of the chunk ID, and
-**MUST** seal each body's offset and length:
-
-```
-index key    = HKDF-SHA256(header key, info = "dittofs header index v1"), 32 bytes
-sealed index = AES-256-GCM-SIV(index key, nonce = the block's nonce, first 12 bytes,
-                               every (offset, length) in block order, AAD = block name)
-```
-
-Block metadata keys chunks by chunk ID and records each chunk's range
-([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)), so a read never needs the header's index; only the stored
-header is sealed. A reader that checks the header seals the ID it expects under
-the block's own header key and compares — never under the namespace's current
-key, which may have rotated since. With boundaries also keyed
+field. A chunk ID is keyed under the namespace's chunk-ID key ([Appendix B.2](#B.2%20Keys)),
+which an encrypting namespace holds wrapped, so its headers list the chunk IDs
+themselves and nothing seals them again: a reader without the chunk-ID key
+cannot compute one from a candidate file. With boundaries also keyed
 ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)), a bucket reader who can cause no write cannot confirm a known
-file by its chunk IDs.
+file by its chunk IDs; whether its chunk lengths confirm one is [RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)'s
+narrower claim.
 
-**Chunk lengths are visible to a bucket reader.** Every body starts with the
-same clear envelope ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)) and the same encryption header carrying the data
-key's ID, back to back, so one get of a block and a scan for that marker yields
-every body's offset and length. Sealing the index hides nothing the bodies do
-not already show, and this RFC claims no more for it.
+**Chunk lengths are visible to a bucket reader.** The header lists every body's
+offset and length in the clear, in every namespace. Sealing them would hide
+nothing: every body starts with the same clear envelope ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)) and the same
+encryption header carrying the data key's ID, back to back, so one get of a
+block and a scan for that marker yields every body's offset and length anyway.
+This RFC claims nothing about lengths.
 
-> ponytail: the sealed index stays only because the header format already has
-> it. Drop it with the sealed IDs at the next block format version; mask the
-> envelope and header with a pad derived from the index key then, if hiding
-> lengths is ever required.
-
-> ponytail: with chunk IDs keyed, sealing them again in an encrypting
-> namespace's headers protects only against a holder of the chunk-ID key who
-> lacks the header key. It stays because block names derive from the sealed
-> form ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)). Drop the seal at the next block format version, when a
-> format change is made anyway.
+> decision: block headers have no header key, no sealed index and no sealed
+> IDs. With chunk IDs keyed under a wrapped key, a second seal protected only
+> against a holder of the chunk-ID key who lacked a header key, and a sealed
+> index hid lengths the bodies show. No block format has shipped, so dropping
+> both costs no migration. Add a length-hiding layer — a pad over each body's
+> envelope and encryption header, and a sealed index with it — if hiding chunk
+> lengths from a bucket reader is ever required; a seal over the index alone
+> would not do it.
 
 > decision: a reader who can cause a write into an encrypting namespace still
-> confirms content by comparison, because chunk IDs, sealed IDs and bodies are
+> confirms content by comparison, because chunk IDs and bodies are
 > deterministic per namespace. Breaking that would take a per-block salt in the
 > chunk key, which every ranged read would then need from somewhere other than
 > the body. Shares that must not learn about each other's content belong in
@@ -1476,15 +1519,15 @@ not already show, and this RFC claims no more for it.
 
 What a bucket reader can still see:
 
-- **sizes**: of blocks, and of every chunk in them, found by scanning a block
-  for the clear envelope that starts each body. With
+- **sizes**: of blocks, and of every chunk in them, read from the header's
+  index or found by scanning a block for the clear envelope that starts each
+  body. With
   compression, a chunk's size says how compressible it was
   ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)), which is why an encrypting chain compresses only by
   explicit choice ([§3.2](#3.2%20Configuration));
 - **repetition**: which content is written more than once;
 - **timing**: what is written and read, and when;
-- with encryption off, **everything**: bodies are plaintext, every chunk
-  length is in the header, and the chunk-ID key is in the clear beside the
+- with encryption off, **everything**: bodies are plaintext, and the chunk-ID key is in the clear beside the
   blocks ([Appendix B.2](#B.2%20Keys)), so keyed IDs there confirm nothing and hide nothing.
 
 ### B.6 What it adds to observability
@@ -1551,7 +1594,7 @@ Descriptive, for the refactor.
 | D12 | Retirement relocates through a census ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | no census is recorded |
 | D13 | Encoding is deterministic within a put attempt and pinned by encoder fixtures, and the chain ID is in the block name ([§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk), [§2.8](#2.8%20The%20chain%20ID)) | a random data key per chunk (D5), so re-encoding one block for a retry writes different bytes, and no fixture pins an encoder |
 | D14 | Material carries a fingerprint, and a read asks only for material its block record lists ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) | not yet checked against the code; to verify during the refactor |
-| D15 | Header hashes are sealed when encryption is on ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | not yet checked against the code; to verify during the refactor |
+| D15 | Headers carry keyed chunk IDs and clear ranges, with no header key and no seal ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | not yet checked against the code; to verify during the refactor |
 | D16 | Read-side bounds come from every registered transform ([§3.1](#3.1%20Interfaces)) | not yet checked against the code; to verify during the refactor |
 | D17 | Material removal is fenced against in-flight encodes ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
 | D18 | Chunk IDs are keyed per namespace, and every namespace has keys held by a provider ([Appendix B.2](#B.2%20Keys)) | not yet checked against the code; to verify during the refactor |
