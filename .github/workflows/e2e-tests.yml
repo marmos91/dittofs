@@ -102,8 +102,9 @@ jobs:
           # rpcbind: required by the real-NLM lock-interop tests, which run a
           # kernel NFSv3 client (no `nolock`) in an isolated network namespace.
           sudo apt-get install -y nfs-common cifs-utils smbclient krb5-user rpcbind
-          # Start rpc-gssd for Kerberos NFS tests
-          sudo systemctl start rpc-gssd || true
+          # No rpc-gssd start here: the unit needs /etc/krb5.keytab, which
+          # only exists once a Kerberos test installs it, and those tests
+          # restart rpc-gssd themselves.
 
       - name: Build DittoFS
         run: nix develop .#ci --command go build -o dfs cmd/dfs/main.go
@@ -125,12 +126,15 @@ jobs:
           # DITTOFS_E2E_REQUIRE_NLM=1: the real-NLM lock-interop test hard-fails
           # (instead of skipping) if its prerequisites are missing, so a
           # misconfigured runner can't silently drop that coverage.
+          # DITTOFS_E2E_REQUIRE_KERBEROS=1: a failed Kerberos mount in the
+          # SMB and cross-protocol Kerberos tests fails the test instead of
+          # skipping it.
           # Full mode: all configurations including Docker-based stores.
           #
           # The harness owns redirection and grading — see the header of
           # run-e2e.sh for why the output must not go through a pipe.
           .github/scripts/run-e2e.sh \
-            sudo -E env "PATH=$PATH" "DITTOFS_E2E_REQUIRE_NLM=1" nix develop .#ci --command \
+            sudo -E env "PATH=$PATH" "DITTOFS_E2E_REQUIRE_NLM=1" "DITTOFS_E2E_REQUIRE_KERBEROS=1" nix develop .#ci --command \
             go test -tags=e2e -v -timeout 30m ./test/e2e/...
 
       - name: Generate summary
