@@ -286,10 +286,13 @@ const batchItemKeys = 10
 // batch drops each ref inside the extent with newest below the removal's
 // version and narrows one crossing an edge, splitting a ref that spans a
 // deallocated extent; drops the holes and overwrite records inside the
-// extent below that version; and advances the cursor. Phase 1 left no hole or overwrite record
-// crossing an edge, so those it drops lie wholly inside. The last batch of a deallocate joins the
-// extent's hole with the holes it touches. Content at or above the
-// removal's version is never touched, so a re-run is harmless.
+// extent below that version; and advances the cursor. Phase 1 left no hole
+// or overwrite record crossing an edge, so those it drops lie wholly inside.
+// A clone's batches also adopt the source's carved refs over what they
+// reached. The last batch of a deallocate or a clone joins the extent's
+// holes with those they touch, and a clone's deletes its open of the
+// source. Content at or above the removal's version is never touched, so a
+// re-run is harmless.
 //
 // ponytail: nothing moves to history, because no snapshot cut is recorded
 // yet, so a dropped ref is dated by nothing and an overwrite record is
