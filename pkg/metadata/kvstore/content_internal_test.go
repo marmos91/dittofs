@@ -427,6 +427,14 @@ func TestCommitRefusals(t *testing.T) {
 	if len(res) != 0 {
 		t.Errorf("a released file's refs were applied: %v", res)
 	}
+	_ = f.s.kv.View(ctx, func(r kv.Reader) error {
+		for row, err := range r.Scan(fileKey(f.share, gone), nil) {
+			if err == nil {
+				t.Errorf("a released file's commit wrote %x", row.Key)
+			}
+		}
+		return nil
+	})
 	other := entity.NamespaceID{1}
 	if err := f.s.Content().Intend(ctx, other, f.name(), Intent{}); err != nil {
 		t.Fatal(err)

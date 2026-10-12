@@ -215,10 +215,16 @@ func commitFile(tx kv.Txn, ns entity.NamespaceID, fc FileCommit, delta counts) (
 		return nil, err
 	}
 	// The offload fence: read and rewritten, so commits of one file
-	// serialise on it. On a single node its epoch is not compared.
+	// serialise on it. On a single node its epoch is not compared. A file
+	// with no record has been released: its refs are dropped, and nothing
+	// is written for it, the fence included, so no key outlives it. The
+	// fence read still conflicts with the release that deletes it.
 	fkey := offloadFenceKey(share, file)
 	fb, ok, err := get(tx, fkey)
 	if err != nil {
+		return nil, err
+	}
+	if _, live, err := get(tx, fileKey(share, file)); err != nil || !live {
 		return nil, err
 	}
 	fv := encodeFence(fence{Epoch: fc.Epoch})
@@ -227,11 +233,6 @@ func commitFile(tx kv.Txn, ns entity.NamespaceID, fc FileCommit, delta counts) (
 	}
 	if err := tx.Set(fkey, fv); err != nil {
 		return nil, err
-	}
-	if _, ok, err := get(tx, fileKey(share, file)); err != nil {
-		return nil, err
-	} else if !ok {
-		return nil, nil // released: its refs are dropped
 	}
 
 	refs := slices.Clone(fc.Refs)
