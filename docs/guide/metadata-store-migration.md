@@ -81,12 +81,14 @@ shares on a second server running the new version, then switch clients over.
    ```bash
    dfs start --config /etc/dittofs-new/config.yaml \
      --pid-file /run/dittofs-new.pid --log-file /var/log/dittofs-new.log
-   dfsctl login --server http://127.0.0.1:8081 --username admin
+   dfsctl login --server http://127.0.0.1:8081 --username admin --context new
    ```
 
-   `dfsctl` talks to the last server you logged in to, so from here on every
-   `dfsctl` command goes to the new instance. To run one against the old server,
-   log in to it again or pass `--server` to that command.
+   Without `--context`, the login replaces your current context, and dfsctl
+   forgets the old server. With it, both servers stay saved: `dfsctl context
+   list` shows them, and `dfsctl context use <name>` picks the one the next
+   commands go to. `--server` alone only changes the URL: it still sends the
+   token of the active context, which the other server rejects.
 
 2. **Recreate the setup on the new instance.** Its control plane starts empty, so
    create again the users, groups and permissions the shares need
@@ -116,10 +118,13 @@ shares on a second server running the new version, then switch clients over.
    briefly disconnects its NFS clients:
 
    ```bash
-   # on each server, for each share you copy
+   # on each server (dfsctl context use <name>), for each share you copy
    dfsctl share nfs-config set /export --squash none
    dfsctl adapter disable nfs
    dfsctl adapter enable nfs --port <that server's NFS port>
+
+   # the remaining steps run on the new instance
+   dfsctl context use new
    ```
 
    Then mount and copy. `rsync` keeps owners, modes, timestamps and hard links:
@@ -147,11 +152,6 @@ shares on a second server running the new version, then switch clients over.
    server, move the new instance's adapters to the ports clients use
    (`dfsctl adapter edit nfs --port 12049`, and the same for SMB), and have
    clients remount: file handles from the old server do not carry over.
-
-   Stop the old server, move the new instance's adapters to the
-   ports clients use (`dfsctl adapter edit nfs --port 12049`, and the same for
-   SMB), and have clients remount: file handles from the old server do not carry
-   over.
 
 ## What does not move
 
