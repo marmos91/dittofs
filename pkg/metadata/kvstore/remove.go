@@ -123,6 +123,8 @@ func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Hand
 			return merrs.NewIsDirectoryError(f.ID.String())
 		case f.Nlink == 0:
 			return entity.ErrStale
+		case f.IsImmutable() || f.IsAppendOnly():
+			return merrs.NewPermissionDeniedError("immutable or append-only " + f.ID.String())
 		case f.Project != d.Project:
 			return entity.ErrCrossProject
 		}

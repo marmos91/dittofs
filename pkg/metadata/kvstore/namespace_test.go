@@ -128,6 +128,7 @@ func TestCaseInsensitiveShare(t *testing.T) {
 		t.Fatalf("Lookup(ReadMe) = %v, %v", got.ID, err)
 	}
 	// The directory, the share grant, the entry and the file: one entry key.
+	// A privileged caller reads no ACL; any other reads the directory's.
 	if n := f.c.Take(); n.Gets != 4 || n.Scanned != 0 {
 		t.Errorf("Lookup read %+v", n)
 	}

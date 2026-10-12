@@ -94,6 +94,18 @@ func mayChange(r kv.Reader, id entity.Identity, f entity.File, a entity.Attrs) e
 	if err := authorize(r, id, f, entity.ReadAttributes); err != nil {
 		return err // the share grant, at least
 	}
+	const locked = entity.FlagImmutable | entity.FlagAppendOnly
+	if f.Flags&locked != 0 {
+		// The one change such a file accepts, from anyone, is a privileged
+		// caller setting or clearing those two flags.
+		if a.Mask != entity.AttrFlags || (a.Flags^f.Flags)&^locked != 0 {
+			return merrs.NewPermissionDeniedError("immutable or append-only " + f.ID.String())
+		}
+		if !id.Privileged {
+			return merrs.NewPrivilegeRequiredError("clear immutable or append-only")
+		}
+		return nil
+	}
 	if id.Privileged {
 		return nil
 	}
