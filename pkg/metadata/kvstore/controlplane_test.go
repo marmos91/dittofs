@@ -74,10 +74,10 @@ func TestUserRenameAndIDsMoveTheirRows(t *testing.T) {
 
 	u.Name, u.IDs = "alicia", entity.ProtocolIDs{uid("1001")}
 	must(t, cp.PutUser(ctx, u))
-	if _, err := p.ByName(ctx, "alice"); !merrs.IsNotFoundError(err) {
+	if _, err := p.ByName(ctx, entity.PrincipalUser, "alice"); !merrs.IsNotFoundError(err) {
 		t.Errorf("old name still resolves: %v", err)
 	}
-	if got, err := p.ByName(ctx, "alicia"); err != nil || got != u.Principal {
+	if got, err := p.ByName(ctx, entity.PrincipalUser, "alicia"); err != nil || got != u.Principal {
 		t.Errorf("new name: %v, %v", got, err)
 	}
 	if _, err := p.ByProtocolID(ctx, uid("1000")); !merrs.IsNotFoundError(err) {
@@ -166,7 +166,7 @@ func TestDeleteRemovesMembershipsAndGrants(t *testing.T) {
 		t.Errorf("a new group inherited a deleted one's grant: %v", a)
 	}
 	must(t, cp.DeleteUser(ctx, u.Principal))
-	if _, err := p.ByName(ctx, "alice"); !merrs.IsNotFoundError(err) {
+	if _, err := p.ByName(ctx, entity.PrincipalUser, "alice"); !merrs.IsNotFoundError(err) {
 		t.Errorf("deleted user resolves: %v", err)
 	}
 	if err := cp.DeleteUser(ctx, u.Principal); !merrs.IsNotFoundError(err) {

@@ -201,7 +201,10 @@ func (r ClientRule) Valid() bool {
 }
 
 // Netgroup is a named set of hosts referenced by name from client rules. A
-// rule naming a netgroup that does not exist matches nothing.
+// rule naming a netgroup that does not exist fails closed: an allow rule
+// matches no host, and a rule of access none matches every host, so deleting
+// a netgroup an early deny names cannot let its hosts reach a later, broader
+// allow.
 type Netgroup struct {
 	Name    string
 	Members []string // host names, addresses or CIDRs

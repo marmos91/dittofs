@@ -16,28 +16,24 @@ type Principals struct{ s *Store }
 
 func (s *Store) Principals() Principals { return Principals{s} }
 
-// ByName finds a user by name, or failing that a group.
-//
-// decision: a user and a group may share a name, as a user's private group
-// does on POSIX systems, and the name lookup takes no kind, so the user wins.
-// A caller that means the group cannot reach it through this call; give the
-// lookup a kind if one ever needs to.
-func (p Principals) ByName(ctx context.Context, name string) (entity.Principal, error) {
+// ByName finds the user or group of that name. Names are unique per kind
+// only: a user and its same-named private group are the POSIX norm.
+func (p Principals) ByName(ctx context.Context, kind entity.PrincipalKind, name string) (entity.Principal, error) {
+	if kind != entity.PrincipalUser && kind != entity.PrincipalGroup {
+		return entity.Principal{}, merrs.NewInvalidArgumentError("only users and groups have names")
+	}
 	var out entity.Principal
 	err := p.s.kv.View(ctx, func(r kv.Reader) error {
-		for _, kind := range []entity.PrincipalKind{entity.PrincipalUser, entity.PrincipalGroup} {
-			b, err := r.Get(nameKey(nameKind(kind), name))
-			if errors.Is(err, kv.ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			id, err := decodeID(b)
-			out = entity.Principal{Kind: kind, ID: id}
+		b, ok, err := get(r, nameKey(nameKind(kind), name))
+		if err != nil {
 			return err
 		}
-		return merrs.NewNotFoundError(name, "principal")
+		if !ok {
+			return merrs.NewNotFoundError(name, kind.String())
+		}
+		id, err := decodeID(b)
+		out = entity.Principal{Kind: kind, ID: id}
+		return err
 	})
 	return out, err
 }

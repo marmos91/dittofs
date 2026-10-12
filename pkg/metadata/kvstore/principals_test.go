@@ -113,16 +113,23 @@ func TestLookups(t *testing.T) {
 		protocolKey(sidID), encodePrincipal(g),
 	)
 	p := s.Principals()
-	if got, err := p.ByName(ctx, "alice"); err != nil || got != u {
-		t.Errorf("ByName(alice) = %v, %v; want the user", got, err)
+	// A user and a group named alice are two principals, told apart by kind.
+	if got, err := p.ByName(ctx, entity.PrincipalUser, "alice"); err != nil || got != u {
+		t.Errorf("ByName(user, alice) = %v, %v", got, err)
 	}
-	if got, err := p.ByName(ctx, "staff"); err != nil || got != g {
-		t.Errorf("ByName(staff) = %v, %v", got, err)
+	if got, err := p.ByName(ctx, entity.PrincipalGroup, "alice"); err != nil || got != g {
+		t.Errorf("ByName(group, alice) = %v, %v", got, err)
+	}
+	if got, err := p.ByName(ctx, entity.PrincipalGroup, "staff"); err != nil || got != g {
+		t.Errorf("ByName(group, staff) = %v, %v", got, err)
+	}
+	if _, err := p.ByName(ctx, entity.PrincipalUser, "staff"); !merrs.IsNotFoundError(err) {
+		t.Errorf("ByName(user, staff): %v", err)
 	}
 	if got, err := p.ByProtocolID(ctx, sidID); err != nil || got != g {
 		t.Errorf("ByProtocolID(sid) = %v, %v", got, err)
 	}
-	if _, err := p.ByName(ctx, "nobody"); !merrs.IsNotFoundError(err) {
+	if _, err := p.ByName(ctx, entity.PrincipalUser, "nobody"); !merrs.IsNotFoundError(err) {
 		t.Errorf("ByName(nobody): %v", err)
 	}
 	if _, err := p.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeUID, Value: "7"}); !merrs.IsNotFoundError(err) {

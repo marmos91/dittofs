@@ -48,8 +48,8 @@ func (c ControlPlane) PutNetgroup(ctx context.Context, g entity.Netgroup) error 
 	})
 }
 
-// DeleteNetgroup removes a netgroup. A client rule naming it then matches
-// nothing, so no rule is rewritten.
+// DeleteNetgroup removes a netgroup. No rule naming it is rewritten: such a
+// rule then fails closed, an allow matching no host and a deny every host.
 func (c ControlPlane) DeleteNetgroup(ctx context.Context, name string) error {
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Delete(netgroupKey(name)) })
 }
