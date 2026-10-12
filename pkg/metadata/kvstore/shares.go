@@ -38,8 +38,18 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 		return s, err
 	}
 	st, err := decodeState(b)
+	if err != nil {
+		return s, err
+	}
 	s.State = st.State
-	return s, err
+	if b, ok, err := get(r, namespacesKey(id)); err != nil || !ok {
+		return s, err
+	} else if nss, err := decodeNamespaces(b); err != nil {
+		return s, err
+	} else {
+		s.Namespaces, s.Write = nss.Namespaces, nss.Write
+	}
+	return s, nil
 }
 
 // PutShare creates a share or changes its name or path; its root never

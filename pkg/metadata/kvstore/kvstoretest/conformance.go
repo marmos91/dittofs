@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"fmt"
@@ -10,8 +10,8 @@ import (
 
 // RFC 7 §12.1's cookie row: deleting the entry a cookie came from, and the
 // entries before it, skips and repeats nothing untouched.
-func TestCookieSurvivesDeletes(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testCookieSurvivesDeletes(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns := f.s.Namespace()
 	for i := range 700 {
 		f.create(f.admin, f.root, fmt.Sprintf("e%03d", i), regular(0o644))
@@ -45,8 +45,8 @@ func TestCookieSurvivesDeletes(t *testing.T) {
 }
 
 // RFC 7 §12.2's cost rows that a key count can answer.
-func TestReadCosts(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testReadCosts(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	files := f.s.Files()
 	h, _ := f.create(f.admin, f.root, "x", regular(0o644))
 
@@ -89,8 +89,8 @@ func TestReadCosts(t *testing.T) {
 
 // RFC 7 §3.6: creates in one directory do not conflict with each other, so
 // 64 at once all succeed and the directory holds all of them.
-func TestParallelCreatesInOneDirectory(t *testing.T) {
-	for _, b := range backends {
+func testParallelCreatesInOneDirectory(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
 		t.Run(b.name, func(t *testing.T) {
 			f, _ := newHeldFS(t, b, entity.FoldIdentity)
 			ns := f.s.Namespace()

@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"errors"
@@ -26,8 +26,8 @@ func pending(t *testing.T, f *fs) []entity.FileID {
 	return ids
 }
 
-func TestUnlinkAndLink(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testUnlinkAndLink(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns, files := f.s.Namespace(), f.s.Files()
 	h, file := f.create(f.admin, f.root, "a", regular(0o644))
 	must(t, ns.Link(ctx, f.admin, f.root, []byte("b"), h))
@@ -65,8 +65,8 @@ func TestUnlinkAndLink(t *testing.T) {
 	}
 }
 
-func TestRemoveDirectory(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testRemoveDirectory(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns := f.s.Namespace()
 	d, made := f.create(f.admin, f.root, "d", directory(0o755))
 	f.create(f.admin, d, "x", regular(0o644))
@@ -87,8 +87,8 @@ func TestRemoveDirectory(t *testing.T) {
 // RFC 7 §12.1's rmdir-against-create row, on every backend and in both
 // commit orders: exactly one commits, and nothing is left under a removed
 // directory.
-func TestRemoveDirectoryRacesCreate(t *testing.T) {
-	for _, b := range backends {
+func testRemoveDirectoryRacesCreate(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
 		for _, removalHeld := range []bool{true, false} {
 			name := b.name + "/create commits first"
 			if !removalHeld {
@@ -119,8 +119,8 @@ func TestRemoveDirectoryRacesCreate(t *testing.T) {
 }
 
 // RFC 7 §12.1's removal rights, as far as the mode decides them.
-func TestRemovalRights(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testRemovalRights(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns := f.s.Namespace()
 	alice, bob := f.member("alice", entity.Principal{}), f.member("bob", entity.Principal{})
 	// A 0777 directory gives everyone delete-a-child, so bob removes
@@ -149,8 +149,8 @@ func TestRemovalRights(t *testing.T) {
 
 // RFC 7 §12.1's Nlink row: over random creates, links and unlinks, every
 // file's Nlink equals the entries naming it after every transaction.
-func TestNlinkIsExactlyItsEntries(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testNlinkIsExactlyItsEntries(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns, files := f.s.Namespace(), f.s.Files()
 	rng := rand.New(rand.NewPCG(1, 2))
 	dirs := []entity.Handle{f.root}

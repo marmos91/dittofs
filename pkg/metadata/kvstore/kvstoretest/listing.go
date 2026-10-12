@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"fmt"
@@ -20,8 +20,8 @@ func names(t *testing.T, seq func(func(kvstore.Listed, error) bool)) ([]string, 
 	return ns, cs
 }
 
-func TestEntries(t *testing.T) {
-	f := newFS(t, entity.FoldUpcase)
+func testEntries(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldUpcase)
 	ns := f.s.Namespace()
 	const n = 600 // more than two pages
 	made := map[string]entity.FileID{}

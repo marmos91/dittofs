@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"errors"
@@ -8,8 +8,8 @@ import (
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-func TestDeleteShareMark(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testDeleteShareMark(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	cp := f.s.ControlPlane()
 	before, _ := cp.ShareList(ctx)
 	must(t, cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsRefuse))
@@ -47,8 +47,8 @@ func TestDeleteShareMark(t *testing.T) {
 func errOf2(_ entity.Handle, _ entity.File, err error) error { return err }
 
 // A cut freezing the share refuses the removal, which the client retries.
-func TestDeleteShareDuringCut(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testDeleteShareDuringCut(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	cp := f.s.ControlPlane()
 	must(t, cp.SetShareState(ctx, f.share.ID, entity.ShareEnabled, entity.ShareFrozen))
 	if err := cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsDelete); !errors.Is(err, entity.ErrDelay) {
@@ -59,8 +59,8 @@ func TestDeleteShareDuringCut(t *testing.T) {
 // The mark and a rename of the same share, in both commit orders: whichever
 // commits second sees the other, so a removed share is never renamed back
 // into the index.
-func TestDeleteShareRacesRename(t *testing.T) {
-	for _, b := range backends {
+func testDeleteShareRacesRename(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
 		for _, deleteHeld := range []bool{true, false} {
 			name := b.name + "/rename commits first"
 			if !deleteHeld {

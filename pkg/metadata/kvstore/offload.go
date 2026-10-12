@@ -276,6 +276,12 @@ func generationOf(r kv.Reader, share entity.ShareID, ns entity.NamespaceID) (uin
 // existing ref's versions include nr's newest, that part is already
 // committed; where the existing ref is newer, that part of nr is refused.
 // It returns the extents of nr now offloaded.
+//
+// ponytail: each ref the commit writes looks up the refs it overlaps with
+// its own seek and scan, so a 64-chunk block opens 128 iterators, about 8 ms
+// a commit on Badger in memory against the 5 ms p99 target. Read the refs
+// over the whole commit's extent once per file and replace them from that
+// view when the offload benchmark is gated.
 func replaceRefs(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, nr entity.ChunkRef, delta counts) ([]entity.Extent, error) {
 	existing, err := refsOver(tx, share, nr.File, nr.Extent())
 	if err != nil {

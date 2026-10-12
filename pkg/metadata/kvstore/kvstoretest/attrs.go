@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"testing"
@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
-func TestSetAttrsRights(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testSetAttrsRights(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	files := f.s.Files()
 	finance, eng := f.group("finance"), f.group("eng")
 	alice := f.member("alice", entity.Principal{}, eng)
@@ -55,8 +55,8 @@ func errOf(_ entity.File, e error) error { return e }
 
 // RFC 7 §12.1's client time row and §9.4's clamp: a time the client gives
 // is stored as given, earlier or later, and Change still advances.
-func TestTimes(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testTimes(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	files := f.s.Files()
 	h, made := f.create(f.admin, f.root, "x", regular(0o644))
 	past := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -76,8 +76,8 @@ func TestTimes(t *testing.T) {
 
 // RFC 7 §12.1's exclusive create row: after a SETATTR, a retry with the
 // first verifier is an error.
-func TestSetAttrsClearsVerifier(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testSetAttrsClearsVerifier(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns, files := f.s.Namespace(), f.s.Files()
 	excl := kvstore.NewFile{Type: entity.Regular, Mode: 0o644, Verifier: []byte("v1")}
 	h, _ := f.create(f.admin, f.root, "lock", excl)
@@ -87,8 +87,8 @@ func TestSetAttrsClearsVerifier(t *testing.T) {
 	}
 }
 
-func TestACLs(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testACLs(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	files := f.s.Files()
 	alice := f.member("alice", entity.Principal{})
 	bob := f.member("bob", entity.Principal{})
@@ -121,8 +121,8 @@ func TestACLs(t *testing.T) {
 	}
 }
 
-func TestXattrs(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testXattrs(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	files := f.s.Files()
 	h, made := f.create(f.admin, f.root, "x", regular(0o644))
 	must(t, files.SetXattr(ctx, f.admin, h, entity.Xattr{Name: []byte("user.b"), Value: []byte("2")}))

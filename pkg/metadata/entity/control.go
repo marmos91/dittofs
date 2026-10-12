@@ -70,6 +70,13 @@ type Share struct {
 	// State is its own record, not part of the one a share put writes: a cut
 	// and a deletion change it as well as the management API.
 	State ShareState
+	// Namespaces lists the block namespaces the share's content is counted
+	// in, each with its generation: one outside a re-home, two during one.
+	// Write is the generation new puts carve under. Both are their own
+	// record, written at create and then only by a re-home or an import,
+	// never by a share put.
+	Namespaces []NamespaceGen
+	Write      uint32
 }
 
 type ShareState uint8

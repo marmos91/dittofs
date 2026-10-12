@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"errors"
@@ -8,8 +8,8 @@ import (
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-func TestRootAndResolve(t *testing.T) {
-	s, _ := newStore(t)
+func testRootAndResolve(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp, files := s.ControlPlane(), s.Files()
 	sh, other := share("photos", "/photos"), share("docs", "/docs")
 	must(t, cp.PutShare(ctx, sh))

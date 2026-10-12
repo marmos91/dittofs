@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"errors"
@@ -21,8 +21,8 @@ type fs struct {
 	root  entity.Handle
 }
 
-func newFS(t *testing.T, fold entity.FoldRule) *fs {
-	s, c := newStore(t)
+func newFS(t *testing.T, kvo Opener, fold entity.FoldRule) *fs {
+	s, c := newStore(t, kvo)
 	return setupFS(t, s, c, fold)
 }
 
@@ -80,8 +80,8 @@ func directory(mode uint32) kvstore.NewFile {
 	return kvstore.NewFile{Type: entity.Directory, Mode: mode}
 }
 
-func TestCreateAndLookup(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testCreateAndLookup(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns := f.s.Namespace()
 	h, made := f.create(f.admin, f.root, "README", regular(0o644))
 	if made.Nlink != 1 || made.Number < 2 || made.Owner != f.admin.Principal || made.Validate() != nil {
@@ -115,8 +115,8 @@ func TestCreateAndLookup(t *testing.T) {
 }
 
 // RFC 7 §12.1's case row.
-func TestCaseInsensitiveShare(t *testing.T) {
-	f := newFS(t, entity.FoldUpcase)
+func testCaseInsensitiveShare(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldUpcase)
 	ns := f.s.Namespace()
 	_, made := f.create(f.admin, f.root, "README", regular(0o644))
 	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("readme"), regular(0o644)); !isExist(err) {
@@ -142,8 +142,8 @@ func TestCaseInsensitiveShare(t *testing.T) {
 
 // RFC 7 §12.1's owner and group at create, setgid for a non-member, and no
 // group at all.
-func TestOwnerAndGroupAtCreate(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testOwnerAndGroupAtCreate(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	primary, other, finance := f.group("users"), f.group("eng"), f.group("finance")
 	alice := f.member("alice", primary, primary, other)
 	carol := f.member("carol", entity.Principal{}) // no primary group, no groups
@@ -189,8 +189,8 @@ func TestOwnerAndGroupAtCreate(t *testing.T) {
 }
 
 // RFC 7 §12.1's exclusive create row.
-func TestExclusiveCreate(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testExclusiveCreate(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns := f.s.Namespace()
 	excl := func(v string) kvstore.NewFile {
 		return kvstore.NewFile{Type: entity.Regular, Mode: 0o644, Verifier: []byte(v)}
@@ -210,8 +210,8 @@ func TestExclusiveCreate(t *testing.T) {
 
 // RFC 7 §12.2: records written per create are constant in the directory's
 // size, and none of them is the directory's record.
-func TestCreateCost(t *testing.T) {
-	f := newFS(t, entity.FoldUpcase)
+func testCreateCost(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldUpcase)
 	f.create(f.admin, f.root, "warm", regular(0o644))
 	for i := range 300 {
 		f.c.Take()
@@ -223,8 +223,8 @@ func TestCreateCost(t *testing.T) {
 	}
 }
 
-func TestGetAndGrant(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testGetAndGrant(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	h, made := f.create(f.admin, f.root, "x", regular(0o600))
 	got, err := f.s.Files().Get(ctx, f.admin, h)
 	if err != nil || got.ID != made.ID {

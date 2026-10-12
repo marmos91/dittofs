@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"testing"
@@ -8,8 +8,8 @@ import (
 
 // What a change costs, in keys read and written: a rename touches its record
 // and its name rows and nothing else.
-func TestCosts(t *testing.T) {
-	s, c := newStore(t)
+func testCosts(t *testing.T, kvo Opener) {
+	s, c := newStore(t, kvo)
 	cp := s.ControlPlane()
 	u := user("alice", uid("1000"))
 	must(t, cp.PutUser(ctx, u))

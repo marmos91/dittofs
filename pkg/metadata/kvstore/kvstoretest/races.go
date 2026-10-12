@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
@@ -37,24 +36,10 @@ func (h *holding) Update(ctx context.Context, fn func(kv.Txn) error) error {
 	})
 }
 
+// backend is the KV a race case runs on, named for its subtest.
 type backend struct {
 	name string
-	open func(t *testing.T) kv.KV
-}
-
-var backends = []backend{
-	{"memory", func(t *testing.T) kv.KV {
-		db, err := badgerkv.Open(badgerkv.Options{})
-		must(t, err)
-		t.Cleanup(func() { db.Close() })
-		return db
-	}},
-	{"disk", func(t *testing.T) kv.KV {
-		db, err := badgerkv.Open(badgerkv.Options{Dir: t.TempDir()})
-		must(t, err)
-		t.Cleanup(func() { db.Close() })
-		return db
-	}},
+	open Opener
 }
 
 func heldStore(t *testing.T, b backend) (*kvstore.Store, *holding) {
@@ -77,8 +62,8 @@ func race(h *holding, outer, inner func() error) (outerErr, innerErr error) {
 
 // Two writers claim one unique row: whichever commits second is refused,
 // in both orders.
-func TestUniqueClaimsRace(t *testing.T) {
-	for _, b := range backends {
+func testUniqueClaimsRace(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
 		t.Run(b.name, func(t *testing.T) {
 			for _, c := range []struct {
 				name string
@@ -121,8 +106,8 @@ func TestUniqueClaimsRace(t *testing.T) {
 
 // A membership or grant added while its principal is deleted never
 // outlives the principal, in either order.
-func TestDeleteRacesAdd(t *testing.T) {
-	for _, b := range backends {
+func testDeleteRacesAdd(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
 		t.Run(b.name, func(t *testing.T) {
 			for _, c := range []struct {
 				name string
@@ -173,8 +158,8 @@ func TestDeleteRacesAdd(t *testing.T) {
 }
 
 // Of two state changes from one state, the second to commit is refused.
-func TestShareStateRace(t *testing.T) {
-	s, h := heldStore(t, backends[0])
+func testShareStateRace(t *testing.T, kvo Opener) {
+	s, h := heldStore(t, kvo.backends()[0])
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
 	must(t, cp.PutShare(ctx, sh))

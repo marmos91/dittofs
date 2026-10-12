@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"testing"
@@ -10,8 +10,8 @@ import (
 func isPerm(err error) bool { return isCode(err, merrs.ErrPermissionDenied) }
 
 // RFC 7 §12.1's flags row, as far as the namespace answers it.
-func TestImmutableAndAppendOnly(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testImmutableAndAppendOnly(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns, files := f.s.Namespace(), f.s.Files()
 	alice := f.member("alice", entity.Principal{})
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
@@ -73,8 +73,8 @@ func TestImmutableAndAppendOnly(t *testing.T) {
 	}
 }
 
-func TestStoredACLDecides(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testStoredACLDecides(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns, files := f.s.Namespace(), f.s.Files()
 	staff := f.group("staff")
 	alice := f.member("alice", entity.Principal{})
@@ -110,8 +110,8 @@ func TestStoredACLDecides(t *testing.T) {
 
 // RFC 7 §12.1's share grant row: a removed grant refuses the next call on
 // a handle the caller already holds.
-func TestRevokedGrantRefusesNextCall(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testRevokedGrantRefusesNextCall(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	alice := f.member("alice", entity.Principal{})
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	h, _ := f.create(alice, pub, "x", regular(0o644))

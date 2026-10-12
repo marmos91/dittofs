@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"errors"
@@ -13,8 +13,8 @@ func isCode(err error, code merrs.ErrorCode) bool {
 	return errors.As(err, &se) && se.Code == code
 }
 
-func TestRename(t *testing.T) {
-	f := newFS(t, entity.FoldUpcase)
+func testRename(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldUpcase)
 	ns, files := f.s.Namespace(), f.s.Files()
 	a, _ := f.create(f.admin, f.root, "a", directory(0o755))
 	b, bdir := f.create(f.admin, f.root, "b", directory(0o755))
@@ -48,8 +48,8 @@ func TestRename(t *testing.T) {
 	}
 }
 
-func TestRenameOver(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testRenameOver(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns := f.s.Namespace()
 	_, x := f.create(f.admin, f.root, "x", regular(0o644))
 	_, y := f.create(f.admin, f.root, "y", regular(0o644))
@@ -91,8 +91,8 @@ func TestRenameOver(t *testing.T) {
 
 // RFC 7 §12.1's sequential loop row: the one check that fails a build with
 // no loop check, whatever the backend.
-func TestRenameUnderItself(t *testing.T) {
-	f := newFS(t, entity.FoldIdentity)
+func testRenameUnderItself(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
 	ns := f.s.Namespace()
 	a, _ := f.create(f.admin, f.root, "a", directory(0o755))
 	b, _ := f.create(f.admin, a, "b", directory(0o755))
@@ -106,8 +106,8 @@ func TestRenameUnderItself(t *testing.T) {
 
 // RFC 7 §12.1's concurrent loop row: A under B and B under A, in both
 // commit orders: one is refused and no unreachable cycle is left.
-func TestRenameLoopRace(t *testing.T) {
-	for _, b := range backends {
+func testRenameLoopRace(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
 		for _, aHeld := range []bool{true, false} {
 			name := b.name + "/A under B held"
 			if !aHeld {
@@ -147,8 +147,8 @@ func TestRenameLoopRace(t *testing.T) {
 
 // RFC 7 §12.1's rename-over row: a create racing into the directory a
 // rename replaces, in both commit orders.
-func TestRenameOverRacesCreate(t *testing.T) {
-	for _, b := range backends {
+func testRenameOverRacesCreate(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
 		for _, renameHeld := range []bool{true, false} {
 			name := b.name + "/create commits first"
 			if !renameHeld {

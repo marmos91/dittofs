@@ -1,4 +1,4 @@
-package kvstore_test
+package kvstoretest
 
 import (
 	"context"
@@ -12,20 +12,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
 )
 
 var ctx = context.Background()
 
-func newStore(t *testing.T) (*kvstore.Store, *kv.Counting) {
+// newStore initialises and opens a store over a fresh KV from o, behind a
+// counting wrapper so a case can assert an operation's cost.
+func newStore(t *testing.T, kvo Opener) (*kvstore.Store, *kv.Counting) {
 	t.Helper()
-	db, err := badgerkv.Open(badgerkv.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	c := &kv.Counting{KV: db}
+	c := &kv.Counting{KV: kvo(t)}
 	if err := kvstore.Init(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +62,8 @@ func share(name, path string) entity.Share {
 	return entity.Share{ID: entity.NewShareID(), Name: name, Path: path, Root: entity.NewFileID()}
 }
 
-func TestUserRenameAndIDsMoveTheirRows(t *testing.T) {
-	s, _ := newStore(t)
+func testUserRenameAndIDsMoveTheirRows(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
 	u := user("alice", uid("1000"))
 	must(t, cp.PutUser(ctx, u))
@@ -101,8 +97,8 @@ func TestUserRenameAndIDsMoveTheirRows(t *testing.T) {
 	}
 }
 
-func TestPrincipalUniqueness(t *testing.T) {
-	s, _ := newStore(t)
+func testPrincipalUniqueness(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	must(t, cp.PutUser(ctx, user("alice", uid("1000"))))
 	if err := cp.PutUser(ctx, user("alice")); !isExist(err) {
@@ -131,8 +127,8 @@ func isExist(err error) bool {
 	return errors.As(err, &se) && se.Code == merrs.ErrAlreadyExists
 }
 
-func TestDeleteRemovesMembershipsAndGrants(t *testing.T) {
-	s, _ := newStore(t)
+func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
 	u, g, outer := user("alice"), group("staff"), group("all")
 	sh := share("photos", "/photos")
@@ -177,8 +173,8 @@ func TestDeleteRemovesMembershipsAndGrants(t *testing.T) {
 	}
 }
 
-func TestShares(t *testing.T) {
-	s, _ := newStore(t)
+func testShares(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	list := func() uint64 {
 		v, err := cp.ShareList(ctx)
@@ -248,8 +244,8 @@ func TestShares(t *testing.T) {
 	}
 }
 
-func TestSetShareState(t *testing.T) {
-	s, _ := newStore(t)
+func testSetShareState(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
 	must(t, cp.PutShare(ctx, sh))
@@ -269,8 +265,8 @@ func TestSetShareState(t *testing.T) {
 	}
 }
 
-func TestGrantVersions(t *testing.T) {
-	s, _ := newStore(t)
+func testGrantVersions(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
 	u, g := user("alice"), group("staff")
 	sh := share("photos", "/photos")
@@ -296,8 +292,8 @@ func TestGrantVersions(t *testing.T) {
 	}
 }
 
-func TestExportPolicy(t *testing.T) {
-	s, _ := newStore(t)
+func testExportPolicy(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
 	must(t, cp.PutShare(ctx, sh))
@@ -325,8 +321,8 @@ func TestExportPolicy(t *testing.T) {
 	}
 }
 
-func TestNetgroupsAndSettings(t *testing.T) {
-	s, _ := newStore(t)
+func testNetgroupsAndSettings(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	must(t, cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/8"}}))
 	must(t, cp.PutNetgroup(ctx, entity.Netgroup{Name: "office"}))
@@ -356,8 +352,8 @@ func TestNetgroupsAndSettings(t *testing.T) {
 }
 
 // A listing longer than one page resumes where the page ended.
-func TestListingPages(t *testing.T) {
-	s, _ := newStore(t)
+func testListingPages(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	const n = 600
 	for i := range n {
@@ -370,8 +366,8 @@ func TestListingPages(t *testing.T) {
 }
 
 // A share's fold rule, name rule and digest key are fixed at create.
-func TestShareBoundSettings(t *testing.T) {
-	s, _ := newStore(t)
+func testShareBoundSettings(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	ci := share("docs", "/docs")
 	ci.Fold = entity.FoldUpcase
