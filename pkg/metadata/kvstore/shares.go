@@ -122,6 +122,8 @@ func (c ControlPlane) claimSharePath(tx kv.Txn, s entity.Share, existed bool, ol
 			return merrs.NewAlreadyExistsError("share path " + s.Path + " is inside share path " + a)
 		}
 	}
+	// Every share put also raises ShareList, which already orders two puts;
+	// the guard keeps this rule from resting on that counter.
 	below := pathsBelow(s.Path)
 	if err := tx.GuardRange(below); err != nil {
 		return err
