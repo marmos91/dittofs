@@ -69,8 +69,9 @@ func decodeFormat(b []byte) (format, error) {
 
 // Store is the metadata store over one KV.
 type Store struct {
-	kv     kv.KV
-	format uint64
+	kv      kv.KV
+	format  uint64
+	numbers numbers
 }
 
 // Init creates the store: the format record at the newest format, the
