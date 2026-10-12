@@ -372,15 +372,14 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 }
 
 // ============================================================================
-// TestCrossProtocol_ErrorConformance (ADAPT-05 e2e tier).
+// TestCrossProtocol_ErrorConformance.
 // ============================================================================
 //
 // Table-driven verification that the same metadata.ErrorCode produces
 // consistent client-observable errnos on both the NFS and SMB mounts, using
 // the per-adapter types tables as the single source of truth for expected
-// per-protocol codes. Extends the XPR-01..06 pattern: one shared server + one
-// NFS mount + one SMB mount, reused across all ~18 subtests (PATTERNS.md
-// gotcha: per-subtest mount bootstrap is flaky and compounds CI time).
+// per-protocol codes. One shared server and one set of mounts are reused
+// across all subtests, because mounting per subtest is slow and flaky.
 //
 // The assertion is: types.StatusForErr(storeErr) (nfs/types) AND
 // smb/types.StatusForErr(storeErr) from
@@ -395,10 +394,11 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 // errnos are derived at runtime from the per-adapter types packages' StatusForErr.
 //
 // Test tier split:
-//   - E2E tier (this function): ~18 codes triggerable via real kernel ops.
-//   - Unit tier: ~9 exotic codes (deadlock, quota, grace period, connection
-//     limits) that require backend fault injection or protocol-specific
-//     RPCs the kernel does not expose at the file-I/O syscall layer. See
+//   - E2E tier (this function): codes a Linux kernel client can provoke
+//     through file-I/O syscalls against a server it does not control.
+//   - Unit tier: codes nothing on that path produces — malformed handles,
+//     backend I/O faults, NFSv4-only operations, lock-state errors that the
+//     kernel clients never send, and codes with no producer at all. See
 //     internal/adapter/nfs/types/statusfor_test.go (per-package full-enum tables).
 func TestCrossProtocol_ErrorConformance(t *testing.T) {
 	if testing.Short() {
@@ -408,9 +408,8 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 	fixture := setupErrorConformanceFixture(t)
 
 	// The conformance table: one row per e2e-triggerable metadata.ErrorCode.
-	// Each row names the code, provides the protocol-specific trigger, and
-	// (optionally) overrides the mount root — e.g., TriggerErrReadOnly must
-	// target the read-only share's mount, not the primary read-write share.
+	// Each row names the code, provides the protocol-agnostic trigger, and
+	// names the share whose mounts the trigger runs against.
 	//
 	// Expected errnos are derived at runtime from the per-adapter types packages via
 	// nfs3StatusToErrno(nfs3types.StatusForErr(sentinelErr)) and
@@ -425,29 +424,26 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 		{name: "ErrNotDirectory", code: merrs.ErrNotDirectory, trigger: helpers.TriggerErrNotDirectory},
 		{name: "ErrNameTooLong", code: merrs.ErrNameTooLong, trigger: helpers.TriggerErrNameTooLong},
 		{name: "ErrInvalidArgument", code: merrs.ErrInvalidArgument, trigger: helpers.TriggerErrInvalidArgument},
-		{name: "ErrInvalidHandle", code: merrs.ErrInvalidHandle, trigger: helpers.TriggerErrInvalidHandle},
-		{name: "ErrStaleHandle", code: merrs.ErrStaleHandle, trigger: helpers.TriggerErrStaleHandle},
-		{name: "ErrAccessDenied", code: merrs.ErrAccessDenied, trigger: helpers.TriggerErrAccessDenied},
-		{name: "ErrPermissionDenied", code: merrs.ErrPermissionDenied, trigger: helpers.TriggerErrPermissionDenied},
-		// ErrReadOnly: SMB framework's MountSMB hardcodes the "/export" share
-		// path, so we cannot currently mount the read-only "/archive" share
-		// over SMB — the fixture aliases SMBReadOnlyMount to the rw mount.
-		// Running TriggerErrReadOnly against a rw SMB mount would return
-		// success (no errno), failing the subtest for the wrong reason.
-		// Skip the SMB leg until the framework gains share-path support.
-		{name: "ErrReadOnly", code: merrs.ErrReadOnly, trigger: helpers.TriggerErrReadOnly, useReadOnlyMount: true, skipSMB: true, skipSMBReason: "SMB framework MountSMB hardcodes /export; /archive mount pending framework update"},
+		// decision: this row pins the errno a server-side write denial
+		// reaches the client as, not which check denies it. A read-only
+		// default permission also gives the share root a root-owned 0755
+		// mode, so the mode bits refuse the write too, and the row passes
+		// even with the share-grant check broken. Pin the grant separately,
+		// on a share whose root mode bits would allow the write, if the
+		// grant check needs its own e2e coverage.
+		{name: "ErrAccessDenied", code: merrs.ErrAccessDenied, trigger: helpers.TriggerErrAccessDenied, share: shareRestricted},
+		// decision: only the NFS leg runs. Nothing a cifs client sends
+		// without POSIX extensions reaches the ownership check: it discards
+		// the server's error on a chmod, never sends a chown, and an explicit
+		// timestamp is authorized by FILE_WRITE_ATTRIBUTES on the open handle
+		// rather than by ownership. Run the SMB leg if the fixture ever mounts
+		// with an option that sends mode or owner changes (cifsacl,
+		// modefromsid).
+		{name: "ErrPermissionDenied", code: merrs.ErrPermissionDenied, trigger: helpers.TriggerErrPermissionDenied,
+			skipSMBReason: "no cifs operation reaches the server's ownership check"},
+		{name: "ErrReadOnly", code: merrs.ErrReadOnly, trigger: helpers.TriggerErrReadOnly, share: shareReadOnly},
+		{name: "ErrNoSpace", code: merrs.ErrNoSpace, trigger: helpers.TriggerErrNoSpace, share: shareQuota},
 		{name: "ErrLocked", code: merrs.ErrLocked, trigger: helpers.TriggerErrLocked},
-		// Codes with reliable triggers ending here. Remaining e2e-tier
-		// entries (ErrIOError, ErrNoSpace, ErrNotSupported, ErrAuthRequired,
-		// ErrLockNotFound) have trigger helpers that t.Skip() with a
-		// documented reason; they are retained as table rows so the shape
-		// matches the e2e-tier list and so a future plan that wires
-		// backend fault injection can unskip them with one edit each.
-		{name: "ErrIOError", code: merrs.ErrIOError, trigger: helpers.TriggerErrIOError},
-		{name: "ErrNoSpace", code: merrs.ErrNoSpace, trigger: helpers.TriggerErrNoSpace},
-		{name: "ErrNotSupported", code: merrs.ErrNotSupported, trigger: helpers.TriggerErrNotSupported},
-		{name: "ErrAuthRequired", code: merrs.ErrAuthRequired, trigger: helpers.TriggerErrAuthRequired},
-		{name: "ErrLockNotFound", code: merrs.ErrLockNotFound, trigger: helpers.TriggerErrLockNotFound},
 	}
 
 	for _, c := range cases {
@@ -459,29 +455,52 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 			wantNFSErrno := nfs3StatusToErrno(nfs3types.StatusForErr(sentinel))
 			wantSMBErrno := smbStatusToErrno(smbtypes.StatusForErr(sentinel))
 
-			nfsRoot := fixture.NFSMount.Path
-			smbRoot := fixture.SMBMount.Path
-			if c.useReadOnlyMount {
-				nfsRoot = fixture.NFSReadOnlyMount.Path
-				smbRoot = fixture.SMBReadOnlyMount.Path
-			}
+			m, ok := fixture.mounts[c.share]
+			require.True(t, ok, "fixture has no mounts for share %d", c.share)
 
 			// NFS side.
 			t.Run("nfs", func(t *testing.T) {
-				got := c.trigger(t, nfsRoot)
+				got := c.trigger(t, m.nfs, m.nfsPeer)
 				assertErrnoMatches(t, "NFS "+c.name, got, wantNFSErrno)
 			})
 
 			// SMB side.
 			t.Run("smb", func(t *testing.T) {
-				if c.skipSMB {
+				if c.skipSMBReason != "" {
 					t.Skipf("SMB subtest skipped: %s", c.skipSMBReason)
 				}
-				got := c.trigger(t, smbRoot)
+				got := c.trigger(t, m.smb, m.smbPeer)
 				assertErrnoMatches(t, "SMB "+c.name, got, wantSMBErrno)
 			})
 		})
 	}
+}
+
+// conformanceShare names which of the fixture's shares a conformance row runs
+// against. The zero value is the primary read-write share.
+type conformanceShare int
+
+const (
+	// shareReadWrite is "/export": read-write for every identity. The only
+	// share with peer mounts.
+	shareReadWrite conformanceShare = iota
+	// shareReadOnly is "/archive": a read-only share. No peer.
+	shareReadOnly
+	// shareRestricted is "/restricted": readable by everyone, writable only
+	// by an explicit grant. Both legs mount it as an identity without one.
+	// No peer.
+	shareRestricted
+	// shareQuota is "/quota": read-write with a 1 MiB byte quota. No peer.
+	shareQuota
+)
+
+// conformanceMounts is the set of mount roots a row's trigger runs against.
+// nfsPeer and smbPeer are the peer roots handed to the trigger on each leg:
+// a mount of the same share by another client or identity, or "" when the
+// share has none.
+type conformanceMounts struct {
+	nfs, smb         string
+	nfsPeer, smbPeer string
 }
 
 // errorConformanceCase is a single row in TestCrossProtocol_ErrorConformance's
@@ -496,28 +515,19 @@ type errorConformanceCase struct {
 	code merrs.ErrorCode
 	// trigger fires ONE scenario against the given mount root and returns
 	// the observed TriggerResult. Both protocols share the same trigger.
-	trigger func(t *testing.T, mountRoot string) helpers.TriggerResult
-	// useReadOnlyMount routes the trigger to the read-only share fixture —
-	// required for ErrReadOnly and any future code that needs a non-rw
-	// mount to reproduce.
-	useReadOnlyMount bool
-	// skipSMB skips the SMB leg of this subtest. Used when the framework
-	// cannot currently set up the required SMB fixture (e.g. read-only
-	// share — MountSMB hardcodes the share path). Document the reason in
-	// skipSMBReason so the skip is intentional and tracked.
-	skipSMB       bool
+	trigger func(t *testing.T, mountRoot, peerRoot string) helpers.TriggerResult
+	// share selects the fixture share the trigger runs against.
+	share conformanceShare
+	// skipSMBReason, when set, skips the SMB leg of this subtest. It must
+	// say why the code cannot be produced over SMB.
 	skipSMBReason string
 }
 
 // errorConformanceFixture holds the shared state for
-// TestCrossProtocol_ErrorConformance. One server + one NFS mount + one SMB
-// mount is bootstrapped once; all subtests reuse it. A second read-only
-// share is provisioned for triggers that require non-rw semantics.
+// TestCrossProtocol_ErrorConformance: one server and, for every share a row
+// can select, its NFS and SMB mounts.
 type errorConformanceFixture struct {
-	NFSMount         *framework.Mount
-	SMBMount         *framework.Mount
-	NFSReadOnlyMount *framework.Mount
-	SMBReadOnlyMount *framework.Mount
+	mounts map[conformanceShare]conformanceMounts
 }
 
 // setupErrorConformanceFixture bootstraps the shared server + mounts for
@@ -530,38 +540,42 @@ func setupErrorConformanceFixture(t *testing.T) *errorConformanceFixture {
 
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// Primary read-write share.
-	rwMeta := helpers.UniqueTestName("confmeta")
-	rwBlock := helpers.UniqueTestName("confpayload")
-	rwShare := "/export"
-	_, err := cli.CreateInMemoryMetadataStore(rwMeta)
-	require.NoError(t, err)
-	_, err = cli.CreateBlockStore(rwBlock, "memory")
-	require.NoError(t, err)
-	_, err = cli.CreateShare(rwShare, rwMeta, rwBlock,
-		helpers.WithShareDefaultPermission("read-write"))
-	require.NoError(t, err)
+	createShare := func(prefix, share string, opts ...helpers.ShareOption) {
+		t.Helper()
+		meta := helpers.UniqueTestName(prefix + "meta")
+		block := helpers.UniqueTestName(prefix + "payload")
+		_, err := cli.CreateInMemoryMetadataStore(meta)
+		require.NoError(t, err)
+		_, err = cli.CreateBlockStore(block, "memory")
+		require.NoError(t, err)
+		_, err = cli.CreateShare(share, meta, block, opts...)
+		require.NoError(t, err)
+	}
 
-	// Read-only share for ErrReadOnly.
-	roMeta := helpers.UniqueTestName("confmetaro")
-	roBlock := helpers.UniqueTestName("confpayloadro")
-	roShare := "/archive"
-	_, err = cli.CreateInMemoryMetadataStore(roMeta)
-	require.NoError(t, err)
-	_, err = cli.CreateBlockStore(roBlock, "memory")
-	require.NoError(t, err)
-	_, err = cli.CreateShare(roShare, roMeta, roBlock,
+	createShare("conf", "/export", helpers.WithShareDefaultPermission("read-write"))
+	createShare("confro", "/archive",
 		helpers.WithShareReadOnly(true),
 		helpers.WithShareDefaultPermission("read-write"))
-	require.NoError(t, err)
+	// Readable by every identity — including the guest an NFS root is
+	// squashed to — and writable only through an explicit grant.
+	createShare("confrestricted", "/restricted", helpers.WithShareDefaultPermission("read"))
+	createShare("confquota", "/quota",
+		helpers.WithShareDefaultPermission("read-write"),
+		helpers.WithShareQuotaBytes("1MiB"))
 
-	// SMB user + permissions for both shares.
-	smbUser := helpers.UniqueTestName("confuser")
+	// SMB users. The writer is granted read-write on every share but
+	// "/restricted", where the reader is granted only read.
 	smbPass := "testpass123"
-	_, err = cli.CreateUser(smbUser, smbPass)
+	writer := helpers.UniqueTestName("confuser")
+	_, err := cli.CreateUser(writer, smbPass)
 	require.NoError(t, err)
-	require.NoError(t, cli.GrantUserPermission(rwShare, smbUser, "read-write"))
-	require.NoError(t, cli.GrantUserPermission(roShare, smbUser, "read-write"))
+	for _, share := range []string{"/export", "/archive", "/quota"} {
+		require.NoError(t, cli.GrantUserPermission(share, writer, "read-write"))
+	}
+	reader := helpers.UniqueTestName("confreader")
+	_, err = cli.CreateUser(reader, smbPass)
+	require.NoError(t, err)
+	require.NoError(t, cli.GrantUserPermission("/restricted", reader, "read"))
 
 	// Enable adapters.
 	nfsPort := helpers.FindFreePort(t)
@@ -576,29 +590,33 @@ func setupErrorConformanceFixture(t *testing.T) *errorConformanceFixture {
 	framework.WaitForServer(t, nfsPort, 10*time.Second)
 	framework.WaitForServer(t, smbPort, 10*time.Second)
 
-	// Mount primary rw share on both protocols.
-	nfsMount := framework.MountNFS(t, nfsPort)
-	t.Cleanup(nfsMount.Cleanup)
-	smbCreds := framework.SMBCredentials{Username: smbUser, Password: smbPass}
-	smbMount := framework.MountSMB(t, smbPort, smbCreds)
-	t.Cleanup(smbMount.Cleanup)
-
-	// Mount read-only share — NFS uses explicit export path "/archive".
-	nfsRO := framework.MountNFSExportWithVersion(t, nfsPort, "/archive", "3")
-	t.Cleanup(nfsRO.Cleanup)
-	// SMB mount of the read-only share requires a second SMB mount; today
-	// the framework's MountSMB hardcodes "/export". For now alias smbRO to
-	// the rw SMB mount and document that ErrReadOnly's SMB assertion is
-	// effectively disabled (trigger targets the NFS read-only mount; the
-	// per-adapter types table row is still verified unit-side).
-	smbRO := smbMount
-
-	return &errorConformanceFixture{
-		NFSMount:         nfsMount,
-		SMBMount:         smbMount,
-		NFSReadOnlyMount: nfsRO,
-		SMBReadOnlyMount: smbRO,
+	writerCreds := framework.SMBCredentials{Username: writer, Password: smbPass}
+	readerCreds := framework.SMBCredentials{Username: reader, Password: smbPass}
+	mountNFS := func(share string) string {
+		m := framework.MountNFSExportWithVersion(t, nfsPort, share, "3")
+		t.Cleanup(m.Cleanup)
+		return m.Path
 	}
+	mountSMB := func(share string, creds framework.SMBCredentials) string {
+		m := framework.MountSMBExport(t, smbPort, share, creds)
+		t.Cleanup(m.Cleanup)
+		return m.Path
+	}
+
+	rwNFS := mountNFS("/export")
+	rwSMB := mountSMB("/export", writerCreds)
+
+	return &errorConformanceFixture{mounts: map[conformanceShare]conformanceMounts{
+		// Each protocol's peer is the other protocol's mount of the share. The
+		// two identities differ — NFS root is squashed to the guest, SMB is
+		// the writer — so a file one creates is not owned by the other.
+		shareReadWrite: {nfs: rwNFS, smb: rwSMB, nfsPeer: rwSMB, smbPeer: rwNFS},
+		shareReadOnly:  {nfs: mountNFS("/archive"), smb: mountSMB("/archive", writerCreds)},
+		// NFS mounts as root, which the default squash maps to the guest;
+		// SMB mounts as the reader. Neither may write.
+		shareRestricted: {nfs: mountNFS("/restricted"), smb: mountSMB("/restricted", readerCreds)},
+		shareQuota:      {nfs: mountNFS("/quota"), smb: mountSMB("/quota", writerCreds)},
+	}}
 }
 
 // assertErrnoMatches compares an observed TriggerResult to an expected
