@@ -17,10 +17,20 @@ var (
 // MaxShareName is the SMB share-name limit, in characters.
 const MaxShareName = 80
 
-// FoldShareName is the form share names are unique under: each character
-// upper-cased by its simple mapping, as SMB servers compare them. The store
-// format records which fold it uses, since changing it can merge two names.
-func FoldShareName(name string) string { return strings.ToUpper(name) }
+// FoldShareName is the form share names are unique under, as SMB servers
+// compare them: a 16-bit upcase table over UTF-16 code units, here each BMP
+// character's simple upper-case mapping, with no normalisation. A character
+// outside the BMP is two surrogate units the table leaves alone, so it is not
+// folded. The store format records which fold it uses, since changing it can
+// merge two names.
+func FoldShareName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if u := unicode.ToUpper(r); r <= 0xFFFF && u <= 0xFFFF {
+			return u
+		}
+		return r
+	}, name)
+}
 
 // ValidShareName reports whether name may name a share: 1 to 80 characters
 // of valid UTF-8, none of them a control character or one of \ / : * ? " < > |,

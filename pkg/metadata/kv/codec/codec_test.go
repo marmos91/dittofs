@@ -39,3 +39,22 @@ func TestRefusal(t *testing.T) {
 		t.Errorf("trailing: %v", r.Done())
 	}
 }
+
+func TestPrimitives(t *testing.T) {
+	b := NewWriter(2).Uint32(9).Uint8(7).Bool(true).String("é").Fixed([]byte{1, 2}).Len(3).Encode()
+	if got, want := hex.EncodeToString(b), "02"+"00000009"+"07"+"01"+"02c3a9"+"0102"+"03"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	r, _, _ := NewReader(b, 2)
+	if r.Uint32() != 9 || r.Uint8() != 7 || !r.Bool() || r.String() != "é" || string(r.Fixed(2)) != "\x01\x02" {
+		t.Fatal("round trip")
+	}
+	// The count claims 3 items with no bytes left for them.
+	if r.Len() != 0 || !errors.Is(r.Done(), ErrTruncated) {
+		t.Errorf("count past the end: %v", r.Done())
+	}
+	r, _, _ = NewReader([]byte{1, 2}, 1)
+	if r.Bool(); !errors.Is(r.Done(), ErrTruncated) {
+		t.Errorf("bool 2: %v", r.Done())
+	}
+}

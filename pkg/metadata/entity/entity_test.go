@@ -164,3 +164,10 @@ func TestClientRuleValid(t *testing.T) {
 		}
 	}
 }
+
+// The fold is a 16-bit table: a character outside the BMP is not folded.
+func TestFoldShareNameBMPOnly(t *testing.T) {
+	if got := FoldShareName("ß𐐨é"); got != "ß𐐨É" {
+		t.Errorf("FoldShareName = %q", got)
+	}
+}
