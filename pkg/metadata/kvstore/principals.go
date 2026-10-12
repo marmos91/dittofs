@@ -117,25 +117,12 @@ func groupsOf(r kv.Reader, of entity.Principal) ([]entity.Principal, error) {
 func (p Principals) Grant(ctx context.Context, share entity.ShareID, of entity.Principal) (entity.ShareAccess, error) {
 	var access entity.ShareAccess
 	err := p.s.kv.View(ctx, func(r kv.Reader) error {
-		g, ok, err := grantIn(r, share, of.ID)
-		if err != nil || ok {
-			access = g.Access
-			return err
-		}
 		groups, err := groupsOf(r, of)
 		if err != nil {
 			return err
 		}
-		for _, grp := range groups {
-			g, ok, err := grantIn(r, share, grp.ID)
-			if err != nil {
-				return err
-			}
-			if ok && g.Access > access {
-				access = g.Access
-			}
-		}
-		return nil
+		access, err = grantFor(r, share, entity.Identity{Principal: of, Groups: groups})
+		return err
 	})
 	return access, err
 }

@@ -10,8 +10,11 @@ import (
 var (
 	// ErrDelay is a share paused by an administrator: the client retries.
 	ErrDelay = errors.New("entity: share quiesced")
-	// ErrStale is a share being removed or retired: its handles go stale.
-	ErrStale = errors.New("entity: share removed")
+	// ErrStale is a handle whose file is gone, or into a share being removed
+	// or retired: the client looks the name up again rather than create.
+	ErrStale = errors.New("entity: stale handle")
+	// ErrWrongShare is a handle of another share than the one asked.
+	ErrWrongShare = errors.New("entity: handle of another share")
 )
 
 // MaxShareName is the SMB share-name limit, in characters.

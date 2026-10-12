@@ -171,3 +171,17 @@ func TestFoldShareNameBMPOnly(t *testing.T) {
 		t.Errorf("FoldShareName = %q", got)
 	}
 }
+
+func TestHandleOneSpelling(t *testing.T) {
+	s, f := NewShareID(), NewFileID()
+	h := NewHandle(s, f)
+	gs, gf, err := h.Parse()
+	if err != nil || gs != s || gf != f || h.Share() != s {
+		t.Fatalf("Parse = %v %v %v", gs, gf, err)
+	}
+	for _, alias := range []Handle{h[:len(h)-1], append(append(Handle{}, h...), 0), append(Handle{2}, h[1:]...), nil} {
+		if _, _, err := alias.Parse(); err != ErrStale {
+			t.Errorf("alias %x parsed: %v", []byte(alias), err)
+		}
+	}
+}

@@ -97,7 +97,7 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 			return err
 		}
 		if !existed {
-			if err := tx.Set(shareKey(s.ID, keys.SSt), encodeState(entity.ShareEnabled)); err != nil {
+			if err := createShareRecords(tx, s); err != nil {
 				return err
 			}
 		}
@@ -106,6 +106,29 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 		}
 		return raise(tx, shareListKey)
 	})
+}
+
+// createShareRecords writes what a new share starts with besides its info:
+// its state, enabled; its root directory; and its numeric file id allocator,
+// above the root's number. The root's key must be free, so a root ID that
+// already names a file is refused rather than overwritten.
+func createShareRecords(tx kv.Txn, s entity.Share) error {
+	root := fileKey(s.ID, s.Root)
+	if _, ok, err := get(tx, root); err != nil {
+		return err
+	} else if ok {
+		return merrs.NewAlreadyExistsError("root " + s.Root.String())
+	}
+	for _, kvs := range [][2][]byte{
+		{shareKey(s.ID, keys.SSt), encodeState(entity.ShareEnabled)},
+		{root, encodeFile(newRoot(tx, s))},
+		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
+	} {
+		if err := tx.Set(kvs[0], kvs[1]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // bindNew gives a new share its bound settings: the identity fold unless
