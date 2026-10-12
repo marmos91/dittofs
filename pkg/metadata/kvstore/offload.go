@@ -92,10 +92,8 @@ func (c Content) Intend(ctx context.Context, ns entity.NamespaceID, name entity.
 // one file serialise whatever process runs them. A file that no longer has
 // a record has been released, and its refs are dropped. The commit never
 // touches size, times or an overwrite record: those are the write path's.
-//
-// ponytail: removals are not consulted, because none is recorded yet. Drop
-// a ref below an overlapping removal's version here when removals are
-// written.
+// A removal not yet pruned drops each part of a ref older than it, so a
+// pass offered before a truncate cannot bring back what it removed.
 func (c Content) Commit(ctx context.Context, bc BlockCommit) (CommitResult, error) {
 	var out CommitResult
 	err := c.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
@@ -235,6 +233,13 @@ func commitFile(tx kv.Txn, ns entity.NamespaceID, fc FileCommit, delta counts) (
 		return nil, err
 	}
 
+	// Every removal not yet pruned drops the parts of a ref older than it:
+	// its scan is untracked, since every removal writes the fence read above.
+	rms, err := removals(tx, share, file)
+	if err != nil {
+		return nil, err
+	}
+	all := masks(rms)
 	refs := slices.Clone(fc.Refs)
 	slices.SortFunc(refs, func(a, b entity.ChunkRef) int { return cmp.Compare(a.Offset, b.Offset) })
 	var done []entity.Extent
@@ -243,11 +248,13 @@ func commitFile(tx kv.Txn, ns entity.NamespaceID, fc FileCommit, delta counts) (
 			return nil, fmt.Errorf("%w: a commit's refs overlap or are empty", ErrInconsistent)
 		}
 		nr.File, nr.NSGen, nr.Died = file, gen, 0
-		applied, err := replaceRefs(tx, ns, share, nr, delta)
-		if err != nil {
-			return nil, err
+		for _, part := range all.visible(nr.Newest, nr.Extent()) {
+			applied, err := replaceRefs(tx, ns, share, nr.Clip(part), delta, all)
+			if err != nil {
+				return nil, err
+			}
+			done = append(done, applied...)
 		}
-		done = append(done, applied...)
 	}
 	return mergeExtents(done), nil
 }
@@ -283,7 +290,7 @@ func generationOf(r kv.Reader, share entity.ShareID, ns entity.NamespaceID) (uin
 // a commit on Badger in memory against the 5 ms p99 target. Read the refs
 // over the whole commit's extent once per file and replace them from that
 // view when the offload benchmark is gated.
-func replaceRefs(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, nr entity.ChunkRef, delta counts) ([]entity.Extent, error) {
+func replaceRefs(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, nr entity.ChunkRef, delta counts, ms masks) ([]entity.Extent, error) {
 	existing, err := refsOver(tx, share, nr.File, nr.Extent())
 	if err != nil {
 		return nil, err
@@ -298,7 +305,7 @@ func replaceRefs(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, nr enti
 		switch {
 		case e.Newest.Less(nr.Newest):
 			write = append(write, over)
-			if err := cutRef(tx, ns, share, e, over, delta); err != nil {
+			if err := cutRef(tx, ns, share, e, over, delta, ms); err != nil {
 				return nil, err
 			}
 		case !nr.Newest.Less(e.Oldest):
@@ -320,19 +327,17 @@ func replaceRefs(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, nr enti
 }
 
 // cutRef removes the part over of an existing ref, keeping what lies on
-// either side as refs of their own.
-func cutRef(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, e entity.ChunkRef, over entity.Extent, delta counts) error {
+// either side as refs of their own, less what a removal of ms hides: a
+// masked piece kept behind a removal's cursor would never be dropped.
+func cutRef(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, e entity.ChunkRef, over entity.Extent, delta counts, ms masks) error {
 	if err := dropRef(tx, ns, share, e, delta); err != nil {
 		return err
 	}
-	if left := e.Clip(entity.ExtentOf(e.Offset, over.Offset)); left.Length > 0 {
-		if err := putRef(tx, ns, share, left, delta); err != nil {
-			return err
-		}
-	}
-	if right := e.Clip(entity.ExtentOf(over.End(), e.End())); right.Length > 0 {
-		if err := putRef(tx, ns, share, right, delta); err != nil {
-			return err
+	for _, side := range subtract(e.Extent(), []entity.Extent{over}) {
+		for _, keep := range ms.visible(e.Newest, side) {
+			if err := putRef(tx, ns, share, e.Clip(keep), delta); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

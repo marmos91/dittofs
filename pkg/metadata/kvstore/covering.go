@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"cmp"
 	"context"
 	"iter"
 	"slices"
@@ -23,13 +24,22 @@ type startedRecord[T any] struct {
 }
 
 // recordsOver returns the records under prefix that overlap [off, end), in
-// start order: the one starting at or before off, found with one seek, and
-// those starting inside the extent. Each is decoded by decode, which also
-// reports its end.
-func recordsOver[T any](r kv.Reader, prefix []byte, off, end int64, decode func(start int64, v []byte) (T, int64, error)) ([]startedRecord[T], error) {
+// start order. With span zero the records of the kind never overlap, so the
+// one starting at or before off is found with one seek, then those starting
+// inside the extent. A positive span bounds every record's length: records
+// of the kind may overlap, as masked ones do while a removal is not done,
+// so the scan starts span below off, where any record over off starts.
+// Each is decoded by decode, which also reports its end.
+func recordsOver[T any](r kv.Reader, prefix []byte, off, end, span int64, decode func(start int64, v []byte) (T, int64, error)) ([]startedRecord[T], error) {
 	var out []startedRecord[T]
 	at := func(start int64) []byte { return keys.Uint64(slices.Clip(prefix), uint64(start)) }
-	if prev, ok, err := r.Before(prefix, at(off+1)); err != nil {
+	after := at(off) // Scan resumes after its key: records starting past off
+	if span > 0 {
+		after = nil
+		if off >= span {
+			after = at(off - span)
+		}
+	} else if prev, ok, err := r.Before(prefix, at(off+1)); err != nil {
 		return nil, err
 	} else if ok {
 		start, err := startOf(prefix, prev.Key)
@@ -44,7 +54,7 @@ func recordsOver[T any](r kv.Reader, prefix []byte, off, end int64, decode func(
 			out = append(out, startedRecord[T]{start, v})
 		}
 	}
-	for row, err := range r.Scan(prefix, at(off)) {
+	for row, err := range r.Scan(prefix, after) {
 		if err != nil {
 			return nil, err
 		}
@@ -55,11 +65,13 @@ func recordsOver[T any](r kv.Reader, prefix []byte, off, end int64, decode func(
 		if start >= end {
 			break
 		}
-		v, _, err := decode(start, row.Value)
+		v, recEnd, err := decode(start, row.Value)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, startedRecord[T]{start, v})
+		if recEnd > off {
+			out = append(out, startedRecord[T]{start, v})
+		}
 	}
 	return out, nil
 }
@@ -70,7 +82,7 @@ func startOf(prefix, key []byte) (int64, error) {
 }
 
 func refsOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) ([]entity.ChunkRef, error) {
-	recs, err := recordsOver(r, refsPrefix(share, file), e.Offset, e.End(), func(start int64, v []byte) (entity.ChunkRef, int64, error) {
+	recs, err := recordsOver(r, refsPrefix(share, file), e.Offset, e.End(), 0, func(start int64, v []byte) (entity.ChunkRef, int64, error) {
 		c, err := decodeRef(file, start, v)
 		return c, c.End(), err
 	})
@@ -81,8 +93,8 @@ func refsOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Ex
 	return out, err
 }
 
-func holesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) ([]hole, error) {
-	recs, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), func(start int64, v []byte) (hole, int64, error) {
+func holesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent, span int64) ([]hole, error) {
+	recs, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), span, func(start int64, v []byte) (hole, int64, error) {
 		h, err := decodeHole(start, v)
 		return h, h.End(), err
 	})
@@ -93,8 +105,8 @@ func holesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.E
 	return out, err
 }
 
-func overwritesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) ([]overwrite, error) {
-	recs, err := recordsOver(r, overwritesPrefix(share, file), e.Offset, e.End(), func(start int64, v []byte) (overwrite, int64, error) {
+func overwritesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent, span int64) ([]overwrite, error) {
+	recs, err := recordsOver(r, overwritesPrefix(share, file), e.Offset, e.End(), span, func(start int64, v []byte) (overwrite, int64, error) {
 		o, err := decodeOverwrite(start, v)
 		return o, o.End(), err
 	})
@@ -113,8 +125,9 @@ func overwritesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e ent
 // one seek per record kind plus the records over the extent, whatever the
 // file's size.
 //
-// ponytail: the masks of removals not yet done are not applied, because no
-// removal is recorded yet. Apply them here when removals are written.
+// The removals not yet done mask what they will drop: a ref, hole or
+// overwrite record in a removal's extent older than it reads as absent, and
+// the offset resolves by what else is there.
 func (c Content) Covering(ctx context.Context, share entity.ShareID, file entity.FileID, off, n int64) iter.Seq2[entity.Span, error] {
 	return func(yield func(entity.Span, error) bool) {
 		var spans []entity.Span
@@ -143,8 +156,11 @@ func covering(r kv.Reader, share entity.ShareID, file entity.FileID, want entity
 	if e.IsEmpty() {
 		return nil, nil
 	}
-	applied := f.Applied
-	holes, err := holesOver(r, share, file, e)
+	ms, err := masksOf(r, share, file)
+	if err != nil {
+		return nil, err
+	}
+	holes, err := holesOver(r, share, file, e, ms.span(f))
 	if err != nil {
 		return nil, err
 	}
@@ -152,11 +168,43 @@ func covering(r kv.Reader, share entity.ShareID, file entity.FileID, want entity
 	if err != nil {
 		return nil, err
 	}
-	ovs, err := overwritesOver(r, share, file, e)
+	ovs, err := overwritesOver(r, share, file, e, ms.span(f))
 	if err != nil {
 		return nil, err
 	}
-	return classify(e, applied, holes, refs, ovs), nil
+	if len(ms) > 0 {
+		holes, refs, ovs = ms.apply(holes, refs, ovs)
+	}
+	return classify(e, f.Applied, holes, refs, ovs), nil
+}
+
+// apply drops what the removals hide, clipping a record that crosses a
+// removal's edge to the part outside it, and returns each kind in start
+// order.
+func (ms masks) apply(holes []hole, refs []entity.ChunkRef, ovs []overwrite) ([]hole, []entity.ChunkRef, []overwrite) {
+	var hs []hole
+	for _, h := range holes {
+		for _, x := range ms.visible(h.Version, h.Extent) {
+			hs = append(hs, hole{Extent: x, Version: h.Version})
+		}
+	}
+	var rs []entity.ChunkRef
+	for _, c := range refs {
+		for _, x := range ms.visible(c.Newest, c.Extent()) {
+			rs = append(rs, c.Clip(x))
+		}
+	}
+	var os []overwrite
+	for _, o := range ovs {
+		for _, x := range ms.visible(o.Version, o.Extent) {
+			o.Extent = x
+			os = append(os, o)
+		}
+	}
+	byStart := func(a, b entity.Extent) int { return cmp.Compare(a.Offset, b.Offset) }
+	slices.SortFunc(hs, func(a, b hole) int { return byStart(a.Extent, b.Extent) })
+	slices.SortFunc(os, func(a, b overwrite) int { return byStart(a.Extent, b.Extent) })
+	return hs, rs, os
 }
 
 // classify cuts e at every record edge and classes each piece: a hole, else

@@ -66,11 +66,9 @@ var ErrNotContent = errors.New("kvstore: file holds no content")
 // own — released, holding no content, operations out of order — is reported
 // in the returned map and fails no other.
 //
-// ponytail: the masks of removals not yet done are not applied, because no
-// removal is recorded yet; a masked hole or overwrite record must count as
-// absent here once one is. A single operation that alone needs more than the
-// budget — a write over 10^5 holes — still commits in one transaction, which
-// the backend may refuse; split it by extent when one shows.
+// ponytail: a single operation that alone needs more than the budget — a
+// write over 10^5 holes — still commits in one transaction, which the
+// backend may refuse; split it by extent when one shows.
 func (e Existence) Commit(ctx context.Context, pending []PendingExistence) (map[entity.FileID]error, error) {
 	failed := map[entity.FileID]error{}
 	next := make([]int, len(pending)) // per file, the first op not yet committed
@@ -146,7 +144,11 @@ func commitExistence(tx kv.Txn, p PendingExistence, first, budget int, fresh boo
 	if f.Type != entity.Regular && f.Type != entity.Stream {
 		return 0, 0, fileFailed(ErrNotContent)
 	}
-	st := &existState{tx: tx, share: p.Share, file: p.File, size: f.Size, f: f, fenced: fenced, epoch: p.Epoch,
+	ms, err := masksOf(tx, p.Share, p.File)
+	if err != nil {
+		return 0, 0, err
+	}
+	st := &existState{tx: tx, share: p.Share, file: p.File, size: f.Size, f: f, fenced: fenced, epoch: p.Epoch, ms: ms,
 		holes: map[int64]hole{}, stored: map[int64]hole{}, ovs: map[int64]overwrite{},
 		dirtyH: map[int64]bool{}, dirtyO: map[int64]bool{}}
 	i := first
@@ -192,6 +194,7 @@ type existState struct {
 	file        entity.FileID
 	f           entity.File
 	fenced      bool // the file has an existence fence
+	ms          masks
 	epoch       uint64
 	size        int64          // size before the commit: below it, outside stored holes, is committed content
 	holes       map[int64]hole // by start, as the commit leaves them; absent and dirty means deleted
@@ -242,27 +245,29 @@ func (s *existState) bound(op PendingOp) (int, error) {
 
 // load reads the holes and overwrite records over w that are not already
 // in memory. A record the commit already changed or deleted keeps its
-// in-memory state.
+// in-memory state. A record a removal not done masks counts as absent, so
+// the commit never cuts one, and writing a record at its key replaces it.
 func (s *existState) load(w entity.Extent) error {
+	span := s.ms.span(s.f)
 	if !covered(s.loadedHoles, w) {
-		hs, err := holesOver(s.tx, s.share, s.file, w)
+		hs, err := holesOver(s.tx, s.share, s.file, w, span)
 		if err != nil {
 			return err
 		}
 		for _, h := range hs {
-			if !s.dirtyH[h.Offset] {
+			if !s.dirtyH[h.Offset] && !s.ms.masked(h.Version, h.Extent) {
 				s.holes[h.Offset], s.stored[h.Offset] = h, h
 			}
 		}
 		s.loadedHoles = append(s.loadedHoles, w)
 	}
 	if !covered(s.loadedOvs, w) {
-		os, err := overwritesOver(s.tx, s.share, s.file, w)
+		os, err := overwritesOver(s.tx, s.share, s.file, w, span)
 		if err != nil {
 			return err
 		}
 		for _, o := range os {
-			if !s.dirtyO[o.Offset] {
+			if !s.dirtyO[o.Offset] && !s.ms.masked(o.Version, o.Extent) {
 				s.ovs[o.Offset] = o
 			}
 		}
@@ -484,18 +489,24 @@ func (e Existence) Overwrites(ctx context.Context, share entity.ShareID, file en
 		if err != nil {
 			return err
 		}
+		ms, err := masksOf(r, share, file)
+		if err != nil {
+			return err
+		}
 		for _, run := range runs {
 			run = run.Intersect(entity.Extent{Length: f.Size})
 			if run.IsEmpty() {
 				continue
 			}
-			hs, err := holesOver(r, share, file, run)
+			hs, err := holesOver(r, share, file, run, ms.span(f))
 			if err != nil {
 				return err
 			}
-			cut := make([]entity.Extent, len(hs))
-			for i, h := range hs {
-				cut[i] = h.Extent
+			var cut []entity.Extent
+			for _, h := range hs {
+				if !ms.masked(h.Version, h.Extent) {
+					cut = append(cut, h.Extent)
+				}
 			}
 			if len(subtract(run, cut)) > 0 {
 				yes = true
