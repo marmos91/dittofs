@@ -15,12 +15,12 @@ import (
 // countingStore wraps a Badger store and counts parent-inode reads, keyed by
 // the requested handle. It embeds *badger.BadgerMetadataStore so it satisfies
 // the full metadata.Store interface while overriding only the two reads the
-// create path can take for the parent — GetFileForCreate when the store offers
+// create path can take for the parent: GetFileForCreate when the store offers
 // the create cache (Badger does), GetFile otherwise. The Service holds it via
 // the Store interface (RegisterStoreForShare), so the overrides are actually
-// dispatched. Reads through tx.GetFile inside a transaction are not counted;
-// the create path deliberately does not read the parent inode inside its
-// transaction (#1573).
+// dispatched. Reads through tx.GetFile inside a transaction are not counted:
+// the create path re-reads the parent there only to reject a directory removed
+// since the preflight read, and never writes its inode.
 type countingStore struct {
 	*badger.BadgerMetadataStore
 	total  atomic.Int64
@@ -39,8 +39,8 @@ func (c *countingStore) GetFileForCreate(ctx context.Context, h metadata.FileHan
 	return c.BadgerMetadataStore.GetFileForCreate(ctx, h)
 }
 
-// TestCreateFile_ParentGetFileDedup pins the parent-inode read dedup (#1737):
-// a single CreateFile must load the parent handle exactly once, not three times.
+// TestCreateFile_ParentGetFileDedup pins preflight parent-read deduplication:
+// create and permission checks share one read before the transaction.
 func TestCreateFile_ParentGetFileDedup(t *testing.T) {
 	t.Parallel()
 
@@ -89,11 +89,10 @@ func TestCreateFile_ParentGetFileDedup(t *testing.T) {
 	parentReads := cs.perKey[string(dirHandle)]
 	t.Logf("CreateFile: total GetFile=%d, parent GetFile=%d", cs.total.Load(), parentReads)
 
-	// After the dedup the parent inode is loaded exactly once. Before #1737 it
-	// was loaded three times (createEntry + CheckParentCreateAccess +
-	// checkWritePermission). Guard against silent regression.
+	// The preflight parent read is shared by createEntry and permission checks.
+	// The transaction separately verifies that the directory still exists.
 	require.Equal(t, int64(1), parentReads,
-		"parent inode must be loaded exactly once per CreateFile (was 3 before #1737)")
+		"parent inode must be loaded exactly once during create preflight")
 }
 
 // BenchmarkCreateFile creates children in one directory via the fixture,

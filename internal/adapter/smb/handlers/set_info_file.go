@@ -28,6 +28,39 @@ func (h *Handler) setFileInfoFromStore(
 	class types.FileInfoClass,
 	buffer []byte,
 ) (*SetInfoResponse, error) {
+	if (class != types.FileEndOfFileInformation && class != types.FileAllocationInformation) || len(buffer) < 8 {
+		return h.applyFileInfoFromStore(ctx, authCtx, openFile, class, buffer)
+	}
+	metaSvc := h.Registry.GetMetadataService()
+	file, err := metaSvc.GetFileForRead(authCtx.Context, openFile.MetadataHandle)
+	if err != nil {
+		return setInfoStatus(types.StatusForErr(err)), nil
+	}
+	if file.PayloadID == "" {
+		return h.applyFileInfoFromStore(ctx, authCtx, openFile, class, buffer)
+	}
+	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, openFile.MetadataHandle)
+	if err != nil {
+		return setInfoStatus(types.StatusForErr(err)), nil
+	}
+	result, err := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, openFile.MetadataHandle, func(authCtx *metadata.AuthContext) (*SetInfoResponse, error) {
+		// Size operations use authCtx.Context for metadata and payload I/O.
+		// Keep the dispatcher's context so it receives their PostSend hooks.
+		return h.applyFileInfoFromStore(ctx, authCtx, openFile, class, buffer)
+	})
+	if err != nil && result == nil {
+		return setInfoStatus(types.StatusForErr(err)), nil
+	}
+	return result, err
+}
+
+func (h *Handler) applyFileInfoFromStore(
+	ctx *SMBHandlerContext,
+	authCtx *metadata.AuthContext,
+	openFile *OpenFile,
+	class types.FileInfoClass,
+	buffer []byte,
+) (*SetInfoResponse, error) {
 	switch class {
 	case types.FileBasicInformation:
 		// FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7 (40 bytes)

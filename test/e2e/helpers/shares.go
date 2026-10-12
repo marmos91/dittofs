@@ -29,6 +29,7 @@ type shareOptions struct {
 	defaultPermission string
 	description       string
 	trashEnabled      *bool
+	quotaBytes        string
 }
 
 // WithShareReadOnly sets the read-only flag for the share.
@@ -59,6 +60,14 @@ func WithShareTrashEnabled() ShareOption {
 	return func(o *shareOptions) {
 		enabled := true
 		o.trashEnabled = &enabled
+	}
+}
+
+// WithShareQuotaBytes sets the per-share byte quota (e.g. "1MiB"). A write that
+// would grow the share past it is refused with "no space".
+func WithShareQuotaBytes(size string) ShareOption {
+	return func(o *shareOptions) {
+		o.quotaBytes = size
 	}
 }
 
@@ -95,6 +104,9 @@ func (r *CLIRunner) CreateShare(name, metadataStore, blockStore string, opts ...
 	}
 	if options.trashEnabled != nil && *options.trashEnabled {
 		args = append(args, "--enable-trash")
+	}
+	if options.quotaBytes != "" {
+		args = append(args, "--quota-bytes", options.quotaBytes)
 	}
 
 	output, err := r.Run(args...)

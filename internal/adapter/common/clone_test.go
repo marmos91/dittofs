@@ -32,7 +32,7 @@ func TestCloneWholeFile_O1(t *testing.T) {
 	dstHandle := putTestFile(t, ms, "/dst.bin", "dst-pid", nil, 0)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "dst-pid", 0); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "dst-pid", 0, nil); err != nil {
 		t.Fatalf("CloneWholeFile failed: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
 	selfHandle := putTestFile(t, ms, "/self.bin", "same-pid", srcBlocks, 4096)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, selfHandle, selfHandle, "same-pid", 0); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, selfHandle, selfHandle, "same-pid", 0, nil); err != nil {
 		t.Fatalf("CloneWholeFile self-clone failed: %v", err)
 	}
 	if len(coord.incrementCalls) != 0 {
@@ -110,7 +110,7 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 	dstHandle := putTestFile(t, ms, "/dst.bin", "dst-pid", nil, 0)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "dst-pid", 0); err == nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "dst-pid", 0, nil); err == nil {
 		t.Fatal("expected CloneWholeFile to fail on IncrementRefCount error")
 	}
 
@@ -155,7 +155,7 @@ func TestCloneWholeFile_SeedsDestinationRanges(t *testing.T) {
 		t.Fatalf("the destination already had %d index extents before the clone", len(before))
 	}
 
-	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "seed-dst-pid", 0); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "seed-dst-pid", 0, nil); err != nil {
 		t.Fatalf("CloneWholeFile: %v", err)
 	}
 
@@ -184,7 +184,7 @@ func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 	srcBlocks := []block.ChunkRef{{Hash: block.ContentHash{0x44}, Offset: 0, Size: 4096}}
 	selfHandle := putTestFile(t, ms, "/seed-self.bin", "seed-self-pid", srcBlocks, 4096)
 
-	if err := CloneWholeFile(ctx, bs, ms, nil, selfHandle, selfHandle, "seed-self-pid", 0); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, nil, selfHandle, selfHandle, "seed-self-pid", 0, nil); err != nil {
 		t.Fatalf("CloneWholeFile self-clone: %v", err)
 	}
 
@@ -251,7 +251,7 @@ func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
 		t.Fatalf("the destination did not hold its own bytes before the clone")
 	}
 
-	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "stale-dst-pid", 0); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "stale-dst-pid", 0, nil); err != nil {
 		t.Fatalf("CloneWholeFile: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestCloneWholeFile_SelfCloneKeepsItsLocalRanges(t *testing.T) {
 		t.Fatalf("WriteAt: %v", err)
 	}
 
-	if err := CloneWholeFile(ctx, bs, ms, nil, selfHandle, selfHandle, "self-pid", 0); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, nil, selfHandle, selfHandle, "self-pid", 0, nil); err != nil {
 		t.Fatalf("CloneWholeFile self-clone: %v", err)
 	}
 

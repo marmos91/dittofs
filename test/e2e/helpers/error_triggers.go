@@ -1,17 +1,17 @@
 //go:build e2e
 
-// Package helpers — error-conformance triggers (ADAPT-05).
+// Package helpers — error-conformance triggers.
 //
 // Each TriggerErr* helper fires one scenario over the given mount root and
 // returns the syscall.Errno that the kernel surfaces from the operation. The
-// e2e conformance test then asserts that errno matches what
-// `internal/adapter/common`'s errmap table says this protocol should return
-// for the corresponding metadata.ErrorCode.
+// e2e conformance test then asserts that errno matches what the per-adapter
+// types.StatusForErr tables say this protocol should return for the
+// corresponding metadata.ErrorCode.
 //
 // Triggers are intentionally minimal: one operation per code, no setup
 // teardown beyond what is needed to reproduce the error. Fixture reuse is the
-// caller's job (TestCrossProtocol_ErrorConformance shares one mount across
-// all subtests per PATTERNS.md's flaky-bootstrap gotcha).
+// caller's job (TestCrossProtocol_ErrorConformance mounts each share once and
+// reuses the mounts across all subtests).
 //
 // Protocol-agnostic by design: the same trigger is called against both the
 // NFS mount root and the SMB mount root; both kernels (Linux nfs client,
@@ -19,6 +19,11 @@
 // that the Go test observes. The cross-protocol assertion is "same
 // metadata.ErrorCode surfaces via the same client-observable errno on both
 // mounts".
+//
+// Every trigger takes a second root, peerRoot: a mount of the same share made
+// by another protocol, and so by another identity, or "" when the share has
+// none. Most triggers ignore it; one that needs a file owned by someone else
+// seeds it there.
 package helpers
 
 import (
@@ -30,6 +35,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TriggerResult captures the syscall.Errno observed from a kernel file
@@ -69,13 +75,13 @@ func newResult(err error) TriggerResult {
 }
 
 // ----------------------------------------------------------------------------
-// Triggerable metadata.ErrorCodes (e2e tier, ~18 codes).
+// Triggerable metadata.ErrorCodes (e2e tier).
 // ----------------------------------------------------------------------------
 
 // TriggerErrNotFound fires a stat() on a path that does not exist. Produces
 // ENOENT on both NFS (NFS3ERR_NOENT / NFS4ERR_NOENT) and SMB
 // (STATUS_OBJECT_NAME_NOT_FOUND).
-func TriggerErrNotFound(t *testing.T, mountRoot string) TriggerResult {
+func TriggerErrNotFound(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	path := filepath.Join(mountRoot, UniqueTestName("missing"))
 	_, err := os.Stat(path)
@@ -85,7 +91,7 @@ func TriggerErrNotFound(t *testing.T, mountRoot string) TriggerResult {
 // TriggerErrAlreadyExists creates a file, then tries O_CREAT|O_EXCL on the
 // same path. Produces EEXIST on both protocols (NFS3ERR_EXIST / NFS4ERR_EXIST
 // / STATUS_OBJECT_NAME_COLLISION).
-func TriggerErrAlreadyExists(t *testing.T, mountRoot string) TriggerResult {
+func TriggerErrAlreadyExists(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	path := filepath.Join(mountRoot, UniqueTestName("already-exists")+".txt")
 	if err := os.WriteFile(path, []byte("seed"), 0644); err != nil {
@@ -103,7 +109,7 @@ func TriggerErrAlreadyExists(t *testing.T, mountRoot string) TriggerResult {
 // TriggerErrNotEmpty creates a directory with a child, then rmdir()s the
 // directory. Produces ENOTEMPTY (NFS3ERR_NOTEMPTY / NFS4ERR_NOTEMPTY /
 // STATUS_DIRECTORY_NOT_EMPTY).
-func TriggerErrNotEmpty(t *testing.T, mountRoot string) TriggerResult {
+func TriggerErrNotEmpty(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	dir := filepath.Join(mountRoot, UniqueTestName("notempty"))
 	if err := os.Mkdir(dir, 0755); err != nil {
@@ -122,7 +128,7 @@ func TriggerErrNotEmpty(t *testing.T, mountRoot string) TriggerResult {
 
 // TriggerErrIsDirectory opens a directory with O_WRONLY. Produces EISDIR
 // (NFS3ERR_ISDIR / NFS4ERR_ISDIR / STATUS_FILE_IS_A_DIRECTORY).
-func TriggerErrIsDirectory(t *testing.T, mountRoot string) TriggerResult {
+func TriggerErrIsDirectory(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	dir := filepath.Join(mountRoot, UniqueTestName("is-dir"))
 	if err := os.Mkdir(dir, 0755); err != nil {
@@ -140,7 +146,7 @@ func TriggerErrIsDirectory(t *testing.T, mountRoot string) TriggerResult {
 // TriggerErrNotDirectory creates a regular file, then calls readdir-style
 // operation (open + Readdir) on it. Produces ENOTDIR (NFS3ERR_NOTDIR /
 // NFS4ERR_NOTDIR / STATUS_NOT_A_DIRECTORY).
-func TriggerErrNotDirectory(t *testing.T, mountRoot string) TriggerResult {
+func TriggerErrNotDirectory(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	file := filepath.Join(mountRoot, UniqueTestName("not-dir")+".txt")
 	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
@@ -158,7 +164,7 @@ func TriggerErrNotDirectory(t *testing.T, mountRoot string) TriggerResult {
 // TriggerErrNameTooLong creates a file with a 300-char name. Produces
 // ENAMETOOLONG (NFS3ERR_NAMETOOLONG / NFS4ERR_NAMETOOLONG /
 // STATUS_OBJECT_NAME_INVALID).
-func TriggerErrNameTooLong(t *testing.T, mountRoot string) TriggerResult {
+func TriggerErrNameTooLong(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	// 300-char filename — well past POSIX NAME_MAX (255) and fits under
 	// PATH_MAX (4096), so the rejection is on name length, not path length.
@@ -175,7 +181,7 @@ func TriggerErrNameTooLong(t *testing.T, mountRoot string) TriggerResult {
 // TriggerErrInvalidArgument attempts readlink() on a regular file. Produces
 // EINVAL (NFS3ERR_INVAL / NFS4ERR_INVAL / STATUS_INVALID_PARAMETER). This is
 // the same trigger codified in v3/handlers/readlink_test.go:TestReadLink_NotSymlink.
-func TriggerErrInvalidArgument(t *testing.T, mountRoot string) TriggerResult {
+func TriggerErrInvalidArgument(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	file := filepath.Join(mountRoot, UniqueTestName("einval")+".txt")
 	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
@@ -187,67 +193,35 @@ func TriggerErrInvalidArgument(t *testing.T, mountRoot string) TriggerResult {
 	return newResult(err)
 }
 
-// TriggerErrInvalidHandle exercises the "stale / bogus file handle" path by
-// opening a file, removing it from underneath the handle, then attempting an
-// operation on the now-orphaned descriptor. NFS kernels translate this to
-// ESTALE (NFS3ERR_STALE / NFS4ERR_STALE); SMB clients see STATUS_FILE_CLOSED
-// which also surfaces as ESTALE on the cifs client. Both map to the same
-// errno, so the cross-protocol assertion holds.
-func TriggerErrInvalidHandle(t *testing.T, mountRoot string) TriggerResult {
+// TriggerErrNoSpace writes past the share's byte quota. mountRoot must be a
+// mount of a share whose quota is smaller than the 4 MiB written here. Both
+// kernel clients may buffer the write, so the error is taken from whichever
+// of write, fsync and close reports it first. Produces ENOSPC
+// (NFS3ERR_NOSPC / STATUS_DISK_FULL).
+func TriggerErrNoSpace(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
-	// A stale/invalid file handle is not reproducible from a single client at
-	// the e2e tier. The intuitive scenario — unlink a file, then read through
-	// an fd you still hold — does NOT produce ESTALE: keeping your own open fd
-	// after unlink is valid POSIX (the inode lives until last close), and over
-	// NFS the client silly-renames the file so the read simply succeeds (or
-	// returns EOF), never ESTALE. A genuinely stale handle requires a *foreign*
-	// deleter or a server restart that drops the handle — neither of which this
-	// single-client fixture sets up. Coverage for the error→errno mapping lives
-	// in the unit tier (common/errmap_test.go); the e2e row is retained for
-	// shape and skipped with a documented reason.
-	t.Skip("ErrInvalidHandle/ErrStaleHandle not e2e-triggerable from one client (own-fd read after unlink is valid POSIX; NFS silly-renames) — covered by unit tier in common/errmap_test.go")
-	return TriggerResult{}
-}
+	path := filepath.Join(mountRoot, UniqueTestName("nospace")+".bin")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("TriggerErrNoSpace: create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
 
-// TriggerErrStaleHandle is an alias for TriggerErrInvalidHandle — both name the
-// same un-triggerable single-client scenario and skip with the same reason.
-// The common/ errmap maps both to protocol codes that surface as ESTALE
-// client-side; that mapping is asserted in the unit tier.
-func TriggerErrStaleHandle(t *testing.T, mountRoot string) TriggerResult {
-	return TriggerErrInvalidHandle(t, mountRoot)
-}
-
-// TriggerErrIOError attempts to read past EOF and then performs a large
-// operation on a corrupted path. Since pure I/O faults are hard to force
-// deterministically without backend-level hooks, we fall back to a scenario
-// that reliably surfaces EIO: read() on a file whose backing block was
-// removed out-of-band. Not in this plan's scope — skipped at the e2e tier.
-//
-// ErrIOError is listed as e2e-triggerable in principle but requires
-// a backend with artificial fault injection to reproduce reliably.
-// When that infrastructure is not available, the unit tier coverage in
-// common/errmap_test.go provides the correctness assertion; the e2e row
-// is included for completeness and skipped with a documented reason.
-func TriggerErrIOError(t *testing.T, mountRoot string) TriggerResult {
-	t.Helper()
-	t.Skip("ErrIOError requires backend fault injection — covered by unit tier in common/errmap_test.go")
-	return TriggerResult{}
-}
-
-// TriggerErrNoSpace attempts to write past the mount's free space. Without
-// a quota-limited share fixture, this is impractical in unit CI. Skipped at
-// e2e tier; coverage lives in unit tier.
-func TriggerErrNoSpace(t *testing.T, mountRoot string) TriggerResult {
-	t.Helper()
-	t.Skip("ErrNoSpace requires a quota-constrained share fixture — covered by unit tier in common/errmap_test.go")
-	return TriggerResult{}
+	_, err = f.Write(make([]byte, 4<<20))
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	return newResult(err)
 }
 
 // TriggerErrReadOnly attempts to create a file on a read-only mount. Requires
 // a dedicated read-only share fixture, which TestCrossProtocol_ErrorConformance
-// sets up via the "ro-export" share; the trigger takes a read-only mount
+// sets up via the "/archive" share; the trigger takes a read-only mount
 // root as argument.
-func TriggerErrReadOnly(t *testing.T, readOnlyMountRoot string) TriggerResult {
+func TriggerErrReadOnly(t *testing.T, readOnlyMountRoot, _ string) TriggerResult {
 	t.Helper()
 	path := filepath.Join(readOnlyMountRoot, UniqueTestName("rofs")+".txt")
 	err := os.WriteFile(path, []byte("x"), 0644)
@@ -257,70 +231,43 @@ func TriggerErrReadOnly(t *testing.T, readOnlyMountRoot string) TriggerResult {
 	return newResult(err)
 }
 
-// TriggerErrAccessDenied attempts an operation forbidden by share-level
-// permissions (reader-only user attempting to create). Requires a share
-// fixture with read-only user permissions. When the fixture is not available,
-// returns EACCES from os.WriteFile against a path with mode 0 on the mount.
-//
-// The NFS/SMB permission-check paths both map to EACCES, so the cross-protocol
-// assertion is: same errno regardless of which protocol's permission layer
-// caught the denial.
-func TriggerErrAccessDenied(t *testing.T, mountRoot string) TriggerResult {
+// TriggerErrAccessDenied creates a file at the root of a share the mounting
+// identity may only read. The server refuses it — the share grant allows only
+// reads, and the share root's mode bits give that identity no write either —
+// with NFS3ERR_ACCES / STATUS_ACCESS_DENIED → EACCES. The caller runs as
+// root, which passes both kernel clients' local permission checks, so the
+// denial observed is the server's; which of the two server checks fires
+// first is not pinned here.
+func TriggerErrAccessDenied(t *testing.T, readOnlyGrantRoot, _ string) TriggerResult {
 	t.Helper()
-	// Create a file with mode 0 (no permissions for anyone) then attempt to
-	// open it for writing as the current user. On NFS with AUTH_UNIX the
-	// server enforces mode bits; on SMB the server enforces ACLs.
-	path := filepath.Join(mountRoot, UniqueTestName("eaccess")+".txt")
-	if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
-		t.Fatalf("TriggerErrAccessDenied: seed create failed: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(path, 0644)
-		_ = os.Remove(path)
-	})
-	// Remove all permissions.
-	if err := os.Chmod(path, 0000); err != nil {
-		t.Fatalf("TriggerErrAccessDenied: chmod 0 failed: %v", err)
-	}
-
-	// Opening for write with no perms surfaces EACCES on both protocols.
-	// Note: running as root bypasses the check — the test documents this
-	// caveat and the unit tier covers the code path regardless.
-	if os.Geteuid() == 0 {
-		t.Skip("TriggerErrAccessDenied: skipping, running as root bypasses mode-bit checks — covered by unit tier")
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY, 0644)
+	path := filepath.Join(readOnlyGrantRoot, UniqueTestName("eacces")+".txt")
+	err := os.WriteFile(path, []byte("x"), 0644)
 	if err == nil {
-		_ = f.Close()
+		_ = os.Remove(path)
 	}
 	return newResult(err)
 }
 
-// TriggerErrPermissionDenied is a synonym for TriggerErrAccessDenied at the
-// e2e tier: both surface as EACCES on both protocols. The unit tier
-// distinguishes EPERM vs EACCES; e2e cannot reliably (kernel collapses them
-// at the NFS/SMB boundary).
-func TriggerErrPermissionDenied(t *testing.T, mountRoot string) TriggerResult {
-	return TriggerErrAccessDenied(t, mountRoot)
-}
-
-// TriggerErrNotSupported exercises a path the server does not implement —
-// e.g., xattr operations on NFSv3, which returns NFS3ERR_NOTSUPP →
-// EOPNOTSUPP (ENOTSUP on Linux). This is best-effort: if the kernel
-// collapses the code to EINVAL or similar, the test skips.
-func TriggerErrNotSupported(t *testing.T, mountRoot string) TriggerResult {
+// TriggerErrPermissionDenied seeds a file through peerRoot — a mount of the
+// same share by another identity — then sets its timestamps to an explicit
+// value through mountRoot. Over NFS only the owner may set explicit times,
+// so the server refuses it: NFS3ERR_PERM → EPERM. Over SMB the same call is
+// authorized by the open handle instead, so this trigger is NFS-only.
+func TriggerErrPermissionDenied(t *testing.T, mountRoot, peerRoot string) TriggerResult {
 	t.Helper()
-	t.Skip("ErrNotSupported e2e trigger requires xattr-class op not universally supported on NFSv3 mounts — covered by unit tier")
-	return TriggerResult{}
-}
+	if peerRoot == "" {
+		t.Fatal("TriggerErrPermissionDenied: needs a peer mount to seed a file owned by another identity")
+	}
+	name := UniqueTestName("eperm") + ".txt"
+	seed := filepath.Join(peerRoot, name)
+	if err := os.WriteFile(seed, []byte("x"), 0644); err != nil {
+		t.Fatalf("TriggerErrPermissionDenied: seed create through peer mount failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(seed) })
 
-// TriggerErrAuthRequired requires an unauthenticated mount attempt (SMB
-// without credentials). The share fixture is required to support anonymous
-// rejection — covered at unit tier for reliability.
-func TriggerErrAuthRequired(t *testing.T, mountRoot string) TriggerResult {
-	t.Helper()
-	t.Skip("ErrAuthRequired is a mount-time rejection, not a per-operation errno — covered by unit tier")
-	return TriggerResult{}
+	past := time.Unix(1_000_000_000, 0)
+	err := os.Chtimes(filepath.Join(mountRoot, name), past, past)
+	return newResult(err)
 }
 
 // TriggerErrLocked acquires a byte-range lock from one descriptor and attempts
@@ -328,10 +275,9 @@ func TriggerErrAuthRequired(t *testing.T, mountRoot string) TriggerResult {
 // second lock is non-blocking; surfaces as STATUS_FILE_LOCK_CONFLICT on SMB /
 // NFS3ERR_JUKEBOX on NFSv3, which translate to the same errno family.
 //
-// Note: NFS locking depends on NLM daemon availability; on macOS the NLM
-// daemon is not available with userspace NFS. The conformance test should
-// invoke framework.SkipIfNFSLockingUnsupported() before this trigger.
-func TriggerErrLocked(t *testing.T, mountRoot string) TriggerResult {
+// NFS locking depends on the NLM daemon, which macOS does not provide for a
+// userspace NFS server, so the trigger skips there.
+func TriggerErrLocked(t *testing.T, mountRoot, _ string) TriggerResult {
 	t.Helper()
 	if runtime.GOOS == "darwin" {
 		t.Skip("TriggerErrLocked: NFS NLM locking not available on macOS — covered by unit tier")
@@ -365,16 +311,6 @@ func TriggerErrLocked(t *testing.T, mountRoot string) TriggerResult {
 
 	lockErr := syscall.Flock(int(contenderF.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	return newResult(lockErr)
-}
-
-// TriggerErrLockNotFound attempts to release a lock that was never acquired.
-// Requires fcntl F_SETLK with F_UNLCK on an unlocked range — the kernel may
-// silently succeed (no error). When it does, the trigger skips; unit tier
-// covers the mapping deterministically.
-func TriggerErrLockNotFound(t *testing.T, mountRoot string) TriggerResult {
-	t.Helper()
-	t.Skip("ErrLockNotFound surfaces only via explicit NLM/SMB unlock RPCs; kernel unlock-of-unlocked is a no-op — covered by unit tier")
-	return TriggerResult{}
 }
 
 // FormatTriggerDiag formats a diagnostic string for failure messages that

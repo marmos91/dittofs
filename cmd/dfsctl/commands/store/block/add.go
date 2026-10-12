@@ -1,6 +1,7 @@
 package block
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,9 @@ Type-specific options:
   stdin is a terminal. An empty endpoint means AWS S3; the resolved target is
   echoed before the store is created.
 
+--config gives the store config as JSON. Flags passed with it are merged into
+it; a flag that contradicts a key the JSON sets is refused.
+
 Examples:
   # Add an S3 store with flags
   dfsctl store block add --name s3-store --type s3 --bucket my-bucket --region us-west-2
@@ -82,7 +86,7 @@ Examples:
 func init() {
 	addCmd.Flags().StringVar(&addName, "name", "", "Store name (required)")
 	addCmd.Flags().StringVar(&addType, "type", "s3", "Store type: s3, memory")
-	addCmd.Flags().StringVar(&addConfig, "config", "", "Store configuration as JSON")
+	addCmd.Flags().StringVar(&addConfig, "config", "", "Store configuration as JSON (flags passed with it are merged in)")
 	// S3 flags
 	addCmd.Flags().StringVar(&addBucket, "bucket", "", "S3 bucket name (required for s3)")
 	addCmd.Flags().StringVar(&addRegion, "region", defaultS3Region, "AWS region (for s3)")
@@ -144,7 +148,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	config, err := buildRemoteConfig(addType, addConfig, s3, addCompression, addParallelUploads, enc)
+	config, err := buildRemoteConfig(addType, addConfig, s3, cmd.Flags().Changed, addCompression, addParallelUploads, enc)
 	if err != nil {
 		return cmdutil.HandleAbort(err)
 	}
@@ -303,27 +307,40 @@ func s3TargetDescription(config map[string]any) string {
 	return "AWS S3 (s3.amazonaws.com)"
 }
 
-func buildRemoteConfig(storeType, jsonConfig string, s3 s3Fields, compression string, parallelUploads int, enc encryptionFlags) (any, error) {
+// buildRemoteConfig assembles the config of the new store. --config, when
+// given, is the base, and every setting also passed as a flag is merged into
+// it, so no flag is accepted and then dropped. supplied reports which flags
+// were named on the command line: an s3 flag is merged into --config only when
+// named, so the --region default never overrides the region the JSON sets.
+func buildRemoteConfig(storeType, jsonConfig string, s3 s3Fields, supplied func(name string) bool, compression string, parallelUploads int, enc encryptionFlags) (any, error) {
+	settings, err := storeSettings(compression, parallelUploads, enc)
+	if err != nil {
+		return nil, err
+	}
+
 	if jsonConfig != "" {
 		var config any
 		if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
 			return nil, fmt.Errorf("invalid JSON config: %w", err)
 		}
-		return config, nil
-	}
-
-	compressionBlock, err := buildCompressionBlock(compression)
-	if err != nil {
-		return nil, err
-	}
-	encryptionBlock, err := buildEncryptionBlock(enc)
-	if err != nil {
-		return nil, err
+		if storeType == "s3" {
+			settings = append(s3Settings(s3, supplied), settings...)
+		}
+		return mergeFlagSettings(config, settings)
 	}
 
 	switch storeType {
 	case "memory":
-		return nil, nil
+		// A memory store applies compression, encryption and the upload cap
+		// like any other remote, so those flags reach it too.
+		if len(settings) == 0 {
+			return nil, nil
+		}
+		config := map[string]any{}
+		for _, s := range settings {
+			config[s.key] = s.value
+		}
+		return config, nil
 
 	case "s3":
 		if s3.region == "" {
@@ -341,20 +358,96 @@ func buildRemoteConfig(storeType, jsonConfig string, s3 s3Fields, compression st
 		if s3.prefix != "" {
 			config["prefix"] = s3.prefix
 		}
-		if compressionBlock != nil {
-			config["compression"] = compressionBlock
-		}
-		if encryptionBlock != nil {
-			config["encryption"] = encryptionBlock
-		}
-		if parallelUploads > 0 {
-			config["parallel_uploads"] = parallelUploads
+		for _, s := range settings {
+			config[s.key] = s.value
 		}
 		return config, nil
 
 	default:
 		return nil, fmt.Errorf("unknown store type: %s (supported: s3, memory)", storeType)
 	}
+}
+
+// flagSetting is one config key set from the command line, with the flag that
+// set it, for error messages.
+type flagSetting struct {
+	flag  string
+	key   string
+	value any
+}
+
+// storeSettings returns the settings every store type takes from its flags:
+// compression, encryption and the upload cap. A flag left at its off value
+// contributes nothing.
+func storeSettings(compression string, parallelUploads int, enc encryptionFlags) ([]flagSetting, error) {
+	var out []flagSetting
+	compressionBlock, err := buildCompressionBlock(compression)
+	if err != nil {
+		return nil, err
+	}
+	if compressionBlock != nil {
+		out = append(out, flagSetting{"--compression", "compression", compressionBlock})
+	}
+	encryptionBlock, err := buildEncryptionBlock(enc)
+	if err != nil {
+		return nil, err
+	}
+	if encryptionBlock != nil {
+		out = append(out, flagSetting{"--encryption-aead", "encryption", encryptionBlock})
+	}
+	if parallelUploads > 0 {
+		out = append(out, flagSetting{"--parallel-uploads", "parallel_uploads", parallelUploads})
+	}
+	return out, nil
+}
+
+// s3Settings returns the s3 fields named on the command line, for merging into
+// --config. A field left off, or named with an empty value, contributes nothing.
+func s3Settings(s3 s3Fields, supplied func(name string) bool) []flagSetting {
+	var out []flagSetting
+	for _, f := range []struct{ flag, key, value string }{
+		{"bucket", "bucket", s3.bucket},
+		{"region", "region", s3.region},
+		{"endpoint", "endpoint", s3.endpoint},
+		{"prefix", "prefix", s3.prefix},
+		{"access-key", "access_key_id", s3.accessKey},
+		{"secret-key", "secret_access_key", s3.secretKey},
+	} {
+		if supplied(f.flag) && f.value != "" {
+			out = append(out, flagSetting{"--" + f.flag, f.key, f.value})
+		}
+	}
+	return out
+}
+
+// mergeFlagSettings adds the flag settings to the parsed --config. A key that
+// --config already sets is accepted when the flag agrees with it and refused
+// when it does not, since the command cannot tell which of the two the
+// operator meant. The error names the flag and the key but never the values,
+// which may be credentials.
+func mergeFlagSettings(config any, settings []flagSetting) (any, error) {
+	if len(settings) == 0 {
+		return config, nil
+	}
+	m, ok := config.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("--config must be a JSON object to combine with %s", settings[0].flag)
+	}
+	for _, s := range settings {
+		if have, ok := m[s.key]; ok && !sameJSON(have, s.value) {
+			return nil, fmt.Errorf("%s conflicts with %q in --config: set it in one place", s.flag, s.key)
+		}
+		m[s.key] = s.value
+	}
+	return m, nil
+}
+
+// sameJSON reports whether a and b encode to the same JSON, so a number parsed
+// from --config (a float64) equals the same number from a flag (an int).
+func sameJSON(a, b any) bool {
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && bytes.Equal(ja, jb)
 }
 
 // buildEncryptionBlock validates the --encryption-* flags and returns

@@ -199,7 +199,7 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 	if err := common.CloneWholeFile(
 		ctx.Context, blockStore, store, nil,
 		srcHandle, dstHandle,
-		dstFile.PayloadID, count,
+		dstFile.PayloadID, count, metaSvc,
 	); err != nil {
 		logger.Debug("NFSv4.2 CLONE failed", "error", err, "client", ctx.ClientAddr)
 		return cloneErr(types.StatusForErr(err))

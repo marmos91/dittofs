@@ -82,6 +82,13 @@ type LocalStore interface {
 	// pointer back here.
 	ReadAt(ctx context.Context, id journal.FileID, offset int64, dst []byte) (n int, st journal.ReadState, err error)
 
+	// IsRangeResident reports whether every byte in the range is held locally,
+	// including dirty bytes. Holes and cold ranges are not resident. It reads
+	// only the coverage index, without reading or verifying payload bytes.
+	// The answer does not pin the range: a later read still handles eviction.
+	// Empty ranges are resident; negative or overflowing ranges return an error.
+	IsRangeResident(ctx context.Context, id journal.FileID, offset, length int64) (bool, error)
+
 	// Hydrate writes bytes fetched from the remote store during a cold read.
 	// Same append primitive as WriteAt, but the record is born clean (already
 	// durable remotely) so it is immediately evictable.

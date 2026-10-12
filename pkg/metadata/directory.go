@@ -215,13 +215,25 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 
 	// Check if directory is empty
 	entries, _, err := store.ListChildren(ctx.Context, dirHandle, "", 1, NamesOnly)
-	if err == nil && len(entries) > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) > 0 {
 		return nil, &StoreError{
 			Code:    ErrNotEmpty,
 			Message: "directory not empty",
 			Path:    name,
 		}
 	}
+
+	guard, err := s.lockNamespace(
+		namespaceAccess{handle: parentHandle},
+		namespaceAccess{handle: dirHandle, exclusive: true},
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer guard.unlock()
 
 	// wcc brackets the parent attributes around the mutation, captured inside
 	// the transaction below (H9).
@@ -236,12 +248,28 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	// Serialize that per-parent against concurrent mkdir/rmdir on the same parent
 	// so the shared counter key is never a BadgerDB SSI conflict source (#1571).
 	now := time.Now()
-	defer s.lockParentLink(parentHandle)()
+	unlockParent := s.lockParentLink(parentHandle)
+	defer func() {
+		if unlockParent != nil {
+			unlockParent()
+		}
+	}()
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Re-read the parent inside the transaction so the pre-op snapshot and
 		// the timestamp mutation derive from the same committed state.
-		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {
-			parent = txParent
+		txParent, pErr := transactionDirectory(ctx.Context, tx, parentHandle)
+		if pErr != nil {
+			return pErr
+		}
+		parent = txParent
+		if err := requireChildIdentity(ctx.Context, tx, parentHandle, name, dirHandle); err != nil {
+			return err
+		}
+		if _, err := transactionDirectory(ctx.Context, tx, dirHandle); err != nil {
+			return err
+		}
+		if err := requireEmptyDirectory(ctx.Context, tx, dirHandle, name); err != nil {
+			return err
 		}
 		// Overlay any pending coalesced bump so Before reflects the same mtime a
 		// concurrent GETATTR would see (and that the prior op's After returned),
@@ -276,7 +304,6 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 
 		return nil
 	})
-
 	if txErr != nil {
 		return nil, txErr
 	}
@@ -298,6 +325,12 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	// under create-then-rmdir churn (#1573).
 	s.dirTimes.Clear(dirHandle)
 
+	// The timestamp flush writes the parent inode. Keep the counter guard until
+	// it finishes so the next directory mutation cannot read that inode while
+	// this operation is still writing it.
+	unlockParent()
+	unlockParent = nil
+	guard.unlock()
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
 	return wcc, nil
 }

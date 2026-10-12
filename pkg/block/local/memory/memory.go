@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -188,6 +190,35 @@ func (s *MemoryStore) ReadAt(_ context.Context, id journal.FileID, offset int64,
 		covered += min(e[1], end) - max(e[0], offset)
 	}
 	return len(dst), journal.ReadState{Hole: covered < int64(len(dst))}, nil
+}
+
+// IsRangeResident checks the written ranges without touching the byte buffer.
+// Adjacent writes are coalesced, and memory never evicts, so one range must
+// cover the entire query for it to be resident.
+func (s *MemoryStore) IsRangeResident(ctx context.Context, id journal.FileID, offset, length int64) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return false, block.ErrStoreClosed
+	}
+	if offset < 0 {
+		return false, block.ErrInvalidOffset
+	}
+	if length < 0 || length > math.MaxInt64-offset {
+		return false, block.ErrInvalidSize
+	}
+	if length == 0 {
+		return true, nil
+	}
+	f := s.files[string(id)]
+	if f == nil {
+		return false, nil
+	}
+	i := sort.Search(len(f.written), func(i int) bool { return f.written[i][1] > offset })
+	return i < len(f.written) && f.written[i][0] <= offset && f.written[i][1] >= offset+length, nil
 }
 
 // Commit is a no-op: memory has no durable substrate.

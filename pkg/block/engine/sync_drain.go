@@ -74,8 +74,7 @@ func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushR
 	// journal serializes flush passes per shard, so the explicit drain and the
 	// background dispatcher never pack the same range twice. fn + AfterFile
 	// are built fresh per call (journal's C9 caller obligation).
-	fn, reap := m.flushFn()
-	if err := m.local.Flush(ctx, journal.FileID(payloadID), journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil {
+	if err := m.flushFile(ctx, journal.FileID(payloadID), true); err != nil {
 		return nil, err
 	}
 	return &block.FlushResult{Finalized: true}, nil
@@ -216,8 +215,7 @@ func (m *RemoteSync) SyncNow(ctx context.Context) error {
 	// bytes into one block and reaps file A's rows with file B's spans.
 	var firstErr error
 	for _, id := range m.local.ListFiles(ctx) {
-		fn, reap := m.flushFn()
-		if err := m.local.Flush(ctx, id, journal.FlushOptions{Force: true, AfterFile: reap}, fn); err != nil && firstErr == nil {
+		if err := m.flushFile(ctx, id, true); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -245,4 +243,17 @@ func (m *RemoteSync) FlushAll(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+// flushFile retains admission across the journal snapshot, asynchronous block
+// commits, and AfterFile. A clone cannot replace the manifest while an older
+// destination pass still has rows to publish or reap.
+func (m *RemoteSync) flushFile(ctx context.Context, id journal.FileID, force bool) error {
+	release, err := m.admission.enter(ctx, string(id))
+	if err != nil {
+		return err
+	}
+	defer release()
+	fn, reap := m.flushFn()
+	return m.local.Flush(ctx, id, journal.FlushOptions{Force: force, AfterFile: reap}, fn)
 }

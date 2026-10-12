@@ -3,10 +3,15 @@ package block
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/cli/output"
+	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/spf13/pflag"
 )
 
 func TestBuildCompressionBlock(t *testing.T) {
@@ -48,7 +53,7 @@ func TestBuildCompressionBlock(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_CompressionMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "zstd", 0, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, suppliedSet(), "zstd", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -66,7 +71,7 @@ func TestBuildRemoteConfig_S3_CompressionMergesIn(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_NoCompressionByDefault(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 0, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, suppliedSet(), "", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -77,14 +82,14 @@ func TestBuildRemoteConfig_S3_NoCompressionByDefault(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_RejectsInvalidAlgo(t *testing.T) {
-	_, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "gzip", 0, encryptionFlags{})
+	_, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, suppliedSet(), "gzip", 0, encryptionFlags{})
 	if err == nil || !strings.Contains(err.Error(), "invalid --compression") {
 		t.Fatalf("err=%v, want invalid --compression error", err)
 	}
 }
 
 func TestBuildRemoteConfig_S3_ParallelUploadsMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 8, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, suppliedSet(), "", 8, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -98,7 +103,7 @@ func TestBuildRemoteConfig_S3_ParallelUploadsMergesIn(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_NoParallelUploadsByDefault(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 0, encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, suppliedSet(), "", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -182,7 +187,7 @@ func TestBuildEncryptionBlock_Rejects(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_EncryptionMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, "", 0, encryptionFlags{
+	cfg, err := buildRemoteConfig("s3", "", s3Fields{bucket: "bucket", region: "us-east-1", accessKey: "AK", secretKey: "SK"}, suppliedSet(), "", 0, encryptionFlags{
 		AEAD:    "aes-256-gcm",
 		KeyKind: "local",
 		KeyFile: "/etc/dittofs/share.key",
@@ -200,16 +205,169 @@ func TestBuildRemoteConfig_S3_EncryptionMergesIn(t *testing.T) {
 	}
 }
 
-func TestBuildRemoteConfig_JSONConfigShortCircuitsFlag(t *testing.T) {
-	// --config takes the parsed JSON verbatim; --compression flag is
-	// ignored when --config is set (matches existing flag interaction).
-	cfg, err := buildRemoteConfig("s3", `{"bucket":"x"}`, s3Fields{}, "lz4", 0, encryptionFlags{})
-	if err != nil {
-		t.Fatalf("buildRemoteConfig: %v", err)
+// blockAddServer records the store config `store block add` sends.
+type blockAddServer struct {
+	*httptest.Server
+	config map[string]any
+}
+
+func newBlockAddServer(t *testing.T) *blockAddServer {
+	t.Helper()
+	s := &blockAddServer{}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/store/block" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var req struct {
+			Name   string `json:"name"`
+			Type   string `json:"type"`
+			Config string `json:"config"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		s.config = nil
+		if req.Config != "" {
+			_ = json.Unmarshal([]byte(req.Config), &s.config)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(apiclient.BlockStore{ID: "id-1", Name: req.Name, Type: req.Type})
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// resetAddFlags puts every addCmd flag back to its default and unnamed state.
+func resetAddFlags() {
+	addCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+}
+
+// runAddWith runs `store block add` with args, and no other flags, against s.
+func runAddWith(t *testing.T, s *blockAddServer, args ...string) error {
+	t.Helper()
+	withGCTestServer(t, s.URL)
+	resetAddFlags()
+	t.Cleanup(resetAddFlags)
+	if err := addCmd.ParseFlags(args); err != nil {
+		t.Fatalf("parse %q: %v", args, err)
 	}
-	m, _ := cfg.(map[string]any)
-	if _, present := m["compression"]; present {
-		t.Fatalf("compression must not be injected when --config provided: %#v", m)
+	var err error
+	captureStdoutBlock(t, func() { err = runAdd(addCmd, nil) })
+	return err
+}
+
+// Every flag `store block add` takes alongside --config must reach the store
+// the server is asked to create. --config used to be sent as given, so a
+// store asked for with --compression zstd was created uncompressed, and the
+// command still succeeded.
+func TestAddCmd_ConfigKeepsEveryFlag(t *testing.T) {
+	cases := []struct {
+		args []string
+		key  string
+		want any // the value under key, as the server decodes it
+	}{
+		{[]string{"--compression", "zstd"}, "compression", map[string]any{"algo": "zstd"}},
+		{[]string{"--encryption-aead", "aes-256-gcm", "--encryption-key-kind", "local", "--encryption-key-file", "/k"},
+			"encryption", map[string]any{"aead": "aes-256-gcm", "key": map[string]any{"kind": "local", "file": "/k"}}},
+		{[]string{"--parallel-uploads", "8"}, "parallel_uploads", float64(8)},
+		{[]string{"--bucket", "b"}, "bucket", "b"},
+		{[]string{"--region", "eu-west-1"}, "region", "eu-west-1"},
+		{[]string{"--endpoint", "http://127.0.0.1:9000"}, "endpoint", "http://127.0.0.1:9000"},
+		{[]string{"--prefix", "p/"}, "prefix", "p/"},
+		{[]string{"--access-key", "AK"}, "access_key_id", "AK"},
+		{[]string{"--secret-key", "SK"}, "secret_access_key", "SK"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			s := newBlockAddServer(t)
+			args := append([]string{"--name", "s", "--type", "s3", "--config", `{"allow_private_endpoint":true}`}, tc.args...)
+			if err := runAddWith(t, s, args...); err != nil {
+				t.Fatalf("store block add %q: %v", args, err)
+			}
+			if !reflect.DeepEqual(s.config[tc.key], tc.want) {
+				t.Errorf("config[%q] = %#v, want %#v; config sent: %#v", tc.key, s.config[tc.key], tc.want, s.config)
+			}
+			if s.config["allow_private_endpoint"] != true {
+				t.Errorf("the --config keys were lost: %#v", s.config)
+			}
+		})
+	}
+}
+
+// --region has a default, so leaving it off must not override the region the
+// JSON sets, nor add one the JSON leaves out.
+func TestAddCmd_ConfigKeepsItsOwnRegion(t *testing.T) {
+	s := newBlockAddServer(t)
+	if err := runAddWith(t, s, "--name", "s", "--type", "s3", "--config", `{"bucket":"b","region":"eu-central-1"}`); err != nil {
+		t.Fatalf("store block add: %v", err)
+	}
+	if s.config["region"] != "eu-central-1" {
+		t.Errorf("region = %v, want the JSON's eu-central-1", s.config["region"])
+	}
+}
+
+// A memory store applies compression, encryption and the upload cap too, so
+// its flags must reach it with or without --config.
+func TestAddCmd_MemoryStoreKeepsItsFlags(t *testing.T) {
+	s := newBlockAddServer(t)
+	if err := runAddWith(t, s, "--name", "m", "--type", "memory", "--compression", "lz4", "--parallel-uploads", "4"); err != nil {
+		t.Fatalf("store block add: %v", err)
+	}
+	if !reflect.DeepEqual(s.config["compression"], map[string]any{"algo": "lz4"}) || s.config["parallel_uploads"] != float64(4) {
+		t.Errorf("config sent: %#v, want compression lz4 and parallel_uploads 4", s.config)
+	}
+
+	s = newBlockAddServer(t)
+	if err := runAddWith(t, s, "--name", "m", "--type", "memory"); err != nil {
+		t.Fatalf("store block add: %v", err)
+	}
+	if s.config != nil {
+		t.Errorf("a memory store without flags sent config %#v, want none", s.config)
+	}
+}
+
+// A flag that agrees with --config is accepted; one that contradicts it is
+// refused, naming the flag and the key but not the values, which may be
+// credentials.
+func TestBuildRemoteConfig_JSONConfigConflicts(t *testing.T) {
+	supplied := suppliedSet("bucket", "secret-key")
+	same := s3Fields{bucket: "b", secretKey: "SK"}
+	cfg, err := buildRemoteConfig("s3", `{"bucket":"b","secret_access_key":"SK","parallel_uploads":8}`, same, supplied, "", 8, encryptionFlags{})
+	if err != nil {
+		t.Fatalf("flags equal to the JSON's values: %v", err)
+	}
+	if m, _ := cfg.(map[string]any); m["parallel_uploads"] != 8 {
+		t.Errorf("parallel_uploads = %#v, want 8", m["parallel_uploads"])
+	}
+
+	cases := []struct {
+		name     string
+		json     string
+		s3       s3Fields
+		compress string
+		wantSub  string
+	}{
+		{"bucket", `{"bucket":"other"}`, s3Fields{bucket: "b"}, "", `--bucket conflicts with "bucket"`},
+		{"secret", `{"secret_access_key":"OLD-SECRET"}`, s3Fields{secretKey: "NEW-SECRET"}, "", `--secret-key conflicts with "secret_access_key"`},
+		{"compression", `{"compression":{"algo":"lz4"}}`, s3Fields{}, "zstd", `--compression conflicts with "compression"`},
+		{"not-an-object", `["x"]`, s3Fields{}, "zstd", "--config must be a JSON object"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildRemoteConfig("s3", tc.json, tc.s3, supplied, tc.compress, 0, encryptionFlags{})
+			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("err = %v, want substring %q", err, tc.wantSub)
+			}
+			if strings.Contains(err.Error(), "SECRET") {
+				t.Errorf("error discloses a credential: %v", err)
+			}
+		})
 	}
 }
 

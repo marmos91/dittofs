@@ -84,8 +84,9 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 
 	// Create in-memory metadata store and block store.
 	metaStore, err := cli.CreateMetadataStore(&apiclient.CreateStoreRequest{
-		Name: "ntlm-meta",
-		Type: "memory",
+		Name:   "ntlm-meta",
+		Type:   "badger",
+		Config: map[string]any{"in_memory": true},
 	})
 	if err != nil {
 		t.Fatalf("create metadata store: %v", err)

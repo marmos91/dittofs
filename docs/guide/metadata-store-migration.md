@@ -84,6 +84,10 @@ shares on a second server running the new version, then switch clients over.
    dfsctl login --server http://127.0.0.1:8081 --username admin
    ```
 
+   `dfsctl` talks to the last server you logged in to, so from here on every
+   `dfsctl` command goes to the new instance. To run one against the old server,
+   log in to it again or pass `--server` to that command.
+
 2. **Recreate the setup on the new instance.** Its control plane starts empty, so
    create again the users, groups and permissions the shares need
    ([Access control](access-control.md)), then the stores and shares:
@@ -105,8 +109,20 @@ shares on a second server running the new version, then switch clients over.
    dfsctl adapter enable smb --port 12446
    ```
 
-4. **Mount both shares on one client and copy.** From Linux over NFS, `rsync`
-   keeps owners, modes, timestamps and hard links:
+4. **Mount both shares on one client and copy.** Run the copy as root, so that
+   `rsync` can keep owners. By default both shares map root to guest, which has
+   no access to them, so turn that off on both servers for the copy. A squash
+   change applies when the NFS adapter restarts. On the old server, that
+   briefly disconnects its NFS clients:
+
+   ```bash
+   # on each server, for each share you copy
+   dfsctl share nfs-config set /export --squash none
+   dfsctl adapter disable nfs
+   dfsctl adapter enable nfs --port <that server's NFS port>
+   ```
+
+   Then mount and copy. `rsync` keeps owners, modes, timestamps and hard links:
 
    ```bash
    sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/old
@@ -125,7 +141,14 @@ shares on a second server running the new version, then switch clients over.
    sudo rsync -aHn --checksum --numeric-ids --itemize-changes /mnt/old/ /mnt/new/
    ```
 
-6. **Switch over.** Stop the old server, move the new instance's adapters to the
+6. **Switch over.** Before clients connect, set squashing back on the new
+   instance (`dfsctl share nfs-config set /export --squash root_to_guest`); it
+   applies when you restart or edit the NFS adapter below. Then stop the old
+   server, move the new instance's adapters to the ports clients use
+   (`dfsctl adapter edit nfs --port 12049`, and the same for SMB), and have
+   clients remount: file handles from the old server do not carry over.
+
+   Stop the old server, move the new instance's adapters to the
    ports clients use (`dfsctl adapter edit nfs --port 12049`, and the same for
    SMB), and have clients remount: file handles from the old server do not carry
    over.

@@ -67,7 +67,7 @@ func TestRealKDC(t *testing.T) {
 		defer proc.Stop()
 
 		// Get real AP-REQ token from the KDC
-		gssToken, _ := getRealAPREQ(t, krb5ConfPath, kdcPort)
+		gssToken, sessionKey := getRealAPREQ(t, krb5ConfPath, kdcPort)
 
 		// === RPCSEC_GSS_INIT ===
 		initCred := encodeCredOrFatal(t, &gss.RPCGSSCredV1{
@@ -75,7 +75,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcNone,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
+		initResult := proc.Process(context.Background(), initCred, nil, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -96,7 +96,16 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(context.Background(), dataCred, nil, procArgs)
+
+		// A DATA call without a call-header MIC must be refused: the verifier
+		// is what binds the request to the session key.
+		unsigned := proc.Process(context.Background(), dataCred, nil, dataCred, procArgs)
+		if unsigned.Err == nil || unsigned.AuthStat != gss.AuthStatCredProblem {
+			t.Fatalf("DATA without a verifier: got err=%v auth_stat=%d, want a refusal with AuthStatCredProblem",
+				unsigned.Err, unsigned.AuthStat)
+		}
+
+		dataResult := processSigned(t, proc, sessionKey, dataCred, procArgs)
 		if dataResult.Err != nil {
 			t.Fatalf("DATA failed: %v", dataResult.Err)
 		}
@@ -129,7 +138,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		replayResult := proc.Process(context.Background(), replayCred, nil, procArgs)
+		replayResult := processSigned(t, proc, sessionKey, replayCred, procArgs)
 		if !replayResult.SilentDiscard {
 			t.Error("expected silent discard for replay, got normal result")
 		}
@@ -142,7 +151,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		dataResult2 := proc.Process(context.Background(), dataCred2, nil, []byte("second request"))
+		dataResult2 := processSigned(t, proc, sessionKey, dataCred2, []byte("second request"))
 		if dataResult2.Err != nil {
 			t.Fatalf("second DATA failed: %v", dataResult2.Err)
 		}
@@ -155,7 +164,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		destroyResult := proc.Process(context.Background(), destroyCred, nil, nil)
+		destroyResult := processSigned(t, proc, sessionKey, destroyCred, nil)
 		if destroyResult.Err != nil {
 			t.Fatalf("DESTROY failed: %v", destroyResult.Err)
 		}
@@ -171,7 +180,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		staleResult := proc.Process(context.Background(), staleCred, nil, procArgs)
+		staleResult := processSigned(t, proc, sessionKey, staleCred, procArgs)
 		if staleResult.Err == nil {
 			t.Fatal("expected error for stale handle")
 		}
@@ -192,7 +201,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcIntegrity,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
+		initResult := proc.Process(context.Background(), initCred, nil, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -210,7 +219,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcIntegrity,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(context.Background(), dataCred, nil, integrityBody)
+		dataResult := processSigned(t, proc, clientSessionKey, dataCred, integrityBody)
 		if dataResult.Err != nil {
 			t.Fatalf("krb5i DATA failed: %v", dataResult.Err)
 		}
@@ -221,7 +230,7 @@ func TestRealKDC(t *testing.T) {
 
 		// Verify reply wrapping works (server -> client direction)
 		replyBody := []byte("READDIR response data")
-		wrappedReply, err := gss.WrapIntegrity(dataResult.SessionKey, dataResult.SeqNum, replyBody)
+		wrappedReply, err := gss.WrapIntegrity(dataResult.SessionKey, dataResult.SeqNum, replyBody, dataResult.HasAcceptorSubkey)
 		if err != nil {
 			t.Fatalf("WrapIntegrity for reply failed: %v", err)
 		}
@@ -234,7 +243,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcIntegrity,
 			Handle:  handle,
 		})
-		proc.Process(context.Background(), destroyCred, nil, nil)
+		processSigned(t, proc, clientSessionKey, destroyCred, nil)
 	})
 
 	t.Run("krb5p_privacy", func(t *testing.T) {
@@ -250,7 +259,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcPrivacy,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
+		initResult := proc.Process(context.Background(), initCred, nil, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -268,7 +277,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcPrivacy,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(context.Background(), dataCred, nil, privacyBody)
+		dataResult := processSigned(t, proc, clientSessionKey, dataCred, privacyBody)
 		if dataResult.Err != nil {
 			t.Fatalf("krb5p DATA failed: %v", dataResult.Err)
 		}
@@ -279,7 +288,7 @@ func TestRealKDC(t *testing.T) {
 
 		// Verify reply wrapping works (server -> client direction)
 		replyBody := []byte("WRITE response data")
-		wrappedReply, err := gss.WrapPrivacy(dataResult.SessionKey, dataResult.SeqNum, replyBody)
+		wrappedReply, err := gss.WrapPrivacy(dataResult.SessionKey, dataResult.SeqNum, replyBody, dataResult.HasAcceptorSubkey)
 		if err != nil {
 			t.Fatalf("WrapPrivacy for reply failed: %v", err)
 		}
@@ -292,7 +301,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcPrivacy,
 			Handle:  handle,
 		})
-		proc.Process(context.Background(), destroyCred, nil, nil)
+		processSigned(t, proc, clientSessionKey, destroyCred, nil)
 	})
 
 	t.Run("default_identity_mapping", func(t *testing.T) {
@@ -318,14 +327,14 @@ func TestRealKDC(t *testing.T) {
 		proc := gss.NewGSSProcessor(verifier, mapper, 100, 10*time.Minute)
 		defer proc.Stop()
 
-		gssToken, _ := getRealAPREQ(t, krb5ConfPath, kdcPort)
+		gssToken, sessionKey := getRealAPREQ(t, krb5ConfPath, kdcPort)
 
 		initCred := encodeCredOrFatal(t, &gss.RPCGSSCredV1{
 			GSSProc: gss.RPCGSSInit,
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcNone,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
+		initResult := proc.Process(context.Background(), initCred, nil, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -337,7 +346,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(context.Background(), dataCred, nil, []byte("test"))
+		dataResult := processSigned(t, proc, sessionKey, dataCred, []byte("test"))
 		if dataResult.Err != nil {
 			t.Fatalf("DATA failed: %v", dataResult.Err)
 		}
@@ -646,15 +655,17 @@ func getRealAPREQ(t *testing.T, krb5ConfPath string, kdcPort int) (gssToken []by
 
 // wrapInGSSAPIToken wraps an AP-REQ in a GSS-API initial context token.
 //
-// Format per RFC 2743 Section 3.1:
+// Format per RFC 2743 Section 3.1, with the krb5 mechanism's inner token
+// starting with the 2-byte token ID 0x01 0x00 for KRB_AP_REQ (RFC 1964
+// Section 1.1), as real clients send it:
 //
-//	0x60 [length] 0x06 0x09 [KRB5-OID-value] [AP-REQ-bytes]
+//	0x60 [length] 0x06 0x09 [KRB5-OID-value] 0x01 0x00 [AP-REQ-bytes]
 func wrapInGSSAPIToken(apReqBytes []byte) []byte {
 	// KRB5 OID value: 1.2.840.113554.1.2.2
 	krb5OIDValue := []byte{0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02}
 
-	// Inner = OID_tag(1) + OID_len(1) + OID_value(9) + AP-REQ
-	innerLen := 1 + 1 + len(krb5OIDValue) + len(apReqBytes)
+	// Inner = OID_tag(1) + OID_len(1) + OID_value(9) + TOK_ID(2) + AP-REQ
+	innerLen := 1 + 1 + len(krb5OIDValue) + 2 + len(apReqBytes)
 
 	var buf bytes.Buffer
 	buf.WriteByte(0x60) // APPLICATION 0 tag
@@ -662,6 +673,7 @@ func wrapInGSSAPIToken(apReqBytes []byte) []byte {
 	buf.WriteByte(0x06) // OBJECT IDENTIFIER tag
 	buf.WriteByte(byte(len(krb5OIDValue)))
 	buf.Write(krb5OIDValue)
+	buf.Write([]byte{0x01, 0x00}) // TOK_ID: KRB_AP_REQ
 	buf.Write(apReqBytes)
 
 	return buf.Bytes()
@@ -719,6 +731,35 @@ func decodeInitRes(t *testing.T, gssReply []byte) (handle []byte, gssMajor uint3
 	return
 }
 
+// signCallHeader builds an RPCSEC_GSS call verifier as the client would: a
+// GSS-API MIC token (RFC 4121) over the call-header preimage, signed with the
+// context's session key and the initiator-sign key usage (RFC 2203 §5.3.1).
+func signCallHeader(t *testing.T, sessionKey types.EncryptionKey, preimage []byte) []byte {
+	t.Helper()
+	tok := gssapi.MICToken{
+		Flags:     0, // Initiator
+		SndSeqNum: 0,
+		Payload:   preimage,
+	}
+	if err := tok.SetChecksum(sessionKey, gss.KeyUsageInitiatorSign); err != nil {
+		t.Fatalf("sign call header: %v", err)
+	}
+	mic, err := tok.Marshal()
+	if err != nil {
+		t.Fatalf("marshal call header MIC: %v", err)
+	}
+	return mic
+}
+
+// processSigned runs a DATA or DESTROY call with a valid call verifier. The
+// credential body stands in for the call-header preimage: the processor checks
+// the MIC against whatever preimage the caller passes, as the gss package's
+// own tests do.
+func processSigned(t *testing.T, proc *gss.GSSProcessor, sessionKey types.EncryptionKey, credBody, body []byte) *gss.GSSProcessResult {
+	t.Helper()
+	return proc.Process(context.Background(), credBody, signCallHeader(t, sessionKey, credBody), credBody, body)
+}
+
 // Integrity/Privacy Wrapping (Client/Initiator Side)
 
 // wrapIntegrityAsInitiator builds an rpc_gss_integ_data body as the client would.
@@ -751,7 +792,10 @@ func wrapIntegrityAsInitiator(t *testing.T, sessionKey types.EncryptionKey, seqN
 	return buf.Bytes()
 }
 
-// wrapPrivacyAsInitiator builds an rpc_gss_priv_data body as the client would.
+// wrapPrivacyAsInitiator builds an rpc_gss_priv_data body as the client would:
+// a sealed (encrypted) Wrap token per RFC 4121 Section 4.2.4.
+//
+//	header (16 bytes) | encrypt(plaintext | header copy with RRC 0)
 func wrapPrivacyAsInitiator(t *testing.T, sessionKey types.EncryptionKey, seqNum uint32, args []byte) []byte {
 	t.Helper()
 
@@ -765,24 +809,28 @@ func wrapPrivacyAsInitiator(t *testing.T, sessionKey types.EncryptionKey, seqNum
 		t.Fatalf("get encryption type: %v", err)
 	}
 
-	wrapToken := gssapi.WrapToken{
-		Flags:     0, // Initiator
-		EC:        uint16(encType.GetHMACBitLength() / 8),
-		RRC:       0,
-		SndSeqNum: uint64(seqNum),
-		Payload:   plaintext,
-	}
-	if err := wrapToken.SetCheckSum(sessionKey, gss.KeyUsageInitiatorSeal); err != nil {
-		t.Fatalf("compute initiator WrapToken checksum: %v", err)
-	}
-	wrapTokenBytes, err := wrapToken.Marshal()
+	const hdrLen = 16
+	header := make([]byte, hdrLen)
+	header[0], header[1] = 0x05, 0x04          // TOK_ID: Wrap
+	header[2] = 0x02                           // Flags: Sealed, sent by the initiator
+	header[3] = 0xFF                           // Filler
+	binary.BigEndian.PutUint16(header[4:6], 0) // EC: no filler
+	binary.BigEndian.PutUint16(header[6:8], 0) // RRC: no rotation
+	binary.BigEndian.PutUint64(header[8:16], uint64(seqNum))
+
+	// The encrypted part carries a copy of the header with RRC zeroed.
+	toEncrypt := make([]byte, len(plaintext)+hdrLen)
+	copy(toEncrypt, plaintext)
+	copy(toEncrypt[len(plaintext):], header)
+
+	_, ciphertext, err := encType.EncryptMessage(sessionKey.KeyValue, toEncrypt, gss.KeyUsageInitiatorSeal)
 	if err != nil {
-		t.Fatalf("marshal WrapToken: %v", err)
+		t.Fatalf("encrypt Wrap token: %v", err)
 	}
 
-	// Encode: opaque(wrap_token)
+	// Encode: opaque(header | ciphertext)
 	var buf bytes.Buffer
-	writeXDROpaque(&buf, wrapTokenBytes)
+	writeXDROpaque(&buf, append(header, ciphertext...))
 	return buf.Bytes()
 }
 

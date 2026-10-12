@@ -5,16 +5,6 @@ on:
     branches: [develop]
   pull_request:
     branches: [develop, main]
-    paths:
-      - 'cmd/**/*.go'
-      - 'pkg/**/*.go'
-      - 'pkg/metadata/store/*/migrations/*.sql'
-      - 'internal/**/*.go'
-      - 'internal/dfsbench/backend/smb.conf.tmpl'
-      - 'go.mod'
-      - 'go.sum'
-      - 'bench/workloads/**'
-      - '.github/workflows/unit-tests.yml'
 
 permissions:
   contents: read
@@ -43,17 +33,49 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # Full history so dorny/paths-filter can resolve the previous commit
+          # on push events; a shallow clone can miss it on a multi-commit push.
+          fetch-depth: 0
+
+      # decision: the Go-change filter lives inside the job rather than in the
+      # workflow's `paths:`. A workflow skipped by path filtering leaves its
+      # check in "Pending" forever, so requiring this check would block every
+      # pull request that touches no Go file — a job whose steps are skipped
+      # reports "Success" instead. The filter is not allowed to fail quietly: a
+      # failure fails this job, so the check can never go green having run
+      # nothing. Overturn this if the check stops being required, or if the
+      # workflow gains a merge_group trigger, which needs the filter's answer
+      # for a base the merge queue supplies rather than a pull request.
+      - name: Check for Go changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'cmd/**/*.go'
+              - 'pkg/**/*.go'
+              - 'pkg/metadata/store/*/migrations/*.sql'
+              - 'internal/**/*.go'
+              - 'internal/dfsbench/backend/smb.conf.tmpl'
+              - 'go.mod'
+              - 'go.sum'
+              - 'bench/workloads/**'
+              - '.github/workflows/unit-tests.yml'
 
       - name: Set up Go
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
           cache: true  # Built-in caching (replaces actions/cache)
 
       - name: Download dependencies
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: go mod download
 
       - name: Verify dependencies
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: go mod verify
 
       # A pull request runs the short suite; the push to develop runs the full
@@ -66,6 +88,7 @@ jobs:
       # full-run baseline; that comparison is only meaningful once both sides
       # run the same set.
       - name: Run unit tests
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: |
           go test -v -race ${{ github.event_name == 'pull_request' && '-short' || '' }} \
             -timeout=25m -coverprofile=coverage.txt -covermode=atomic \
@@ -74,6 +97,7 @@ jobs:
             ./cmd/...
 
       - name: Upload coverage to Codecov
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.txt
@@ -86,4 +110,5 @@ jobs:
       # in the repo names dfs-binaries, so nothing has ever fetched what this
       # step stored.
       - name: Build binary
+        if: github.event_name != 'pull_request' || steps.filter.outputs.go == 'true'
         run: go build -v -o dfs cmd/dfs/main.go

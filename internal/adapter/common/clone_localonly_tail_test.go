@@ -86,7 +86,7 @@ func TestMaterializeLocalClone_RejectsLongerDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeRows := mustListChunks(t, ctx, ms, "tail-dst-pid")
-	err = CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "tail-dst-pid", 0)
+	err = CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "tail-dst-pid", 0, nil)
 	var storeErr *metadata.StoreError
 	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrNotSupported {
 		t.Errorf("clone error = %v, want unsupported whole-file replacement", err)
@@ -138,7 +138,7 @@ func TestMaterializeLocalClone_GrowsWithoutClipping(t *testing.T) {
 	writeAndSeal(t, ctx, bs, "grow-src-pid", source)
 	writeAndSeal(t, ctx, bs, "grow-dst-pid", bytes.Repeat([]byte{0x44}, dstSize))
 
-	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "grow-dst-pid", 0); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "grow-dst-pid", 0, nil); err != nil {
 		t.Fatalf("CloneWholeFile: %v", err)
 	}
 

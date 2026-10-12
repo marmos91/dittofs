@@ -19,10 +19,11 @@ import (
 // tier populated ahead of the read frontier. This fires on EVERY read; the
 // window is computed purely from offset+len(data).
 func (bs *Store) ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return 0, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	n, err := bs.readAtInternal(ctx, payloadID, data, offset)
 	if err != nil {
 		return n, err
@@ -34,10 +35,11 @@ func (bs *Store) ReadAt(ctx context.Context, payloadID string, data []byte, offs
 // GetSize returns the stored size of a payload.
 // Checks local store first, falls back to syncer (remote).
 func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return 0, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	if size, found := bs.local.FileSize(ctx, journal.FileID(payloadID)); found {
 		return uint64(size), nil
 	}
@@ -55,10 +57,11 @@ func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) 
 // delete it if the tests that drive it go, rather than reintroducing an
 // interface to hold it up.
 func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return false, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	if _, found := bs.local.FileSize(ctx, journal.FileID(payloadID)); found {
 		return true, nil
 	}
@@ -85,10 +88,11 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 // Returns currentBlocks unchanged — the canonical projection happens
 // at Flush time, not WriteAt time.
 func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []block.ChunkRef, data []byte, offset uint64) ([]block.ChunkRef, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return currentBlocks, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
@@ -173,10 +177,11 @@ func distinctOffsets(refs []block.ChunkRef) []uint64 {
 }
 
 func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks []block.ChunkRef, newSize uint64) ([]block.ChunkRef, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return currentBlocks, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	// coordinator decrements run FIRST so a refcount-bookkeeping
 	// failure leaves the file untouched on disk and remote. Previous
 	// order (local → cache → syncer → coordinator) could leave 4-of-5
@@ -284,10 +289,11 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 // space reclaim in aggregate. length == 0, or a payload with no blocks, is a
 // no-op success.
 func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks []block.ChunkRef, offset, length uint64) ([]block.ChunkRef, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return currentBlocks, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	if length == 0 {
 		return currentBlocks, nil
 	}
@@ -369,10 +375,11 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 // Subsequent steps (cache invalidate, coordinator refcount decrements
 // optional remote sweep) are unchanged.
 func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.ChunkRef) error {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	if err := bs.local.Delete(ctx, journal.FileID(payloadID)); err != nil {
 		return fmt.Errorf("local delete failed: %w", err)
 	}
@@ -577,10 +584,11 @@ func (bs *Store) staleDestinationOffsets(ctx context.Context, tx metadata.Transa
 // hash are two distinct dst rows, mirroring the per-offset row model used by
 // the rollup ObjectIDPersister and the Delete/Truncate by-ID reap contract.
 func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []block.ChunkRef) ([]block.ChunkRef, error) {
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, srcPayloadID, dstPayloadID)
+	if err != nil {
 		return nil, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	// A source that places no blocks copies no content, but it still replaces
 	// the destination's: the copy hands it a file with nothing in it, so every
 	// row the destination holds is one the copy took away. The reap below runs

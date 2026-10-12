@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -306,16 +307,20 @@ func (h *Handler) Create(
 	// Pre-warm auth context cache (avoids registry lookups on WRITE)
 	_, _ = h.GetCachedAuthContext(ctx)
 
-	// Pre-warm file metadata cache (avoids store.GetFile on WRITE)
-	// Build a File struct from the fileAttr for caching
+	// Publish current attributes under payload admission so a completed clone
+	// cannot be followed by a pre-create snapshot entering the write cache.
 	if fileAttr.Type == metadata.FileTypeRegular {
-		shareName, id, _ := metadata.DecodeFileHandle(fileHandle)
-		cachedFile := &metadata.File{
-			ID:        id,
-			ShareName: shareName,
-			FileAttr:  *fileAttr,
+		_, warmErr := common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(scoped *metadata.AuthContext) (struct{}, error) {
+			fresh, err := metaSvc.GetFileForRead(scoped.Context, fileHandle)
+			if err != nil {
+				return struct{}{}, err
+			}
+			metaSvc.PrewarmWriteCache(fileHandle, fresh)
+			return struct{}{}, nil
+		})
+		if warmErr != nil {
+			logger.DebugCtx(ctx.Context, "CREATE: write cache warm failed", "error", warmErr)
 		}
-		metaSvc.PrewarmWriteCache(fileHandle, cachedFile)
 	}
 
 	// Convert metadata to NFS attributes
@@ -476,65 +481,71 @@ func truncateExistingFile(
 	req *CreateRequest,
 ) (*metadata.FileAttr, error) {
 	fileHandle, _ := metadata.EncodeFileHandle(existingFile)
-	// Build SetAttrs for the update
-	setAttrs := &metadata.SetAttrs{}
-
-	// Determine target size
-	targetSize := uint64(0) // Default: truncate to empty
-	if req.Attr != nil && req.Attr.Size != nil {
-		targetSize = *req.Attr.Size
-	}
-	setAttrs.Size = &targetSize
-
-	// Apply other requested attributes from request
-	if req.Attr != nil {
-		if req.Attr.Mode != nil {
-			setAttrs.Mode = req.Attr.Mode
+	return common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(authCtx *metadata.AuthContext) (*metadata.FileAttr, error) {
+		existingFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+		if err != nil {
+			return nil, err
 		}
-		if req.Attr.UID != nil {
-			setAttrs.UID = req.Attr.UID
-		}
-		if req.Attr.GID != nil {
-			setAttrs.GID = req.Attr.GID
-		}
-		if req.Attr.Atime != nil {
-			setAttrs.Atime = req.Attr.Atime
-		}
-		if req.Attr.Mtime != nil {
-			setAttrs.Mtime = req.Attr.Mtime
-		}
-	}
+		// Build SetAttrs for the update
+		setAttrs := &metadata.SetAttrs{}
 
-	// Update file metadata using metaSvc
-	// This includes permission checking. The returned WCC describes the file
-	// being truncated; the CREATE response's directory WCC is unaffected because
-	// truncating an existing entry does not modify the parent directory.
-	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
-		return nil, fmt.Errorf("update file metadata: %w", err)
-	}
-
-	// Truncate content if file has content.
-	if existingFile.PayloadID != "" {
-		// Thread the file's pre-truncate FileAttr.Blocks snapshot so the
-		// engine reaps RefCount on every block dropped past targetSize —
-		// without it the truncated tail chunks leak on the remote forever
-		// (#832). existingFile was fetched (via Lookup → GetFile) BEFORE
-		// SetFileAttributes pruned the store copy, so its Blocks list still
-		// reflects the full pre-truncate extent. Returned []ChunkRef is
-		// discarded — the canonical FileAttr.Blocks is reconciled at flush.
-		if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), existingFile.Blocks, targetSize); err != nil {
-			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
-			// Non-fatal: metadata is already updated
+		// Determine target size
+		targetSize := uint64(0) // Default: truncate to empty
+		if req.Attr != nil && req.Attr.Size != nil {
+			targetSize = *req.Attr.Size
 		}
-	}
+		setAttrs.Size = &targetSize
 
-	// Get updated attributes
-	updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
-	if err != nil {
-		return nil, fmt.Errorf("get updated attributes: %w", err)
-	}
+		// Apply other requested attributes from request
+		if req.Attr != nil {
+			if req.Attr.Mode != nil {
+				setAttrs.Mode = req.Attr.Mode
+			}
+			if req.Attr.UID != nil {
+				setAttrs.UID = req.Attr.UID
+			}
+			if req.Attr.GID != nil {
+				setAttrs.GID = req.Attr.GID
+			}
+			if req.Attr.Atime != nil {
+				setAttrs.Atime = req.Attr.Atime
+			}
+			if req.Attr.Mtime != nil {
+				setAttrs.Mtime = req.Attr.Mtime
+			}
+		}
 
-	return &updatedFile.FileAttr, nil
+		// Update file metadata using metaSvc
+		// This includes permission checking. The returned WCC describes the file
+		// being truncated; the CREATE response's directory WCC is unaffected because
+		// truncating an existing entry does not modify the parent directory.
+		if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
+			return nil, fmt.Errorf("update file metadata: %w", err)
+		}
+
+		// Truncate content if file has content.
+		if existingFile.PayloadID != "" {
+			// Thread the file's pre-truncate FileAttr.Blocks snapshot so the
+			// engine reaps RefCount on every block dropped past targetSize —
+			// without it the truncated tail chunks leak on the remote forever
+			// (#832). existingFile was fetched (via Lookup → GetFile) BEFORE
+			// SetFileAttributes pruned the store copy, so its Blocks list still
+			// reflects the full pre-truncate extent. Returned []ChunkRef is
+			// discarded — the canonical FileAttr.Blocks is reconciled at flush.
+			if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), existingFile.Blocks, targetSize); err != nil {
+				logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
+				// Non-fatal: metadata is already updated
+			}
+		}
+
+		// Get updated attributes
+		updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+		if err != nil {
+			return nil, fmt.Errorf("get updated attributes: %w", err)
+		}
+
+		return &updatedFile.FileAttr, nil
+	})
 }
 
 // applySetAttrsToFileAttr applies SetAttrs to FileAttr for initial file creation.

@@ -49,10 +49,11 @@ func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uin
 	// gone, the metadata block list is the best remaining source, and widening
 	// would replace it with a fabrication. Withdraw this if a caller ever acts
 	// on the extents without a READ that re-checks liveness.
-	if err := bs.enter(); err != nil {
+	ctx, release, err := bs.enterPayload(ctx, payloadID)
+	if err != nil {
 		return nil, err
 	}
-	defer bs.closeMu.RUnlock()
+	defer release()
 	if fileSize == 0 {
 		return nil, nil
 	}

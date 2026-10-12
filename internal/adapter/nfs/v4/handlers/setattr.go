@@ -241,25 +241,49 @@ func (h *Handler) applySetAttrsWithTruncateReclaim(
 	preFile *metadata.File,
 	attrs *metadata.SetAttrs,
 ) error {
-	if _, err := metaSvc.SetFileAttributes(authCtx, handle, attrs); err != nil {
+	apply := func(authCtx *metadata.AuthContext, preFile *metadata.File) error {
+		if _, err := metaSvc.SetFileAttributes(authCtx, handle, attrs); err != nil {
+			return err
+		}
+
+		// Reclaim block data past the new EOF only on a size change. This helper
+		// is also reached from OPEN(UNCHECKED4) with attrs carrying no size (mode
+		// only); guarding on attrs.Size != nil keeps a mode-only OPEN from
+		// truncating an existing file's content to zero. The helper further
+		// no-ops unless this is a genuine shrink (newSize < preFile.Size), reaps
+		// RefCount on every dropped block (#832), and is best-effort — the
+		// metadata write already committed. Same seam as NFSv3 SETATTR /
+		// CREATE-truncate and SMB SetEndOfFile.
+		if attrs.Size != nil {
+			if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, handle, preFile, *attrs.Size); rErr != nil {
+				logger.Warn("NFSv4 truncate reclaim failed",
+					"handle", string(handle), "size", *attrs.Size, "error", rErr)
+			}
+		}
+		return nil
+	}
+	if attrs.Size == nil {
+		return apply(authCtx, preFile)
+	}
+	file, err := metaSvc.GetFileForRead(authCtx.Context, handle)
+	if err != nil {
 		return err
 	}
-
-	// Reclaim block data past the new EOF only on a size change. This helper
-	// is also reached from OPEN(UNCHECKED4) with attrs carrying no size (mode
-	// only); guarding on attrs.Size != nil keeps a mode-only OPEN from
-	// truncating an existing file's content to zero. The helper further
-	// no-ops unless this is a genuine shrink (newSize < preFile.Size), reaps
-	// RefCount on every dropped block (#832), and is best-effort — the
-	// metadata write already committed. Same seam as NFSv3 SETATTR /
-	// CREATE-truncate and SMB SetEndOfFile.
-	if attrs.Size != nil {
-		if rErr := common.ReclaimTruncatedBlocks(ctx.Context, h.Registry, handle, preFile, *attrs.Size); rErr != nil {
-			logger.Warn("NFSv4 truncate reclaim failed",
-				"handle", string(handle), "size", *attrs.Size, "error", rErr)
-		}
+	if file.PayloadID == "" {
+		return apply(authCtx, file)
 	}
-	return nil
+	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, handle)
+	if err != nil {
+		return err
+	}
+	_, err = common.WithFilePayloadScope(authCtx, metaSvc, blockStore, handle, func(authCtx *metadata.AuthContext) (struct{}, error) {
+		fresh, err := metaSvc.GetFile(authCtx.Context, handle)
+		if err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, apply(authCtx, fresh)
+	})
+	return err
 }
 
 // isSignificantAttrChange returns true if the attribute bitmap contains
