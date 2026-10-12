@@ -372,7 +372,10 @@ type ClientRule struct {
 }
 
 // Netgroup is a named set of hosts, server-wide, referenced by name from
-// client rules. A rule naming a netgroup that does not exist matches nothing.
+// client rules. A rule naming a netgroup that does not exist fails closed: a
+// rule granting access matches no host, and a rule with Access none matches
+// every host, so deleting a netgroup a deny names never lets its hosts fall
+// through to a later, broader rule.
 type Netgroup struct {
 	Name    string
 	Members []string // host names, addresses or CIDRs
@@ -380,7 +383,7 @@ type Netgroup struct {
 }
 
 // Installation is the installation's identity: one record. ID is minted at
-// random by the explicit initialisation step, which writes it here and into
+// random by the explicit initialisation step (Init, §3.2), which writes it here and into
 // every journal's format file (RFC 1 §3), and is never changed. A start never
 // creates this record: a start that finds journals naming an installation and
 // no record, or a record and no journal, reports the side that is missing
@@ -555,6 +558,97 @@ SMB share-name limit (MS-SRVS `NNLEN`), has no
   and nothing is renamed silently. Without this an import can publish a second
   share answering one tree connect, or nest one share inside another's tree.
 
+#### 2.3.2 Removing a share
+
+A share is removed by `DeleteShare`, and removal is one-way: once a share is
+`being removed` it never serves again. The state changes are these, each a
+`SetShareState` naming the state it expects:
+
+| From | To | By | Refused when |
+| --- | --- | --- | --- |
+| `enabled` | `quiesced`, and back | the management API | — |
+| `enabled`, `quiesced` | `being removed` | `DeleteShare` | a cut is running (`ErrDelay`); a GC pause exists on any namespace the share's `Namespaces` names (`ErrMoving`, [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)); a re-home is running (`ErrRehoming`, [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); snapshots exist and the request neither deletes nor detaches them; with `delete`, any use record exists — backup, clone, restore, copy or move ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) — since the removal could not finish while one holds a snapshot |
+| `being removed`, `retired` | — | `DeleteShare` again | always, with `ErrStale`: the share is already gone to clients |
+| `being removed` | `retired` | the removal, when it detached snapshots | — |
+| `being removed`, `retired` | no record | the removal's last step; for `retired`, the deletion of its last detached snapshot ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)) | — |
+
+```go
+// DeleteShare starts a share's removal and returns once the share is
+// being removed: its name and path are free, and every call into it is
+// ErrStale. The rest runs in the background and survives a crash.
+DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition) error
+
+type SnapshotDisposition uint8 // refuse (the default), delete, detach
+```
+
+**The removal runs in this order.** Each step is idempotent. The state record
+`S‖id‖st` holds the step reached, so a crash or a failover of the share's
+primary ([RFC 11](rfc-11-ownership.md)) resumes the removal where it stopped.
+
+1. **Mark.** One transaction. It reads with tracking (§4.1) `S‖id‖nsg`, the GC
+   pause of every namespace that names, and `S‖id‖rh`, and it `GuardRange`s
+   `S‖id‖snap‖` and `S‖id‖use‖`; it refuses as the table says. Then it moves
+   the state to `being removed`, deletes `NX‖share‖name` and `NP‖path`, and
+   raises `SL`. From this commit on, admission answers `ErrStale` for every
+   call into the share ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), the pseudo-filesystem no longer shows it,
+   and a new share may take the name. Every gate holds in both commit orders
+   ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)), because each side reads a key the other writes:
+   - RFC 27's pause transaction reads each share's state with tracking and
+     waits for a share that is `being removed`;
+   - a re-home's start and a cut's announce ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) read the
+     share's state with tracking and refuse a share that is not `enabled` or
+     `quiesced`; either one committing first is caught by this step's
+     tracked read or range guard;
+   - a new use record falls under the `S‖id‖use‖` range guard, and its writer
+     reads the state ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)).
+2. **Snapshots.** With `delete`, each snapshot is deleted through RFC 12's
+   serial deletion. With `detach`, nothing is deleted yet: step 4 keeps what the
+   snapshots see.
+3. **Live state and journal.** The engine moves the share's context to
+   `removing` ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)) and closes the share's syncer flow
+   ([RFC 3](rfc-3-syncer.md)). Every open, lock, caching grant, watch, layout
+   and copy under the share ends without a recall (`DropShare`, [RFC 14 §11](rfc-14-open-state.md#11.%20Interface)):
+   the holder's next call is `ErrStale` whatever it holds. The journal tag is
+   then forgotten (`Forget`, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), and its dirty bytes are dropped
+   without being offloaded. With `detach`, the extents a kept snapshot sees are
+   offloaded first.
+4. **Files.** Every file under `F‖ShareID` is dropped in bounded batches. Each
+   ref goes through the batched removal of [RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation), so
+   counts fall and GC retires blocks the ordinary way ([RFC 9](rfc-9-gc.md)). It is
+   **not** a range drop: the counts and the `CR` reverse refs a ref names live
+   outside the prefix. With `detach`, only what no kept snapshot sees is
+   dropped ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)).
+5. **Server-wide rows that name the share.** Its grants and their `GR` reverse
+   keys; share-scoped settings (`CFG`), raising `CFGGEN` in the same
+   transaction, and any secret (`SEC`) only those settings referenced; every
+   client's `CL‖client‖sh‖shard` for its shards; and any `MV` record. Parked
+   refs (`NS‖ns‖pk‖ShareID‖…`) stay until the backups that need them expire
+   ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
+6. **The share's own records, then its shards.** Without kept snapshots, every
+   `S‖id‖*` record is deleted, then the shards' `SH‖shard` records with their
+   `rq`, `xh` and `hw` rows, last, since they name the primary that drives and
+   resumes the removal ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)); `SL` is raised. With `detach`,
+   the state becomes `retired`, and what RFC 12 §2.8 still reads stays: `st`,
+   `info`, `nsg`, `snap`, `cut`, `use`, the history records (`live`, `hd`, `sc`,
+   `hr`) and the shard records. Everything else under `S‖id` — export policy,
+   quotas, usage, the rest — is deleted. The shard records and the rest go
+   with the last detached snapshot. The `ShareID` is never reused.
+7. **The namespace.** When no share's `Namespaces` names a namespace any
+   longer, and no parked ref or retained catalog backup does, the namespace is
+   drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)). GC deletes its blocks,
+   then its keys are destroyed ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), then its claim and control objects
+   are deleted, and last its `NS‖ns` records, the `NS‖ns‖drain` mark included.
+
+> [!note] decision
+> Removal frees the name at once and the space later. A client sees the share
+> gone at the first commit. The bytes stay in the bucket until GC has deleted
+> them, and readable to anyone holding the keys until step 7 destroys them.
+> Destroying keys first (crypto-shredding) would make the bucket's copy
+> unreadable at once, but it would also break a retained catalog backup that
+> needs those keys ([RFC 5](rfc-5-transforms.md) T19). Add a `shred` disposition that refuses
+> while any backup names the namespace, if a deployment must make deleted data
+> unreadable before GC reaches it.
+
 ### 2.4 Methods on entities
 
 Entities carry **pure** methods: no I/O, no context, no store. They exist so
@@ -630,7 +724,9 @@ The views are defined where their semantics are:
 // resolves transitive membership; its result is cached only under a key that
 // includes everything it read (RFC 7 §7.5).
 type Principals interface {
-	ByName(ctx context.Context, name string) (Principal, error)
+	// ByName takes a kind: a user and a group may share a name (a user's
+	// private group), and NX‖user‖name and NX‖group‖name are separate rows.
+	ByName(ctx context.Context, kind PrincipalKind, name string) (Principal, error)
 	ByProtocolID(ctx context.Context, id ProtocolID) (Principal, error)
 	Groups(ctx context.Context, p Principal) iter.Seq2[Principal, error]
 	Grant(ctx context.Context, share ShareID, p Principal) (ShareAccess, error)
@@ -647,10 +743,16 @@ type ControlPlane interface {
 	PutGroup(ctx context.Context, g Group) error
 	AddMember(ctx context.Context, m Membership) error
 	RemoveMember(ctx context.Context, m Membership) error
+	DeleteGroup(ctx context.Context, p Principal) error // all its rows: the group, its name and protocol-ID indexes (NX, PX), grants (through GR), memberships both ways (M, MR) and quota records
 	Shares(ctx context.Context) iter.Seq2[Share, error]
 	PutShare(ctx context.Context, s Share) error // Name, Path, Root, Config only
 	SetShareState(ctx context.Context, share ShareID, from, to ShareState) error
-	SetGrant(ctx context.Context, g ShareGrant) error
+	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition) error // §2.3.2
+	SetGrant(ctx context.Context, g ShareGrant) error // Access none deletes the grant and its GR key; Version is the writing commit's, so a re-created grant never repeats a Version an authorisation cache keyed on
+	PutExportPolicy(ctx context.Context, p ExportPolicy) error // raises Version, as SetGrant does
+	Netgroups(ctx context.Context, after string) iter.Seq2[Netgroup, error]
+	PutNetgroup(ctx context.Context, n Netgroup) error
+	DeleteNetgroup(ctx context.Context, name string) error // rules naming it are not rewritten and fail closed (Netgroup)
 	Snapshots(ctx context.Context, share ShareID) iter.Seq2[Snapshot, error]
 	Settings(ctx context.Context, scope SettingScope) iter.Seq2[Setting, error]
 	PutSetting(ctx context.Context, s Setting) error
@@ -724,6 +826,7 @@ package of the tool that needs them, not methods on the store.
 There is one concrete store, built once from a `KV`:
 
 ```go
+err := metadata.Init(ctx, kv)                              // once per installation; see below
 st, err := metadata.Open(ctx, kv, metadata.Options{...}) // reads the format record first (§4.6)
 
 var (
@@ -738,6 +841,12 @@ var (
 	_ Inspect      = st.Inspect()
 )
 ```
+
+`Init` is the store's part of the explicit initialisation step
+([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). In one transaction it writes `\x00format`, `IN`
+with a fresh installation ID and `SL` at 0, and it refuses a store that already
+holds a format record. `Open` never creates one: it reports a store with no
+format record as not initialised.
 
 Inside, the store is not one giant type. Each area — namespace, files, content,
 blocks, principals, control plane, open state — is its own small struct over one
@@ -988,6 +1097,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
 | | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, and the last one it wrote; a `Recheck` reads the claim and compares it with these before any rewrite. Every claim put on any path — start, `Recheck`, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
 | | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; its value names the move that wrote it; GC reads it before every pass and batch, and every relocation, delete or collection commit reads it with a tracked `Get` and refuses while it exists ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
+| | `NS‖ns‖drain` | drain mark: the namespace is being emptied after no share names it; refuses a share creation, clone or restore into it and resumes the drain after a crash ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)); deleted last |
 | | `NS‖ns‖gc‖cursor‖walk‖shard` | walk cursor per kind of walk (audit, block walk, index rebuild) and shard, so a restarted walk resumes; derived |
 | | `NS‖ns‖pk‖ShareID‖FileID‖offset‖died` | parked ref: a ref a re-home dropped from namespace `ns` while an unexpired catalog backup taken before the re-home finished still needs it, filed under `ns`'s prefix and owned by `ns`'s installation, so moving the re-homed share neither carries nor drops it; it keeps its chunk count and reverse key in `ns`, is seen by no read, snapshot or listing, only by `ns`'s GC, and is dropped when the last such backup expires ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `NS‖ns‖key‖kind‖keyID` | namespace key record: kind (`chunk-id-key`, `chunking-key`, `header-key`, `export-key`, `data-key`), ID, fingerprint, the ID of the master key that wraps it, the wrapped bytes, and state — `current`, `retired` or `destroyed`; a destroyed key keeps only ID, fingerprint and state. Every key is wrapped but one: a non-encrypting namespace's chunk-ID key, held in the clear, with no master key ID. Each record reaches the namespace's `keys` control object and every backup location its policies write to before it becomes current. Not a secret: a wrapped key is useless without the master key, which is never here, and the one clear key hides nothing its plaintext blocks do not already show ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
@@ -1038,8 +1148,8 @@ Consequences:
   > ponytail: one key per File, so `chmod` and an existence commit on one file
   > conflict and one retries. Split the write path's fields into their own key
   > when a profile shows those retries.
-- Every per-file key carries the `ShareID`. Deleting or exporting a share is a
-  prefix operation (a range drop or a range scan) instead of a tree walk; a share's files stay together for
+- Every per-file key carries the `ShareID`. Exporting a share is a prefix scan,
+  and deleting one walks the prefix in batches (§2.3.2), instead of a tree walk; a share's files stay together for
   placement; and a restore into a new share gets new keys, so it can never
   alias a handle to the original (§5, decision 1). Prior art prefixes
   by volume for the same reasons (Appendix B). The handle already names
@@ -1125,7 +1235,7 @@ are the prefix's. No separator byte is written.
 | --- | --- |
 | `F‖id` | none for the File itself; `acl` 0x01, `x` 0x02, `s` 0x03, `e` 0x04, `t` 0x05, `h` 0x06, `rm` 0x07, `ov` 0x08, `ref` 0x09, `H` 0x0A, `fx` 0x0B, `fo` 0x0C, `rel` 0x0D, `op` 0x0E, `dp` 0x0F; under `op‖openID`, `l` 0x01 |
 | `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16 |
-| `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05 |
+| `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06 |
 | `N‖node`, `SH‖shard`, `CL‖clientID` | `exp` 0x01, `clk` 0x02; `rq` 0x01, `xh` 0x02, `hw` 0x03; `sh` 0x01 |
 | enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `header-key` 0x03, `export-key` 0x04, `data-key` 0x05 |
 
@@ -1260,7 +1370,7 @@ rules the store's shares use. It is the **only** record of the store format:
 the store format's active version is this integer, and the control plane's gate
 raises it by rewriting this record, in the transaction that checks every
 registered node's range. The explicit initialisation step writes it, with the
-Installation record, when it creates the store. Opening a store **MUST** read it first and refuse a
+Installation record, when it creates the store (`Init`, §3.2). Opening a store **MUST** read it first and refuse a
 format outside the range the binary reads and writes, before reading any other
 key. A new record kind, a change to the key encoding (§4.2.1), or permission to write a new codec
 version is a format bump: format *n* names, in code, the codec versions a binary
@@ -1293,6 +1403,24 @@ unit, with no normalisation ([RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Cas
 one ID and is bound ([RFC 13](rfc-13-configuration.md)); a binary that does not implement every
 recorded rule **MUST** refuse the store. The identity rule serves
 case-sensitive shares.
+
+The first case-insensitive rule's table is **Unicode simple uppercase over the
+Basic Multilingual Plane**: each unit maps to its `Simple_Uppercase_Mapping`
+when that is one BMP unit, and to itself otherwise. The table is generated once,
+checked in as data and pinned by a hash test, so neither a toolchain upgrade
+nor a newer Unicode version can change a share's keys; a table built from a
+newer Unicode version is a new ID. It is not any one Windows version's `$UpCase`,
+which differ between versions. Under it `ǅ` and `ǆ` fold together, `Straße`
+and `STRASSE` do not, the Kelvin sign stays apart from `K`
+([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)), and the long `ſ` and the dotless `ı` fold with `s` and `i`.
+
+> [!note] decision
+> Unicode simple uppercase is chosen because it is reproducible from a public
+> source and close to what Windows ships. Before the table is frozen, it is
+> diffed against a current Windows `$UpCase`; every unit where they differ,
+> `ſ` and `ı` among the candidates, is either matched to Windows or listed here
+> with the reason. Overturned by a client population that copies names which
+> collide under this table but not on NTFS.
 
 ## 5. Decisions and evidence
 
@@ -1422,7 +1550,26 @@ A fault-injecting `KV` wrapper fails, delays or reorders at every call:
 - a process kill between the phases of a batched removal (RFC 6 §6.2),
   resumed on restart;
 - an epoch change mid-operation (the old primary's writes are refused, namespace
-  transactions included, through the fence they guard).
+  transactions included, through the fence they guard);
+- a share removal (§2.3.2) killed after each of its seven steps and resumed,
+  and once failed over to the shard's next primary: assert it finishes, every
+  call into the share answers `ErrStale` from step 1 on, a new share can take
+  the name at once, and at the end no key carries the `ShareID` but parked refs
+  a retained backup needs, every chunk's
+  `Refcount` equals the refs the other shares hold, and the journal holds no
+  record under the share's tag;
+- a removal racing a namespace pause (RFC 27 §2.2), a cut's announce, a
+  re-home's start, a new use record and a second `DeleteShare`, each in both
+  commit orders: exactly one wins, and a loser is refused, waits or retries as
+  the §2.3.2 table says; remove one tracked read or range guard from step 1
+  and the guard-first order lets both commit;
+- `DeleteShare` with `detach`: the share ends `retired`, every kept snapshot
+  reads as it did, and deleting the last one leaves no key carrying the
+  `ShareID`; with the default disposition on a share with snapshots, and with
+  `delete` while a backup holds one, it is refused and changes nothing;
+- a namespace drained after its last share's removal (RFC 9 §7.6): every block
+  is deleted, then its keys destroyed, then its records gone; a share creation
+  into it while draining is refused.
 
 ## 7. Benchmarks and profiling
 

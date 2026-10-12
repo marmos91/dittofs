@@ -478,7 +478,9 @@ admitted until it commits or its prepare's hold deadline ends it
 The **coordinator** is the control plane's snapshot service. Taking snapshot *k*
 is four steps:
 
-1. **Announce.** The coordinator commits the snapshot record in state `cutting`,
+1. **Announce.** The coordinator reads the share's state with tracking and
+   refuses unless it is `enabled` or `quiesced`, so a cut and a share's removal
+   never both commit ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). It commits the snapshot record in state `cutting`,
    with *k* and a deadline in store time, `snapshots.cut_deadline` after it.
    While a `cutting` record exists, any primary that starts serving one of the
    share's shards — after a takeover, a handover, a move of files or the
@@ -995,6 +997,7 @@ cuts 5, 9 and 14; delete 9.
 
 The deletion reads two history entries, whatever the share's total history.
 
+A share is deleted by RFC 16's removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), whose snapshot disposition is the request below.
 Deleting a share with snapshots **MUST** be refused unless the request deletes or
 detaches them.
 
@@ -1015,7 +1018,9 @@ detaches them.
    apply unchanged.
 
 When the last detached snapshot of a retired share is deleted, the share's
-remaining records are removed and its identity is never reused. A detached
+remaining records are removed, its shard records last, and its identity is
+never reused; that deletion then runs the namespace drain check
+([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)). A detached
 snapshot moves with its namespace ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)). A recovery import's detached
 snapshots ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)) are snapshots of a retired share created for them.
 

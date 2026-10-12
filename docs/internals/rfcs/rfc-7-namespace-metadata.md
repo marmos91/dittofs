@@ -573,6 +573,22 @@ the owner, group and everyone entries would fail the same way: `chmod 600`
 would keep granting a named user access, and the ACL's implied mode would no
 longer equal `Mode`.
 
+**How an ACL is evaluated until RFC 19 exists.** The chokepoint walks the
+entries in order, as [RFC 8881 §6.2.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.2.1) specifies: an entry is skipped
+unless it names the caller (directly, through one of the caller's groups, or as
+owner, group or everyone) and is effective on this file; an allow entry grants
+the requested bits it covers that no earlier entry denied; a deny entry refuses
+the request if it covers a requested bit not yet granted; the walk ends when
+every requested bit is granted, and a bit no entry granted is refused.
+
+> [!note] decision
+> The ordered allow/deny walk is the interim evaluation, chosen because it is
+> what NFSv4 clients already assume and what a Windows ACL in canonical order
+> reduces to. It lives behind `Files.Authorize` only (§7.1), so RFC 19 can
+> replace it without touching a caller. Overturned by RFC 19's model, or by a
+> Windows client whose non-canonical ACL the walk answers differently from
+> Windows.
+
 ### 2.7 Extended attributes and named streams
 
 ```go
@@ -933,10 +949,11 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   name, so no client makes a name the share's Windows clients cannot open.
 
 **Neither names nor keys are normalised.** A stored name is the bytes given
-([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the fold rule is NTFS's: the name's
+([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the fold mechanism is NTFS's, though not its table: the name's
 UTF-16 code units are each mapped through a 16-bit **upcase table**, one unit for
 one, with no normalisation, and the table is recorded by ID with the rule
-([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)). That is how NTFS and Samba compare names, and it is not
+([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format), which names the first table: Unicode simple uppercase over
+the BMP, generated once and frozen). That is how NTFS and Samba compare names, and it is not
 Unicode case folding: a supplementary-plane letter, whose units are surrogates,
 is compared as given, and the Kelvin, Ohm and Angstrom signs and the capital
 sharp s upcase to themselves rather than folding to `k`, `ω`, `å` and `ß`. So

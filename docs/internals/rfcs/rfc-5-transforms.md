@@ -798,6 +798,11 @@ and material.
   merely marked destroyed while a cache still held it would stay usable until
   that cache evicted it, which is no removal at all for a key thought exposed.
 
+**A drained namespace's keys go last.** When a namespace no share names is
+drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), its keys are removed by this same rule once its
+blocks are deleted, and T19 still holds: a key a retained export names stops the
+drain rather than being destroyed.
+
 ### 5.4 Changing an algorithm is adding a transform
 
 A transform ID names an algorithm and its body format, not a library. So:

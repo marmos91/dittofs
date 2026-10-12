@@ -643,7 +643,7 @@ attributes at its own primary ([§5.7](#5.7%20GetAttr)) and needs no order betwe
 call to the share of the handle or open it names, in this order:
 
 1. the share's state ([RFC 16 §2.3.1](rfc-16-metadata-store.md#2.3.1%20Share%20names%2C%20paths%20and%20state)) — `ErrDelay` while quiesced,
-   `ErrStale` once being removed;
+   `ErrStale` once being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share));
 2. the share's `ExportPolicy` flavour rule — `ErrWrongSecurity`;
 3. its client rules, against the call's address and the netgroups it is in —
    `ErrAccess`, or a narrowing to read-only;

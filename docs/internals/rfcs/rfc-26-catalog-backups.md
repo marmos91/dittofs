@@ -279,7 +279,9 @@ listable without the installation that wrote it.
 A **use record** in the metadata store marks a snapshot as being read by a clone,
 a restore, a backup or a move. It is written in the transaction that starts the
 reader, which requires the snapshot to be `complete` and conflicts with a
-deletion's first transaction on the snapshot record. For a clone or restore it is
+deletion's first transaction on the snapshot record. That transaction also
+reads the share's state with tracking and refuses a share that is `being
+removed` ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), whose removal range-guards the use records. For a clone or restore it is
 deleted at publish or on failure; for a backup, when the backup expires; for a
 copying backup, when it completes, since it then holds its own blocks
 ([§2.4](#2.4%20Copying%20backups)); for a move, when B has published or A has aborted ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)). A deletion checks

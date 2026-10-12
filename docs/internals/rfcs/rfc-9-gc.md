@@ -1507,6 +1507,31 @@ continue into such a store once it drifts.
 > reads per store, so it can shrink if the per-store cost at 10⁴ namespaces
 > allows, and should grow only if that cost is measured to matter.
 
+### 7.6 A namespace no share names is drained
+
+A namespace is deleted only when nothing can name its blocks again: no share's
+`Namespaces` names it, no parked ref does ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), and no retained catalog
+backup does ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)). A share's removal checks this as its last step
+([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), in a transaction that reads each of them with tracking
+and writes the drain mark `NS‖ns‖drain`. A share creation, clone or restore
+into a namespace reads that mark with tracking and is refused while it exists. Then:
+
+1. GC runs as always: every ref is gone, so every count reaches zero, every
+   block retires and the deleter deletes it after its verification
+   ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)). Nothing is deleted by listing or by prefix: draining
+   is ordinary collection with nothing left alive.
+2. Once no block record remains and trash has been emptied ([§3.7](#3.7%20Trash)),
+   the namespace's keys are destroyed through the census rule of
+   [RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census): the census is empty by then.
+3. The claim and the other control objects are deleted, then every
+   `NS‖ns` record, last of all the drain mark.
+
+A drain that stops resumes from the drain mark. A namespace a backup or a
+parked ref still names stays as it is; the backup expiry sweep
+([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)), the parked-ref prune, and the deletion of a retired
+share's last detached snapshot ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)) run the same check again
+when they remove the last one.
+
 ## 8. API surface
 
 Signatures are indicative; the obligations above are normative. GC declares an

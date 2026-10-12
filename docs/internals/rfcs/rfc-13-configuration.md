@@ -296,7 +296,7 @@ giving the API a way to edit what the file owns.
 | Event | Effect |
 | --- | --- |
 | a declared record differs from the store | the file's value is written |
-| a record is removed from the file | it stays, and stops being managed; with `prune: true` in the file it is deleted instead, subject to the same refusals as an API delete |
+| a record is removed from the file | it stays, and stops being managed; with `prune: true` in the file it is deleted instead, subject to the same refusals as an API delete (`DeleteShare` for a share, with the default disposition, [RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
 | an API call edits a declared field of a managed record | refused, naming the file |
 | an operation writes a system field of a managed record, or changes a create-only field through an allowed operation | written; for a create-only field the file's differing value is reported, not applied |
 | a file declares a record managed by another source name | refused: the record changes source only after the first source stops declaring it; health condition on the refusing node |

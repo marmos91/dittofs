@@ -346,6 +346,12 @@ dirty extents would never be offered and never become evictable. The caller
 salvage — read through a handle attached for the purpose, then `Forget` — or
 `Forget` it at once, and report every such tag with its held and dirty bytes.
 `Stats` names every tag that holds a record ([§3.7](#3.7%20State%20introspection)).
+A share's removal forgets its own tag once its handles are closed, dropping its
+dirty bytes rather than offloading them ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), step 3); a
+removal interrupted before that step resumes and forgets it. A copy of the tag
+on a journal the removal never opened — an old primary's, after a failover —
+is a tag no share claims, and the rule above resolves it at that journal's
+next start.
 
 ### 3.1 Write
 
@@ -1355,11 +1361,29 @@ for a stable write gets one because the engine calls `Sync` before replying
 ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); that is cheap, because one sync covers every writer waiting on the
 stream (group commit).
 
+A sync's cost is mostly the device's cache flush, paid once per call however
+many records it covers. Taking along records nobody is waiting on writes nothing
+extra: each is due a sync within the bound anyway, and a sync only writes it
+sooner. A `Sync` touches one segment only, the stream's active one: the stream
+makes a segment durable when it rolls to the next, because the seal marker
+**MUST** be durable before a successor naming the segment exists
+([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). So a roll costs a
+segment sync and a directory sync (the new segment's entry, §5.1), and a `Sync`
+otherwise costs one.
+
+The time bound adds no writes either: without it, the operating system writes
+the same dirty pages back on its own schedule (about 30 s by default on Linux),
+but without a device flush. The timer adds at most one flush per stream per
+second and shrinks what a host crash can lose, for a client that never flushes,
+to the bound.
+
 > [!note] decision
 > The bound is a constant of the implementation (proposal: 1 s), not measured.
 > Overturned by a measurement showing that the timer's syncs cost throughput a
 > longer bound would recover, or that host loss within the bound is unacceptable
-> to a deployment.
+> to a deployment. The measurement is J1 ([§9.6](#9.6%20Benchmarks)) without a
+> `Sync` after each write, so only the timer syncs, run at 1 s and at a longer
+> bound.
 
 Whatever the bound :
 
@@ -1371,7 +1395,11 @@ Whatever the bound :
 **The sync must reach the device.** On a platform where the plain file-sync call
 does not flush the device's write cache — the Apple filesystem is one — the
 journal **MUST** use the call that does (a full sync), or a synced record does
-not survive power loss.
+not survive power loss. On Linux, a data-only sync (`fdatasync`) is enough: it skips
+timestamps but keeps the size and allocation a read after a crash depends on. A
+sync of a byte range alone (`sync_file_range`) is not: it writes out no file
+metadata and flushes no device cache, so the appended blocks it covers may not
+survive a crash.
 
 ### 5.3 A failed sync
 

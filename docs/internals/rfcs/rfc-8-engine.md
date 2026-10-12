@@ -337,7 +337,7 @@ type ShareContext struct {
 	Policy   PolicyState          // access pattern, dirty ages, backoff, frontiers (§3.3)
 	Health   ShareHealth          // per direction (§11.1)
 	Budgets  Budgets              // its share of journal capacity, transfers and pacing
-	State    ShareState           // adding, serving, quiescing, removing
+	State    ShareState           // adding, serving, quiescing, removing: removing from the store's being removed (RFC 16 §2.3.2)
 }
 ```
 

@@ -299,7 +299,9 @@ This document **MUST NOT**:
 
 A **shard** is a set of files with one primary at a time. Every file belongs to
 one shard, recorded with the file ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)), and the shard record names
-its primary, epoch and replicas.
+its primary, epoch and replicas. A share's removal is driven by the primary of
+each of its shards, resumes on that shard's next primary after a failover, and
+deletes the shard records last ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
 
 | Policy | A file's shard is | When |
 | --- | --- | --- |

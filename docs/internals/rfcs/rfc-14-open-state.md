@@ -1583,6 +1583,7 @@ type OpenState interface {
 
 	// Restart notification from an NLM host (§4.5): expires its old ClientID.
 	HostRestarted(ctx context.Context, host []byte, state uint32) error
+	DropShare(ctx context.Context, share ShareID) error // ends every open, lock, grant, watch, layout and copy under a share being removed, without a recall or a wait for the holder (RFC 16 §2.3.2); not a revocation, so it starts no §5.3 no-grant period for the client
 
 	// Asynchronous copies (§2.7). The filesystem service runs the copy and
 	// reports progress; Status and Cancel answer ErrNoCopy for a lost copy.

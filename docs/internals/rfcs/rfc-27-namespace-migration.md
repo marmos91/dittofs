@@ -557,7 +557,9 @@ A share in a namespace shared with other shares — a clone with its source, whi
 deduplication is deferred ([RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves)) — cannot be moved alone. Its chunks are
 counted together with theirs. A **re-home** fixes that: it copies the share's
 content into a new namespace of its own while the share keeps serving. After
-that, the share moves alone ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)). A re-home is the migration
+that, the share moves alone ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)). The transaction that starts a re-home
+reads the share's state with tracking and refuses a share that is `being
+removed` or `retired` ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)). A re-home is the migration
 [RFC 13 §5.1](rfc-13-configuration.md#5.1%20A%20bound%20setting%20refuses%20change) names as the only way a share's namespace binding changes while the
 share holds content, and so also the only way to change a bound setting — the
 chunking target, the keys, whether the namespace encrypts — for content already
