@@ -57,7 +57,7 @@ type Config struct {
 	ControlPlane api.APIConfig `mapstructure:"controlplane" yaml:"controlplane"`
 
 	// Admin contains initial admin user configuration for bootstrap
-	// This is used by 'dittofs init' to set up the first admin user
+	// This is used by 'dfs init' to set up the first admin user
 	Admin AdminConfig `mapstructure:"admin" yaml:"admin"`
 
 	// Kerberos contains Kerberos/RPCSEC_GSS authentication configuration.
@@ -365,7 +365,7 @@ type LogRotationConfig struct {
 }
 
 // AdminConfig contains initial admin user configuration for bootstrap.
-// This is used by 'dittofs init' to pre-configure the first admin user.
+// This is used by 'dfs init' to pre-configure the first admin user.
 type AdminConfig struct {
 	// Username is the admin username
 	// Default: "admin"
@@ -375,7 +375,7 @@ type AdminConfig struct {
 	Email string `mapstructure:"email" yaml:"email,omitempty"`
 
 	// PasswordHash is the bcrypt hash of the admin password
-	// Generated during 'dittofs init' or can be set manually
+	// Generated during 'dfs init' or can be set manually
 	// Use: htpasswd -nbB "" "password" | cut -d: -f2
 	PasswordHash string `mapstructure:"password_hash" yaml:"password_hash,omitempty"`
 }
@@ -868,12 +868,12 @@ func MustLoad(configPath string) (*Config, error) {
 			// (which makes a systemd unit crash-loop), fall back to built-in
 			// defaults + DITTOFS_* env overrides and warn clearly. Load("")
 			// already resolves env > defaults and validates, so a defaults-
-			// only boot is a fully supported configuration. Run `dittofs init`
+			// only boot is a fully supported configuration. Run `dfs init`
 			// to materialize a config file when persistent settings are needed.
 			fmt.Fprintf(os.Stderr,
 				"WARNING: no configuration file found at default location: %s\n"+
 					"         starting with built-in defaults (override via DITTOFS_* env vars).\n"+
-					"         Run 'dittofs init' to create a config file for persistent settings.\n",
+					"         Run 'dfs init' to create a config file for persistent settings.\n",
 				GetDefaultConfigPath())
 			cfg, err := Load("")
 			if err != nil {
@@ -886,7 +886,7 @@ func MustLoad(configPath string) (*Config, error) {
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
 			return nil, fmt.Errorf("configuration file not found: %s\n\n"+
 				"Please create the configuration file:\n"+
-				"  dittofs init --config %s",
+				"  dfs init --config %s",
 				configPath, configPath)
 		}
 	}
