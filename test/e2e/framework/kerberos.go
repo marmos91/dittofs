@@ -4,7 +4,9 @@ package framework
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -187,13 +189,48 @@ func (k *KDCHelper) AddServicePrincipal(t *testing.T, service, hostname string) 
 // Kinit obtains a Kerberos ticket for the given principal.
 func (k *KDCHelper) Kinit(t *testing.T, principal, password string) {
 	t.Helper()
+	k.kinit(t, principal, password, filepath.Join(k.ccacheDir, "krb5cc_default"))
+}
+
+// KinitForCIFSMount obtains a ticket like Kinit, and also stores it where the
+// kernel CIFS client's key upcall finds it when this process mounts.
+//
+// A sec=krb5 mount gets its service ticket from cifs.upcall. For credential
+// uid 0, cifs.upcall never reads KRB5CCNAME from the mounting process
+// (cifs-utils cifs.upcall.c: "We can't reasonably do this for root"), so a
+// root mount only finds a ticket in root's default cache, FILE:/tmp/krb5cc_0
+// (the test krb5.conf sets no default_ccache_name). With the ticket only in
+// the per-test cache, the mount fails with ENOKEY, and mount.cifs's retry with
+// cruid=$SUDO_UID cannot open the root-owned per-test cache either.
+//
+// Whatever was at that path before is restored when the test ends.
+func (k *KDCHelper) KinitForCIFSMount(t *testing.T, principal, password string) {
+	t.Helper()
+	k.Kinit(t, principal, password)
+
+	upcallCache := fmt.Sprintf("/tmp/krb5cc_%d", os.Getuid())
+	orig, readErr := os.ReadFile(upcallCache)
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		require.NoError(t, readErr, "read %s before replacing it", upcallCache)
+	}
+	t.Cleanup(func() {
+		if readErr == nil {
+			_ = os.WriteFile(upcallCache, orig, 0600)
+		} else {
+			_ = os.Remove(upcallCache)
+		}
+	})
+	k.kinit(t, principal, password, upcallCache)
+}
+
+func (k *KDCHelper) kinit(t *testing.T, principal, password, ccachePath string) {
+	t.Helper()
 
 	fullPrincipal := principal
 	if !strings.Contains(principal, "@") {
 		fullPrincipal = fmt.Sprintf("%s@%s", principal, k.realm)
 	}
 
-	ccachePath := filepath.Join(k.ccacheDir, "krb5cc_default")
 	cmd := exec.Command("kinit", "-c", ccachePath, fullPrincipal)
 	cmd.Env = append(os.Environ(),
 		"KRB5_CONFIG="+k.krb5Config,
@@ -203,6 +240,30 @@ func (k *KDCHelper) Kinit(t *testing.T, principal, password string) {
 
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "kinit failed: %s", string(output))
+}
+
+// RestartGSSD restarts rpc.gssd so it picks up the krb5.conf and keytab a
+// test has just installed. The unit only starts once /etc/krb5.keytab exists
+// (ConditionPathExists), so on a host without a keytab it isn't running until
+// a test installs one and restarts it. Without it, a sec=krb5 NFS mount fails
+// with "an incorrect mount option was specified".
+func RestartGSSD(t *testing.T) {
+	t.Helper()
+	if err := exec.Command("systemctl", "restart", "rpc-gssd").Run(); err != nil {
+		t.Logf("Warning: could not restart rpc-gssd: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+}
+
+// SkipOrFailKerberosMount skips a test whose Kerberos mount failed. With
+// DITTOFS_E2E_REQUIRE_KERBEROS=1 it fails the test instead, so a broken host
+// setup or a server-side Kerberos failure can't pass as a skip.
+func SkipOrFailKerberosMount(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("DITTOFS_E2E_REQUIRE_KERBEROS") == "1" {
+		t.Fatalf("Kerberos mount required (DITTOFS_E2E_REQUIRE_KERBEROS=1): "+format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 // KinitWithKeytab obtains a Kerberos ticket using a keytab.

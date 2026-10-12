@@ -18,12 +18,13 @@ func WithFilePayloadScope[T any](authCtx *metadata.AuthContext, metaSvc *metadat
 	}
 	// decision: the request deadline covers the wait for the payload scope, not
 	// only the block-store calls inside it. A CLONE holds the scope exclusively
-	// across its source's upload, and the scope admits in arrival order, so
-	// without a deadline here a read or write queued behind it waits with no
-	// bound. With one, the wait ends as an I/O error the client retries. The
-	// callback shares the same budget, because WithRequestDeadline keeps a
-	// deadline the context already has. Revisit when CLONE stops holding the
-	// scope across uploads.
+	// through its final drain of the source, which uploads whatever arrived since
+	// its first drain and can wait behind a flush pass on the same shard, and the
+	// scope admits in arrival order, so without a deadline here a read or write
+	// queued behind it waits with no bound. With one, the wait ends as an I/O
+	// error the client retries. The callback shares the same budget, because
+	// WithRequestDeadline keeps a deadline the context already has. Revisit when
+	// nothing holds the scope exclusively across an upload.
 	scopeCtx, cancel := WithRequestDeadline(authCtx.Context)
 	defer cancel()
 	entered := false

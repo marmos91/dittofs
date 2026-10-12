@@ -133,7 +133,7 @@ func testSMBKerberosAuth(t *testing.T, kdc *framework.KDCHelper, smbPort int) {
 	}
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	// Mount SMB with Kerberos
@@ -158,7 +158,7 @@ func testSMBKerberosAuth(t *testing.T, kdc *framework.KDCHelper, smbPort int) {
 	}
 
 	if lastErr != nil {
-		t.Skipf("SMB Kerberos mount failed (may need kernel CIFS Kerberos support): %v", lastErr)
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed (may need kernel CIFS Kerberos support): %v", lastErr)
 	}
 
 	defer func() {
@@ -194,7 +194,7 @@ func testSMBKerberosIdentityMapping(t *testing.T, kdc *framework.KDCHelper, smbP
 	}
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	// Mount SMB with Kerberos
@@ -209,7 +209,7 @@ func testSMBKerberosIdentityMapping(t *testing.T, kdc *framework.KDCHelper, smbP
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Skipf("SMB Kerberos mount failed: %s", string(output))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed: %s", string(output))
 	}
 
 	defer func() {
@@ -272,7 +272,7 @@ func testSMBKerberosAndNTLMCoexist(t *testing.T, kdc *framework.KDCHelper, smbPo
 	require.NoError(t, err, "Should write file via NTLM mount")
 
 	// Second: mount with Kerberos auth
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	krbMountPoint := t.TempDir()
@@ -286,7 +286,7 @@ func testSMBKerberosAndNTLMCoexist(t *testing.T, kdc *framework.KDCHelper, smbPo
 	)
 	krbOutput, krbErr := krbCmd.CombinedOutput()
 	if krbErr != nil {
-		t.Skipf("SMB Kerberos mount failed: %s", string(krbOutput))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed: %s", string(krbOutput))
 	}
 	defer func() {
 		_ = exec.Command("umount", krbMountPoint).Run()

@@ -109,22 +109,6 @@
       ]
     },
 
-    "nfs-kerberos": {
-      "description": "NFS sec=krb5 mount and Kerberos credential handling",
-      "protocol": "NFS",
-      "profiles": ["memory-kerberos"],
-      "known_failures": null,
-      "timeout_minutes": 30,
-      "steps": [
-        {
-          "name": "run",
-          "cmd": "nfs-conformance/run.sh",
-          "args": ["--verbose"],
-          "root": false
-        }
-      ]
-    },
-
     "pynfs": {
       "description": "pynfs NFSv4.0/4.1 protocol conformance",
       "host_adapter": true,

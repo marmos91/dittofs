@@ -288,6 +288,40 @@ func TestCloneWaitsForOldDestinationCarve(t *testing.T) {
 	require.Equal(t, srcRows[0].Hash, dstRows[0].Hash)
 }
 
+// The source's dirty data is uploaded before the clone takes its payloads
+// exclusively, so a read of the source is not held up by that upload.
+func TestCloneUploadsSourceBeforeExclusiveAdmission(t *testing.T) {
+	f := newCloneConcurrencyFixture(t, true)
+	ctx := context.Background()
+	src, dst := f.file("src"), f.file("dst")
+	source := bytes.Repeat([]byte{0x4a}, 4096)
+	require.NoError(t, f.write(ctx, src, "src", source, 0))
+	paused := &clonePausedRemote{Store: f.remote, entered: make(chan struct{}), release: make(chan struct{})}
+	f.syncer.SetRemoteBlockStore(paused)
+	cloneDone := make(chan error, 1)
+	go func() { cloneDone <- common.CloneWholeFile(ctx, f.bs, f.ms, nil, src, dst, "dst", 0, f.svc) }()
+	select {
+	case <-paused.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("clone did not start uploading the source")
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := f.bs.ReadAt(ctx, "src", make([]byte, len(source)), 0)
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		close(paused.release)
+		t.Fatal("a read of the source waited for the clone's upload")
+	}
+	close(paused.release)
+	require.NoError(t, receiveCloneResult(t, cloneDone))
+	f.read("dst", source)
+}
+
 type clonePendingFlushBarrier struct {
 	metadata.Store
 	entered chan struct{}

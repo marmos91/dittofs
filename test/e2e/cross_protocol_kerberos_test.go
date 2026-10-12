@@ -105,7 +105,7 @@ func TestCrossProtocolKerberosIdentity(t *testing.T) {
 	installCrossProtocolKerberosConfig(t, kdc)
 
 	// Get Kerberos ticket for alice
-	kdc.Kinit(t, "alice", "alice123")
+	kdc.KinitForCIFSMount(t, "alice", "alice123")
 	defer kdc.Kdestroy(t)
 
 	t.Run("NFSCreateSMBRead", func(t *testing.T) {
@@ -127,7 +127,7 @@ func testCrossProtocolNFSCreateSMBRead(t *testing.T, kdc *framework.KDCHelper, n
 	// Mount NFS with Kerberos
 	nfsMount, nfsErr := framework.MountNFSWithKerberosAndError(t, nfsPort, "/xp-krb", "krb5", 4)
 	if nfsErr != nil {
-		t.Skipf("NFS Kerberos mount failed: %v", nfsErr)
+		framework.SkipOrFailKerberosMount(t, "NFS Kerberos mount failed: %v", nfsErr)
 	}
 	defer nfsMount.Cleanup()
 
@@ -149,7 +149,7 @@ func testCrossProtocolNFSCreateSMBRead(t *testing.T, kdc *framework.KDCHelper, n
 	)
 	smbOutput, smbErr := smbCmd.CombinedOutput()
 	if smbErr != nil {
-		t.Skipf("SMB Kerberos mount failed: %s", string(smbOutput))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed: %s", string(smbOutput))
 	}
 	defer func() {
 		_ = exec.Command("umount", smbMountPoint).Run()
@@ -179,7 +179,7 @@ func testCrossProtocolSMBCreateNFSRead(t *testing.T, kdc *framework.KDCHelper, n
 	)
 	smbOutput, smbErr := smbCmd.CombinedOutput()
 	if smbErr != nil {
-		t.Skipf("SMB Kerberos mount failed: %s", string(smbOutput))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed: %s", string(smbOutput))
 	}
 	defer func() {
 		_ = exec.Command("umount", smbMountPoint).Run()
@@ -195,7 +195,7 @@ func testCrossProtocolSMBCreateNFSRead(t *testing.T, kdc *framework.KDCHelper, n
 	// Mount NFS with Kerberos
 	nfsMount, nfsErr := framework.MountNFSWithKerberosAndError(t, nfsPort, "/xp-krb", "krb5", 4)
 	if nfsErr != nil {
-		t.Skipf("NFS Kerberos mount failed: %v", nfsErr)
+		framework.SkipOrFailKerberosMount(t, "NFS Kerberos mount failed: %v", nfsErr)
 	}
 	defer nfsMount.Cleanup()
 
@@ -215,7 +215,7 @@ func testCrossProtocolBidirectionalVisibility(t *testing.T, kdc *framework.KDCHe
 	// Mount NFS with Kerberos
 	nfsMount, nfsErr := framework.MountNFSWithKerberosAndError(t, nfsPort, "/xp-krb", "krb5", 4)
 	if nfsErr != nil {
-		t.Skipf("NFS Kerberos mount failed: %v", nfsErr)
+		framework.SkipOrFailKerberosMount(t, "NFS Kerberos mount failed: %v", nfsErr)
 	}
 	defer nfsMount.Cleanup()
 
@@ -230,7 +230,7 @@ func testCrossProtocolBidirectionalVisibility(t *testing.T, kdc *framework.KDCHe
 	)
 	smbOutput, smbErr := smbCmd.CombinedOutput()
 	if smbErr != nil {
-		t.Skipf("SMB Kerberos mount failed: %s", string(smbOutput))
+		framework.SkipOrFailKerberosMount(t, "SMB Kerberos mount failed: %s", string(smbOutput))
 	}
 	defer func() {
 		_ = exec.Command("umount", smbMountPoint).Run()
@@ -373,4 +373,5 @@ func installCrossProtocolKerberosConfig(t *testing.T, kdc *framework.KDCHelper) 
 	if err := os.WriteFile("/etc/krb5.keytab", keytabData, 0600); err != nil {
 		t.Logf("Warning: cannot install test keytab: %v", err)
 	}
+	framework.RestartGSSD(t)
 }

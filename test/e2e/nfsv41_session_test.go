@@ -3,11 +3,14 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,258 +23,196 @@ import (
 )
 
 // =============================================================================
-// NFSv4.1 Session and EOS (Exactly-Once Semantics) E2E Tests
+// NFSv4.1 Session E2E Tests
 // =============================================================================
 //
-// These tests validate NFSv4.1-specific session management and exactly-once
-// semantics (EOS) behavior. EOS ensures that retried operations produce the
-// same result as the original, preventing duplicate side effects after network
-// disruptions.
+// These tests exercise v4.1 session management through a kernel mount:
+// EXCHANGE_ID -> CREATE_SESSION -> SEQUENCE (on every compound) ->
+// DESTROY_SESSION.
 //
-// The v4.1 session lifecycle is: EXCHANGE_ID -> CREATE_SESSION -> SEQUENCE
-// (on every compound) -> DESTROY_SESSION. EOS replay is verified through
-// server-side log scraping for replay cache hits during v4.1 operations.
-//
-// Note: The Linux NFS client may not trigger replay during normal operation.
-// These tests verify the EOS infrastructure is active and handling sessions
-// correctly. Actual replay scenarios require network disruption which is
-// tested separately in TestNFSv41EOSConnectionDisruption.
+// Exactly-once semantics are not observable here: a replay needs the server to
+// execute a request whose reply the client then never receives, and nothing a
+// kernel mount does on demand produces that. The replay cache is covered
+// deterministically by TestSequence_ReplayWithCache,
+// TestSequence_ReplayWithoutCache and TestSequence_FalseRetry_DifferentOps in
+// internal/adapter/nfs/v4/handlers.
+
+var (
+	createSessionOp  = regexp.MustCompile(`op_name=CREATE_SESSION status=0\b`)
+	destroySessionOp = regexp.MustCompile(`op_name=DESTROY_SESSION status=0\b`)
+)
 
 // =============================================================================
-// Test 1: EOS Replay on Reconnect
+// Test 1: Concurrent I/O on One Session
 // =============================================================================
 
-// TestNFSv41EOSReplayOnReconnect verifies EOS behavior by performing heavy
-// I/O through a v4.1 mount and checking server logs for any replay cache
-// activity. The Linux NFS client may or may not trigger replays during normal
-// operation, so the test logs warnings rather than failing if no replay is
-// detected -- the EOS machinery is validated by unit tests; this E2E test
-// validates the integration.
-func TestNFSv41EOSReplayOnReconnect(t *testing.T) {
+// TestNFSv41ConcurrentIOOnSession runs concurrent create/write/fsync/read
+// cycles through one v4.1 mount, so the compounds contend for the session's
+// slot table, and requires every file to round-trip.
+func TestNFSv41ConcurrentIOOnSession(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping NFSv4.1 EOS replay test in short mode")
+		t.Skip("Skipping NFSv4.1 concurrent session I/O test in short mode")
 	}
 
 	framework.SkipIfNFSv41Unsupported(t)
 
-	sp, _, nfsPort := setupNFSv4TestServer(t)
+	_, _, nfsPort := setupNFSv4TestServer(t)
 
-	// Mount v4.1
 	mount := framework.MountNFSWithVersion(t, nfsPort, "4.1")
 	t.Cleanup(mount.Cleanup)
 
-	// Capture server log position before test operations
-	logBefore := readLogFile(t, sp)
-
-	// Perform heavy I/O to increase the probability of a natural retry.
-	// Multiple concurrent file creates/writes stress the session slot table.
-	var wg sync.WaitGroup
 	const concurrentFiles = 20
+	errs := make([]error, concurrentFiles)
+	var wg sync.WaitGroup
 
 	for i := range concurrentFiles {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			filePath := mount.FilePath(fmt.Sprintf("eos_replay_%03d.txt", idx))
-			content := []byte(fmt.Sprintf("EOS replay test data for file %d -- padding to increase size %s",
-				idx, strings.Repeat("x", 1024)))
-
-			f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
-			if err != nil {
-				t.Logf("File create %d failed: %v", idx, err)
-				return
-			}
-
-			_, _ = f.Write(content)
-			_ = f.Sync()
-			_ = f.Close()
-
-			// Read back to generate more NFS operations
-			_, _ = os.ReadFile(filePath)
+			filePath := mount.FilePath(fmt.Sprintf("session_io_%03d.txt", idx))
+			content := []byte(fmt.Sprintf("session I/O data for file %d %s", idx, strings.Repeat("x", 1024)))
+			errs[idx] = writeSyncReadBack(filePath, content)
 		}(i)
 	}
 	wg.Wait()
 
-	// Allow time for log flushing
-	time.Sleep(1 * time.Second)
-
-	// Clean up test files
-	for i := range concurrentFiles {
-		_ = os.Remove(mount.FilePath(fmt.Sprintf("eos_replay_%03d.txt", i)))
+	for i, err := range errs {
+		assert.NoError(t, err, "file %d should round-trip", i)
+		_ = os.Remove(mount.FilePath(fmt.Sprintf("session_io_%03d.txt", i)))
 	}
+}
 
-	// Check server logs for replay-related activity
-	logAfter := readLogFile(t, sp)
-	newLogs := extractNewLogs(logBefore, logAfter)
-
-	replayDetected := false
-	replayIndicators := []string{
-		"replay cache hit",
-		"SEQUENCE replay",
-		"slot seqid",
-		"cached reply",
-		"replay detected",
+// writeSyncReadBack creates path, writes content, fsyncs, closes, and checks
+// that a fresh read returns content.
+func writeSyncReadBack(path string, content []byte) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("create: %w", err)
 	}
-
-	for _, indicator := range replayIndicators {
-		if strings.Contains(strings.ToLower(newLogs), strings.ToLower(indicator)) {
-			t.Logf("EOS replay activity detected: found %q in server logs", indicator)
-			replayDetected = true
-			break
-		}
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write: %w", err)
 	}
-
-	if !replayDetected {
-		t.Log("WARNING: No replay cache activity detected in server logs. " +
-			"This is expected during normal operation -- the Linux NFS client may not " +
-			"trigger replays without network disruption. EOS machinery is validated by " +
-			"unit tests; this E2E test confirms the v4.1 session infrastructure is active.")
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("fsync: %w", err)
 	}
-
-	// Verify the session was established (EXCHANGE_ID + CREATE_SESSION succeeded)
-	sessionIndicators := []string{
-		"EXCHANGE_ID",
-		"CREATE_SESSION",
-		"SEQUENCE",
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
 	}
-
-	sessionActive := false
-	for _, indicator := range sessionIndicators {
-		if strings.Contains(newLogs, indicator) {
-			t.Logf("v4.1 session activity confirmed: found %q in server logs", indicator)
-			sessionActive = true
-		}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read back: %w", err)
 	}
-
-	if !sessionActive {
-		t.Log("NOTE: No explicit session operation log messages found. " +
-			"The v4.1 mount succeeded, which implicitly validates EXCHANGE_ID, " +
-			"CREATE_SESSION, and SEQUENCE handling.")
+	if !bytes.Equal(got, content) {
+		return fmt.Errorf("read back %d bytes, want %d", len(got), len(content))
 	}
-
-	t.Log("TestNFSv41EOSReplayOnReconnect: PASSED (session infrastructure validated)")
+	return nil
 }
 
 // =============================================================================
-// Test 2: EOS Connection Disruption
+// Test 2: I/O Survives Packet Loss
 // =============================================================================
 
-// TestNFSv41EOSConnectionDisruption attempts to force an EOS replay by
-// disrupting the TCP connection during a large file write. If iptables or
-// equivalent tools are unavailable, the test skips with an informative message.
-func TestNFSv41EOSConnectionDisruption(t *testing.T) {
+// TestNFSv41IOSurvivesPacketLoss writes and fsyncs the first half of a 10MB
+// file, drops the client's packets to the server for 500ms while the second
+// half is written and fsynced, and requires the file to read back intact. A DROP stalls TCP rather than breaking the
+// connection, so the client retransmits on the same connection.
+func TestNFSv41IOSurvivesPacketLoss(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping NFSv4.1 EOS connection disruption test in short mode")
+		t.Skip("Skipping NFSv4.1 packet loss test in short mode")
 	}
 
 	framework.SkipIfNFSv41Unsupported(t)
 
-	// Check if iptables is available for connection disruption
-	_, err := exec.LookPath("iptables")
-	if err != nil {
-		t.Skip("Skipping: iptables not available for connection disruption (requires root and iptables)")
+	if _, err := exec.LookPath("iptables"); err != nil {
+		t.Skip("Skipping: iptables not available to drop packets")
 	}
-
-	// Verify we can actually use iptables (need root)
-	testCmd := exec.Command("iptables", "-L", "-n")
-	if output, err := testCmd.CombinedOutput(); err != nil {
+	if output, err := exec.Command("iptables", "-L", "-n").CombinedOutput(); err != nil {
 		t.Skipf("Skipping: cannot use iptables (need root): %v\nOutput: %s", err, string(output))
 	}
 
-	sp, _, nfsPort := setupNFSv4TestServer(t)
+	_, _, nfsPort := setupNFSv4TestServer(t)
 
-	// Mount v4.1
-	mount := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	// Mount over IPv4: "localhost" resolves to ::1, which the iptables rule
+	// below does not filter.
+	mount := framework.MountNFSWithVersionAt(t, "127.0.0.1", nfsPort, "4.1")
 	t.Cleanup(mount.Cleanup)
 
-	// Capture log position
-	logBefore := readLogFile(t, sp)
+	filePath := mount.FilePath("packet_loss_test.bin")
+	t.Cleanup(func() { _ = os.Remove(filePath) })
+	data := make([]byte, 10*1024*1024)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
 
-	// Start writing a large file in a goroutine
-	filePath := mount.FilePath("eos_disruption_test.bin")
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
+	require.NoError(t, err, "create file")
+	defer f.Close()
+	half := len(data) / 2
+	_, err = f.Write(data[:half])
+	require.NoError(t, err, "write first half")
+	require.NoError(t, f.Sync(), "fsync first half")
+
+	// The rule goes in before the second half is written, so its fsync cannot
+	// complete until the rule is removed; the packet counter proves traffic hit
+	// it.
+	comment := fmt.Sprintf("dittofs-e2e-drop-%d", nfsPort)
+	ruleArgs := []string{"OUTPUT", "-p", "tcp", "--dport", fmt.Sprintf("%d", nfsPort),
+		"-m", "comment", "--comment", comment, "-j", "DROP"}
+	out, err := exec.Command("iptables", append([]string{"-A"}, ruleArgs...)...).CombinedOutput()
+	require.NoError(t, err, "add iptables DROP rule: %s", string(out))
+	removeRule := func() { _ = exec.Command("iptables", append([]string{"-D"}, ruleArgs...)...).Run() }
+	t.Cleanup(removeRule)
+
 	writeErr := make(chan error, 1)
-
 	go func() {
-		data := make([]byte, 10*1024*1024) // 10MB
-		for i := range data {
-			data[i] = byte(i % 256)
-		}
-
-		f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			writeErr <- err
+		if _, err := f.Write(data[half:]); err != nil {
+			writeErr <- fmt.Errorf("write second half: %w", err)
 			return
 		}
-		defer f.Close()
-
-		_, err = f.Write(data)
-		if err != nil {
-			writeErr <- err
-			return
-		}
-
-		err = f.Sync()
-		writeErr <- err
+		writeErr <- f.Sync()
 	}()
 
-	// Wait briefly for write to start, then disrupt connection
-	time.Sleep(100 * time.Millisecond)
-
-	// Add iptables rule to drop packets to the NFS port briefly
-	dropRule := exec.Command("iptables", "-A", "OUTPUT",
-		"-p", "tcp", "--dport", fmt.Sprintf("%d", nfsPort),
-		"-j", "DROP")
-	if err := dropRule.Run(); err != nil {
-		t.Logf("Failed to add iptables rule: %v -- continuing without disruption", err)
-	} else {
-		// Clean up iptables rule after brief disruption
-		t.Cleanup(func() {
-			cleanRule := exec.Command("iptables", "-D", "OUTPUT",
-				"-p", "tcp", "--dport", fmt.Sprintf("%d", nfsPort),
-				"-j", "DROP")
-			_ = cleanRule.Run()
-		})
-
-		// Keep the disruption for 500ms
-		time.Sleep(500 * time.Millisecond)
-
-		// Remove the drop rule to restore connectivity
-		restoreRule := exec.Command("iptables", "-D", "OUTPUT",
-			"-p", "tcp", "--dport", fmt.Sprintf("%d", nfsPort),
-			"-j", "DROP")
-		_ = restoreRule.Run()
-	}
-
-	// Wait for write to complete (may succeed or fail depending on disruption timing)
+	time.Sleep(500 * time.Millisecond)
 	select {
 	case err := <-writeErr:
-		if err != nil {
-			t.Logf("Write completed with error (expected during disruption): %v", err)
-		} else {
-			t.Log("Write completed successfully (NFS client may have retried transparently)")
-		}
+		t.Fatalf("fsync finished while every packet to the server was dropped (err=%v)", err)
+	default:
+	}
+	assert.Positive(t, droppedPackets(t, comment), "the DROP rule should have dropped packets to the server")
+	removeRule()
+
+	select {
+	case err := <-writeErr:
+		require.NoError(t, err, "the second half should write and fsync across the packet loss")
 	case <-time.After(60 * time.Second):
-		t.Log("Write timed out (client may be stuck retrying)")
+		t.Fatal("fsync did not complete within 60s of the packet loss ending")
 	}
 
-	// Allow time for log flushing
-	time.Sleep(2 * time.Second)
+	got, err := os.ReadFile(filePath)
+	require.NoError(t, err, "read back")
+	assert.True(t, bytes.Equal(data, got), "file should read back intact (%d bytes, want %d)", len(got), len(data))
+}
 
-	// Clean up test file
-	_ = os.Remove(filePath)
-
-	// Check server logs for replay evidence
-	logAfter := readLogFile(t, sp)
-	newLogs := extractNewLogs(logBefore, logAfter)
-
-	if strings.Contains(strings.ToLower(newLogs), "replay") {
-		t.Log("Replay cache activity detected after connection disruption")
-	} else {
-		t.Log("NOTE: No explicit replay detected. The NFS client may have " +
-			"established a new session rather than replaying on the old one.")
+// droppedPackets returns the packet counter of the OUTPUT rule tagged with
+// comment.
+func droppedPackets(t *testing.T, comment string) int64 {
+	t.Helper()
+	out, err := exec.Command("iptables", "-L", "OUTPUT", "-v", "-x", "-n").CombinedOutput()
+	require.NoError(t, err, "list iptables OUTPUT: %s", string(out))
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.Contains(line, "/* "+comment+" */") {
+			continue
+		}
+		fields := strings.Fields(line)
+		require.NotEmpty(t, fields)
+		n, err := strconv.ParseInt(fields[0], 10, 64)
+		require.NoError(t, err, "parse packet counter in %q", line)
+		return n
 	}
-
-	t.Log("TestNFSv41EOSConnectionDisruption: PASSED")
+	t.Fatalf("no iptables OUTPUT rule tagged %q:\n%s", comment, out)
+	return 0
 }
 
 // =============================================================================
@@ -325,31 +266,10 @@ func TestNFSv41SessionEstablishment(t *testing.T) {
 	// Unmount -- should trigger DESTROY_SESSION
 	mount.Cleanup()
 
-	// Allow time for session teardown and log flushing
-	time.Sleep(2 * time.Second)
-
-	// Check server logs for session lifecycle
-	logAfter := readLogFile(t, sp)
-	newLogs := extractNewLogs(logBefore, logAfter)
-
-	// Check for session creation evidence
-	if strings.Contains(newLogs, "CREATE_SESSION") || strings.Contains(newLogs, "create_session") {
-		t.Log("CREATE_SESSION confirmed in server logs")
-	} else {
-		t.Log("NOTE: No explicit CREATE_SESSION log message found. " +
-			"The successful v4.1 mount implicitly confirms session creation.")
-	}
-
-	// Check for session destruction evidence
-	if strings.Contains(newLogs, "DESTROY_SESSION") || strings.Contains(newLogs, "destroy_session") ||
-		strings.Contains(newLogs, "session destroyed") || strings.Contains(newLogs, "Session destroyed") {
-		t.Log("DESTROY_SESSION confirmed in server logs (clean session teardown)")
-	} else {
-		// DESTROY_SESSION may not be logged at INFO level, or the client may
-		// just close the connection (relying on session reaper for cleanup)
-		t.Log("NOTE: No explicit DESTROY_SESSION log message found. " +
-			"The client may rely on session lease expiry for cleanup.")
-	}
+	assert.True(t, waitForLog(t, sp, logBefore, createSessionOp, 1, time.Second),
+		"mounting should create a session")
+	assert.True(t, waitForLog(t, sp, logBefore, destroySessionOp, 1, 5*time.Second),
+		"unmounting should destroy the session")
 
 	t.Log("TestNFSv41SessionEstablishment: PASSED")
 }

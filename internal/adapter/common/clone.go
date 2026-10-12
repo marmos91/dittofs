@@ -15,8 +15,9 @@ import (
 // CloneWholeFile clones the entire source into the destination at offset zero.
 // A zero count uses the source's current size; otherwise count must still match
 // that size after draining pending rollups. Destinations with an existing tail
-// beyond the source are unsupported. Source and destination are exclusive for
-// the full operation, so a concurrent tail write waits until it can survive.
+// beyond the source are unsupported. Source and destination are exclusive from
+// the final drain through the manifest swap, so a concurrent tail write waits
+// until it can survive; the bulk of the source's upload happens before that.
 //
 // Remote-backed copies replace the manifest and update refcounts in one
 // metadata transaction, then discard the destination's replaced local content.
@@ -39,6 +40,16 @@ func CloneWholeFile(
 	srcFile, err := metadataStore.GetFile(ctx, srcHandle)
 	if err != nil {
 		return fmt.Errorf("fetch source payload: %w", err)
+	}
+	// Upload the source's dirty data before taking the payloads exclusively. The
+	// drain needs only the shared admission reads and writes use, so they keep
+	// running while it uploads, and the drain inside the scope below has only
+	// what arrived in between. Its error is left to that drain, which
+	// decides the clone.
+	if srcFile.PayloadID != dstPayloadID {
+		if err := blockStore.DrainPayload(ctx, string(srcFile.PayloadID)); err != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
 	}
 	return blockStore.WithPayloadScope(ctx, []string{string(srcFile.PayloadID), string(dstPayloadID)}, true, func(ctx context.Context) error {
 		if srcFile.PayloadID == dstPayloadID {

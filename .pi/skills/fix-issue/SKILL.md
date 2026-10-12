@@ -185,7 +185,7 @@ matches the change — they cover different things:
 
 ```bash
 cd test/smb-conformance && ./run.sh     # SMB2/3: WPTS BVT, Samba-derived
-cd test/nfs-conformance && ./run.sh     # Kerberos/sec=krb5 mounts ONLY, not general NFS
+sudo -E go test -tags=e2e -v -run Kerberos ./test/e2e/   # NFS and SMB Kerberos mounts
 sudo ./test/posix/run-posix.sh          # pjdfstest: the real NFS-side FS-semantics suite
 ```
 
@@ -270,8 +270,8 @@ gh pr diff <PR>
 
 **CI.** Ten workflows run per PR — `unit-tests`, `lint`, `integration-tests`,
 `posix-tests`, `smb-conformance`, `operator-tests`, `windows-build`,
-`secret-scan`, `ci-health`, and `nfs-kerberos` (path-scoped to the kerberos and
-NFS adapter trees). The protocol suites are slow.
+`secret-scan`, `ci-health`, and `e2e-tests` (only its Kerberos tests, path-scoped
+to the Kerberos code). The protocol suites are slow.
 
 ```bash
 gh pr checks <PR> --watch

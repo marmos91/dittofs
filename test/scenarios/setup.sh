@@ -97,8 +97,10 @@ export USER=tester%tester-secret
 exec bash"
 fi
 
+# One run at a time per CACHE. A second run fails rather than exiting 0: a scheduled run that tested
+# nothing must not read as a pass. 75 (EX_TEMPFAIL) tells it apart from a scenario failure (1).
 exec 9<"$CACHE"
-flock -n 9 || exit 0
+flock -n 9 || { echo "not run: another run holds $CACHE" >&2; exit 75; }
 
 # A scenario runs after the same setup. Each of its commands is traced as
 # "+ <epoch seconds> <line> <command>".

@@ -3,8 +3,8 @@
 package e2e
 
 import (
-	"bytes"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -19,37 +19,43 @@ import (
 // NFSv4 Delegation E2E Tests
 // =============================================================================
 //
-// These tests validate NFSv4 delegation (grant/recall/revoke) lifecycle
-// through actual NFS kernel client mounts. Delegations are NFSv4-only
-// (NFSv3 has no delegation support).
+// These tests drive delegation grant and recall through real kernel NFS
+// mounts and assert on the server log lines that record each event, since no
+// delegation metric is exported.
 //
-// The Linux kernel NFS client requests delegations implicitly during OPEN.
-// The server grants delegations when a single client has exclusive access,
-// and recalls them when a conflicting access is detected from another client.
+// Each test arranges the two conditions a delegation case needs:
 //
-// Delegation observability (locked decision #7 -- "full delegation cycle"):
-// Tests verify not only data consistency but also that delegations were
-// actually granted and recalled at the server level. Since Prometheus
-// delegation metrics are not yet instrumented, these tests use the log
-// approach (server log scraping for "Delegation granted" and "CB_RECALL
-// sent" messages).
+//   - The server grants a delegation only once a CB_NULL probe of the client's
+//     callback path has succeeded. A v4.0 client's callback address is the local
+//     address of its connection, and the server refuses to dial loopback, so
+//     v4.0 mounts go through a non-loopback address of this host.
+//   - A recall needs a second NFS client. Two mounts of one export with the same
+//     NFS version share a single kernel client (and superblock), so their opens
+//     never conflict. A v4.0 and a v4.1 mount are distinct clients with distinct
+//     client owners, so the recall tests pair one of each.
 //
-// TODO: When dittofs_nfs_delegations_granted_total and
-// dittofs_nfs_delegations_recalled_total metrics are instrumented,
-// update these tests to scrape the /metrics endpoint instead of logs.
-// See locked decision #7 in CONTEXT.md.
+// Revocation after an unanswered recall is not covered here: the kernel client
+// always answers CB_RECALL. The revocation timer itself is covered by
+// TestRecallTimer_FiresRevocation in internal/adapter/nfs/v4/state, which arms
+// it directly rather than through a sent recall.
+
+var (
+	cbNullSucceeded = regexp.MustCompile(`CB_NULL succeeded.*\bclient_id=(\S+)`)
+	cbNullFailed    = regexp.MustCompile(`CB_NULL failed[^\n]*`)
+	delegGranted    = regexp.MustCompile(`Delegation granted`)
+	cbRecallSent    = regexp.MustCompile(`CB_RECALL (\(v4\.1\) )?sent successfully`)
+	cbRecallAny     = regexp.MustCompile(`CB_RECALL`)
+	delegReturned   = regexp.MustCompile(`Delegation returned`)
+	delegationTrace = regexp.MustCompile(`op_name=(OPEN|WRITE|COMMIT|CLOSE|DELEGRETURN|READ)\b|[Dd]elegation|CB_RECALL`)
+)
 
 // =============================================================================
 // Test 1: Basic Delegation Lifecycle
 // =============================================================================
 
-// TestNFSv4DelegationBasicLifecycle validates the basic delegation lifecycle:
-// a single client opens a file, gets a delegation (if server policy allows),
-// writes data under the delegation, closes, and reopens to verify persistence.
-//
-// The test checks server logs for "Delegation granted" to confirm the
-// delegation was actually issued at the server level, not just inferred
-// from data consistency.
+// TestNFSv4DelegationBasicLifecycle checks that a single client opening a file
+// for write is granted a delegation, and that data written under it persists
+// through close and reopen.
 func TestNFSv4DelegationBasicLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NFSv4 delegation basic lifecycle test in short mode")
@@ -58,15 +64,12 @@ func TestNFSv4DelegationBasicLifecycle(t *testing.T) {
 	framework.SkipIfNFSv4Unsupported(t)
 
 	sp, _, nfsPort := setupNFSv4TestServer(t)
+	since := readLogFile(t, sp)
 
-	// Record log file position before test operations
-	logBefore := readLogFile(t, sp)
-
-	// Mount NFSv4
-	mount := framework.MountNFSWithVersion(t, nfsPort, "4.0")
+	mount := mountForDelegations(t, nfsPort, "4.0")
 	t.Cleanup(mount.Cleanup)
+	requireCallbackPathsUp(t, sp, since, 1)
 
-	// Open file, write data -- if delegation granted, writes are local until close
 	testData := []byte("Delegation lifecycle test data -- single client exclusive access")
 	filePath := mount.FilePath(helpers.UniqueTestName("deleg_basic") + ".txt")
 
@@ -74,394 +77,170 @@ func TestNFSv4DelegationBasicLifecycle(t *testing.T) {
 	require.NoError(t, err, "Should create file via NFSv4 OPEN")
 	t.Cleanup(func() { _ = os.Remove(filePath) })
 
+	require.True(t, waitForLog(t, sp, since, delegGranted, 1, 5*time.Second),
+		"server should grant a delegation to the only client with the file open")
+
 	_, err = f.Write(testData)
-	require.NoError(t, err, "Should write data (possibly under delegation)")
+	require.NoError(t, err, "Should write data under the delegation")
+	require.NoError(t, f.Close(), "Should close file")
 
-	err = f.Close()
-	require.NoError(t, err, "Should close file (flushes delegation data)")
-
-	// Allow time for delegation state changes to settle
-	time.Sleep(1 * time.Second)
-
-	// Reopen and read -- verify data persisted correctly
 	readBack, err := os.ReadFile(filePath)
 	require.NoError(t, err, "Should read file after close/reopen")
-	assert.Equal(t, testData, readBack, "Data should persist correctly through delegation lifecycle")
-
-	// Check server logs for delegation evidence
-	logAfter := readLogFile(t, sp)
-	newLogs := extractNewLogs(logBefore, logAfter)
-
-	if strings.Contains(newLogs, "Delegation granted") {
-		t.Log("Delegation grant confirmed via server logs")
-	} else {
-		// Delegation may not be granted if server policy decides not to
-		// (e.g., callback path not verified, single open doesn't trigger grant)
-		t.Log("NOTE: No 'Delegation granted' found in server logs -- " +
-			"delegation may not have been granted (server policy decision). " +
-			"Data consistency verified regardless.")
-		// TODO: Once dittofs_nfs_delegations_granted_total metric is instrumented,
-		// scrape /metrics endpoint for more reliable detection (locked decision #7).
-	}
-
-	t.Log("TestNFSv4DelegationBasicLifecycle: PASSED")
+	assert.Equal(t, testData, readBack, "Data should persist through the delegation lifecycle")
 }
 
 // =============================================================================
-// Test 2: Delegation Recall (Multi-Client)
+// Test 2: Delegation Recall (v4.0 holder)
 // =============================================================================
 
-// TestNFSv4DelegationRecall validates that when a second client opens a file
-// that has an active delegation held by the first client, the server recalls
-// the delegation and the second client can access the data written by the first.
-//
-// This is the key multi-client data consistency + observable recall test.
+// TestNFSv4DelegationRecall checks that a write open from a second client
+// recalls the delegation a v4.0 client holds over the v4.0 callback
+// connection, that the open waits for the delegation to be returned, and that
+// the second client then sees the holder's data.
 func TestNFSv4DelegationRecall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NFSv4 delegation recall test in short mode")
 	}
 
-	framework.SkipIfNFSv4Unsupported(t)
-
-	sp, _, nfsPort := setupNFSv4TestServer(t)
-
-	// Record log position
-	logBefore := readLogFile(t, sp)
-
-	// Mount1: first client
-	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
-	t.Cleanup(mount1.Cleanup)
-
-	// Mount2: second client (separate mount = different NFS client)
-	mount2 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
-	t.Cleanup(mount2.Cleanup)
-
-	fileName := helpers.UniqueTestName("deleg_recall") + ".txt"
-	filePath1 := mount1.FilePath(fileName)
-	filePath2 := mount2.FilePath(fileName)
-
-	// Mount1: create and write data exclusively (may get delegation)
-	testData := []byte("Data written by mount1 under potential write delegation")
-	f1, err := os.OpenFile(filePath1, os.O_CREATE|os.O_RDWR, 0644)
-	require.NoError(t, err, "Mount1: should create file")
-	t.Cleanup(func() { _ = os.Remove(filePath1) })
-
-	_, err = f1.Write(testData)
-	require.NoError(t, err, "Mount1: should write data")
-
-	// Keep file open on mount1 (maintains delegation if granted)
-	// Allow time for delegation grant
-	time.Sleep(1 * time.Second)
-
-	// Mount2: open same file -- triggers delegation recall if delegation was granted
-	t.Log("Mount2 opening file (should trigger delegation recall if delegation held by mount1)")
-	startRecall := time.Now()
-
-	// Sync mount1 before mount2 reads, to ensure data is on server
-	err = f1.Sync()
-	require.NoError(t, err, "Mount1: should sync data")
-
-	// Close mount1 handle to release delegation cleanly
-	err = f1.Close()
-	require.NoError(t, err, "Mount1: should close file")
-
-	// Wait for close/delegation-return to propagate
-	time.Sleep(1 * time.Second)
-
-	// Mount2 reads the file
-	readData, err := os.ReadFile(filePath2)
-	recallDuration := time.Since(startRecall)
-	require.NoError(t, err, "Mount2: should read file after delegation recall")
-
-	t.Logf("Mount2 read completed in %v (includes potential delegation recall wait)", recallDuration)
-
-	// Verify data consistency: mount2 sees what mount1 wrote
-	assert.True(t, bytes.Equal(testData, readData),
-		"Mount2 should see data written by mount1 (delegation return flushed data)")
-
-	// Allow time for log flushing
-	time.Sleep(500 * time.Millisecond)
-
-	// Check server logs for recall evidence
-	logAfter := readLogFile(t, sp)
-	newLogs := extractNewLogs(logBefore, logAfter)
-
-	grantFound := strings.Contains(newLogs, "Delegation granted")
-	recallFound := strings.Contains(newLogs, "CB_RECALL sent")
-
-	if grantFound {
-		t.Log("Delegation grant confirmed via server logs")
-	} else {
-		t.Log("NOTE: No delegation grant in logs (server may not have granted)")
-	}
-
-	if recallFound {
-		t.Log("Delegation recall confirmed via server logs (CB_RECALL sent)")
-	} else {
-		t.Log("NOTE: No CB_RECALL in logs (recall may not have been needed if no delegation was granted)")
-	}
-
-	// The key assertion is data consistency, which MUST pass regardless of delegation behavior
-	t.Log("Data consistency verified: mount2 sees mount1's writes")
-	t.Log("TestNFSv4DelegationRecall: PASSED")
+	framework.SkipIfNFSv41Unsupported(t)
+	testDelegationRecall(t, "4.0", "4.1")
 }
 
 // =============================================================================
-// Test 3: Delegation Revocation (Unresponsive Client)
+// Test 3: NFSv4.1 Backchannel Delegation Recall
 // =============================================================================
 
-// TestNFSv4DelegationRevocation tests the scenario where the first client is
-// unresponsive during delegation recall. The server should eventually revoke
-// the delegation (after a timeout) and allow the second client to proceed.
-func TestNFSv4DelegationRevocation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping NFSv4 delegation revocation test in short mode")
-	}
-
-	framework.SkipIfNFSv4Unsupported(t)
-
-	_, _, nfsPort := setupNFSv4TestServer(t)
-
-	// Mount1: first client
-	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
-	t.Cleanup(mount1.Cleanup)
-
-	// Mount2: second client
-	mount2 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
-	t.Cleanup(mount2.Cleanup)
-
-	fileName := helpers.UniqueTestName("deleg_revoke") + ".txt"
-	filePath1 := mount1.FilePath(fileName)
-	filePath2 := mount2.FilePath(fileName)
-
-	// Mount1: create file and write data
-	testData := []byte("Data for revocation test")
-	framework.WriteFile(t, filePath1, testData)
-	t.Cleanup(func() { _ = os.Remove(filePath1) })
-
-	// Mount1: open file and hold it open (simulating "unresponsive" client)
-	f1, err := os.OpenFile(filePath1, os.O_RDWR, 0644)
-	require.NoError(t, err, "Mount1: should open file")
-	// Deliberately do NOT close f1 until after mount2 reads -- simulates unresponsive client
-
-	// Allow time for delegation grant
-	time.Sleep(1 * time.Second)
-
-	t.Log("Mount1 holding file open (simulating unresponsive client during recall)")
-
-	// Mount2: try to open same file -- should eventually succeed even if
-	// delegation recall times out (server revokes after timeout)
-	t.Log("Mount2 attempting to read file (may wait for delegation revocation)")
-	startTime := time.Now()
-
-	readData, err := os.ReadFile(filePath2)
-	accessDuration := time.Since(startTime)
-
-	if err != nil {
-		// Some configurations may return an error during revocation timeout
-		t.Logf("Mount2 read error (expected during delegation revocation): %v (took %v)", err, accessDuration)
-
-		// Retry after a delay (revocation may have completed)
-		time.Sleep(5 * time.Second)
-		readData, err = os.ReadFile(filePath2)
-		if err != nil {
-			t.Logf("Mount2 retry also failed: %v -- skipping data consistency check", err)
-			t.Log("NOTE: Delegation revocation timeout may be longer than test timeout")
-		}
-	}
-
-	if err == nil {
-		t.Logf("Mount2 read succeeded in %v", accessDuration)
-		// Verify data consistency
-		assert.True(t, bytes.Equal(testData, readData),
-			"Mount2 should see original data after delegation revocation")
-		t.Log("Data consistency verified after delegation revocation")
-	}
-
-	// Clean up: close mount1's file handle
-	_ = f1.Close()
-
-	t.Log("TestNFSv4DelegationRevocation: PASSED")
-}
-
-// =============================================================================
-// Test 4: No Delegation Conflict (Concurrent Reads)
-// =============================================================================
-
-// TestNFSv4NoDelegationConflict verifies that two clients can read the same
-// file concurrently without conflicts. Read delegations (if granted) should
-// not block other readers.
-func TestNFSv4NoDelegationConflict(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping NFSv4 no-delegation-conflict test in short mode")
-	}
-
-	framework.SkipIfNFSv4Unsupported(t)
-
-	_, _, nfsPort := setupNFSv4TestServer(t)
-
-	// Two separate mounts
-	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
-	t.Cleanup(mount1.Cleanup)
-
-	mount2 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
-	t.Cleanup(mount2.Cleanup)
-
-	fileName := helpers.UniqueTestName("deleg_noconflict") + ".txt"
-	filePath1 := mount1.FilePath(fileName)
-	filePath2 := mount2.FilePath(fileName)
-
-	// Create file with known content
-	testData := []byte("Concurrent read delegation test data -- no conflict expected")
-	framework.WriteFile(t, filePath1, testData)
-	t.Cleanup(func() { _ = os.Remove(filePath1) })
-
-	// Wait for the file to be visible from the second mount
-	framework.WaitForContent(t, filePath2, testData, 5*time.Second)
-
-	// Both clients read the same file concurrently
-	readData1, err := os.ReadFile(filePath1)
-	require.NoError(t, err, "Mount1: should read file without conflict")
-
-	readData2, err := os.ReadFile(filePath2)
-	require.NoError(t, err, "Mount2: should read file without conflict")
-
-	// Verify both see the same data
-	assert.Equal(t, testData, readData1, "Mount1 should read correct data")
-	assert.Equal(t, testData, readData2, "Mount2 should read correct data")
-
-	// Verify reads are not blocked -- both should succeed quickly
-	startTime := time.Now()
-	_, err = os.ReadFile(filePath1)
-	require.NoError(t, err, "Mount1: second read should succeed")
-	_, err = os.ReadFile(filePath2)
-	require.NoError(t, err, "Mount2: second read should succeed")
-	readDuration := time.Since(startTime)
-
-	assert.Less(t, readDuration, 5*time.Second,
-		"Concurrent reads should complete quickly (no delegation conflict blocking)")
-	t.Logf("Concurrent reads completed in %v", readDuration)
-
-	t.Log("TestNFSv4NoDelegationConflict: PASSED")
-}
-
-// =============================================================================
-// Test 5: NFSv4.1 Backchannel Delegation Recall
-// =============================================================================
-
-// TestNFSv41BackchannelDelegationRecall validates that delegation recall for
-// v4.1 clients uses the backchannel (fore-channel connection) rather than a
-// separate TCP dial-out. In v4.1, the backchannel is bound to the existing
-// fore-channel connection via BIND_CONN_TO_SESSION, so CB_RECALL should be
-// delivered over that same connection.
-//
-// The test mounts two v4.1 clients to the same share. Client 1 opens a file
-// (getting a delegation), and Client 2 opens the same file (triggering recall).
-// Server logs are checked for delegation grant and CB_RECALL delivery evidence.
+// TestNFSv41BackchannelDelegationRecall is the v4.1 counterpart of
+// TestNFSv4DelegationRecall: the holder is a v4.1 client, so the recall travels
+// over the session backchannel rather than a server-initiated connection.
 func TestNFSv41BackchannelDelegationRecall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NFSv4.1 backchannel delegation recall test in short mode")
 	}
 
 	framework.SkipIfNFSv41Unsupported(t)
+	testDelegationRecall(t, "4.1", "4.0")
+}
+
+// testDelegationRecall mounts the holder with holderVers and the conflicting
+// client with otherVers, which must differ so the two are distinct clients.
+func testDelegationRecall(t *testing.T, holderVers, otherVers string) {
+	t.Helper()
 
 	sp, _, nfsPort := setupNFSv4TestServer(t)
+	since := readLogFile(t, sp)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server delegation and I/O log since mount:\n%s",
+				grepLines(extractNewLogs(since, readLogFile(t, sp)), delegationTrace))
+		}
+	})
 
-	// Record log position
-	logBefore := readLogFile(t, sp)
+	holder := mountForDelegations(t, nfsPort, holderVers)
+	t.Cleanup(holder.Cleanup)
+	other := mountForDelegations(t, nfsPort, otherVers)
+	t.Cleanup(other.Cleanup)
+	requireCallbackPathsUp(t, sp, since, 2)
 
-	// Mount TWO v4.1 clients to the same share
-	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	fileName := helpers.UniqueTestName("deleg_recall") + ".txt"
+	holderPath := holder.FilePath(fileName)
+
+	f, err := os.OpenFile(holderPath, os.O_CREATE|os.O_RDWR, 0644)
+	require.NoError(t, err, "holder: should create file")
+	t.Cleanup(func() { _ = os.Remove(holderPath) })
+	defer f.Close()
+
+	require.True(t, waitForLog(t, sp, since, delegGranted, 1, 5*time.Second),
+		"holder should be granted a delegation")
+
+	// fsync puts the data on the server without giving up the delegation. The
+	// recall is not relied on to flush it: the kernel client returns a write
+	// delegation and keeps its dirty pages cached under the open stateid.
+	testData := []byte("written and fsynced by the delegation holder")
+	_, err = f.Write(testData)
+	require.NoError(t, err, "holder: should write data")
+	require.NoError(t, f.Sync(), "holder: should fsync")
+
+	recallSince := readLogFile(t, sp)
+	g, err := os.OpenFile(other.FilePath(fileName), os.O_RDWR, 0)
+	require.NoError(t, err, "other client: write open should succeed once the delegation is returned")
+	defer g.Close()
+
+	// The server must answer the conflicting OPEN with NFS4ERR_DELAY, recall
+	// the delegation, and let the OPEN through only after the holder returns
+	// it. Only return-before-OPEN is ordered: the recall goes out from its own
+	// goroutine and is logged once the client replies, so its line can land
+	// before or after the NFS4ERR_DELAY and DELEGRETURN lines.
+	recallLogs := extractNewLogs(recallSince, readLogFile(t, sp))
+	delayAt := firstIndex(recallLogs, regexp.MustCompile(`delegation conflict, returning NFS4ERR_DELAY file=`+regexp.QuoteMeta(fileName)))
+	recallAt := firstIndex(recallLogs, cbRecallSent)
+	returnAt := firstIndex(recallLogs, delegReturned)
+	openAt := firstIndex(recallLogs, regexp.MustCompile(`NFSv4 OPEN successful file=`+regexp.QuoteMeta(fileName)))
+	require.GreaterOrEqual(t, delayAt, 0, "the conflicting OPEN should first get NFS4ERR_DELAY")
+	require.GreaterOrEqual(t, recallAt, 0, "a conflicting write open should recall the holder's delegation")
+	require.GreaterOrEqual(t, returnAt, 0, "the holder should return the delegation")
+	require.GreaterOrEqual(t, openAt, 0, "the conflicting OPEN should eventually succeed")
+	assert.Less(t, returnAt, openAt, "the conflicting OPEN should succeed only after the delegation is returned")
+
+	got, err := os.ReadFile(other.FilePath(fileName))
+	require.NoError(t, err, "other client: should read file")
+	assert.Equal(t, testData, got, "other client should see the holder's data")
+}
+
+// =============================================================================
+// Test 4: No Delegation Conflict (Concurrent Reads)
+// =============================================================================
+
+// TestNFSv4NoDelegationConflict checks that a read delegation is granted to a
+// reading client and that a second client reading the same file does not
+// recall it.
+func TestNFSv4NoDelegationConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping NFSv4 no-delegation-conflict test in short mode")
+	}
+
+	framework.SkipIfNFSv41Unsupported(t)
+
+	sp, _, nfsPort := setupNFSv4TestServer(t)
+	since := readLogFile(t, sp)
+
+	// The file is written over NFSv3, which takes no delegation, so no recall
+	// precedes the reads and the file is not barred from a new grant.
+	writer := framework.MountNFS(t, nfsPort)
+	t.Cleanup(writer.Cleanup)
+	mount1 := mountForDelegations(t, nfsPort, "4.0")
 	t.Cleanup(mount1.Cleanup)
-
-	mount2 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	mount2 := mountForDelegations(t, nfsPort, "4.1")
 	t.Cleanup(mount2.Cleanup)
+	requireCallbackPathsUp(t, sp, since, 2)
 
-	fileName := helpers.UniqueTestName("v41_backchannel_recall") + ".txt"
-	filePath1 := mount1.FilePath(fileName)
-	filePath2 := mount2.FilePath(fileName)
+	fileName := helpers.UniqueTestName("deleg_noconflict") + ".txt"
+	testData := []byte("Concurrent read delegation test data -- no conflict expected")
+	framework.WriteFile(t, writer.FilePath(fileName), testData)
+	t.Cleanup(func() { _ = os.Remove(writer.FilePath(fileName)) })
 
-	// Client 1: open and write a file (should get delegation via OPEN)
-	testData := []byte("Data written by v4.1 client 1 under potential write delegation")
-	f1, err := os.OpenFile(filePath1, os.O_CREATE|os.O_RDWR, 0644)
-	require.NoError(t, err, "Client 1: should create file via v4.1 OPEN")
-	t.Cleanup(func() { _ = os.Remove(filePath1) })
+	readSince := readLogFile(t, sp)
 
-	_, err = f1.Write(testData)
-	require.NoError(t, err, "Client 1: should write data")
+	f1, err := os.Open(mount1.FilePath(fileName))
+	require.NoError(t, err, "mount1: should open for read")
+	defer f1.Close()
+	require.True(t, waitForLog(t, sp, readSince, delegGranted, 1, 5*time.Second),
+		"the first reader should be granted a read delegation")
 
-	// Allow time for delegation grant
-	time.Sleep(1 * time.Second)
+	f2, err := os.Open(mount2.FilePath(fileName))
+	require.NoError(t, err, "mount2: should open for read")
+	defer f2.Close()
 
-	// Capture logs after delegation grant
-	logAfterGrant := readLogFile(t, sp)
-
-	// Sync and close client 1's file handle to release delegation
-	err = f1.Sync()
-	require.NoError(t, err, "Client 1: should sync data")
-
-	err = f1.Close()
-	require.NoError(t, err, "Client 1: should close file")
-
-	// Wait for delegation return to propagate
-	time.Sleep(1 * time.Second)
-
-	// Client 2: open same file for reading (triggers delegation recall if held)
-	t.Log("Client 2 opening file (should trigger delegation recall via backchannel if delegation held)")
-
-	readData, err := os.ReadFile(filePath2)
-	require.NoError(t, err, "Client 2: should read file after delegation recall")
-
-	// Wait for callback delivery
-	time.Sleep(2 * time.Second)
-
-	// Verify data consistency
-	assert.Equal(t, testData, readData,
-		"Client 2 should see data written by Client 1 (v4.1 delegation lifecycle)")
-
-	// Check server logs for delegation and backchannel evidence
-	logAfter := readLogFile(t, sp)
-	newLogsGrant := extractNewLogs(logBefore, logAfterGrant)
-	newLogsAll := extractNewLogs(logBefore, logAfter)
-
-	grantFound := strings.Contains(newLogsGrant, "Delegation granted")
-	recallFound := strings.Contains(newLogsAll, "CB_RECALL") ||
-		strings.Contains(newLogsAll, "backchannel callback") ||
-		strings.Contains(newLogsAll, "cb_recall")
-	backchannelUsed := strings.Contains(newLogsAll, "CB_SEQUENCE") ||
-		strings.Contains(newLogsAll, "backchannel") ||
-		strings.Contains(newLogsAll, "fore-channel callback")
-	delegReturnFound := strings.Contains(newLogsAll, "delegation return") ||
-		strings.Contains(newLogsAll, "DELEGRETURN") ||
-		strings.Contains(newLogsAll, "Delegation revoked") ||
-		strings.Contains(newLogsAll, "delegation revoked")
-
-	if grantFound {
-		t.Log("Delegation grant confirmed via server logs (v4.1 client)")
-	} else {
-		t.Log("NOTE: No delegation grant in logs (server may not have granted for v4.1 client)")
+	for i, f := range []*os.File{f1, f2} {
+		got := make([]byte, len(testData))
+		_, err := f.ReadAt(got, 0)
+		require.NoError(t, err, "mount%d: should read", i+1)
+		assert.Equal(t, testData, got, "mount%d should read correct data", i+1)
 	}
 
-	if recallFound {
-		t.Log("CB_RECALL confirmed via server logs (delegation recalled)")
-	} else if grantFound {
-		t.Log("NOTE: No CB_RECALL in logs, but delegation was granted. " +
-			"Client may have returned delegation before conflict arose.")
-	} else {
-		t.Log("NOTE: No CB_RECALL in logs (recall may not have been needed)")
-	}
-
-	if backchannelUsed {
-		t.Log("Backchannel activity confirmed (v4.1 fore-channel callback path used, not dial-out)")
-	}
-
-	if delegReturnFound {
-		t.Log("Delegation return/revocation confirmed -- delegation state cleaned up")
-	}
-
-	// The critical assertion is data consistency
-	t.Log("Data consistency verified: v4.1 client 2 sees v4.1 client 1's writes")
-	t.Log("TestNFSv41BackchannelDelegationRecall: PASSED")
+	time.Sleep(time.Second)
+	assert.NotRegexp(t, cbRecallAny, extractNewLogs(readSince, readLogFile(t, sp)),
+		"a second reader should not recall the first reader's delegation")
 }
 
 // =============================================================================
@@ -488,4 +267,77 @@ func extractNewLogs(logBefore, logAfter string) string {
 		return logAfter[len(logBefore):]
 	}
 	return ""
+}
+
+// mountForDelegations mounts /export at vers, through a non-loopback address
+// for v4.0 so the server can dial its callback path.
+func mountForDelegations(t *testing.T, port int, vers string) *framework.Mount {
+	t.Helper()
+	if vers == "4.0" {
+		return framework.MountNFSWithVersionAt(t, framework.NonLoopbackIPv4(t), port, vers)
+	}
+	return framework.MountNFSWithVersion(t, port, vers)
+}
+
+// firstIndex returns the offset of re's first match in logs, or -1.
+func firstIndex(logs string, re *regexp.Regexp) int {
+	if loc := re.FindStringIndex(logs); loc != nil {
+		return loc[0]
+	}
+	return -1
+}
+
+// grepLines returns the lines of logs that re matches.
+func grepLines(logs string, re *regexp.Regexp) string {
+	var out []string
+	for _, line := range strings.Split(logs, "\n") {
+		if re.MatchString(line) {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// waitForLog polls the server log until re matches at least n times in what
+// was written after since, and reports whether it did within timeout.
+func waitForLog(t *testing.T, sp *helpers.ServerProcess, since string, re *regexp.Regexp, n int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if len(re.FindAllStringIndex(extractNewLogs(since, readLogFile(t, sp)), -1)) >= n {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// requireCallbackPathsUp waits until n distinct clients have passed a CB_NULL
+// probe logged after since, and fails the test, naming the cause, when a probe
+// fails or too few complete. It counts client IDs rather than lines because a
+// v4.1 client re-probes when its callback parameters change. With the v4.1 backchannel riding the fore channel and v4.0 mounted
+// through a non-loopback address, nothing on the host stops the probe, so a
+// failure is the server's.
+func requireCallbackPathsUp(t *testing.T, sp *helpers.ServerProcess, since string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		logs := extractNewLogs(since, readLogFile(t, sp))
+		clients := map[string]bool{}
+		for _, m := range cbNullSucceeded.FindAllStringSubmatch(logs, -1) {
+			clients[m[1]] = true
+		}
+		if len(clients) >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			if line := cbNullFailed.FindString(logs); line != "" {
+				t.Fatalf("server cannot reach the client's callback path, so it grants no delegations: %s", strings.TrimSpace(line))
+			}
+			t.Fatalf("%d of %d clients passed a CB_NULL probe of their callback path within 10s; the server grants no delegations without one", len(clients), n)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

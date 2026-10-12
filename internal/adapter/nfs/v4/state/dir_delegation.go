@@ -238,6 +238,10 @@ func (sm *StateManager) flushDirNotifications(deleg *DelegationState) {
 			logger.Warn("CB_NOTIFY: backchannel queue full, notifications lost",
 				"client_id", deleg.ClientID,
 				"count", len(pending))
+		} else {
+			logger.Debug("CB_NOTIFY queued",
+				"client_id", deleg.ClientID,
+				"count", len(pending))
 		}
 	} else {
 		logger.Debug("CB_NOTIFY: no backchannel sender, notifications lost",
