@@ -242,3 +242,27 @@ func TestWarmScopeReleasesEachPayloadWhenWarmed(t *testing.T) {
 	require.NoError(t, err, "exclusive admission on a warmed payload waited for the rest of the warm")
 	require.NoError(t, waitWarmScope(t, warmed))
 }
+
+// A payload is admitted only once a download slot is free for it, so it is not
+// held while its first fetch waits for another payload's to finish.
+func TestWarmScopeAdmitsAPayloadOnlyWithAFreeSlot(t *testing.T) {
+	f := newWarmScopeFixture(t)
+	f.rs.config.ParallelDownloads = 1
+	f.remote.gateHash = f.dstRow.Hash
+	ctx := context.Background()
+	warmed := make(chan error, 1)
+	go func() { _, err := f.bs.WarmAll(ctx, nil); warmed <- err }()
+	select {
+	case <-f.remote.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("warm never fetched the destination")
+	}
+	// Give the warm time to reach the next payload while the only slot is taken.
+	time.Sleep(50 * time.Millisecond)
+	scopeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := f.bs.WithPayloadScope(scopeCtx, []string{"warm-src"}, true, func(context.Context) error { return nil })
+	close(f.remote.release)
+	require.NoError(t, err, "a payload was held while its fetch waited for a download slot")
+	require.NoError(t, waitWarmScope(t, warmed))
+}

@@ -30,13 +30,14 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 // separate. g.Go blocks once the limit is reached; the first task error cancels
 // the rest via the returned context.
 func (m *RemoteSync) fetchGroup(ctx context.Context) (*errgroup.Group, context.Context) {
-	parallel := m.config.ParallelDownloads
-	if parallel < 1 {
-		parallel = 1
-	}
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(parallel)
+	g.SetLimit(m.downloadParallelism())
 	return g, gctx
+}
+
+// downloadParallelism is the number of remote downloads that may run at once.
+func (m *RemoteSync) downloadParallelism() int {
+	return max(m.config.ParallelDownloads, 1)
 }
 
 // coveringChunk pairs a manifest row with the block index its first byte falls

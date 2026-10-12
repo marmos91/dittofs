@@ -11,6 +11,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 )
 
 // WarmResult summarizes a WarmAll run: how many chunks came back from the
@@ -136,17 +138,24 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 		cancel()
 	}
 
-	// Bound remote-download concurrency via the shared fetchGroup helper (same
-	// ParallelDownloads limit the cold-read demand loop uses). g.Go blocks once
-	// the limit is reached, which also paces how far admission runs ahead of the
-	// fetches. The first error cancels the rest.
-	g, gctx := m.fetchGroup(ctx)
+	// Remote downloads are bounded by the same ParallelDownloads limit the
+	// cold-read demand loop uses. A payload is admitted only once a download slot
+	// is free, and that slot goes to its first fetch, so a payload is never held
+	// while its first fetch waits for another payload's to finish. The first
+	// error cancels the rest.
+	g, gctx := errgroup.WithContext(ctx)
+	slots := semaphore.NewWeighted(int64(m.downloadParallelism()))
 	for i, payloadID := range payloadIDs {
 		if gctx.Err() != nil {
 			break // first error/cancel: stop scheduling the remaining payloads
 		}
+		if err := slots.Acquire(gctx, 1); err != nil {
+			fail(err)
+			break
+		}
 		release, err := m.admission.enter(gctx, payloadID)
 		if err != nil {
+			slots.Release(1)
 			fail(err)
 			break
 		}
@@ -155,6 +164,7 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 		targets, err := m.warmTargets(gctx, payloadID, m.local.WriteVersion())
 		if err != nil {
 			release()
+			slots.Release(1)
 			fail(err)
 			break
 		}
@@ -172,12 +182,20 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 				release()
 			}
 		}
+		handed := false // whether a fetch has taken the slot acquired above
 		for _, t := range targets {
 			if gctx.Err() != nil {
 				break
 			}
+			if handed {
+				if err := slots.Acquire(gctx, 1); err != nil {
+					break
+				}
+			}
+			handed = true
 			refs.Add(1)
 			g.Go(func() error {
+				defer slots.Release(1)
 				data, err := m.fetchResolvedBlock(gctx, t.fb, t.span)
 				unref()
 				if err != nil {
@@ -197,6 +215,9 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 				prog.push(0)
 				return nil
 			})
+		}
+		if !handed {
+			slots.Release(1)
 		}
 		unref()
 	}
