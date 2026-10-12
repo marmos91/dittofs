@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
@@ -103,7 +104,7 @@ func TestOpenRefusesFormat(t *testing.T) {
 	for name, f := range map[string]format{
 		"too new":      {Version: maxFormat + 1, Folds: knownFolds},
 		"too old":      {Version: minFormat - 1, Folds: knownFolds},
-		"unknown fold": {Version: maxFormat, Folds: []uint32{foldIdentity, 99}},
+		"unknown fold": {Version: maxFormat, Folds: []uint32{uint32(entity.FoldIdentity), 99}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			db := memKV(t)

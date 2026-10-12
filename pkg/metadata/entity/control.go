@@ -61,6 +61,12 @@ type Share struct {
 	Name string
 	Path string // absolute and normalised: "/photos", "/home/alice"
 	Root FileID
+	// Fold, Names and DigestKey are bound when the share is created and never
+	// change: changing either rule would re-fold or refuse names already
+	// stored, and a new key would reorder every listing and void its cookies.
+	Fold      FoldRule
+	Names     NameRule
+	DigestKey [DigestKeyLen]byte
 	// State is its own record, not part of the one a share put writes: a cut
 	// and a deletion change it as well as the management API.
 	State ShareState

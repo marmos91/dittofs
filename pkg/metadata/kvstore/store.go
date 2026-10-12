@@ -27,11 +27,15 @@ const (
 	maxFormat = 1
 )
 
-// Fold rules, by the ID the format record names them by. Each names one
-// upcase table; the identity rule serves case-sensitive shares.
-const foldIdentity = 1
-
-var knownFolds = []uint32{foldIdentity}
+// knownFolds is every fold rule this binary implements, by the ID the
+// format record names it by.
+var knownFolds = func() []uint32 {
+	var ids []uint32
+	for _, r := range entity.FoldRules {
+		ids = append(ids, uint32(r))
+	}
+	return ids
+}()
 
 // format is the store format record: the active store format and the fold
 // rules the store's shares use.

@@ -368,3 +368,37 @@ func TestListingPages(t *testing.T) {
 		t.Fatalf("%d groups, sorted %v", len(got), slices.IsSortedFunc(got, func(a, b entity.Group) int { return strings.Compare(a.Name, b.Name) }))
 	}
 }
+
+// A share's fold rule, name rule and digest key are fixed at create.
+func TestShareBoundSettings(t *testing.T) {
+	s, _ := newStore(t)
+	cp := s.ControlPlane()
+	ci := share("docs", "/docs")
+	ci.Fold = entity.FoldUpcase
+	must(t, cp.PutShare(ctx, ci))
+	must(t, cp.PutShare(ctx, share("src", "/src")))
+	got := all(t, cp.Shares(ctx))
+	if got[0].Fold != entity.FoldUpcase || got[0].Names != entity.NamesWindows || got[0].DigestKey == ([32]byte{}) {
+		t.Errorf("case-insensitive share: %v %v", got[0].Fold, got[0].Names)
+	}
+	if got[1].Fold != entity.FoldIdentity || got[1].Names != entity.NamesPOSIX || got[1].DigestKey == got[0].DigestKey {
+		t.Errorf("default share: %v %v", got[1].Fold, got[1].Names)
+	}
+	// A rename that names none of them keeps them.
+	ci.Name, ci.Fold = "papers", 0
+	must(t, cp.PutShare(ctx, ci))
+	if got := all(t, cp.Shares(ctx)); got[0].Name != "papers" || got[0].Fold != entity.FoldUpcase || got[0].DigestKey == ([32]byte{}) {
+		t.Errorf("after rename: %+v", got[0])
+	}
+	for name, mut := range map[string]func(*entity.Share){
+		"fold":  func(s *entity.Share) { s.Fold = entity.FoldIdentity },
+		"names": func(s *entity.Share) { s.Names = entity.NamesPOSIX },
+		"key":   func(s *entity.Share) { s.DigestKey[0] ^= 1 },
+	} {
+		changed := ci
+		mut(&changed)
+		if err := cp.PutShare(ctx, changed); err == nil {
+			t.Errorf("changing the %s was accepted", name)
+		}
+	}
+}

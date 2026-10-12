@@ -3,7 +3,9 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"iter"
+	"slices"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
@@ -58,6 +60,13 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 	if !entity.ValidSharePath(s.Path) {
 		return merrs.NewInvalidArgumentError("share path " + s.Path + " not valid")
 	}
+	if s.Fold != 0 && !slices.Contains(entity.FoldRules, s.Fold) || s.Names != 0 && s.Names.String() == "" {
+		return merrs.NewInvalidArgumentError("unknown fold or name rule")
+	}
+	key := s.DigestKey
+	if key == ([entity.DigestKeyLen]byte{}) {
+		rand.Read(key[:])
+	}
 	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
 		info := shareKey(s.ID, keys.SInfo)
 		b, existed, err := get(tx, info)
@@ -72,9 +81,14 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 			if old.Root != s.Root {
 				return merrs.NewInvalidArgumentError("a share's root never changes")
 			}
+			if err := keepBound(&s, old); err != nil {
+				return err
+			}
 			if old.Name == s.Name && old.Path == s.Path {
 				return nil
 			}
+		} else {
+			bindNew(&s, key)
 		}
 		if err := c.claimShareName(tx, s, existed, old.Name); err != nil {
 			return err
@@ -92,6 +106,33 @@ func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 		}
 		return raise(tx, shareListKey)
 	})
+}
+
+// bindNew gives a new share its bound settings: the identity fold unless
+// one is named, the name rule that goes with its fold unless one is named,
+// and a digest key drawn at random unless one is given.
+func bindNew(s *entity.Share, key [entity.DigestKeyLen]byte) {
+	if s.Fold == 0 {
+		s.Fold = entity.FoldIdentity
+	}
+	if s.Names == 0 {
+		s.Names = entity.NamesPOSIX
+		if s.Fold == entity.FoldUpcase {
+			s.Names = entity.NamesWindows
+		}
+	}
+	s.DigestKey = key
+}
+
+// keepBound carries an existing share's bound settings into a put, a zero
+// field meaning "unchanged", and refuses any other value.
+func keepBound(s *entity.Share, old entity.Share) error {
+	if s.Fold != 0 && s.Fold != old.Fold || s.Names != 0 && s.Names != old.Names ||
+		s.DigestKey != ([entity.DigestKeyLen]byte{}) && s.DigestKey != old.DigestKey {
+		return merrs.NewInvalidArgumentError("a share's fold rule, name rule and digest key never change")
+	}
+	s.Fold, s.Names, s.DigestKey = old.Fold, old.Names, old.DigestKey
+	return nil
 }
 
 func (c ControlPlane) claimShareName(tx kv.Txn, s entity.Share, existed bool, oldName string) error {

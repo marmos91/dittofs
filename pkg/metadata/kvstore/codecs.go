@@ -122,7 +122,8 @@ func decodePrincipal(b []byte) (entity.Principal, error) {
 
 // encodeShareInfo writes the fields a share put owns; State is its own record.
 func encodeShareInfo(s entity.Share) []byte {
-	return codec.NewWriter(v1).String(s.Name).String(s.Path).Fixed(s.Root[:]).Encode()
+	return codec.NewWriter(v1).String(s.Name).String(s.Path).Fixed(s.Root[:]).
+		Uint32(uint32(s.Fold)).Uint8(uint8(s.Names)).Fixed(s.DigestKey[:]).Encode()
 }
 
 func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
@@ -132,6 +133,9 @@ func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
 	}
 	s := entity.Share{ID: id, Name: r.String(), Path: r.String()}
 	copy(s.Root[:], r.Fixed(16))
+	s.Fold = entity.FoldRule(r.Uint32())
+	s.Names = entity.NameRule(r.Uint8())
+	copy(s.DigestKey[:], r.Fixed(entity.DigestKeyLen))
 	return s, r.Done()
 }
 
