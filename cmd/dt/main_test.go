@@ -91,6 +91,14 @@ func lines(s string) int { return strings.Count(s, "\n") }
 // A renamed file is listed under both paths, so moving it out of a suite's
 // paths still runs that suite.
 func TestChangedFilesKeepsBothSidesOfARename(t *testing.T) {
+	// A git hook running the tests exports GIT_DIR and the like, which would
+	// point these commands at the repository being committed to.
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GIT_") {
+			t.Setenv(k, "")
+			_ = os.Unsetenv(k)
+		}
+	}
 	root := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
