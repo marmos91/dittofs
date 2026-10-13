@@ -2,7 +2,9 @@ package kvstore
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"slices"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
@@ -20,8 +22,9 @@ var ErrHeld = errors.New("kvstore: file still held")
 // committing first aborts it — then deletes the File, its ACL, xattrs,
 // stream links, delete-pending record and pending release, writes a pending
 // release for each stream, and records the removal of [0, ∞), which masks
-// the refs until Resume drops them. The fences and the rest of the file's
-// prefix go when that removal is pruned. A file already gone was released
+// the refs until Resume drops them and carries the File's Version, which
+// names its version-index entry. The fences, that entry and the rest of the
+// file's prefix go when that removal is pruned. A file already gone was released
 // before, and a replay changes nothing.
 func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uint64, op RemoveOp) error {
 	if err := rewriteFences(tx, share, file, epoch); err != nil {
@@ -78,12 +81,10 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 	if err := chargeFile(tx, share, &f, nil); err != nil {
 		return err
 	}
-	// The file's version-index entry moves to the release's version, which
-	// its removal record holds until pruning deletes both.
-	if err := moveFloor(tx, share, file, f.Version, op.Version); err != nil {
-		return err
-	}
-	m := entity.Removal{Version: op.Version, Extent: entity.ExtentOf(0, entity.EndOfFile), Kind: entity.RemoveRelease}
+	// The file's version-index entry stays at its Version, which the removal
+	// record carries as FileVersion until the prune deletes both.
+	m := entity.Removal{Version: op.Version, Extent: entity.ExtentOf(0, entity.EndOfFile), Kind: entity.RemoveRelease,
+		OvSpan: f.MaxOverwrite, FileVersion: f.Version}
 	return tx.Set(removalKey(share, file, op.Version), encodeRemoval(m))
 }
 
@@ -122,34 +123,76 @@ func deleteUnder(tx kv.Txn, prefix []byte) error {
 	return nil
 }
 
-// dropReleased deletes every key of a released file left under its prefix
-// but its history — the fences, the removal records, a removed directory's
-// leftover time deltas — and its version-index entries: the one at the
-// release's version and each leftover delta's. Its pruned release removal
-// is the last thing that needed them, so no key of the file outlives it.
-func dropReleased(tx kv.Txn, share entity.ShareID, file entity.FileID, v entity.JournalVersion) error {
-	his, deltas := historyPrefix(share, file), deltasPrefix(share, file)
-	ks := [][]byte{floorKey(share, file, v)}
-	for row, err := range tx.Scan(fileKey(share, file), nil) {
-		if err != nil {
+// pruneReleased deletes the keys a released file left under its prefix, its
+// history apart — a removed directory's leftover time deltas, each with its
+// version-index entry, and anything else there — in batches within the key
+// budget, since a directory can keep any number of unfolded deltas. Each
+// batch reads the offload fence, tracked, as PruneRemovals does. The last
+// deletes the release's removal, the fences and the File's own index entry,
+// at the removal's FileVersion, so no key of the file outlives it. A re-run
+// resumes where the last stopped: what a batch deleted is gone.
+//
+// ponytail: each batch walks the keys it keeps — the fences, the removal and
+// the history — again from the prefix's start. History is empty until
+// snapshot cuts land; scan around its range then if its walk shows.
+func (s *Store) pruneReleased(ctx context.Context, share entity.ShareID, file entity.FileID, m entity.Removal) error {
+	limit := max(2, s.k-4) // a delta and its index entry are two deletes
+	for {
+		var more bool
+		err := s.kv.Update(ctx, func(tx kv.Txn) error {
+			if _, _, err := get(tx, offloadFenceKey(share, file)); err != nil {
+				return err
+			}
+			if _, ok, err := get(tx, removalKey(share, file, m.Version)); err != nil || !ok {
+				more = false
+				return err // pruned already
+			}
+			ks, err := releasedKeys(tx, share, file, m.Version, limit)
+			if err != nil {
+				return err
+			}
+			if more = len(ks) > 0; !more {
+				ks = [][]byte{removalKey(share, file, m.Version), existenceFenceKey(share, file), offloadFenceKey(share, file),
+					floorKey(share, file, m.FileVersion)}
+			}
+			for _, k := range ks {
+				if err := tx.Delete(k); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil || !more {
 			return err
 		}
-		if bytes.HasPrefix(row.Key, his) {
+	}
+}
+
+// releasedKeys is up to limit keys a released file's prune deletes before
+// its last batch: every key under its prefix but its history, its fences and
+// the release's removal at v, with a delta's index entry beside the delta.
+func releasedKeys(r kv.Reader, share entity.ShareID, file entity.FileID, v entity.JournalVersion, limit int) ([][]byte, error) {
+	his, deltas := historyPrefix(share, file), deltasPrefix(share, file)
+	keep := [][]byte{existenceFenceKey(share, file), offloadFenceKey(share, file), removalKey(share, file, v)}
+	var ks [][]byte
+	for row, err := range r.Scan(fileKey(share, file), nil) {
+		if err != nil {
+			return nil, err
+		}
+		if bytes.HasPrefix(row.Key, his) || slices.ContainsFunc(keep, func(k []byte) bool { return bytes.Equal(k, row.Key) }) {
 			continue
+		}
+		if len(ks)+2 > limit {
+			break
 		}
 		ks = append(ks, bytes.Clone(row.Key))
 		if bytes.HasPrefix(row.Key, deltas) {
 			d, err := decodeDelta(row.Value)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			ks = append(ks, deltaFloorKey(share, file, d.Version, [32]byte(row.Key[len(deltas):])))
 		}
 	}
-	for _, k := range ks {
-		if err := tx.Delete(k); err != nil {
-			return err
-		}
-	}
-	return nil
+	return ks, nil
 }

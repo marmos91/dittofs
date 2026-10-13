@@ -94,6 +94,70 @@ func TestRelease(t *testing.T) {
 	}
 }
 
+// RFC 6 §6.4: a released file's leftover keys, here a directory's unfolded
+// time deltas with their version-index entries, are pruned in batches
+// within the key budget, and the last batch takes the removal, the fences
+// and the File's own entry, at the Version its removal carries.
+func TestReleasePruneBatches(t *testing.T) {
+	var w *writesKV
+	f := newContentFix(t, func(db kv.KV) kv.KV { w = &writesKV{KV: db}; return w })
+	ctx := context.Background()
+	file := f.file(0)
+	f.exist(file, write(1, 0, mib))
+	var kvs [][]byte
+	for i := range 20 {
+		unique := [32]byte{0: byte(i + 1)}
+		d := delta{Modify: f.clk.now(), Change: f.clk.now(), Version: entity.VersionOf(uint64(i + 2))}
+		kvs = append(kvs, append(deltasPrefix(f.share, file), unique[:]...), encodeDelta(d),
+			deltaFloorKey(f.share, file, d.Version, unique), encodeEmpty())
+	}
+	rows(t, f.s, kvs...)
+	last := f.get(file).Version
+	f.unlinked(file)
+	f.remove(file, release(30))
+	if rs := f.removals(file); len(rs) != 1 || rs[0].FileVersion != last {
+		t.Fatalf("release removal %+v, want FileVersion %d", rs, last.Counter())
+	}
+	f.checkFloor()
+	f.resume(file)
+
+	f.s.SetKeyBudget(10)
+	w.max = 0
+	if err := f.s.Content().PruneRemovals(ctx, f.share, file, entity.VersionOf(99)); err != nil {
+		t.Fatal(err)
+	}
+	if w.max > 10 {
+		t.Errorf("a prune batch wrote %d keys, budget 10", w.max)
+	}
+	if left := f.keysUnder(file); len(left) != 0 {
+		t.Errorf("keys left after pruning: %x", left)
+	}
+	f.checkFloor()
+}
+
+// writesKV records the most keys one Update set or deleted.
+type writesKV struct {
+	kv.KV
+	max int
+}
+
+func (w *writesKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	return w.KV.Update(ctx, func(tx kv.Txn) error {
+		c := &writesTxn{Txn: tx}
+		err := fn(c)
+		w.max = max(w.max, c.n)
+		return err
+	})
+}
+
+type writesTxn struct {
+	kv.Txn
+	n int
+}
+
+func (t *writesTxn) Set(k, v []byte) error { t.n++; return t.Txn.Set(k, v) }
+func (t *writesTxn) Delete(k []byte) error { t.n++; return t.Txn.Delete(k) }
+
 // RFC 7 §4.5: a release re-checks every holder and changes nothing when
 // one remains.
 func TestReleaseRefusesHeld(t *testing.T) {

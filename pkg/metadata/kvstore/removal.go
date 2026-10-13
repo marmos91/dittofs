@@ -611,9 +611,12 @@ func (n shareNamespaces) namespace(gen uint32) (entity.NamespaceID, error) {
 // atOrBelow, the lowest newest version of the file's offload passes in
 // flight, or every done one when none is. It reads the offload fence,
 // tracked, so a pass committing meanwhile orders against it. Pruning a
-// released file's removal deletes the rest of its keys, its history apart.
+// released file's removal deletes the rest of its keys, its history apart,
+// in batches of their own (pruneReleased).
 func (c Content) PruneRemovals(ctx context.Context, share entity.ShareID, file entity.FileID, atOrBelow entity.JournalVersion) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
+	var released *entity.Removal
+	err := c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		released = nil
 		if _, _, err := get(tx, offloadFenceKey(share, file)); err != nil {
 			return err
 		}
@@ -626,7 +629,8 @@ func (c Content) PruneRemovals(ctx context.Context, share entity.ShareID, file e
 				continue
 			}
 			if m.Kind == entity.RemoveRelease {
-				return dropReleased(tx, share, file, m.Version)
+				released = &m
+				return nil // the release is the file's last removal
 			}
 			if err := tx.Delete(removalKey(share, file, m.Version)); err != nil {
 				return err
@@ -634,4 +638,8 @@ func (c Content) PruneRemovals(ctx context.Context, share entity.ShareID, file e
 		}
 		return nil
 	})
+	if err != nil || released == nil {
+		return err
+	}
+	return c.s.pruneReleased(ctx, share, file, *released)
 }

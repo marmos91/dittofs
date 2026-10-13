@@ -12,7 +12,8 @@ import (
 // checkFloor asserts RFC 6 §8.3's index over the fixture's share: every
 // File has exactly one entry, at its stored Version and in its bucket; every
 // unfolded delta has one at its version; a released file not yet pruned has
-// one at its release's version; and there is no other entry.
+// one at the File's last Version, which its removal carries; and there is no
+// other entry.
 func (f *cfix) checkFloor() {
 	f.t.Helper()
 	want := map[string]bool{}
@@ -43,7 +44,7 @@ func (f *cfix) checkFloor() {
 					return err
 				}
 				if m, err := decodeRemoval(v, row.Value); err == nil && m.Kind == entity.RemoveRelease {
-					want[string(floorKey(f.share, id, v))] = true
+					want[string(floorKey(f.share, id, m.FileVersion))] = true
 				}
 			}
 		}
