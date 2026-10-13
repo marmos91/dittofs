@@ -395,7 +395,20 @@ suites:
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
-        paths: [internal/adapter/**, pkg/adapter/**, pkg/metadata/**, internal/auth/**, pkg/auth/**, pkg/identity/**, "test/e2e/*kerberos*", test/e2e/framework/kerberos.go, test/integration/kerberos/**]
+        paths:
+          - internal/adapter/**
+          - pkg/adapter/**
+          - pkg/metadata/**
+          - internal/auth/**
+          - pkg/auth/**
+          - pkg/identity/**
+          - pkg/controlplane/**             # export auth policy, users and identity mappings
+          - internal/controlplane/**        # the identity mapping and provider API
+          - pkg/config/**                   # the Kerberos keytab and principal
+          - cmd/dfs/**                      # the server's Kerberos capability at start
+          - "test/e2e/*kerberos*"
+          - test/e2e/framework/kerberos.go
+          - test/integration/kerberos/**
 
   # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix` and
   # `select.pr` replace suites.json's profiles and PR lists. Commands are shortened: the flags each
@@ -521,7 +534,7 @@ suites:
 | `exclude` | Globs of files `tests` matches that aren't tests | none |
 | `matrix` | Axes and their values; `dt plan` makes one cell per combination | one cell |
 | `select` | Per tier below the suite's widest: a narrower glob for `tests`, or the `matrix` values that tier runs | every match, every value |
-| `options` | Named variants of the suite. An option is a copy of the suite with each field it sets replaced as a whole: a `needs`, `env`, `fixture` or `matrix` it sets replaces the suite's, and isn't merged into it. It runs as its own cells, and alone with `dt run SUITE --OPTION` An option doesn't take the suite's `job`, which names the suite's own fixed job, and an option that sets `matrix` doesn't keep the suite's `select`, which narrowed the matrix it replaced | none |
+| `options` | Named variants of the suite. An option is a copy of the suite with each field it sets replaced as a whole: a `needs`, `env`, `fixture` or `matrix` it sets replaces the suite's, and isn't merged into it. It runs as its own cells, and alone with `dt run SUITE --OPTION`. An option doesn't take the suite's `job`, which names the suite's own fixed job, and an option that sets `matrix` doesn't keep the suite's `select`, which narrowed the matrix it replaced | none |
 | `fixture` | The DittoFS server the tests run against (§4.2) | none: the suite starts what it needs itself |
 | `image` | A container image to run `cmd` in, on the fixture's network | none: the host, or `dtc` |
 | `volumes` | Mounts into `image`, host path to container path | none |
@@ -562,10 +575,11 @@ runs: pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --maketree
 timeout is twice its class's bound plus 2 minutes for the container's setup, so 32 minutes for an
 `l`. An `xxl` scenario has no bound, so only the cell's timeout applies to it.
 
-**A cell outlasts its tests.** `dt plan` never gives a cell a limit shorter than its longest test's
-limit plus the fixture's 5 minutes (§4.2); it raises the cell's limit and says so. So a 9x cell,
-which `needs_by_test` gives the dedicated host, gets 2 h 7 min for an `xl` scenario whatever
-`cell` says, and an `xxl` one gets the cell limit it sets.
+**A cell outlasts its tests.** A cell runs its tests one after another, so `dt plan` never gives
+it a limit shorter than the sum of its tests' limits plus the fixture's 5 minutes (§4.2); it raises
+the cell's limit and says so. A test with no bound counts as the cell's own limit. So the 9x cell,
+which `needs_by_test` gives the dedicated host, gets 5 h 7 min whatever `cell` says: 2 h 2 min for
+its `xl` scenario, the cell's 90 minutes for each of its two `xxl` ones, and 5 for the fixture.
 
 Rules `dt` enforces when it loads the file:
 - names are `[a-z0-9-]+`;
@@ -691,8 +705,9 @@ queue rather than change what they test. `dt plan --estimate` gives a tier's run
 touched NFS" to be safe. The full set after every merge is what catches the cross-component
 regressions a small PR tier misses. The one exception is a narrow suite whose `paths` name what can
 break it: e2e's Kerberos run is a protocol feature that a change under `pkg/block` can't affect, so
-it runs on pull requests that touch the adapters, the metadata (auth metadata included) or the
-authentication code, and after every merge.
+it runs on pull requests that touch the adapters, the metadata (auth metadata included), the
+authentication code, the control plane, the configuration or the server's start-up, and after
+every merge.
 
 ### 4.4 The command line
 
@@ -735,8 +750,8 @@ to Ubuntu. `dt plan --json` prints the tier and its cells:
     "needs": ["linux", "podman", "host:dedicated", "disk:110"], "blocking": true,
     "tests": ["test/scenarios/90-smb-hour-holds-xxl.sh", "test/scenarios/91-smb-125gb-file-sync-xxl.sh",
               "test/scenarios/92-smb-fslogix-container-xl.sh"],
-    "test_timeout": "size", "timeout_minutes": 127,
-    "notes": ["cell timeout raised from 90m to 2h7m: its longest test's limit plus 5m for the fixture"] } ] }
+    "test_timeout": "size", "timeout_minutes": 307,
+    "notes": ["cell timeout raised from 90m to 5h7m: the sum of its tests' limits plus 5m for the fixture"] } ] }
 ```
 
 A cell lists `tests` only when it runs part of its suite's; `matrix`, `option` and `job` appear
