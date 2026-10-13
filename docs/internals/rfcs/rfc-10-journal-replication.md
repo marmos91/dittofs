@@ -345,7 +345,10 @@ SetEpoch(s ShardID, id FileID, e uint64) error
 Discard(s ShardID, id FileID) error
 ```
 
-It adds two record kinds, **epoch** and **discard**, lifts RFC 1's rule that a
+It adds record kinds **epoch**, **discard**, **request entry** and per-shard **forget**, and, to
+every operation's record, the fields the frozen header ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)) lacks — the
+shard, the request ID, the digest and the result — carried in the extension
+record's own body, as RFC 28 §2.3 prescribes for a later format version. It lifts RFC 1's rule that a
 version's epoch half is zero ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)), and gives `Offload` a **ceiling**:
 an offer includes only content at or below the version the caller passes. This
 layer passes the shard's committed point ([§5](#5.%20Offload%20and%20release)).
@@ -411,7 +414,20 @@ shards — carries the holds and the stamps too.
 has each shard's primary send `Forget` for the share's tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) to every
 replica of the shard, and the step for that shard completes only once each
 replica of the set has made it durable or has been removed from the set
-([§7.2](#7.2%20Removal)). A replica never offloads (§5), so without it each replica
+([§7.2](#7.2%20Removal)). **No shard forgets before every shard is offloaded.** One
+journal holds every shard its node is primary or replica of, and RFC 1's
+`Forget` drops a tag whole, so the removal sends no `Forget` until every shard
+of the share has offloaded what a kept snapshot needs: the coordinator's gate
+over the shards' `rm` rows ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), step 3) is that rule, and this
+layer adds none of its own. Under `delete`, with no kept snapshot, each shard
+has nothing to offload and records its row as offloaded at once, so the gate
+opens. After the gate, each shard's replicated `Forget` writes a durable
+**forget** record naming (shard, tag) on the primary and every replica. When a
+node holds a forget record for every shard of the share it serves in that
+journal, as primary or replica, it closes its flow and its handle on the tag
+and **then** calls RFC 1's whole-tag `Forget`, which RFC 1 refuses while a
+handle of the tag is open. So a primary of A and C never closes the flow C is
+still using, and a replica of A and B never drops B's part early. A replica never offloads (§5), so without it each replica
 would keep the share's dirty content, never offered and never evictable, until
 its next start. A removed replica that comes back holds a tag no share claims
 and resolves it at its next start ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
@@ -444,7 +460,8 @@ every late operation below it out.
    expiry record and its journals' generations ([§2.2](#2.2%20One%20journal%20carries%20many%20shards)), never the node record ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)). Losing the lease fences all of the node's shards.
    A node **MUST** stop acknowledging and serving — open state included — when its
    lease runs out by its own clock less the drift bound (9.5 s of 10 s at the
-   proposed defaults), and when it has not reached the store for half its lease. A renewal returns
+   proposed defaults), and when it has not reached the store — any store call of
+it answered, as [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch) defines it — for half its lease. A renewal returns
    the store's time ([RFC 9 §1.2](rfc-9-gc.md#1.2%20Words%20this%20document%20uses)); a node whose clock differs from it by more than half
    the drift bound, less half the renewal's round trip, self-fences. A drift
    beyond the bound can break open-state exclusivity, which only the lease
@@ -558,8 +575,8 @@ acknowledgement stays the operation.
 Only the primary offloads, as on one node, and **only content at or below the
 committed point** — it passes the point as the offer's ceiling ([§2.3](#2.3%20The%20journal%20extension)). A newer
 ref committed ahead of an older operation still in flight would make that
-operation's commit be refused as older ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)), and it could never become
-durable. Replicas never offload.
+operation's commit be refused as older ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)), and it could never be
+offloaded. Replicas never offload.
 
 **Replicas release by being told.** After an offload commit lands, the primary
 sends each replica the extents it covered with the commit's `oldest` and
@@ -697,19 +714,29 @@ counts: it proves the primary is not isolated as well as a full replica's does,
 so a full replica that falls silent during a repair through a learner is
 removed rather than stalling writes for the whole tail copy, and the shard runs
 exposed ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)) until the learner's tail is covered.
-A replica removed for an answer — a refusal as amnesiac, a refusal within its
-share's limit, or a lag it reported — is exempt: its answer proves the primary
-is not isolated, so it is removed even when it is the last full replica, and the
-shard runs below its floor, reported, until repair restores it. Otherwise a
-two-member shard whose one replica refuses could neither remove it nor
-relinquish, and its writes would stall on a replica that will never accept them.
+A replica removed for an answer that only a rejoin can cure — a refusal as
+amnesiac, or a point below its persisted mark — is exempt: its answer proves the
+primary is not isolated, and it can never accept the shard's writes again, so it
+is removed even when it is the last full replica, and the shard runs below its
+floor, reported, until repair restores it. Otherwise a two-member shard whose
+one replica is amnesiac could neither remove it nor relinquish, and its writes
+would stall on a replica that will never accept them. A replica removed for lag
+or journal pressure — a refusal within its share's limit, or a lag it reported
+— is not exempt: it may still catch up, so the keep-one rule holds it like a
+silent one. **Silence removals run before answer removals**: with replica B
+silent and replica C lagging, the primary removes B first, keeping C, which
+answered; removing C first would leave dead B the only replica, which keep-one
+then protects, and the primary would relinquish to it.
 A primary that has heard from no replica of
 a shard within the bound cannot tell its own isolation from their loss, so it
 removes none and **relinquishes** the shard instead: it stops acknowledging,
 granting and serving for the shard, waits for its fenced commits for it to end,
 ends its put intents for it as a handover does
 ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)), then writes the
-record at the next epoch marking itself relinquished, by compare-and-swap. A relinquished shard is taken over like one whose primary's
+record at the next epoch marking itself relinquished, by compare-and-swap
+(`Relinquish`, [RFC 11 §11](rfc-11-ownership.md#11.%20API%20surface)). The shard
+record holds the relinquishing node's ID, kept whatever its node epoch, and the
+operator's acknowledgement below, written by `AckLost`; a takeover clears both. A relinquished shard is taken over like one whose primary's
 lease lapsed ([§9.2](#9.2%20Takeover)), at once and without marking the old primary's node
 record, whose other shards it still serves. Without the rule, a primary cut off
 from both replicas but reaching the store removes them both before any watchdog
@@ -967,8 +994,10 @@ waits for no lease:
    ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)) — and sends every replica the
    committed point covering it;
 3. it writes the record naming the new primary at the next epoch, by
-   compare-and-swap, and sends the new primary the shard's open-state table and the
-   recent entries of its dedup table ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). On an unknown outcome it
+   compare-and-swap, and sends the new primary the shard's open-state table; the
+   dedup table is not shipped, since the new primary looks a retry up on a miss
+   in the durable request records and journal request entries it shares
+   ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). On an unknown outcome it
    re-reads the record before doing anything else, so it never resumes writes
    under a record that has moved;
 4. the new primary installs the epoch on every replica, re-applies existence as
@@ -1061,7 +1090,7 @@ committed point. Each example is a scenario of the simulator's catalogue
 | 0 | A assigns `v(5,100)` to `f[0,4K)`, sends it with `cp = v(5,99)` | B, C apply, persist `cp 99`, ack | U: e5, A; B, C | — |
 | 1 | A holds all acks | — | — | write acknowledged |
 | 2 | A crashes | — | A's node lease runs out | writes to U stall |
-| 3 | — | B, C gather: both report `cp 99`; B wins the tie, coming before C in U's slot order | store time passes A's expiry + drift | — |
+| 3 | — | B, C gather: both report `cp 99`; B wins the tie, coming before C in U's slot order | B's wait of the lease plus the drift bound passes, on its own clock, from a read that saw A's expiry record unchanged since | — |
 | 4 | B claims | — | one txn: A's node record marked lapsed; U e6, primary B; C | — |
 | 5 | B installs e6 on itself, then C | C installs e6, reports `cp 99` | — | — |
 | 6 | baseline 99; B pulls `v(5,100)` from C (it holds it already) and re-issues it as `v(6,1)` | C applies `v(6,1)`, acks | — | — |
@@ -1134,7 +1163,7 @@ at B, a replica that is not a learner.
 | --- | --- | --- | --- | --- |
 | 0 | A stops writes, open-state grants and primary reads for U; drains | B, C ack the in-flight operations | — | writes to U pause |
 | 1 | A sends `cp v(5,400)` | B, C persist it | — | — |
-| 2 | A names B primary; sends open-state table and dedup entries | — | CAS: U e6, primary B; A, C | — |
+| 2 | A names B primary; sends the open-state table | — | CAS: U e6, primary B; A, C | — |
 | 3 | B installs e6 on A and C, re-applies existence, sets `cp v(5,400)`, installs the table | A, C install e6 | existence commits at e6 | writes resume at B; no grace |
 
 **(h) A node rejoins with an empty disk under the same node ID** —
@@ -1252,7 +1281,7 @@ Each invariant is stated where its rule lives; the model checks them as properti
 | R18 | A node other than the primary serves an extent only where every extent within it carries the version the primary named for it | [§8](#8.%20Reads) |
 | R19 | The committed point counts a learner only from its join point; the floor counts learners | [§2.1](#2.1%20Terms), [§7.1](#7.1%20Count%2C%20floor%20and%20placement) |
 | R20 | The ownership epoch fences, the node epoch guards commits and supersedes put intents, and the shard incarnation drives the write verifier and the grace instance; no rule reads one for another's job | [§2.1](#2.1%20Terms) |
-| R21 | A primary removes a replica for silence only while another, a learner included, answers it within the removal bound, and removes one that refused or reported lag regardless; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by another node's takeover or operator acknowledgement, never by a claim from the relinquishing node, under any node epoch, or from its journal | [§7.2](#7.2%20Removal) |
+| R21 | A primary removes a replica for silence only while another, a learner included, answers it within the removal bound, removes silent replicas before answering ones, and removes regardless only one that is amnesiac or below its mark; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by another node's takeover or operator acknowledgement, never by a claim from the relinquishing node, under any node epoch, or from its journal | [§7.2](#7.2%20Removal) |
 | R22 | An operation's request ID and result survive its eviction, settling and repack, on every member, until the retry window has passed | [§2.3](#2.3%20The%20journal%20extension) |
 | R23 | A node's self-fence by its own clock falls before a successor may serve, at the clock-rate bound ρ: `(L − δ) × (1 + ρ) < L + δ`, the successor's wait being `L + δ` on its own monotonic clock from the reply to a read that saw the lease's expiry record unchanged since, so it rests on no clock offset | [§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3, [§9.2](#9.2%20Takeover) step 1 |
 

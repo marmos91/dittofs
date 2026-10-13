@@ -366,7 +366,7 @@ Every call a node forwards to a primary carries one envelope:
 
 | Field | Means |
 | --- | --- |
-| request ID | derived from the protocol's own retry identity, not from the connection, because an NFSv4 client retries only on a new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0, (client address, XID, procedure, checksum of the arguments), as a server's reply cache keys a retry; for NFSv4.1, (session, slot, sequence ID). A retry carrying the same identity, on any connection and through any front-end that holds the client's address, carries the same ID ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)). An SMB request is given an ID the front-end mints — its node ID and node epoch, the connection, and a number never reused on it — since SMB names its retries by open state instead (below); it is never derived from SMB message IDs, which are per connection, so two channels of one session can send two different requests under one (client GUID, session ID, message ID) |
+| request ID | derived from the protocol's own retry identity, not from the connection, because an NFSv4 client retries only on a new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0, (client address, XID, procedure, checksum of the arguments), as a server's reply cache keys a retry; for NFSv4.1, (front-end node ID, node epoch, session, slot, sequence ID), since each front-end mints its own session IDs and nothing makes them unique across front-ends. A retry carrying the same identity, on any connection and through any front-end that holds the client's address, carries the same ID ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)). An SMB request is given an ID the front-end mints — its node ID and node epoch, the connection, and a number never reused on it — since SMB names its retries by open state instead (below); it is never derived from SMB message IDs, which are per connection, so two channels of one session can send two different requests under one (client GUID, session ID, message ID) |
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the front-end; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)) |
@@ -380,15 +380,34 @@ Every call a node forwards to a primary carries one envelope:
   answer a retry from it rather than apply it again. The retry window is an
   installation setting ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), counted from the
   mutation's acknowledgement, and the journal's request entries and the
-  request records expire by it too. It **MUST** exceed the longest gap after an
-  answer before the client's next retransmission can arrive — on a Linux hard
-  NFS mount the retransmission back-off starts at 60 s and caps at 600 s — plus
-  a takeover; the request deadline (30 s) bounds the server's work on a call,
-  not when its client retries it, and is no bound for the window.
-  The table is handed over with every handover and with the files of every
-  batch move ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). A
+  request records expire by it too. The control plane refuses a window below 600 s — a hard-mounting
+  client's retransmission back-off cap (600 s on Linux) — plus the takeover
+  bound ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)); the request
+  deadline (30 s) bounds the server's work on a call, not when its client
+  retries it, and is no bound for the window. An entry is recorded when its
+  mutation is admitted, so a retry that finds it still running waits for its
+  result instead of running a second time. The table is not shipped in a
+  handover, whose freeze it would stretch past its target at gigabytes per
+  window; the new primary looks a retry up on a miss in the durable request
+  records and journal request entries, and the files of a batch move carry
+  their own entries ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). Each client's entries are
+  capped, the oldest dropped first, and expired request records are swept
+  through a key ordered by expiry rather than only by a new primary's fold. A
   write whose reply was lost, retried after another write landed on the same
   extent, then returns its first result instead of overwriting the second.
+
+> decision: a retry inside the retry window is answered once; one later is
+> applied again, as on any NFSv3 server, and so is one whose entry its
+> client's cap dropped. No finite window covers a client cut
+> off for longer than the window, which resends on reconnect whatever the
+> back-off, so the window is sized to the clients' retransmission behaviour,
+> not as a guarantee. Overturned if client traces show retries arriving after
+> the window often enough to matter.
+
+> ponytail: the table keeps every mutation of the window, about 1.8×10⁷ entries
+> at 20,000 mutations a second for 15 minutes, bounded only by the per-client
+> cap. Bound it by memory, as a server reply cache is, when the handover and
+> takeover benchmarks show the table's rebuild or lookups in their times.
 - **The table survives a takeover (cluster).** A journal operation carries its
   request ID into the journal and to every replica, and its record keeps the
   request ID and result ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)); a namespace mutation writes a
@@ -402,9 +421,12 @@ Every call a node forwards to a primary carries one envelope:
   lock sequence, and every other operation on an open by the open's channel
   sequence, refusing one whose channel sequence is stale (MS-SMB2 3.3.5.2.10).
   The channel sequence and the counts of requests outstanding under it are
-  fields of the `Open` record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), held at the primary, handed
-  over with it, and durable with a persistent open, so a stale replayed write
-  is refused after the loss of a front-end and after a failover alike.
+  fields of the `Open` record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), held at the primary and handed
+  over with it. For a persistent open the channel sequence is durable, written
+  in the transaction that applies the request, so a stale replayed write is
+  refused after the loss of a front-end and after a failover alike; the
+  outstanding counts are never written, and a new primary starts them at zero
+  ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
 
 > decision: an NFSv4.1 retry after its session was lost is a new request. The
 > session — its slot table and replay cache — lives at the front-end and dies
@@ -584,7 +606,7 @@ store gives no high availability, whatever the roles.
 | T7 | A client-facing address is taken over by a surviving `protocol` node when its node is lost, and only after that node's lease has lapsed by the margins of [§5.3](#5.3%20Client%20addressing), the marking node has held the claim hold, and every `storage` node refuses its node epoch and has ended every call it admitted under it. |
 | T8 | A coordinator that is not the primary of a file it leaves without entries writes its pending release; only the file's primary releases it. |
 | T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
-| T10 | An NFS request ID is the protocol's retry identity — (client address, XID, procedure, argument checksum) for NFSv3 and NFSv4.0, (session, slot, sequence ID) for NFSv4.1 — so a retry on a new connection or through another front-end carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or the channel sequence and outstanding counts in its `Open`, durable for a persistent open. |
+| T10 | An NFS request ID is the protocol's retry identity — (client address, XID, procedure, argument checksum) for NFSv3 and NFSv4.0, (front-end node ID, node epoch, session, slot, sequence ID) for NFSv4.1 — so a retry on a new connection or through another front-end carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or the channel sequence and outstanding counts in its `Open`, the channel sequence durable for a persistent open. |
 | T11 | A single node advertises no pNFS and answers every layout operation with `NFS4ERR_NOTSUPP`. |
 
 ## 9. Conformance and benchmarks
@@ -642,7 +664,9 @@ ships a remote view; until then there is nothing remote to test:
 **Benchmarks**, split against collocated, same hardware: per-operation latency
 added by one hop; SMB throughput through a `protocol` node on the primary's node
 and one that forwards; pNFS bandwidth with the client's node and the data server
-apart; time from a `protocol` node's loss to clients resuming.
+apart; time from a `protocol` node's loss to clients resuming; handover and
+takeover time with a full retry window's dedup entries and request records at
+the peak mutation rate.
 
 ## 10. Observability
 

@@ -329,7 +329,10 @@ Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, erro
 Unregister(store StoreID) error
 // SetDrift raises the store's drift condition, err naming the drifted
 // setting, or clears it when err is nil (§2.8). The store's one Recheck
-// caller (RFC 4 §4.11) calls it after each Recheck; nothing else does.
+// caller (RFC 4 §4.11) calls it after a Recheck whose read found a setting
+// that differs, or after two periods in a row whose Recheck could not read
+// at all; a transient Recheck failure alone never raises it. Nothing else
+// calls it.
 SetDrift(store StoreID, err error)
 // A background flow's fetches run in the background class (§2.9); GC, copying
 // backups and re-homes open one.
@@ -342,15 +345,18 @@ func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRange) 
 // decoding it; a copying backup uses it (RFC 26 §2.4.2). FetchRaw writes the
 // whole stored block into the caller's writer at its offsets, a retry resuming
 // at the first byte not yet written (at byte 0 after a response-checksum
-// mismatch), and returns the source's stored checksum when it is of the
-// destination's kind, else the checksum of the bytes written; UploadRaw puts
-// exactly size bytes under that checksum and returns the store's version.
-func (f *Flow) FetchRaw(ctx context.Context, name BlockName, v Version, size int64, dst io.WriterAt) (sum []byte, err error)
+// mismatch), checks the staged bytes against the source's stored checksum of
+// whatever kind, and returns a checksum of kind, the destination's put kind:
+// the source's stored one when it is of that kind, else the checksum of the
+// staged bytes it just checked; UploadRaw puts exactly size bytes under that
+// checksum and returns the store's version.
+func (f *Flow) FetchRaw(ctx context.Context, name BlockName, v Version, size int64, kind string, dst io.WriterAt) (sum []byte, err error)
 func (f *Flow) UploadRaw(ctx context.Context, name BlockName, size int64, sum []byte, retainUntil time.Time, src func() (io.Reader, error)) (Version, error)
 // Small runs one small-object call — a backup copier's versioned-object put
-// or get, listing, or retention read or extension (RFC 4 §4.15) — as a
-// transfer of direction d: scheduled, retried, throttled and health-checked
-// like a block's.
+// or get, one listing page, a retention read or extension (RFC 4 §4.15), or one
+// of Recheck's reads (RFC 4 §4.11) — as a transfer of direction d: scheduled,
+// retried, throttled and health-checked like a block's. call makes exactly one
+// request, under a ctx that ends at the small-call bound (§2.10).
 func (f *Flow) Small(ctx context.Context, d Direction, call func(ctx context.Context) error) error
 // FetchVersion is Fetch of one recorded version, verified like Fetch.
 func (f *Flow) FetchVersion(ctx context.Context, name BlockName, v Version, want []ChunkRange) iter.Seq2[Chunk, error]
@@ -483,12 +489,21 @@ namespace's material and hold plaintext, which the copier must not. So
   stream. A get whose response checksum mismatches voids that whole response
   ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)): the mismatch arrives after the last byte, so the bytes it wrote
   are suspect and the retry restarts at byte 0, not at the first byte not yet
-  written. It returns a checksum of the kind the destination store's put needs
-  ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)): the source's **stored** checksum, as its get reported it, when
-  that is of the destination's kind, and otherwise the checksum of the bytes as
-  written. The stored one makes the destination's put check the copy end to end,
-  so a byte wrong in transit on a resumed range, which carries no response
-  checksum, or in staging, fails the put instead of landing. Nothing is decoded or
+  written. **Once every byte is staged, it checks the staging against the
+  source's stored checksum**, of whatever kind the source's get reported: it
+  computes that kind over the staged bytes, and a mismatch voids the staging like
+  a response-checksum mismatch, the retry restarting at byte 0 within the
+  attempt bound. Only then does it return a checksum of `kind`, the kind the
+  destination store's put needs, which the caller passes because the flow is
+  bound to the source store and cannot know the destination's
+  ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)): the source's **stored** checksum when it is of that kind, and
+  otherwise the checksum of the staged bytes just checked. So a byte wrong in
+  transit on a resumed range, which carries no response checksum, fails at the
+  source's check even between two stores of different kinds (CRC32C at one, MD5
+  at the other), and the destination's put then checks the copy against a sum
+  the source vouched for. A source that reports no stored checksum (an object
+  written in parts whose ETag is no MD5 of the bytes) gets no end-to-end check
+  here, which the store's own transfer checks and a later `Verify` cover. Nothing is decoded or
   verified beyond the store's own transfer checks; the copier checks the
   block's name from its header without material ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)), and `Verify`
   checks content later;
@@ -497,7 +512,12 @@ namespace's material and hold plaintext, which the copier must not. So
   recorded, which the caller writes into its progress object and manifest. Its
   `src` reads local staging the caller filled with `FetchRaw`, never a remote
   stream ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), and the put carries `FetchRaw`'s checksum, so staging
-  damaged between the two fails the put rather than landing as a complete copy;
+  damaged between the two fails the put rather than landing as a complete copy.
+  A destination that takes no up-front checksum and acknowledges with an MD5
+  `ETag` is checked after the put: the store compares the `ETag` with the passed
+  sum and fails the put as `ErrCorrupt` on a mismatch
+  ([RFC 4 C.3](rfc-4-remote-tier.md#C.3%20How%20the%20contract%20maps%20to%20S3)). The staging itself is counted against the copier's
+  budget ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound));
 - **`FetchVersion`** reads chunks of one recorded version, decoded and verified
   exactly as `Fetch` does; `Verify` and a restore from an immutable location use
   it ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)).
@@ -514,6 +534,25 @@ on throttling, refused by an unhealthy direction and charged at a fixed small
 size. One `503 SlowDown` during a burst of retention extensions then backs off
 instead of failing the backup, and the calls sit inside the client's connection
 sum ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), since they run on the same workers.
+
+**A small call is one request under a fixed bound.** `Small` runs an opaque
+closure, so the throughput floor, trickle rule and first-byte bound, which
+measure body bytes, cannot see it. Each `call` therefore **MUST** make exactly
+one request, and its `ctx` ends at the **small-call bound** ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)); an
+attempt that outlives it fails as `ErrTransient`. A listing is paged, one page
+per `Small` call, the next resuming after the last key and version the previous
+page returned, so a long listing is many bounded calls, never one call bounded
+only by the copier's context. A retention call that never answers then holds a
+worker for the bound, not for `max_copy_time`. A body carried through `Small`
+**MUST** be within a block's bound ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)): a retry calls `call` again, which
+re-delivers a get's bytes from its start, and only a small body can be
+re-buffered whole. **An export part is not a small object**: up to 64 MiB
+([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), it rides a raw transfer like a block — staged under the copier's staging
+budget ([RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing)), spilled to local disk above it,
+put with `UploadRaw` under its checksum, read back with `FetchRaw`, which
+resumes by range — and is charged at its size ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)). For a raw
+transfer `name` then names the part's versioned object, which the engine's
+`Store` routes by its kind.
 
 **`Fetch`** is a demand: a reader is waiting. **`Prefetch`** is speculation
 ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are separate methods, not one method with
@@ -574,7 +613,7 @@ for:
 | --- | --- | --- |
 | a backend | the `Store` interface of [§1.3](#1.3%20Interface) | a fault-injecting fake |
 | the bytes to upload | the `src` closure passed to `Upload` | a closure over a byte slice |
-| time | the runtime clock | a virtual clock |
+| time | the one clock interface every component takes ([index, Test harness](rfc-index.md#Test%20harness)), never a clock of its own | that interface's virtual clock |
 | logging | a structured logger | a handler that records the lines |
 
 No journal, no carver, no metadata store, no engine, no disk and no network.
@@ -695,8 +734,8 @@ by GC's own budget and spilled to local disk above it ([RFC 9 §4.2](rfc-9-gc.md
 syncer's bound covers the fetch and the put; the staging between them is counted
 by GC, and **MUST** be, or this bound says nothing about the process. A copying
 backup's **copy staging**, filled by `FetchRaw` and read by `UploadRaw`
-([§1.3](#1.3%20Interface)), is the same: counted by the copier against its own budget and
-spilled to local disk above it, and **MUST** be.
+([§1.3](#1.3%20Interface)), is the same: counted by the copier against its own budget
+([RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing)) and spilled to local disk above it, and **MUST** be.
 
 The limit belongs to the syncer, not to each store: memory runs out for the whole
 process, and only a limit set where all the transfers happen adds up to a number
@@ -739,6 +778,16 @@ attempt depend on what the store needs before the first byte ([§3.4](#3.4%20One
 
 Each pass reads the offered bytes again, usually from page cache.
 
+**A measured attempt's lengths and checksum outlive a throttled retry.** The
+measuring passes depend only on the offered bytes, which stay stable until
+`Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)), so an attempt ended by `ErrThrottled` keeps the lengths
+and checksum it measured, and its retry runs only the sending pass. An error
+retry keeps them too, unless the attempt failed with `ErrCorrupt`, whose retry
+measures again. So the table's last column bounds every `Upload`, throttled
+attempts included: each of the up to eight throttled attempts adds one read of
+`src`, and an `Upload` reads `src` at most twelve times plus one per throttled
+attempt, at most 20.
+
 **Retries draw on a budget per store and direction.** Every error retry — an
 attempt beyond the first after an `ErrTransient` other than `ErrThrottled`, or
 after a put's `ErrCorrupt` — takes a token from its store's bucket for that
@@ -746,7 +795,12 @@ direction; every transfer in that direction that succeeds without an error retry
 returns a fraction of one ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). An empty bucket means the failed attempt is
 reported, not retried. **A quarter of each bucket is a reserve that only
 demand retries may spend** ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)): a background or speculation transfer
-whose bucket holds no more than the reserve is reported, not retried. So a
+whose bucket holds no more than the reserve is reported, not retried. In the get
+direction demand is a `Fetch` on a flow that is not background. Every upload is
+background work to the scheduler, so in the put direction the reserve is held
+for uploads on a flow that is not background — offload, which writers wait on —
+against uploads on background flows (relocation, copies, re-homes), which may
+not spend it. So a
 copying backup's reads on a path that fails one first attempt in ten, or
 offload's put retries, cannot spend the tokens a blocked reader's cold fetch
 needs, and a fetch failure never drains the put bucket or the reverse — health
@@ -871,8 +925,9 @@ later than the 90th percentile of the store's first-byte times in that
 direction over the last 60 s **SHOULD** be cancelled and retried on a new
 connection, within the retry bound, at most once per transfer and without a
 budget token (above). Slow-tail retries on a store and direction **MUST NOT**
-exceed 5% of the transfers it dispatched over the same 60 s window; past that
-share a slow transfer is waited out, under the throughput floor and the
+exceed the larger of one and 5% of the transfers it dispatched over the same
+60 s window, so a lone cold read on an idle store, where 5% rounds to zero, still
+gets its one retry; past that share a slow transfer is waited out, under the throughput floor and the
 first-byte bound like any other.
 Sending a second request alongside the first and taking whichever answers
 (hedging; Dean and Barroso, *The Tail at Scale*, 2013) cuts tail latency further
@@ -1017,9 +1072,17 @@ each direction on its own:
   direction, and every re-admission then fails. So a direction made unhealthy
   with `ErrDenied` (any cause), or by the failure window while its probe passed,
   keeps a **denial count** until a transfer in that direction succeeds. While
-  the count is above zero, a re-admitted direction turns unhealthy again on its
-  first transfer failing with an error that counts toward health, without
-  waiting for the failure window, and the count rises; and its own probe, or the expiry of an unprobed direction, may clear it
+  the count is above zero, a re-admitted direction turns unhealthy again, and
+  the count rises, when its re-admission fails again: a direction made unhealthy
+  by `ErrDenied` on its first transfer failing with `ErrDenied`, without waiting
+  for the failure window; a direction made unhealthy by the failure window only
+  through the window again, or once more than a tenth of the transfers it has
+  dispatched since its re-admission have failed with an error that counts toward
+  health — the share past which the retry budget no longer breaks even
+  ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). A blip that tripped the window drains the put bucket to its reserve,
+  so after it one ordinary transient failure among many puts is near certain
+  before any success; re-tripping on it would keep a store completing 97% of its
+  puts unhealthy for hours; and its own probe, or the expiry of an unprobed direction, may clear it
   only once a **denial backoff** has run since it last turned unhealthy: one
   probe interval at a count of one, doubling per count, up to 15 minutes
   ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). A successful transfer in that direction resets the count to zero. A
@@ -1287,18 +1350,19 @@ setting:
 | failure window | 30 s | a direction whose every transfer failed for this long, with its probe passing, turns unhealthy, and recovers only on its own evidence ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | throughput floor | 64 KiB/s over 30 s, judged on the store's aggregate per direction; a transfer moving no byte for 30 s, or under a quarter of its store's mean per-transfer rate over 30 s, fails regardless | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | first-byte bound | 10 s: to the first body byte of a get; to the first body byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| small-call bound | 30 s per `Small` attempt, for its one request | a small-object call, whose body bytes no floor can see, holds a worker for at most this long per attempt ([§1.3](#1.3%20Interface)) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | unhealthy log interval | 60 s | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)'s summary line |
 | retry bound | four attempts per transfer: the first and three retries; attempts ended by `ErrThrottled` count apart, up to eight per transfer, and take no token | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
-| retry budget | a bucket per store and direction holding that half's pool size in tokens, a quarter of it a reserve only demand retries may spend; an error retry in that direction takes one, a transfer in it that succeeds without an error retry returns 0.1; throttled retries, slow-tail retries and verification re-gets take none | stays full below about 9% failed first attempts, keeps retries near a tenth of a store's traffic when it fails everything, one failing store or direction cannot spend another's, and background retries cannot spend a reader's ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| slow-tail retry | at most one per transfer, on a first byte later than the 90th percentile of the store's first-byte times in that direction over the last 60 s, and at most 5% of the store's transfers in that direction over the same window | a store slowing past its usual tail is sent at most 5% more requests, not one more per transfer ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| retry budget | a bucket per store and direction holding that half's pool size in tokens, a quarter of it a reserve only demand retries may spend (offload's puts, in the put direction); an error retry in that direction takes one, a transfer in it that succeeds without an error retry returns 0.1; throttled retries, slow-tail retries and verification re-gets take none | stays full below about 9% failed first attempts, keeps retries near a tenth of a store's traffic when it fails everything, one failing store or direction cannot spend another's, and background retries cannot spend a reader's ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| slow-tail retry | at most one per transfer, on a first byte later than the 90th percentile of the store's first-byte times in that direction over the last 60 s, and at most the larger of one and 5% of the store's transfers in that direction over the same window | a store slowing past its usual tail is sent at most 5% more requests, not one more per transfer ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | verification re-get | one per fetch transfer, of the chunk that failed verification | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | denial backoff | one probe interval at a denial count of one, doubling per count, up to 15 min; the count reset by a successful transfer in that direction | a store that keeps refusing is re-admitted ever more rarely, never latched ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | retry backoff | full jitter: uniform in [0, min(5 s, 100 ms × 2^attempt)] | transfers that failed together do not retry together ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
 > decision: the time and rate values above — probe interval, hold-down, failure
 > window, throughput floor, first-byte and detach bounds, log interval, the two
-> backoffs — and the counts and ratios — the three-quarter cap, the queue and
+> backoffs, the small-call bound — and the counts and ratios — the three-quarter cap, the queue and
 > waiter multiples, four attempts, eight throttled attempts, the 0.1 refund,
 > the quarter reserve, the 90th percentile, the 5% slow-tail share and its 60 s
 > window — were
@@ -1673,7 +1737,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§3.4](#3.4%20One%20put%20per%20block) partial put | Interrupt a transfer; assert the name is not retrievable and was not reported stored. |
 | [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration) stability | Give `Upload` a `src` whose bytes change mid-stream; assert the put is refused and nothing is stored under the name. That the journal keeps offered bytes stable is [RFC 1](rfc-1-journal.md)'s check. |
 | [§4.1](#4.1%20One%20fetch%2C%20two%20consumers) verification | Corrupt the fetched bytes; assert no byte of the chunk is yielded and the error is `ErrCorrupt`. |
-| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through a store in each checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table; assert `src` is read once, twice and three times per attempt respectively, never more than twelve times per `Upload`, that the bytes sent equal the bytes measured, and that a `src` that changes between any two passes fails the put. |
+| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through a store in each checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table; assert `src` is read once, twice and three times per attempt respectively, never more than twelve times per `Upload`; answer the MD5-mode store with `ErrThrottled` eight times as well: `src` is read at most 20 times, each throttled retry reading it once, that the bytes sent equal the bytes measured, and that a `src` that changes between any two passes fails the put. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) verification re-get | Flip one byte of a chunk on its first get only; assert the chunk is re-got once and yielded verified, no error is reported, and no budget token is taken. Flip it on every get; assert `ErrCorrupt` after exactly two gets of the range. Do the same to an encrypted body, so the transform's integrity check refuses it: the same two outcomes. Answer a recorded range with a past-the-end refusal; assert `ErrCorrupt` of kind `malformed` with no re-get. |
 | [§1.3](#1.3%20Interface) census | Put a block whose chunks use two transforms and two materials; assert `Upload` returns every distinct descriptor, and none on a failed put. |
 | [§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) yield at once | Hold one caller mid-iteration; assert the chunk it holds is unchanged until its next iteration, and that each chunk is yielded before the next is read from the store. |
@@ -1724,7 +1788,9 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) drift condition | Raise a store's drift condition through `SetDrift` with both probes passing; assert uploads to it are refused at once and fetches still run. Clear it; assert uploads resume without waiting for a probe transition. A syncer that reads only its probes keeps putting into the drifted store. |
-| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to a fake immutable store: the bytes it saw equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) window re-trip | Trip a store's put direction by the failure window, drain its put bucket to the reserve, then re-admit it with 96 puts in flight failing 3% transiently: it stays healthy, and its puts complete. Fail more than a tenth of them: it turns unhealthy again and the denial backoff doubles. A design that re-trips on the first failure keeps the store unhealthy for hours. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) lone slow tail | On an idle store, give one fetch a first byte past the 90th percentile: it gets its one slow-tail retry, where a bare 5% share would round to none. |
+| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to a fake immutable store: the bytes it saw equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Repeat from a CRC32C source to an MD5 destination: `FetchRaw` finds the staging against the source's CRC32C, re-fetches from byte 0, and returns the MD5 of correct bytes. To a destination with no up-front checksum, damage the staging after `FetchRaw`: the `ETag` the put returns mismatches the passed sum and `UploadRaw` fails `ErrCorrupt`. Hold a `Small` call's one request unanswered: the attempt fails at the small-call bound and is retried, never held for the copier's context. List 10⁴ versions through `Small`: one page per call, a retried page resuming after the last key returned. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) no put probe | Register a store with `PutProbe` false: over an hour no put probe reaches it. Fail every upload for the failure window: put-unhealthy, uploads refused; with no probe and no transfer, it turns healthy after its hold-down and the next upload is sent; fail that one too: unhealthy again with the hold-down doubled. A design that waits for a put probe here latches it unhealthy for good. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) cause per direction | Turn a store put-unhealthy with `ErrDenied` of cause quota, then another with cause access, a third with cause size, a fourth with `ErrTransient`, and raise a fifth's drift condition: `Flow.Health(Put)` wraps the quota cause, the access cause, the size cause, `ErrTransient` and `ErrDrift` in turn, and `Flow.Healthy(Put)` is false for all five. |
 | [§1.3](#1.3%20Interface) destroyed material | A fake store returning `ErrMaterialDestroyed` on every fetch for the failure window: each call fails unretried with that error, never `ErrCorrupt`, and the store stays get-healthy. |

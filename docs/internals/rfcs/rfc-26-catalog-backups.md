@@ -105,7 +105,8 @@ of `photos` is `complete` ([RFC 12](rfc-12-snapshots.md)).
   copying backup survives losing the bucket too, and at an immutable location
   survives a stolen installation credential as well. No backup survives losing
   the master key that wraps its namespace's export key — every namespace has
-  one, encrypting or not — so that master key lives off the host.
+  one, encrypting or not — so [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) requires that master key off
+  the host for every namespace that takes backups.
 - Every export is sealed and authenticated, and an import publishes all of its
   records or none.
 - A restore always makes a new share; from a copying backup, in a new namespace.
@@ -136,7 +137,7 @@ questions.
 ## 1. Purpose
 
 Operators ask a file service's data protection to **survive losing the metadata
-store.** The bucket is a replicated, durable service, but the metadata store is
+store.** The bucket is a replicated service that keeps what it acknowledged, but the metadata store is
 software the operator runs, and a bad upgrade or a lost cluster can destroy it.
 Metadata is a small fraction of the data, so copying it elsewhere is cheap; a
 catalog backup ([§2](#2.%20Catalog%20backups)) is that copy, and restoring it brings
@@ -197,12 +198,11 @@ copies the blocks, against the first and last of those.
 sealed under the namespace's export key, which is held only wrapped under a
 master key ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so a backup of either kind, at any
 location, mutable or immutable, opens only where that master key is held. In an
-encrypting namespace the chunk-ID, header and data keys are wrapped the same way. The
-master key therefore **MUST** live off the host, in a key service or in a key
-file whose off-host escrow was verified at setup, and no key falls back to the
-host's own wrapping key; [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s table is the one statement of
-which keys exist per namespace kind, what wraps each and what must live off the
-host. A non-encrypting namespace keeps only its chunk-ID key in the clear beside
+encrypting namespace the chunk-ID and data keys are wrapped the same way.
+[RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) is the one statement of which keys exist per namespace
+kind, what wraps each, and when a master key must live off the host and a key
+file needs verified off-host escrow; a namespace that takes backups is one of
+the cases it names, and this document restates none of it. A non-encrypting namespace keeps only its chunk-ID key in the clear beside
 its blocks — its key record is not wrapped — so a bucket reader can verify its
 chunks; its export key is still wrapped, and restoring its backup after losing
 the host still needs the escrowed master key.
@@ -216,7 +216,10 @@ namespace names — a backup not `expired`, at any configured location — with
 records in the metadata store only ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)); every retained
 export keeps the old wrapping, so the old key is destroyed only once the last
 export naming it has expired, and immutable backups are not made unrestorable by
-the usual compliance rotation.
+the usual compliance rotation. The check reads only the locations the
+installation has a record for, so deleting a location record **MUST** be refused
+with `ErrLocation`, naming the backups, while any backup there is not `expired`; otherwise the check would stop
+reading the backups it protects.
 
 **A backup location has a mode**, stated in its location record
 ([§4.2](#4.2%20Configuration)) and enforced by the store that opens it
@@ -257,6 +260,11 @@ carries:
   — with the IDs of the master keys that wrap them ([§2](#2.%20Catalog%20backups), [RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material));
 - the namespace's identity, prefix and key scope, and every other bound setting
   of the namespace ([§3.1](#3.1%20Layout));
+- the snapshot's list of **incomplete files**, whose existence commit failed
+  ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), in its header. Their records carry the version before
+  the failed write, which a copy must not serve as current, so an import keeps
+  the list, and a read of such a file in the restored share fails as it does in
+  the snapshot; a clone carries the list the same way;
 - per share, its fold rule and the hash key its entries' digests are keyed under
   ([RFC 7 §3.4](rfc-7-namespace-metadata.md#3.4%20Enumeration)), both fixed when the share was created. Every entry key and
   every directory position is derived from them, so an import that drew its own
@@ -298,9 +306,12 @@ Expiry marks the backup `expired` in its location, then deletes the use record,
 then removes the export. An expired backup **MUST NOT** be restored; the reverse
 order lets a crash leave a restorable backup whose blocks were swept.
 
-**Expiry does not need the policy that wrote the backup.** When a backup
-completes, its expiry time — completion plus the policy's retention for it — is
-written into its state object and, while it has one, its use record. Expiry runs
+**Expiry does not need the policy that wrote the backup.** A backup's retention
+is fixed when it starts and written into its use record and its first state
+version, so a backup still running when its share's removal deletes the policy
+never reads the policy again. When it completes, its expiry time — completion
+plus that retention — is written into its state object and, while it has one,
+its use record. Expiry runs
 installation-wide on the snapshot service's period, from those recorded times,
 over every backup location the installation has a location record for: a
 backup past its time is expired whether or not its share, its policy or its
@@ -309,7 +320,21 @@ policy ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share))
 ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)), so expiry that waited on the policy would hold a detached
 snapshot, and the namespace's drain ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), until an operator ran `Expire`.
 A recovery import's detached snapshots ([§2.3](#2.3%20Restore)) expire the same way, from the
-times their backups recorded.
+times their backups recorded, and the expiry that deletes such a snapshot's use
+record deletes the snapshot too, in the same transaction: it exists only to hold
+that backup's blocks, and a retired share never prunes it otherwise.
+
+**An expiry time can be raised, never lowered except by `Expire`.** `Extend`
+([§4.1](#4.1%20Interfaces)) raises a complete backup's expiry time — for a legal hold, say — by
+a new state version and, while it has one, its use record, in one transaction
+with the use record. At an immutable location it first extends every version
+the backup names, as completion does ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)), and the new expiry time
+**MUST NOT** pass the call's time plus the location's retention cap less one
+day; past that it is refused with `ErrInvalid`, naming the cap. A catalog backup
+whose share's refs are parked in another namespace
+([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) raises the parking's recorded time in the same transaction,
+and is refused with `ErrNotClaimed`, naming that namespace, when another
+installation holds it.
 
 **An abandoned reader releases its snapshot.** A use record whose reader is still
 running — a backup `writing`, a clone or restore staging — carries a deadline its
@@ -344,15 +369,29 @@ Restore creates a new share. There are two sources:
   - loads the namespace's key records from the `keys` control object in the
     namespace's bucket ([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)) and from every configured backup
     location, besides those the export carries, and takes their union by key
-    ID: a key any source marks `destroyed` stays destroyed, since that mark is
-    a rewritten key record and reaches those objects like any other, and of the
-    rest each key's newest version that unwraps and matches its fingerprint. Every new key record — wrapped,
+    ID over the versions that **authenticate**: each keys-object version
+    carries a sequence and the keys MAC under the export key
+    ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), as every versioned object at a location does
+    ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)). A retired export key may have leaked
+    ([§3.1](#3.1%20Layout)), so a version authenticated only under a retired export key is
+    ignored once any version under a newer key authenticates, and a `destroyed`
+    mark is honoured only from a version under the current export key or under
+    a key a newer authenticated version vouches for. A key such a version marks
+    `destroyed` stays destroyed, since that mark is a rewritten key record and reaches those
+    objects like any other, and of the rest each key's newest version that
+    unwraps and matches its fingerprint. A version that fails to authenticate is
+    ignored and reported as a health condition naming its location: a holder of
+    one location's put credential can add a version, and a `destroyed` mark it
+    forged must not refuse every later recovery import. Every new key record — wrapped,
     never a secret — reaches the bucket's object before it becomes current, and
     a location's before the next backup there starts ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so a key rotated after the last backup, under
     which relocation has since re-encoded that backup's chunks, is still found;
   - re-derives the material census from the headers it resolved rather than
     trusting the export's: a block re-sealed after the backup can carry material
-    the export never listed. Material missing from its provider refuses the
+    the export never listed. A header is written by whoever can put into the
+    bucket, so it accepts a header's entry only for material the namespace's
+    authenticated key records hold; any other entry is left out of the census
+    and reported, naming the block. Material missing from its provider refuses the
     import naming the IDs, as [RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material) requires;
   - recomputes every count from the imported refs ([RFC 6 §7.4](rfc-6-block-metadata.md#7.4%20Restore)) and ends
     with the audit ([RFC 6 §7.5](rfc-6-block-metadata.md#7.5%20Audit)); a retired block the backup records whose
@@ -373,7 +412,13 @@ Restore creates a new share. There are two sources:
     blocks. While paused, the namespace deletes, relocates and collects
     nothing: an import of one share never deletes a block
     another share needs. The pause costs the space those deletes would have
-    freed, and is reported ([RFC 27 §6](rfc-27-namespace-migration.md#6.%20Observability), `move_gc_paused`).
+    freed, and is reported ([RFC 27 §6](rfc-27-namespace-migration.md#6.%20Observability), `move_gc_paused`). This pause record's
+    kind is a recovery import's, not a move's: it holds no step, no base-cut
+    list and no deadline, since an interrupted import is never resumed from its
+    staging ([§3.2](#3.2%20Import%20is%20staged%20and%20published%20atomically)) ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), the
+    abort a move's past deadline triggers ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) never applies to it,
+    and a scheduler finding no deadline **MUST NOT** treat it as past. Only the
+    operator's statement deletes it.
 
 **Losing the metadata store is recovered this way, and only this way.** On a
 single node the embedded metadata store goes with its host
@@ -388,7 +433,15 @@ journals, is not served as current, and its blocks wait, unreferenced, under the
 GC pause above until the operator's statement. Taking a catalog backup on a
 period is what bounds that loss. The journals' content for the lost store's
 shares sits under tags no recovered share claims, since recovery gives each
-share a new identity: before it serves, the node **MUST**, for every such tag,
+share a new identity. So a recovery import, **before it publishes any share**,
+records each adopted journal's identity in the rebuilt store, `Restamp`s it with
+the rebuilt store's installation ID, opens it, and raises the store's tag
+counter above every tag the journal's `Stats` names; only then does it mint a
+tag for any share ([RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). No
+recovered share is then given a stranded tag. Which tags are stranded is the engine's to compute, from the
+rebuilt store's share records once every share it serves is attached
+([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), and to pass to `Forget` by name: a journal cannot know which
+tags a store claims. Before it serves, the node **MUST**, for every such tag,
 either export its held extents for salvage and then `Forget` it, or `Forget` it
 at once, and report each tag with its held and dirty bytes
 ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A tag left alone would hold dirty extents that are never offered
@@ -472,14 +525,21 @@ namespace's folder is gone. Restoring from them always makes a new namespace
   first namespace to use an immutable location finds it and opens. A credential
   rotation proves the new credential reaches the same location by reading that
   recorded version (immutable) or a nonce stored in the object (mutable), not by
-  any namespace's claim.
+  any namespace's claim. At a mutable location the object is shared by every
+  installation that has a record for the location — a move's target or a
+  recovery import creates one too — so creating a location record reads the
+  object first and adopts the nonce already stored there, putting its own only
+  when there is none; overwriting it would make the first installation's next
+  credential rotation fail.
 - **Each backup's state object** holds `writing`, `complete`, `damaged`, `failed`
   or `expired`, as [§2.1](#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata) keeps it, and can be listed without the installation.
 - **The folder record** `NS‖ns‖bk‖location`, in the namespace's metadata, names the
   copy or sweep running at the folder, with a deadline its holder renews and a
   **lease number** raised at every take. It keeps the folder's **census**: every
-  (material ID, fingerprint) in the census of a block that some retained
-  manifest lists. Being under the namespace's prefix, it moves with a migration
+  (material ID, fingerprint) in the census of a block in the folder's **mark
+  set** — the blocks the manifests of its retained backups and the progress
+  objects it still keeps list ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep), step 1). This is the one
+  definition; settle recomputes it from that set. Being under the namespace's prefix, it moves with a migration
   ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)).
 - **The folder record is a fenced lease.** A holder paused past its deadline
   must not act after another has taken the record. So every transaction a copy
@@ -492,7 +552,14 @@ namespace's folder is gone. Restoring from them always makes a new namespace
   with ρ and σ [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock bounds. A new holder takes the record only
   past the old deadline. A sweep's delete then never lands after a copy has taken
   the folder and reused the block, short of a pause the clock bound does not
-  cover — the ceiling the claim's decision names ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+  cover — the ceiling the claim's decision names ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The fence acts
+  only while *L* / (1 + ρ) − σ exceeds the renewal interval, a third of the
+  lease: with the 10-minute lease ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) and ρ of 5%, a σ
+  above about 6.2 minutes closes a holder's window before it renews, and above
+  about 9.5 minutes the window never opens and copies and sweeps silently stop.
+  That is [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s ceiling: σ **MUST** stay below *L* / (1 + ρ) less
+  the renewal period, about 6.2 minutes for this lease, and a higher setting is
+  refused when written.
 
 #### 2.4.2 What is copied
 
@@ -561,7 +628,9 @@ a block byte for byte and return the stored version
 - **The cost of sealed copies is that material stays in use.** [RFC 5 §5.2](rfc-5-transforms.md#5.2%20Relocation%20re-encodes)'s
   reason for re-encoding on relocation applies here. A folder block keeps the
   material that sealed it for as long as a manifest lists it. So removing material
-  **MUST** also find it in no folder record's census of the namespace, and a copy
+  **MUST** also find it in no folder record's census, of any namespace — a
+  backup taken mid-re-home lists the leaving namespace's blocks in the other's
+  folder ([§2.4.1](#2.4.1%20Layout%20at%20the%20location)) — and a copy
   never reuses a folder block whose census names material being retired. Once
   every backup that lists such a block has expired, the folder's census no longer
   names the material, and removal proceeds.
@@ -591,7 +660,14 @@ serialises them.
 2. **Plan**, as [§2.4.2](#2.4.2%20What%20is%20copied) describes.
 3. **Copy, in batches.** For each batch of blocks to copy:
    - one transaction adds the batch's census to the folder record, so the census
-     never misses material a folder block uses;
+     never misses material a folder block uses. It reads with a tracked `Get`
+     the drain mark (`NS‖ns‖drain`) of every namespace whose material the batch
+     lists — the folder's own and, mid-re-home, the leaving one — so a drain's
+     key check ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), which re-reads that mark before it removes
+     anything, conflicts with this transaction in either commit order: a census
+     entry committed first stops the removal, and a removal committed first
+     aborts this transaction, whose retry finds the material gone and fails the
+     batch rather than copying blocks no key can open;
    - the blocks are copied through background flows of the syncer, one on the
      namespace's store and one on the folder's
      ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). The copier resolves each chunk from the namespace's
@@ -602,19 +678,29 @@ serialises them.
    - once the batch's puts have succeeded, a progress object lists its block names, and at
      an immutable location the version of each.
 
-   Every other call the copier, the sweep, expiry and restore make at the
-   location — state, export and progress puts and gets, listings, retention
-   extensions — goes through the syncer as a small-object transfer
-   ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), never straight to the store: it is retried with backoff
-   within a deadline, its concurrency is bounded, and it is counted in the
-   client's connection sum ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)). One throttling reply in an
-   extension burst then delays the backup rather than failing it.
+   Export parts are carried as raw transfers, like blocks: an import or
+   restore fetches each part with `FetchRaw` into staging, resuming a reset
+   by range, and the copier puts each with `UploadRaw` carrying the part's
+   checksum, each charged at its size ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), so a 64 MiB part is
+   neither held outside a budget nor re-delivered from byte 0 into a stream
+   whose frames would then fail. Every other call the copier, the sweep, expiry
+   and restore make at the location — state, head and progress puts and gets,
+   listings, retention extensions, each an object within a block's bound —
+   goes through the syncer as a small-object transfer
+   ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), never straight to the store: each call is one request
+   under the syncer's fixed per-request bound, a listing is paged one request
+   per call and resumes from its last key, it is retried with backoff, its
+   concurrency is bounded, and it is counted in the client's connection sum
+   ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)). One throttling reply in an extension burst then delays the
+   backup rather than failing it, and a retention call that never answers holds
+   a worker for one request's bound, not for `max_copy_time`.
 4. **Export.** The copier writes the `backup-copy` export, manifest last, as
    bounded parts and then their head ([§3.1](#3.1%20Layout)). Every manifest block was either
    put by this copy or taken from the base's manifest.
 5. **Complete.** At an immutable location the copier first extends every
    version the backup names to the completion time plus its retention
-   ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)). It then marks the state object `complete`. Then one
+   ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)). It then marks the state object `complete`, a version naming the
+   export it completes ([§3.1](#3.1%20Layout)). Then one
    transaction releases the folder record and deletes the use record. Then the
    progress objects are deleted, where the location deletes anything.
 
@@ -645,8 +731,10 @@ deadlines while it makes progress.
   marked `failed` if it is still `writing`, then the folder record is released,
   then the use record is deleted. Its progress objects stay: the share's next
   copy takes the blocks they list as base ([§2.4.2](#2.4.2%20What%20is%20copied)), and the sweep keeps them
-  until a copy of the share completes, then collects every block of the failed
-  copies that no retained manifest lists.
+  until a copy of the share completes, or the share is removed, then collects
+  every block of the failed copies that no retained manifest lists. Whatever
+  export parts the failed attempt put are never a base, and are removed at once
+  ([§3.1](#3.1%20Layout)).
 - **`max_copy_time` bounds one attempt**, from its start, not the whole chain of
   attempts that a large first copy takes. A copy still running at
   `max_copy_time` is marked `failed` as above, and its successor resumes from
@@ -662,12 +750,17 @@ is marked `expired`, then the folder is swept, then the export is removed. A cra
 anywhere in that sequence leaves a backup that cannot be restored, and blocks that
 the next sweep collects.
 
-**Retention expires complete backups only, and never the last one.** A policy's
+**Retention expires complete backups, and never the last one; a failed backup
+expires when its progress stops being a base.** A policy's
 expiry **MUST NOT** expire a share's newest complete copying backup at a location
 while the share exists and is not retired; a removed share has no successor
 copy coming, so its last backup expires at its recorded time ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
 So a chain of copies that keep failing — the namespace's bucket gone, say — never
-expires the backups that are still good.
+expires the backups that are still good. A `failed` backup has no retention of
+its own: the settle that removes its progress (step 3) marks it `expired`, so
+every backup's state reaches `expired`, and a failed catalog backup, whose
+export parts are removed at abandonment where the location deletes anything, is
+marked `expired` then.
 
 **The sweep** runs after an expiry, after a `failed` backup, or on a period. It
 holds the folder record, runs only while the claim names its installation
@@ -680,9 +773,11 @@ record's holder also runs that `Recheck` on GC's period
    taken mid-re-home copies every block into the new namespace's folder
    ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), so no backup names a folder of another namespace. The mark set is the union of the
    manifests of every `complete` and `damaged` backup, plus the progress objects
-   of every backup still `writing`, and of every `failed` one whose share has
-   completed no copy at the location since (its blocks are a successor's base,
-   [§2.4.2](#2.4.2%20What%20is%20copied)).
+   of every backup still `writing`, and of every `failed` one whose share still
+   exists, is not removed, and has completed no copy at the location since (its
+   blocks are a successor's base, [§2.4.2](#2.4.2%20What%20is%20copied)). A removed share has no successor,
+   so its failed copies' progress leaves the mark set, and would otherwise pin
+   the folder's census, and the namespace's drain, for good.
    An export or state object that cannot be read or verified **MUST** stop the
    sweep with no delete. An incomplete mark set would delete a live backup's
    blocks.
@@ -691,12 +786,16 @@ record's holder also runs that `Recheck` on GC's period
    under the same fence GC uses ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
 3. **Settle.** Recompute the folder record's census from the mark set. Remove the
    exports and progress objects of `expired` backups, and those of a `failed`
-   backup only once its share has completed a copy at the location since: until
-   then they are a successor's base ([§2.4.2](#2.4.2%20What%20is%20copied)), and removing them would
-   restart a first copy too large for one attempt from zero. A settle that
-   leaves the census empty, and an expiry that deletes a use record, runs the
-   namespace's drain check ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) in the same transaction, for this
-   namespace and for any other whose keys the removed blocks carried.
+   backup only once its share has completed a copy at the location since, or
+   been removed, marking it `expired` first: until then they are a successor's
+   base ([§2.4.2](#2.4.2%20What%20is%20copied)), and removing them would restart a first copy too large
+   for one attempt from zero. A settle and an expiry that deletes a use record
+   run the drain check ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) in the same transaction — as RFC 9
+   states it, which this document does not restate — for this namespace and for
+   every other whose material the removed blocks carried, whether or not this
+   folder's census is left empty: the settle that drops the last block sealed
+   under a namespace that left by re-home is what lets that namespace's drain
+   go on.
 
 Serialisation makes the mark exact. No copy runs while the sweep holds the folder
 record, so no block is added or reused between the mark and the delete. The one
@@ -745,7 +844,12 @@ own bookkeeping:
   location health object's recorded version to the single target
   [RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) states, within the retention cap, so the location still opens
   after the lifecycle age, however long a process stays up; extending writes no
-  object.
+  object. The namespace's `keys` object there is kept the same way: it is put
+  with a retain-until, its versions are found by listing versions, and every
+  open and `Recheck` extends its newest authenticated version to that same
+  target — the last end of one of its generations at or before now plus the
+  cap less one day, never later — so a recovery import still finds the key records after the lifecycle
+  age.
 - **Every put carries its own retain-until, and every retain-until is
   recorded.** The location has no bucket default retention to rely on: a
   default at least the longest retention would lock every hourly block as long
@@ -762,8 +866,9 @@ own bookkeeping:
   is below *T* + *R*, and the export's, and records the new values. A block put
   early in a long copy is therefore kept as long as one put at the end.
 - **Extensions come in generations.** Every retain-until the copier sets is
-  extended one **generation** `G` past the time it needs, `G` being the location
-  record's ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes); proposal: 7 days), and a version whose
+  the end of one of its name's **generations** at or after the time it needs,
+  as [RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) words it, `G` being the location record's period
+  (proposal: 7 days), so it lands at most one `G` past the need; a version whose
   recorded retain-until already covers the need is not touched. Each name has
   its own phase: its generation boundaries are the multiples of `G` offset by
   `hash(name) mod G`, so versions reused on one day fall due spread across the
@@ -773,21 +878,30 @@ own bookkeeping:
   for *N* reused blocks — at 1 PiB of 4 MiB blocks with `G` of 7 days about
   3.8×10⁷ a day, 440/s, spread evenly — against one call per block per backup,
   or 2.7×10⁸ in one burst with a shared phase. The cost is that a version is
-  held up to `G` past its need.
+  held up to `G` past its need. A need the cap's clamp (below) cuts short takes
+  the last generation end at or before the clamp instead.
 - **What a credential may lock is capped.** The location's bucket policy **MUST**
   cap the remaining retention a put may set at the location record's retention
   cap — the longest retention of any policy writing there, plus one generation
-  and `backups.max_copy_time` — and the open checks verify that cap
+  and `backups.max_copy_time`, and one day of the service's rounding margin, in
+  whole days, as [RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) and
+  [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record) state it — and the open checks verify that cap
   ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)), so a stolen put credential cannot lock objects for a century
   and hold their storage cost to ransom. The same policy **MUST** deny placing
-  a legal hold, which carries no retain-until and so escapes the cap. DittoFS
+  a legal hold, which carries no retain-until and so escapes the cap. Both
+  denies apply to every principal but one named break-glass principal, not to
+  the location's credential alone, so an inspection or auditor credential with
+  retention rights cannot lock either. DittoFS
   itself never asks past the cap: every retain-until it sets — a put, a
-  completion's extension, a generation, the last good backup's and the health
-  object's extensions — is clamped to the call's time plus the cap, and a need
-  the clamp cuts short is met by the next extension, made once the
-  retain-until comes within one generation. So no rule here sends a request
-  the bucket policy refuses, and a refusal always means the credential or the
-  policy changed.
+  completion's extension, a generation, the last good backup's, the health
+  object's and the `keys` object's extensions — is clamped to the call's time
+  plus the cap **less one day**, the latest date [RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) lets a call
+  send, and a need the clamp cuts short is met by the next extension, made once
+  the retain-until comes within one generation. The health object's target,
+  the last end of one of its generations at or before that same date, is RFC 4's
+  to state. So no rule here sends a request the bucket policy refuses or RFC 4
+  refuses locally, and a refusal always means the credential or the policy
+  changed.
 - **A copy reuses its base's versions, extending them.** Incremental copies work
   as elsewhere ([§2.4.2](#2.4.2%20What%20is%20copied)): a block the base holds is not put again, and
   the new manifest names the base's version, whose retention step 5 extends. No
@@ -887,6 +1001,14 @@ nothing publishes. `Verify` finds that damage before a restore needs the backup.
   demand ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)), and under `backups.copy_rate`, a byte rate per
   installation, so that a full first copy of a large share does not take a
   service's egress budget in one night.
+- **Staging.** The copier's **copy staging** — what a raw transfer holds
+  between `FetchRaw` and `UploadRaw`, a block or an export part, each counted at
+  its full size ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) — is held in memory up to a budget derived,
+  not set: twice the folder flow's upload workers × 64 MiB, the largest object
+  it stages, so every upload worker has one object ready and one filling.
+  Staging above it is spilled to local disk; an import's part staging is
+  counted the same way, against the importer's flow. Make it a setting when the
+  spill shows in a copy's wall time.
 - **Restore** costs a ranged get per named chunk from the folder, plus the decode,
   encode and put of every restored byte.
 
@@ -937,7 +1059,9 @@ header   = (sealed) prefix, key scope and every other bound setting ‖
            per share: fold rule and entry-digest hash key ‖
            source installation ‖ share and snapshot ids ‖ cuts ‖ base digest
            (move-delta only) ‖ (material ID, fingerprint) of every census
-           material ‖ record counts per section ‖ header MAC
+           material ‖ incomplete files (backup kinds) ‖
+           digests of retained exports sealed under retired export keys ‖
+           record counts per section ‖ header MAC
 section* = type (1 byte, RFC 5 Appendix B.1) ‖ frame* ‖ section MAC ‖ record count
 frame    = length ‖ sealed records ‖ frame index      (frames of at most 4 MiB)
 trailer  = end marker ‖ trailer MAC
@@ -955,7 +1079,23 @@ specifies, with associated data namespace ‖ kind ‖ key ID, so a record moved
 another namespace or kind fails to unwrap. The clear part says only what an
 importer needs to find the keys: the namespace, the export-key IDs current and
 retired, the master-key IDs, and the key records. The export key rotates
-([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)); a retired one stays until no retained export names it. In an
+([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)); a retired one stays until no retained export names it.
+
+**What a retired export key sealed is vouched for by the current one.** A leaked
+retired key could otherwise forge an export or a state version that a reader
+accepts. So every export sealed under the current key carries, in its sealed
+header, the digest of every retained export of the namespace sealed under a
+retired key, and a rotation re-seals every retained backup's state object under
+the new key — a new version, at the next higher sequence, naming the same
+export — at each location as the snapshot service next reaches it. A reader
+**MUST** accept an export sealed under a retired key only when its digest is
+listed by an export, or named by a state version, sealed under a newer key, and
+**MUST** ignore a backup's state versions under a retired key once a version of
+it under a newer key authenticates. No clock is needed: what a newer key
+vouches for was sealed before it was current, and nothing sealed under a retired
+key after its retirement is vouched for. Until a location is reached after a
+rotation, its backups are read as before it, which is the window a leaked
+retired key still has there. In an
 encrypting namespace a reader of the location without the master key learns the
 namespace ID and the export's size, and nothing of the tree, the names, the chunk
 IDs or the principals; a writer without it cannot change a byte unnoticed,
@@ -990,11 +1130,29 @@ blocks.
   version each was stored as, with the stream's total size. A reader gets the
   head, then each listed part, and parses the concatenation as one stream; a
   head listing a missing part, or a part whose size or checksum differs, is a
-  torn export and fails the import. The head adds no trust: the stream's frame
-  AEADs and MACs, which a part from another export or a reordered one fails,
-  stay the only check of content, and the head is only the stream's table of
-  contents. Every rule that names an export — its retention, its extension,
-  its expiry — names its head and every part it lists. A 40 TiB share at 256 KiB
+  torn export and fails the import. The head also records the byte offset of
+  the manifest section, so the sweep's mark ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)) reads the clear
+  part and that section alone, checked by its section MAC against the one the
+  state names, rather than every retained export whole. The head adds no trust:
+  the stream's frame AEADs and MACs, which a part from another export or a
+  reordered one fails, stay the only check of content, and the head is only the
+  stream's table of contents. Every rule that names an export — its retention,
+  its extension, its expiry — names its head and every part it lists.
+- **Bound to its backup by the state.** A head has no MAC, and at an immutable
+  location may have several versions, so a reader **MUST NOT** take a stream as
+  a backup's on the head's word. The state version that marks a backup
+  `complete` ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)) names its export's digest, its manifest section's
+  MAC, and at an immutable location the head's version, under the state MAC.
+  Restore, `Verify` and the sweep read the head by that version and accept the
+  stream only if its trailer digest — or, for the sweep, its manifest section's
+  MAC — equals the one the state names. A head a thief put listing another
+  backup's parts, or a second authentic export a restarted copier wrote under
+  a new salt, is then refused rather than read as the backup's.
+- **Removed by prefix.** At a location that deletes, an export is removed by
+  listing its `part/` prefix and deleting every part found, and its head last,
+  never by reading the head: a crash between the parts and the head leaves parts
+  no head lists. An abandoned or failed backup's parts are removed so at
+  abandonment, catalog and copying alike. A 40 TiB share at 256 KiB
   chunks carries about 1.7 × 10⁸ chunk records, an export of roughly 10 GB,
   which no single put could hold on a service whose limit is 5 GiB.
 
@@ -1075,6 +1233,9 @@ type Backups interface {
 	Verify(ctx context.Context, loc string, id BackupID) (VerifyReport, error) // marks it damaged on failure
 	List(ctx context.Context, loc string, ns NamespaceID) ([]BackupInfo, error)
 	Expire(ctx context.Context, loc string, id BackupID) error // then sweeps a copying backup's folder
+	// Extend raises a complete backup's expiry time, never past the location's
+	// cap less one day at an immutable location (§2.2).
+	Extend(ctx context.Context, loc string, id BackupID, until time.Time) error
 	// Restore clones, or runs a recovery import if holderGone (§2.3). For a
 	// copying backup, spec.Namespace names the new namespace it re-encodes into
 	// (§2.4.5), and holderGone is ignored.
@@ -1112,8 +1273,9 @@ is how a provisioning file declares them
 `copy_rate`, `max_copy_time` and the generation `G` are proposals, not
 measurements: the rate is settled by the daily-copy benchmark of
 [§6.5](#6.5%20Benchmarks%20and%20targets) against the location's own put throughput, `max_copy_time` by the
-wall time of a first copy of the largest share a location holds at that rate,
-and `G` by the extension calls a day the immutable-location check of
+wall time of the largest **incremental** copy a location takes at that rate,
+with the index's headroom — not by a first copy, which completes across
+attempts and so cannot settle the bound on one ([§2.4.3](#2.4.3%20Writing%20one%2C%20step%20by%20step)) — and `G` by the extension calls a day the immutable-location check of
 [§6.3](#6.3%20Group%20A%20%E2%80%94%20lost%20or%20wrong%20content) counts. The location's `lifecycle_age` and `retention_cap` are derived
 from them, as their comments state.
 
@@ -1128,7 +1290,7 @@ backups:
       { type: s3, bucket: dfs-vault, prefix: backups/, mode: immutable,
         credential: dfs-vault-put-only, lifecycle_age: 2208h,       # ≥ longest retain + max_copy_time
         generation: 168h,                                           # extension generation G (§2.4.4)
-        retention_cap: 2376h }      # ≥ longest retain + G + max_copy_time; enforced by bucket policy
+        retention_cap: 2400h }      # ≥ longest retain + G + max_copy_time + 1 day, whole days; enforced by bucket policy
 ```
 
 ## 5. Invariants
@@ -1144,13 +1306,13 @@ stated in the one that owns its subject; the numbers missing here are theirs.
 | S18 | Counts after an import are recomputed from imported refs, never read from the export. |
 | S19 | An import maps principals by opaque ID, never by protocol ID, refuses a collision of principal ID, protocol ID, principal name, share name, share path or netgroup, and carries no secret. |
 | S23 | Every chunk a copying backup's export names lies in a folder block its manifest lists, and that block is byte for byte the namespace's block of that name. A copy reuses only its base's folder blocks, and never one whose census names material being retired. |
-| S24 | At an immutable location DittoFS deletes nothing, every object a backup names is read by its recorded version, and each is locked until at least the backup's completion plus its retention ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)). Elsewhere, a folder block is deleted only by a sweep that runs alone at its folder, from the namespace's claim holder, and finds the block in no manifest of a `complete` or `damaged` backup and in no progress of a `writing` one. Any unreadable export stops the sweep. Material named by a folder's census is never removed. |
+| S24 | At an immutable location DittoFS deletes nothing, every object a backup names is read by its recorded version, and each is locked until at least the backup's completion plus its retention ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep)). Elsewhere, a folder block is deleted only by a sweep that runs alone at its folder, from the namespace's claim holder, and finds the block in no manifest of a `complete` or `damaged` backup and in no progress of a `writing` one, or of a `failed` one whose share exists and has completed no copy there since. Any unreadable export stops the sweep. Material named by a folder's census is never removed. |
 | S25 | A copying backup releases its snapshot only once `complete`. Retention never expires a share's newest complete copying backup at a location. A restore from one re-encodes into a new namespace, checks every chunk against its plaintext hash, and publishes all or nothing. |
 | S29 | An export is sealed and authenticated under its namespace's export key by RFC 5's export cryptography, names in its clear part the export-key and master-key IDs it needs, carries each key record as RFC 5's key table holds it, carries every bound setting, each share's fold rule and entry-digest key, and every netgroup its policy names with its members, and an import refuses any mismatch and any fold rule its binary does not implement. |
 | S30 | A recovery import leaves its namespace's GC paused until the operator states every share recovered or given up. |
 | S31 | A folder record is a fenced lease: a holder acts only under its own lease number, and issues no put or delete once *L* / (1 + ρ) − σ has passed since the read that showed *L* left. Every wait on another process's or installation's timeout is *T* × (1 + ρ) + σ. |
 | S36 | No backup survives losing the master key that wraps its namespace's keys; every export names the master keys it needs, and a master key any retained export names is never destroyed. |
-| S37 | A failed copy is the base of its successor; `max_copy_time` bounds one attempt; a policy is held to its incremental copy, not its first. At an immutable location every put carries its own recorded retain-until within the location's cap, extensions come once per generation, backups are found by listing versions, every state and progress version is authenticated and the one of highest authenticated sequence is read, the location's one health object is written at location creation, and it and the last good backup never age out. |
+| S37 | A failed copy is the base of its successor; `max_copy_time` bounds one attempt; a policy is held to its incremental copy, not its first. At an immutable location every put carries its own recorded retain-until within the location's cap, extensions come once per generation, backups are found by listing versions, every state and progress version is authenticated and the one of highest authenticated sequence is read, the location's one health object is written at location creation, and it, the `keys` object and the last good backup never age out; every retain-until DittoFS sets is at most the call's time plus the cap less one day. A stream is a backup's only when its digest is the one the backup's `complete` state version names. |
 
 ## 6. Test plan and benchmarks
 
@@ -1208,6 +1370,8 @@ failed predecessor's progress.
 | S24 | `S-snap-copy-immutable`: copies to an immutable location — every get by recorded version; a put under an existing name by a stolen credential, then a restore: the restore reads the recorded versions and every file reads back. A copy that took 40 h: every version its manifest names is locked to its completion plus retention, including blocks put in its first hour. Copies keep failing for twice the retention: the last good backup's versions are still locked and it restores. A policy whose period is below its estimated incremental copy is refused `ErrPolicyPeriod`; one below its full copy but above its increment is accepted. A first copy of 40 TiB at 200 MiB/s with `max_copy_time` 48 h: it fails once, its successor builds on its progress, and the share has a complete backup within three attempts; restart each attempt from zero and none completes. Run past the lifecycle age with the health object and the last good backup untouched: the location still opens, and a restore lists versions and finds the backup. Put a newer `expired` state version with a stolen credential: the restore ignores it, since it does not authenticate. Re-put the backup's own authentic `writing` version: the restore reads `complete`, the higher sequence. Copy the first namespace ever to a fresh immutable location: it opens, finding the location's health object by its recorded version. Keep a process up past the lifecycle age plus two generations: the location still opens, and the health object's lock never exceeds the cap. A failed first copy is settled before its successor runs: its progress objects stay and the successor builds on them. Answer one extension in a burst with a throttling reply: the backup completes. |
 | S29 | Flip one byte of an export's clear part, header, a frame and the trailer, and move one frame to another position: each is refused `ErrExportCorrupt`. Read an export without the master key: no file name, chunk ID or principal appears in its bytes. Import with a chunking target, an encrypt flag or a key ID that differs from B's: refused `ErrScopeMismatch` naming it. Import a policy naming netgroup `ops` into a B whose `ops` has other members: refused `ErrNetgroupCollision`; into a B without `ops`: adopted with its members, and a client of the deny list is still denied. |
 | S29 | Restore a catalog backup of a case-insensitive share whose listings clients were paging: every name is found by lookup, and a listing resumed from a cookie taken before the backup continues where it stopped. Draw a fresh digest key or fold rule at import: lookups miss and cookies resume elsewhere. Import an export whose share records a fold rule ID this binary does not implement: refused `ErrScopeMismatch` naming the ID, nothing published and staging empty; key it under the identity rule instead, and a lookup of `readme` misses the file stored as `README`. Check the export's frame nonces: no two frames of one export repeat one. |
+| §2.3 | Put, with one location's put credential, a keys-object version marking the current export key `destroyed`: a recovery import ignores it, reports it naming the location, and publishes; take the union of every version instead, and every later recovery import is refused. Plant a header census entry naming material no key record holds: the import leaves it out and reports it. |
+| §2.4.4 | A copy fails, then its share is removed: the next settle drops the failed copy's progress, marks it `expired`, empties the census, and the namespace drains; keep the progress, and the drain never runs. A namespace re-homed out of N, whose last N-sealed block in N′'s folder is swept while N′'s census stays non-empty: N's drain runs at that settle. At an immutable location with `retain` 90 days, `G` 7 days and `max_copy_time` 2 days, a cap of 100 days: every extension of the last good backup during a run of failed copies is accepted; clamp to now plus the cap instead, and every clamped extension is refused. |
 | S30 | `S-snap-recovery-shared`: a namespace holds a share with a catalog backup and its clone with none, sharing blocks. Recover the share alone: GC deletes, relocates and collects nothing in the namespace, and every block the clone needs survives; after the operator's statement GC runs and the audit is clean. Start GC at publish instead: the clone's blocks are deleted. |
 | S31 | `S-snap-folder-lease`: a sweep pauses past its deadline after its mark; a copy takes the folder and reuses a block the mark left unlisted; the sweep resumes: it deletes nothing, by its lease number and its own clock. Run the sweep's clock 5% slow: it stops by *L* / 1.05 − σ; fence by the deadline alone, without the clock bound, and the sweep deletes the reused block. A recovery import whose clock runs 5% fast against a partitioned old holder's waits two `Recheck` periods × 1.05 + σ by the slow clock; wait two periods plus a fixed margin and both delete for a while. |
 | S36 | Back up an encrypting namespace, rotate its master key, and destroy the old one: refused `ErrMaterialInUse`, naming the backup; expire the backup and the destroy succeeds. Restore the backup on an installation that holds no master key: refused `ErrMaterialMissing`. Back up a non-encrypting namespace, lose the host's disk, and restore from the bucket and the backup with the escrowed master key: every file reads back; without it, the restore is refused `ErrMaterialMissing` though the chunk-ID key is in the bucket. |
@@ -1218,7 +1382,7 @@ failed predecessor's progress.
 | Concern | Counted check |
 | --- | --- |
 | [§3.1](#3.1%20Layout) streaming | Import of a 10⁶-file export holds at most one frame plus bounded batches in memory. |
-| [§3.1](#3.1%20Layout) parts | Write a copying backup whose export exceeds 200 MiB to a fake location refusing any put over 64 MiB: assert the export is stored as parts of at most 64 MiB and a head, and restores. Drop one part, swap two, and substitute a part of another backup's export: each restore fails. Repeat with the head rewritten to match: the swap and the substitution still fail, on the stream's AEAD. |
+| [§3.1](#3.1%20Layout) parts | Write a copying backup whose export exceeds 200 MiB to a fake location refusing any put over 64 MiB: assert the export is stored as parts of at most 64 MiB and a head, and restores. Drop one part, swap two, and substitute a part of another backup's export: each restore fails. Repeat with the head rewritten to match: the swap and the substitution still fail, on the stream's AEAD. Put a new head version for one backup listing every part of another backup's authentic export: restore, `Verify` and the sweep refuse it, since its digest is not the one the state names; trust the head and the restore serves the other backup's tree. Crash the copier between its parts and its head, then abandon the backup: listing the `part/` prefix finds no part left. The sweep of a folder with 90 retained exports reads each one's clear part and manifest section only. |
 | [§2.4](#2.4%20Copying%20backups) increment | A second copy of an unchanged share puts no block. After one changed file, it puts only the blocks holding its new chunks. A sweep lists the folder once. |
 
 ### 6.5 Benchmarks and targets
@@ -1261,7 +1425,8 @@ copy marked `failed`, a backup marked `damaged` and a stopped sweep log at `Warn
 
 ## Appendix A — where the current code differs
 
-Descriptive, for the refactor.
+Descriptive, for the refactor. Its D numbers are shared by RFC 12, RFC 26 and
+RFC 27, which split one list; the numbers missing here are theirs.
 
 | # | This document says | The code today |
 | --- | --- | --- |

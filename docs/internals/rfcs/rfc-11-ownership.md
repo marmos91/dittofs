@@ -430,6 +430,14 @@ shard, and a directory renamed into it keeps its own.
 - **Cost.** One shard record per child of a marked directory, and one slot
   table per installation, whose size is fixed by the slot count, not by nodes or
   shards. A rebalance touches the shards of the moved slots only.
+- **A share lists its shards.** Creating a shard writes, in the same
+  transaction, the share's shard-set key `S‖id‖shs‖shard`
+  ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and the shard's removal
+  deletes that key with the shard record. A walk over a share's shards — share
+  removal's gate ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) — reads that list in bounded
+  batches, each a transaction of at most K keys, rather than every shard record
+  in one transaction: at 10⁵ per-child shards one transaction would track some
+  2×10⁵ keys, past what a store's conflict tracking takes.
 
 **No client operation writes a per-share key.** With 10^5 per-child shards in one share:
 
@@ -503,7 +511,11 @@ it can be fenced before its client addresses are taken over
 **A primary fences itself.** It **MUST** stop acknowledging writes, serving open
 state, serving reads and answering version queries ([§6](#6.%20Reads%20on%20other%20nodes)) once its node lease
 is within the drift bound of expiry by its own clock, or once it has not reached
-the store for half its lease. Each renewal returns the store's time, and a node
+the store for half its lease. A node **reached the store** at the send time of
+its latest store call of any kind — a renewal, a read or a commit — whose reply
+arrived; a node that has stopped renewing, its watchdog having fired, still
+reaches the store through its other calls, and fences by its lease, not by
+reach. Each renewal returns the store's time, and a node
 whose clock differs from it by more than half the drift bound, after allowing
 half the renewal's round trip, fences itself as if its lease had lapsed. A successor **MUST NOT** serve before the old lease plus the
 drift bound has passed on its own monotonic clock since the reply to a read
@@ -529,6 +541,9 @@ per shard, so a takeover starts at most a period after the lease could lapse.
 Every other lease and hold comparison here is of a time a node stored against
 that node's own `Now` — a renewal, a resume, a node's new lease after a mark, a
 participant's hold deadline ([§8.1](#8.1%20Operations%20across%20shards)) — and needs no bound across clocks either.
+A wait is process-local and never persisted: a claimant that restarts, or whose
+read of the expiry record is lost, starts its wait again from the reply to a
+fresh read.
 
 > decision: no wait in the cluster's lease protocol compares one node's stored
 > time with another node's clock, so it needs no bound on the offset between
@@ -660,8 +675,8 @@ batch of files from one shard to another.
 
 **A shard's primary moves** by [RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover): the new primary is first a replica
 that is not a learner; the old one stops writes, grants and reads, drains, and
-names the new one at the next epoch; it hands over the open-state table and the
-dedup table; the new primary re-applies existence and serves with no grace period.
+names the new one at the next epoch; it hands over the open-state table, and the
+new primary finds retries in the durable request records on a miss; it re-applies existence and serves with no grace period.
 A handover whose old primary is lost before it completes becomes a failover.
 
 **Files move between shards in batches.** A subtree can hold more files than one
@@ -720,7 +735,13 @@ one above G's by an ordinary change of R's record and installs it on R's replica
    shipped again under the new epochs.
 4. **Serve.** R's primary re-applies existence for the batch's files, as after a
    takeover ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover) step 5), installs the open-state entries, whose
-   client records already name R, and serves the files. G's
+   client records already name R, and serves the files. A stateid or SMB
+   persistent FileId names the shard that held its record when it was issued
+   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), so the batch's commit also writes, at G, a
+   **forwarding entry** for each moved entry naming R; G answers a call naming
+   one with a routing error that names R, and deletes the entry when the state it
+   names ends. Without it, G answers a moved stateid as bad, breaking the promise
+   that a move hands state over unseen. G's
    primary refuses any later call for them with a routing error, because their
    recorded shard is no longer G, and front-ends re-route.
 5. **Discard.** G's primary sends its replicas a committed point covering the
@@ -781,8 +802,13 @@ never a wrong write, because the check is at the receiver.
 mutations keyed by request ID alone, which is unique across the cluster
 ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) — not by shard or epoch, so a retry that straddles an epoch raise,
 or is re-routed to the shard a file moved to, is still recognised — holding each
-result for at least the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). The table travels with every
-handover and, entry by entry, with the files of every batch. **It also survives a
+result for at least the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). The table is not shipped in a
+handover — at the window's length it holds the peak mutation rate times 900 s,
+gigabytes that would stall the handover's freeze — so a new primary looks a
+retry up on a miss in the durable request records and journal request entries;
+it travels, entry by entry, with the files of every batch. An entry is recorded
+when its mutation is admitted, not when it has a result, so a retry that finds
+it still running waits for that result rather than running again. **It also survives a
 takeover (cluster):** a journal operation's record keeps its request ID and
 result, and the pair outlives the operation's eviction for the retry window
 ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)); every namespace mutation writes a **request
@@ -794,7 +820,9 @@ never applied a second time. The request ID is keyed on the protocol's own
 retry identity, not on the connection, because an NFSv4 client retries only on a
 new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0 it
 is (client address, XID, procedure, checksum of the arguments), as a server's
-reply cache keys a retry; for NFSv4.1 it is (session, slot, sequence ID). A
+reply cache keys a retry; for NFSv4.1 it is (front-end node ID, node epoch,
+session, slot, sequence ID), since each front-end mints its own session IDs and
+nothing makes them unique across front-ends. A
 retry carrying the same identity, on any connection and through any front-end
 that holds the client's address, maps to the same request ID
 ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). An NFSv4.1 retry after its session was lost
@@ -807,7 +835,11 @@ records a health condition on the node. If it persists for the **unreachable
 delay** (`shard.unreachable_delay`), each of the node's shards is handed over to
 a replica the front-ends can reach; a primary that does not complete a handover
 within the **unreachable handover bound** (`shard.unreachable_handover_bound`)
-is refused its next renewal, which turns the handover into a failover. Both are
+is refused its next renewal, which turns the handover into a failover. The
+refusal marks the node record lapsed in the transaction that refuses, as a
+takeover's claim does, so `Resume` fails as `Renew` does and the node acquires a
+new node epoch; an unmarked refusal would be undone by the next `Resume`, which
+rewrites the expiry record and races the replica's claim. Both are
 installation settings ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), proposed at 30 s and 60 s.
 
 > decision: the unreachable delay is not the re-placement delay. That one waits
@@ -919,8 +951,9 @@ commits first, is ordered before the claim if it commits first, and one that
 starts later reads the mark. The guard is a conflict, not a time:
 no check of store time against the lease's expiry fences a commit, because a
 store whose commit path chooses the commit timestamp after the check could land
-the commit past the expiry. Store time decides only when a lease has lapsed
-([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). Every commit of a node guards one record, and guards are shared, so
+the commit past the expiry. Whether another node's lease has lapsed is decided
+by a wait on the claimant's own clock from a read that saw the expiry record
+unchanged since ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)), never by comparing that expiry with `Now`. Every commit of a node guards one record, and guards are shared, so
 they never contend with each other; renewals write another record.
 
 Fenced commits are existence ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)), offload ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)),
@@ -1188,7 +1221,7 @@ node epoch 3, lease expiry E; replicas B and C.
 | t | node A | node B | metadata store | client sees |
 | --- | --- | --- | --- | --- |
 | 0 | S(e5); begins commits for `f` and `g`, then freezes | — | S: e5, (A, 3); fences `f`, `g` (S, e5) | — |
-| 1 | — | after E + drift in store time, takes S over | one txn: A's node record marked lapsed at 3; S: e6, (B, 5); C | writes resume at B |
+| 1 | — | after the lease plus the drift bound on its own clock, from a read that saw A's expiry record unchanged since, takes S over | one txn: A's node record marked lapsed at 3; S: e6, (B, 5); C | writes resume at B |
 | 2 | — | writes `f`, writing its fences first | fence `f` (S, e6); `g` untouched | — |
 | 3 | resumes; its commit for `g` arrives, guarding A's node record | — | refused: the record is marked lapsed, though fence `g` is still (S, e5) | `g` intact |
 | 4 | its commit for `f` arrives | — | refused: (S, e5) ≠ (S, e6) | `f` has B's write |
@@ -1223,8 +1256,18 @@ type Shards interface {
 	// the node record, at the same node epoch, by writing the record unmarked
 	// and, in the same transaction, swapping each journal generation as Renew
 	// does; it conflicts with any claim marking it (§3.1). The node serves
-	// nothing from a journal in lost. ErrLeaseExpired once marked.
+	// nothing from a journal in lost. ErrLeaseExpired once marked, including
+	// by the unreachable handover bound's refusal (§5.1).
 	Resume(ctx context.Context, node NodeID, nodeEpoch uint64, gens map[JournalID]uint64) (expires time.Time, lost []JournalID, err error)
+	// Relinquish marks the caller relinquished in the shard record at the next
+	// epoch, by compare-and-swap, after it has stopped serving the shard and
+	// ended its fenced commits and put intents for it (RFC 10 §7.2).
+	Relinquish(ctx context.Context, c Claim) error
+	// AckLost records an operator's acknowledgement that a relinquished
+	// shard's replicas are lost, which lets the relinquishing node or a node
+	// holding its journal claim it (RFC 10 §7.2, RFC 0 §10.2). Refused unless
+	// the record marks the shard relinquished.
+	AckLost(ctx context.Context, s ShardID, epoch uint64) error
 	// Move moves files from one shard to another in batches, resuming from the
 	// move record of the pair (§4).
 	Move(ctx context.Context, from, to ShardID, files iter.Seq[FileID]) error
@@ -1263,7 +1306,7 @@ var (
 | O3 | A shard record names its primary as (node, node epoch); a node whose lease lapsed is primary of nothing until it takes a shard over. |
 | O4 | A file's shard is set at create and changes only by a batched move; every file is in exactly one shard between batches. |
 | O5 | A node other than the primary, a replica included, serves only bytes carrying the version the primary names; a learner serves none. |
-| O6 | A stale route costs a refusal and a retry, never a wrong write; a retry is answered from the dedup table, keyed by request ID alone and handed over with every handover and batch. |
+| O6 | A stale route costs a refusal and a retry, never a wrong write; a retry is answered from the dedup table, keyed by request ID alone, looked up on a miss in the durable request records after a handover and moved with the files of every batch. |
 | O7 | A failover starts grace for the shard and releases nothing before it ends; a handover or batch move hands open state over and starts none. |
 | O8 | The write verifier changes whenever the shard incarnation or the journal's loss generation changes, and is derived from no shard epoch; the shard incarnation rises every time a node begins serving the shard as primary, and on nothing else. |
 | O9 | Shard records and client state share no records. |
@@ -1373,7 +1416,7 @@ a claim or address mark waited out the claim hold.
 | `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline, each deleting its hold record; a late commit is refused |
 | `S-shard-cross-hold-release` | a participant releases an expired hold while the coordinator's commit is in flight, the release committing first, on a store that chooses the commit timestamp after the commit's reads; the commit conflicts with the deletion of the hold record and aborts, and the deny-delete open the participant then grants stands |
 | `S-shard-cross-dir-loop` | two cross-shard directory renames that together would make a cycle: one commits |
-| `S-shard-readdirplus-foreign` | a listing shows children in other shards at their flushed size, never older |
+| `S-shard-readdirplus-foreign` | a listing shows children in other shards at a size no older than the existence age behind their flushed size ([§6](#6.%20Reads%20on%20other%20nodes)) |
 | `S-shard-store-stall-resume` | the store stalls for one and a half node leases ([RFC 13](rfc-13-configuration.md)) with every node healthy; assert no shard fails over, no grace runs, and every write verifier is unchanged afterwards. A design where every lapsed lease is replaced fails over every shard |
 | `S-shard-resume-vs-claim` | a primary's resume and a replica's claim race on one node record; assert exactly one commits, and a resumed primary serves only if the claim lost |
 | `S-shard-journal-stall` | a primary's journal device stops completing syncs while the node still reaches the store; assert it stops renewing after the stall bound and a replica takes over. A health check by store reachability alone keeps the shard stuck |
@@ -1381,7 +1424,7 @@ a claim or address mark waited out the claim hold.
 | `S-shard-retry-after-takeover` | a namespace mutation and a write each lose their reply; the primary fails over after the write's content was offloaded and evicted; the client retries through the same front-end on the same connection; assert each is answered with its first result and applied once. A request entry dropped with the evicted content applies the write twice |
 | `S-shard-raise-live-primary` | a replica joins, then a learner is cleared, under a live primary with existence commits and puts in flight; assert every commit lands at the new epoch after the primary rewrites the touched files' fences, GC removes none of its intents, and no ref names a removed object. A design where only a new primary writes fences refuses every commit after the raise; one that supersedes intents by epoch leaks a dangling ref |
 | `S-shard-resume-rollback` | image a primary's VM while it holds its lease, let the lease lapse with no takeover, restore the image; assert its resume's generation swap loses, it serves nothing from that journal, and the shard fails over with every acknowledged write. A resume that skips the swap serves the rolled-back journal under the old verifier |
-| `S-shard-stall-renew-phase` | stall the store for one and a half node leases with every node's renewal timer just past its last attempt; assert every node's first renewal after the stall lands within the jitter, no node marks another lapsed within the hold, and no shard fails over. A renewal retried only at the period, or a hold of one period, fails over shards |
+| `S-shard-stall-renew-phase` | stall the store for one and a half node leases with every node's renewal timer just past its last attempt; assert every node's first renewal after the stall lands within one renewal period of the store's return, no node marks another lapsed within the hold, and no shard fails over. A claim hold of one period, as the failing control, fails over shards |
 | `S-shard-repair-one-join` | lose the first replica of a per-child shard's slot; let repair restore the count, then let the node leave the placement set; assert the recomputed slot names the node repair joined, and the shard saw one join and one tail copy |
 | `S-shard-verifier-roundtrip` | hand a shard A → B → A with no restart; assert the write verifier A gives the second time differs from the first. A verifier from node, node epoch and process instance alone repeats |
 | `S-shard-slot-domains` | four nodes in two racks, replica count 2; assert every slot's nodes lie in different racks, and that a rack loss leaves every shard a replica |

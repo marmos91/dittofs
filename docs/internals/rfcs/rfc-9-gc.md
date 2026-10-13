@@ -1158,8 +1158,9 @@ per second; with 1% of bytes rewritten a day the incremental passes read about
 2,000 per second, and the 90-day full pass about 1,450 per second more.
 
 > ponytail: the full pass still point-reads every ref, and the lowering it gates
-> waits up to `gc.audit.forward_period`, so a count left high by a defect holds
-> its block that long. Upgrade to letting incremental passes gate lowering, once
+> waits for a full pass that starts after the suspect count, so a count left
+> high by a defect holds its block up to about two `gc.audit.forward_period`s —
+> about 180 days at the 90-day period — not one. Upgrade to letting incremental passes gate lowering, once
 > every path that deletes a `CR` key is shown to write or re-read its ref in the
 > same transaction, when the full pass shows in a profile or held leaks show in
 > the space-amplification benchmark.
@@ -1416,6 +1417,17 @@ a fixed short period (proposal: 5 min), independent of any other GC work, and
 also reads the namespace claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
 it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
 
+**Drift is a differing read, not an error.** A `Recheck` call that fails with a
+transient error — a throttle, a 5xx, a timeout — is retried as any small call
+is ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), and a `Recheck` that still cannot read a setting records
+`passed` false without `drift`. Drift is raised only by a read that returns a
+setting differing from what the store requires, or after two consecutive
+periods whose `Recheck` could not read ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). A single unread period
+only defers deletes and copies, since the deleter needs the last `Recheck` to
+have passed (below); puts go on. Raised on any error, one 503 would make the namespace's put
+direction unhealthy for a period, and a share at its journal limit would answer
+no space meanwhile, for a cause that clears by itself.
+
 **The claim is read before it is rewritten, and the nonce is recorded before it
 is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
 ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) **MUST** first read the claim and compare its nonce with the last
@@ -1533,7 +1545,11 @@ continue into such a store once it drifts.
 A namespace is deleted only when nothing can name its blocks again: no share's
 `Namespaces` names it, no parked ref does ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), no retained catalog
 backup does ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), and no folder record of the namespace
-(`NS‖ns‖bk‖`, [RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) holds a non-empty census. A complete copying
+(`NS‖ns‖bk‖`, [RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) holds a non-empty census or still lists a block a
+copying backup holds — in a plaintext namespace the census names no material,
+so it is empty while copies still list blocks, and the listing is what keeps
+the folder sweepable. This is the one drain gate: RFC 16's step 7, RFC 26 and
+RFC 27 cite it rather than restate it. A complete copying
 backup has released its use record, and its folder record is all that says it
 still needs the namespace's keys, claim and sweep. The check reads each of
 these with tracking — the parked refs, use records and folder records by
@@ -1550,7 +1566,10 @@ The check runs in the transaction that removes the last thing it reads:
 - a catalog backup's expiry, which deletes its use record, and a folder sweep's
   settle, which empties a folder record's census ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep));
 - the parked-ref prune ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace));
-- the deletion of a retired share's last detached snapshot ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)).
+- the deletion of a retired share's last detached snapshot ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting));
+- a folder sweep's settle in **any** namespace that removes the last listing of
+  this namespace's material — a drain stopped at step 2 by another
+  namespace's folder re-runs step 2 here, not at the next restart.
 
 A namespace any of them still names stays as it is until the one that removes
 the last runs the check. Then:
@@ -1559,15 +1578,33 @@ the last runs the check. Then:
    block retires and the deleter deletes it after its verification
    ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)). Nothing is deleted by listing or by prefix: draining
    is ordinary collection with nothing left alive.
-2. Once no block record remains and trash has been emptied ([§3.7](#3.7%20Trash)),
-   the namespace's keys are destroyed through the census rule of
+2. Once no block record remains, trash has been emptied ([§3.7](#3.7%20Trash)) and the
+   namespace's put-intent prefix `I‖ns‖` is empty, the namespace's keys are
+   destroyed through the census rule of
    [RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census). Its own census and folder censuses are empty by then, but
    a copying backup taken during a re-home out of this namespace copied its
    blocks, still sealed under this namespace's keys, into the other namespace's
    folder ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)). So a key that a folder record of any namespace
    lists, or that a retained export names, stops the drain here rather than
    being destroyed, and the sweep that removes the last such listing runs this
-   step again.
+   step again. The check is **one check before any `Remove`**, decided once
+   and applied to all of the namespace's keys or to none — data key, chunk-ID
+   key, chunking key, each retired one ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). It is not one
+   transaction: it reads every namespace's folder census in batches within K,
+   and every retained export's material list as the metadata store's backup
+   state records it, never by reading a backup location. It first rewrites the
+   drain mark, which every copy that adds a census entry for this namespace's
+   material reads with tracking ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)); the transaction that
+   removes the keys re-reads the mark with tracking, so a census entry added
+   since the check began aborts it, and the check runs again. If any entry or
+   export names any key, it removes none. Checked one key at a time,
+   a step that stops at the data key has already destroyed the chunk-ID and
+   chunking keys, which no census lists, and the other namespace's retained
+   backups can then be neither verified nor restored.
+   Put intents are waited for because a share removed mid-re-home leaves
+   objects named only by intents; the drain abandons them at once rather than
+   waiting for their epoch to be superseded ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)), and the abandonment's
+   deleter still holds the claim, which step 3 deletes only after.
 3. The claim and the other control objects are deleted, then every
    `NS‖ns` record, last of all the drain mark.
 

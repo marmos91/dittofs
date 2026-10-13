@@ -48,8 +48,8 @@ order: each part builds on the ones before it.
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
 | RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
-| RFC 21 | NFS | planned | decisions the NFS standards leave open; drafted on the `docs/rfc-21-22-protocols` branch and not yet rebased on this set, so its error table, stable-write and grace rules still predate RFC 8, RFC 14 and RFC 17 |
-| RFC 22 | SMB | planned | decisions the SMB standards leave open; drafted beside RFC 21 on the same branch, with the same rebase pending |
+| RFC 21 | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
+| RFC 22 | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
@@ -82,8 +82,8 @@ graph LR
   R9["9 GC"] --> R2 & R3 & R4 & R5 & R6 & R8
   R10["10 journal replication"] --> R1 & R6 & R8 & R11 & R16 & R28
   R11["11 shards"] --> R1 & R6 & R7 & R8 & R10 & R14 & R15 & R16 & R28
-  R12["12 snapshots"] --> R1 & R2 & R4 & R6 & R7 & R8 & R9 & R10 & R11 & R13 & R16
-  R13["13 configuration"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R15 & R16 & R26 & R27 & R28
+  R12["12 snapshots"] --> R1 & R2 & R4 & R6 & R7 & R8 & R9 & R10 & R11 & R13 & R16 & R17 & R26 & R27
+  R13["13 configuration"] --> R1 & R2 & R3 & R4 & R5 & R7 & R8 & R9 & R10 & R11 & R12 & R15 & R16 & R26 & R27 & R28
   R14["14 open state"] --> R7 & R11 & R15 & R16
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
@@ -96,7 +96,7 @@ graph LR
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
+Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 12 ↔ RFC 26, RFC 12 ↔ RFC 27, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 26 ↔ RFC 27.
 
 ## Conventions
 
@@ -141,9 +141,9 @@ every RFC of this set are to be interpreted as in RFC 2119.
   identifiers and package names are not, and an implementation may name and
   shape them differently.
 - A number inside a **MUST** is either a fixed value or a setting's default, and
-  [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) lists which. That audit is not finished: about
-  forty-six such sentences have not yet been checked against the list, and until
-  they are, a number in a rule that RFC 13 does not list is a proposal.
+  [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) lists which, each proposed row naming the measurement that
+  settles it. A number in a rule that RFC 13 does not list is a proposal and a
+  defect against that RFC, closed by adding the row.
 - `ponytail:` notes mark a deliberately simple design and name what would justify
   replacing it; `decision:` notes mark a deliberately narrow rule and name what
   would overturn it.
@@ -238,9 +238,13 @@ target is stated against something measured on the same box (the filesystem,
 the hash, the link), so it holds on any hardware.
 
 **A proposed target is replaced once, by measurement.** A benchmark target or a
-setting's default an RFC marks proposed is a starting value. The first run on
-the reference box replaces it with the measured value plus headroom, stated
-beside the result. A proposed target that first run misses is a design finding
+setting's default an RFC marks proposed is a starting value, and the two settle
+differently. A **benchmark target** is replaced by the first run on the
+reference box with the measured value plus headroom, stated beside the result.
+A **setting's default** — a set-point such as the chunking Target or a space
+amplification target — takes the value its RFC 13 row's settling measurement
+selects (a sweep, a trace, a per-service or per-client-OS run), wherever that
+measurement runs; it has no headroom and no miss. A proposed benchmark target that first run misses is a design finding
 against the RFC that states it, not a number to relax: the design is changed, or
 the target is withdrawn with its reason recorded, before the measured value
 becomes the baseline. Every RFC's proposed targets follow this rule, and its
@@ -282,13 +286,16 @@ than a private one per RFC.
    from one clock interface (now, timers, and, under test, advance and skew).
    Every fault seam implements one fault interface: fail, delay, drop, tear or
    reorder a named operation, on a seeded schedule read from that clock. The
+   interfaces' signatures are [RFC 8](rfc-8-engine.md#2.%20Composition)'s, which composes the node, and every
+   component takes them from there rather than defining a private clock. The
    seams are the journal's storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), the fake store
    ([RFC 3 §1.4](rfc-3-syncer.md#1.4%20It%20is%20testable%20on%20its%20own)), the fault transport under a real store client
    ([RFC 4 §7.2](rfc-4-remote-tier.md#7.2%20Fault%20transport)) and the fault-injecting store wrappers
    ([RFC 16 §6.4](rfc-16-metadata-store.md#6.4%20Faults%20and%20crashes)). A seam with a private clock cannot take part in a
    check that skews time across components, such as RFC 0's clock made 5% fast.
 2. **One composed single-node harness.** The production composition root
-   ([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role), [RFC 8 §2](rfc-8-engine.md#2.%20Composition)) builds the node, with the journal's
+   ([RFC 8 §2](rfc-8-engine.md#2.%20Composition), which a first-release node follows without the deferred
+   [RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role)) builds the node, with the journal's
    storage seam, the fault-injecting metadata store and the fault transport put
    in place of the device, the store and the network, and nothing else swapped.
    Every first-release check that crosses components runs on it:
@@ -314,7 +321,12 @@ than a private one per RFC.
    | real Windows and Linux SMB clients | daily | single node, once a day against a real remote service as well |
 
    The protocol RFCs (RFC 21 and RFC 22) own which tests each
-   suite must pass; this table owns only when they run and against what.
+   suite must pass and each suite's known-failure list, every entry naming the
+   decision that makes it fail; this table owns only when they run and against
+   what. A protocol check that tests a single-node rule runs here, on one node,
+   even where a cluster row tests the same rule across a failover: a row mixing
+   the two is split, so a single-node rule — a restart's grace and its reboot
+   tests included — never loses its only wire check to the deferred cluster.
 
 ### Today's suites, mapped to the tiers
 

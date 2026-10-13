@@ -120,10 +120,10 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
   bucket reader who can cause no write into it cannot confirm a file by hashing
   it; in a non-encrypting one the key is in the clear and nothing is hidden.
   An encrypting namespace also keys where boundaries fall, which hides which
-  known file a run of chunk lengths belongs to — the lengths themselves stay
-  visible to a bucket reader — and only from a reader who cannot get content of
-  their choosing into the namespace
-  ([§6](#6.%20Boundaries%20are%20public)). A non-encrypting namespace cuts under the public, unkeyed table.
+  file a run of chunk lengths belongs to only from a bucket reader who can cause
+  no write into the namespace **and knows none of its stored content**; anyone
+  who knows some stored content can map the keyed table, so in practice it hides
+  little ([§6](#6.%20Boundaries%20are%20public)). A non-encrypting namespace cuts under the public, unkeyed table.
 
 ### How the rest is organised
 
@@ -1300,7 +1300,9 @@ One is open:
   frozen only once [Appendix C](#Appendix%20C%20%E2%80%94%20choosing%20the%20target)'s measurement plan has run through the real offload
   path, before the first release writes content under it. A different default
   is adopted if it beats 256 KiB on that path by more than the whole-file
-  baseline's margins.
+  baseline's margins. `Target` is a set-point, not a benchmark target: the
+  index's "measured value plus headroom" rule does not apply to it, and its
+  default is whatever that sweep selects.
 
 Settled:
 
@@ -1309,7 +1311,8 @@ Settled:
 2. **Whether `Min` survives:** as a derived bound, `Target / 4`, not a setting.
 3. **How much [§6](#6.%20Boundaries%20are%20public) gives away:** every chunk's length, to any bucket reader; an
    encrypting namespace keys its boundaries, which hides which file the lengths
-   belong to from passive observers only.
+   belong to only from a bucket reader who can cause no write and knows none of
+   the namespace's stored content ([§6](#6.%20Boundaries%20are%20public)).
 4. **Chunk IDs** are keyed per namespace from the first release ([§4.1](#4.1%20A%20chunk)).
 5. **The block target:** default 4 MiB, from 1 MiB to 64 MiB ([§5.2](#5.2%20Packing%20rules)).
 

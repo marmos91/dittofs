@@ -807,10 +807,20 @@ and material.
   those copies useless, and [Appendix B.2](#B.2%20Keys) refuses that while a retained export
   names it.
 
-**A drained namespace's keys go last.** When a namespace no share names is
-drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), its keys are removed by this same rule once its
-blocks are deleted, and T19 still holds: a key a retained export or any
-namespace's folder record names stops the drain rather than being destroyed.
+**A drained namespace's keys go last, all or none.** When a namespace no share
+names is drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), its keys are removed by this same rule once its
+blocks are deleted, and T19 still holds. The check is one check before any
+`Remove`, not one transaction: it reads every namespace's folder census in
+K-bounded batches, and every retained export's material as the metadata store's
+backup state records it, never by reading remote locations. If any of them
+names **any** of the namespace's material, the drain destroys none of it and
+stops; it destroys all of it only when the whole check passed and a re-read of
+the namespace's fence shows no census entry naming its material appeared since
+the check began ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)).
+Folder censuses list transform material only, so a key-by-key check would
+destroy the chunk-ID key and the chunking key, which no census lists, before the
+data key stopped it, and leave another namespace's retained backups of these
+blocks neither verifiable nor restorable.
 
 ### 5.4 Changing an algorithm is adding a transform
 
@@ -945,6 +955,11 @@ alike. A new transform gets it by registering.
 | T20 | Destroy a data key while the journal still holds some chunks its blocks cover: a decode of a remote-only chunk returns `ErrMaterialDestroyed`, the codec's verification-failure counter does not move, the engine reports those chunks Lost; the chunks still held locally are not evicted, are offloaded again under the current key, and read back. |
 | T21 | Encode a block of an encrypting namespace: no unkeyed hash of any of its chunks appears in its bytes; its header's chunk IDs are the keyed ones block metadata records, and ranged reads at block metadata's ranges still verify. Scan the block for the clear envelope: every body's offset and length is found, as [B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) states, so no test or text claims lengths hidden. |
 | [Appendix B.2](#B.2%20Keys) | Rotate the data key after the last catalog backup, relocate that backup's blocks under it, then lose the metadata store: the recovery import loads the new key records from the bucket's `keys` object and every file reads back. Fail the put to one backup location during a rotation: the new key becomes current once the bucket's `keys` put succeeds, and the next backup to that location is refused until its `keys` object holds every key record. Fail the bucket's `keys` put: the old key stays current. Rotate a key-file master key without its escrow check: refused with `ErrNotEscrowed`. |
+| [Appendix B.2](#B.2%20Keys) | Add to one backup location's `keys` object a version marking the current data key, chunk-ID key and export key destroyed, with no keys MAC or a MAC under a key the installation never issued: a recovery import ignores it, reports the location's health condition naming it, and restores. Two rotations started at once: the object's last version holds both records. A destroy with every location unreachable: it returns once the bucket's put succeeded. |
+| [Appendix B.2](#B.2%20Keys) | Rotate the export key, then forge a `keys`-object version MAC'd under the retired key that marks the current keys `destroyed`: a recovery import that finds any authenticated version under the new key ignores it and restores. A copier and a rotation writing one location's object at once: the object's versions carry distinct, rising sequences and the last holds both records. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key-service provider whose service rotates a key in place: the next wrap reports a new version-qualified ID, every key record is re-wrapped under it, and the old ID's destroy check refuses while a retained export names it. An alias retargeted to another key: the same. |
+| [Appendix B.3](#B.3%20Rotation) | Rotate the export key, then forge a state version and an export under the retired key: once the location has been reached after the rotation, a reader ignores the forged state version (a re-sealed one under the new key authenticates) and refuses the forged export (no newer export lists its digest); a genuine pre-rotation export is accepted. |
+| [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Drain a namespace whose data key another namespace's folder census still names: the drain removes none of its keys, the chunk-ID and chunking keys included. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Write a backup's state as `writing`, `complete`, then `damaged`; re-put the authentic `complete` version on top: the reader takes `damaged`, by sequence. Two field lists that join to the same bytes without length prefixes give different MACs. The golden vectors cover the sealed header, the progress MAC, and a state MAC over a nonzero expiry time. Change a `complete` version's expiry time and keep its tag: it fails to authenticate. |
 | [Appendix B.2](#B.2%20Keys) | Hand the put intent step a plan whose chunk IDs were computed under another namespace's chunk-ID key: refused, and nothing is put. |
 
@@ -1020,7 +1035,7 @@ compresses each chunk twice.
 > ([§3.2](#3.2%20Configuration)). Keep the measuring pass's bodies for the send, within the syncer's
 > memory bound, when the second compression shows in a put profile.
 
-**Settings.** `level` (proposal: 3 for zstd, zstd's own default; LZ4 has none).
+**Settings.** `level` (proposal: 3 for zstd, zstd's own default; LZ4 has none). A zstd level **MUST** be within −128 to 22, the range one signed byte holds and the top of zstd's own scale; a configuration outside it is refused when the chain is built ([§2.7](#2.7%20Failures)). zstd accepts negative levels down to −131072, but nothing below −128 is worth a wider key.
 Its `LengthKey` is the level as one signed byte, two's complement, for zstd, and
 empty (*k* = 0) for LZ4. It changes the output,
 so it is in the chain ID ([§2.8](#2.8%20The%20chain%20ID)). Changing it affects the next write only.
@@ -1073,6 +1088,7 @@ derived under a label another derivation uses:
 | `dittofs export mac v1` | export key and the export's salt | the key authenticating an export's clear part, header, sections and trailer |
 | `dittofs export state v1` | export key and the backup's ID | the key authenticating each version of a backup's state object ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)) |
 | `dittofs export progress v1` | export key and the backup's ID | the key authenticating each version of a running copy's progress objects ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)) |
+| `dittofs keys object v1` | export key and the namespace's ID | the key authenticating each version of a `keys` object, in the bucket and at every backup location ([Appendix B.2](#B.2%20Keys)) |
 | `dittofs key check v1` | any material | its fingerprint ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) |
 
 **Export cryptography.** An export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) is sealed with the same AEAD
@@ -1094,9 +1110,11 @@ header MAC  = HMAC-SHA256(mac key, "header" ‖ clear MAC ‖ sealed header)
 section MAC = HMAC-SHA256(mac key, "section" ‖ section index ‖ section type ‖ record count ‖ each frame's tag)
 trailer MAC = HMAC-SHA256(mac key, "trailer" ‖ clear MAC ‖ header MAC ‖ every section MAC, in order)
 state key   = HKDF-SHA256(export key, salt = backup ID, info = "dittofs export state v1"), 32 bytes
-state MAC   = HMAC-SHA256(state key, backup ID ‖ state ‖ sequence ‖ export digest ‖ time ‖ expiry time ‖ key count ‖ each master-key ID it names, in ID order)
+state MAC   = HMAC-SHA256(state key, backup ID ‖ state ‖ sequence ‖ export digest ‖ manifest MAC ‖ export head version ‖ time ‖ expiry time ‖ key count ‖ each master-key ID it names, in ID order)
 progress key = HKDF-SHA256(export key, salt = backup ID, info = "dittofs export progress v1"), 32 bytes
 progress MAC = HMAC-SHA256(progress key, backup ID ‖ batch ‖ sequence ‖ SHA-256 of the progress body)
+keys key    = HKDF-SHA256(export key, salt = namespace ID, info = "dittofs keys object v1"), 32 bytes
+keys MAC    = HMAC-SHA256(keys key, namespace ID ‖ sequence ‖ export key ID ‖ SHA-256 of the key records)
 ```
 
 **Every joined field is length-prefixed.** In every AAD and MAC input of this
@@ -1148,6 +1166,15 @@ It covers the expiry time for the same reason: expiry runs from the time the
 state object records ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), so a put credential that could
 rewrite an unauthenticated time could expire a retained backup early. `time` is
 when the version was written; `expiry time` is zero until the backup completes.
+`manifest MAC` is the export's manifest section MAC, which the sweep checks in
+place of the whole stream's digest ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)); `export head version` is the version the location stored for the export's head
+object (empty at a mutable location, and until the head is put), so the state
+version that marks a backup complete names the one head that is its export: a
+head version added later for the same backup, listing another backup's parts,
+or a second authentic export from a restarted copier, is not that backup's
+export, and a reader accepts a stream only when its trailer's digest (for the
+sweep, its manifest section's MAC) equals the one this MAC covers
+([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)).
 
 **State and progress versions are ordered by their authenticated sequence.** A
 writer raises `sequence` by one at every write of a backup's state object, and
@@ -1156,7 +1183,9 @@ that authenticates, the one with the **highest sequence** — never the newest b
 the store's order or time, which anyone holding the location's put credential
 can change by re-putting an older authentic version
 ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)). A state's transitions are monotone — `writing`, then
-`complete`, then `damaged` or `expired` — and a write that would go back is
+`complete` or `failed`; `complete`, then `damaged` or `expired`; `failed`, then
+`expired` once its progress is no longer a base for a later copy
+([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)) — and a write that would go back is
 refused, so a replayed `complete` cannot hide a later `damaged`, nor a replayed
 `writing` unmake a `complete`.
 
@@ -1190,8 +1219,18 @@ stored wrap = provider kind (1 byte: 0x01 key file, 0x02 key service)
 
 For the key file the wrap bytes are nonce ‖ ciphertext ‖ tag and the master-key
 ID is a minted ID's bytes; for a key service they are exactly what the service
-returned, never parsed, and the master-key ID is the service's key identifier
-as its ASCII bytes. The AAD reaches each provider's input as follows: the key
+returned, never parsed, and the master-key ID is the **immutable,
+version-qualified identifier the service reports for that wrap**, as its ASCII
+bytes — the service's full resource name of the key version, or a key name
+with its key version where the service names versions that way — never an alias or a key
+name that a later rotation retargets. A service that rotates a key in place
+then wraps under a new version with a new ID, which the provider treats as a
+master-key rotation ([B.3](#B.3%20Rotation)): every key record is re-wrapped under it, so the
+old version can be destroyed in the service only once the destroy check of
+[B.2](#B.2%20Keys) passes for its own ID. Under a name that stays the same across
+versions, nothing would re-wrap, and destroying an old version in the service
+would silently make every record and export wrapped under it unopenable, past
+any check here. The AAD reaches each provider's input as follows: the key
 file passes the AAD bytes to AES-256-GCM-SIV; a service that takes
 authenticated data as bytes gets the same bytes; a service that takes it as a
 string map gets the one entry `dittofs-wrap-aad` → the AAD bytes in lowercase
@@ -1271,10 +1310,12 @@ table from a key there.
 > later holds no unkeyed hash. Wrap it only if non-encrypting namespaces are ever
 > required to hide content from a bucket reader, which needs encryption anyway.
 
-**What a keyed ID claims, and to whom.** A keyed chunk ID and
-keyed boundaries stop a bucket reader confirming that a namespace holds a known
-file only **in an encrypting namespace, against a reader who can cause no write
-into it**. In a non-encrypting namespace the bodies and the chunk-ID key are both
+**What a keyed ID claims, and to whom.** A keyed chunk ID stops a bucket reader
+confirming that a namespace holds a known file only **in an encrypting
+namespace, against a reader who can cause no write into it**. Keyed boundaries
+claim less: only against a reader who can cause no write **and knows none of the
+namespace's stored content**, since known content maps the keyed table
+([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)). In a non-encrypting namespace the bodies and the chunk-ID key are both
 readable, and nothing is hidden. In an encrypting one, a reader who can also
 cause a write — a co-tenant share of the namespace, a sender whose mail lands in
 a profile container — writes a candidate and compares: chunk IDs and bodies
@@ -1295,9 +1336,14 @@ off the host:
   a backup policy for any namespace of the configuration, is refused
   (`ErrNotEscrowed`), naming the key.
 
-The check is per key, not per provider: a key-file master key becomes
-`current`, at creation or by rotation ([B.3](#B.3%20Rotation)), only once its own escrow check
-has passed, and is refused with `ErrNotEscrowed` otherwise. A rotated key with
+The check is per key, not per provider: where the rule above applies — a
+namespace of the configuration encrypts or takes catalog backups — a key-file
+master key becomes `current`, at creation or by rotation ([B.3](#B.3%20Rotation)), only once
+its own escrow check has passed, and is refused with `ErrNotEscrowed` otherwise.
+A configuration none of whose namespaces encrypts or takes catalog backups
+needs no escrow, and gaining its first such namespace or policy is refused
+until its current master key has passed the check. This paragraph and the one
+above are the one statement of the escrow rule; other RFCs cite it. A rotated key with
 no escrow would leave every key record re-wrapped under it held only on the host.
 
 **No storage-key fallback.** A namespace key is wrapped only under a master key
@@ -1333,11 +1379,34 @@ backup's chunks, which is in the bucket, beside its `keys` object. The call that
 rotates or re-wraps owns these puts: it makes them through the namespace's
 remote store, retries them with backoff, and returns once the bucket's put has
 succeeded, leaving the location puts to the next copy's check.
+**Every version of a `keys` object is authenticated.** Each carries a sequence,
+raised by one at every write, and the keys MAC ([B.1](#B.1%20How%20a%20chunk%20is%20encrypted)) under the export key
+current when it was written, whose ID it names. One call writes the object at a
+time: every writer — rotation, re-wrap, destroy, and a copier bringing a
+location's object up to date before its copy — takes the namespace's key lock in
+the metadata store, reads that target object's last sequence from it, and
+writes the whole object from the key records under it at the next sequence, so
+two writers never drop each other's record or put one sequence twice
+([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects), [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A destroy
+owns its puts as a rotation does: it makes the bucket's put and returns once it
+has succeeded, leaving the location puts to the next copy's check.
 A recovery import loads key records from there as well as from the export
-([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), taking the union by key ID of every version it finds, each checked by
-its unwrap and its fingerprint. A key any source marks `destroyed` stays
-destroyed: the mark is a rewritten key record and reaches the same objects, so
-an older version elsewhere never brings a destroyed key back. Without this, a key rotated after the last backup —
+([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), taking the union by key ID of every version it finds that
+**authenticates**: its export key unwraps under a master key the installation
+holds, and its keys MAC verifies under it; each wrapped record is then checked
+by its unwrap and its fingerprint. **A version authenticated only under a
+retired export key is ignored once any version under a newer export key
+authenticates**, as a state version is ([B.3](#B.3%20Rotation)), and a `destroyed` mark is
+honoured only from a version under the current export key or under a key that a
+newer authenticated version vouches for: a leaked retired export key plus one
+location's put credential then cannot plant the marks. A version that does not authenticate is
+ignored and reported as a health condition of the location, naming it. A key an
+authenticated version marks `destroyed` stays destroyed: the mark is a
+rewritten key record and reaches the same objects, so an older version
+elsewhere never brings a destroyed key back. A destroyed record carries no wrap
+to check and its fingerprint can be copied from a genuine one, so only the MAC
+stops a holder of one location's put credential from adding a version that
+marks the current keys destroyed and refusing every later recovery import. Without this, a key rotated after the last backup —
 under which relocation may since have re-encoded that backup's blocks — would
 be held only by the metadata store that was lost, and the whole namespace with
 it, not only the day's writes.
@@ -1389,7 +1458,7 @@ construction if it cannot get the current data key ([§2.7](#2.7%20Failures)).
 
 ### B.3 Rotation
 
-There are four rotations, and they cost different things:
+There are three rotations, and they cost different things:
 
 - **Rotating a master key re-wraps.** A new master key becomes current; every
   namespace key wrapped under the old one is unwrapped and wrapped again under
@@ -1398,7 +1467,7 @@ There are four rotations, and they cost different things:
   master key can be destroyed only once no key record names it, no retained
   export does and no move pins it ([B.2](#B.2%20Keys)): it stays held, retired, until the
   last backup that carries its wrapping expires. The new key becomes current only
-  after its escrow check, and each re-wrapped record only once it has reached the
+  after its escrow check where [B.2](#B.2%20Keys) requires one, and each re-wrapped record only once it has reached the
   bucket's `keys` object ([B.2](#B.2%20Keys)); a backup location receives it before its next
   backup starts. This is the rotation a
   compliance schedule usually asks for.
@@ -1413,21 +1482,29 @@ There are four rotations, and they cost different things:
   the old one is `retired`, still held, and carried, wrapped, in every later
   export, so the newest export alone opens the older ones. A retired export key
   is destroyed once no retained export or state object names it. Rotation
-  narrows a leaked export key's reach only for reading: it cannot read an export
-  sealed after the rotation. Until it is destroyed it is still accepted, so its
-  holder can still forge an export or a state object under it, and nothing ties
-  an export to the time its key was current. It **SHOULD** rotate with the master
-  key, and **MUST** be rotatable on request when thought exposed.
+  narrows a leaked export key's reach for reading — it cannot read an export
+  sealed after the rotation — and for forging: **every export sealed under the
+  current key carries, in its sealed header, the digest of every retained export
+  of the namespace sealed under a retired key, and a rotation re-seals every
+  retained backup's state object under the new key** — a new version at the next
+  sequence, naming the same export — at each location as it is next reached. A
+  reader accepts an export under a retired key only when an export or state
+  version under a newer key lists or names its digest, and ignores a backup's
+  state versions under a retired key once one under a newer key authenticates
+  ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)). A forgery made under a leaked retired key after its
+  rotation is vouched for by nothing, and is refused. It **SHOULD** rotate
+  with the master key, and **MUST** be rotatable on request when thought exposed.
 
-> decision: A retired export key still authenticates what it sealed, and what a leaked
-> copy of it forges. Refusing it would make every backup sealed before the
-> rotation unreadable, and tying each export to the time its key was current
-> needs a clock the forger does not control, which a backup location does not
-> provide. The remedy for a key thought exposed is to rotate it and let, or
-> make, the backups it sealed expire, so it can be destroyed; until then a
-> forgery under it is admitted. Revisit if a backup location gains an
-> authenticated write time, which would let a reader refuse a version sealed
-> under a key retired before that time.
+> decision: a retired export key authenticates only what the current key
+> vouches for. Refusing it outright would make every backup sealed before the
+> rotation unreadable, and admitting all it authenticates would admit a leaked
+> copy's forgeries. No clock is needed to tell them apart: what a newer key
+> vouches for — retired-key exports listed by digest, state objects re-sealed at
+> rotation — was sealed before it was current, so a version forged later is
+> vouched for by nothing. The list costs 32 bytes per retained retired-key
+> export per export. Until a location is reached after a rotation its backups
+> are read as before it, which is the window a leaked retired key still has
+> there; it closes when the snapshot service next reaches that location.
 
 The chunk-ID key and the chunking key never rotate. Changing the chunk-ID key
 renames every chunk, and changing the chunking key re-cuts every file: either is

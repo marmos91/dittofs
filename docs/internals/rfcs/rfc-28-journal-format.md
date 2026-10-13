@@ -137,7 +137,7 @@ initial value and final XOR all ones), stored as a little-endian 32-bit integer.
 Where a checksum is **seeded with the journal identity**, it is the CRC32C of
 the 16 identity bytes followed by the bytes it covers; otherwise it is the CRC32C
 of those bytes alone. Magic values are ASCII. Reserved bytes are written as zero
-and covered by their structure's checksum.
+and covered by their structure's checksum, which every structure puts last.
 
 **The `format` file — 56 bytes.**
 
@@ -149,13 +149,14 @@ and covered by their structure's checksum.
 | 8 | 16 | journal identity |
 | 24 | 16 | installation ID, a 128-bit value |
 | 40 | 8 | generation; zero, and never read, below the replication extension's version |
-| 48 | 4 | CRC32C over bytes `[0, 48)`, not seeded |
-| 52 | 4 | reserved, zero |
+| 48 | 4 | reserved, zero |
+| 52 | 4 | CRC32C over bytes `[0, 52)`, not seeded |
 
 Open reads the version first and fails on one it does not recognise; for
 version 1 a file of any length but 56 bytes fails the open like a bad checksum.
 **The file is replaced whole, never edited in place.** `Init`, and every later
-rewrite (only the replication extension's generation changes it), writes the
+rewrite (`Restamp` after a lost store, [§3.4](#3.4%20Unattachable%20files), and the replication extension's
+generation), writes the
 new content to `format.tmp`, syncs it, renames it over `format`, and syncs the
 directory before returning, so a crash leaves the old file or the new one
 whole, never a mix. Open ignores a `format.tmp`, the next rewrite overwrites
@@ -179,7 +180,7 @@ which is what a torn write is to a client that was not answered.
 At most a bounded number of segments per file-stream are open for append at one
 time; every other segment is sealed. Writes to one `FileID` **MUST** be
 serialised; writes to different `FileID`s **MAY** proceed concurrently, and the
-number of independent append streams is configurable.
+number of independent append streams is configurable ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)).
 
 **A segment is allocated whole when it is created.** The journal creates a
 segment at its cap and allocates every byte of it at once, with the
@@ -199,12 +200,52 @@ steps over it ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 **A segment is made ahead of need, as a spare.** The headroom and the repack
 reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and the next segment of every stream, are held as
-**spares**: segments created under their `<id>.seg` name, allocated at their
-cap, and synced with the directory, but taken by no stream yet. A spare's id is
-drawn when it is created; its header slot is zeros until a stream takes it. So
-making a segment — allocating, zero-filling where Appendix A requires it, and
-the directory sync — happens off the write path, and a roll costs only the
-take.
+**spares**: segments allocated at their cap and taken by no stream yet. **A
+spare is made under a temporary name and renamed into place only once whole**:
+it is created as `<id>.spare.tmp`, allocated, zero-filled where Appendix A
+requires it and synced, then renamed to `<id>.seg` and the directory synced, so
+a crash leaves either no `<id>.seg` or a whole one; open unlinks any
+`.spare.tmp` it finds. A spare's id is drawn when it is made; its header slot
+is zeros until a stream takes it. So making a segment happens off the write
+path, and a roll costs only the take.
+
+**A retired segment is recycled as a spare.** A segment repack or reclamation
+would unlink becomes a spare instead, while the pool is below its target, if it
+was **kept at its cap**: a seal that finds the pool below its target does not
+truncate the segment's free tail ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)) but writes its trailer at the
+cap's last 32 bytes ([§2.5](#2.5%20Catalog%20layout)), so the segment stays full-size and allocated,
+accounted at its cap. A segment sealed with its tail returned is unlinked when
+retired, never recycled. Recycling closes the segment's descriptors as for an
+unlink ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)), renames it to a fresh `<id>.seg` and syncs the directory,
+**then** overwrites its header slot with zeros and syncs it. Renamed first, a
+crash between the steps leaves a file whose name no longer matches the segment
+id its old header and records carry, so none of them verifies there
+([§2.3](#2.3%20Records)) and recovery re-adopts it as a spare ([§3.1](#3.1%20Rebuilding)); zeroed first, a crash
+would leave the old name with records that still verify. Its blocks are
+already allocated and written, so it needs no zero-fill, and a sustained load
+pays one segment's write per segment, not two. Only growing the pool — at `Init`, when the journal's maximum is
+raised, or when no retired segment is to hand — makes a new spare and pays the
+fill. A recycled segment's old records sit past its zeroed header slot; a scan
+stops at a zero header slot with no verifying header after it
+([§3.3](#3.3%20Torn%20and%20corrupt%20records)), and a record left from the segment's last life names the old
+segment id, so it never verifies here. A segment whose sync failed
+([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) is unlinked, never recycled.
+
+**A roll that finds no spare ready is refused, at once.** A content write that
+needs a new segment while no spare is ready is refused with `ErrNoSpace` naming
+the journal, without waiting ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), and the engine answers it
+retry-later ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)) while the pool is refilled off the write path.
+Header-only records go on drawing on the allocated headroom. `spare_waits`
+counts each such refusal, so a pool too small for the write rate shows before
+it costs a client.
+
+> ponytail: segments are a constant size (proposal 256 MiB), so a stream
+> writing at an NVMe drive's 5 GB/s rolls about twenty times a second, each
+> roll a seal and a segment sync, which a transfer that flushes only at its end
+> never asked for. Upgrade to a larger constant, chosen by J1's sequential row
+> and J8's repack amplification measured at two or three sizes, when
+> `spare_waits` or J1's sequential row shows the roll rate at the device's
+> speed.
 
 Every segment begins with a fixed-size header, written once, when a stream
 takes the segment, and covered by its own checksum; the stream's next sync makes
@@ -272,8 +313,8 @@ crash from a truncation ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 | 4 | 4 | reserved, zero |
 | 8 | 8 | segment id |
 | 16 | 8 | the marker's own offset in the segment |
-| 24 | 4 | CRC32C over bytes `[0, 24)`, seeded with the journal identity |
-| 28 | 4 | reserved, zero |
+| 24 | 4 | reserved, zero |
+| 28 | 4 | CRC32C over bytes `[0, 28)`, seeded with the journal identity |
 
 A scan tells a slot by its first four bytes: `DJR1` a record header ([§2.3](#2.3%20Records)),
 `DJS1` a seal marker, all zeros the zero-slot rule of [§3.3](#3.3%20Torn%20and%20corrupt%20records), anything else damage. A
@@ -339,7 +380,10 @@ it moves would carry rotted bytes forward under a fresh, valid checksum.
 An unrecognised record kind fails the open like an unrecognised format ([§2.1](#2.1%20Layout)).
 **A kind added later is a new format version**: a newer binary opens a journal of
 the older version, and an older binary refuses the newer one. The replication
-kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) are added this way. The numeric values are in the kinds
+kinds of [RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) are added this way: the extension's format version brings its request-entry and
+per-shard forget kinds, and the per-record fields it needs (shard, request ID,
+digest, result), as that version's own body, none of which this version's
+header carries. The numeric values are in the kinds
 table below. The kind is read only once the header verifies — a header that does
 not is damage ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) — and a verifying header whose kind the segment's format version
 does not define fails the open in every range, the extension range included. It
@@ -353,7 +397,7 @@ over a removal resurrects what it removed.
 | kind | `write` | what the record does: stage bytes (`write`, `fill`) or remove or mark them (`release`, `truncate`, `deallocate`, `delete`, `clone target`, `offloaded`, `unmark`, `loss`, `hold`, `unhold`, `stamp`, `forget`) |
 | segment id | 42 | which segment the record was written into; a record found anywhere else is not this segment's |
 | `FileID` | `7c1e…` (alice.vhdx) | which file the bytes belong to |
-| share tag | `profiles` | which share's limits the bytes count against ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) |
+| share tag | 7 (the `profiles` share's tag) | which share's limits the bytes count against ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) |
 | file offset | 1 073 741 824 | where in the file the bytes start |
 | length | 65 536 | how many bytes; for a `deallocate` or `clone target`, how far it reaches. A `truncate` and a `delete` reach to the end of the file and write 0, which no extent can mean, since a zero-length `deallocate` or `clone target` is refused ([RFC 1 §3.6](rfc-1-journal.md#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
 | sequence number | 51 207 | the order this journal appended records in |
@@ -462,8 +506,9 @@ version, and the record's offset within the segment. An entry carries no
 payload: a header-only record whose payload the index needs — a `loss` record's
 dropped sequence number and flags, a `clone target`'s spec, a `hold`'s, an
 `unhold`'s or a `stamp`'s 8 bytes — is read at its `recordOffset` and verified
-like any record ([§2.3](#2.3%20Records)). Those kinds are rare, so a catalog read stays one small
-read per segment plus one per such record; a write's modification time is read
+like any record ([§2.3](#2.3%20Records)). Those kinds are not rare — a stamp per file per
+existence commit, a hold per dirty file per cut — so a catalog read is one small
+read per segment plus one per such record, and J6 reports their count; a write's modification time is read
 from its record only when `Since` yields it.
 
 - The footer **MUST** be written and made durable **after** the records it
@@ -507,7 +552,10 @@ All integers are little-endian and packed without padding.
 entries immediately after the seal marker and the trailer immediately after the
 footer, then truncates the segment to end there ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)), so the trailer is the
 file's last 32 bytes whether the segment was full, sealed early or shortened at
-recovery ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A stream seals a segment while what
+recovery ([§3.3](#3.3%20Torn%20and%20corrupt%20records)). A segment kept at its cap for recycling ([§2.2](#2.2%20Segments)) is not
+truncated: its trailer is written at the cap's last 32 bytes instead, and
+`footerOffset` still names the footer just past the seal marker; the zeros
+between footer and trailer belong to neither. A stream seals a segment while what
 remains still holds the seal marker, a footer entry for every record in it, and
 the trailer.
 
@@ -519,8 +567,8 @@ the trailer.
 | 8 | 8 | `footerOffset` — absolute offset of the first footer entry: just past the seal marker, which itself begins just past the last record ([§2.2](#2.2%20Segments)) |
 | 16 | 4 | `entryCount` |
 | 20 | 4 | CRC32C over the footer entries |
-| 24 | 4 | CRC32C over trailer bytes `[0, 24)` |
-| 28 | 4 | reserved, zero |
+| 24 | 4 | reserved, zero |
+| 28 | 4 | CRC32C over trailer bytes `[0, 28)` |
 
 Both catalog checksums are plain CRC32C, not seeded ([§2.1](#2.1%20Layout)): which journal a
 segment belongs to is settled by its header ([§2.2](#2.2%20Segments)), and every entry is checked
@@ -636,9 +684,14 @@ been open at a crash ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
 
 **A segment with no record is a spare again.** A segment under a name this
 journal produces whose header slot is zeros — a spare no stream took — or whose
-header does not verify, and in which no record header verifies anywhere, holds
+header verifies or does not, or names a segment id other than its file name's —
+a recycle a crash interrupted after the rename (§2.2) — and in which no record
+header verifies anywhere — a take whose first records a crash lost — holds
 nothing that was ever durable: a take is made durable only with the records after
-it. Recovery **MUST** re-adopt it as a spare ([§2.2](#2.2%20Segments)), counted toward the
+it. A spare reaches its `.seg` name only once whole (§2.2), but recovery still
+checks its size against the cap and, where the platform reports it, that no
+extent is left unallocated or unwritten; one that fails is unlinked and made
+again rather than adopted. Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), counted toward the
 headroom, the repack reserve or a stream's next segment, and **MUST NOT** treat it
 as an orphan: unlinking it after an age gate would leave the reserves the re-appends
 below draw on short at the very start that needs them.
@@ -656,7 +709,9 @@ floor, applied before it is served ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)
 
 Recovery also rebuilds each file's retained extents ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), applies every loss
 record by the rule of [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events), which decides what a loss reaches, and applies
-every forget record to the records of its tag below it ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
+every forget record to the records of its tag below it ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). The
+replication extension's discard and epoch records are rebuilt as
+[RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension) states; this format adds none of their rules.
 
 There are two sources for the index. An implementation **MUST** be able to scan
 alone, and **SHOULD** read catalogs where they verify:
@@ -674,8 +729,8 @@ packed small records approaches reading everything the journal holds.
 **The active segments are always scanned**, because they carry no footer. An
 active segment that has taken no append for 30 s **MUST** be sealed once the
 bytes it holds beyond its last catalogued point pass
-`journal.idle_seal_bytes` (proposal: 16 MiB), so the unavoidable scan stays bounded — with eight streams,
-at most eight segments' tails. The seal returns the segment's unwritten tail
+`journal.idle_seal_bytes` (proposal: 16 MiB), so the unavoidable scan stays bounded — with the proposed
+16 streams, at most 16 segments' tails. The seal returns the segment's unwritten tail
 ([RFC 1 §7.3](rfc-1-journal.md#7.3%20Accounting)), so an early seal strands no space. An idle segment below the
 threshold stays open: sealing it would cost a footer and a new segment every
 30 s for a trickle of writes, and scanning it costs little.
@@ -920,9 +975,18 @@ needs a new journal, and none is created:
   without an operator.
 - **A lost store.** Once an operator has acknowledged the loss and a recovery
   import has rebuilt the store ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), the caller records the identity
-  the error names for this directory and opens with it. The journal then
+  the error names for this directory and, since the rebuilt store carries a new
+  installation ID, calls `Restamp` with that identity as `expect`: it rewrites
+  the `format` file's installation ID by the whole-file replace of [§2.1](#2.1%20Layout),
+  refusing a directory whose journal identity is not `expect`. Without it every
+  later start would report the journal foreign. It then opens with that
+  identity — every adopted journal, before the import publishes any share —
+  and raises the rebuilt store's tag counter above every tag their `Stats`
+  name; only then are the recovered shares published and their tags minted
+  ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). The journal
   serves under tags no share of the rebuilt store claims, and
-  [RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s rule for such tags resolves them — salvage or forget — before
+  [RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s rule for such tags, run at
+  [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) step 5, resolves them — salvage or forget — before
   anything is served.
 
 Every other case — a segment present, or another installation's ID — stays
@@ -991,6 +1055,8 @@ A check here fails by **coming back up describing something other than what is o
 | [§3.4](#3.4%20Unattachable%20files) unidentified directory | Open a directory holding segments and no `format` file, and separately one holding only unrelated files; assert both fail to open, nothing in either is modified or deleted, and `Init` refuses both. Assert an empty directory fails to open and that `Init` creates a journal there whose `format` carries the installation ID given. |
 | [§3.4](#3.4%20Unattachable%20files) journal gone | Create a journal, record its identity, write and close; delete the directory's contents, then separately the directory itself, then replace it with another journal. Open each with the recorded identity; assert every open fails, nothing is created in the directory, and only `Init` then creates a new journal. Open the original journal with `expect` zero; assert it fails naming its journal identity and installation ID, and creates nothing. A design that opens an empty directory as new, or adopts a journal its caller has no record of, fails. |
 | [§3.1](#3.1%20Rebuilding) spares are re-adopted | Open a journal so it makes its spares; crash once with every spare untaken, and once after a stream takes one but before its first sync; reopen each. Assert every record-less segment is a spare again, the headroom and repack reserve are whole without new allocation, nothing is reported as an orphan or as damage, and a later roll takes a spare. A design that age-gates them as orphans comes back with its reserves short. |
+| [§2.2](#2.2%20Segments) a spare is whole or absent | Crash at the seam at every step of making a spare — after create, allocation, zero-fill, sync, rename — dropping unsynced allocations and directory changes; reopen. Assert every `<id>.seg` found is at its cap and fully allocated, no `.spare.tmp` survives, and a release appended into a re-adopted spare at a full filesystem succeeds. A design that names the spare before it is whole re-adopts a short one. |
+| [§2.2](#2.2%20Segments) retired segments are recycled | Run sustained writes and repack until segments retire, with the pool below its target and with some segments sealed early when idle; assert every recycled `<id>.seg` is at its cap and fully allocated, the seam sees a rename then a zeroed header slot per retired segment and no zero-fill, a crash between the rename and the header sync, and after it, reopens with the segment re-adopted as a spare, nothing reported as damage and no old record attached, that a reopen reads no record of a recycled segment's old life, and that a segment whose sync failed is unlinked. Hold spare-making at the seam; assert a write needing a roll is refused at once with `ErrNoSpace` naming the journal, `spare_waits` counts it, and a header-only record still appends. |
 | [§3.4](#3.4%20Unattachable%20files) interrupted `Init` | Crash after `Init` writes `format` and before the caller records its identity; reopen with `expect` zero. Assert the open fails naming the identity and this installation's ID, and that no segment is present; record the identity and open with it; assert the journal opens empty and serves. Repeat with a segment in the directory; assert it stays refused. |
 | [§2.5](#2.5%20Catalog%20layout) unknown version | Write a trailer with a future format version; assert the segment is scanned and the open succeeds. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) neighbours survive | With a catalog present, corrupt one record; assert every other record in that segment still reads. |
@@ -1095,12 +1161,17 @@ segment is allocated whole ([§2.2](#2.2%20Segments)). Suitable journal filesyst
 Btrfs on Linux; APFS on macOS; NTFS on Windows.
 
 Allocation, per platform: on Linux, `fallocate` then writing zeros over the
-whole segment and syncing it, so no extent is left unwritten; on XFS the
+whole segment and syncing it, so no extent is left unwritten — or one
+zeroing allocation where the kernel offers one that leaves the extents
+written —; on XFS the
 `fallocate` also rules out speculative allocation past the end of the file, since
 the file never grows. `fcntl(F_PREALLOCATE)` then setting the size on macOS;
-setting the file's allocation size, then its end of file, on Windows. A spare is
-made ahead of need ([§2.2](#2.2%20Segments)), so the zero-fill costs one segment's write
-off the write path, not a stall at a roll.
+setting the file's allocation size, then its end of file, then its valid data
+length to the end (or writing zeros where that call is not permitted), on
+Windows, since an append past the valid data length commits filesystem metadata
+at every flush. A spare is made ahead of need and a retired segment is recycled
+as one ([§2.2](#2.2%20Segments)), so the zero-fill is paid only when the pool grows, off the
+write path.
 
 > decision: zero-filled on Linux because `fallocate` alone leaves unwritten extents on
 > ext4 and XFS: the first write into each converts it in a filesystem-journal
@@ -1108,9 +1179,14 @@ off the write path, not a stall at a roll.
 > filesystem-journal commit, and [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)'s one flush per `Sync` would not
 > hold. Written zeros make an append an overwrite of allocated, written blocks
 > whose size never changes, which `fdatasync` makes durable with the data alone.
-> The cost is writing every segment twice. Overturned by J1 run both ways
-> ([RFC 1 §9.6](rfc-1-journal.md#9.6%20Benchmarks)) showing the zero-fill's device writes cost more throughput than the
-> conversions it saves.
+> Zero-filling every new segment would write each segment twice, so above half
+> the device's bandwidth spares would run out and the fill would land on the
+> write path; recycling retired segments ([§2.2](#2.2%20Segments)) pays it only when the pool
+> grows. Settled by J1's sequential row run sustained past the device's write
+> cache, with recycling, against a fill of every segment: if recycling cannot
+> keep `spare_waits` at zero there, the pool target is raised; and by J1's
+> `Sync`-per-write row with and without the fill, which overturns the fill if
+> unwritten-extent conversions cost less than its writes.
 
 **On a copy-on-write filesystem**, such as Btrfs, allocation reserves space but
 a write into allocated bytes may still allocate anew, so a write can meet
@@ -1125,7 +1201,17 @@ descend into a nested one. An implementation **MUST** check the attribute at
 `Init` and at open and refuse a directory without it on such a filesystem, and
 **MUST** refuse, on Btrfs, a directory that is not a subvolume's root; a snapshot
 taken of that subvolume itself by an operator is not detectable, and voids the
-headroom for as long as it is kept.
+headroom for as long as it is kept. Open **MUST** refuse a copy-on-write
+filesystem mounted without cache flushes (`nobarrier` on Btrfs), as for Linux
+below.
+
+Snapshots and thin provisioning below the filesystem defeat allocation the same
+way: an APFS local snapshot shares the journal's blocks, and a thin-provisioned
+device (a thin pool, a deduplicating volume, a thin LUN) can fail a write into
+space the filesystem allocated. The journal cannot detect either everywhere;
+it reports a journal on a device the platform names as thin-provisioned as a
+health condition, and the deployment owns keeping snapshots off the journal's
+volume.
 
 Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)):
 
@@ -1137,7 +1223,11 @@ Sync and unlink, per platform ([§2.2](#2.2%20Segments), [RFC 1 §5.2](rfc-1-jou
   (`nobarrier` or `barrier=0` on ext4, `nobarrier` on older XFS): there no sync
   reaches the device, and a synced record does not survive power loss.
 - **Windows**: segments are opened with `FILE_SHARE_DELETE`, so one can be
-  deleted while a reader still holds it; `FlushFileBuffers` is the sync.
+  deleted while a reader still holds it; `FlushFileBuffers` is the sync. There
+  is no directory sync: a create, rename or unlink is made durable by opening the
+  directory with backup semantics and calling `FlushFileBuffers` on it, which
+  NTFS honours. Open **MUST** refuse a volume whose write-cache buffer flushing
+  is turned off by policy, where the platform reports it, as for `nobarrier`.
 
 Reading past the page cache, for the open-time tail check ([§3.1](#3.1%20Rebuilding)): `O_DIRECT`
 on Linux, `F_NOCACHE` on macOS, `FILE_FLAG_NO_BUFFERING` on Windows.
