@@ -1034,15 +1034,23 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				pruned := block.PruneChunkRefsToSize(row.Blocks, *attrs.Size)
 				if len(pruned) != len(row.Blocks) {
 					row.Blocks = pruned
-					// Keep ObjectID (the Merkle root over Blocks) consistent with
-					// the trimmed list, or zero it when no blocks remain so the
-					// file reads as "never quiesced" instead of carrying a stale
-					// dedup pointer.
-					switch {
-					case len(pruned) == 0 && !row.ObjectID.IsZero():
-						row.ObjectID = block.ObjectID{}
-					case len(pruned) > 0:
-						row.ObjectID = block.ComputeObjectID(pruned)
+					// Keep an existing ObjectID (the Merkle root over Blocks)
+					// consistent with the trimmed list, or zero it when no blocks
+					// remain so the file reads as "never quiesced" instead of
+					// carrying a stale dedup pointer.
+					//
+					// A file without one is left without one. The store keeps
+					// ObjectIDs unique, and ComputeObjectID hashes only the chunk
+					// hashes, so two files truncated down to the same chunks would
+					// collide and the second truncate would fail on every retry
+					// (#2924). Nothing reads an ObjectID since file-level dedup
+					// was removed, and the RFCs drop the field.
+					if !row.ObjectID.IsZero() {
+						if len(pruned) == 0 {
+							row.ObjectID = block.ObjectID{}
+						} else {
+							row.ObjectID = block.ComputeObjectID(pruned)
+						}
 					}
 					pruneManifest = true
 				}
