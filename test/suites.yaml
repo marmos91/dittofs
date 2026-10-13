@@ -134,8 +134,9 @@ suites:
   smbtorture:
     format: subunit
     image: quay.io/samba.org/samba-toolbox:v0.8
-    cmd: "smbtorture //{server}/smbbasic -U{user}%{password} {test}"
-    tests: test/smb-conformance/smbtorture/tests.txt
+    # Its test list, with each test's limit and the shards that split it on pull requests, is
+    # still built by smb-conformance/smbtorture/run.sh; it comes here as a file of its own.
+    cmd: "smbtorture //{server}/smbbasic -U{user}%{password}"
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture: { profile: "{profile}", smb: true, reset: each }

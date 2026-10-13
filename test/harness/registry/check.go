@@ -164,6 +164,9 @@ func checkUnit(root string, u *Suite) []error {
 		if !nameRE.MatchString(a.Name) {
 			fail("matrix axis %q: a name is [a-z0-9-]+", a.Name)
 		}
+		if len(a.Values) == 0 {
+			fail("matrix axis %q has no values", a.Name)
+		}
 		axes[a.Name] = true
 	}
 	used := map[string]bool{}
@@ -193,6 +196,9 @@ func checkUnit(root string, u *Suite) []error {
 		for axis, values := range sel.Values {
 			if !axes[axis] {
 				fail("select.%s: no matrix axis %q", t, axis)
+			}
+			if len(values) == 0 {
+				fail("select.%s: %s selects no value", t, axis)
 			}
 			for _, v := range values {
 				if !slices.Contains(u.Matrix.values(axis), v) {

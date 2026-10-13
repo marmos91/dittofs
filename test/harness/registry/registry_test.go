@@ -36,6 +36,8 @@ func TestLoadRules(t *testing.T) {
 		{"unknown placeholders are refused", ok + "suites:\n  a: { cmd: 'run {nope}' }\n", "unknown placeholder {nope}"},
 		{"tiers are known", ok + "suites:\n  a: { cmd: true, tier: weekly }\n", `tier "weekly"`},
 		{"needs are known", ok + "suites:\n  a: { cmd: true, needs: [linx] }\n", `unknown need "linx"`},
+		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},
+		{"a selection names a value", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [] } } }\n", "selects no value"},
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},
 	}
 	for _, c := range cases {

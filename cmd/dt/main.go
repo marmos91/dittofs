@@ -156,11 +156,22 @@ func shardCells(cells []plan.Cell, spec string) ([]plan.Cell, error) {
 
 // changedFiles lists the paths the branch changes since it left base.
 func changedFiles(root, base string) ([]string, error) {
-	out, err := exec.Command("git", "-C", root, "diff", "--name-only", base+"...HEAD").Output()
+	out, err := exec.Command("git", "-C", root, "diff", "-z", "--name-only", base+"...HEAD").Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff %s...HEAD: %w", base, err)
 	}
-	return strings.Fields(string(out)), nil
+	return splitNUL(out), nil
+}
+
+// splitNUL splits git's -z output, where a path may hold spaces or quotes.
+func splitNUL(out []byte) []string {
+	paths := []string{}
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 func load() (*registry.Registry, error) {

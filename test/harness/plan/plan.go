@@ -124,7 +124,7 @@ type group struct {
 
 func unitCells(root string, u *registry.Suite, tier string) ([]Cell, error) {
 	sel := u.Select[tier]
-	groups, err := testGroups(root, u, sel.Glob)
+	groups, limits, err := testGroups(root, u, sel.Glob)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func unitCells(root string, u *registry.Suite, tier string) ([]Cell, error) {
 				if partial {
 					c.Tests = tests
 				}
-				if err := c.setTimeout(u.Timeout, tests); err != nil {
+				if err := c.setTimeout(u.Timeout, tests, limits); err != nil {
 					return nil, err
 				}
 				cells = append(cells, c)
@@ -169,15 +169,16 @@ func unitCells(root string, u *registry.Suite, tier string) ([]Cell, error) {
 }
 
 // testGroups splits the unit's tests into the ones its needs cover and, per
-// needs_by_test entry, the ones that need more. Tests are listed only when
-// something needs them: a split, shards, a narrowing glob or size timeouts.
-func testGroups(root string, u *registry.Suite, narrow string) ([]group, error) {
-	if len(u.NeedsByTest) == 0 && u.Shards <= 1 && narrow == "" && u.Timeout.Test != "size" {
-		return []group{{}}, nil
+// needs_by_test entry, the ones that need more, and returns the tests that
+// carry their own limit. Tests are listed only when something needs them: a
+// split, shards, a narrowing glob, size timeouts or a list with limits.
+func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[string]time.Duration, error) {
+	if len(u.NeedsByTest) == 0 && u.Shards <= 1 && narrow == "" && u.Timeout.Test != "size" && u.Tests.File == "" {
+		return []group{{}}, nil, nil
 	}
-	tests, err := listTests(root, u, narrow)
+	tests, limits, err := listTests(root, u, narrow)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	globs := make([]string, 0, len(u.NeedsByTest))
 	for g := range u.NeedsByTest {
@@ -209,19 +210,21 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, error) 
 			out = append(out, *g)
 		}
 	}
-	return out, nil
+	return out, limits, nil
 }
 
 // listTests expands the unit's tests: a glob relative to root, a list of
-// names, or a .txt file of names. A glob holding a placeholder is resolved
-// only when the cell runs, so it lists nothing here.
-func listTests(root string, u *registry.Suite, narrow string) ([]string, error) {
+// names, or a .txt file of names, each line a name and optionally its own
+// limit. A glob holding a placeholder is resolved only when the cell runs, so
+// it lists nothing here.
+func listTests(root string, u *registry.Suite, narrow string) ([]string, map[string]time.Duration, error) {
 	var tests []string
+	limits := map[string]time.Duration{}
 	switch {
 	case u.Tests.Glob != "" && !strings.Contains(u.Tests.Glob, "{"):
 		m, err := filepath.Glob(filepath.Join(root, u.Tests.Glob))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, p := range m {
 			rel, _ := filepath.Rel(root, p)
@@ -234,18 +237,27 @@ func listTests(root string, u *registry.Suite, narrow string) ([]string, error) 
 	case u.Tests.File != "":
 		data, err := os.ReadFile(filepath.Join(root, u.Tests.File))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			if name, _, _ := strings.Cut(strings.TrimSpace(line), " "); name != "" && !strings.HasPrefix(name, "#") {
-				tests = append(tests, name)
+		for i, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+				continue
+			}
+			tests = append(tests, fields[0])
+			if len(fields) > 1 {
+				limit, err := time.ParseDuration(fields[1])
+				if err != nil {
+					return nil, nil, fmt.Errorf("%s:%d: %q is not a duration", u.Tests.File, i+1, fields[1])
+				}
+				limits[fields[0]] = limit
 			}
 		}
 	}
 	if narrow != "" {
 		tests = slices.DeleteFunc(slices.Clone(tests), func(t string) bool { return !match(narrow, t) })
 	}
-	return tests, nil
+	return tests, limits, nil
 }
 
 // match reports whether glob matches the test's path or its file name.
@@ -340,21 +352,27 @@ func blocking(b registry.Blocking, tier string) bool {
 	return true
 }
 
-// setTimeout sets the cell's limits. A cell never gets less than its longest
-// test's limit plus the fixture's setup time; when that raises it, a note
-// says so.
-func (c *Cell) setTimeout(t registry.Timeout, tests []string) error {
+// setTimeout sets the cell's limits. A test's limit is its own from the list,
+// else its size class's or the suite's. A cell never gets less than its
+// longest test's limit plus the fixture's setup time; when that raises it, a
+// note says so.
+func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]time.Duration) error {
 	cell, err := time.ParseDuration(t.Cell)
 	if err != nil {
 		return err
 	}
 	var longest time.Duration
-	if t.Test == "size" {
-		for _, name := range tests {
-			longest = max(longest, sizeLimit(name))
+	if t.Test != "size" {
+		if longest, err = time.ParseDuration(t.Test); err != nil {
+			return err
 		}
-	} else if longest, err = time.ParseDuration(t.Test); err != nil {
-		return err
+	}
+	for _, name := range tests {
+		limit, own := limits[name]
+		if !own && t.Test == "size" {
+			limit = sizeLimit(name)
+		}
+		longest = max(longest, limit)
 	}
 	if need := longest + fixtureSetup; longest > 0 && need > cell {
 		c.Notes = append(c.Notes, fmt.Sprintf("cell timeout raised from %s to %s: its longest test's limit plus %s for the fixture", t.Cell, short(need), short(fixtureSetup)))
@@ -376,11 +394,16 @@ func sizeLimit(name string) time.Duration {
 	return 0
 }
 
-// short formats d without zero units: 2h7m, not 2h7m0s.
+// short formats a whole number of minutes without zero units: 2h7m, 2h, 10m.
 func short(d time.Duration) string {
-	s := d.String()
-	s = strings.TrimSuffix(s, "0s")
-	return strings.TrimSuffix(s, "0m")
+	h, m := d/time.Hour, (d%time.Hour)/time.Minute
+	switch {
+	case h > 0 && m > 0:
+		return fmt.Sprintf("%dh%dm", h, m)
+	case h > 0:
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dm", m)
 }
 
 // union returns a followed by the items of b it lacks.

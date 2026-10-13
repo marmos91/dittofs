@@ -201,3 +201,54 @@ func TestChangedPaths(t *testing.T) {
 		t.Errorf("merge with a docs-only change: %d cells, %v", len(cells), err)
 	}
 }
+
+// A .txt test list may give a test its own limit, which the cell covers.
+func TestTestListLimits(t *testing.T) {
+	root := t.TempDir()
+	list := "# a comment\nslow 40m\nquick\n"
+	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(list), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	y := `version: 1
+defaults: { format: exit, tier: merge, timeout: { test: 10m, cell: 30m } }
+suites:
+  s: { cmd: "run {test}", tests: tests.txt, shards: 2 }
+`
+	r, err := registry.Parse(root, []byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Plan(root, r, "merge", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) != 2 || !slices.Equal(cells[0].Tests, []string{"slow"}) {
+		t.Fatalf("cells %+v", cells)
+	}
+	// slow: its own 40m plus 5m for the fixture; quick: the suite's 10m fits in 30m.
+	if cells[0].TimeoutMinutes != 45 || cells[1].TimeoutMinutes != 30 {
+		t.Errorf("limits %d and %d minutes, want 45 and 30", cells[0].TimeoutMinutes, cells[1].TimeoutMinutes)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte("slow forty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1") {
+		t.Errorf("a bad limit: %v", err)
+	}
+}
+
+func TestShort(t *testing.T) {
+	cases := map[time.Duration]string{
+		10 * time.Minute:            "10m",
+		2*time.Hour + 7*time.Minute: "2h7m",
+		2 * time.Hour:               "2h",
+		90 * time.Minute:            "1h30m",
+		5 * time.Minute:             "5m",
+	}
+	for d, want := range cases {
+		if got := short(d); got != want {
+			t.Errorf("short(%s) = %q, want %q", d, got, want)
+		}
+	}
+}

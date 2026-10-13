@@ -83,3 +83,14 @@ func TestListJSON(t *testing.T) {
 }
 
 func lines(s string) int { return strings.Count(s, "\n") }
+
+// git -z output keeps a path with spaces or quotes whole.
+func TestSplitNUL(t *testing.T) {
+	got := splitNUL([]byte("docs/a b.md\x00pkg/\"q\".go\x00"))
+	if want := []string{"docs/a b.md", `pkg/"q".go`}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got := splitNUL(nil); got == nil || len(got) != 0 {
+		t.Errorf("no changes: %#v, want an empty, non-nil list", got)
+	}
+}
