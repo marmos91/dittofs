@@ -32,20 +32,30 @@ type CloneOp struct {
 }
 
 // Clone applies phase 1 of a clone, after the destination's pending
-// existence below it. In one transaction it removes the destination extent
-// as a deallocate does, so the content there older than the clone is
-// masked; records the extent as existing but where the source has holes,
-// which become the destination's, at the clone's version; grows the
-// destination to cover it; writes the clone's removal record with its spec;
-// and writes a durable open of the source, which keeps the source from
-// release until the clone is done. Resume then adopts the source's carved
-// refs, re-versioned at the clone's version. Every refusal — an overlapping
-// clone within one file, a source extent past its size, a clone across
-// namespaces — comes before anything changes. A clone at or below applied
-// was applied before, and a replay changes nothing.
+// existence below it. In one transaction, O(1) keys whatever the source
+// holds, it removes the destination extent as a deallocate does, so the
+// content there older than the clone is masked, but writes no merged hole;
+// records the whole extent as existing; grows the destination to cover it;
+// writes the clone's removal record with its spec; and writes a durable open
+// of the source, which keeps the source from release until the clone is
+// done. Resume then adopts the source's carved refs, re-versioned at the
+// clone's version, and writes its holes as the destination's. Every refusal —
+// an overlapping clone within one file, a source extent past its size or
+// under a clone of its own not done, a clone across namespaces — comes
+// before anything changes. A clone at or below applied was applied before,
+// and a replay changes nothing.
 //
 // Until the clone is done, a covering lookup over the destination extent
-// answers ErrDelay rather than a half-copied extent.
+// answers ErrDelay rather than a half-copied extent, and the engine answers
+// a write into it ErrDelay, so no destination write lands where a batch
+// writes a hole.
+//
+// decision: phase 1 charges the whole extent and each batch gives back the
+// bytes of the source holes it writes, so the destination's Charged and its
+// usage read high, by the source's hole bytes in the extent, until the clone
+// is done. Lowering them in phase 1 would read every source hole in one
+// transaction, the O(holes) cost the batches exist to avoid. Revisit if a
+// quota check against that transient excess refuses writes in practice.
 func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) error {
 	sp := op.Spec
 	if sp.Len <= 0 || sp.SrcOff < 0 || sp.DstOff < 0 {
@@ -90,8 +100,7 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 	if err := sameNamespaces(tx, sp.SrcShare, share); err != nil {
 		return err
 	}
-	srcSpans, err := covering(tx, sp.SrcShare, sp.Src, entity.ExtentOf(sp.SrcOff, sp.SrcOff+sp.Len))
-	if err != nil {
+	if err := noCloneOver(tx, sp.SrcShare, sp.Src, entity.ExtentOf(sp.SrcOff, sp.SrcOff+sp.Len)); err != nil {
 		return err
 	}
 	ms, err := masksOf(tx, share, file)
@@ -114,19 +123,9 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 			return err
 		}
 	}
-	// The destination exists over the extent but where the source has holes.
+	// The destination exists over the whole extent; phase 2 writes the
+	// source's holes there and gives their bytes back.
 	f.Charged += ext.Length
-	for _, s := range srcSpans {
-		if s.Class != entity.Hole {
-			continue
-		}
-		h := hole{Extent: entity.Extent{Offset: s.Offset - sp.SrcOff + sp.DstOff, Length: s.Length}, Version: op.Version}
-		if err := tx.Set(holeKey(share, file, h.Offset), encodeHole(h)); err != nil {
-			return err
-		}
-		f.Charged -= h.Length
-		f.MaxSpan = max(f.MaxSpan, h.Length)
-	}
 	f.Size = max(f.Size, ext.End())
 	f.Applied = entity.MaxVersion(op.Version, op.Copied)
 	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
@@ -163,6 +162,22 @@ func gapHole(tx kv.Txn, share entity.ShareID, f *entity.File, ms masks, at int64
 	}
 	f.MaxSpan = max(f.MaxSpan, h.Length)
 	return tx.Set(holeKey(share, f.ID, h.Offset), encodeHole(h))
+}
+
+// noCloneOver refuses a source extent that a clone of its own not done
+// still writes: it is not served until that clone is done, so a clone of it
+// waits too. It reads the source's removals, a handful.
+func noCloneOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) error {
+	ms, err := masksOf(r, share, file)
+	if err != nil {
+		return err
+	}
+	for _, m := range ms {
+		if m.Kind == entity.RemoveClone && m.Extent.Overlaps(e) {
+			return entity.ErrDelay
+		}
+	}
+	return nil
 }
 
 // cloneOpenKey is the durable open a clone holds on its source: its ID is
@@ -202,11 +217,14 @@ func sameNamespaces(r kv.Reader, src, dst entity.ShareID) error {
 // carved refs there re-versioned at the clone's version and born at its
 // cut, counting each chunk in the destination's generation of its
 // namespace. A destination ref at or above the clone's version holds
-// content written after it and is left alone. Uncarved source runs write
-// nothing: a copied run reads from the destination's journal, and one not
-// held reads Lost as the source's does. A ref whose chunk record is gone or
-// names a deleted block is carried as Lost the same way.
-func adopt(tx kv.Txn, share entity.ShareID, file entity.FileID, m entity.Removal, batch entity.Extent, ms masks, nss shareNamespaces, deltas map[uint32]counts) error {
+// content written after it and is left alone. Each source hole run becomes a
+// destination hole at the clone's version, joined with a hole it touches;
+// its bytes come off f's Charged and f's MaxSpan is raised to the joined
+// hole. A nil f is a released destination, which takes no holes. Uncarved source runs write nothing: a copied run reads from the
+// destination's journal, and one not held reads Lost as the source's does.
+// A ref whose chunk record is gone or names a deleted block is carried as
+// Lost the same way.
+func adopt(tx kv.Txn, share entity.ShareID, file entity.FileID, f *entity.File, m entity.Removal, batch entity.Extent, ms masks, nss shareNamespaces, deltas map[uint32]counts) error {
 	sp := m.Clone
 	srcBatch := entity.Extent{Offset: batch.Offset - sp.DstOff + sp.SrcOff, Length: batch.Length}
 	spans, err := covering(tx, sp.SrcShare, sp.Src, srcBatch)
@@ -218,6 +236,19 @@ func adopt(tx kv.Txn, share entity.ShareID, file entity.FileID, m entity.Removal
 		return err
 	}
 	for _, s := range spans {
+		if s.Class == entity.Hole {
+			if f == nil {
+				continue
+			}
+			e := entity.Extent{Offset: s.Offset - sp.SrcOff + sp.DstOff, Length: s.Length}
+			h, err := mergedHole(tx, share, file, *f, ms, e, m.Version)
+			if err != nil {
+				return err
+			}
+			f.Charged -= e.Length
+			f.MaxSpan = max(f.MaxSpan, h.Length)
+			continue
+		}
 		if s.Class != entity.Carved {
 			continue
 		}

@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,56 @@ func TestCloneJoinRaisesMaxSpan(t *testing.T) {
 	if got := f.spans(dst, 5*mib+mib/2, mib/2); len(got) != 1 || got[0].Class != entity.Hole {
 		t.Errorf("inside the joined hole: %+v", got)
 	}
+}
+
+// RFC 6 §6.6 and RFC 8 §9.1 step 4: a clone's phase 1 writes O(1) keys
+// however many holes the source has, recording the whole extent as existing
+// and charged; the batches write the holes within the key budget and give
+// their bytes back. A clone of a destination still being cloned waits.
+func TestCloneHolesInPhase2(t *testing.T) {
+	var w *writesKV
+	f := newContentFix(t, func(db kv.KV) kv.KV { w = &writesKV{KV: db}; return w })
+	ctx := context.Background()
+	src, dst, third := f.file(0), f.file(0), f.file(0)
+	var ops []PendingOp
+	const writes = 120
+	for i := range int64(writes) {
+		ops = append(ops, write(uint64(i+1), 2*i*mib, mib)) // a 1 MiB hole after each write but the last
+	}
+	f.exist(src, ops...)
+
+	w.max = 0
+	f.clone(f.cloneOp(src, dst, 0, 0, (2*writes-1)*mib, 50))
+	if w.max > 12 {
+		t.Errorf("phase 1 wrote %d keys for %d source holes", w.max, writes-1)
+	}
+	if got := f.holeRecords(dst); got != "" {
+		t.Errorf("phase 1 wrote holes %s", got)
+	}
+	if got := f.get(dst).Charged; got != (2*writes-1)*mib {
+		t.Errorf("charged %d after phase 1, want the whole extent", got)
+	}
+	f.checkUsage()
+	if err := f.s.Existence().Clone(ctx, f.cloneOp(dst, third, 0, 0, mib, 51), nil); !errors.Is(err, entity.ErrDelay) {
+		t.Errorf("a clone of a destination being cloned: %v", err)
+	}
+
+	budget := 5*batchItemKeys + 4 // one record of each kind per batch
+	f.s.SetKeyBudget(budget)
+	w.max = 0
+	f.resume(dst)
+	if w.max > budget {
+		t.Errorf("a batch wrote %d keys, budget %d", w.max, budget)
+	}
+	f.want(dst, "after the clone", f.layout(src))
+	if got := f.get(dst); got.Charged != writes*mib || got.MaxSpan != mib {
+		t.Errorf("charged %d, max span %d", got.Charged, got.MaxSpan)
+	}
+	if got := strings.Count(f.holeRecords(dst), "@50"); got != writes-1 {
+		t.Errorf("%d holes at the clone's version, want %d", got, writes-1)
+	}
+	f.checkUsage()
+	f.checkCounts()
 }
 
 // A clone over existing content masks and drops what was there below its

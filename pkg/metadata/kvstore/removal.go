@@ -290,13 +290,14 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 	return nil
 }
 
-// mergedHole writes a deallocate's extent e as one hole at v, joined with
-// the visible holes that straddle or touch its edges, and deletes the keys
-// of those it joined. They are at most two, read at the edges, so phase 1
-// stays O(1) however many holes lie inside e: those stay, masked, for phase
-// 2 to drop. A hole another removal masks is never joined, and may touch the
-// merged hole until that removal's phase 2 drops it. The merged hole's key
-// replaces a masked hole starting there.
+// mergedHole writes e as one hole at v — a deallocate's extent, or a
+// source hole a clone's batch writes — joined with the visible holes that
+// straddle or touch its edges, and deletes the keys of those it joined. They
+// are at most two, read at the edges, so it costs O(1) however many holes
+// lie inside e: those stay, masked, for phase 2 to drop. A hole another
+// removal masks is never joined, and may touch the merged hole until that
+// removal's phase 2 drops it. The merged hole's key replaces a masked hole
+// starting there.
 func mergedHole(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, v entity.JournalVersion) (hole, error) {
 	m := hole{Extent: e, Version: v}
 	var joined []int64
@@ -340,11 +341,13 @@ const batchItemKeys = 10
 // extent below that version; and advances the cursor. Phase 1 left no hole
 // or overwrite record crossing an edge, so those it drops lie wholly inside.
 // A clone's batches also adopt the source's carved refs over what they
-// reached. The last batch of a clone joins the extent's holes with those
-// they touch, raising MaxSpan to the longest it makes, and deletes its open
-// of the source; a deallocate's merged hole, written in phase 1, already
-// holds every hole it touched. Content at or above the removal's version is
-// never touched, so a re-run is harmless.
+// reached and write its holes there, each joined with a hole it touches,
+// giving their bytes back to Charged and raising MaxSpan; the source's
+// records starting in a batch count toward its bound like the
+// destination's. A clone's last batch deletes its open of the source. A
+// deallocate's merged hole, written in phase 1, already holds every hole it
+// touched. Content at or above the removal's version is never touched, so a
+// re-run is harmless.
 //
 // ponytail: nothing moves to history, because no snapshot cut is recorded
 // yet, so a dropped ref is dated by nothing and an overwrite record is
@@ -381,7 +384,7 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	}
 	kinds := 3 // refs, holes and overwrite records, up to n of each
 	if m.Kind == entity.RemoveClone {
-		kinds++ // and the source's refs a batch adopts
+		kinds += 2 // and the source's refs a batch adopts and holes it writes
 	}
 	n := max(1, (s.k-4)/(kinds*batchItemKeys))
 	from, end := m.Cursor, m.Extent.End()
@@ -417,7 +420,14 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 		if err != nil {
 			return false, err
 		}
-		batchEnd = min(batchEnd, srcEnd-sp.SrcOff+sp.DstOff)
+		_, srcHoleEnd, err := firstStarting(tx, holesPrefix(sp.SrcShare, sp.Src), srcFrom, sp.SrcOff+sp.Len, n, func(start int64, v []byte) (hole, int64, error) {
+			h, err := decodeHole(start, v)
+			return h, h.End(), err
+		})
+		if err != nil {
+			return false, err
+		}
+		batchEnd = min(batchEnd, min(srcEnd, srcHoleEnd)-sp.SrcOff+sp.DstOff)
 	}
 	batch := entity.ExtentOf(from, batchEnd)
 	reaches := func(start int64, e entity.Extent) bool {
@@ -462,8 +472,21 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 		}
 	}
 	if m.Kind == entity.RemoveClone {
-		if err := adopt(tx, share, file, m, batch, ms, nss, deltas); err != nil {
+		var dst *entity.File // a released destination takes no holes
+		before := f
+		if live {
+			dst = &f
+		}
+		if err := adopt(tx, share, file, dst, m, batch, ms, nss, deltas); err != nil {
 			return false, err
+		}
+		if live && (f.Charged != before.Charged || f.MaxSpan != before.MaxSpan) {
+			if err := putFile(tx, f.Version, f); err != nil {
+				return false, err
+			}
+			if err := chargeFile(tx, share, &before, &f); err != nil {
+				return false, err
+			}
 		}
 	}
 	for gen, d := range deltas {
@@ -481,16 +504,6 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	if m.Cursor >= end {
 		m.Done = true
 		if m.Kind == entity.RemoveClone {
-			longest, err := joinHoles(tx, share, file, f, ms[1:], m.Extent)
-			if err != nil {
-				return false, err
-			}
-			if live && longest > f.MaxSpan {
-				f.MaxSpan = longest
-				if err := putFile(tx, f.Version, f); err != nil {
-					return false, err
-				}
-			}
 			if err := tx.Delete(cloneOpenKey(share, file, m.Version, *m.Clone)); err != nil {
 				return false, err
 			}
@@ -566,38 +579,6 @@ func firstStarting[T any](r kv.Reader, prefix []byte, from, end int64, n int, de
 		out = append(out, startedRecord[T]{start, x})
 	}
 	return out, end, nil
-}
-
-// joinHoles joins the holes over e and those touching it that no other
-// removal not done masks, so a clone leaves holes that never touch, and
-// reports the longest hole it made, which the caller raises MaxSpan to.
-func joinHoles(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, others masks, e entity.Extent) (int64, error) {
-	w := entity.ExtentOf(max(0, e.Offset-1), e.End()+1)
-	hs, err := holesOver(tx, share, file, w, others.holeSpan(f))
-	if err != nil {
-		return 0, err
-	}
-	var longest int64
-	hs = slices.DeleteFunc(hs, func(h hole) bool { return others.masked(h.Version, h.Extent) })
-	for i := 0; i < len(hs); {
-		j, joined := i+1, hs[i]
-		for j < len(hs) && hs[j].Offset == joined.End() {
-			joined.Extent = entity.ExtentOf(joined.Offset, hs[j].End())
-			joined.Version = entity.MaxVersion(joined.Version, hs[j].Version)
-			if err := tx.Delete(holeKey(share, file, hs[j].Offset)); err != nil {
-				return 0, err
-			}
-			j++
-		}
-		if j > i+1 {
-			if err := tx.Set(holeKey(share, file, joined.Offset), encodeHole(joined)); err != nil {
-				return 0, err
-			}
-			longest = max(longest, joined.Length)
-		}
-		i = j
-	}
-	return longest, nil
 }
 
 // shareNamespaces maps a share's namespace generations to namespaces.
