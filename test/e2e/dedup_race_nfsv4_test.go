@@ -27,7 +27,7 @@
 //  3. Prime dedup with a single donor file written first, then write N
 //     additional byte-identical files CONCURRENTLY (goroutines + WaitGroup).
 //     Concurrent identical content maximises contention on the hot dedup keys
-//     (the obj:<hash> object_id index + the content-hash FileChunk rows) and
+//     (the content-hash FileChunk rows) and
 //     reproduces the Pending-donor window.
 //  4. Assert the FIX holds: every concurrent write/close (which flushes +
 //     COMMITs over NFSv4.1) succeeds with NO EIO, and every file reads back
@@ -97,7 +97,7 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	// ---- One on-disk badger metadata store ----
-	// A fresh directory per run is the clean slate: no ObjectID rows from a
+	// A fresh directory per run is the clean slate: no chunk rows from a
 	// prior run can pre-claim the payload's chunks before the donor write and
 	// mask the Pending-donor window this test reproduces.
 	metaName := helpers.UniqueTestName("dedup-nfsv4-meta")

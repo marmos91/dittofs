@@ -101,7 +101,7 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// A fresh on-disk directory per run is the clean slate: no ObjectID rows
+	// A fresh on-disk directory per run is the clean slate: no chunk rows
 	// from a prior run can pre-claim the payload's chunks before the first
 	// clone is written (false-negative regime).
 	metaName := helpers.UniqueTestName("vmfleet-meta")
