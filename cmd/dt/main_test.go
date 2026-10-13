@@ -242,3 +242,17 @@ func TestRunWritesTheJobSummary(t *testing.T) {
 		t.Errorf("summary %q, %v", got, err)
 	}
 }
+
+// --results is relative to the checkout's root, wherever dt runs from.
+func TestRunResultsRelativeToRoot(t *testing.T) {
+	checkout(t)
+	if err := os.Mkdir("sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("sub")
+	out, _ := dt(t, "run", "away", "--results", "rel")
+	sep := string(filepath.Separator)
+	if !strings.Contains(out, sep+"rel"+sep) || strings.Contains(out, "sub"+sep+"rel") {
+		t.Errorf("results not under the root's rel:\n%s", out)
+	}
+}

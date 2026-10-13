@@ -90,7 +90,12 @@ var minute = time.Minute
 // o.Results. Cancelling ctx stops the cell running and the ones after it.
 func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	commit := gitShort(o.Root)
-	dir, err := newRunDir(o.Results, time.Now().UTC().Format("20060102T150405Z")+"-"+commit)
+	// Absolute, so {out} means the same from any directory a command runs in.
+	results, err := filepath.Abs(o.Results)
+	if err != nil {
+		return Report{}, err
+	}
+	dir, err := newRunDir(results, time.Now().UTC().Format("20060102T150405Z")+"-"+commit)
 	if err != nil {
 		return Report{}, err
 	}
@@ -167,7 +172,10 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 		if err != nil {
 			return NotRun, err.Error()
 		}
-		workdir = filepath.Join(o.Root, d)
+		workdir = d
+		if !filepath.IsAbs(d) {
+			workdir = filepath.Join(o.Root, d)
+		}
 	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return NotRun, err.Error()

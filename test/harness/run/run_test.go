@@ -475,3 +475,27 @@ func TestNothingToRun(t *testing.T) {
 		t.Errorf("status %d, %v\n%s", rep.Status(), err, out.String())
 	}
 }
+
+// {out} is absolute, so a command finds it from whatever directory it runs
+// in, a relative results directory included; a dir that fills to an absolute
+// path, as {out} does, is used as it is.
+func TestPathsHoldFromAnyDir(t *testing.T) {
+	root, r := repo(t, `suites:
+  rel: { cmd: { sh: "echo x > {out}/got" }, dir: sub }
+  abs: { cmd: { sh: "pwd > here" }, dir: "{out}" }
+`, map[string]string{"sub/.keep": ""})
+	t.Chdir(root)
+	for _, suite := range []string{"rel", "abs"} {
+		cells, err := Select(root, r, suite, "", "pr", nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, err := Run(context.Background(), cells, Options{Root: root, Results: "results", Out: &bytes.Buffer{}})
+		if err != nil || rep.Outcomes[0].Result != Passed {
+			t.Errorf("%s: %+v, %v", suite, rep.Outcomes, err)
+		}
+		if !filepath.IsAbs(rep.Dir) {
+			t.Errorf("%s: run directory %q", suite, rep.Dir)
+		}
+	}
+}

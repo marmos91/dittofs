@@ -49,7 +49,10 @@ func newRun() *cobra.Command {
 				return err
 			}
 			if results == "" {
-				results = filepath.Join(root, "test", "harness", "results")
+				results = filepath.Join("test", "harness", "results")
+			}
+			if !filepath.IsAbs(results) {
+				results = filepath.Join(root, results)
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -80,7 +83,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these suites of the group")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these suites of the group")
 	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and problems are annotated")
-	cmd.Flags().StringVar(&results, "results", "", "where results go (default test/harness/results)")
+	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if r, err := load(); err == nil {
 		for _, s := range r.Suites {
