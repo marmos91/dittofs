@@ -79,6 +79,7 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 	if !f.Applied.Less(op.Version) {
 		return nil // applied before, its source perhaps gone since
 	}
+	before := f
 	src, err := fileIn(tx, sp.SrcShare, sp.Src)
 	if err != nil {
 		return err
@@ -131,6 +132,9 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
 	f.Version = nextFileVersion(tx, entity.MaxVersion(f.Version, f.Applied))
 	if err := putFile(tx, was, f); err != nil {
+		return err
+	}
+	if err := chargeFile(tx, share, &before, &f); err != nil {
 		return err
 	}
 	spec := sp

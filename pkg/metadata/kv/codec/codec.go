@@ -28,6 +28,9 @@ func (w *Writer) Uint64(v uint64) *Writer {
 	return w
 }
 
+// Int64 writes a signed integer as its two's complement, in 8 bytes.
+func (w *Writer) Int64(v int64) *Writer { return w.Uint64(uint64(v)) }
+
 // Bytes writes v with its length in front.
 func (w *Writer) Bytes(v []byte) *Writer {
 	w.b = binary.AppendUvarint(w.b, uint64(len(v)))
@@ -103,6 +106,8 @@ func (r *Reader) Uint64() uint64 {
 	r.b = r.b[8:]
 	return v
 }
+
+func (r *Reader) Int64() int64 { return int64(r.Uint64()) }
 
 // Bytes reads a length-prefixed field, sharing the value's bytes.
 func (r *Reader) Bytes() []byte {

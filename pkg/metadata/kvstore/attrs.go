@@ -84,6 +84,9 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 		}
 		changed(tx, &next)
 		out = next
+		if err := chargeFile(tx, share, &file, &next); err != nil {
+			return err
+		}
 		return putFile(tx, file.Version, next)
 	})
 	return out, err

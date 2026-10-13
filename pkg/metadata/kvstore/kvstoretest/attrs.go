@@ -175,3 +175,42 @@ func testVersionFloor(t *testing.T, kvo Opener) {
 		t.Errorf("floor %d, highest Version reported %d", floor.Counter(), top.Counter())
 	}
 }
+
+// RFC 7 §2.8 and RFC 16 §4.4: a file is charged to its owner, its group
+// and the share by its logical bytes; chown moves exactly that, and the
+// fold changes no answer.
+func testUsageFollowsOwner(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	staff := f.group("staff")
+	alice := f.member("alice", staff, staff)
+	bob := f.member("bob", staff, staff)
+	h, made := f.create(f.admin, f.root, "mail", kvstore.NewFile{Type: entity.Regular, Mode: 0o644,
+		Attrs: entity.Attrs{}.WithOwner(alice.Principal).WithGroup(staff)})
+	_, id, err := h.Parse()
+	must(t, err)
+	failed, err := f.s.Existence().Commit(ctx, []kvstore.PendingExistence{{Share: f.share.ID, File: id,
+		Ops: []kvstore.PendingOp{{Version: entity.VersionOf(made.Version.Counter() + 1), Kind: kvstore.OpWrite,
+			Extent: entity.Extent{Length: 3 << 20}, Time: time.Now()}}}})
+	must(t, err)
+	must(t, failed[id])
+	c := f.s.Capacity()
+	usage := func(p entity.Principal) entity.Usage {
+		u, err := c.PrincipalUsage(ctx, f.share.ID, p)
+		must(t, err)
+		return u
+	}
+	want := entity.Usage{Bytes: 3 << 20, Files: 1}
+	if got := usage(alice.Principal); got != want {
+		t.Errorf("alice %+v, want %+v", got, want)
+	}
+	must(t, errOf(f.s.Files().SetAttrs(ctx, f.admin, h, entity.Attrs{}.WithOwner(bob.Principal))))
+	for _, fold := range []bool{false, true} {
+		if fold {
+			_, err := c.FoldUsage(ctx, f.share.ID, 0)
+			must(t, err)
+		}
+		if a, b, g := usage(alice.Principal), usage(bob.Principal), usage(staff); a != (entity.Usage{}) || b != want || g != want {
+			t.Errorf("after chown (folded %v): alice %+v, bob %+v, staff %+v", fold, a, b, g)
+		}
+	}
+}

@@ -141,6 +141,7 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	if !f.Applied.Less(op.Version) {
 		return nil // already applied
 	}
+	before := f
 	ms, err := masksOf(tx, share, file)
 	if err != nil {
 		return err
@@ -178,6 +179,9 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
 	f.Version = nextFileVersion(tx, entity.MaxVersion(f.Version, f.Applied))
 	if err := putFile(tx, was, f); err != nil {
+		return err
+	}
+	if err := chargeFile(tx, share, &before, &f); err != nil {
 		return err
 	}
 	if live.IsEmpty() {

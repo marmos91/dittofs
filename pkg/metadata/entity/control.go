@@ -294,5 +294,11 @@ func (k ScopeKind) String() string                { return enumString(scopeKinds
 func (k ScopeKind) MarshalText() ([]byte, error)  { return enumMarshal(scopeKinds, k) }
 func (k *ScopeKind) UnmarshalText(b []byte) error { return enumUnmarshal(scopeKinds, k, b) }
 
+// Usage is what a share, a principal or a project holds: logical bytes,
+// holes excluded and shared content counted in full, and files.
+type Usage struct {
+	Bytes, Files int64
+}
+
 // SecretRef names a sealed credential; the zero ref names none.
 type SecretRef [16]byte

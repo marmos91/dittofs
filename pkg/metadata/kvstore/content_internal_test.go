@@ -77,7 +77,12 @@ func newContentFix(t *testing.T, wrap func(kv.KV) kv.KV) *cfix {
 func (f *cfix) file(size int64) entity.FileID {
 	id := entity.NewFileID()
 	x := entity.File{ID: id, Share: f.share, Type: entity.Regular, Number: 99, Size: size, Nlink: 1, Version: entity.VersionOf(1)}
-	if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) error { return putFile(tx, entity.JournalVersion{}, x) }); err != nil {
+	if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) error {
+		if err := putFile(tx, entity.JournalVersion{}, x); err != nil {
+			return err
+		}
+		return chargeFile(tx, f.share, nil, &x)
+	}); err != nil {
 		f.t.Fatal(err)
 	}
 	return id
@@ -209,6 +214,7 @@ func (f *cfix) block(name entity.BlockName) (entity.Block, bool) {
 // the chunk records naming it with a nonzero count, retired exactly at zero.
 func (f *cfix) checkCounts() {
 	f.checkFloor()
+	f.checkUsage()
 	f.t.Helper()
 	ctx := context.Background()
 	refsPer := map[entity.ChunkHash]int64{}

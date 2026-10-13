@@ -202,6 +202,9 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 		if err := putFile(tx, entity.JournalVersion{}, f); err != nil {
 			return err
 		}
+		if err := chargeFile(tx, share, nil, &f); err != nil {
+			return err
+		}
 		if err := tx.Set(key, encodeEntry(entity.Entry{Parent: d.ID, Name: name, Child: f.ID, Type: f.Type})); err != nil {
 			return err
 		}

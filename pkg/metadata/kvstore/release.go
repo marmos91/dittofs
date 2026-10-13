@@ -75,6 +75,9 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 			return err
 		}
 	}
+	if err := chargeFile(tx, share, &f, nil); err != nil {
+		return err
+	}
 	// The file's version-index entry moves to the release's version, which
 	// its removal record holds until pruning deletes both.
 	if err := moveFloor(tx, share, file, f.Version, op.Version); err != nil {

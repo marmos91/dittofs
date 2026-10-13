@@ -159,7 +159,7 @@ func createShareRecords(tx kv.Txn, s *entity.Share) error {
 			return err
 		}
 	}
-	return nil
+	return chargeFile(tx, s.ID, nil, &rf)
 }
 
 // ErrTagsExhausted is an installation that has given every journal tag.
