@@ -77,13 +77,7 @@ func withDeltas(r kv.Reader, d entity.File) (entity.File, error) {
 		if err != nil {
 			return d, err
 		}
-		if x.Modify.After(d.Modify) {
-			d.Modify = x.Modify
-		}
-		if x.Change.After(d.Change) {
-			d.Change = x.Change
-		}
-		d.Version = entity.MaxVersion(d.Version, x.Version)
+		d = applyDelta(d, x)
 	}
 	return d, nil
 }

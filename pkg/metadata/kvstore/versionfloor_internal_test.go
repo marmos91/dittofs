@@ -129,3 +129,33 @@ func TestVersionLimit(t *testing.T) {
 		t.Error("raised the limit of a share that does not exist")
 	}
 }
+
+// A directory's fold replaces its deltas' version-index entries with the
+// directory's own, leaving no stray entry behind.
+func TestFoldDirectoryIndex(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	cp := f.s.ControlPlane()
+	admin := entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Name: "admin"}
+	if err := cp.PutUser(ctx, admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share, Principal: admin.Principal, Access: entity.AccessAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	id := entity.Identity{Principal: admin.Principal, Privileged: true}
+	root, rf, err := f.s.Files().Root(ctx, id, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		if _, _, err := f.s.Namespace().Create(ctx, id, root, []byte(name), NewFile{Type: entity.Regular, Mode: 0o644}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.checkFloor()
+	if _, err := f.s.Namespace().FoldDirectory(ctx, f.share, rf.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.checkFloor()
+}

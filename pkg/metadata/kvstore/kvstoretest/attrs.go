@@ -214,3 +214,52 @@ func testUsageFollowsOwner(t *testing.T, kvo Opener) {
 		}
 	}
 }
+
+// RFC 16 §4.4: folding a directory's time deltas changes nothing a Get
+// returns, the version floor included, and leaves its Get no deltas to
+// scan.
+func testFoldDirectory(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	dir, _ := f.create(f.admin, f.root, "d", directory(0o755))
+	for i := range 12 {
+		f.create(f.admin, dir, "f"+string(rune('a'+i)), regular(0o644))
+	}
+	before, err := files.Get(ctx, f.admin, dir)
+	must(t, err)
+	floor, err := f.s.VersionFloor(ctx, []entity.ShareID{f.share.ID})
+	must(t, err)
+	_, id, err := dir.Parse()
+	must(t, err)
+	for more := true; more; {
+		more, err = f.s.Namespace().FoldDirectory(ctx, f.share.ID, id)
+		must(t, err)
+	}
+	f.c.Take()
+	after, err := files.Get(ctx, f.admin, dir)
+	must(t, err)
+	if n := f.c.Take(); n.Scanned != 0 {
+		t.Errorf("a folded directory's Get scanned %d deltas", n.Scanned)
+	}
+	if !after.Modify.Equal(before.Modify) || !after.Change.Equal(before.Change) || after.Version != before.Version {
+		t.Errorf("fold changed the directory: %v %v %d -> %v %v %d", before.Modify, before.Change, before.Version.Counter(),
+			after.Modify, after.Change, after.Version.Counter())
+	}
+	if again, err := f.s.VersionFloor(ctx, []entity.ShareID{f.share.ID}); err != nil || again != floor {
+		t.Errorf("floor %d -> %d %v", floor.Counter(), again.Counter(), err)
+	}
+}
+
+// RFC 7 §9.5: a time set explicitly on a directory holds, though creates
+// in it left deltas with later times.
+func testDirectoryTimeSet(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	dir, _ := f.create(f.admin, f.root, "d", directory(0o755))
+	f.create(f.admin, dir, "a", regular(0o644))
+	past := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	must(t, errOf(files.SetAttrs(ctx, f.admin, dir, entity.Attrs{}.WithModify(past))))
+	if got, err := files.Get(ctx, f.admin, dir); err != nil || !got.Modify.Equal(past) {
+		t.Errorf("directory Modify %v %v, want %v", got.Modify, err, past)
+	}
+}

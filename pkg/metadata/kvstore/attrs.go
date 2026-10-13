@@ -65,6 +65,18 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 		if err := mayChange(tx, id, file, a); err != nil {
 			return err
 		}
+		// A directory's unfolded deltas fold first, so a time set
+		// explicitly here is not overtaken by a later delta's on read.
+		//
+		// ponytail: it folds every unfolded delta in this transaction,
+		// unbounded; the primary's regular fold keeps them few. Fold only
+		// those before the cut the transaction read when cuts land.
+		stored := file.Version
+		if file.IsDir() {
+			if _, _, err := foldDeltas(tx, &file, -1); err != nil {
+				return err
+			}
+		}
 		next := file.Apply(a)
 		if a.Changes(entity.AttrMode) && !file.IsDir() && next.Mode&entity.ModeSetgid != 0 && !id.Privileged && !id.InGroup(next.Group) {
 			next.Mode &^= entity.ModeSetgid // a non-member cannot make a setgid program of a group it is not in
@@ -87,7 +99,7 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 		if err := chargeFile(tx, share, &file, &next); err != nil {
 			return err
 		}
-		return putFile(tx, file.Version, next)
+		return putFile(tx, stored, next)
 	})
 	return out, err
 }

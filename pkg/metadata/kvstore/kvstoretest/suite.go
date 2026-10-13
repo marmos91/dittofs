@@ -69,6 +69,8 @@ func Run(t *testing.T, open Opener) {
 		{"ShareTags", testShareTags},
 		{"VersionFloor", testVersionFloor},
 		{"UsageFollowsOwner", testUsageFollowsOwner},
+		{"FoldDirectory", testFoldDirectory},
+		{"DirectoryTimeSet", testDirectoryTimeSet},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}
