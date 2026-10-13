@@ -950,7 +950,7 @@ The rules:
 | Write over committed content | an overwrite record covers the overwritten runs ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)) |
 | Truncate up | `size` grows; `[old size, new size)` becomes a hole |
 | Truncate down | `size` shrinks; a removal is recorded, which masks the holes and overwrite records past it until phase 2 drops them |
-| Deallocate | the extent reads as a hole at once; a removal is recorded, which masks the holes and overwrite records in the extent, and phase 2 drops them, writes the merged hole and drops or narrows the refs over it ([§6](#6.%20Reference%20counting)) |
+| Deallocate | the extent reads as a hole at once; a removal is recorded, which masks the holes and overwrite records in the extent, and phase 1 also writes the merged hole at the removal's version, and phase 2 drops the masked records and drops or narrows the refs over it ([§6](#6.%20Reference%20counting)) |
 | Allocate | none — see below |
 
 **Allocate MUST NOT remove a hole** unless the zeros it promises are staged in

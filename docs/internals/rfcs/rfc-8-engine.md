@@ -1817,9 +1817,9 @@ Truncate down, deallocate, release and a clone's destination are **removals**
 
 The journal stops holding the extent at a new version, then phase 1 records the
 removal and writes the extent's merged hole at its version *v* at once, at the
-extent's start key, replacing any masked hole at that key; phase 2's batches
-drop the masked refs and holes inside it and join what remains with the holes
-it touches ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). Written by phase 2's last batch instead, the
+extent's start key, joined with the at most two holes touching its edges and
+replacing any masked hole at that key; phase 2's batches only drop the masked
+refs and holes inside it ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). Written by phase 2's last batch instead, the
 merged hole at *v* would cover a write accepted into the extent between the
 phases, which has no hole record to shrink, and those bytes would read as
 zeros; written in phase 1, it is shrunk or split by that write like any other
