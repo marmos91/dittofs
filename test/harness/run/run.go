@@ -300,14 +300,42 @@ func stopped(ctx context.Context) string {
 }
 
 // execute runs one command with its output going to w, and returns its exit
-// status. A command that outlives ctx is killed with everything it started.
+// status. A command that outlives ctx is killed with everything it started,
+// and whatever a command leaves running in its process group is killed when
+// it exits.
 func execute(ctx context.Context, argv []string, dir string, env []string, w io.Writer) (int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = dir, env, w, w
-	// A leftover child holding the output open can't keep dt waiting.
-	cmd.WaitDelay = 5 * time.Second
+	cmd.Dir, cmd.Env = dir, env
+	// The command writes to a pipe of dt's own, not one exec makes, so Wait
+	// returns when the command exits, whatever it left holding the output.
+	r, pw, err := os.Pipe()
+	if err != nil {
+		return -1, err
+	}
+	cmd.Stdout, cmd.Stderr = pw, pw
 	killTree(cmd)
-	err := cmd.Run()
+	err = cmd.Start()
+	_ = pw.Close()
+	if err != nil {
+		_ = r.Close()
+		return -1, err
+	}
+	copied := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(w, r)
+		close(copied)
+	}()
+	err = cmd.Wait()
+	killLeftovers(cmd)
+	// What still holds the output now runs outside the command's group:
+	// give it a moment to finish writing, then stop reading.
+	select {
+	case <-copied:
+	case <-time.After(5 * time.Second):
+		_ = r.Close()
+		<-copied
+	}
+	_ = r.Close()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return exit.ExitCode(), nil

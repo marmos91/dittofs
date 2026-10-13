@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -93,7 +93,7 @@ func TestMultiLineScriptNote(t *testing.T) {
 
 // Each test runs under its own limit; one that fails or times out fails the
 // cell, and the ones after it still run. A timed-out test's children die with
-// it.
+// it, those that made a process group of their own included.
 func TestTestsRunUnderTheirLimits(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { cmd: "sh {test}", tests: "t/*.sh", timeout: { test: 1s } }
@@ -102,10 +102,11 @@ func TestTestsRunUnderTheirLimits(t *testing.T) {
 		"t/b.sh": "exit 3\n",
 		"t/c.sh": "sleep 30 & echo $! > \"$0.pid\"; wait\n",
 		"t/d.sh": "echo ran > \"$0.ran\"\n",
+		"t/e.sh": "set -m; sleep 30 & echo $! > \"$0.pid\"; wait\n",
 	})
 	rep, _ := runTarget(t, root, r, "s", false)
 	note := rep.Outcomes[0].Note
-	for _, want := range []string{"t/b.sh: `sh t/b.sh` exited 3", "t/c.sh: timed out after 1s"} {
+	for _, want := range []string{"t/b.sh: `sh t/b.sh` exited 3", "t/c.sh: timed out after 1s", "t/e.sh: timed out after 1s"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note %q lacks %q", note, want)
 		}
@@ -113,15 +114,47 @@ func TestTestsRunUnderTheirLimits(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "t/d.sh.ran")); err != nil {
 		t.Error("the test after the failures didn't run")
 	}
-	pid, _ := os.ReadFile(filepath.Join(root, "t/c.sh.pid"))
-	n, err := strconv.Atoi(strings.TrimSpace(string(pid)))
+	for _, test := range []string{"t/c.sh", "t/e.sh"} {
+		if alive(t, filepath.Join(root, test+".pid")) {
+			t.Errorf("%s: the timed-out test's child outlived it", test)
+		}
+	}
+}
+
+// A command that exits but leaves a process holding its output still passes:
+// the process is killed, and dt doesn't wait on it.
+func TestLeftoversAreKilled(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { cmd: "sh {test}", tests: "t/*.sh" }
+`, map[string]string{"t/a.sh": "sleep 30 & echo $! > \"$0.pid\"\nexit 0\n"})
+	start := time.Now()
+	rep, _ := runTarget(t, root, r, "s", false)
+	took := time.Since(start)
+	if o := rep.Outcomes[0]; o.Result != Passed {
+		t.Errorf("outcome %+v", o)
+	}
+	if alive(t, filepath.Join(root, "t/a.sh.pid")) {
+		t.Error("the process the test left behind outlived it")
+	}
+	if took > 3*time.Second {
+		t.Errorf("took %s: dt waited on what the test left behind", took)
+	}
+}
+
+// alive reports whether the process whose pid is in file still runs. It only
+// looks: a pid can be reused, so a test never signals one.
+func alive(t *testing.T, file string) bool {
+	t.Helper()
+	data, err := os.ReadFile(file)
 	if err != nil {
-		t.Fatalf("child pid %q: %v", pid, err)
+		t.Fatal(err)
 	}
-	if p, _ := os.FindProcess(n); p.Signal(syscall.Signal(0)) == nil {
-		_ = p.Kill()
-		t.Error("the timed-out test's child outlived it")
+	pid := strings.TrimSpace(string(data))
+	if _, err := strconv.Atoi(pid); err != nil {
+		t.Fatalf("pid %q in %s", pid, file)
 	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", pid).Output()
+	return err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 }
 
 // When the cell's limit passes, the running test is stopped and the rest
