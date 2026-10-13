@@ -45,7 +45,7 @@ import (
 // Server Config         "cfg:"   cfg:server                             MetadataServerConfig (JSON)
 // Filesystem Caps       "cap:"   cap:fs                                 FilesystemCapabilities (JSON)
 // Format Version        "fmt:"   fmt:store                              uint32 (big-endian binary)
-// Retired ObjectID idx  "obj:"   obj:<contentHash>                      no longer written or read
+// Retired ObjectID idx  "obj:"   obj:<contentHash>                      dropped at open (retired_objectid_index.go)
 // PayloadID Index       "pl:"    pl:<payloadID>                         file UUID (bytes)
 
 const (

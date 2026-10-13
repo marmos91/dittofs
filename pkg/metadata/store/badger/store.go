@@ -414,6 +414,13 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to initialize singletons: %w", err)
 	}
 
+	// A store written before #2924 still holds keys of the retired ObjectID
+	// index. Nothing reads them; drop them before the store serves.
+	if _, err := dropRetiredObjectIDIndex(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	// Initialize the usedBytes counter from a full file scan, which also writes
 	// the pl: index when this store's rows predate it — one decode pass, not two.
 	if err := store.initUsedBytesAndPayloadIndex(); err != nil {
