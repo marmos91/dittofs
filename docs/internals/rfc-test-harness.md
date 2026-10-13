@@ -258,8 +258,10 @@ What stays, because it isn't an entry point:
 ### Getting `dt`
 
 `dt` is a Go command in the main module, `cmd/dt`. `test/harness/bin/dt` stays the path people
-type: a shim that runs `go run ./cmd/dt`, so a developer needs nothing but Go, and the build is
-cached after the first call. CI builds it once per job with `go build -o`.
+type: a shim that builds `./cmd/dt` with `go build` and runs it, so a developer needs nothing but
+Go, and the build is cached after the first call. It doesn't use `go run`, which turns every
+failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per job with
+`go build -o`.
 
 `dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one:
 the fixture's mounts and unmounts, pjdfstest's `prove`, and restarting `rpc.gssd`. A Go suite
