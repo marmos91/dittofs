@@ -190,3 +190,14 @@ func TestShimKeepsExitStatus(t *testing.T) {
 		t.Errorf("shim: %v, want exit status 3", err)
 	}
 }
+
+// With --ci, the run's outcomes are added to the job summary.
+func TestRunWritesTheJobSummary(t *testing.T) {
+	summary := filepath.Join(t.TempDir(), "summary.md")
+	t.Setenv("GITHUB_STEP_SUMMARY", summary)
+	_, _ = dt(t, "run", "unit", "--ci", "--results", t.TempDir())
+	got, err := os.ReadFile(summary)
+	if err != nil || !strings.Contains(string(got), "| `unit` |") {
+		t.Errorf("summary %q, %v", got, err)
+	}
+}

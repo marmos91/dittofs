@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -64,6 +65,11 @@ func newRun() *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "results:", rep.Dir)
+			if ci {
+				if err := appendSummary(rep.Markdown("dt run " + strings.Join(args, " "))); err != nil {
+					return err
+				}
+			}
 			if s := rep.Status(); s != 0 {
 				return exitStatus(s)
 			}
@@ -87,6 +93,23 @@ func newRun() *cobra.Command {
 		}
 	}
 	return cmd
+}
+
+// appendSummary adds md to the job summary, when the run has one.
+func appendSummary(md string) error {
+	path := os.Getenv("GITHUB_STEP_SUMMARY")
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(md)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 func first(s []string) string {

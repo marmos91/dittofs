@@ -64,6 +64,17 @@ func (r Report) Status() int {
 	return 0
 }
 
+// Markdown is the run's outcomes as a Markdown table under title, for a job
+// summary.
+func (r Report) Markdown(title string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### %s\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n", title)
+	for _, o := range r.Outcomes {
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", o.Cell, o.Result, o.Took, strings.ReplaceAll(o.Note, "|", `\|`))
+	}
+	return b.String()
+}
+
 // Options say where a run happens and writes.
 type Options struct {
 	Root    string    // the repository

@@ -347,3 +347,17 @@ func TestNoBaseSkipsItsCommands(t *testing.T) {
 		t.Errorf("outcome %+v\n%s", rep.Outcomes[0], out)
 	}
 }
+
+// The job summary is a table of every cell's outcome; a | in a note can't
+// break it.
+func TestMarkdown(t *testing.T) {
+	rep := Report{Outcomes: []Outcome{
+		{Cell: "lint-go", Result: Failed, Note: "`a | b` exited 1", Took: 2 * time.Second},
+		{Cell: "shellcheck", Result: Passed, Took: time.Second},
+	}}
+	want := "### dt run lint\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n" +
+		"| `lint-go` | failed | 2s | `a \\| b` exited 1 |\n| `shellcheck` | passed | 1s |  |\n"
+	if got := rep.Markdown("dt run lint"); got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
