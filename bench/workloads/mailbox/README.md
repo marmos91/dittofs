@@ -63,7 +63,7 @@ There are two kinds of scenario:
 | `03-folder-resort.fio` | Sorting a large folder by another column | Phase 1: small random reads over the folder's table. Phase 2: small random writes for the new index. Runs for one user only, `USERS` is ignored | Fixed work |
 | `04-search-reindex.fio` | Windows Search re-indexing the mailbox | Random reads (8K to 64K) over the whole file, plus paced 32K mixed I/O (40% reads) on the search catalog and paced sequential 64K writes to its log | Fixed time |
 | `05-ost-full-sync.fio` | Downloading a full mailbox into a new OST | Rate limited sequential 256K writes appended past the end of the file, plus small random metadata I/O | Fixed time |
-| `06-logoff-compaction.fio` | Sign-out with FSLogix VHDX compaction | 1 MiB sequential reads from the tail of the file and 1 MiB sequential writes toward the front, at the same time | Fixed work |
+| `06-logoff-compaction.fio` | Sign-out with FSLogix VHDX compaction | 1 MiB sequential reads from the tail of the file and 1 MiB sequential writes toward the front, at the same time, then a truncate to 60% of the file, rounded up to 1 MiB | Fixed work |
 
 ## Running
 
@@ -139,9 +139,11 @@ segments, so one pending record keeps its segment local. Repeat the drain until
 With a small `VHDX_SIZE`, lower `LOGON_IO`, `SORT_READ`, `SORT_WRITE`,
 `COMPACT_MOVE` and `SYNC_GROW` to match.
 
-`05-ost-full-sync` makes each file `SYNC_GROW` larger on every run. The download
-stops after `SYNC_GROW` bytes or `RUNTIME` seconds, whichever comes first. Delete
-the files and run `00-prepare` again to get back to `VHDX_SIZE`.
+`05-ost-full-sync` makes each file `SYNC_GROW` larger on every run, and
+`06-logoff-compaction` cuts each file to 60% of its size, rounded up to 1 MiB, on
+every run. The download in 05 stops after `SYNC_GROW` bytes or `RUNTIME`
+seconds, whichever comes first. Delete the files and run `00-prepare` again to
+get back to `VHDX_SIZE`.
 
 In `02-mail-flow` each user starts at a random point in the first 60 seconds
 and then pauses `MAIL_INTERVAL` or `SEND_INTERVAL` between bursts. For a short
@@ -190,6 +192,11 @@ pending remote bytes), then run
 without waiting out the grace period. Its help describes it as meant for tests
 and one-off cleanups.
 
+To check that a 06 run released the tails, drain the uploads and run
+`dfsctl store block gc <share> --grace-period 0` before and after the run: the
+second GC should sweep objects with 0 errors. A truncate is accepted even if
+releasing the blocks fails, so a passing fio run alone does not prove it.
+
 ## Running scenarios together
 
 Real load is a mix. Two useful pairs, started as two `run.sh` commands in
@@ -203,7 +210,6 @@ parallel against the same files:
 
 - SMB opens, durable handles and lease breaks while the container is attached
 - VHDX metadata updates as a dynamic disk grows
-- The final truncate at the end of compaction
 - Server side dedupe. `COMPRESS_PCT` only roughly controls compressibility
 
 ## Calibration

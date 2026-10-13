@@ -40,6 +40,11 @@ option_set_opts "$VARIANT" >/dev/null || { echo "unknown option set: $VARIANT" >
 [[ $EUID -eq 0 ]] || { echo "must run as root (nfstest mounts and captures packets)" >&2; exit 2; }
 
 NFS_PORT="${NFS_PORT:-12049}"
+# The export and the MOUNT port default to what DittoFS serves; baseline-knfsd.sh
+# overrides both to run the same modules against the kernel server, whose
+# mountd is found through rpcbind (an empty NFSTEST_MOUNTPORT).
+NFSTEST_EXPORT="${NFSTEST_EXPORT:-/export}"
+NFSTEST_MOUNTPORT="${NFSTEST_MOUNTPORT-$NFS_PORT}"
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 RESULTS_DIR="${DITTOFS_RESULTS_DIR:-$(mktemp -d)}"
 MODULE_TIMEOUT="${NFSTEST_MODULE_TIMEOUT:-1200}"
@@ -86,7 +91,7 @@ SERVER="${NFSTEST_SERVER:-$(hostname -I | awk '{print $1}')}"
 MTOPTS="hard"
 extra="$(option_set_extra_opts "$VARIANT")"
 [[ -n "$extra" ]] && MTOPTS+=",$extra"
-[[ "$VERSION" == 3 ]] && MTOPTS+=",mountport=$NFS_PORT"
+[[ "$VERSION" == 3 && -n "$NFSTEST_MOUNTPORT" ]] && MTOPTS+=",mountport=$NFSTEST_MOUNTPORT"
 
 mkdir -p "$MOUNT_POINT"
 detach "$MOUNT_POINT"
@@ -161,7 +166,7 @@ COUNT=0
         # shellcheck disable=SC2046  # module_args is a word list on purpose
         (cd "$RESULTS_DIR" && PYTHONPATH="$NFSTEST" timeout --kill-after=30 "$MODULE_TIMEOUT" \
             python3 "$NFSTEST/test/nfstest_$m" \
-            --server "$SERVER" --port "$NFS_PORT" --export /export \
+            --server "$SERVER" --port "$NFS_PORT" --export "$NFSTEST_EXPORT" \
             --nfsversion "$VERSION" --mtpoint "$MOUNT_POINT" \
             --mtopts "$MTOPTS" --tbsize 8k --rmtraces --notty $(module_args "$m"))
         echo "nfstest_$m exited $?"

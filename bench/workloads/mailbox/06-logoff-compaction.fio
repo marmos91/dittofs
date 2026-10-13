@@ -2,8 +2,9 @@
 ; FSLogix VHDX compaction at sign-out: payload blocks are moved from the tail
 ; of the VHDX toward the front, then the file is truncated. Over SMB this
 ; is large I/O (up to the SMB max transfer size, typically 1 MB).
-; Modeled as a concurrent tail-read stream and front-write stream per user.
-; Not modeled: free-space analysis (small) and the final truncate (metadata).
+; Modeled as a concurrent tail-read stream and front-write stream per user,
+; then a truncate to 60% of the file, rounded up to 1 MiB, once both have finished.
+; Not modeled: free-space analysis (small).
 ;
 ; Single user: USERS=1.  Logoff storm (end of shift): e.g. USERS=200.
 ; All users start together: worst case, close to a shift ending at a fixed time.
@@ -37,3 +38,17 @@ offset=20%
 size=40%
 rw=write
 sync=1
+
+; Final truncate: compaction ends by cutting the file at the end of the moved
+; data. ftruncate turns each write into an ftruncate at that offset, so one
+; 1 MiB "write" at 60% cuts each user's file to 60% of its size, rounded up to
+; 1 MiB, and the server releases the tail's blocks.
+[truncate-tail]
+stonewall
+numjobs=${USERS}
+ioengine=ftruncate
+rw=write
+offset=60%
+bs=1m
+number_ios=1
+iodepth=1

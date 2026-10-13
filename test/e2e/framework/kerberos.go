@@ -255,6 +255,86 @@ func RestartGSSD(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 }
 
+// InstallSystemKerberos puts the test KDC's krb5.conf and keytab at
+// /etc/krb5.conf and /etc/krb5.keytab, where rpc.gssd and cifs.upcall read
+// them, and restarts rpc.gssd onto them. When the test ends, each file goes
+// back to what the host had: its old content, or no file at all when there
+// was none, so a host without a keytab doesn't keep the test realm's keys and
+// start rpc.gssd on them. rpc.gssd is then restarted again.
+//
+// The restore is registered before anything is written, so a failed install
+// is undone too. A file that exists but can't be read is left alone, since it
+// couldn't be restored.
+func (k *KDCHelper) InstallSystemKerberos(t *testing.T) error {
+	t.Helper()
+
+	// Registered first so it runs last, after the files are back.
+	t.Cleanup(func() { RestartGSSD(t) })
+	if err := installFiles(t, []installedFile{
+		{path: "/etc/krb5.conf", src: k.Krb5ConfigPath(), perm: 0644},
+		{path: "/etc/krb5.keytab", src: k.KeytabPath(), perm: 0600},
+	}); err != nil {
+		return err
+	}
+	RestartGSSD(t)
+	return nil
+}
+
+// installedFile is a file a test puts at path from src, with perm when it
+// creates it.
+type installedFile struct {
+	path string
+	src  string
+	perm fs.FileMode
+}
+
+// installFiles copies each file's src to its path and, when the test ends,
+// puts back what was at each path before, or removes the file if there was
+// none. InstallSystemKerberos is its only caller; it is separate so the restore
+// can be tested on paths a test owns.
+func installFiles(t *testing.T, files []installedFile) error {
+	t.Helper()
+
+	type saved struct {
+		installedFile
+		data    []byte
+		existed bool
+	}
+	originals := make([]saved, 0, len(files))
+	for _, f := range files {
+		data, err := os.ReadFile(f.path)
+		switch {
+		case err == nil:
+			originals = append(originals, saved{f, data, true})
+		case errors.Is(err, fs.ErrNotExist):
+			originals = append(originals, saved{installedFile: f})
+		default:
+			return fmt.Errorf("read %s before replacing it: %w", f.path, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		for _, o := range originals {
+			if o.existed {
+				_ = os.WriteFile(o.path, o.data, o.perm)
+			} else {
+				_ = os.Remove(o.path)
+			}
+		}
+	})
+
+	for _, f := range files {
+		data, err := os.ReadFile(f.src)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", f.src, err)
+		}
+		if err := os.WriteFile(f.path, data, f.perm); err != nil {
+			return fmt.Errorf("install %s (needs root): %w", f.path, err)
+		}
+	}
+	return nil
+}
+
 // SkipOrFailKerberosMount skips a test whose Kerberos mount failed. With
 // DITTOFS_E2E_REQUIRE_KERBEROS=1 it fails the test instead, so a broken host
 // setup or a server-side Kerberos failure can't pass as a skip.

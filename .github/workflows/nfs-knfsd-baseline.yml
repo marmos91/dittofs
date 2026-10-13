@@ -1,0 +1,71 @@
+# nfstest knfsd baseline
+#
+# Runs nfstest's dio and delegation modules against the Linux kernel NFS server
+# on the same runner image the nightly nfstest cells use, and uploads
+# test/nfs-mount/nfstest/baseline-knfsd.md. That file is committed by hand from
+# the artifact: it is the evidence the nfstest known-failure tables cite when a
+# row is about the kernel client rather than DittoFS.
+#
+# Not a CI gate: it measures a third-party server, so its verdict says nothing
+# about any given commit. It takes as long as the nfstest cells it is compared
+# with, so it runs nightly beside them, and on demand, never on a PR.
+
+name: nfstest knfsd baseline
+
+on:
+  schedule:
+    # Nightly at 04:43 UTC, staggered from the other protocol suites.
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: 'Option sets to run, comma-separated (blank runs all)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    name: nfstest against knfsd
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install kernel NFS server and suite dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-kernel-server nfs-common tcpdump jq
+          sudo modprobe nfsd || echo "WARNING: could not load nfsd"
+
+      - name: Cache the upstream suites
+        uses: actions/cache@v6
+        with:
+          path: test/nfs-mount/.cache
+          key: nfs-mount-suites-${{ hashFiles('test/nfs-mount/fetch.sh') }}
+
+      - name: Run nfstest against knfsd
+        env:
+          VARIANTS: ${{ inputs.variants }}
+        run: |
+          sudo ./test/nfs-mount/nfstest/baseline-knfsd.sh ${VARIANTS:+--variants "$VARIANTS"}
+          cat test/nfs-mount/nfstest/baseline-knfsd.md >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload baseline
+        if: always()
+        # A lost diagnostics zip must not invert the verdict of the run step.
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: nfstest-knfsd-baseline
+          path: |
+            test/nfs-mount/nfstest/baseline-knfsd.md
+            test/nfs-mount/nfstest/results/
+          retention-days: 30
