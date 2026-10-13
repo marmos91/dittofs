@@ -265,16 +265,18 @@ failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per 
 
 `dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one:
 the fixture's mounts and unmounts, pjdfstest's `prove`, and restarting `rpc.gssd`. A Go suite
-whose tests need root themselves, like e2e, which mounts from inside `go test`, is compiled as the
-user (`go test -c`), and only the test binary runs under `sudo -n`. So the Go build cache and the
-results stay the user's, and the `root` need (§4.5) means passwordless sudo, not running `dt`
-under sudo.
+whose tests need root themselves, like e2e, which mounts from inside `go test`, runs with
+`go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs only each
+binary under `sudo -n`, in its package's directory and with the flags `go test` gives every
+binary. So the Go build cache and the results stay the user's, and the `root` need (§4.5) means
+passwordless sudo, not running `dt` under sudo.
 
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
 the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the fixture's
-variables (`KRB5CCNAME`, the server's address and ports) and `PATH`. Today's e2e job does the same
-by hand, with `sudo -E env "PATH=$PATH" ...`.
+variables (`KRB5CCNAME`, the server's address and ports), `PATH`, and Go's `GOCACHE`,
+`GOMODCACHE`, `GOFLAGS=-mod=readonly`, `GOPROXY=off` and `TMPDIR`, since the e2e tests build `dfs`
+themselves. Today's e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`.
 
 ## 4. Design
 
@@ -353,7 +355,20 @@ suites:
       - dt docs --check                         # was check-docs.sh
       - .github/scripts/combined-tree.sh selftest
       - go test ./test/harness/...              # dt's own tests, which absorb the shell self-tests
-  shellcheck: { job: ShellCheck, tier: pr, cmd: { sh: "git ls-files '*.sh' | xargs shellcheck --severity=warning" } }
+  shellcheck:                           # *.sh, and the executables without an extension that start with a shell's #!
+    job: ShellCheck
+    tier: pr
+    cmd:
+      sh: |
+        git ls-files -s | while read -r mode _ _ f; do
+          [ -f "$f" ] || continue
+          case "${f##*/}" in
+            *.sh) ;;
+            *.*) continue ;;
+            *) [ "$mode" = 100755 ] && head -n1 "$f" | grep -Eq '^#! */[^ ]*/(env *)?[abk]*sh' || continue ;;
+          esac
+          printf '%s\0' "$f"
+        done | xargs -0 shellcheck --severity=warning
 
   unit:
     job: Unit Tests (1.26.x)            # the name the ruleset requires, until it requires the gate (§4.8)
@@ -590,8 +605,8 @@ Rules `dt` enforces when it loads the file:
 - every `known`, `shares` and `templates` path exists;
 - every `{test}` has a `tests`;
 - every group names existing suites;
-- a `go-json` command begins with `go test`, so `dt` can add `-json -count=1` after it, or build it
-  with `-c` and run the binary through `go tool test2json` when it needs root (§4.6);
+- a `go-json` command begins with `go test`, so `dt` can add `-json -count=1` after it, and
+  `-exec` to run each test binary under `sudo` when it needs root (§4.6);
 - every `matrix` axis is used by the cell's command, fixture or `env`, so an axis an option doesn't
   need can't multiply identical cells.
 
@@ -801,7 +816,7 @@ first version is narrow, so it can't flood the tracker as #1705's alarm did:
 |---|---|
 | 0 | no new failures and no unexpected skips (known, quarantined and flaky ones are reported, not counted) |
 | 1 | at least one new failure, a test that timed out included: once the fixture's check passed, a hung operation is a regression until shown otherwise |
-| 2 | something didn't run: unmet needs, a fixture that failed its check or timed out, nothing ran, tests the cell's timeout left unstarted, or, in a suite with a `known` file, a test that skipped without being an expected skip |
+| 2 | something didn't run: unmet needs (with `--ci`), a fixture that failed its check or timed out, nothing ran, tests the cell's timeout left unstarted, or, in a suite with a `known` file, a test that skipped without being an expected skip |
 | 3 | usage or registry error |
 
 Status 1 is a regression; status 2 is an environment problem or lost coverage. A cell with both
@@ -823,7 +838,9 @@ defence against another flood.
 
 `dt doctor` reports which are met. For an unmet need, `dt run` either moves to the `dtc` container
 (when it provides it and `--in` allows), or reports the suite as not run, with the reason. It is
-never reported as passed. In CI, `dt plan` gives each cell its place from the same list: `windows`
+never reported as passed. Without `--ci` such a cell is skipped: the run's status comes from the
+cells that ran, so `dt run go` on a laptop still checks what it can, and a run where nothing ran
+is exit 2. With `--ci` it is an error, exit 2 (§4.4). In CI, `dt plan` gives each cell its place from the same list: `windows`
 and `macos` get those hosted runners, a cell needing `host:dedicated` or more disk than a runner has
 gets the dedicated host, and everything else Ubuntu. A `needs_by_test` entry splits its tests into
 cells of their own, so the 9x scenarios go to the host and the rest of `system` stays on runners.
@@ -914,7 +931,7 @@ There are six, each read by one reader in `dt`:
 | Format | Read from | Test case | Suites |
 |---|---|---|---|
 | `exit` | the exit status | the command, or each file in `tests` | lint, operator, system, fio-verify, bench-smoke, one-line suites |
-| `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache. A suite whose tests need root (e2e) is built with `go test -c` and its binary run under `sudo` as `go tool test2json -t ./e2e.test -test.v=test2json`, which gives the same events and never replays a cached result | each test and subtest, with skips and their reasons | unit, integration, e2e |
+| `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache. A suite whose tests need root (e2e) runs as `go test -json -count=1 -exec 'sudo -n env ...'`, which builds as the user, runs each test binary under `sudo`, and gives the same events | each test and subtest, with skips and their reasons | unit, integration, e2e |
 | `junit` | a JUnit XML file the tool writes | each test case | pynfs (`--xml`) |
 | `tap` | the TAP each test file prints | each test file, as the known-failure lists name them | pjdfstest |
 | `subunit` | smbtorture's `test:`, `success:`, `failure:`, `error:` and `skip:` lines | each smbtorture test | smbtorture; its connection-failure filter and truncation handling move into Go with their test cases |
