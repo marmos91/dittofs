@@ -27,12 +27,12 @@ env:
 #
 # Each job runs one lint suite of test/suites.yaml with dt, which holds the
 # checks and their order. The grouping is by what a check needs, not by what
-# it does: Go Checks is everything that needs a toolchain, Repo Checks
-# everything that needs a full clone, ShellCheck the shell scripts. Sharing one
-# Go build cache means `go vet ./...` warms the compile that required-tests.sh
-# would otherwise pay for again. dt runs every command of a suite even after
-# one fails, so a red job reports every check that failed, the signal ten
-# separate jobs used to give, and names each in its summary and an annotation.
+# it does: Go Checks runs everything that analyses Go, Repo Checks everything
+# that needs a full clone, ShellCheck the shell scripts. Sharing one Go build
+# cache means `go vet ./...` warms the compile that required-tests.sh would
+# otherwise pay for again. dt runs every command of a suite even after one
+# fails, so a red job reports every check that failed, the signal ten separate
+# jobs used to give, and names each in the job summary.
 jobs:
   go-checks:
     name: Go Checks
@@ -60,8 +60,8 @@ jobs:
           install-only: true
           # Analyse cold every run. The action restores and saves its analysis
           # cache even when it only installs, and dt's run reads it. Its cache
-          # key covers go.sum, but its restore-key fallback does not: when a
-          # dependency bump changes go.sum the run misses its own key, restores
+          # key covers go.mod, but its restore-key fallback does not: when a
+          # dependency bump changes go.mod the run misses its own key, restores
           # the pre-bump analysis cache, and then saves a fact set built from it
           # under the new key. Every later run gets an exact hit on that entry,
           # and staticcheck loses the cross-package fact that t.Fatal never

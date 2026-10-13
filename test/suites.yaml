@@ -51,13 +51,15 @@ suites:
     tier: pr
     cmd:
       sh: |
-        { git ls-files '*.sh'
-          git ls-files -s | while read -r mode _ _ f; do
-            [ "$mode" = 100755 ] || continue
-            case "${f##*/}" in *.*) continue ;; esac
-            head -n1 "$f" | grep -Eq '^#! */[^ ]*/(env *)?[abk]*sh' && echo "$f"
-          done
-        } | xargs shellcheck --severity=warning
+        git ls-files -s | while read -r mode _ _ f; do
+          [ -f "$f" ] || continue
+          case "${f##*/}" in
+            *.sh) ;;
+            *.*) continue ;;
+            *) [ "$mode" = 100755 ] && head -n1 "$f" | grep -Eq '^#! */[^ ]*/(env *)?[abk]*sh' || continue ;;
+          esac
+          printf '%s\0' "$f"
+        done | xargs -0 shellcheck --severity=warning
   unit:
     job: Unit Tests (1.26.x)
     format: go-json
