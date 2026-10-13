@@ -24,7 +24,7 @@ var (
 
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
-	// and the runner leave alone.
+	// and dt run leave alone.
 	PlaceholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
 )
 

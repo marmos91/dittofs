@@ -65,11 +65,15 @@ func Check(n string) error {
 			return fmt.Errorf("%d GB free here", free)
 		}
 	case "port":
-		l, err := net.Listen("tcp", ":"+arg)
-		if err != nil {
-			return errors.New("the port is in use")
+		// Every address and loopback alone: some systems let the first bind
+		// while something listens on the second.
+		for _, addr := range []string{":" + arg, "127.0.0.1:" + arg} {
+			l, err := net.Listen("tcp", addr)
+			if err != nil {
+				return errors.New("the port is in use")
+			}
+			_ = l.Close()
 		}
-		_ = l.Close()
 	case "host":
 		return errors.New("only the dedicated host meets it")
 	case "service", "cloud":

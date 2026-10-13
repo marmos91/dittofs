@@ -176,10 +176,7 @@ func TestCellLimitStopsTheCell(t *testing.T) {
 // nothing ran exits 2; with --ci the cell didn't run, which is exit 2 and an
 // annotation (sections 4.4 and 4.5).
 func TestUnmetNeeds(t *testing.T) {
-	other := "windows"
-	if runtime.GOOS == "windows" {
-		other = "linux"
-	}
+	other := "windows" // repo skips the test there
 	root, r := repo(t, `groups: { g: [away, here] }
 suites:
   away: { cmd: "true", needs: [`+other+`] }
@@ -497,5 +494,14 @@ func TestPathsHoldFromAnyDir(t *testing.T) {
 		if !filepath.IsAbs(rep.Dir) {
 			t.Errorf("%s: run directory %q", suite, rep.Dir)
 		}
+	}
+}
+
+// An annotation's text can't end it early or break it: %, CR and LF are
+// escaped, and in its title : and , too.
+func TestAnnotation(t *testing.T) {
+	got := annotation("dt a:b,c", "100% done\nthen\rmore")
+	if want := "::error title=dt a%3Ab%2Cc::100%25 done%0Athen%0Dmore"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

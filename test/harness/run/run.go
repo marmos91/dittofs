@@ -109,10 +109,18 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		rep.Outcomes = append(rep.Outcomes, Outcome{c.Name, result, note, time.Since(start).Round(time.Second)})
 		_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, result, note)
 		if o.CI && (result == Failed || result == NotRun) {
-			_, _ = fmt.Fprintf(o.Out, "::error title=dt %s::%s: %s\n", c.Name, result, note)
+			_, _ = fmt.Fprintln(o.Out, annotation("dt "+c.Name, result+": "+note))
 		}
 	}
 	return rep, nil
+}
+
+// annotation is an error annotation with title and message, escaped as the
+// workflow command's format asks: properties also escape : and ,.
+func annotation(title, message string) string {
+	data := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
+	property := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C")
+	return "::error title=" + property.Replace(title) + "::" + data.Replace(message)
 }
 
 // runCell runs one cell and returns its result and a note on it.
