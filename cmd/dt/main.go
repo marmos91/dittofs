@@ -156,7 +156,9 @@ func shardCells(cells []plan.Cell, spec string) ([]plan.Cell, error) {
 
 // changedFiles lists the paths the branch changes since it left base.
 func changedFiles(root, base string) ([]string, error) {
-	out, err := exec.Command("git", "-C", root, "diff", "-z", "--name-only", base+"...HEAD").Output()
+	// --no-renames lists both sides of a rename, so a file moved out of a
+	// suite's paths still touches them.
+	out, err := exec.Command("git", "-C", root, "diff", "-z", "--no-renames", "--name-only", base+"...HEAD").Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff %s...HEAD: %w", base, err)
 	}

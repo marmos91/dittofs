@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,6 +87,38 @@ func TestListJSON(t *testing.T) {
 }
 
 func lines(s string) int { return strings.Count(s, "\n") }
+
+// A renamed file is listed under both paths, so moving it out of a suite's
+// paths still runs that suite.
+func TestChangedFilesKeepsBothSidesOfARename(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		pre := []string{"-C", root, "-c", "user.name=dt", "-c", "user.email=dt@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}
+		if out, err := exec.Command("git", append(pre, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "pkg/old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pkg/old/x.go"), []byte("package old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q")
+	git("add", ".")
+	git("commit", "-q", "-m", "add")
+	git("mv", "pkg/old", "pkg/new")
+	git("commit", "-q", "-m", "move")
+
+	got, err := changedFiles(root, "HEAD~1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"pkg/new/x.go", "pkg/old/x.go"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
 
 // git -z output keeps a path with spaces or quotes whole.
 func TestSplitNUL(t *testing.T) {

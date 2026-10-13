@@ -86,7 +86,20 @@ suites:
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
-        paths: [internal/adapter/**, pkg/adapter/**, pkg/metadata/**, internal/auth/**, pkg/auth/**, pkg/identity/**, "test/e2e/*kerberos*", test/e2e/framework/kerberos.go, test/integration/kerberos/**]
+        paths:
+          - internal/adapter/**
+          - pkg/adapter/**
+          - pkg/metadata/**
+          - internal/auth/**
+          - pkg/auth/**
+          - pkg/identity/**
+          - pkg/controlplane/**             # export auth policy, users and identity mappings
+          - internal/controlplane/**        # the identity mapping and provider API
+          - pkg/config/**                   # the Kerberos keytab and principal
+          - cmd/dfs/**                      # the server's Kerberos capability at start
+          - "test/e2e/*kerberos*"
+          - test/e2e/framework/kerberos.go
+          - test/integration/kerberos/**
 
   # Conformance. On pull requests only the production profile, badger-s3, runs.
   pjdfstest:

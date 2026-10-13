@@ -82,7 +82,7 @@ func TestTiersContainTheOnesBefore(t *testing.T) {
 
 // Shards deal a group's tests in turn; needs_by_test sends its tests to
 // a cell of their own on the place that meets them, unsharded; a cell's limit
-// covers its longest test plus the fixture.
+// covers the sum of its tests' limits plus the fixture.
 func TestSplitsShardsAndTimeouts(t *testing.T) {
 	root := t.TempDir()
 	for _, f := range []string{"00-a-xs.sh", "01-b-s.sh", "02-c-m.sh", "90-d-xl.sh", "91-e-xxl.sh"} {
@@ -126,8 +126,8 @@ suites:
 	if last.Name != "system/dedicated" || last.Place != Dedicated || len(last.Tests) != 2 {
 		t.Fatalf("needs_by_test cell %+v", last)
 	}
-	// 90-d-xl: twice an hour plus 2 minutes, plus 5 for the fixture. xxl has no bound.
-	if last.TimeoutMinutes != 127 || len(last.Notes) != 1 {
+	// 90-d-xl's 122 minutes, 91-e-xxl counted as the cell's 90, and 5 for the fixture.
+	if last.TimeoutMinutes != 217 || len(last.Notes) != 1 {
 		t.Errorf("dedicated cell: %d minutes, notes %v", last.TimeoutMinutes, last.Notes)
 	}
 	if merge[0].TimeoutMinutes != 90 {

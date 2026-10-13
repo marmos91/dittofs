@@ -352,30 +352,40 @@ func blocking(b registry.Blocking, tier string) bool {
 	return true
 }
 
-// setTimeout sets the cell's limits. A test's limit is its own from the list,
-// else its size class's or the suite's. A cell never gets less than its
-// longest test's limit plus the fixture's setup time; when that raises it, a
-// note says so.
+// setTimeout sets the cell's limits. A cell runs its tests one after
+// another, so it never gets less than the sum of their limits plus the
+// fixture's setup time; when that raises it, a note says so. A test's limit is
+// its own from the list, else its size class's or the suite's, and a test
+// with no bound counts as the cell's own limit.
 func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]time.Duration) error {
 	cell, err := time.ParseDuration(t.Cell)
 	if err != nil {
 		return err
 	}
-	var longest time.Duration
+	var each time.Duration // the suite's limit per test; none for size
 	if t.Test != "size" {
-		if longest, err = time.ParseDuration(t.Test); err != nil {
+		if each, err = time.ParseDuration(t.Test); err != nil {
 			return err
 		}
 	}
-	for _, name := range tests {
-		limit, own := limits[name]
-		if !own && t.Test == "size" {
-			limit = sizeLimit(name)
+	total := each // a suite whose tests aren't listed counts as one test
+	if len(tests) > 0 {
+		total = 0
+		for _, name := range tests {
+			limit, own := limits[name]
+			if !own && t.Test == "size" {
+				limit = sizeLimit(name)
+			} else if !own {
+				limit = each
+			}
+			if limit == 0 {
+				limit = cell
+			}
+			total += limit
 		}
-		longest = max(longest, limit)
 	}
-	if need := longest + fixtureSetup; longest > 0 && need > cell {
-		c.Notes = append(c.Notes, fmt.Sprintf("cell timeout raised from %s to %s: its longest test's limit plus %s for the fixture", t.Cell, short(need), short(fixtureSetup)))
+	if need := total + fixtureSetup; total > 0 && need > cell {
+		c.Notes = append(c.Notes, fmt.Sprintf("cell timeout raised from %s to %s: the sum of its tests' limits plus %s for the fixture", t.Cell, short(need), short(fixtureSetup)))
 		cell = need
 	}
 	c.TimeoutMinutes = int((cell + time.Minute - 1) / time.Minute)

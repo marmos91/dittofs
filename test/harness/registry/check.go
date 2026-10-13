@@ -23,8 +23,8 @@ var (
 	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "mount", "user", "password", "realm")
 
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
-	// A {name} not preceded by $, so a shell ${VAR} in an sh command is left alone.
-	placeholderRE = regexp.MustCompile(`(?:^|[^$])\{([A-Za-z0-9_.-]+)\}`)
+	// A {name}, or a shell ${VAR}, which placeholdersIn skips.
+	placeholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
 )
 
 func set(items ...string) map[string]bool {
@@ -171,10 +171,10 @@ func checkUnit(root string, u *Suite) []error {
 	}
 	used := map[string]bool{}
 	for _, s := range u.allStrings() {
-		for _, m := range placeholderRE.FindAllStringSubmatch(s, -1) {
-			used[m[1]] = true
-			if !placeholders[m[1]] && !axes[m[1]] {
-				fail("unknown placeholder {%s}", m[1])
+		for _, p := range placeholdersIn(s) {
+			used[p] = true
+			if !placeholders[p] && !axes[p] {
+				fail("unknown placeholder {%s}", p)
 			}
 		}
 	}
@@ -183,8 +183,8 @@ func checkUnit(root string, u *Suite) []error {
 	}
 	inCell := map[string]bool{}
 	for _, s := range u.cellStrings() {
-		for _, m := range placeholderRE.FindAllStringSubmatch(s, -1) {
-			inCell[m[1]] = true
+		for _, p := range placeholdersIn(s) {
+			inCell[p] = true
 		}
 	}
 	for _, a := range u.Matrix {
@@ -208,6 +208,18 @@ func checkUnit(root string, u *Suite) []error {
 		}
 	}
 	return errs
+}
+
+// placeholdersIn returns the {name} placeholders in s, leaving out a shell
+// ${VAR} in an sh command.
+func placeholdersIn(s string) []string {
+	var out []string
+	for _, m := range placeholderRE.FindAllStringSubmatch(s, -1) {
+		if !strings.HasPrefix(m[0], "$") {
+			out = append(out, m[1])
+		}
+	}
+	return out
 }
 
 func checkNeed(n string) error {
