@@ -71,6 +71,27 @@ func TestClone(t *testing.T) {
 	f.want(dst, "replay", "hole[0,2) carved[2,6) hole[6,8) carved[8,12) uncarved[12,14)")
 }
 
+// RFC 6 §6.6: the hole a clone's last batch joins raises the destination's
+// MaxSpan, so a lookup starting inside it still finds its start while
+// another removal is not done.
+func TestCloneJoinRaisesMaxSpan(t *testing.T) {
+	f := newContentFix(t, nil)
+	src, dst := f.file(0), f.file(0)
+	f.exist(src, write(1, mib, mib))
+	f.exist(dst, write(1, 0, 4*mib), write(2, 5*mib, 2*mib))
+	f.clone(f.cloneOp(src, dst, 0, 5*mib, mib, 3)) // the source's hole lands beside dst's
+	f.resume(dst)
+	f.want(dst, "after the clone", "uncarved[0,4) hole[4,6) uncarved[6,7)")
+	if got := f.get(dst); got.MaxSpan != 2*mib {
+		t.Errorf("max span %d, want the joined hole's %d", got.MaxSpan, 2*mib)
+	}
+
+	f.remove(dst, dealloc(4, 0, mib)) // phase 1 only: a removal not done
+	if got := f.spans(dst, 5*mib+mib/2, mib/2); len(got) != 1 || got[0].Class != entity.Hole {
+		t.Errorf("inside the joined hole: %+v", got)
+	}
+}
+
 // A clone over existing content masks and drops what was there below its
 // version, and leaves alone what was written after it.
 func TestCloneOverContent(t *testing.T) {
