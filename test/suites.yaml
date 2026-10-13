@@ -14,31 +14,50 @@ groups:              # `dt run GROUP` runs every suite in it
   perf: [fio-verify, bench-smoke]
 
 suites:
-  # Lint. `job` keeps the check names the develop ruleset requires.
+  # Lint. `job` keeps the check names the develop ruleset requires. Every command of a list
+  # runs even after one fails, so a red job reports every check that failed.
   lint-go:
     job: Go Checks
     tier: pr
     cmd:
       - { sh: 'test -z "$(gofmt -s -l .)" || { gofmt -s -l .; exit 1; }' }
       - go vet ./...
+      # Tagged tests compile in no other check, so one could stop compiling without anything
+      # going red. None of these tags excludes another.
       - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...
-      - go run ./test/spec-citations
+      - go run ./test/spec-citations          # the MS-FSCC, MS-FSA and MS-SMB2 citations
+      # The tests that pin an authorization or encryption gate, run by name: the edit that
+      # reopens a gate can delete its test in the same change.
       - test/required-tests.sh
       - golangci-lint run --timeout=5m
   lint-repo:
     job: Repo Checks
     tier: pr
     cmd:
-      - test/conformance/check-docs.sh
+      - test/conformance/check-docs.sh         # the documentation's suite tables match the manifest
       - test/conformance/run_test.sh
       - test/common/known-failures_test.sh
       - test/smb-conformance/compose-env_test.sh
-      - test/new-package-tests.sh {base}
+      - test/new-package-tests.sh {base}       # a new package carries a test of its own
+      # A docs: commit changes only documentation, and no commit credits an AI tool. Both run
+      # on pushes too, since planning commits reach develop without a pull request.
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
-      - .github/scripts/run-e2e-selftest.sh
-  shellcheck: { job: ShellCheck, tier: pr, cmd: { sh: "git ls-files '*.sh' | xargs shellcheck --severity=warning" } }
-
+      - .github/scripts/run-e2e-selftest.sh    # the e2e wrapper against failing, hung and false-green stand-ins
+  # Every shell script: the *.sh files, and the executables without an extension whose first
+  # line is a shell's shebang.
+  shellcheck:
+    job: ShellCheck
+    tier: pr
+    cmd:
+      sh: |
+        { git ls-files '*.sh'
+          git ls-files -s | while read -r mode _ _ f; do
+            [ "$mode" = 100755 ] || continue
+            case "${f##*/}" in *.*) continue ;; esac
+            head -n1 "$f" | grep -Eq '^#! */[^ ]*/(env *)?[abk]*sh' && echo "$f"
+          done
+        } | xargs shellcheck --severity=warning
   unit:
     job: Unit Tests (1.26.x)
     format: go-json
