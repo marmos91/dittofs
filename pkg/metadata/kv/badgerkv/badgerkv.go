@@ -388,6 +388,7 @@ func (r *reader) Scan(prefix, after []byte) iter.Seq2[kv.KeyValue, error] {
 
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = prefix
+		opts.PrefetchValues = false
 		it := r.snap.NewIterator(opts)
 		defer it.Close()
 		start := prefix
