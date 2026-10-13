@@ -481,11 +481,14 @@ func (r *reader) Before(prefix, key []byte) (kv.KeyValue, bool, error) {
 	return kv.KeyValue{}, false, nil
 }
 
-// Versions reads the snapshot, so inside Update it reports no version for the
-// transaction's own writes, and Badger does not track it.
+// Versions reads the snapshot, untracked, and refuses a key the transaction
+// wrote: its version is the commit's, which Badger assigns only then.
 func (r *reader) Versions(keys [][]byte) ([]uint64, error) {
 	vs := make([]uint64, len(keys))
 	for i, k := range keys {
+		if _, ok := r.own[string(k)]; ok {
+			return nil, kv.ErrUncommittedVersion
+		}
 		item, err := r.snap.Get(k)
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			continue

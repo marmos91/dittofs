@@ -623,8 +623,9 @@ func testScanUncommitted(t *testing.T, s kv.KV) {
 }
 
 // Versions orders one key's writes as their commits, reports 0 for an absent
-// key, and inside Update reports the snapshot's version, never one for the
-// transaction's own write.
+// key, and inside Update reports the snapshot's version of a key the
+// transaction has not written and ErrUncommittedVersion for one it set or
+// deleted.
 func testVersions(t *testing.T, s kv.KV) {
 	var seen []uint64
 	for _, v := range []string{"1", "2", "3"} {
@@ -639,15 +640,23 @@ func testVersions(t *testing.T, s kv.KV) {
 		t.Errorf("absent key has version %d, want 0", vs[1])
 	}
 	if err := s.Update(ctx(t), func(tx kv.Txn) error {
-		if err := tx.Set([]byte("k"), []byte("4")); err != nil {
-			return err
-		}
 		vs, err := tx.Versions(byteKeys([]string{"k"}))
 		if err != nil {
 			return err
 		}
 		if vs[0] != seen[2] {
-			return fmt.Errorf("k after its own Set has version %d, want the snapshot's %d", vs[0], seen[2])
+			return fmt.Errorf("k before any write has version %d, want the snapshot's %d", vs[0], seen[2])
+		}
+		if err := tx.Set([]byte("k"), []byte("4")); err != nil {
+			return err
+		}
+		if err := tx.Delete([]byte("other")); err != nil {
+			return err
+		}
+		for _, key := range []string{"k", "other"} {
+			if _, err := tx.Versions(byteKeys([]string{"absent", key})); !errors.Is(err, kv.ErrUncommittedVersion) {
+				return fmt.Errorf("Versions of %s after this transaction wrote it: %v, want ErrUncommittedVersion", key, err)
+			}
 		}
 		return nil
 	}); err != nil {

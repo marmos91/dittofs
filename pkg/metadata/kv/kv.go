@@ -50,8 +50,10 @@ type Reader interface {
 	// Versions returns each key's change sequence, in one batched read: the
 	// version the store assigned the commit that last wrote the key, ordering
 	// the writes of one key as their commits were ordered. A key absent from
-	// the snapshot has 0. Inside Update it reports what the snapshot holds,
-	// never a version for the transaction's own writes, and it is not tracked.
+	// the snapshot has 0. Inside Update a key the transaction set or deleted
+	// has no version until the commit, so the call fails with
+	// ErrUncommittedVersion rather than guess one; any other key reports what
+	// the snapshot holds. It is not tracked.
 	Versions(keys [][]byte) ([]uint64, error)
 }
 
@@ -113,6 +115,8 @@ var (
 	// caller only joined with ctx's error, once ctx is done.
 	ErrConflict = errors.New("kv: transaction conflict")
 	ErrTooLarge = errors.New("kv: transaction exceeds limits")
+	// ErrUncommittedVersion is Versions of a key the transaction wrote.
+	ErrUncommittedVersion = errors.New("kv: version of a key written in this transaction")
 )
 
 // Retry runs attempt until it returns anything but ErrConflict or ctx is done,
