@@ -558,7 +558,7 @@ a registry error (exit 3).
 | each `matrix` key | the cell's value on that axis |
 | `{test}` | one test's file name or list entry |
 | `{args}` | the tier's `args` |
-| `{base}` | the ref a change is compared against: in CI, a pull request's base branch, or for a push to develop the commit before it; `origin/develop` locally |
+| `{base}` | the ref a change is compared against: in CI, a pull request's base branch, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout |
 | `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them |
 | `{out}` | the cell's results directory |
@@ -607,8 +607,9 @@ output. `dt plan --json` gives them the same, from YAML.
 `suites.json` goes with `run.sh`: its profiles become `matrix`, its PR lists `select.pr`, and its
 known-failure paths `known`. `test/conformance/check-docs.sh`, which renders the documentation's
 tables from it, becomes `dt docs --check`. Its other reader, `ci-health.yml`, takes from it only the
-names of the workflows it watches. Those are workflows, not suites, so they stay there until step 3
-(§8) moves the workflows into `tests.yml`, which `ci-health.yml` then watches.
+names of the workflows it watches. Those are workflows, not suites, so the registry doesn't hold
+them. When `suites.json` goes in step 3 (§8), the list moves into `ci-health.yml` itself, whose
+trigger already repeats it, and names `tests.yml` and any workflow still outside it (§4.8).
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -768,11 +769,13 @@ cells at once. That is safe only because each fixture gets its own ports, mount 
 directory. Today the suites share them and must run one at a time (`Makefile:108-111`).
 
 **The tier of a run.** `dt run` runs each suite or option it names at `--tier T`, `pr` by default,
-or at the suite's own tier when that is wider. The tier sets its `args`, its per-tier `env` and its
+or at the suite's own tier when that is wider; `manual` counts as the widest, so
+`dt run pynfs --knfsd` runs at `manual`. The tier sets its `args`, its per-tier `env` and its
 `select`: `dt run unit` runs the short tests, as on a pull request, and `dt run system` the 0x-8x
 scenarios, as after a merge. A name that gives matrix values runs those values whatever `select`
-keeps, so `dt run pynfs/badger` runs both of `badger`'s cells. In CI each cell runs at the tier its
-plan was made for.
+keeps, so `dt run pynfs/badger` runs both of `badger`'s cells. In CI every `dt run` passes the tier
+of the workflow run it belongs to, the fixed-name jobs (§4.8) included, so a push to develop runs
+`unit` without `-short`, as today.
 
 **Posting failures.** `dt report --failures --post` opens a GitHub issue for each new failure, or
 comments on the one already open for it, and lists them in the develop-status issue (§4.8). The
@@ -1068,12 +1071,16 @@ One workflow, `tests.yml`, runs every registered suite:
   Because the gate needs every blocking job, a failing job can't hide behind a green summary, as
   the nightly's baseline job did from 2026-09-10 (#2997).
 - **Lint:** the suites with a `job` run as fixed jobs of that name: `Go Checks`, `Repo Checks` and
-  `ShellCheck`, each `dt run NAME --ci`. They move here from `lint.yml` with their names, so the
+  `ShellCheck`, each `dt run NAME --tier T --ci`, with the workflow run's tier. They move here from `lint.yml` with their names, so the
   develop ruleset's required checks don't change. `Go Checks` also vets every build-tagged test,
   as #3002 added. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
   `Integration Tests (1.26.x)`, until the ruleset requires the gate. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
-  to develop, and the new-package check, which runs on pull requests only today, runs there too.
+  to develop. The new-package check, which runs on pull requests only today, runs on pushes too,
+  by intent: the commit before a push is as good a base for its merge base. Where there is no
+  `{base}` (the schedule, `workflow_dispatch`, a push without a previous commit), the commands that
+  use it are skipped, as `lint.yml` skips the commit checks today, and say so in the log. A
+  skipped command neither fails the cell nor leaves it not run: there is no change to check.
 - **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
 
 **Merging.** Since 2026-10-08:
@@ -1268,8 +1275,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
 
 1. **Registry and runner.** `test/suites.yaml` with groups and options, and `dt list`, `plan`,
    `run` and `docs` in Go, for the `exit` and `go-json` formats. `lint.yml`'s steps become the
-   command lists of the lint suites, and its jobs run them with `dt run NAME --ci` under their
-   names until step 3 moves them into `tests.yml`. Every suite is registered, and the commands
+   command lists of the lint suites, and its jobs run them with `dt run NAME --tier T --ci` under
+   their names until step 3 moves them into `tests.yml`. Every suite is registered, and the commands
    people use today become aliases.
    *Exit:* `dt plan --tier pr --json` yields today's PR cells, less the `memory` and `badger`
    conformance cells (§4.3).
@@ -1287,8 +1294,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
      Then AD-DC, the Kerberos runs and `bench-smoke.yml`.
-   - `ci-health.yml` watches `tests.yml` in place of the workflows `suites.json` names, and stops
-     re-running its failed jobs, since `dt`'s retry replaces that.
+   - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
+     once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
+     retry replaces that.
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs, and the PR that removes the old job deletes that suite's scripts.
    - `run.sh`, `suites.json`, the NFS `sec=krb5` job and the Makefile's `test-*` targets go with
