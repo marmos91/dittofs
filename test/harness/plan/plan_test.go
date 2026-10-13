@@ -256,3 +256,26 @@ func TestShort(t *testing.T) {
 		}
 	}
 }
+
+// A shard with no tests left to deal isn't a cell.
+func TestNoEmptyShards(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []string{"a.sh", "b.sh"} {
+		if err := os.WriteFile(filepath.Join(root, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	y := "version: 1\ndefaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }\n" +
+		"suites:\n  s: { cmd: 'run {test}', tests: \"*.sh\", shards: 4 }\n"
+	r, err := registry.Parse(root, []byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Plan(root, r, "merge", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(cells); !slices.Equal(got, []string{"s/shard-1", "s/shard-2"}) {
+		t.Errorf("cells %v", got)
+	}
+}

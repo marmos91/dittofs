@@ -157,6 +157,9 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 					tests = shard(g.tests, i, shards)
 					segments = append(segments, "shard-"+strconv.Itoa(i))
 				}
+				if partial && len(tests) == 0 {
+					continue // more shards than tests: this one has nothing to run
+				}
 				c := Cell{
 					Name: strings.Join(segments, "/"), Suite: suite, Option: option,
 					Matrix: p.asMap(), Place: place, Needs: needs,
