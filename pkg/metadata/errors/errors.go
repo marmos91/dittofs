@@ -95,8 +95,7 @@ const (
 
 	// ErrConflict indicates a concurrent-write conflict: a Badger SSI abort,
 	// including two writers claiming the same Merkle-root ObjectID
-	// concurrently. The runtime coordinator wraps it into
-	// engine.ErrObjectIDConflict on the manifest write.
+	// concurrently.
 	ErrConflict
 
 	// ErrCrossShare indicates a two-handle operation named handles from two

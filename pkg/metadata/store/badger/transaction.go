@@ -120,17 +120,13 @@ func (s *BadgerMetadataStore) WithTransactionRelaxed(ctx context.Context, fn fun
 // pkg/block/engine/flush.go — so a retry there re-derives from the state that
 // committed in between and loses nothing.
 //
-// Two closures elsewhere do hand in a wholesale list computed outside the call,
-// and neither makes the retry the thing at fault. Deallocate's PunchHole
+// One closure elsewhere does hand in a wholesale list computed outside the call,
+// and it does not make the retry the thing at fault. Deallocate's PunchHole
 // (pkg/metadata/sparse.go) reads the file outside and writes the recomputed list
 // back: the lost-update window there is opened by the unlocked read-then-write
-// and is equally open when the first attempt commits. PersistFileChunks
-// (pkg/controlplane/runtime/shares/coordinator.go) overwrites File.Blocks with a
-// list its caller computed — but it has no caller, in or out of this repo's
-// tree: the name occurs only in its own definition, the engine interface it
-// satisfies, and tests, whatever its doc comment says about a syncer. Withdraw
-// this the moment either grows a hot concurrent caller, because then the
-// contract, not the backoff, is what needs changing.
+// and is equally open when the first attempt commits. Withdraw this the moment
+// it grows a hot concurrent caller, because then the contract, not the backoff,
+// is what needs changing.
 func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, durable bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -278,8 +274,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 
 	// All retries exhausted. Classify the raw badgerdb.ErrConflict SSI abort as a
 	// StoreError{Code: ErrConflict} so codebase-wide conflict detection
-	// (errors.As(*StoreError) / IsConflictError, the runtime coordinator's
-	// mapObjectIDConflict) recognizes it. The raw sentinel stays reachable via
+	// (errors.As(*StoreError) / IsConflictError) recognizes it. The raw sentinel stays reachable via
 	// Cause/Unwrap for diagnostics and errors.Is.
 	if goerrors.Is(lastErr, badgerdb.ErrConflict) {
 		return mapBadgerError(lastErr, "badger WithTransaction", "")

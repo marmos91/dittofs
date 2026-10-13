@@ -75,8 +75,8 @@ func TestWithTransaction_RetryExhaustedConflictIsWrapped(t *testing.T) {
 		t.Fatalf("expected a retry-exhausted conflict error, got nil")
 	}
 
-	// MUST be recognizable as an mderrors conflict (this is what
-	// mapObjectIDConflict relies on).
+	// MUST be recognizable as an mderrors conflict (this is what the
+	// protocol adapters' error mapping relies on).
 	if !mderrors.IsConflictError(txErr) {
 		t.Fatalf("retry-exhausted conflict not recognized as mderrors conflict: %v", txErr)
 	}
