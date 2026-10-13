@@ -22,7 +22,8 @@ type Cell struct {
 // or a suite's cells by the first segments of their names; option picks one
 // of the suite's options. Each suite or option runs at tier, or at its own
 // tier when that is wider, and a TARGET that names values keeps every matrix
-// value. only and skip narrow a group; tests, when given, are the tests to run.
+// value. only and skip narrow a group; tests, when given, are the tests to run,
+// and each must name one. A suite with no cells gives none: nothing to run.
 func Select(root string, r *registry.Registry, target, option, tier string, only, skip, tests []string) ([]Cell, error) {
 	if !slices.Contains(registry.Tiers, tier) {
 		return nil, fmt.Errorf("tier %q is not one of %s", tier, strings.Join(registry.Tiers, ", "))
@@ -36,6 +37,7 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 		return nil, fmt.Errorf("%s is a group: name one of its suites to pick cells or an option", name)
 	}
 	var cells []Cell
+	found := map[string]bool{}
 	for _, s := range suites {
 		unit, path, err := unitOf(r, s, option, rest)
 		if err != nil {
@@ -59,7 +61,7 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			}
 			cell := Cell{Cell: c, Unit: unit, Tier: at}
 			if len(tests) > 0 {
-				if cell.Tests, err = chosen(root, cell, tests); err != nil {
+				if cell.Tests, err = chosen(root, cell, tests, found); err != nil {
 					return nil, err
 				}
 				if len(cell.Tests) == 0 {
@@ -69,8 +71,13 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			cells = append(cells, cell)
 		}
 	}
-	if len(cells) == 0 {
-		return nil, fmt.Errorf("no cell matches %s %s", target, strings.Join(tests, " "))
+	for _, name := range tests {
+		if !found[name] {
+			return nil, fmt.Errorf("no test %q in %s", name, target)
+		}
+	}
+	if len(cells) == 0 && rest != "" {
+		return nil, fmt.Errorf("no cell matches %s", target)
 	}
 	return cells, nil
 }
@@ -134,8 +141,9 @@ func wider(a, b string) string {
 	return a
 }
 
-// chosen returns the cell's tests that the names pick, by path or file name.
-func chosen(root string, c Cell, names []string) ([]string, error) {
+// chosen returns the cell's tests that the names pick, by path or file name,
+// and marks each name that picked one in found.
+func chosen(root string, c Cell, names []string, found map[string]bool) ([]string, error) {
 	tests := c.Tests
 	if len(tests) == 0 {
 		all, _, err := plan.ListTests(root, c.Unit, "")
@@ -146,7 +154,14 @@ func chosen(root string, c Cell, names []string) ([]string, error) {
 	}
 	var out []string
 	for _, t := range tests {
-		if slices.Contains(names, t) || slices.Contains(names, filepath.Base(t)) {
+		picked := false
+		for _, name := range names {
+			if name == t || name == filepath.Base(t) {
+				found[name] = true
+				picked = true
+			}
+		}
+		if picked {
 			out = append(out, t)
 		}
 	}

@@ -304,6 +304,8 @@ suites:
 		{"g", "", []string{"z"}, nil},
 		{"a", "", nil, []string{"one.sh"}},
 		{"c", "", nil, []string{"three.sh"}},
+		{"c", "", nil, []string{"two.sh", "typo.sh"}},
+		{"a/z", "", nil, nil},
 	} {
 		if _, err := Select(root, r, bad.target, bad.option, "pr", bad.only, nil, bad.tests); err == nil {
 			t.Errorf("%+v: no error", bad)
@@ -362,5 +364,81 @@ func TestMarkdown(t *testing.T) {
 		"| `lint-go` | failed | 2s | `a \\| b` exited 1 |\n| `shellcheck` | passed | 1s |  |\n"
 	if got := rep.Markdown("dt run lint"); got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A command that exits 75 ran nothing, as the scenarios' setup does when
+// another run holds their lock: the test didn't run, and the cell didn't run
+// unless another test failed (section 4.6).
+func TestExit75IsNotRun(t *testing.T) {
+	root, r := repo(t, `suites:
+  held: { cmd: "sh {test}", tests: "h/*.sh" }
+  mixed: { cmd: "sh {test}", tests: "m/*.sh" }
+`, map[string]string{"h/a.sh": "exit 75\n", "h/b.sh": "exit 0\n", "m/a.sh": "exit 75\n", "m/b.sh": "exit 1\n"})
+	rep, _ := runTarget(t, root, r, "held", false)
+	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "h/a.sh: `sh h/a.sh` exited 75: it ran nothing") || rep.Status() != 2 {
+		t.Errorf("held: %+v, status %d", o, rep.Status())
+	}
+	if rep, _ := runTarget(t, root, r, "mixed", false); rep.Outcomes[0].Result != Failed || rep.Status() != 1 {
+		t.Errorf("mixed: %+v, status %d", rep.Outcomes[0], rep.Status())
+	}
+}
+
+// An interrupt leaves the running test, and every test and cell after it, not
+// run: an interrupted run is no regression (section 4.4).
+func TestInterruptIsNotRun(t *testing.T) {
+	root, r := repo(t, `groups: { g: [slow, next] }
+suites:
+  slow: { cmd: "sh {test}", tests: "t/*.sh" }
+  next: { cmd: "true" }
+`, map[string]string{"t/a.sh": "sleep 30\n", "t/b.sh": "exit 0\n"})
+	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow, next := rep.Outcomes[0], rep.Outcomes[1]
+	if slow.Result != NotRun || !strings.Contains(slow.Note, "t/a.sh: interrupted") || !strings.Contains(slow.Note, "1 tests not started: interrupted") {
+		t.Errorf("slow: %+v", slow)
+	}
+	if next.Result != NotRun || rep.Status() != 2 {
+		t.Errorf("next: %+v, status %d", next, rep.Status())
+	}
+}
+
+// A command with a placeholder dt doesn't fill can't run, wherever it sits,
+// so the cell runs none of its commands.
+func TestUnfillableCommandIsNotRun(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { cmd: [ "touch ran", "run {bin}" ] }
+`, nil)
+	rep, _ := runTarget(t, root, r, "s", false)
+	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "{bin}") || rep.Status() != 2 {
+		t.Errorf("outcome %+v, status %d", o, rep.Status())
+	}
+	if _, err := os.Stat(filepath.Join(root, "ran")); err == nil {
+		t.Error("the cell ran a command before finding one it can't fill")
+	}
+}
+
+// A suite whose tests match nothing gives no cells, which is nothing to run:
+// exit 2, not a usage error.
+func TestNothingToRun(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { cmd: "sh {test}", tests: "none/*-xs.sh", timeout: { test: size } }
+`, nil)
+	cells, err := Select(root, r, "s", "", "pr", nil, nil, nil)
+	if err != nil || len(cells) != 0 {
+		t.Fatalf("cells %v, %v", cells, err)
+	}
+	var out bytes.Buffer
+	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out})
+	if err != nil || rep.Status() != 2 || !strings.Contains(out.String(), "[dt] nothing to run") {
+		t.Errorf("status %d, %v\n%s", rep.Status(), err, out.String())
 	}
 }

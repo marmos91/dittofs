@@ -36,7 +36,7 @@ func newRun() *cobra.Command {
 			}
 			var option []string
 			cmd.Flags().Visit(func(f *pflag.Flag) {
-				if options[f.Name] {
+				if options[f.Name] && f.Value.String() == "true" {
 					option = append(option, f.Name)
 				}
 			})
