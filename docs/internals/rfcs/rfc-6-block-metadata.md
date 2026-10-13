@@ -2627,7 +2627,7 @@ One line per requirement.
 | [§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths) disjoint write sets | every offload commit rewrites the per-file record |
 | [§6.1](#6.1%20A%20refcount%20is%20exactly%20its%20refs) refcount is its refs | never incremented; decrements in separate transactions; `live` set once |
 | [§5.4](#5.4%20Reads%20that%20gate%20a%20commit) gating reads, fences | no primary epoch or per-file fence records; guards are in-process |
-| [§6.2](#6.2%20Truncation%20and%20deallocation) versioned, batched removals | none; removals run in one transaction or several unrelated ones |
+| [§6.2](#6.2%20Truncation%20and%20deallocation) versioned, batched removals | none; removals run in one transaction or several unrelated ones; a ref cut by the new end of file is kept whole, not narrowed, and only the file size stops a read past it |
 | [§6.3](#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary) underflow fails and recounts | clamped at zero |
 | [§6.5](#6.5%20Who%20owns%20a%20ref) the count is the authority, snapshots through history | a mark phase with hold lists for snapshots and open files |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone | the refcount increment is missing; one transaction |

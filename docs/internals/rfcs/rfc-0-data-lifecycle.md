@@ -1435,8 +1435,17 @@ by the caller's deadline, not by a fixed attempt count, and the backoff between
 attempts **MUST** be randomised: a backoff computed from the attempt number alone
 makes every loser of one conflict collide again on the next attempt.
 
+**A refusal by a rule is not a conflict.** A conflict clears when the other
+writer's commit is seen; a refusal by a rule the store enforces, such as a
+uniqueness constraint, is refused again on every attempt. It **MUST NOT** be
+reported as a conflict and **MUST NOT** be retried: it is answered at once with a
+definite error that names the rule (`ErrExist` for a uniqueness rule), never
+with retry-later, which a client would retry for ever.
+
 Conformance drives concurrent writers at one deliberately shared key and asserts
-two things together: conflicts **occur**, and **none** reaches the caller.
+two things together: conflicts **occur**, and **none** reaches the caller. It also
+drives one write that a uniqueness rule refuses and asserts it is answered with
+that rule's error on the first attempt.
 
 **A read that gates a commit MUST hold in both commit orders.** Every supported
 store tracks point reads and range guards and detects write-write conflicts,
