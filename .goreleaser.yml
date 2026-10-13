@@ -159,7 +159,7 @@ changelog:
       - '^docs:'
       - '^test:'
       - '^chore:'
-      - merges
+      - '^Merge '
   groups:
     - title: Features
       regexp: '^.*?feat(\([\w-]+\))??!?:.+$'
