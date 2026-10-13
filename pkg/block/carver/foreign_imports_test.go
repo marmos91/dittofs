@@ -19,7 +19,7 @@ import (
 // carver back toward engine is a cycle, and an edge to journal or local would
 // make the boundary-search-plus-batching logic answerable only in terms of a
 // run and a local store. Pulling engine's read loop in here needs journal.Run,
-// local.LocalStore, and engine's own BlockSink/Deduper/CarveChunk — the last
+// journal.LocalStore, and engine's own BlockSink/Deduper/CarveChunk — the last
 // three are the cycle. A prose claim about a dependency graph rots, so the
 // claim is asserted rather than written down.
 //

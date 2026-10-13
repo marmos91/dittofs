@@ -1,0 +1,22 @@
+; 00-prepare.fio
+; Lays out one file per user (user.0.vhdx ... user.N-1.vhdx), sized like an
+; *allocated* FSLogix VHDX. Run once before the other scenarios, with USERS set
+; to the largest user count you plan to test.
+; Real data is written so later reads hit allocated blocks, not sparse holes
+; that some filesystems answer without doing any I/O.
+
+[global]
+ioengine=${IOENGINE}
+directory=${TARGET_DIR}
+filename_format=user.$jobnum.vhdx
+size=${VHDX_SIZE}
+direct=1
+refill_buffers=1
+buffer_compress_percentage=${COMPRESS_PCT}
+group_reporting=1
+
+[prepare]
+numjobs=${USERS}
+rw=write
+bs=1m
+iodepth=8

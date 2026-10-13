@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/require"
@@ -61,7 +61,7 @@ func newWarmScopeFixture(t *testing.T) *warmScopeFixture {
 	dst, err := carve.ms.ListFileChunks(ctx, "warm-dst")
 	require.NoError(t, err)
 	require.Len(t, dst, 1)
-	mem := localmemory.New()
+	mem := journaltest.New(t)
 	cfg := DefaultConfig()
 	cfg.ManualSync = true
 	cfg.ParallelDownloads = 2

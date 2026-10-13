@@ -12,7 +12,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > that actually shipped them. Nothing here has been reconstructed after the
 > fact.
 
-## Unreleased
+## [0.35.0] — 2026-10-12
+
+The main change in 0.35.0 is that **BadgerDB is now the only metadata
+store**: the PostgreSQL, SQLite and legacy `memory` metadata store backends have
+been removed. Read the migration guide below before upgrading a server that uses
+any of them.
+
+### Removed
+
+- **Breaking: the PostgreSQL, SQLite and legacy `memory` metadata stores are
+  gone; BadgerDB is the only metadata store.** The `postgres`, `sqlite` and
+  `memory` metadata store types no longer exist. A server whose configuration
+  still names one refuses to start, with `unsupported metadata store type`, and
+  changes nothing. There is no conversion tool: a share on a SQL store moves by
+  copying its files to a share on a new instance. A `memory` store is removed
+  before the upgrade and recreated as a Badger store kept in RAM, with
+  `dfsctl store metadata add --name <store> --in-memory`. See the
+  [metadata store migration guide](docs/guide/metadata-store-migration.md) before
+  upgrading. The control-plane database (`database:`, SQLite or PostgreSQL) is not
+  affected.
+
+### Fixed
+
+- **A write refused because the local store is full now reaches the client as
+  "no space", not as an I/O error.** SMB returns `STATUS_DISK_FULL`, NFSv3
+  `NFS3ERR_NOSPC` and NFSv4 `NFS4ERR_NOSPC`, where all three used to return
+  their generic I/O error.
+
+- **A request that arrives with no deadline gets 30 seconds at the block
+  store.** A cold read from a remote that stopped answering, or a write held
+  while the local store was at capacity, used to wait out their own 60-second
+  budgets, and the backpressure budget restarted whenever the remote drained a
+  little.
+
+- **Deleting a file no longer waits for a flush pass to finish uploading.** The
+  delete itself was already durable; only the best-effort reclaim at its end
+  waited, and with the remote down it waited for upload slots that never freed.
+  An SMB delete-on-close was measured held for 68 seconds, past the point where
+  clients give up on the connection.
+
+- **A write that lands while a CLONE replaces its destination is no longer read
+  back as zeros.** A write outside the cloned range could commit between the
+  clone's metadata transaction and its journal discard and be lost, and a
+  background carve or warm could republish the old content over the clone.
+  CLONE now holds the source and destination exclusively for the whole
+  replacement, and ordinary writes, carves and warms take shared ownership.
+
+- **That ownership is no longer held across a clone's upload or a whole-share
+  warm.** A CLONE drains its source before taking the exclusive hold, and a warm
+  holds one payload at a time, so reads and writes on other files no longer
+  queue behind either.
+
+- **Directory removal and rename are ordered against creates inside the
+  directory.** A directory could be removed after another operation had
+  created or moved a child into it, a create could commit after its parent was
+  gone, and a delayed removal could delete a name that a rename had already
+  replaced. Creates of distinct names in one directory still run concurrently.
+
+- **New files created over SMB get the user's own primary GID, as they do over
+  NFS.** A user with a GID and no group memberships used to write files owned by
+  group 1000, and a user with groups got their first group's GID instead of
+  their own.
+
+- **`dfsctl store block add --config` no longer drops the flags given beside
+  it.** `--compression`, every `--encryption-*` flag, `--parallel-uploads` and
+  the S3 field flags were silently discarded, so a store asked for compression
+  or encryption was created without it. Flags are now merged into the JSON, and
+  a flag that contradicts a key the JSON already sets is refused. `--type
+  memory` now sends the compression, encryption and upload settings as well.
+
+- **An S3 endpoint refused by the private-address guard fails at once.** The SDK
+  retried the refused dial up to ten times with backoff, turning a definite
+  refusal into a 30-second timeout.
+
+- **The startup warning for a missing config file names `dfs init`**, not
+  `dittofs init`.
+
+### Performance
+
+- **Sequential reads of a file that is already local no longer re-download it.**
+  Prefetch ignored what the journal already held, so each warm 32 MiB pass
+  fetched 24 MiB from the remote again; it now fetches only the ranges that are
+  not resident. Demand fetches and integrity checks are unchanged.
+
+## [0.34.0] — 2026-09-24
 
 ### Changed
 
@@ -28,19 +112,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   appended a whole fresh copy to a log whose reclamation pass the workload
   never triggered; one field store reached 245 GiB of log against 0.15 GiB of
   live data.
-
-### Removed
-
-- **The SQL and in-memory metadata stores are gone: BadgerDB is the only
-  metadata store.** The `postgres`, `sqlite` and `memory` metadata store types
-  have been removed. A server whose configuration still names one refuses to
-  start, with `unsupported metadata store type`, and changes nothing. There is no
-  conversion tool: a share on a SQL store moves by copying its files to a share on
-  a new instance, and a `memory` store is removed before the upgrade and recreated
-  with `dfsctl store metadata add --in-memory`. See the
-  [metadata store migration guide](docs/guide/metadata-store-migration.md) before
-  upgrading. The control-plane database (`database:`, SQLite or PostgreSQL) is not
-  affected.
 
 ### Fixed
 

@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 )
 
 // TestWriteAt_SparseDest_ReadsLeadingGapAsZeros reproduces the data-plane
@@ -60,11 +60,11 @@ func TestWriteAt_SparseDest_ReadsLeadingGapAsZeros(t *testing.T) {
 	}
 }
 
-// TestMemoryStore_ReadPayloadAt_SparseLeadingGap isolates the local-store
-// contract: ReadPayloadAt over a window whose leading bytes were never
-// written must serve those bytes as zeros, not return ErrFileChunkNotFound.
-func TestMemoryStore_ReadPayloadAt_SparseLeadingGap(t *testing.T) {
-	store := memory.New()
+// TestJournalStore_ReadAt_SparseLeadingGap isolates the local-store
+// contract: ReadAt over a window whose leading bytes were never written must
+// serve those bytes as zeros, not return ErrFileChunkNotFound.
+func TestJournalStore_ReadAt_SparseLeadingGap(t *testing.T) {
+	store := journaltest.New(t)
 	ctx := context.Background()
 	const payloadID = "sparse-local"
 
@@ -79,7 +79,7 @@ func TestMemoryStore_ReadPayloadAt_SparseLeadingGap(t *testing.T) {
 		t.Fatalf("ReadAt: %v", err)
 	}
 	if n != len(dest) {
-		t.Fatalf("ReadPayloadAt short read: got %d, want %d", n, len(dest))
+		t.Fatalf("ReadAt short read: got %d, want %d", n, len(dest))
 	}
 	for i := 0; i < 4096; i++ {
 		if dest[i] != 0 {

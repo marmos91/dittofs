@@ -1,0 +1,199 @@
+# test/suites.yaml: every test suite, one entry each. `dt list` prints it; `dt plan` expands it.
+# Format and rules: docs/internals/rfc-test-harness.md, section 4.1.
+version: 1
+
+defaults:            # any suite field; a suite's own value wins
+  format: exit       # how results are read
+  tier: merge        # the smallest tier that runs the suite: pr < merge < nightly; manual never auto
+  timeout: { test: 30m, cell: 60m }   # each test, and the whole cell
+
+groups:              # `dt run GROUP` runs every suite in it
+  lint: [lint-go, lint-repo, shellcheck]
+  go: [unit, integration, e2e, operator]
+  conformance: [pjdfstest, pynfs, wpts, smbtorture]
+  perf: [fio-verify, bench-smoke]
+
+suites:
+  # Lint. `job` keeps the check names the develop ruleset requires.
+  lint-go:
+    job: Go Checks
+    tier: pr
+    cmd:
+      - { sh: 'test -z "$(gofmt -s -l .)" || { gofmt -s -l .; exit 1; }' }
+      - go vet ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...
+      - go run ./test/spec-citations
+      - test/required-tests.sh
+      - golangci-lint run --timeout=5m
+  lint-repo:
+    job: Repo Checks
+    tier: pr
+    cmd:
+      - test/conformance/check-docs.sh
+      - test/conformance/run_test.sh
+      - test/common/known-failures_test.sh
+      - test/smb-conformance/compose-env_test.sh
+      - test/new-package-tests.sh {base}
+      - test/commit-type-matches-diff.sh {base}
+      - test/no-ai-attribution.sh {base}
+      - .github/scripts/run-e2e-selftest.sh
+  shellcheck: { job: ShellCheck, tier: pr, cmd: { sh: "git ls-files '*.sh' | xargs shellcheck --severity=warning" } }
+
+  unit:
+    job: Unit Tests (1.26.x)
+    format: go-json
+    cmd: go test -race {args} -timeout=25m ./pkg/... ./internal/... ./cmd/... ./test/...
+    args: { pr: "-short" }
+    tier: pr
+    options:
+      windows:
+        cmd: go test -short -race -p 2 -timeout=25m ./...
+        needs: [windows]
+        blocking: { pr: false }
+      nonrace:
+        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
+        env: { DITTOFS_BENCH_LANE: "1" }
+        tier: nightly
+  integration:
+    job: Integration Tests (1.26.x)
+    format: go-json
+    cmd: go test -tags=integration -p 1 -timeout=20m {packages}
+    packages: { tag: integration }
+    tier: pr
+    needs: [docker, "service:postgres", "service:kmip"]
+    options:
+      portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
+      kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
+      ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smb-client], tier: merge }
+  operator:
+    dir: k8s/dittofs-operator
+    cmd:
+      - make test
+      - make lint
+      - make manifests-verify
+      - kubectl kustomize config/default
+    tier: pr
+  e2e:
+    format: go-json
+    cmd: go test -tags=e2e -timeout=30m ./test/e2e/...
+    env:
+      DITTOFS_E2E_REQUIRE_NLM: "1"
+      DITTOFS_E2E_REQUIRE_KERBEROS: "1"
+      nightly: { DITTOFS_E2E_NIGHTLY: "1" }
+    needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
+    options:
+      stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }
+      kerberos:                         # the Kerberos mounts, on pull requests that can affect them
+        cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
+        tier: pr
+        paths:
+          - internal/adapter/**
+          - pkg/adapter/**
+          - pkg/metadata/**
+          - internal/auth/**
+          - pkg/auth/**
+          - pkg/identity/**
+          - pkg/controlplane/**             # export auth policy, users and identity mappings
+          - internal/controlplane/**        # the identity mapping and provider API
+          - pkg/config/**                   # the Kerberos keytab and principal
+          - cmd/dfs/**                      # the server's Kerberos capability at start
+          - "test/e2e/*kerberos*"
+          - test/e2e/framework/kerberos.go
+          - test/integration/kerberos/**
+
+  # Conformance. On pull requests only the production profile, badger-s3, runs.
+  pjdfstest:
+    format: tap
+    cmd: prove -v {test}
+    dir: "{mount}"
+    tests: "{tools}/pjdfstest/tests/*/*.t"
+    matrix: { profile: [memory, badger, badger-s3], nfs: ["3", "4", "4.1"] }
+    select: { pr: { profile: [badger-s3] } }
+    fixture:
+      profile: "{profile}"
+      nfs: { version: "{nfs}", options: "noac,sync,lookupcache=none" }
+      squash: root_to_admin
+      users: [65532, 65533, 65534]
+      delegations: false
+    tier: pr
+    needs: [linux, root, nfs-client]
+  pynfs:
+    format: junit
+    cmd: "pynfs-4.{minor} {server}/export --minorversion {minor} --security sys --maketree --xml {out}/junit.xml all"
+    matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
+    select: { pr: { profile: [badger-s3] } }
+    fixture: { profile: "{profile}", nfs: export, lease: 30s, users: [1] }
+    tier: pr
+    needs: [linux]
+    options:
+      knfsd:
+        matrix: { minor: ["0", "1"] }
+        fixture: { server: knfsd, nfs: export }
+        tier: manual
+        blocking: false
+  wpts:
+    format: trx
+    image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
+    env: { Usage: RunTestCases, Filter: TestCategory=BVT }
+    matrix: { profile: [memory, badger, badger-s3] }
+    select: { pr: { profile: [badger-s3] } }
+    fixture:
+      profile: "{profile}"
+      smb: { encryption: preferred }
+    templates: test/smb-conformance/ptfconfig/*.template
+    volumes: { "{out}/config": /data/fileserver }
+    tier: pr
+    needs: [linux, docker]
+  smbtorture:
+    format: subunit
+    image: quay.io/samba.org/samba-toolbox:v0.8
+    # Its test list, with each test's limit and the shards that split it on pull requests, is
+    # still built by smb-conformance/smbtorture/run.sh; it comes here as a file of its own.
+    cmd: "smbtorture //{server}/smbbasic -U{user}%{password}"
+    matrix: { profile: [memory, badger, badger-s3] }
+    select: { pr: { profile: [badger-s3] } }
+    fixture: { profile: "{profile}", smb: true, reset: each }
+    tier: pr
+    needs: [linux, docker]
+    options:
+      kerberos:
+        cmd: "smbtorture //{server}/smbbasic -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        tests: [smb2.session, smb2.read, smb2.lock]
+        matrix: {}
+        fixture: { profile: memory, smb: true, kerberos: true }
+        tier: merge
+
+  # Each OS's own clients mount the fixture's share, and the workloads run over the mount.
+  # The suite itself is the Linux run, with every workload; macOS and Windows run a smoke test.
+  clients:
+    tests: test/clients/*
+    cmd: "{test} {mount}"
+    fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }
+    needs: [linux, root, smb-client, nfs-client]
+    tier: nightly
+    options:
+      macos:   { needs: [macos], fixture: { profile: memory, smb: { mount: true }, nfs: "4" } }
+      windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } }
+
+  # The system scenarios: a real server in a container, real clients, faults injected.
+  system:
+    cmd: test/scenarios/setup.sh {test}
+    tests: test/scenarios/[0-9][0-9]-*.sh
+    select: { merge: "[0-8]?-*.sh" }
+    needs: [linux, podman]
+    needs_by_test:
+      "9?-*.sh": ["host:dedicated", "disk:110"]
+    timeout: { test: size, cell: 90m }
+    shards: 4
+  fio-verify:
+    cmd: "fio --output-format=json --output={out}/{test}.json {test}"
+    tests: bench/workloads/*.fio
+    exclude: [bench/workloads/layout.fio]
+    fixture: { profile: badger-s3, nfs: "4.1" }
+    env: { BENCH_DIR: "{mount}" }
+    metrics: fio-json
+    tier: nightly
+    needs: [linux, root, nfs-client]
+    options:
+      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client] }
+  bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }

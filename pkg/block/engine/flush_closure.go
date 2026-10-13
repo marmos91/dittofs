@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/carver"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
 
@@ -29,7 +28,7 @@ const defaultBlockUploadWindow = 8
 // closure to a Syncer-lifetime field would interleave two files' bytes into
 // one block. Callers build it inside the Flush call they pass it to.
 type flushClosure struct {
-	local     local.LocalStore
+	local     journal.LocalStore
 	params    chunker.Params
 	blockSize int64
 	deduper   Deduper
@@ -46,7 +45,7 @@ type flushClosure struct {
 
 // newFlushClosure builds the fn + AfterFile pair for one Flush pass. See the
 // type comment for the per-call freshness obligation.
-func newFlushClosure(l local.LocalStore, params chunker.Params, blockSize int64, deduper Deduper, sink BlockSink, slots *syncer.DynamicSemaphore) (journal.FlushFunc, func(context.Context, journal.FileID) error) {
+func newFlushClosure(l journal.LocalStore, params chunker.Params, blockSize int64, deduper Deduper, sink BlockSink, slots *syncer.DynamicSemaphore) (journal.FlushFunc, func(context.Context, journal.FileID) error) {
 	c := &flushClosure{
 		local:      l,
 		params:     params,

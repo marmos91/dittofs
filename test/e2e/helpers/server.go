@@ -76,8 +76,24 @@ func FindFreePort(t *testing.T) int {
 // Uses t.TempDir() for state directory (pid file, log file).
 func StartServerProcess(t *testing.T, configPath string) *ServerProcess {
 	t.Helper()
+	return startServerProcessIn(t, configPath, t.TempDir())
+}
 
-	stateDir := t.TempDir()
+// RestartServerProcess starts a new server on the state directory of sp, which
+// must already have exited. The control-plane database, the block-store journals
+// and the log file all live there, so the new process comes back with the same
+// stores, shares and enabled adapters, the way a restarted server does. Only the
+// API port is new.
+func RestartServerProcess(t *testing.T, sp *ServerProcess) *ServerProcess {
+	t.Helper()
+	return startServerProcessIn(t, "", sp.stateDir)
+}
+
+// startServerProcessIn starts a server whose config, database, journals, pid
+// file and log file live in stateDir.
+func startServerProcessIn(t *testing.T, configPath, stateDir string) *ServerProcess {
+	t.Helper()
+
 	apiPort := FindFreePort(t)
 
 	// Create a modified config with our API port
@@ -502,7 +518,11 @@ database:
   sqlite:
     path: "%s/dittofs.db"
 
-`, apiPort, stateDir)
+blockstore:
+  journal:
+    path: "%s/blocks"
+
+`, apiPort, stateDir, stateDir)
 
 	configFile := filepath.Join(stateDir, "config.yaml")
 	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {

@@ -11,7 +11,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
@@ -264,7 +263,7 @@ func TestResidentPrefetchStraddlingChunk(t *testing.T) {
 // the legal interleaving where speculative prefetch skips a range that a later
 // demand read must fetch after all.
 type evictAfterResidency struct {
-	local.LocalStore
+	journal.LocalStore
 	once atomic.Bool
 }
 
@@ -298,7 +297,7 @@ func TestResidentPrefetchEvictionFallsBackToDemand(t *testing.T) {
 }
 
 type failedResidency struct {
-	local.LocalStore
+	journal.LocalStore
 	err error
 }
 

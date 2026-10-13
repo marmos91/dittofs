@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -385,10 +384,12 @@ func TestNFSv41MultipleSessions(t *testing.T) {
 // Test 5: Session Recovery After Server Restart
 // =============================================================================
 
-// TestNFSv41SessionRecoveryAfterRestart verifies that after a server restart,
-// a v4.1 client can re-establish a session and resume operations. The old
-// session state is lost (memory backend), so the client must perform a new
-// EXCHANGE_ID + CREATE_SESSION.
+// TestNFSv41SessionRecoveryAfterRestart restarts the server underneath a live
+// v4.1 mount and requires the mount to carry on. The restarted server runs on
+// the same state directory and the same badger metadata store, so the mount's
+// file handles stay valid and only its session is lost: the client must
+// establish a new one, and then read back a file written before the restart and
+// create a new one.
 func TestNFSv41SessionRecoveryAfterRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NFSv4.1 session recovery test in short mode")
@@ -396,15 +397,15 @@ func TestNFSv41SessionRecoveryAfterRestart(t *testing.T) {
 
 	framework.SkipIfNFSv41Unsupported(t)
 
-	// Start first server
 	sp1 := helpers.StartServerProcess(t, "")
-
+	t.Cleanup(sp1.ForceKill)
 	runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
 
 	metaStore := helpers.UniqueTestName("recoverymeta")
 	blockStore := helpers.UniqueTestName("recoverypayload")
 
-	_, err := runner1.CreateInMemoryMetadataStore(metaStore)
+	_, err := runner1.CreateMetadataStore(metaStore, "badger",
+		helpers.WithMetaDBPath(filepath.Join(t.TempDir(), "badger")))
 	require.NoError(t, err)
 
 	_, err = runner1.CreateBlockStore(blockStore, "memory")
@@ -421,85 +422,80 @@ func TestNFSv41SessionRecoveryAfterRestart(t *testing.T) {
 	require.NoError(t, err)
 	framework.WaitForServer(t, nfsPort, 10*time.Second)
 
-	// Mount v4.1 and perform some operations
 	mount := framework.MountNFSWithVersion(t, nfsPort, "4.1")
 	t.Cleanup(mount.Cleanup)
 
+	before := []byte("before restart")
 	testFile := mount.FilePath("recovery_test.txt")
-	framework.WriteFile(t, testFile, []byte("before restart"))
+	framework.WriteFile(t, testFile, before)
 
-	// Stop first server
-	sp1.ForceKill()
+	require.NoError(t, sp1.StopGracefully(), "first server should shut down cleanly")
+	logBefore := readLogFile(t, sp1)
 
-	// Start a new server on the same port
-	sp2 := helpers.StartServerProcess(t, "")
+	// The stores, the share and the enabled NFS adapter all come back from the
+	// control-plane database in the shared state directory.
+	sp2 := helpers.RestartServerProcess(t, sp1)
 	t.Cleanup(sp2.ForceKill)
-
 	runner2 := helpers.LoginAsAdmin(t, sp2.APIURL())
 
-	metaStore2 := helpers.UniqueTestName("recoverymeta2")
-	blockStore2 := helpers.UniqueTestName("recoverypayload2")
-
-	_, err = runner2.CreateInMemoryMetadataStore(metaStore2)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
-
-	_, err = runner2.CreateBlockStore(blockStore2, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner2.DeleteBlockStore(blockStore2) })
-
-	_, err = runner2.CreateShare("/export", metaStore2, blockStore2)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner2.DeleteShare("/export") })
-
-	_, err = runner2.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = runner2.DisableAdapter("nfs") })
-
-	err = helpers.WaitForAdapterStatus(t, runner2, "nfs", true, 5*time.Second)
+	err = helpers.WaitForAdapterStatus(t, runner2, "nfs", true, 10*time.Second)
 	require.NoError(t, err)
 	framework.WaitForServer(t, nfsPort, 10*time.Second)
 
-	// The old mount's session is dead. The kernel NFS client should detect
-	// this and attempt to re-establish the session. We test by trying new
-	// operations -- the old file is gone (memory backend), but we should
-	// be able to create new files.
-	//
-	// Use a context with timeout since the client may take time to recover.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Attempt to create a new file on the existing mount.
-	// This may fail if the NFS client hasn't recovered the session yet.
+	// The deadline covers the full default grace period, which holds new opens
+	// until it ends; a client that reclaims and sends RECLAIM_COMPLETE ends it
+	// early.
+	after := []byte("after restart")
 	newFile := mount.FilePath("after_restart.txt")
-	var recoveryErr error
+	t.Cleanup(func() { _ = os.Remove(newFile) })
 
-	for {
-		select {
-		case <-ctx.Done():
-			if recoveryErr != nil {
-				t.Logf("Session recovery did not complete within timeout: %v", recoveryErr)
-				t.Log("NOTE: This is expected with memory backend -- the NFS client " +
-					"may report stale handle errors for the old mount after server restart.")
-			}
-			// Not a test failure -- session recovery behavior depends on client implementation
-			t.Log("TestNFSv41SessionRecoveryAfterRestart: PASSED (recovery timeout is acceptable)")
-			return
-		default:
-			f, err := os.OpenFile(newFile, os.O_CREATE|os.O_RDWR, 0644)
-			if err != nil {
-				recoveryErr = err
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			_, _ = f.Write([]byte("after restart"))
-			_ = f.Sync()
-			_ = f.Close()
-
-			t.Log("Session recovered: successfully created file after server restart")
-			_ = os.Remove(newFile)
-			t.Log("TestNFSv41SessionRecoveryAfterRestart: PASSED")
-			return
+	checkRecovered := func() error {
+		got, err := os.ReadFile(testFile)
+		if err != nil {
+			return fmt.Errorf("read file written before restart: %w", err)
 		}
+		if !bytes.Equal(got, before) {
+			return fmt.Errorf("file written before restart reads back %q, want %q", got, before)
+		}
+		if err := os.WriteFile(newFile, after, 0644); err != nil {
+			return fmt.Errorf("create file after restart: %w", err)
+		}
+		got, err = os.ReadFile(newFile)
+		if err != nil {
+			return fmt.Errorf("read file created after restart: %w", err)
+		}
+		if !bytes.Equal(got, after) {
+			return fmt.Errorf("file created after restart reads back %q, want %q", got, after)
+		}
+		return nil
 	}
+
+	deadline := time.Now().Add(120 * time.Second)
+	for {
+		err = checkRecovered()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			sp2.DumpLogs(t)
+			t.Fatalf("mount did not recover after server restart: %v", err)
+		}
+		time.Sleep(time.Second)
+	}
+
+	// Both files are still in the client's page cache, and the change attribute
+	// survives in badger, so the reads above may never have reached the server.
+	// Drop the cache so these go over the wire and the restarted share's journal
+	// has to serve the bytes.
+	require.NoError(t, os.WriteFile("/proc/sys/vm/drop_caches", []byte("3"), 0),
+		"dropping the page cache needs root")
+	got, err := os.ReadFile(testFile)
+	require.NoError(t, err)
+	assert.Equal(t, before, got, "file written before restart should read back from the server")
+	got, err = os.ReadFile(newFile)
+	require.NoError(t, err)
+	assert.Equal(t, after, got, "file created after restart should read back from the server")
+
+	assert.True(t, waitForLog(t, sp2, logBefore, createSessionOp, 1, 5*time.Second),
+		"the client should have created a new session on the restarted server")
 }

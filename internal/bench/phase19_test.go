@@ -10,7 +10,7 @@
 // isn't justified.
 //
 // The runner exercises the canonical RandWrite warm-cache shape
-// (in-tree microbench: memory metadata + memory local store + 4 KiB
+// (in-tree microbench: memory metadata + journal local store + 4 KiB
 // blocks + 4 MiB FastCDC-sized chunks + 64 MiB seeded file) and
 // asserts the measured ns/op divided by the baseline ns/op is ≤ 1.00.
 //
@@ -31,7 +31,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 )
 
 // phase11BaselineRandWriteNsPerOp is the baseline ns/op for the
@@ -124,7 +124,7 @@ func TestPhase19_AggregateRandWriteGate_LeqOne(t *testing.T) {
 // runPhase19RandWriteWarmCache executes one rand-write warm-cache pass
 // against a freshly-built fixture and returns the measured ns/op.
 // Mirrors the perf_bench_phase12_test.go fixture shape but on the
-// write side: memory metadata + memory local store + 4 KiB rand-write
+// write side: memory metadata + journal local store + 4 KiB rand-write
 // IOs against a 64 MiB seeded payload (warm cache).
 func runPhase19RandWriteWarmCache(t *testing.T) float64 {
 	t.Helper()
@@ -169,11 +169,12 @@ func runPhase19RandWriteWarmCache(t *testing.T) float64 {
 }
 
 // newPhase19BlockStore builds the in-tree microbench engine.Store
-// for the aggregate gate. Memory metadata + memory local store match
-// the canonical perf-gate fixture shape.
+// for the aggregate gate. Memory metadata + journal local store match
+// the canonical perf-gate fixture shape. The journal store's per-read
+// verification does not enter this bench — it is write-only.
 func newPhase19BlockStore(t *testing.T) *engine.Store {
 	t.Helper()
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	fbs := newAggregateStubFileChunkStore()
 	syncer := engine.NewRemoteSync(localStore, nil, fbs, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{

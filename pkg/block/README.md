@@ -86,10 +86,9 @@ The ones with a contract beyond "this went wrong":
 
 - `remote` — the block-keyed `RemoteBlockStore` contract, its backends (`s3`,
   `memory`) and `Passthrough`, the forwarding base the decorators embed.
-- `local` — the payload-keyed `LocalStore` interface, plus `local/memory`, the
-  in-memory test double.
 - `journal` — the append-log write-back local store: records, shards, carve,
-  eviction and GC.
+  eviction and GC. The payload-keyed `LocalStore` interface lives here too;
+  tests outside the package open a real store through `journal/journaltest`.
 - `engine` — the composition root: local store + syncer + cache + metadata.
 - `carver`, `chunker` — the FastCDC carve pass over dirty ranges.
 - `middleware` — the two decorators wrapping a remote store, `middleware/compression`

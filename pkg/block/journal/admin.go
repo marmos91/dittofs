@@ -25,6 +25,17 @@ func (s *Store) Durable() bool { return s.durable.Load() }
 
 // SetDurable overrides the durability report (config["durable"]). The default
 // is true; an operator may flip it for a store on volatile media.
+//
+// decision: this flips the REPORT only — it does not make the store stop
+// fsyncing. groupCommit fsyncs every record regardless, so a store with
+// durable=false is still crash-safe on disk while claiming not to be. That
+// asymmetry is safe for every current caller because each reads the boolean
+// through block.IsDurable and never the fsync outcome: the engine's
+// fast-path ack (flush.go: bs.LocalDurable() && !RequireDurableCommit) and the
+// strict-mode commit rule both branch on the report alone. So the
+// volatile-tier tests drive a real durable store and prove the boolean-driven
+// decision, which is what they name. Overturn this if a caller ever needs the
+// report to describe real IO behaviour — then the flag must gate the fsync too.
 func (s *Store) SetDurable(v bool) { s.durable.Store(v) }
 
 // Closed reports whether the store has been closed and is no longer accepting

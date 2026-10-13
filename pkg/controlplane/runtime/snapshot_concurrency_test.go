@@ -14,7 +14,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -99,7 +99,7 @@ func newConcRuntime(t *testing.T) (*Runtime, *controlledSnapshotable) {
 func addConcShare(t *testing.T, rt *Runtime, backup *controlledSnapshotable, shareName string) *concFixture {
 	t.Helper()
 
-	localStore := bsmemory.New()
+	localStore := journaltest.New(t)
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	mem := backup.BadgerMetadataStore
@@ -125,6 +125,14 @@ func addConcShare(t *testing.T, rt *Runtime, backup *controlledSnapshotable, sha
 		t.Fatalf("SetLocalStoreDirForTesting: %v", err)
 	}
 	return &concFixture{rt: rt, backup: backup, shareName: shareName}
+}
+
+// close tears the fixture's share down, closing its block store. Each
+// iteration builds a real journal store, which owns background goroutines; the
+// in-memory double it replaced owned none, so the scenarios never had to tear
+// down and would otherwise trip their own leak assertion.
+func (f *concFixture) close() {
+	_ = f.rt.RemoveShare(f.shareName)
 }
 
 // assertNoGoroutineLeak settles, then fails if the live goroutine count grew
@@ -301,6 +309,7 @@ func TestSnapshotConcurrency_DoubleCreate(t *testing.T) {
 			}
 		}
 		cancel()
+		fx.close()
 	}
 
 	if panics.Load() != 0 {
@@ -406,6 +415,7 @@ func TestSnapshotConcurrency_DeleteVsInFlightCreate(t *testing.T) {
 			t.Fatalf("iter %d: WaitForSnapshot: %v", i, werr)
 		}
 		cancel()
+		fx.close()
 	}
 
 	if panics.Load() != 0 {

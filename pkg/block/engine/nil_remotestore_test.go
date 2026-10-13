@@ -6,13 +6,11 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
-
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // newNilRemoteStoreEnv creates a test environment with nil remoteStore (local-only mode).
-func newNilRemoteStoreEnv(t *testing.T) (*RemoteSync, local.LocalStore, func()) {
+func newNilRemoteStoreEnv(t *testing.T) (*RemoteSync, journal.LocalStore, func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ms := badgertest.NewInMemory(t)

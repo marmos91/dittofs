@@ -1,7 +1,8 @@
 # RFC: one test harness, with a suite registry, one runner and one result format
 
-**Status:** proposed, revision 4.1. Nothing here is implemented yet; §8 orders the work.
-**Discussion:** the pull request that adds this file.
+**Status:** accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
+implemented yet; §8 orders the work.
+**Discussion:** #2975, and the pull request that settled §9.
 
 ## Summary
 
@@ -39,10 +40,10 @@ reliable way to tell what they found.
 
 **Decided:** Go from the start, CTRF, and GitHub issues with the project board for tracking (team
 call and reviews, 2026-10-08).
-**Open (§9):** the PR budget against smbtorture's 21–23 minutes, the merge tier's cost on shared
-runners, retrying a fixture's setup on PRs, which Go suites grade their skips, and who runs the
-dedicated test host; also the operator and Windows jobs on PRs, the client suite's workloads, and
-when the gate becomes required.
+**Settled (§9, 2026-10-13):** smbtorture is sharded on PRs, merge runs queue and the test set
+never changes with load, a fixture's setup is never retried, the Go suites grade their skips
+package by package from e2e, the dedicated host is `ditto`, and the gate becomes required after
+two green weeks.
 **Plan (§8):** seven steps, conformance first. Each step ships on its own, and an old CI job keeps
 running beside its replacement until their results match.
 
@@ -52,7 +53,8 @@ Read this before adding a test suite, changing a test workflow, or touching `tes
 describes the harness we want to end up with, and how to get there from what exists, suite by
 suite.
 
-**Builds on:** the `dt` harness on `dev/test-harness` (`1b9d49b9`) as a reference, the conformance
+**Builds on:** the `dt` harness on `dev/test-harness` (`1b9d49b9`, and since 2026-10-13
+`ce1a6781`, which drops the conformance Postgres and the separate KMIP step) as a reference, the conformance
 graders and their tests, the system scenarios in `test/scenarios/`, and `dfsbench` (`cmd/bench`).
 **Checked against:**
 - `develop` at `d0efaa75` (at `e33edad6` for #2955) and `dev/test-harness` at `1b9d49b9`, on
@@ -389,7 +391,24 @@ suites:
       nightly: { DITTOFS_E2E_NIGHTLY: "1" }
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
     options:
-      stress: { cmd: go test -tags=e2e,stress -timeout=60m ./test/e2e/..., tier: nightly }
+      stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }   # quoted: a comma ends a flow value
+      kerberos:                         # the Kerberos mounts, on pull requests that can affect them
+        cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
+        tier: pr
+        paths:
+          - internal/adapter/**
+          - pkg/adapter/**
+          - pkg/metadata/**
+          - internal/auth/**
+          - pkg/auth/**
+          - pkg/identity/**
+          - pkg/controlplane/**             # export auth policy, users and identity mappings
+          - internal/controlplane/**        # the identity mapping and provider API
+          - pkg/config/**                   # the Kerberos keytab and principal
+          - cmd/dfs/**                      # the server's Kerberos capability at start
+          - "test/e2e/*kerberos*"
+          - test/e2e/framework/kerberos.go
+          - test/integration/kerberos/**
 
   # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix` and
   # `select.pr` replace suites.json's profiles and PR lists. Commands are shortened: the flags each
@@ -462,7 +481,8 @@ suites:
         tier: merge
 
   # Each OS's own clients mount the fixture's share, and the workloads run over the mount. Replaces
-  # smb-client-compat.yml once its results match. The suite itself is the Linux run.
+  # smb-client-compat.yml once its results match. The suite itself is the Linux run, with every
+  # workload; macOS and Windows run a smoke test (§9).
   clients:
     tests: test/clients/*               # the workloads: today's smb-client-compat checks
     cmd: "{test} {mount}"
@@ -500,7 +520,7 @@ suites:
 
 | Field | Meaning | Default |
 |---|---|---|
-| `cmd` | A command, or a list of commands run in order until one fails, from the repository root or inside `image`. A command is a string, split into arguments at spaces, and never passes through a shell; `{ sh: "..." }` runs one through `sh -c` (Git Bash on Windows) when it needs pipes or `$(...)`. Its placeholders are below | required, unless the image provides one |
+| `cmd` | A command, or a list of commands, from the repository root or inside `image`. Every command of a list runs, in order, and the cell fails if any of them failed, so one run reports every problem, as the lint jobs do today. A command is a string, split into arguments at spaces, and never passes through a shell; `{ sh: "..." }` runs one through `sh -c` (Git Bash on Windows) when it needs pipes or `$(...)`. Its placeholders are below | required, unless the image provides one |
 | `dir` | The directory the commands run in, such as `{mount}` | the repository root |
 | `format` | How each test's result is read: `exit`, `go-json`, `junit`, `tap`, `subunit`, `trx` (§4.6) | `exit` |
 | `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json` (§4.6) | none |
@@ -509,11 +529,12 @@ suites:
 | `timeout` | `test`: each test's limit; `cell`: the whole cell's, including the fixture. The two keys are set separately: an option, suite or default that sets one keeps the other from the level above. `test: size` takes it from a scenario's size class (below). A `.txt` test list may give a test its own | `{ test: 30m, cell: 60m }` |
 | `needs` | What the machine must offer (§4.5) | none |
 | `needs_by_test` | Extra needs for the tests matching a glob; `dt plan` puts those tests in cells of their own, on a place that meets them (§4.5) | none |
+| `paths` | On pull requests, run only when the change touches a path matching one of these globs (`dir/**` for a whole tree). Only for a narrow suite that changes elsewhere can't break, as `e2e --kerberos` | every pull request |
 | `tests` | A glob, one test per matching file; a list of names; or a `.txt` file of names, one per line, each with an optional timeout | none: the suite is one test, or finds its own |
 | `exclude` | Globs of files `tests` matches that aren't tests | none |
 | `matrix` | Axes and their values; `dt plan` makes one cell per combination | one cell |
 | `select` | Per tier below the suite's widest: a narrower glob for `tests`, or the `matrix` values that tier runs | every match, every value |
-| `options` | Named variants of the suite. An option is a copy of the suite with each field it sets replaced as a whole: a `needs`, `env`, `fixture` or `matrix` it sets replaces the suite's, and isn't merged into it. It runs as its own cells, and alone with `dt run SUITE --OPTION` | none |
+| `options` | Named variants of the suite. An option is a copy of the suite with each field it sets replaced as a whole: a `needs`, `env`, `fixture` or `matrix` it sets replaces the suite's, and isn't merged into it. It runs as its own cells, and alone with `dt run SUITE --OPTION`. An option doesn't take the suite's `job`, which names the suite's own fixed job, and an option that sets `matrix` doesn't keep the suite's `select`, which narrowed the matrix it replaced | none |
 | `fixture` | The DittoFS server the tests run against (§4.2) | none: the suite starts what it needs itself |
 | `image` | A container image to run `cmd` in, on the fixture's network | none: the host, or `dtc` |
 | `volumes` | Mounts into `image`, host path to container path | none |
@@ -554,10 +575,11 @@ runs: pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --maketree
 timeout is twice its class's bound plus 2 minutes for the container's setup, so 32 minutes for an
 `l`. An `xxl` scenario has no bound, so only the cell's timeout applies to it.
 
-**A cell outlasts its tests.** `dt plan` never gives a cell a limit shorter than its longest test's
-limit plus the fixture's 5 minutes (§4.2); it raises the cell's limit and says so. So a 9x cell,
-which `needs_by_test` gives the dedicated host, gets 2 h 7 min for an `xl` scenario whatever
-`cell` says, and an `xxl` one gets the cell limit it sets.
+**A cell outlasts its tests.** A cell runs its tests one after another, so `dt plan` never gives
+it a limit shorter than the sum of its tests' limits plus the fixture's 5 minutes (§4.2); it raises
+the cell's limit and says so. A test with no bound counts as the cell's own limit. So the 9x cell,
+which `needs_by_test` gives the dedicated host, gets 5 h 7 min whatever `cell` says: 2 h 2 min for
+its `xl` scenario, the cell's 90 minutes for each of its two `xxl` ones, and 5 for the fixture.
 
 Rules `dt` enforces when it loads the file:
 - names are `[a-z0-9-]+`;
@@ -641,8 +663,9 @@ Kerberos upcall.
 The fixture's own steps (package installs, image pulls, the server's start) have a short timeout of
 their own, 5 minutes by default. A stalled package mirror then fails the cell as "not run" within
 minutes, instead of using up the cell's whole timeout, as one did for 15 jobs on 2026-10-07 (#2977).
-Whether a pull request retries a failed fixture step once is open (§9); a test is never retried on a
-pull request (§4.7).
+A failed fixture step is never retried (§9): DittoFS starts inside the fixture, so a retry could
+hide its flakiness. The cell is reported as not run, and someone re-runs it by hand. A test is
+never retried on a pull request (§4.7).
 
 `dt` stops only the processes it started. Today `teardown-posix.sh` kills every `dfs start` on the
 machine, a developer's own server included. Each cell's results go to its `{out}`, the same layout
@@ -672,20 +695,26 @@ block, such as the Windows unit run on PRs (§9). `blocking` may differ per tier
 
 **Budgets.** These are proposals, against today's 25–40 min. Every result records its duration,
 and `dt history` gives p50 and p90 per suite, so moving a suite between tiers is a one-word change
-made on measured numbers. Two things don't fit yet, and are open in §9: smbtorture alone took 21
-and 23 minutes on a PR run on 2026-10-12, over the `pr` budget, and the budgets are wall clock per
-run, while every run draws on the same shared runners. `dt plan --estimate` gives a tier's
-runner-minutes from `dt history`, so a tier's cost is known before it changes.
+made on measured numbers. Two things didn't fit, and §9 settles both: smbtorture alone took 21
+and 23 minutes on a PR run on 2026-10-12, over the `pr` budget, so it is sharded on PRs; and the
+budgets are wall clock per run, while every run draws on the same shared runners, so merge runs
+queue rather than change what they test. `dt plan --estimate` gives a tier's runner-minutes from
+`dt history`, so a tier's cost is known before it changes.
 
 **No selection by changed layer.** The components depend on each other too much for "this PR only
 touched NFS" to be safe. The full set after every merge is what catches the cross-component
-regressions a small PR tier misses.
+regressions a small PR tier misses. The one exception is a narrow suite whose `paths` name what can
+break it: e2e's Kerberos run is a protocol feature that a change under `pkg/block` can't affect, so
+it runs on pull requests that touch the adapters, the metadata (auth metadata included), the
+authentication code, the control plane, the configuration or the server's start-up, and after
+every merge.
 
 ### 4.4 The command line
 
 ```text
 dt list [--tier T] [--json]                    suites, options, groups, tier, format and needs; whether they can run here
-dt plan --tier T [--shard I/N] [--json]        the cells a tier runs, each with its place; CI turns --json into its matrix
+dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with its place; CI turns --json into its matrix;
+   [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
    [--estimate]                                and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--only A,B] [--skip A,B] [--parallel N]
@@ -702,6 +731,32 @@ dt docs [--check]                              write the documentation's suite t
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
 and `dtc` for the container.
+
+**Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the
+order the axes are written, then, for tests a `needs_by_test` entry sends elsewhere, the place they
+go to, and last `shard-I` when the suite has shards: `pjdfstest/badger-s3/4.1`,
+`smbtorture/kerberos`, `system/shard-2`, `system/dedicated`. `dt run pynfs/badger` runs every cell
+whose name begins with those segments. Shards split the tests of a cell on a shared place, dealt
+in turn so long and short tests spread evenly; a dedicated host runs its tests as one cell.
+`dt plan --shard I/N` deals the tier's cells the same way, for splitting a run across machines.
+
+A cell's place comes from its `needs`: `windows` and `macos` cells go to those runners, a cell
+needing `host:dedicated` or more disk than a runner's 14 GB to the dedicated host, and the rest
+to Ubuntu. `dt plan --json` prints the tier and its cells:
+
+```json
+{ "tier": "nightly", "cells": [
+  { "name": "system/dedicated", "suite": "system", "place": "dedicated",
+    "needs": ["linux", "podman", "host:dedicated", "disk:110"], "blocking": true,
+    "tests": ["test/scenarios/90-smb-hour-holds-xxl.sh", "test/scenarios/91-smb-125gb-file-sync-xxl.sh",
+              "test/scenarios/92-smb-fslogix-container-xl.sh"],
+    "test_timeout": "size", "timeout_minutes": 307,
+    "notes": ["cell timeout raised from 90m to 5h7m: the sum of its tests' limits plus 5m for the fixture"] } ] }
+```
+
+A cell lists `tests` only when it runs part of its suite's; `matrix`, `option` and `job` appear
+when the cell has them. CI turns `place` into the job's runner and `timeout_minutes` into its
+`timeout-minutes`.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
@@ -946,9 +1001,9 @@ converts the old lists once.
 **Expected skips.** In a suite with a `known` file, a test that skips, or doesn't execute, must be
 listed as an expected skip, with its reason. A skip that isn't listed makes the cell exit 2 (R10).
 The conformance suites and `system` have `known` files from the start. The Go suites have hundreds
-of skips (331 `Skip` calls on develop, and 71 test files that branch on `testing.Short()`), so which
-of them grade skips, and from when, is open (§9); until a Go suite opts in, its skips are reported
-and counted but not graded. This is what turns §1's silent
+of skips (331 `Skip` calls on develop, and 71 test files that branch on `testing.Short()`), so
+they opt in package by package, starting with e2e (§9); until a Go suite opts in, its skips are
+reported and counted but not graded. This is what turns §1's silent
 cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance cases and the 11
 Kerberos e2e subtests would each have shown as lost coverage the day they started skipping. The
 first lists are written from today's runs, each entry with a reason, so the suites start green and
@@ -1006,7 +1061,7 @@ One workflow, `tests.yml`, runs every registered suite:
   develop ruleset's required checks don't change. `Go Checks` also vets every build-tagged test,
   as #3002 added. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
   `Integration Tests (1.26.x)`, until the ruleset requires the gate.
-- **Docs-only PRs:** `dt plan` returns no cells, and `gate` passes.
+- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
 
 **Merging.** Since 2026-10-08:
 - develop requires `Unit Tests (1.26.x)` and `Integration Tests (1.26.x)` beside the lint and
@@ -1016,7 +1071,7 @@ One workflow, `tests.yml`, runs every registered suite:
   approved and up to date.
 
 `Tests / gate` replaces the per-workflow test checks as the required one, once the `pr` tier has
-proved itself (§9). The PR that makes it required also drops `Unit Tests (1.26.x)` and
+been green for two weeks (§9). The PR that makes it required also drops `Unit Tests (1.26.x)` and
 `Integration Tests (1.26.x)` from the ruleset and their `job` names from the registry, in one
 change, so no PR waits for a check that no longer reports. A single gate that always runs avoids
 GitHub's path-filter trap by construction.
@@ -1243,55 +1298,56 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
 Conformance comes first, in steps 1–3, because its suites are already graded, then the system
 scenarios and fio (R8).
 
-## 9. Open questions
+## 9. Settled questions
 
-From the revision 3 review, for the team:
+The questions the third review left open were settled with the team on 2026-10-12 and 2026-10-13.
+Changing any of them is a pull request to this section.
+
+From the third review:
 
 - **The PR budget against smbtorture.** smbtorture took 23 minutes on `memory` and 21 on `badger`
-  on a PR run on 2026-10-12, over the 20-minute p90 on its own, and `badger-s3` with `reset: each`
-  won't be faster. Either split it over two runners on PRs (`shards: 2`, the same tests), or run a
-  `select.pr` subset on PRs and the full set after merge. Proposed: shards first, since they keep
-  the coverage, and measure.
+  on a PR run on 2026-10-12, over the 20-minute p90 on its own. Decided: on PRs it is split over
+  two runners (`shards: 2`, the same tests), measured with `dt plan --estimate`. Runners are
+  shared, so sharding helps only while they aren't the bottleneck. If it doesn't pay off, or turns
+  out complicated, PRs run a `select.pr` subset and the full set runs after merge.
 - **The merge tier on shared runners.** Every run draws on the same runner pool. On the full run
   set of #2652 (2026-09-15, 29 jobs), no more than 10 jobs ran at once, jobs spent longer queued
-  (9,664 s) than running (9,014 s), and protocol conformance was 91% of the job-seconds. And since
-  branches must be up to date, each merge also re-runs every open PR's `pr` tier. Proposed:
-  `dt plan --estimate` gives each tier's runner-minutes before step 3 moves anything. For
-  back-to-back merges, queue the runs, keeping "every merge is tested", rather than cancel the
-  superseded ones. If the queue grows past an agreed wait, run `memory` and `badger` nightly and
-  only `badger-s3` on every merge.
-- **Retrying a fixture's setup on PRs.** A stalled package mirror blocked 15 jobs on 2026-10-07
-  (#2977), and with no retry on PRs it blocks the PR until someone re-runs it. Proposed: retry a
-  failed fixture step once on PRs, never a test, so a flaky test still can't merge. The "no retry
-  on PRs" decision was about tests, so this needs the team's agreement.
-- **Which Go suites grade their skips.** The conformance suites and `system` have `known` files.
-  `unit`, `integration` and `e2e` have hundreds of skips, many tier- or OS-dependent. Proposed: they
-  report skips without grading them, and opt in package by package, each with a known list using
+  (9,664 s) than running (9,014 s), and protocol conformance was 91% of the job-seconds. Decided:
+  merge runs queue, and the test set never changes with load. Each workflow's concurrency group
+  already does this: one run in progress and at most one waiting, a newer merge replacing the
+  waiting run, so merges that land faster than a run are tested together by the next one.
+  `tests.yml` keeps that setting, and no time-based cancelling is needed. On 2026-10-12, a merge took a median of 33 minutes to its last
+  check (20 to 47, over 13 merges), inside the 60-minute budget.
+- **Retrying a fixture's setup.** Decided: never. DittoFS starts inside the fixture, so a retry
+  could hide flakiness in it. A failed setup is reported as not run (exit 2) and re-run by hand.
+  The stall that blocked 15 jobs on 2026-10-07 (#2977) was a package mirror, before DittoFS
+  started; tools built from `flake.lock` through a cache make that rarer.
+- **Which Go suites grade their skips.** Decided: `unit`, `integration` and `e2e` report their skips
+  without grading them, and opt in package by package, each with a known list using
   `where: { tier, os }`, starting with e2e, where the silent cases in §1 were.
-- **Who runs the dedicated host, and holds its issue-writing token?** Today it is `ditto`, Radu's.
+- **The dedicated host.** Decided: `ditto`, a server Cubbit rents, stays the dedicated host, with a
+  token that can only write issues. If it has to move, cloud spot VMs are the alternative. Whatever
+  runs it needs x86_64 Linux with passwordless sudo, the kernel NFS and SMB clients, podman, about
+  110 GB of free disk for the long scenarios, and its own bucket and credentials.
 
-Carried over:
+Carried over from earlier reviews:
 
-- Are the tier budgets right: 20 min p90 for `pr`, 60 for `merge`, 4 h for `nightly`?
-- The operator, Windows, unit and integration jobs only run on PRs that touch their paths today.
-  With no selection by layer they run on every PR. The proposal:
-  - the operator job (about 3 min) blocks on PRs;
-  - the Windows unit run (about 17 min of runner time) is non-blocking on PRs and blocking after
-    merge.
+- **The tier budgets:** 20 minutes p90 for `pr`, 60 for `merge` and 4 hours for `nightly`, adjusted
+  on measured numbers.
+- **The operator and Windows jobs on PRs:** the operator job (about 3 minutes) blocks on PRs. The
+  Windows unit run (about 17 minutes of runner time) is non-blocking on PRs and blocking after
+  merge.
+- **The `clients` suite:** Linux is the default and runs every workload. macOS and Windows run a
+  smoke test each; on Windows it is the fio mailbox workload, through a PowerShell runner (#3050).
+  cthon04 and nfstest come in as suites of their own, on Linux (#3008).
+- **When the gate becomes required:** after two green weeks of the `pr` tier.
+- **The bar for deleting a suite's scripts:** 5 consecutive runs with matching results.
+- **The e2e nightly tier and the stress tests:** they start in `nightly` with known-failure entries.
+  Fixing them is outside this RFC; the dedup tests broken at setup are #2992.
+- **History:** stays in GitHub artifacts for now, and moves to a data branch only if benchmarks
+  need more than their 90 days.
 
-  Agreed?
-- The `clients` suite: which workloads run on which OS? cthon04 and nfstest come in as suites of
-  their own (#3008), on Linux. Should cthon04, which is portable, also run under `clients` on macOS
-  and Windows? nfstest is Linux only.
-- When does the gate become required: after two green weeks, or on a measured rate of failures not
-  caused by code?
-- Is 5 consecutive matching runs the right bar for deleting a suite's scripts?
-- The e2e nightly tier and the stress tests have never run in CI, and the dedup tests are broken
-  at setup (#2992). Do they start in `nightly` with known-failure entries, or get fixed first?
-- Does history stay in artifacts, or move to a data branch once benchmarks need longer than 90
-  days?
-
-Settled:
+Settled before revision 4:
 - CTRF: decided in the 2026-10-08 call.
 - Which profiles run on PRs: `badger-s3` only.
 - WPTS's setup: it fits the fixture's fields.

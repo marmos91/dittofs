@@ -1,0 +1,42 @@
+; 02-mail-flow.fio
+; Steady-state working day: receiving and sending mail, for USERS users.
+; Each burst of I/Os = one message (B-tree, contents table, view indexes,
+; allocation map, body/attachment blocks, Search reading the new item);
+; thinktime = gap between messages.
+; Metric: p99 / p99.9 latency (what makes Outlook hang).
+; Lower MAIL_INTERVAL to simulate a busy hour.
+
+[global]
+ioengine=${IOENGINE}
+directory=${TARGET_DIR}
+filename_format=user.$jobnum.vhdx
+size=${VHDX_SIZE}
+allow_file_create=0
+direct=1
+sync=1
+refill_buffers=1
+buffer_compress_percentage=${COMPRESS_PCT}
+time_based=1
+runtime=${RUNTIME}
+lat_percentiles=1
+percentile_list=50:90:99:99.9
+random_distribution=zipf:1.1
+iodepth=1
+; spread users so they don't all burst at the same instant
+startdelay=0-60
+
+[receive]
+numjobs=${USERS}
+rw=randrw
+rwmixread=30
+bssplit=4k/60:8k/40,4k/50:8k/30:32k/10:64k/10
+thinktime=${MAIL_INTERVAL}
+thinktime_blocks=30
+
+[send]
+numjobs=${USERS}
+rw=randrw
+rwmixread=35
+bssplit=4k/40:8k/30:64k/30,4k/40:8k/20:64k/20:256k/20
+thinktime=${SEND_INTERVAL}
+thinktime_blocks=60

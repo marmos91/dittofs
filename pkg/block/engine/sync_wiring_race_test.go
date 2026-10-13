@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
@@ -45,8 +45,7 @@ func (s *sealingRemote) SealChunk(_ context.Context, _ block.ContentHash, plaint
 // store can only come from reading the fields separately — exactly the design
 // the single snapshot rejects.
 func TestFlushFnReadsWiringUnderLock(t *testing.T) {
-	local := memorylocal.New()
-	t.Cleanup(func() { _ = local.Close() })
+	local := journaltest.New(t)
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 
@@ -103,8 +102,7 @@ func TestFlushFnReadsWiringUnderLock(t *testing.T) {
 // package drives that read against a concurrent setter, so without this the
 // gate's lock could be removed and every test would stay green.
 func TestFlushCommitterGateReadsUnderLock(t *testing.T) {
-	local := memorylocal.New()
-	t.Cleanup(func() { _ = local.Close() })
+	local := journaltest.New(t)
 
 	m := NewRemoteSync(local, nil, newStubFileChunkStore(), RemoteSyncConfig{})
 

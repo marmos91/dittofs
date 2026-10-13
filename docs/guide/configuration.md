@@ -429,8 +429,8 @@ What happens when that cannot finish depends on whether the journal is durable:
 - **Durable journal (the normal case):** an unhealthy block store makes the flush
   return its soft, non-finalized result, and the COMMIT is acked anyway — the
   bytes already survive a restart, and the syncer keeps retrying.
-- **Volatile local tier** (a journal explicitly marked `{"durable": false}`, or
-  the in-memory store used by tests): nothing crash-safe holds the bytes, so the
+- **Volatile local tier** (a journal explicitly marked `{"durable": false}`):
+  nothing crash-safe holds the bytes, so the
   COMMIT returns a transient I/O error (`NFS3ERR_IO` / `NFS4ERR_IO` / SMB
   `STATUS_UNEXPECTED_IO_ERROR`) and the client re-drives.
 

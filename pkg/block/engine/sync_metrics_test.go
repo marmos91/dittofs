@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 )
 
 // nopDataplaneMetrics satisfies both journal.MetricsRecorder (what SetMetrics
@@ -40,7 +40,7 @@ func (nopDataplaneMetrics) RecordBlockRangeRead(int)                {}
 // The pre-SetMetrics assertion is what keeps this non-vacuous: it proves the
 // sink observed below came from the back-fill and not from construction.
 func TestSetMetrics_ReachesSyncerAfterConstruction(t *testing.T) {
-	localStore := memory.New()
+	localStore := journaltest.New(t)
 	syncer := NewRemoteSync(localStore, nil, newStubFileChunkStore(), DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer})

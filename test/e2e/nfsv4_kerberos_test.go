@@ -446,47 +446,9 @@ func setupKerberosV4Share(t *testing.T, runner *helpers.CLIRunner, shareName str
 func installSystemKeytabV4(t *testing.T, kdc *framework.KDCHelper) {
 	t.Helper()
 
-	// Store original file contents for restoration
-	origKrb5Conf, _ := os.ReadFile("/etc/krb5.conf")
-	origKeytab, _ := os.ReadFile("/etc/krb5.keytab")
-
-	// Restore original files on cleanup
-	t.Cleanup(func() {
-		if len(origKrb5Conf) > 0 {
-			_ = os.WriteFile("/etc/krb5.conf", origKrb5Conf, 0644)
-		}
-		if len(origKeytab) > 0 {
-			_ = os.WriteFile("/etc/krb5.keytab", origKeytab, 0600)
-		}
-		_ = exec.Command("systemctl", "restart", "rpc-gssd").Run()
-	})
-
-	// Install test krb5.conf to system location
-	krb5ConfData, err := os.ReadFile(kdc.Krb5ConfigPath())
-	require.NoError(t, err)
-
-	err = os.WriteFile("/etc/krb5.conf", krb5ConfData, 0644)
-	if err != nil {
-		t.Skipf("Cannot install test krb5.conf (need root): %v", err)
+	if err := kdc.InstallSystemKerberos(t); err != nil {
+		framework.SkipOrFailKerberosMount(t, "cannot install the test Kerberos files: %v", err)
 	}
-
-	// Copy keytab to /etc/krb5.keytab
-	keytabData, err := os.ReadFile(kdc.KeytabPath())
-	require.NoError(t, err)
-
-	err = os.WriteFile("/etc/krb5.keytab", keytabData, 0600)
-	if err != nil {
-		t.Skipf("Cannot install test keytab (need root): %v", err)
-	}
-
-	// Restart rpc-gssd to pick up new configuration
-	cmd := exec.Command("systemctl", "restart", "rpc-gssd")
-	if err := cmd.Run(); err != nil {
-		t.Logf("Warning: could not restart rpc-gssd: %v", err)
-	}
-
-	// Wait for rpc-gssd to restart
-	time.Sleep(500 * time.Millisecond)
 
 	// Get machine credentials
 	hostname, _ := os.Hostname()

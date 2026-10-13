@@ -52,6 +52,15 @@ jobs:
       - name: Run smoke benchmark
         run: ./dfsbench run --smoke --results ./bench-results
 
+      # The mailbox job files are not part of dfsbench, so the smoke run above
+      # never opens them. This only checks that they parse.
+      - name: Parse the mailbox job files
+        working-directory: bench/workloads/mailbox
+        run: |
+          for job in *.fio; do
+            TARGET_DIR="$RUNNER_TEMP" ./run.sh "$job" --parse-only
+          done
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7

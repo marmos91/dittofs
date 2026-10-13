@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/block/syncer"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -26,7 +26,7 @@ type RemoteSync struct {
 	// before journal.Flush and retain it through the manifest reap.
 	admission *payloadAdmission
 
-	local       local.LocalStore
+	local       journal.LocalStore
 	remoteStore remote.RemoteStore
 	// hasRemote mirrors "remoteStore != nil" as an atomic so hot-path gating
 	// (the carveActive recompute and the readahead scheduler) can read it
@@ -177,7 +177,7 @@ func (m *RemoteSync) UnsyncedBytes() int64 {
 }
 
 // NewRemoteSync creates a new RemoteSync. The fileChunkStore is required for content-addressed dedup.
-func NewRemoteSync(local local.LocalStore, remoteStore remote.RemoteStore, fileChunkStore block.EngineFileChunkStore, config RemoteSyncConfig) *RemoteSync {
+func NewRemoteSync(local journal.LocalStore, remoteStore remote.RemoteStore, fileChunkStore block.EngineFileChunkStore, config RemoteSyncConfig) *RemoteSync {
 	if fileChunkStore == nil {
 		panic("fileChunkStore is required for RemoteSync")
 	}

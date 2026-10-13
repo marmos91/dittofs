@@ -66,6 +66,15 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
 
+      - name: Add the CHANGELOG.md section to the release notes
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          python3 scripts/release-notes.py "$TAG" < "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish Linux repositories
         run: ./scripts/publish-linux-repos.sh
         env:

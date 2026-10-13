@@ -8,8 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
-	"github.com/marmos91/dittofs/pkg/block/local"
-	"github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/journal/journaltest"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
@@ -18,7 +17,7 @@ import (
 // each with a payload the local store also holds, so the scan sees the shape a
 // warmed share presents at start: every locally-resident file matched by a
 // metadata row whose size is already correct.
-func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataStore, *memory.MemoryStore, []string) {
+func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataStore, *journal.Store, []string) {
 	tb.Helper()
 	ctx := context.Background()
 
@@ -45,7 +44,7 @@ func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataSto
 		return h
 	}
 
-	local := memory.New()
+	local := journaltest.New(tb)
 	ids := make([]string, n)
 	for i := range ids {
 		dir, path := root, ""
@@ -108,7 +107,7 @@ type enrichedOnly struct{ metadata.Store }
 
 // scanSerialEnriched reproduces the share-start scan as it ran before this
 // change: one enriched metadata load per locally-resident file, in file order.
-func scanSerialEnriched(ctx context.Context, store metadata.Store, localStore local.LocalStore, files []string) (int, error) {
+func scanSerialEnriched(ctx context.Context, store metadata.Store, localStore journal.LocalStore, files []string) (int, error) {
 	n := 0
 	for _, id := range files {
 		journalSize, ok := localStore.FileSize(ctx, journal.FileID(id))
