@@ -102,7 +102,9 @@ func TestCrossProtocolKerberosIdentity(t *testing.T) {
 	framework.WaitForServer(t, smbPort, 30*time.Second)
 
 	// Install system Kerberos config for NFS/CIFS clients
-	installCrossProtocolKerberosConfig(t, kdc)
+	if err := kdc.InstallSystemKerberos(t); err != nil {
+		t.Logf("Warning: %v", err)
+	}
 
 	// Get Kerberos ticket for alice
 	kdc.KinitForCIFSMount(t, "alice", "alice123")
@@ -333,45 +335,4 @@ adapters:
 	require.NoError(t, err)
 	t.Setenv("DITTOFS_ADMIN_INITIAL_PASSWORD", "adminpassword")
 	return configPath
-}
-
-func installCrossProtocolKerberosConfig(t *testing.T, kdc *framework.KDCHelper) {
-	t.Helper()
-
-	// Store original files
-	origKrb5Conf, _ := os.ReadFile("/etc/krb5.conf")
-	origKeytab, _ := os.ReadFile("/etc/krb5.keytab")
-
-	t.Cleanup(func() {
-		if len(origKrb5Conf) > 0 {
-			_ = os.WriteFile("/etc/krb5.conf", origKrb5Conf, 0644)
-		} else {
-			_ = os.Remove("/etc/krb5.conf")
-		}
-		if len(origKeytab) > 0 {
-			_ = os.WriteFile("/etc/krb5.keytab", origKeytab, 0600)
-		} else {
-			_ = os.Remove("/etc/krb5.keytab")
-		}
-		_ = exec.Command("systemctl", "restart", "rpc-gssd").Run()
-	})
-
-	// Install test krb5.conf
-	krb5ConfData, err := os.ReadFile(kdc.Krb5ConfigPath())
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile("/etc/krb5.conf", krb5ConfData, 0644); err != nil {
-		t.Logf("Warning: cannot install test krb5.conf: %v", err)
-	}
-
-	// Copy keytab
-	keytabData, err := os.ReadFile(kdc.KeytabPath())
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile("/etc/krb5.keytab", keytabData, 0600); err != nil {
-		t.Logf("Warning: cannot install test keytab: %v", err)
-	}
-	framework.RestartGSSD(t)
 }
