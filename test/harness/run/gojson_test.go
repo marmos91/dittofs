@@ -223,13 +223,17 @@ const rootSuite = `suites:
 
 // The root path runs every package's binary through go test's -exec under
 // sudo, two packages named nfs included, in its package's directory, with the
-// suite's environment, quotes and spaces intact, and root's build settings;
-// TEST names reach the binaries as -run (section 3).
+// suite's environment, quotes and spaces intact, and root's build settings,
+// and leaves only its events behind; TEST names reach the binaries as -run
+// (section 3).
 func TestRootPath(t *testing.T) {
 	fakeSudo(t)
-	o, out, _ := goRun(t, rootSuite, rootModule)
+	o, out, dir := goRun(t, rootSuite, rootModule)
 	if o.Result != Passed || o.Note != "4 passed, 0 failed, 0 skipped" {
 		t.Errorf("outcome %+v\n%s", o, out)
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, "g")); len(left) != 1 || left[0].Name() != "go-test-1.json" {
+		t.Errorf("left in the cell's results: %v", left)
 	}
 	if o, _, _ := goRun(t, rootSuite, rootModule, "TestHow", "TestV3"); o.Result != Passed || o.Note != "2 passed, 0 failed, 0 skipped" {
 		t.Errorf("with TEST names: %+v", o)
