@@ -89,6 +89,21 @@ func newRun() *cobra.Command {
 	return cmd
 }
 
+// alias is a command people use today, `dt NAME ARGS`, which is
+// `dt run NAME ARGS` (section 3).
+func alias(name string) *cobra.Command {
+	return &cobra.Command{
+		Use:                name + " [ARGS...]",
+		Short:              "dt run " + name,
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := cmd.Root()
+			root.SetArgs(append([]string{"run", name}, args...))
+			return root.Execute()
+		},
+	}
+}
+
 func first(s []string) string {
 	if len(s) == 0 {
 		return ""

@@ -140,14 +140,21 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	for k, v := range c.Matrix {
 		vals[k] = v
 	}
-	args := strings.Fields(c.Unit.Args[c.Tier])
-	env, err := environ(c.Unit, c.Tier, vals, args)
+	lists := map[string][]string{"args": strings.Fields(c.Unit.Args[c.Tier])}
+	if c.Unit.Packages != nil {
+		pkgs, err := goPackages(o.Root, c.Unit.Packages.Tag)
+		if err != nil {
+			return NotRun, err.Error()
+		}
+		lists["packages"] = pkgs
+	}
+	own, err := suiteEnv(c.Unit, c.Tier, vals, lists)
 	if err != nil {
 		return NotRun, err.Error()
 	}
 	workdir := o.Root
 	if c.Unit.Dir != "" {
-		d, err := replace(c.Unit.Dir, vals, args, nil)
+		d, err := replace(c.Unit.Dir, vals, lists, nil)
 		if err != nil {
 			return NotRun, err.Error()
 		}
@@ -156,7 +163,10 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
 	defer cancel()
-	t := tester{cell: c, ctx: cellCtx, dir: workdir, env: env, vals: vals, args: args, out: io.MultiWriter(o.Out, log), log: log}
+	t := tester{cell: c, ctx: cellCtx, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, out: io.MultiWriter(o.Out, log), log: log}
+	if c.Unit.Format == "go-json" {
+		return t.goJSON(c.Tests)
+	}
 	var failures []string
 	unstarted := 0
 	for _, test := range tests {
@@ -189,9 +199,10 @@ type tester struct {
 	cell     Cell
 	ctx      context.Context
 	dir      string
-	env      []string
+	env      []string // dt's environment and the suite's
+	own      []string // the suite's alone
 	vals     map[string]string
-	args     []string
+	lists    map[string][]string
 	out, log io.Writer
 }
 
@@ -216,7 +227,7 @@ func (t tester) run(test string, limit time.Duration) string {
 			_, _ = fmt.Fprintf(t.out, "[dt] skipped, no change to check: %s%s\n", cmd.Line, cmd.Sh)
 			continue
 		}
-		argv, err := fill(cmd, t.vals, t.args)
+		argv, err := fill(cmd, t.vals, t.lists)
 		if err != nil {
 			return prefix + err.Error()
 		}
@@ -261,7 +272,12 @@ func execute(ctx context.Context, argv []string, dir string, env []string, w io.
 	// A leftover child holding the output open can't keep dt waiting.
 	cmd.WaitDelay = 5 * time.Second
 	killTree(cmd)
-	err := cmd.Run()
+	return exitCode(cmd.Run())
+}
+
+// exitCode turns a command's error into its exit status, keeping the error
+// only when the command didn't run to an exit.
+func exitCode(err error) (int, error) {
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return exit.ExitCode(), nil
@@ -279,7 +295,7 @@ func unsupported(u *registry.Suite) string {
 		return "dt doesn't set up fixtures yet"
 	case u.Image != "":
 		return "dt doesn't run commands in images yet"
-	case u.Format != "exit":
+	case u.Format != "exit" && u.Format != "go-json":
 		return fmt.Sprintf("dt doesn't read %s results yet", u.Format)
 	}
 	return ""

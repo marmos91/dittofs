@@ -3,7 +3,6 @@ package run
 import (
 	"fmt"
 	"maps"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -16,20 +15,22 @@ var placeholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
 
 // fill turns a command into the arguments it runs with, its placeholders
 // replaced. A line is split at spaces and never passes through a shell, and
-// a whole {args} becomes one argument per item; an sh command runs through
-// sh -c, with its values shell-quoted.
-func fill(c registry.Command, vals map[string]string, args []string) ([]string, error) {
+// a whole {args} or {packages}, which hold lists, becomes one argument per
+// item; an sh command runs through sh -c, with its values shell-quoted.
+func fill(c registry.Command, vals map[string]string, lists map[string][]string) ([]string, error) {
 	if c.Sh != "" {
-		s, err := replace(c.Sh, vals, args, shellQuote)
+		s, err := replace(c.Sh, vals, lists, shellQuote)
 		return []string{"sh", "-c", s}, err
 	}
 	var argv []string
 	for _, field := range strings.Fields(c.Line) {
-		if field == "{args}" {
-			argv = append(argv, args...)
-			continue
+		if name, whole := strings.CutPrefix(field, "{"); whole && strings.HasSuffix(name, "}") {
+			if items, ok := lists[strings.TrimSuffix(name, "}")]; ok {
+				argv = append(argv, items...)
+				continue
+			}
 		}
-		s, err := replace(field, vals, args, nil)
+		s, err := replace(field, vals, lists, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -39,8 +40,8 @@ func fill(c registry.Command, vals map[string]string, args []string) ([]string, 
 }
 
 // replace fills the placeholders in s, each value through quote when it's
-// given.
-func replace(s string, vals map[string]string, args []string, quote func(string) string) (string, error) {
+// given; a list's items are joined with spaces.
+func replace(s string, vals map[string]string, lists map[string][]string, quote func(string) string) (string, error) {
 	if quote == nil {
 		quote = func(v string) string { return v }
 	}
@@ -50,10 +51,10 @@ func replace(s string, vals map[string]string, args []string, quote func(string)
 			return m
 		}
 		name := m[1 : len(m)-1]
-		if name == "args" {
-			quoted := make([]string, len(args))
-			for i, a := range args {
-				quoted[i] = quote(a)
+		if items, ok := lists[name]; ok {
+			quoted := make([]string, len(items))
+			for i, item := range items {
+				quoted[i] = quote(item)
 			}
 			return strings.Join(quoted, " ")
 		}
@@ -85,13 +86,13 @@ func shellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
 
-// environ is dt's environment plus the suite's, for every tier and then for
-// its own, which wins.
-func environ(u *registry.Suite, tier string, vals map[string]string, args []string) ([]string, error) {
-	env := os.Environ()
+// suiteEnv is the suite's environment, for every tier and then for its own,
+// which wins; it goes after dt's own.
+func suiteEnv(u *registry.Suite, tier string, vals map[string]string, lists map[string][]string) ([]string, error) {
+	var env []string
 	for _, m := range []map[string]string{u.Env.All, u.Env.ByTier[tier]} {
 		for _, k := range slices.Sorted(maps.Keys(m)) {
-			v, err := replace(m[k], vals, args, nil)
+			v, err := replace(m[k], vals, lists, nil)
 			if err != nil {
 				return nil, err
 			}

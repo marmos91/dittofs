@@ -153,10 +153,10 @@ func TestRunStatuses(t *testing.T) {
 			t.Errorf("dt %s: %v, want a usage error", strings.Join(args, " "), err)
 		}
 	}
-	// unit is go-json, which dt doesn't read yet, so it didn't run.
+	// pjdfstest needs a fixture, which dt doesn't set up yet, so it didn't run.
 	var status exitStatus
-	if _, err := dt(t, "run", "unit", "--results", t.TempDir()); !errors.As(err, &status) || status != 2 {
-		t.Errorf("dt run unit: %v, want exit status 2", err)
+	if _, err := dt(t, "run", "pjdfstest", "--results", t.TempDir()); !errors.As(err, &status) || status != 2 {
+		t.Errorf("dt run pjdfstest: %v, want exit status 2", err)
 	}
 }
 
@@ -188,5 +188,15 @@ func TestShimKeepsExitStatus(t *testing.T) {
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 3 {
 		t.Errorf("shim: %v, want exit status 3", err)
+	}
+}
+
+// dt unit, dt integration and dt e2e are dt run with the rest of the
+// arguments, as before.
+func TestAliases(t *testing.T) {
+	for _, name := range []string{"unit", "integration", "e2e"} {
+		if _, err := dt(t, name, "--tier", "weekly"); err == nil || !strings.Contains(err.Error(), "weekly") {
+			t.Errorf("dt %s --tier weekly: %v, want dt run's tier error", name, err)
+		}
 	}
 }

@@ -45,7 +45,7 @@ func newRoot(out io.Writer) *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.SetOut(out)
-	root.AddCommand(newList(), newPlan(), newRun())
+	root.AddCommand(newList(), newPlan(), newRun(), alias("unit"), alias("integration"), alias("e2e"))
 	return root
 }
 

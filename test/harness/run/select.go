@@ -41,7 +41,8 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 		if err != nil {
 			return nil, err
 		}
-		if len(tests) > 0 && !unit.Tests.Set() {
+		goTests := unit.Format == "go-json" // go test finds its tests; TEST names them
+		if len(tests) > 0 && !unit.Tests.Set() && !goTests {
 			if len(suites) > 1 {
 				continue // a group's suites without tests have none to pick
 			}
@@ -58,7 +59,10 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 				continue
 			}
 			cell := Cell{Cell: c, Unit: unit, Tier: at}
-			if len(tests) > 0 {
+			switch {
+			case len(tests) > 0 && goTests:
+				cell.Tests = tests
+			case len(tests) > 0:
 				if cell.Tests, err = chosen(root, cell, tests); err != nil {
 					return nil, err
 				}

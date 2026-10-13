@@ -18,12 +18,19 @@ import (
 
 const head = "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\n"
 
-// repo writes files into a new repository root and loads the registry y.
+// repo writes files into a new repository root and loads the registry y,
+// for suites that run sh.
 func repo(t *testing.T, y string, files map[string]string) (string, *registry.Registry) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("these suites run sh, which the go-json tests don't need")
 	}
+	return anyRepo(t, y, files)
+}
+
+// anyRepo is repo for suites that run on every platform.
+func anyRepo(t *testing.T, y string, files map[string]string) (string, *registry.Registry) {
+	t.Helper()
 	root := t.TempDir()
 	for name, body := range files {
 		p := filepath.Join(root, name)
@@ -151,10 +158,10 @@ suites:
 // A suite dt can't run yet is reported as not run, never as passed.
 func TestUnsupportedIsNotRun(t *testing.T) {
 	root, r := repo(t, `suites:
-  g: { cmd: go test ./..., format: go-json }
+  g: { cmd: prove t, format: tap }
 `, nil)
 	rep, _ := runTarget(t, root, r, "g", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "go-json") {
+	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "tap") {
 		t.Errorf("outcome %+v", o)
 	}
 }
@@ -218,20 +225,20 @@ func TestRunDirsAreUnique(t *testing.T) {
 }
 
 // Placeholders: a line splits at spaces and never through a shell, a whole
-// {args} becomes one argument per item, an sh command gets its values quoted,
-// and a shell's ${VAR} is left alone (section 4.1).
+// {args} or {packages} becomes one argument per item, an sh command gets its
+// values quoted, and a shell's ${VAR} is left alone (section 4.1).
 func TestFill(t *testing.T) {
 	vals := map[string]string{"out": "/r/o", "test": "it's.sh"}
-	args := []string{"-short", "-v"}
-	got, err := fill(registry.Command{Line: "go test {args} -o={out}/x {test}"}, vals, args)
-	if err != nil || !slices.Equal(got, []string{"go", "test", "-short", "-v", "-o=/r/o/x", "it's.sh"}) {
+	lists := map[string][]string{"args": {"-short", "-v"}, "packages": {"./a", "./b"}}
+	got, err := fill(registry.Command{Line: "go test {args} -o={out}/x {test} {packages}"}, vals, lists)
+	if err != nil || !slices.Equal(got, []string{"go", "test", "-short", "-v", "-o=/r/o/x", "it's.sh", "./a", "./b"}) {
 		t.Errorf("line: %q, %v", got, err)
 	}
-	got, err = fill(registry.Command{Sh: "echo ${HOME} {test} {args}"}, vals, args)
+	got, err = fill(registry.Command{Sh: "echo ${HOME} {test} {args}"}, vals, lists)
 	if want := `echo ${HOME} 'it'\''s.sh' '-short' '-v'`; err != nil || got[2] != want {
 		t.Errorf("sh: %q, %v", got, err)
 	}
-	if _, err := fill(registry.Command{Line: "run {packages}"}, vals, nil); err == nil || !strings.Contains(err.Error(), "{packages}") {
+	if _, err := fill(registry.Command{Line: "run {bin}"}, vals, nil); err == nil || !strings.Contains(err.Error(), "{bin}") {
 		t.Errorf("a placeholder dt doesn't provide: %v", err)
 	}
 }
