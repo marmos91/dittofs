@@ -43,7 +43,7 @@ func encodeFile(f entity.File) []byte {
 		putTime(w, t)
 	}
 	return w.Fixed(f.Version[:]).Uint64(uint64(f.Size)).Uint64(uint64(f.Charged)).Fixed(f.Applied[:]).
-		Uint64(uint64(f.MaxSpan)).
+		Uint64(uint64(f.MaxSpan)).Uint64(uint64(f.MaxOverwrite)).
 		Uint32(f.Nlink).Fixed(f.Parent[:]).Uint64(f.Shard).Uint64(f.Project).Uint64(f.Number).
 		Bytes(f.CreateVerifier).Bytes(f.Target).Uint32(f.Device.Major).Uint32(f.Device.Minor).
 		Fixed(f.StreamOf[:]).Encode()
@@ -65,6 +65,7 @@ func decodeFile(share entity.ShareID, id entity.FileID, b []byte) (entity.File, 
 	f.Charged = int64(r.Uint64())
 	f.Applied = readVersion(r)
 	f.MaxSpan = int64(r.Uint64())
+	f.MaxOverwrite = int64(r.Uint64())
 	f.Nlink = r.Uint32()
 	f.Parent = readFileID(r)
 	f.Shard, f.Project, f.Number = r.Uint64(), r.Uint64(), r.Uint64()

@@ -95,7 +95,11 @@ func decodeOverwrite(start int64, b []byte) (overwrite, error) {
 // A removal's value; its version is in its key.
 func encodeRemoval(m entity.Removal) []byte {
 	w := codec.NewWriter(v1).Uint64(uint64(m.Extent.Offset)).Uint64(uint64(m.Extent.End())).
-		Uint8(uint8(m.Kind)).Uint64(uint64(m.Cut)).Uint64(uint64(m.Cursor)).Bool(m.Done).Bool(m.Clone != nil)
+		Uint8(uint8(m.Kind)).Uint64(uint64(m.Cut)).Uint64(uint64(m.Cursor)).Bool(m.Done).Uint64(uint64(m.OvSpan))
+	if m.Kind == entity.RemoveRelease {
+		w.Fixed(m.FileVersion[:])
+	}
+	w.Bool(m.Clone != nil)
 	if c := m.Clone; c != nil {
 		w.Fixed(c.SrcShare[:]).Fixed(c.Src[:]).Uint64(uint64(c.SrcOff)).Uint64(uint64(c.DstOff)).Uint64(uint64(c.Len)).Fixed(c.AsOf[:])
 	}
@@ -114,6 +118,10 @@ func decodeRemoval(version entity.JournalVersion, b []byte) (entity.Removal, err
 	m.Cut = entity.SnapshotCut(r.Uint64())
 	m.Cursor = int64(r.Uint64())
 	m.Done = r.Bool()
+	m.OvSpan = int64(r.Uint64())
+	if m.Kind == entity.RemoveRelease {
+		m.FileVersion = readVersion(r)
+	}
 	if r.Bool() {
 		c := &entity.CloneSpec{SrcShare: entity.ShareID(readFileID(r)), Src: readFileID(r)}
 		c.SrcOff, c.DstOff, c.Len = int64(r.Uint64()), int64(r.Uint64()), int64(r.Uint64())
@@ -121,7 +129,7 @@ func decodeRemoval(version entity.JournalVersion, b []byte) (entity.Removal, err
 		m.Clone = c
 		return m, checkEpochs(r, version, c.AsOf)
 	}
-	return m, checkEpochs(r, version)
+	return m, checkEpochs(r, version, m.FileVersion)
 }
 
 // fence is the (shard, epoch) a file's commits on one path must carry.

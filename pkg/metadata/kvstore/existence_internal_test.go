@@ -96,6 +96,11 @@ func TestExistenceCommit(t *testing.T) {
 	if got, want := f.layout(file), "carved[0,1) uncarved[1,1.5)@6 uncarved[1.5,3)@7 carved[3,4) hole[4,5) uncarved[5,11) hole[11,14)"; got != want {
 		t.Errorf("after overwrites: %s, want %s", got, want)
 	}
+	// The two bounds are kept apart: the 6 MiB hole does not widen the
+	// overwrite window.
+	if got := f.get(file); got.MaxOverwrite != 3*mib/2 || got.MaxSpan != 6*mib {
+		t.Errorf("max overwrite %d, max span %d", got.MaxOverwrite, got.MaxSpan)
+	}
 	b := chunk(2)
 	f.commit(file, carry(b), ref(mib, 2*mib, b, 6, 7))
 	if got, want := f.layout(file), "carved[0,1) carved[1,3) carved[3,4) hole[4,5) uncarved[5,11) hole[11,14)"; got != want {

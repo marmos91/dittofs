@@ -250,9 +250,8 @@ func (s *existState) bound(op PendingOp) (int, error) {
 // in-memory state. A record a removal not done masks counts as absent, so
 // the commit never cuts one, and writing a record at its key replaces it.
 func (s *existState) load(w entity.Extent) error {
-	span := s.ms.span(s.f)
 	if !covered(s.loadedHoles, w) {
-		hs, err := holesOver(s.tx, s.share, s.file, w, span)
+		hs, err := holesOver(s.tx, s.share, s.file, w, s.ms.holeSpan(s.f))
 		if err != nil {
 			return err
 		}
@@ -264,7 +263,7 @@ func (s *existState) load(w entity.Extent) error {
 		s.loadedHoles = append(s.loadedHoles, w)
 	}
 	if !covered(s.loadedOvs, w) {
-		os, err := overwritesOver(s.tx, s.share, s.file, w, span)
+		os, err := overwritesOver(s.tx, s.share, s.file, w, s.ms.ovSpan(s.f))
 		if err != nil {
 			return err
 		}
@@ -427,7 +426,7 @@ func (s *existState) dropHole(start int64) { delete(s.holes, start); s.dirtyH[st
 
 func (s *existState) setOv(o overwrite) {
 	s.ovs[o.Offset], s.dirtyO[o.Offset] = o, true
-	s.f.MaxSpan = max(s.f.MaxSpan, o.Length)
+	s.f.MaxOverwrite = max(s.f.MaxOverwrite, o.Length)
 }
 
 func (s *existState) dropOv(start int64) { delete(s.ovs, start); s.dirtyO[start] = true }
@@ -503,7 +502,7 @@ func (e Existence) Overwrites(ctx context.Context, share entity.ShareID, file en
 			if run.IsEmpty() {
 				continue
 			}
-			hs, err := holesOver(r, share, file, run, ms.span(f))
+			hs, err := holesOver(r, share, file, run, ms.holeSpan(f))
 			if err != nil {
 				return err
 			}

@@ -21,7 +21,7 @@ func fileCodecCases() []codecCase {
 		Owner: entity.Principal{Kind: entity.PrincipalUser, ID: pid}, Group: group,
 		Mode: 0o4755, Flags: entity.FlagHidden | entity.FlagImmutable,
 		Birth: old, Modify: t0, Change: t0, // Access left zero
-		Version: entity.VersionOf(9), Size: 5, Charged: 4096, Applied: entity.VersionOf(7), MaxSpan: 6, Nlink: 2,
+		Version: entity.VersionOf(9), Size: 5, Charged: 4096, Applied: entity.VersionOf(7), MaxSpan: 6, MaxOverwrite: 8, Nlink: 2,
 		Shard: 3, Project: 4, Number: 42,
 		CreateVerifier: []byte("verifier"), Target: []byte("/a"),
 	}
@@ -39,7 +39,7 @@ func fileCodecCases() []codecCase {
 				"fffffffd49ef6f00" + "00000000" + "8000000000000000" + "00000000" + // birth 1601, access zero
 				"000000006b49d200" + "0000007b" + "000000006b49d200" + "0000007b" +
 				"00000000000000000000000000000009" + "0000000000000005" + "0000000000001000" +
-				"00000000000000000000000000000007" + "0000000000000006" + "00000002" +
+				"00000000000000000000000000000007" + "0000000000000006" + "0000000000000008" + "00000002" +
 				"00000000000000000000000000000000" + "0000000000000003" + "0000000000000004" + "000000000000002a" +
 				"087665726966696572" + "022f61" + "00000000" + "00000000" + "00000000000000000000000000000000",
 			func(b []byte) (any, error) { return decodeFile(sid, fid, b) }},

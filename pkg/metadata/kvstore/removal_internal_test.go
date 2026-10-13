@@ -3,6 +3,8 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,6 +144,59 @@ func TestDeallocate(t *testing.T) {
 		t.Errorf("C's refcount %d, want 2 after the split", rec.Refcount)
 	}
 	f.checkCounts()
+}
+
+// RFC 6 §6.2: a deallocate's phase 1 joins the holes touching its edges
+// into its merged hole, one record, and leaves the hole inside it masked for
+// phase 2, which has nothing left to join.
+func TestDeallocateJoinsEdgeHoles(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	f.exist(file, write(1, 0, mib), write(2, 2*mib, mib), write(3, 4*mib, mib), write(4, 6*mib, mib))
+	f.want(file, "before", "uncarved[0,1) hole[1,2) uncarved[2,3) hole[3,4) uncarved[4,5) hole[5,6) uncarved[6,7)")
+
+	f.remove(file, dealloc(5, 2*mib, 3*mib))
+	if got := f.holeRecords(file); got != "[1,6)@5 [3,4)@3" {
+		t.Errorf("phase 1 holes %s", got)
+	}
+	if got := f.get(file); got.MaxSpan != 5*mib || got.Charged != 2*mib {
+		t.Errorf("max span %d, charged %d", got.MaxSpan, got.Charged)
+	}
+	f.exist(file, write(6, mib, mib/2))
+	f.want(file, "a write after it", "uncarved[0,1.5) hole[1.5,6) uncarved[6,7)")
+
+	f.resume(file)
+	if got := f.holeRecords(file); got != "[1.5,6)@5" {
+		t.Errorf("phase 2 holes %s", got)
+	}
+	f.want(file, "phase 2", "uncarved[0,1.5) hole[1.5,6) uncarved[6,7)")
+}
+
+// holeRecords is a file's hole records in MiB, each with its version.
+func (f *cfix) holeRecords(file entity.FileID) string {
+	f.t.Helper()
+	var b strings.Builder
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		pre := holesPrefix(f.share, file)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			start, err := startOf(pre, row.Key)
+			if err != nil {
+				return err
+			}
+			h, err := decodeHole(start, row.Value)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&b, "[%g,%g)@%d ", float64(h.Offset)/mib, float64(h.End())/mib, h.Version.Counter())
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // RFC 6 §6.2's transfer row: a pass offered before a truncate commits after

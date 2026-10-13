@@ -165,7 +165,7 @@ func covering(r kv.Reader, share entity.ShareID, file entity.FileID, want entity
 			return nil, entity.ErrDelay // a half-copied extent is never served
 		}
 	}
-	holes, err := holesOver(r, share, file, e, ms.span(f))
+	holes, err := holesOver(r, share, file, e, ms.holeSpan(f))
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func covering(r kv.Reader, share entity.ShareID, file entity.FileID, want entity
 	if err != nil {
 		return nil, err
 	}
-	ovs, err := overwritesOver(r, share, file, e, ms.span(f))
+	ovs, err := overwritesOver(r, share, file, e, ms.ovSpan(f))
 	if err != nil {
 		return nil, err
 	}

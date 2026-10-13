@@ -238,7 +238,13 @@ type Removal struct {
 	Cut     SnapshotCut // the cut its phase 1 read
 	Cursor  int64       // refs below this offset are dropped
 	Done    bool
-	Clone   *CloneSpec // Kind RemoveClone only
+	// OvSpan is the File's MaxOverwrite at phase 1, the bound phase 2's
+	// history scan needs once a release has deleted the File.
+	OvSpan int64
+	// FileVersion is the deleted File's Version, Kind RemoveRelease only: it
+	// names the File's version-floor entry, which the prune deletes.
+	FileVersion JournalVersion
+	Clone       *CloneSpec // Kind RemoveClone only
 }
 
 // Masks reports whether the removal hides content at version v over e: it is

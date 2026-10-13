@@ -28,15 +28,17 @@ type File struct {
 	// change attribute and SMB change detection report its counter half.
 	Version JournalVersion
 
-	// Size, Charged, Applied and MaxSpan are the write path's: only an
-	// existence commit and a removal set them.
+	// Size, Charged, Applied, MaxSpan and MaxOverwrite are the write path's:
+	// only an existence commit and a removal set them.
 	Size    int64
 	Charged int64 // logical bytes charged to Owner, Group and Project, holes excluded
 	Applied JournalVersion
-	// MaxSpan is the length of the longest hole or overwrite record the file
-	// has ever had, never lowered, so every such record over an offset, live
-	// or in history, starts within MaxSpan below it.
-	MaxSpan int64
+	// MaxSpan is the length of the longest hole the file has ever had, and
+	// MaxOverwrite that of its longest overwrite record. Neither is ever
+	// lowered, so every record of the kind over an offset, live or in
+	// history, starts within its bound below it.
+	MaxSpan      int64
+	MaxOverwrite int64
 
 	// Nlink is the number of entries naming the file. A share's root and a
 	// named stream have none.

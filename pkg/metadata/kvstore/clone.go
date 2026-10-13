@@ -106,7 +106,7 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 			return err
 		}
 		f.Charged -= charged
-		if err := narrowStraddlers(tx, share, file, f, ms, live); err != nil {
+		if err := narrowStraddlers(tx, share, file, f, ms, live, true); err != nil {
 			return err
 		}
 	} else if ext.Offset > f.Size {
@@ -138,7 +138,7 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 		return err
 	}
 	spec := sp
-	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, Clone: &spec}
+	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, Clone: &spec}
 	if err := tx.Set(removalKey(share, file, op.Version), encodeRemoval(m)); err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 func gapHole(tx kv.Txn, share entity.ShareID, f *entity.File, ms masks, at int64, v entity.JournalVersion) error {
 	h := hole{Extent: entity.ExtentOf(f.Size, at), Version: v}
 	if f.Size > 0 {
-		prev, err := holesOver(tx, share, f.ID, entity.ExtentOf(f.Size-1, f.Size), ms.span(*f))
+		prev, err := holesOver(tx, share, f.ID, entity.ExtentOf(f.Size-1, f.Size), ms.holeSpan(*f))
 		if err != nil {
 			return err
 		}

@@ -69,7 +69,7 @@ func (e Existence) PruneOverwrites(ctx context.Context, share entity.ShareID, fi
 		if err != nil {
 			return err
 		}
-		ovs, err := overwritesOver(tx, share, file, entity.Extent{Length: entity.EndOfFile}, ms.span(f))
+		ovs, err := overwritesOver(tx, share, file, entity.Extent{Length: entity.EndOfFile}, ms.ovSpan(f))
 		if err != nil {
 			return err
 		}
@@ -106,7 +106,7 @@ func uncovered(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.F
 	if e.IsEmpty() {
 		return nil, nil
 	}
-	hs, err := holesOver(r, share, file, e, ms.span(f))
+	hs, err := holesOver(r, share, file, e, ms.holeSpan(f))
 	if err != nil {
 		return nil, err
 	}

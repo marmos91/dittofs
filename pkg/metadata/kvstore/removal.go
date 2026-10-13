@@ -65,14 +65,18 @@ func (ms masks) masked(v entity.JournalVersion, e entity.Extent) bool {
 	return len(ms.visible(v, e)) == 0
 }
 
-// span is how far below an offset a hole or overwrite record over it may
-// start: records of a kind overlap only while a removal masks some of them,
-// and none is longer than the file's MaxSpan.
-func (ms masks) span(f entity.File) int64 {
+// holeSpan and ovSpan are how far below an offset a hole or an overwrite
+// record over it may start: records of a kind overlap only while a removal
+// masks some of them, and none is longer than the file's MaxSpan or
+// MaxOverwrite.
+func (ms masks) holeSpan(f entity.File) int64 { return ms.span(f.MaxSpan) }
+func (ms masks) ovSpan(f entity.File) int64   { return ms.span(f.MaxOverwrite) }
+
+func (ms masks) span(longest int64) int64 {
 	if len(ms) == 0 {
 		return 0
 	}
-	return max(1, f.MaxSpan)
+	return max(1, longest)
 }
 
 // RemoveOp is a removal the write path makes: a truncate down to Extent's
@@ -86,14 +90,16 @@ type RemoveOp struct {
 
 // Remove applies phase 1 of a removal, after the file's pending existence
 // below it; releasePhase1 says what a release's does. For a truncate or a
-// deallocate, in one transaction it sets size for a truncate, cuts the at most two holes and two overwrite records crossing
-// the extent's edges there,
-// makes a deallocated extent one hole at the removal's version, lowers
-// Charged, advances applied, and writes the removal record, which masks the
-// refs, holes and overwrite records inside the extent until Resume has
-// dropped them. It writes no ref. A removal at or below applied is a no-op,
-// so a replay is harmless. Both fences are read and written, so the removal
-// conflicts with an offload commit and with an existence commit of the file.
+// deallocate, in one transaction it sets size for a truncate, cuts the at
+// most two overwrite records crossing the extent's edges there, and the at
+// most two holes for a truncate, makes a deallocated extent one hole at the
+// removal's version joined with the holes at its edges, lowers Charged,
+// advances applied, and writes the removal record, with the File's
+// MaxOverwrite as its OvSpan, which masks the refs, holes and overwrite
+// records inside the extent until Resume has dropped them. It writes no
+// ref. A removal at or below applied is a no-op, so a replay is harmless.
+// Both fences are read and written, so the removal conflicts with an
+// offload commit and with an existence commit of the file.
 //
 // decision: the pending existence commits in its own transactions before
 // phase 1 rather than in phase 1's. The engine holds the file's guard across
@@ -103,7 +109,7 @@ type RemoveOp struct {
 // decision: a deallocate's extent becomes a hole record at once, at the
 // removal's version, rather than when phase 2 finishes: a write after the
 // removal then splits that hole as it would any other, so the bytes it wrote
-// are never covered by the merged hole phase 2 leaves.
+// are never covered by a merged hole phase 2 would leave.
 //
 // ponytail: lowering Charged reads every hole in the extent, untracked,
 // which a truncate of a TRIM-fragmented file makes O(holes) reads though it
@@ -160,7 +166,7 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 			return err
 		}
 		f.Charged -= charged
-		if err := narrowStraddlers(tx, share, file, f, ms, live); err != nil {
+		if err := narrowStraddlers(tx, share, file, f, ms, live, op.Kind == entity.RemoveTruncate); err != nil {
 			return err
 		}
 	}
@@ -169,10 +175,11 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 		f.Size = ext.Offset
 	case !live.IsEmpty():
 		ext = live
-		if err := tx.Set(holeKey(share, file, ext.Offset), encodeHole(hole{Extent: ext, Version: op.Version})); err != nil {
+		h, err := mergedHole(tx, share, file, f, ms, ext, op.Version)
+		if err != nil {
 			return err
 		}
-		f.MaxSpan = max(f.MaxSpan, ext.Length)
+		f.MaxSpan = max(f.MaxSpan, h.Length)
 	}
 	was := f.Version
 	f.Applied = op.Version
@@ -187,7 +194,7 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	if live.IsEmpty() {
 		return nil // a deallocate past the end of file removes nothing
 	}
-	m := entity.Removal{Version: op.Version, Extent: ext, Kind: op.Kind, Cursor: ext.Offset}
+	m := entity.Removal{Version: op.Version, Extent: ext, Kind: op.Kind, Cursor: ext.Offset, OvSpan: f.MaxOverwrite}
 	return tx.Set(removalKey(share, file, op.Version), encodeRemoval(m))
 }
 
@@ -214,7 +221,7 @@ func rewriteFences(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 // e less its holes and the extents of deallocations not yet done, which
 // read as holes. A masked hole lies inside one of those, or past size.
 func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent) (int64, error) {
-	hs, err := holesOver(r, share, file, e, ms.span(f))
+	hs, err := holesOver(r, share, file, e, ms.holeSpan(f))
 	if err != nil {
 		return 0, err
 	}
@@ -234,20 +241,24 @@ func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.F
 	return n, nil
 }
 
-// narrowStraddlers cuts each visible hole and overwrite record that
-// crosses an edge of e in two at that edge, so every one is either inside
-// e, and masked, or outside it: no later write or commit can then leave a
-// piece of a masked record where phase 2 has already passed. That is at
-// most two records of each kind.
-func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent) error {
+// narrowStraddlers cuts each visible overwrite record, and each visible
+// hole when holes is set, that crosses an edge of e in two at that edge, so
+// every one is either inside e, and masked, or outside it: no later write or
+// commit can then leave a piece of a masked record where phase 2 has
+// already passed. That is at most two records of each kind. A deallocate
+// joins its edge holes into its merged hole instead.
+func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, holes bool) error {
 	for _, edge := range []int64{e.Offset, e.End()} {
 		if edge >= f.Size {
 			continue
 		}
 		at := entity.Extent{Offset: edge, Length: 1}
-		hs, err := holesOver(tx, share, file, at, ms.span(f))
-		if err != nil {
-			return err
+		var hs []hole
+		if holes {
+			var err error
+			if hs, err = holesOver(tx, share, file, at, ms.holeSpan(f)); err != nil {
+				return err
+			}
 		}
 		for _, h := range hs {
 			if h.Offset >= edge || ms.masked(h.Version, h.Extent) {
@@ -259,7 +270,7 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 				}
 			}
 		}
-		os, err := overwritesOver(tx, share, file, at, ms.span(f))
+		os, err := overwritesOver(tx, share, file, at, ms.ovSpan(f))
 		if err != nil {
 			return err
 		}
@@ -279,6 +290,42 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 	return nil
 }
 
+// mergedHole writes a deallocate's extent e as one hole at v, joined with
+// the visible holes that straddle or touch its edges, and deletes the keys
+// of those it joined. They are at most two, read at the edges, so phase 1
+// stays O(1) however many holes lie inside e: those stay, masked, for phase
+// 2 to drop. A hole another removal masks is never joined, and may touch the
+// merged hole until that removal's phase 2 drops it. The merged hole's key
+// replaces a masked hole starting there.
+func mergedHole(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, v entity.JournalVersion) (hole, error) {
+	m := hole{Extent: e, Version: v}
+	var joined []int64
+	for _, at := range []entity.Extent{entity.ExtentOf(max(0, e.Offset-1), e.Offset+1), entity.ExtentOf(e.End()-1, e.End()+1)} {
+		hs, err := holesOver(tx, share, file, at, ms.holeSpan(f))
+		if err != nil {
+			return hole{}, err
+		}
+		for _, h := range hs {
+			left := h.Offset < e.Offset && h.End() >= e.Offset
+			right := h.End() > e.End() && h.Offset <= e.End()
+			if !left && !right || ms.masked(h.Version, h.Extent) || slices.Contains(joined, h.Offset) {
+				continue
+			}
+			joined = append(joined, h.Offset)
+			m.Extent = entity.ExtentOf(min(m.Offset, h.Offset), max(m.End(), h.End()))
+		}
+	}
+	for _, start := range joined {
+		if start == m.Offset {
+			continue // the merged hole's own key
+		}
+		if err := tx.Delete(holeKey(share, file, start)); err != nil {
+			return hole{}, err
+		}
+	}
+	return m, tx.Set(holeKey(share, file, m.Offset), encodeHole(m))
+}
+
 // batchItemKeys is at most the keys one item a phase-2 batch reaches
 // writes: a ref split in two is its drop, two puts and their reverse keys,
 // its chunk record, and its block record with its trash entry when the
@@ -293,10 +340,10 @@ const batchItemKeys = 10
 // extent below that version; and advances the cursor. Phase 1 left no hole
 // or overwrite record crossing an edge, so those it drops lie wholly inside.
 // A clone's batches also adopt the source's carved refs over what they
-// reached. The last batch of a deallocate or a clone joins the extent's
-// holes with those they touch, and a clone's deletes its open of the
-// source. Content at or above the removal's version is never touched, so a
-// re-run is harmless.
+// reached. The last batch of a clone joins the extent's holes with those
+// they touch and deletes its open of the source; a deallocate's merged hole,
+// written in phase 1, already holds every hole it touched. Content at or
+// above the removal's version is never touched, so a re-run is harmless.
 //
 // ponytail: nothing moves to history, because no snapshot cut is recorded
 // yet, so a dropped ref is dated by nothing and an overwrite record is
@@ -432,12 +479,10 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	m.Cursor = batch.End()
 	if m.Cursor >= end {
 		m.Done = true
-		if m.Kind == entity.RemoveDeallocate || m.Kind == entity.RemoveClone {
+		if m.Kind == entity.RemoveClone {
 			if err := joinHoles(tx, share, file, f, ms[1:], m.Extent); err != nil {
 				return false, err
 			}
-		}
-		if m.Kind == entity.RemoveClone {
 			if err := tx.Delete(cloneOpenKey(share, file, m.Version, *m.Clone)); err != nil {
 				return false, err
 			}
@@ -516,10 +561,10 @@ func firstStarting[T any](r kv.Reader, prefix []byte, from, end int64, n int, de
 }
 
 // joinHoles joins the holes over e and those touching it that no other
-// removal not done masks, so a deallocate leaves holes that never touch.
+// removal not done masks, so a clone leaves holes that never touch.
 func joinHoles(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, others masks, e entity.Extent) error {
 	w := entity.ExtentOf(max(0, e.Offset-1), e.End()+1)
-	hs, err := holesOver(tx, share, file, w, others.span(f))
+	hs, err := holesOver(tx, share, file, w, others.holeSpan(f))
 	if err != nil {
 		return err
 	}
