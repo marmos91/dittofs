@@ -719,7 +719,7 @@ dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with 
    [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
    [--estimate]                                and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
-   [--only A,B] [--skip A,B] [--parallel N]
+   [--tier T] [--only A,B] [--skip A,B] [--parallel N]
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
 dt report [RUN] --failures [--post]            only the new failures; --post opens or updates an issue per failure
@@ -764,6 +764,13 @@ when the cell has them. CI turns `place` into the job's runner and `timeout_minu
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
 cells at once. That is safe only because each fixture gets its own ports, mount point and results
 directory. Today the suites share them and must run one at a time (`Makefile:108-111`).
+
+**The tier of a run.** `dt run` runs each suite or option it names at `--tier T`, `pr` by default,
+or at the suite's own tier when that is wider. The tier sets its `args`, its per-tier `env` and its
+`select`: `dt run unit` runs the short tests, as on a pull request, and `dt run system` the 0x-8x
+scenarios, as after a merge. A name that gives matrix values runs those values whatever `select`
+keeps, so `dt run pynfs/badger` runs both of `badger`'s cells. In CI each cell runs at the tier its
+plan was made for.
 
 **Posting failures.** `dt report --failures --post` opens a GitHub issue for each new failure, or
 comments on the one already open for it, and lists them in the develop-status issue (§4.8). The
@@ -1048,8 +1055,8 @@ One workflow, `tests.yml`, runs every registered suite:
   and `workflow_dispatch` the tier it's given.
 - **Jobs:**
   - `plan` runs `dt plan --tier T --json`.
-  - `run` is a matrix over its cells, each `dt run CELL --ci` on the runner `dt plan` named, with
-    `--retry 1` on develop and the schedule, never on PRs.
+  - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`
+    named, with `--retry 1` on develop and the schedule, never on PRs.
   - `gate` needs every job that runs a blocking cell, and always runs. It merges the summaries
     into one report, and fails unless every blocking cell exited 0.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
