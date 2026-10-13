@@ -391,7 +391,11 @@ suites:
       nightly: { DITTOFS_E2E_NIGHTLY: "1" }
     needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
     options:
-      stress: { cmd: go test -tags=e2e,stress -timeout=60m ./test/e2e/..., tier: nightly }
+      stress: { cmd: "go test -tags=e2e,stress -timeout=60m ./test/e2e/...", tier: nightly }   # quoted: a comma ends a flow value
+      kerberos:                         # the Kerberos mounts, on pull requests that can affect them
+        cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
+        tier: pr
+        paths: [internal/adapter/**, pkg/adapter/**, pkg/metadata/**, internal/auth/**, pkg/auth/**, pkg/identity/**, "test/e2e/*kerberos*", test/e2e/framework/kerberos.go, test/integration/kerberos/**]
 
   # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix` and
   # `select.pr` replace suites.json's profiles and PR lists. Commands are shortened: the flags each
@@ -503,7 +507,7 @@ suites:
 
 | Field | Meaning | Default |
 |---|---|---|
-| `cmd` | A command, or a list of commands run in order until one fails, from the repository root or inside `image`. A command is a string, split into arguments at spaces, and never passes through a shell; `{ sh: "..." }` runs one through `sh -c` (Git Bash on Windows) when it needs pipes or `$(...)`. Its placeholders are below | required, unless the image provides one |
+| `cmd` | A command, or a list of commands, from the repository root or inside `image`. Every command of a list runs, in order, and the cell fails if any of them failed, so one run reports every problem, as the lint jobs do today. A command is a string, split into arguments at spaces, and never passes through a shell; `{ sh: "..." }` runs one through `sh -c` (Git Bash on Windows) when it needs pipes or `$(...)`. Its placeholders are below | required, unless the image provides one |
 | `dir` | The directory the commands run in, such as `{mount}` | the repository root |
 | `format` | How each test's result is read: `exit`, `go-json`, `junit`, `tap`, `subunit`, `trx` (§4.6) | `exit` |
 | `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json` (§4.6) | none |
@@ -512,11 +516,12 @@ suites:
 | `timeout` | `test`: each test's limit; `cell`: the whole cell's, including the fixture. The two keys are set separately: an option, suite or default that sets one keeps the other from the level above. `test: size` takes it from a scenario's size class (below). A `.txt` test list may give a test its own | `{ test: 30m, cell: 60m }` |
 | `needs` | What the machine must offer (§4.5) | none |
 | `needs_by_test` | Extra needs for the tests matching a glob; `dt plan` puts those tests in cells of their own, on a place that meets them (§4.5) | none |
+| `paths` | On pull requests, run only when the change touches a path matching one of these globs (`dir/**` for a whole tree). Only for a narrow suite that changes elsewhere can't break, as `e2e --kerberos` | every pull request |
 | `tests` | A glob, one test per matching file; a list of names; or a `.txt` file of names, one per line, each with an optional timeout | none: the suite is one test, or finds its own |
 | `exclude` | Globs of files `tests` matches that aren't tests | none |
 | `matrix` | Axes and their values; `dt plan` makes one cell per combination | one cell |
 | `select` | Per tier below the suite's widest: a narrower glob for `tests`, or the `matrix` values that tier runs | every match, every value |
-| `options` | Named variants of the suite. An option is a copy of the suite with each field it sets replaced as a whole: a `needs`, `env`, `fixture` or `matrix` it sets replaces the suite's, and isn't merged into it. It runs as its own cells, and alone with `dt run SUITE --OPTION` | none |
+| `options` | Named variants of the suite. An option is a copy of the suite with each field it sets replaced as a whole: a `needs`, `env`, `fixture` or `matrix` it sets replaces the suite's, and isn't merged into it. It runs as its own cells, and alone with `dt run SUITE --OPTION` An option doesn't take the suite's `job`, which names the suite's own fixed job, and an option that sets `matrix` doesn't keep the suite's `select`, which narrowed the matrix it replaced | none |
 | `fixture` | The DittoFS server the tests run against (§4.2) | none: the suite starts what it needs itself |
 | `image` | A container image to run `cmd` in, on the fixture's network | none: the host, or `dtc` |
 | `volumes` | Mounts into `image`, host path to container path | none |
@@ -684,13 +689,17 @@ queue rather than change what they test. `dt plan --estimate` gives a tier's run
 
 **No selection by changed layer.** The components depend on each other too much for "this PR only
 touched NFS" to be safe. The full set after every merge is what catches the cross-component
-regressions a small PR tier misses.
+regressions a small PR tier misses. The one exception is a narrow suite whose `paths` name what can
+break it: e2e's Kerberos run is a protocol feature that a change under `pkg/block` can't affect, so
+it runs on pull requests that touch the adapters, the metadata (auth metadata included) or the
+authentication code, and after every merge.
 
 ### 4.4 The command line
 
 ```text
 dt list [--tier T] [--json]                    suites, options, groups, tier, format and needs; whether they can run here
-dt plan --tier T [--shard I/N] [--json]        the cells a tier runs, each with its place; CI turns --json into its matrix
+dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with its place; CI turns --json into its matrix;
+   [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
    [--estimate]                                and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--only A,B] [--skip A,B] [--parallel N]
@@ -707,6 +716,32 @@ dt docs [--check]                              write the documentation's suite t
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
 and `dtc` for the container.
+
+**Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the
+order the axes are written, then, for tests a `needs_by_test` entry sends elsewhere, the place they
+go to, and last `shard-I` when the suite has shards: `pjdfstest/badger-s3/4.1`,
+`smbtorture/kerberos`, `system/shard-2`, `system/dedicated`. `dt run pynfs/badger` runs every cell
+whose name begins with those segments. Shards split the tests of a cell on a shared place, dealt
+in turn so long and short tests spread evenly; a dedicated host runs its tests as one cell.
+`dt plan --shard I/N` deals the tier's cells the same way, for splitting a run across machines.
+
+A cell's place comes from its `needs`: `windows` and `macos` cells go to those runners, a cell
+needing `host:dedicated` or more disk than a runner's 14 GB to the dedicated host, and the rest
+to Ubuntu. `dt plan --json` prints the tier and its cells:
+
+```json
+{ "tier": "nightly", "cells": [
+  { "name": "system/dedicated", "suite": "system", "place": "dedicated",
+    "needs": ["linux", "podman", "host:dedicated", "disk:110"], "blocking": true,
+    "tests": ["test/scenarios/90-smb-hour-holds-xxl.sh", "test/scenarios/91-smb-125gb-file-sync-xxl.sh",
+              "test/scenarios/92-smb-fslogix-container-xl.sh"],
+    "test_timeout": "size", "timeout_minutes": 127,
+    "notes": ["cell timeout raised from 90m to 2h7m: its longest test's limit plus 5m for the fixture"] } ] }
+```
+
+A cell lists `tests` only when it runs part of its suite's; `matrix`, `option` and `job` appear
+when the cell has them. CI turns `place` into the job's runner and `timeout_minutes` into its
+`timeout-minutes`.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
@@ -1011,7 +1046,7 @@ One workflow, `tests.yml`, runs every registered suite:
   develop ruleset's required checks don't change. `Go Checks` also vets every build-tagged test,
   as #3002 added. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
   `Integration Tests (1.26.x)`, until the ruleset requires the gate.
-- **Docs-only PRs:** `dt plan` returns no cells, and `gate` passes.
+- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
 
 **Merging.** Since 2026-10-08:
 - develop requires `Unit Tests (1.26.x)` and `Integration Tests (1.26.x)` beside the lint and
