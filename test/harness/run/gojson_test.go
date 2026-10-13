@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
 // goModule is a module with tests that pass, fail, skip and fail in a
@@ -132,71 +131,6 @@ func TestFollowedIgnoresLeftovers(t *testing.T) {
 	}
 }
 
-// go test's flags split into the build's, the test binary's and the packages.
-func TestSplitGoTest(t *testing.T) {
-	build, test, pkgs := splitGoTest(strings.Fields("go test -tags=e2e -race -timeout=30m -run Kerberos -short -p 2 ./test/e2e/... ./x"))
-	if !slices.Equal(build, []string{"-tags=e2e", "-race", "-p=2"}) ||
-		!slices.Equal(test, []string{"-test.timeout=30m", "-test.run=Kerberos", "-test.short"}) ||
-		!slices.Equal(pkgs, []string{"./test/e2e/...", "./x"}) {
-		t.Errorf("build %q, test %q, packages %q", build, test, pkgs)
-	}
-}
-
-// The root path builds the binaries as the user and runs each through
-// test2json in its package's directory, with the suite's environment passed
-// explicitly and the test flags as the binary's (section 3). It runs once
-// without sudo, and once through sudo where passwordless sudo exists.
-func TestGoTestAsRoot(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the root path runs through env and sudo")
-	}
-	files := map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": `package a
-
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
-
-func TestEnv(t *testing.T) {
-	if os.Getenv("DT_SUITE_VAR") != "passed" {
-		t.Error("the suite's environment wasn't passed")
-	}
-	if wd, _ := os.Getwd(); filepath.Base(wd) != "a" {
-		t.Errorf("ran in %s, not the package's directory", wd)
-	}
-	if !testing.Short() {
-		t.Error("-short didn't reach the binary")
-	}
-	if os.Getenv("DT_WANT_ROOT") == "1" && os.Geteuid() != 0 {
-		t.Error("the binary didn't run as root")
-	}
-}
-`}
-	root, _ := anyRepo(t, "suites:\n  g: { cmd: \"true\" }\n", files)
-	check := func(t *testing.T, own ...string) {
-		out := t.TempDir()
-		var res results
-		var buf bytes.Buffer
-		tr := tester{cell: Cell{Unit: &registry.Suite{}}, ctx: context.Background(), dir: root, env: os.Environ(), own: own, vals: map[string]string{"out": out}, out: &buf}
-		code, err := tr.goTestAsRoot(strings.Fields("go test -short ./..."), filepath.Join(out, "go-test-1"), &res)
-		if err != nil || code != 0 || res.tests["example.com/m/a TestEnv"] != "pass" {
-			t.Errorf("exit %d, %v, tests %v\n%s", code, err, res.tests, buf.String())
-		}
-	}
-	t.Run("as the user", func(t *testing.T) {
-		elevate = nil
-		t.Cleanup(func() { elevate = []string{"sudo", "-n"} })
-		check(t, "DT_SUITE_VAR=passed")
-	})
-	t.Run("through sudo", func(t *testing.T) {
-		if os.Geteuid() == 0 || exec.Command("sudo", "-n", "true").Run() != nil {
-			t.Skip("no passwordless sudo")
-		}
-		check(t, "DT_SUITE_VAR=passed", "DT_WANT_ROOT=1")
-	})
-}
-
 // {packages} lists the packages whose tests the tag changes, and finding none
 // is an error (section 4.1).
 func TestGoPackages(t *testing.T) {
@@ -224,5 +158,222 @@ func TestGoPackages(t *testing.T) {
 	}
 	if _, err := goPackages(root, "nosuchtag"); err == nil {
 		t.Error("a tag that changes nothing gave no error")
+	}
+}
+
+// fakeSudo puts a sudo on the PATH that drops -n, marks the environment and
+// runs the rest as the user, so the root path runs without real sudo. As
+// root, dt takes the plain path, so there's nothing to test.
+func fakeSudo(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("the root path runs through sudo, as a user that isn't root")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n[ \"$1\" = -n ] && shift\nDT_FAKE_SUDO=1 exec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// rootModule has a package that checks how it was run, and two packages named
+// nfs, one at a versioned path, which go names nfs.test both.
+var rootModule = map[string]string{
+	"go.mod": goModule["go.mod"],
+	"a/a_test.go": `package a
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestHow(t *testing.T) {
+	for k, want := range map[string]string{
+		"DT_FAKE_SUDO": "1", "DT_SPACES": "two words", "DT_QUOTE": "it's",
+		"GOPROXY": "off", "GOFLAGS": "-mod=readonly",
+	} {
+		if got := os.Getenv(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if !strings.Contains(os.Getenv("GOCACHE"), "dt-root-gocache") {
+		t.Errorf("GOCACHE = %q, not root's own", os.Getenv("GOCACHE"))
+	}
+	if wd, _ := os.Getwd(); filepath.Base(wd) != "a" {
+		t.Errorf("ran in %s, not the package's directory", wd)
+	}
+}
+
+func TestOther(t *testing.T) {}
+`,
+	"nfs/v3/v3_test.go":     "package nfs\n\nimport \"testing\"\n\nfunc TestV3(t *testing.T) {}\n",
+	"other/nfs/nfs_test.go": "package nfs\n\nimport \"testing\"\n\nfunc TestOtherNFS(t *testing.T) {}\n",
+}
+
+const rootSuite = `suites:
+  g:
+    cmd: go test ./...
+    format: go-json
+    needs: [root]
+    env: { DT_SPACES: "two words", DT_QUOTE: "it's" }
+`
+
+// The root path runs every package's binary through go test's -exec under
+// sudo, two packages named nfs included, in its package's directory, with the
+// suite's environment, quotes and spaces intact, and root's build settings;
+// TEST names reach the binaries as -run (section 3).
+func TestRootPath(t *testing.T) {
+	fakeSudo(t)
+	o, out, _ := goRun(t, rootSuite, rootModule)
+	if o.Result != Passed || o.Note != "4 passed, 0 failed, 0 skipped" {
+		t.Errorf("outcome %+v\n%s", o, out)
+	}
+	if o, _, _ := goRun(t, rootSuite, rootModule, "TestHow", "TestV3"); o.Result != Passed || o.Note != "2 passed, 0 failed, 0 skipped" {
+		t.Errorf("with TEST names: %+v", o)
+	}
+}
+
+// Cancelling the root path sends SIGINT, so the tests' own cleanup runs.
+func TestRootPathCancel(t *testing.T) {
+	fakeSudo(t)
+	dir := t.TempDir()
+	started, cleaned := filepath.Join(dir, "started"), filepath.Join(dir, "cleaned")
+	files := map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": `package w
+
+import (
+	"os"
+	"os/signal"
+	"testing"
+	"time"
+)
+
+func TestMain(m *testing.M) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		<-c
+		_ = os.WriteFile(os.Getenv("DT_CLEANED"), nil, 0o644)
+		os.Exit(1)
+	}()
+	os.Exit(m.Run())
+}
+
+func TestWait(t *testing.T) {
+	_ = os.WriteFile(os.Getenv("DT_STARTED"), nil, 0o644)
+	time.Sleep(time.Minute)
+}
+`}
+	y := "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [root], env: { DT_STARTED: \"" + started + "\", DT_CLEANED: \"" + cleaned + "\" } }\n"
+	root, r := anyRepo(t, y, files)
+	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for {
+			if _, err := os.Stat(started); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cleaned); err != nil {
+		t.Error("the tests' cleanup didn't run: they weren't interrupted")
+	}
+	if o := rep.Outcomes[0]; o.Result != Failed || !strings.Contains(o.Note, "interrupted") {
+		t.Errorf("outcome %+v", o)
+	}
+}
+
+// A package that fails outside any test fails the cell, named as such: one
+// whose TestMain exits non-zero after its tests pass, and one whose goroutine
+// panics before any test. A test that calls os.Exit(0) fails, since go test
+// passes -test.paniconexit0. The same on both paths.
+func TestOutsideAnyTest(t *testing.T) {
+	files := map[string]string{
+		"go.mod":        goModule["go.mod"],
+		"tm/tm_test.go": "package tm\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { m.Run(); os.Exit(3) }\n\nfunc TestFine(t *testing.T) {}\n",
+		"gp/gp_test.go": "package gp\n\nimport (\n\t\"os\"\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestMain(m *testing.M) {\n\tgo func() { panic(\"boom\") }()\n\ttime.Sleep(time.Second)\n\tos.Exit(m.Run())\n}\n\nfunc TestNever(t *testing.T) {}\n",
+		"ex/ex_test.go": "package ex\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestExit0(t *testing.T) { os.Exit(0) }\n",
+	}
+	check := func(t *testing.T, needs string) {
+		o, out, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: ["+needs+"] }\n", files)
+		for _, want := range []string{"TestExit0", "example.com/m/gp: failed outside any test", "example.com/m/tm: failed outside any test"} {
+			if o.Result != Failed || !strings.Contains(o.Note, want) {
+				t.Errorf("note %q lacks %q\n%s", o.Note, want, out)
+			}
+		}
+	}
+	t.Run("as the user", func(t *testing.T) { check(t, "") })
+	t.Run("as root", func(t *testing.T) {
+		fakeSudo(t)
+		check(t, "root")
+	})
+}
+
+// TEST names select subtests too: each element of a name is anchored.
+func TestRunPatternSubtests(t *testing.T) {
+	if got, want := runPattern([]string{"TestA", "TestParent/bad"}), "^TestA$|^TestParent$/^bad$"; got != want {
+		t.Errorf("pattern %q, want %q", got, want)
+	}
+	o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", goModule, "TestParent/bad")
+	if o.Result != Failed || o.Note != "0 passed, 2 failed, 0 skipped: TestParent/bad" {
+		t.Errorf("outcome %+v", o)
+	}
+}
+
+// -exec takes a word in quotes whole, so a value with spaces or a quote is
+// quoted with the quote it doesn't hold; one with both can't be passed.
+func TestExecQuote(t *testing.T) {
+	for w, want := range map[string]string{"plain": "plain", "two words": "'two words'", "it's": `"it's"`, "": "''"} {
+		if got, err := execQuote(w); err != nil || got != want {
+			t.Errorf("execQuote(%q) = %q, %v, want %q", w, got, err, want)
+		}
+	}
+	if _, err := execQuote(`it's "both"`); err == nil {
+		t.Error("a word with both quotes passed")
+	}
+}
+
+// A service whose variables aren't set falls back to the local service's,
+// which reach the tests' environment: here KMIP's, from the file dt services
+// writes, pointing at a listener of the test's own.
+func TestGoJSONServiceEnv(t *testing.T) {
+	t.Setenv("DITTOFS_TEST_KMIP", "")
+	t.Setenv("DITTOFS_TEST_KMIP_ENDPOINT", "")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	files := map[string]string{
+		"go.mod":                      goModule["go.mod"],
+		"test/harness/state/kmip.env": "DITTOFS_TEST_KMIP=1\nDITTOFS_TEST_KMIP_ENDPOINT=" + l.Addr().String() + "\n",
+		"k/k_test.go": `package k
+
+import (
+	"os"
+	"testing"
+)
+
+func TestEndpoint(t *testing.T) {
+	if os.Getenv("DITTOFS_TEST_KMIP") != "1" || os.Getenv("DITTOFS_TEST_KMIP_ENDPOINT") == "" {
+		t.Error("the local KMIP's variables didn't reach the tests")
+	}
+}
+`,
+	}
+	o, out, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [\"service:kmip\"] }\n", files)
+	if o.Result != Passed {
+		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }

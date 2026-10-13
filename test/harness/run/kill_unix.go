@@ -15,11 +15,12 @@ func killTree(cmd *exec.Cmd) {
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 }
 
-// stopTree is killTree for a command run through sudo. dt can't signal what
-// sudo runs as root, so cancelling sends SIGTERM, which sudo passes on, and
-// kills sudo only if it hasn't ended within grace.
-func stopTree(cmd *exec.Cmd, grace time.Duration) {
+// interruptTree is killTree for a command whose tests run as root, which dt
+// can't kill: cancelling sends SIGINT to the process group, which sudo passes
+// on to the tests so their cleanup runs, and kills the command only if it
+// hasn't ended within grace.
+func interruptTree(cmd *exec.Cmd, grace time.Duration) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGINT) }
 	cmd.WaitDelay = grace
 }

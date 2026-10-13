@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,12 +192,14 @@ func TestShimKeepsExitStatus(t *testing.T) {
 	}
 }
 
-// dt unit, dt integration and dt e2e are dt run with the rest of the
-// arguments, as before.
+// dt unit, dt integration and dt e2e are dt run of that suite with the rest
+// of the arguments, as before: each is given an option only another suite
+// has, so a wrong mapping names the wrong suite.
 func TestAliases(t *testing.T) {
-	for _, name := range []string{"unit", "integration", "e2e"} {
-		if _, err := dt(t, name, "--tier", "weekly"); err == nil || !strings.Contains(err.Error(), "weekly") {
-			t.Errorf("dt %s --tier weekly: %v, want dt run's tier error", name, err)
+	for name, option := range map[string]string{"unit": "knfsd", "integration": "windows", "e2e": "windows"} {
+		want := fmt.Sprintf("%s has no option %q", name, option)
+		if _, err := dt(t, name, "--"+option); err == nil || err.Error() != want {
+			t.Errorf("dt %s --%s: %v, want %q", name, option, err, want)
 		}
 	}
 }

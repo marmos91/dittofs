@@ -101,7 +101,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	if why := unsupported(c.Unit); why != "" {
 		return NotRun, why
 	}
-	if unmet := needs.Unmet(c.Needs); len(unmet) > 0 {
+	if unmet := needs.Unmet(o.Root, c.Needs); len(unmet) > 0 {
 		if o.CI {
 			return NotRun, strings.Join(unmet, "; ")
 		}
@@ -163,7 +163,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
 	defer cancel()
-	t := tester{cell: c, ctx: cellCtx, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, out: io.MultiWriter(o.Out, log), log: log}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, out: io.MultiWriter(o.Out, log), log: log}
 	if c.Unit.Format == "go-json" {
 		return t.goJSON(c.Tests)
 	}
@@ -198,6 +198,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 type tester struct {
 	cell     Cell
 	ctx      context.Context
+	root     string // the repository
 	dir      string
 	env      []string // dt's environment and the suite's
 	own      []string // the suite's alone

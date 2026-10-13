@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -29,11 +30,12 @@ var tools = map[string]map[string]string{
 	"knfsd":          {"linux": "exportfs"},
 }
 
-// Unmet returns each need the machine doesn't meet, with the reason.
-func Unmet(list []string) []string {
+// Unmet returns each need the machine doesn't meet, with the reason. root is
+// the checkout, whose local services' values a service need falls back to.
+func Unmet(root string, list []string) []string {
 	var out []string
 	for _, n := range list {
-		if err := Check(n); err != nil {
+		if err := Check(root, n); err != nil {
 			out = append(out, n+": "+err.Error())
 		}
 	}
@@ -41,7 +43,7 @@ func Unmet(list []string) []string {
 }
 
 // Check returns why the machine doesn't meet need n, or nil when it does.
-func Check(n string) error {
+func Check(root, n string) error {
 	kind, arg, _ := strings.Cut(n, ":")
 	switch kind {
 	case "linux", "windows", "macos":
@@ -74,7 +76,7 @@ func Check(n string) error {
 	case "host":
 		return errors.New("only the dedicated host meets it")
 	case "service":
-		return checkService(arg)
+		return checkService(root, arg)
 	case "cloud":
 		return errors.New("dt doesn't check cloud needs yet")
 	default:
@@ -89,30 +91,73 @@ func Check(n string) error {
 	return nil
 }
 
-// services say, per service, the variable its tests read its address from,
-// the variable that must be 1 to enable them, if any, and the prefix of the
-// variables that belong to it.
+// services say, per service, the prefix of the variables its tests read, the
+// one holding its address, and the one that must be 1 to enable them, if
+// any. When the address isn't set, the values are the local service's, as
+// dt services starts it: written here, or in a file it writes.
 var services = map[string]struct {
-	address, enabled, prefix string
+	prefix, address, enabled string
+	local                    []string
+	localFile                string
 	parse                    func(string) (string, error)
 }{
-	"localstack": {address: "LOCALSTACK_ENDPOINT", prefix: "LOCALSTACK_ENDPOINT", parse: urlAddress},
-	"postgres":   {address: "DITTOFS_TEST_POSTGRES_DSN", prefix: "DITTOFS_TEST_POSTGRES_DSN", parse: dsnAddress},
-	"kmip":       {address: "DITTOFS_TEST_KMIP_ENDPOINT", enabled: "DITTOFS_TEST_KMIP", prefix: "DITTOFS_TEST_KMIP", parse: hostPort},
+	"localstack": {prefix: "LOCALSTACK_ENDPOINT", address: "LOCALSTACK_ENDPOINT",
+		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}, parse: urlAddress},
+	"postgres": {prefix: "DITTOFS_TEST_POSTGRES_DSN", address: "DITTOFS_TEST_POSTGRES_DSN",
+		local: []string{"DITTOFS_TEST_POSTGRES_DSN=host=localhost port=15432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"}, parse: dsnAddress},
+	"kmip": {prefix: "DITTOFS_TEST_KMIP", address: "DITTOFS_TEST_KMIP_ENDPOINT", enabled: "DITTOFS_TEST_KMIP",
+		localFile: "test/harness/state/kmip.env", parse: hostPort},
 }
 
-// checkService meets a service need when the variables its tests read are
-// set and its address answers, so the tests can't skip it unseen.
-func checkService(name string) error {
+// serviceVars are a service's variables, as NAME=value: dt's own when its
+// address is set, else the local service's.
+func serviceVars(root, name string) ([]string, error) {
 	s := services[name]
-	if s.enabled != "" && os.Getenv(s.enabled) != "1" {
+	if os.Getenv(s.address) != "" {
+		var vars []string
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, s.prefix) {
+				vars = append(vars, kv)
+			}
+		}
+		return vars, nil
+	}
+	if s.localFile == "" {
+		return s.local, nil
+	}
+	data, err := os.ReadFile(filepath.Join(root, s.localFile))
+	if err != nil {
+		return nil, fmt.Errorf("%s isn't set, and %s doesn't exist (dt services up %s writes it)", s.address, s.localFile, name)
+	}
+	var vars []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line = strings.TrimSpace(line); strings.Contains(line, "=") && !strings.HasPrefix(line, "#") {
+			vars = append(vars, line)
+		}
+	}
+	return vars, nil
+}
+
+// checkService meets a service need when its variables are there and its
+// address answers, so the tests can't skip it unseen.
+func checkService(root, name string) error {
+	vars, err := serviceVars(root, name)
+	if err != nil {
+		return err
+	}
+	value := func(key string) string {
+		for _, kv := range vars {
+			if k, v, _ := strings.Cut(kv, "="); k == key {
+				return v
+			}
+		}
+		return ""
+	}
+	s := services[name]
+	if s.enabled != "" && value(s.enabled) != "1" {
 		return fmt.Errorf("%s isn't 1", s.enabled)
 	}
-	v := os.Getenv(s.address)
-	if v == "" {
-		return fmt.Errorf("%s isn't set", s.address)
-	}
-	addr, err := s.parse(v)
+	addr, err := s.parse(value(s.address))
 	if err != nil {
 		return fmt.Errorf("%s: %w", s.address, err)
 	}
@@ -124,18 +169,14 @@ func checkService(name string) error {
 }
 
 // ServiceEnv returns the variables of the services among list, as
-// NAME=value, for a command whose environment dt passes explicitly.
-func ServiceEnv(list []string) []string {
+// NAME=value, for the cell's environment and for a command whose environment
+// dt passes explicitly.
+func ServiceEnv(root string, list []string) []string {
 	var out []string
 	for _, n := range list {
-		name, isService := strings.CutPrefix(n, "service:")
-		if !isService {
-			continue
-		}
-		for _, kv := range os.Environ() {
-			if strings.HasPrefix(kv, services[name].prefix) {
-				out = append(out, kv)
-			}
+		if name, isService := strings.CutPrefix(n, "service:"); isService {
+			vars, _ := serviceVars(root, name)
+			out = append(out, vars...)
 		}
 	}
 	return out
