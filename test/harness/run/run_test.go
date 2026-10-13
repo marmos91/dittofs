@@ -75,6 +75,22 @@ func TestEveryCommandRuns(t *testing.T) {
 	}
 }
 
+// A multi-line script is named in the note by its first line, so the note
+// stays on one line.
+func TestMultiLineScriptNote(t *testing.T) {
+	root, r := repo(t, `suites:
+  s:
+    cmd:
+      sh: |
+        false
+        # more
+`, nil)
+	rep, _ := runTarget(t, root, r, "s", false)
+	if note := rep.Outcomes[0].Note; note != "`false ...` exited 1" {
+		t.Errorf("note %q", note)
+	}
+}
+
 // Each test runs under its own limit; one that fails or times out fails the
 // cell, and the ones after it still run. A timed-out test's children die with
 // it.

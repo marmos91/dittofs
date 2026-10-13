@@ -234,15 +234,25 @@ func (t tester) run(test string, limit time.Duration) string {
 		case ctx.Err() != nil:
 			return fmt.Sprintf("%s%s", prefix, stopped(t.ctx))
 		case err != nil:
-			failed = append(failed, fmt.Sprintf("`%s`: %v", shown, err))
+			failed = append(failed, fmt.Sprintf("`%s`: %v", firstLine(shown), err))
 		case code != 0:
-			failed = append(failed, fmt.Sprintf("`%s` exited %d", shown, code))
+			failed = append(failed, fmt.Sprintf("`%s` exited %d", firstLine(shown), code))
 		}
 	}
 	if len(failed) == 0 {
 		return ""
 	}
 	return prefix + strings.Join(failed, ", ")
+}
+
+// firstLine names a command in a note by its first line, so a multi-line
+// script keeps the note, and an annotation made from it, on one line.
+func firstLine(s string) string {
+	first, rest, _ := strings.Cut(s, "\n")
+	if strings.TrimSpace(rest) != "" {
+		return first + " ..."
+	}
+	return first
 }
 
 // stopped says why the cell's context ended.
