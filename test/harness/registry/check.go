@@ -178,7 +178,7 @@ func checkUnit(root string, u *Suite) []error {
 			}
 		}
 	}
-	if used["test"] && !u.Tests.set() {
+	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
 	}
 	inCell := map[string]bool{}

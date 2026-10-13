@@ -39,7 +39,8 @@ type Tests struct {
 	File  string
 }
 
-func (t Tests) set() bool { return t.Glob != "" || t.File != "" || len(t.Names) > 0 }
+// Set reports whether the suite names its tests.
+func (t Tests) Set() bool { return t.Glob != "" || t.File != "" || len(t.Names) > 0 }
 
 // Axis is one matrix axis and its values.
 type Axis struct {

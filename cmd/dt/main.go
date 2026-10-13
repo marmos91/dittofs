@@ -26,7 +26,12 @@ import (
 const exitUsage = 3
 
 func main() {
-	if err := newRoot(os.Stdout).Execute(); err != nil {
+	err := newRoot(os.Stdout).Execute()
+	var status exitStatus
+	switch {
+	case errors.As(err, &status):
+		os.Exit(int(status))
+	case err != nil:
 		fmt.Fprintln(os.Stderr, "dt:", err)
 		os.Exit(exitUsage)
 	}
@@ -40,7 +45,7 @@ func newRoot(out io.Writer) *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.SetOut(out)
-	root.AddCommand(newList(), newPlan())
+	root.AddCommand(newList(), newPlan(), newRun())
 	return root
 }
 

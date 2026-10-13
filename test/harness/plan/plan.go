@@ -69,7 +69,7 @@ func Plan(root string, r *registry.Registry, tier string, changed []string) ([]C
 			if !RunsIn(u.Tier, tier) || !touches(u.Paths, changed) {
 				continue
 			}
-			c, err := unitCells(root, u, tier)
+			c, err := UnitCells(root, u, tier, false)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", u.Name, err)
 			}
@@ -122,8 +122,15 @@ type group struct {
 	needs []string
 }
 
-func unitCells(root string, u *registry.Suite, tier string) ([]Cell, error) {
+// UnitCells expands one suite or option into its cells, narrowed by its
+// select for tier. allValues keeps every matrix value, for a run that names
+// the values it wants.
+func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]Cell, error) {
 	sel := u.Select[tier]
+	values := sel.Values
+	if allValues {
+		values = nil
+	}
 	groups, limits, err := testGroups(root, u, sel.Glob)
 	if err != nil {
 		return nil, err
@@ -132,7 +139,7 @@ func unitCells(root string, u *registry.Suite, tier string) ([]Cell, error) {
 	// A cell lists its tests only when it runs part of the suite's.
 	partial := len(groups) > 1 || sel.Glob != "" || u.Shards > 1
 	var cells []Cell
-	for _, p := range points(u.Matrix, sel.Values) {
+	for _, p := range points(u.Matrix, values) {
 		for _, g := range groups {
 			needs := union(u.Needs, g.needs)
 			place := placeOf(needs)
@@ -176,7 +183,7 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 	if len(u.NeedsByTest) == 0 && u.Shards <= 1 && narrow == "" && u.Timeout.Test != "size" && u.Tests.File == "" {
 		return []group{{}}, nil, nil
 	}
-	tests, limits, err := listTests(root, u, narrow)
+	tests, limits, err := ListTests(root, u, narrow)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -213,11 +220,11 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 	return out, limits, nil
 }
 
-// listTests expands the unit's tests: a glob relative to root, a list of
+// ListTests expands the unit's tests: a glob relative to root, a list of
 // names, or a .txt file of names, each line a name and optionally its own
 // limit. A glob holding a placeholder is resolved only when the cell runs, so
 // it lists nothing here.
-func listTests(root string, u *registry.Suite, narrow string) ([]string, map[string]time.Duration, error) {
+func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[string]time.Duration, error) {
 	var tests []string
 	limits := map[string]time.Duration{}
 	switch {
@@ -362,21 +369,17 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 	if err != nil {
 		return err
 	}
-	var each time.Duration // the suite's limit per test; none for size
-	if t.Test != "size" {
-		if each, err = time.ParseDuration(t.Test); err != nil {
-			return err
-		}
+	// A suite whose tests aren't listed counts as one test.
+	total, err := TestLimit(t, "", nil)
+	if err != nil {
+		return err
 	}
-	total := each // a suite whose tests aren't listed counts as one test
 	if len(tests) > 0 {
 		total = 0
 		for _, name := range tests {
-			limit, own := limits[name]
-			if !own && t.Test == "size" {
-				limit = sizeLimit(name)
-			} else if !own {
-				limit = each
+			limit, err := TestLimit(t, name, limits)
+			if err != nil {
+				return err
 			}
 			if limit == 0 {
 				limit = cell
@@ -390,6 +393,18 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 	}
 	c.TimeoutMinutes = int((cell + time.Minute - 1) / time.Minute)
 	return nil
+}
+
+// TestLimit is a test's limit: its own from a .txt list, else its size
+// class's or the suite's. Zero means no bound.
+func TestLimit(t registry.Timeout, name string, limits map[string]time.Duration) (time.Duration, error) {
+	if limit, own := limits[name]; own {
+		return limit, nil
+	}
+	if t.Test == "size" {
+		return sizeLimit(name), nil
+	}
+	return time.ParseDuration(t.Test)
 }
 
 // sizeLimit is a scenario's limit from the size class in its file name: twice

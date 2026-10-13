@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -13,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/test/harness/plan"
 )
 
-func run(t *testing.T, args ...string) (string, error) {
+func dt(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
 	root := newRoot(&out)
@@ -24,7 +26,7 @@ func run(t *testing.T, args ...string) (string, error) {
 
 // dt plan --json gives every cell a name, a place and a limit.
 func TestPlanJSON(t *testing.T) {
-	out, err := run(t, "plan", "--tier", "pr", "--json")
+	out, err := dt(t, "plan", "--tier", "pr", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,15 +49,15 @@ func TestPlanJSON(t *testing.T) {
 
 // --shard I/N keeps every N-th cell from the I-th, and refuses a bad spec.
 func TestPlanShard(t *testing.T) {
-	all, _ := run(t, "plan", "--tier", "pr")
-	one, err := run(t, "plan", "--tier", "pr", "--shard", "1/2")
+	all, _ := dt(t, "plan", "--tier", "pr")
+	one, err := dt(t, "plan", "--tier", "pr", "--shard", "1/2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if lines(one) >= lines(all) {
 		t.Errorf("shard 1/2 has %d lines, the whole plan %d", lines(one), lines(all))
 	}
-	if _, err := run(t, "plan", "--tier", "pr", "--shard", "3/2"); err == nil {
+	if _, err := dt(t, "plan", "--tier", "pr", "--shard", "3/2"); err == nil {
 		t.Error("--shard 3/2 accepted")
 	}
 }
@@ -63,14 +65,14 @@ func TestPlanShard(t *testing.T) {
 // A usage error is an error, which main turns into exit status 3.
 func TestUsageErrors(t *testing.T) {
 	for _, args := range [][]string{{"plan"}, {"plan", "--tier", "weekly"}, {"list", "--tier", "weekly"}} {
-		if _, err := run(t, args...); err == nil {
+		if _, err := dt(t, args...); err == nil {
 			t.Errorf("dt %s: no error", strings.Join(args, " "))
 		}
 	}
 }
 
 func TestListJSON(t *testing.T) {
-	out, err := run(t, "list", "--json")
+	out, err := dt(t, "list", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,5 +138,55 @@ func TestSplitNUL(t *testing.T) {
 	}
 	if got := splitNUL(nil); got == nil || len(got) != 0 {
 		t.Errorf("no changes: %#v, want an empty, non-nil list", got)
+	}
+}
+
+// dt run's usage errors are plain errors, which main turns into exit status
+// 3; a run that didn't pass carries its own status.
+func TestRunStatuses(t *testing.T) {
+	for _, args := range [][]string{
+		{"run"}, {"run", "nope"}, {"run", "lint", "--kerberos"},
+		{"run", "smbtorture", "--kerberos", "--windows"}, {"run", "unit", "--tier", "weekly"},
+	} {
+		var status exitStatus
+		if _, err := dt(t, args...); err == nil || errors.As(err, &status) {
+			t.Errorf("dt %s: %v, want a usage error", strings.Join(args, " "), err)
+		}
+	}
+	// unit is go-json, which dt doesn't read yet, so it didn't run.
+	var status exitStatus
+	if _, err := dt(t, "run", "unit", "--results", t.TempDir()); !errors.As(err, &status) || status != 2 {
+		t.Errorf("dt run unit: %v, want exit status 2", err)
+	}
+}
+
+// Each suite option is a flag of dt run.
+func TestRunOptionFlags(t *testing.T) {
+	out, err := dt(t, "run", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--kerberos", "--windows", "--knfsd"} {
+		if !strings.Contains(out, flag) {
+			t.Errorf("dt run --help lacks %s", flag)
+		}
+	}
+}
+
+// The shim passes dt's exit status through, from wherever it's called.
+func TestShimKeepsExitStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the shim is a sh script")
+	}
+	shim, err := filepath.Abs("../../test/harness/bin/dt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(shim, "run", "nope")
+	cmd.Dir = t.TempDir()
+	err = cmd.Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 {
+		t.Errorf("shim: %v, want exit status 3", err)
 	}
 }
