@@ -31,6 +31,7 @@ func TestLoadRules(t *testing.T) {
 		{"known paths exist", ok + "suites:\n  a: { cmd: true, known: missing.yaml }\n", "missing.yaml does not exist"},
 		{"{test} needs tests", ok + "suites:\n  a: { cmd: 'run {test}' }\n", "has no tests"},
 		{"groups name existing suites", ok + "groups: { g: [nope] }\nsuites:\n  a: { cmd: true }\n", `no suite "nope"`},
+		{"commands aren't blank", ok + "suites:\n  a: { cmd: [\"true\", \"\"] }\n", "a command is blank"},
 		{"go-json begins with go test", ok + "suites:\n  a: { cmd: make test, format: go-json }\n", "begins with go test"},
 		{"every matrix axis is used", ok + "suites:\n  a: { cmd: true, matrix: { profile: [memory] } }\n", `axis "profile" is used by no command`},
 		{"unknown placeholders are refused", ok + "suites:\n  a: { cmd: 'run {nope}' }\n", "unknown placeholder {nope}"},

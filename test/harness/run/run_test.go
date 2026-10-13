@@ -250,6 +250,9 @@ func TestFill(t *testing.T) {
 	if _, err := fill(registry.Command{Line: "run {packages}"}, vals, nil); err == nil || !strings.Contains(err.Error(), "{packages}") {
 		t.Errorf("a placeholder dt doesn't provide: %v", err)
 	}
+	if _, err := fill(registry.Command{Line: "{args}"}, vals, nil); err == nil {
+		t.Error("a command that fills to nothing has no error")
+	}
 }
 
 // Select: a group narrowed by --only and --skip, options by flag or by name,

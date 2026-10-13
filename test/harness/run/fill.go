@@ -1,18 +1,15 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
-
-// placeholderRE matches a {name}, or a shell's ${VAR}, which is left alone.
-var placeholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
 
 // fill turns a command into the arguments it runs with, its placeholders
 // replaced. A line is split at spaces and never passes through a shell, and
@@ -35,6 +32,9 @@ func fill(c registry.Command, vals map[string]string, args []string) ([]string, 
 		}
 		argv = append(argv, s)
 	}
+	if len(argv) == 0 {
+		return nil, errors.New("a command is empty")
+	}
 	return argv, nil
 }
 
@@ -45,7 +45,7 @@ func replace(s string, vals map[string]string, args []string, quote func(string)
 		quote = func(v string) string { return v }
 	}
 	var missing []string
-	out := placeholderRE.ReplaceAllStringFunc(s, func(m string) string {
+	out := registry.PlaceholderRE.ReplaceAllStringFunc(s, func(m string) string {
 		if strings.HasPrefix(m, "$") {
 			return m
 		}
@@ -72,12 +72,7 @@ func replace(s string, vals map[string]string, args []string, quote func(string)
 
 // uses reports whether the command holds the placeholder name.
 func uses(c registry.Command, name string) bool {
-	for _, m := range placeholderRE.FindAllStringSubmatch(c.Line+" "+c.Sh, -1) {
-		if !strings.HasPrefix(m[0], "$") && m[1] == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(registry.Placeholders(c.Line+" "+c.Sh), name)
 }
 
 // shellQuote quotes v as one word for sh.
