@@ -284,15 +284,33 @@ func TestHooksInstall(t *testing.T) {
 	}
 }
 
-// A harness hook sends the repository's own hook of the same name to dtc; in
-// the container it runs it with its arguments and input, and returns its exit
-// status. The fake docker records the trip to dtc, which ends there.
+// dtcDocker puts first on PATH a docker that passes dtc's checks and stands in
+// for the container: it records each call's command in dir/calls and, for run,
+// its arguments, one per line, in dir/argv and its input in dir/stdin, and
+// exits 4. dtc goes as far as docker run, and no further.
+func dtcDocker(t *testing.T) (dir string) {
+	t.Helper()
+	dir = t.TempDir()
+	writeFile(t, filepath.Join(dir, "docker"), "#!/bin/sh\necho \"docker $1\" >> '"+dir+"/calls'\ncase \"$1\" in\n"+
+		"context) echo unix:///var/run/docker.sock ;;\n"+
+		"run) printf '%s\\n' \"$@\" > '"+dir+"/argv'; cat > '"+dir+"/stdin'; exit 4 ;;\n"+
+		"esac\n")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DOCKER_HOST", "")
+	return dir
+}
+
+// A harness hook sends the repository's own hook of the same name to dtc, with
+// its arguments and input and the repository, and returns the container's exit
+// status; in the container it runs that hook with its arguments and input, and
+// returns its exit status.
 func TestHarnessHook(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the hooks are bash")
 	}
 	gitless(t)
-	calls := fakeTools(t)
+	fakeTools(t)
+	docker := dtcDocker(t)
 	hook, err := filepath.Abs("../../test/harness/githooks/pre-push")
 	if err != nil {
 		t.Fatal(err)
@@ -306,17 +324,43 @@ func TestHarnessHook(t *testing.T) {
 		err := cmd.Run()
 		var exit *exec.ExitError
 		ran, _ := os.ReadFile(filepath.Join(repo, "ran"))
-		docker := takeCalls(t, calls)
+		calls := takeCalls(t, filepath.Join(docker, "calls"))
+		argv := takeCalls(t, filepath.Join(docker, "argv"))
+		stdin := takeCalls(t, filepath.Join(docker, "stdin"))
 		if inContainer == "" {
-			// On this machine: dtc, whose first step asks the fake docker
-			// for the daemon, fails, and the repository's hook doesn't run.
-			if !errors.As(err, &exit) || exit.ExitCode() != 2 || docker != "docker info\n" || len(ran) != 0 {
-				t.Errorf("on this machine: %v, docker calls %q, hook output %q; want dtc's exit status 2 after docker info", err, docker, ran)
+			// On this machine: docker run gets the hook, its arguments and its
+			// input, and the repository as git names it; the repository's hook
+			// doesn't run here.
+			top, _ := filepath.EvalSymlinks(repo)
+			if !errors.As(err, &exit) || exit.ExitCode() != 4 || len(ran) != 0 || stdin != "refs\n" ||
+				!strings.HasSuffix(argv, "\nshell\n"+hook+"\norigin\nurl\n") || !strings.Contains(argv, "\nDITTOFS_REPO="+top+"\n") {
+				t.Errorf("on this machine: %v, hook output %q, docker run input %q, arguments:\n%s\nwant docker run's exit status 4, input \"refs\\n\", and shell %s origin url for %s",
+					err, ran, stdin, argv, hook, top)
 			}
 			continue
 		}
-		if !errors.As(err, &exit) || exit.ExitCode() != 3 || string(ran) != "origin url\nrefs\n" || docker != "" {
-			t.Errorf("in the container: %v, hook output %q, docker calls %q; want the repository's hook and exit status 3", err, ran, docker)
+		if !errors.As(err, &exit) || exit.ExitCode() != 3 || string(ran) != "origin url\nrefs\n" || calls != "" {
+			t.Errorf("in the container: %v, hook output %q, docker calls %q; want the repository's hook and exit status 3", err, ran, calls)
 		}
+	}
+}
+
+// dtc reaches docker run when it can't read the host's timezone: TZ unset, and
+// /etc/localtime not a link, which a readlink that fails stands for.
+func TestDtcWithoutTimezone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("dtc is bash")
+	}
+	gitless(t)
+	fakeTools(t)
+	docker := dtcDocker(t)
+	writeFile(t, filepath.Join(docker, "readlink"), "#!/bin/sh\nexit 1\n")
+	t.Setenv("TZ", "")
+	_ = os.Unsetenv("TZ")
+	t.Setenv("DITTOFS_REPO", tempRepo(t))
+	out, err := exec.Command("../../test/harness/bin/dtc", "list").CombinedOutput()
+	var exit *exec.ExitError
+	if argv := takeCalls(t, filepath.Join(docker, "argv")); !errors.As(err, &exit) || exit.ExitCode() != 4 || !strings.HasSuffix(argv, "\nlist\n") {
+		t.Errorf("dtc list: %v, docker run arguments %q; want docker run's exit status 4\n%s", err, argv, out)
 	}
 }

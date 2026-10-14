@@ -7,10 +7,21 @@
 # already on localhost.
 set -uo pipefail
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ "${DT_HOSTNET:-}" != 1 ]]; then
-    for p in 4566 15432 5696; do
-        socat "TCP-LISTEN:$p,bind=127.0.0.1,fork,reuseaddr" "TCP:host.docker.internal:$p" >/dev/null 2>&1 &
+# forward PORT returns once localhost:PORT listens, so the command can connect at
+# once. A forwarder that exits, or doesn't listen within 5 seconds, ends the run.
+forward() {
+    socat "TCP-LISTEN:$1,bind=127.0.0.1,fork,reuseaddr" "TCP:host.docker.internal:$1" >/dev/null 2>&1 &
+    local pid=$!
+    for _ in {1..50}; do
+        [[ -n "$(ss -Hltn "sport = :$1")" ]] && return
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
     done
+    echo "[dtc] cannot forward port $1 to host.docker.internal" >&2
+    exit 2
+}
+if [[ "${DT_HOSTNET:-}" != 1 ]]; then
+    for p in 4566 15432 5696; do forward "$p"; done
 fi
 # A Linux engine keeps uid 0 on files a root container writes into bind mounts,
 # so hand what the run created in the checkout (results, state, git index

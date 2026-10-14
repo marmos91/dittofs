@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# dtc: run dt inside the Linux dev container
-# (docs/internals/rfc-test-harness.md, section 4.5).
+# dtc: run dt inside the Linux dev container.
 #
 #   dtc <dt command> [args]      e.g. dtc list, dtc run lint, dtc services status
 #   dtc shell                    interactive shell in the same container
@@ -82,7 +81,7 @@ name="dtc-$$-$RANDOM"
 # that is the host's git.
 envs=(-e DITTOFS_REPO="$REPO" -e DT_CONTAINER_NAME="$name" -e DT_HOST_UID="$(id -u)" -e DT_HOST_GID="$(id -g)")
 # The host's timezone, so log names and timestamps line up with logs written on the host.
-tz="${TZ:-$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')}"
+tz="${TZ:-$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p' || true)}"
 [[ -z "$tz" && -r /etc/timezone ]] && tz="$(cat /etc/timezone)"
 [[ -n "$tz" ]] && envs+=(-e TZ="$tz")
 while IFS='=' read -r k _; do
