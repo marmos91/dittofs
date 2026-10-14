@@ -464,10 +464,11 @@ func TestUnfillableCommandIsNotRun(t *testing.T) {
 // A suite whose tests match nothing gives no cells, which is nothing to run:
 // exit 2, not a usage error.
 func TestNothingToRun(t *testing.T) {
-	root, r := repo(t, `suites:
-  s: { cmd: "sh {test}", tests: "none/*-xs.sh", timeout: { test: size } }
+	root, r := repo(t, `groups: { g: [s] }
+suites:
+  s: { cmd: "true" }
 `, nil)
-	cells, err := Select(root, r, "s", "", "pr", nil, nil, nil)
+	cells, err := Select(root, r, "g", "", "pr", nil, []string{"s"}, nil)
 	if err != nil || len(cells) != 0 {
 		t.Fatalf("cells %v, %v", cells, err)
 	}

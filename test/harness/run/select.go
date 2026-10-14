@@ -23,7 +23,8 @@ type Cell struct {
 // of the suite's options. Each suite or option runs at tier, or at its own
 // tier when that is wider, and a TARGET that names values keeps every matrix
 // value. only and skip narrow a group; tests, when given, are the tests to run,
-// and each must name one. A suite with no cells gives none: nothing to run.
+// and each must name one. A group whose suites are all skipped gives none:
+// nothing to run.
 func Select(root string, r *registry.Registry, target, option, tier string, only, skip, tests []string) ([]Cell, error) {
 	if !slices.Contains(registry.Tiers, tier) {
 		return nil, fmt.Errorf("tier %q is not one of %s", tier, strings.Join(registry.Tiers, ", "))

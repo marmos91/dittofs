@@ -257,7 +257,8 @@ func TestShort(t *testing.T) {
 	}
 }
 
-// A shard with no tests left to deal isn't a cell.
+// A shard left with no tests is dropped, since a cell listing none runs the
+// whole suite.
 func TestNoEmptyShards(t *testing.T) {
 	root := t.TempDir()
 	for _, f := range []string{"a.sh", "b.sh"} {
@@ -265,17 +266,37 @@ func TestNoEmptyShards(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	y := "version: 1\ndefaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }\n" +
-		"suites:\n  s: { cmd: 'run {test}', tests: \"*.sh\", shards: 4 }\n"
+	y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 1m, cell: 10m } }\nsuites:\n  s: { cmd: \"run {test}\", tests: \"*.sh\", shards: 4 }\n"
 	r, err := registry.Parse(root, []byte(y))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cells, err := Plan(root, r, "merge", nil)
+	cells, err := Plan(root, r, "pr", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := names(cells); !slices.Equal(got, []string{"s/shard-1", "s/shard-2"}) {
-		t.Errorf("cells %v", got)
+		t.Fatalf("cells %v", got)
+	}
+}
+
+// A test list that comes out empty is an error, not a suite with no cells.
+func TestEmptyTestListIsAnError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.sh"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, suite := range map[string]string{
+		"glob":   `{ cmd: "run {test}", tests: "nope/*.sh", shards: 2 }`,
+		"select": `{ cmd: "run {test}", tests: "*.sh", select: { pr: "typo-*.sh" } }`,
+	} {
+		y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 1m, cell: 10m } }\nsuites:\n  s: " + suite + "\n"
+		r, err := registry.Parse(root, []byte(y))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Plan(root, r, "pr", nil); err == nil || !strings.Contains(err.Error(), "no test to plan") {
+			t.Errorf("%s: got %v", name, err)
+		}
 	}
 }

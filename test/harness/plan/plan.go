@@ -155,10 +155,12 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 				tests := g.tests
 				if shards > 1 {
 					tests = shard(g.tests, i, shards)
+					// A cell with no tests listed runs the whole suite, so a
+					// shard left empty by fewer tests than shards is dropped.
+					if len(tests) == 0 {
+						continue
+					}
 					segments = append(segments, "shard-"+strconv.Itoa(i))
-				}
-				if partial && len(tests) == 0 {
-					continue // more shards than tests: this one has nothing to run
 				}
 				c := Cell{
 					Name: strings.Join(segments, "/"), Suite: suite, Option: option,
@@ -189,6 +191,11 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 	tests, limits, err := ListTests(root, u, narrow)
 	if err != nil {
 		return nil, nil, err
+	}
+	// Planning needs the list here, so an empty one is a registry mistake (a
+	// glob or a tier's select matching nothing) rather than a suite to drop.
+	if len(tests) == 0 {
+		return nil, nil, fmt.Errorf("tests %s list no test to plan", testsSource(u, narrow))
 	}
 	globs := make([]string, 0, len(u.NeedsByTest))
 	for g := range u.NeedsByTest {
@@ -268,6 +275,17 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 		tests = slices.DeleteFunc(slices.Clone(tests), func(t string) bool { return !match(narrow, t) })
 	}
 	return tests, limits, nil
+}
+
+func testsSource(u *registry.Suite, narrow string) string {
+	src := u.Tests.Glob + u.Tests.File
+	if len(u.Tests.Names) > 0 {
+		src = strings.Join(u.Tests.Names, " ")
+	}
+	if narrow != "" {
+		src += " narrowed by " + narrow
+	}
+	return src
 }
 
 // match reports whether glob matches the test's path or its file name.
