@@ -129,12 +129,9 @@ func (t tester) buildBin() error {
 // DITTOFS_E2E_BIN and PATH explicitly, as go test words them.
 func (t tester) sudo() (string, error) {
 	// decision: the caller's own environment stays behind. A variable set by
-	// hand to narrow the tests, such as DITTOFS_E2E_SKIP_KERBEROS,
-	// DITTOFS_E2E_LOCAL_ONLY or MINIO_ENDPOINT, doesn't reach them, which
-	// fails closed: the tests it would skip run, and those it would point at
-	// a service start their own. What a suite needs goes in its env, which is
-	// passed. Forward a prefix of the caller's variables if narrowing a root
-	// suite by hand turns out to be needed.
+	// hand to narrow the tests, such as DITTOFS_E2E_SKIP_KERBEROS, doesn't
+	// reach them, which fails closed: the tests it would skip run. What a
+	// suite needs goes in its env, which is passed.
 	words := slices.Concat(
 		[]string{"sudo", "-n", "env", "PATH=" + os.Getenv("PATH"), "DITTOFS_E2E_BIN=" + t.vals["bin"]},
 		t.own, needs.ServiceEnv(t.root, t.cell.Needs))
@@ -267,8 +264,8 @@ func (r *results) add(line []byte, w io.Writer) {
 	}
 }
 
-// ran reports whether a test of that name, a subtest's whole, ran in any
-// package.
+// ran reports whether a test with exactly that name, subtest path included,
+// ran in any package.
 func (r *results) ran(name string) bool {
 	for k := range r.tests {
 		if _, test, _ := strings.Cut(k, " "); test == name {
