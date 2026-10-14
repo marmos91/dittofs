@@ -39,7 +39,8 @@ RUN_START="$(date +%s)"
 # the last one lasts until END, when the run ended. A line that runs more than once, in a loop,
 # gets its times added up. A line ending in & starts a background job, whose trace comes from the
 # job and can land after the lines that follow: it gets no time of its own, and its trace moves
-# no other line's.
+# no other line's. Only the one-line form is recognised: a background job written over several
+# lines, or a line ending in "& # comment", is still timed like any other.
 times() {
     awk -v scenario="$HERE/$1" -v end="$2" '
         BEGIN {
