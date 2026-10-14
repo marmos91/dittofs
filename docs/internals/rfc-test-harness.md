@@ -583,7 +583,7 @@ a registry error (exit 3).
 | `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them |
 | `{out}` | the cell's results directory |
 | `{packages}` | the package list `packages` gives |
-| `{server}`, `{mount}`, `{user}`, `{password}`, `{realm}` | from the fixture (§4.2) |
+| `{server}`, `{mount}`, `{user}`, `{password}`, `{realm}`, `{client2}` | from the fixture (§4.2) |
 
 For the pynfs cell `badger-s3/1`, for example:
 
@@ -638,8 +638,9 @@ trigger already repeats it, and names `tests.yml` and any workflow still outside
 - **The crash rigs, the edge tests and the reproductions:** they stay runnable by hand, as today,
   and come back as `manual` suites when someone needs them in a run.
 - **cthon04 and nfstest (#3008):** they move in as suites in §8's step 3, with #3008's named
-  mount-option sets as a `matrix` axis of the fixture's `nfs` options. Their entries are written
-  then, from their `suites.json` entries.
+  mount-option sets as a `matrix` axis of the fixture's `nfs` options, run as `users: [self]` on a
+  namespaced `client` (a second one for nfstest), against `rpcbind: host` (§4.2). Their entries
+  are written then, from their `suites.json` entries.
 
 ### 4.2 Fixtures: the DittoFS a suite runs against
 
@@ -652,18 +653,24 @@ carry a script that builds it.
 |---|---|
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
-| `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`. `export` exports the share without a mount, for pynfs |
+| `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. `export` exports the share without a mount, for pynfs |
 | `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their flags, as data; the default is one share, `/export` |
-| `users` | UIDs to create, each with a read-write grant on every share |
+| `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
 | `squash`, `delegations`, `lease` | Export and adapter settings |
 | `kerberos` | `true` starts the KDC service, writes the keytabs, restarts `rpc.gssd` once the keytab is in place, puts a test user's ticket where the kernel's upcall reads it, and turns Kerberos on |
 | `reset` | `each`: recreate the shares before every test, as smbtorture's runner does today |
+| `client` | `namespace`: the cell's mounts and commands run on a client in a network namespace of its own, with its own rpcbind, `rpc.statd`, hostname and NFS client identifier, joined to the host by a bridge. A client on the server's own stack loses NLM, since its lockd takes the server's registration, and its traffic can't be told from the server's |
+| `clients` | `2` adds a second namespaced client at `{client2}`, which the user `dt` runs as can reach over ssh, for suites that drive two clients, such as nfstest's cache and delegation tests. Its traffic is copied into the first client's interface, as on a shared segment |
+| `rpcbind` | `host`: the server registers MOUNT and NLM with the host's rpcbind, so an NFSv3 client on another network stack can lock |
 
 There is no field for a setup script. A suite that needs something these fields can't say gets a
 new field in `dt`, with a test, so the setup stays in one place that has tests. WPTS shows this
 works: its 8 shares are plain `dfsctl share create` flags, and its encryption is one adapter
-setting.
+setting. The client namespaces are the same case: they replace the shell that builds them today,
+for e2e's NLM interop test (`test/e2e/testdata/nlm/nlm_axis_interop.sh`) and, with #3101, for
+cthon04 and nfstest, and none of it needs a test account of its own, since `dt` already runs as an
+ordinary user with passwordless sudo (§3).
 
 `dt` applies the adapter settings before enabling the adapter. Otherwise it restarts the adapter,
 because the server's settings watcher polls every 10 seconds and the tests would start before it
@@ -672,7 +679,9 @@ notices.
 The fixture gives the command these placeholders:
 - `{server}`: the address the tools reach it at. It's the host's non-loopback address, so NFSv4.0
   callbacks to the client can be dialled; DittoFS refuses loopback callback addresses, which is
-  why pynfs's delegation tests can't run today (#2996).
+  why pynfs's delegation tests can't run today (#2996). From a namespaced `client` it's the
+  host's bridge address.
+- `{client2}`: the second client's address, with `clients: 2`.
 - `{mount}` and `{realm}`.
 - `{user}` and `{password}`: a test user whose password is generated per run, in place of the
   WPTS password now written in six places.

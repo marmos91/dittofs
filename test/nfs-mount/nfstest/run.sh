@@ -9,6 +9,13 @@
 # test/posix/setup-posix.sh --no-mount). nfstest mounts and unmounts the
 # export itself for every module, with the option set under test.
 #
+# The client is a network namespace of its own (see ../netns.sh), and nfstest
+# runs as an ordinary user with passwordless sudo (see ../test-user.sh), which
+# is how it expects to run. A second namespace, reached over ssh, is the second
+# client that the delegation recall tests and nfstest_cache drive. The script
+# runs twice: on the host it sets all that up and grades, and inside the
+# namespace, re-executed with DITTOFS_CLIENT_NS set, it runs the modules.
+#
 # Writes one log with each module's output between "NFSTEST-MODULE <module>"
 # markers and a final "NFSTEST-DONE <number of modules>", which is what
 # parse-results.sh grades.
@@ -21,6 +28,12 @@ SUITE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SUITE_DIR/option-sets.sh"
 # shellcheck source=../../common/mounts.sh
 source "$SUITE_DIR/../common/mounts.sh"
+# shellcheck source=../netns.sh
+source "$SUITE_DIR/netns.sh"
+# shellcheck source=../test-user.sh
+source "$SUITE_DIR/test-user.sh"
+
+ARGS=("$@")
 
 VARIANT=""
 MODULES="${NFSTEST_MODULES:-}"
@@ -30,7 +43,7 @@ while [[ $# -gt 0 ]]; do
     --variant=*) VARIANT="${1#*=}"; shift ;;
     --modules) MODULES="${2:?--modules requires a value}"; shift 2 ;;
     --modules=*) MODULES="${1#*=}"; shift ;;
-    -h | --help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -62,29 +75,22 @@ KNOWN_FAILURES="${DITTOFS_KNOWN_FAILURES:-}"
 
 # The modules that apply to this option set, unless --modules narrowed them.
 if [[ -z "$MODULES" ]]; then
-    # decision: nfstest_cache is left out. It needs a second client host: the
-    # "remote" client it drives gets the same mount point and options as the
-    # local one, so on a single host the two mounts collide. Add it when the
-    # suite gains a second client (a network namespace or another runner).
     MODULES="posix,dio"
-    # See option-sets.sh: under nolock the locks never leave the client.
+    # nfstest_cache times attribute caching against a change from the second
+    # client. On NFSv4 that change recalls the first client's delegation, which
+    # makes it revalidate at once — correct, and fatal to every timing check
+    # the module makes. So it runs on NFSv3 only.
+    [[ "$VERSION" == 3 ]] && MODULES+=",cache"
     # lock is the slowest module after dio and found nothing that varies with
-    # caching or I/O size, so it runs on the plain v4 sets only.
-    if option_set_locks "$VARIANT" && [[ "$VARIANT" == v4.0 || "$VARIANT" == v4.1 ]]; then
+    # caching or I/O size, so it runs on the plain sets of each protocol only.
+    if option_set_locks "$VARIANT" && [[ "$VARIANT" == v3 || "$VARIANT" == v4.0 || "$VARIANT" == v4.1 ]]; then
         MODULES+=",lock"
     fi
     [[ "$VERSION" != 3 ]] && MODULES+=",delegation"
 fi
 
-NFSTEST="$("$SUITE_DIR/fetch.sh" nfstest)" || { echo "could not fetch nfstest" >&2; exit 2; }
-
-# The server is this host, addressed by its primary IP rather than localhost.
-# nfstest checks many assertions against a packet capture, and with 127.0.0.1
-# at both ends it cannot match the client's calls to the server: every "OPEN
-# should be sent" style check fails although the capture holds the call. With
-# the primary address it captures on loopback all the same, and matches.
-SERVER="${NFSTEST_SERVER:-$(hostname -I | awk '{print $1}')}"
-[[ -n "$SERVER" ]] || { echo "cannot determine this host's address; set NFSTEST_SERVER" >&2; exit 2; }
+SERVER="$NS_SERVER_ADDR"
+CLIENT2="$(ns_addr 2)"
 
 # nfstest takes the version and the port on flags of their own. NFSv3 also
 # needs the MOUNT protocol's port, which DittoFS serves on the same one.
@@ -93,49 +99,84 @@ extra="$(option_set_extra_opts "$VARIANT")"
 [[ -n "$extra" ]] && MTOPTS+=",$extra"
 [[ "$VERSION" == 3 && -n "$NFSTEST_MOUNTPORT" ]] && MTOPTS+=",mountport=$NFSTEST_MOUNTPORT"
 
+if [[ -z "${DITTOFS_CLIENT_NS:-}" ]]; then
+    FETCHED="$("$SUITE_DIR/fetch.sh" nfstest)" || { echo "could not fetch nfstest" >&2; exit 2; }
+    # A fresh private directory, not a fixed path another user could have
+    # prepared; it is opened to reading only once it is this script's own.
+    WORKBASE="$(mktemp -d /tmp/dittofs-nfs-mount.XXXXXX)" || exit 2
+    chmod 0755 "$WORKBASE"
+    NFSTEST="$WORKBASE/nfstest"
+    SSHD_DIR="$WORKBASE/sshd"
+    teardown() {
+        client_ns_down_all
+        test_user_release
+        rm -rf "$WORKBASE"
+    }
+    trap teardown EXIT
+    client_ns_down_all
+    test_user_ensure || { echo "could not create the test user" >&2; exit 2; }
+    test_user_copy "$FETCHED" "$NFSTEST" || { echo "could not copy nfstest" >&2; exit 2; }
+    client_ns_up 1 || exit 2
+    client_ns_up 2 || exit 2
+    client_ns_mirror 2 1 || { echo "could not mirror the second client's traffic" >&2; exit 2; }
+
+    # The second client: sshd in namespace 2, which nfstest reaches as the
+    # test user. Every command it runs there, mount included, runs in that
+    # namespace.
+    sshd_config="$(test_user_sshd_config "$SSHD_DIR" "$CLIENT2")" || exit 2
+    client_ns_exec 2 "$(command -v sshd || echo /usr/sbin/sshd)" -D -e -f "$sshd_config" \
+        >"$RESULTS_DIR/sshd-client2.log" 2>&1 &
+    for _ in $(seq 1 20); do
+        nc -z -w 1 "$CLIENT2" 22 2>/dev/null && break
+        sleep 0.5
+    done
+    nc -z -w 1 "$CLIENT2" 22 2>/dev/null || { echo "sshd on the second client never came up" >&2; exit 2; }
+
+    client_ns_exec 1 env DITTOFS_CLIENT_NS=1 NFSTEST="$NFSTEST" DITTOFS_RESULTS_DIR="$RESULTS_DIR" \
+        NFSTEST_MODULES="$MODULES" "$SCRIPT_DIR/run.sh" "${ARGS[@]}" ||
+        echo "the client side exited $?" >&2
+
+    # The teardown step deletes the server log; keep it with the results.
+    gzip -c /tmp/dittofs-posix-server.log >"$RESULTS_DIR/server.log.gz" 2>/dev/null || true
+
+    # Not exec: the EXIT trap has to run to tear the namespaces down.
+    "$SCRIPT_DIR/parse-results.sh" "$LOG" "$KNOWN_FAILURES" "$RESULTS_DIR"
+    exit $?
+fi
+
+# From here on this runs inside the client namespace.
+
+# nfstest runs from a directory the test user can write; the results directory
+# belongs to whoever started the suite.
+WORKDIR="$(mktemp -d /tmp/dittofs-nfstest-cwd.XXXXXX)"
+chown "$TEST_USER_NAME:$TEST_USER_NAME" "$WORKDIR"
+
 mkdir -p "$MOUNT_POINT"
 detach "$MOUNT_POINT"
 
 cleanup() {
-    # nfstest leaves its packet capture running when a module dies mid-test.
+    # A module killed by its timeout never stops its packet capture, nor ends
+    # what it started on the second client: its ssh sessions, its remote
+    # procedure server there, and that client's mount, which lives in the
+    # second namespace and is reachable only through it.
     pkill -f 'tcpdump .*nfstest_' 2>/dev/null || true
+    pkill -u "$TEST_USER_NAME" -x ssh 2>/dev/null || true
+    sudo -u "$TEST_USER_NAME" -H timeout 30 ssh "$CLIENT2" \
+        "sudo pkill -u $TEST_USER_NAME -x python3; sudo umount -f -l $MOUNT_POINT" >/dev/null 2>&1 || true
     detach "$MOUNT_POINT"
 }
-trap cleanup EXIT
-
-# --tbsize sizes the kernel buffer of every packet capture. nfstest's default is
-# 192 MiB; with the captures it orphans (see reap_orphan_captures) a dio run
-# once held over thirty at once, and the host ran out of memory until the OOM
-# killer took dfs. The reaper ends the leak; the smaller buffer bounds what an
-# orphan costs in the two seconds before the reaper finds it.
-
-# reap_orphan_captures — kill nfstest's packet captures that nfstest has let go
-# of, every two seconds, until killed. nfstest starts each tcpdump through
-# `sh -c` and stops it by killing that shell, which orphans the tcpdump rather
-# than ending it. Every orphan goes on capturing all loopback traffic: within
-# one dio module they reach dozens, a new capture then starts too slowly to see
-# its test's traffic, and every packet-checking assertion after that fails. A
-# capture is kept while its parent is still nfstest's shell or nfstest itself.
-reap_orphan_captures() {
-    local pid ppid parent
-    while sleep 2; do
-        for pid in $(pgrep -f 'tcpdump .*nfstest_' 2>/dev/null); do
-            ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
-            [[ -n "$ppid" ]] || continue
-            parent="$(ps -o args= -p "$ppid" 2>/dev/null)"
-            [[ "$parent" == *tcpdump* || "$parent" == *nfstest_* ]] || kill "$pid" 2>/dev/null
-        done
-    done
-}
+trap 'cleanup; rm -rf "$WORKDIR"' EXIT
 
 # module_args MODULE — the arguments one module needs beyond the common ones.
 module_args() {
     case "$1" in
     delegation)
-        # The recall tests mount a second client, which takes its port from
-        # --client and otherwise tries 2049: every recall then waits out a
-        # refused mount and the module runs past its timeout.
-        echo "--client port=$NFS_PORT"
+        # The recall tests need a second client. Without a port it mounts
+        # 2049, and every recall waits out a refused mount.
+        echo "--client $CLIENT2:port=$NFS_PORT"
+        ;;
+    cache)
+        echo "--client $CLIENT2"
         ;;
     dio)
         # dio checks every assertion against a packet capture it stops right
@@ -149,7 +190,8 @@ module_args() {
 
 COUNT=0
 {
-    echo "nfstest $(git -C "$NFSTEST" rev-parse --short HEAD), option set $VARIANT: vers=$VERSION,$MTOPTS"
+    echo "nfstest $(git -c safe.directory="*" -C "$NFSTEST" rev-parse --short HEAD), option set $VARIANT: vers=$VERSION,$MTOPTS"
+    echo "client $(ns_addr 1), second client $CLIENT2, run as $TEST_USER_NAME (uid $TEST_USER_UID)"
     IFS=',' read -ra mods <<<"$MODULES"
     for m in "${mods[@]}"; do
         echo "NFSTEST-MODULE nfstest_$m"
@@ -161,26 +203,19 @@ COUNT=0
             COUNT=$((COUNT + 1))
             continue
         fi
-        reap_orphan_captures &
-        reaper=$!
         # shellcheck disable=SC2046  # module_args is a word list on purpose
-        (cd "$RESULTS_DIR" && PYTHONPATH="$NFSTEST" timeout --kill-after=30 "$MODULE_TIMEOUT" \
+        # timeout runs inside sudo, as the test user: sudo cannot pass on a
+        # SIGKILL, so from outside it would end sudo and leave a module stuck
+        # on a hung mount running.
+        (cd "$WORKDIR" && sudo -u "$TEST_USER_NAME" -H \
+            timeout --kill-after=30 "$MODULE_TIMEOUT" env PYTHONPATH="$NFSTEST" \
             python3 "$NFSTEST/test/nfstest_$m" \
             --server "$SERVER" --port "$NFS_PORT" --export "$NFSTEST_EXPORT" \
             --nfsversion "$VERSION" --mtpoint "$MOUNT_POINT" \
-            --mtopts "$MTOPTS" --tbsize 8k --rmtraces --notty $(module_args "$m"))
+            --mtopts "$MTOPTS" --rmtraces --notty $(module_args "$m"))
         echo "nfstest_$m exited $?"
-        kill "$reaper" 2>/dev/null
-        wait "$reaper" 2>/dev/null
         COUNT=$((COUNT + 1))
         cleanup
     done
     echo "NFSTEST-DONE $COUNT"
 } 2>&1 | tee "$LOG"
-
-# The teardown step deletes the server log; keep it with the results, which
-# CI uploads.
-gzip -c /tmp/dittofs-posix-server.log >"$RESULTS_DIR/server.log.gz" 2>/dev/null || true
-
-"$SCRIPT_DIR/parse-results.sh" "$LOG" "$KNOWN_FAILURES" "$RESULTS_DIR"
-exit $?
