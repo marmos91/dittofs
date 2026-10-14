@@ -143,9 +143,9 @@ Every suite has its own entry point, its own setup and its own way of saying how
 | R10 | Not run is never passed | an unmet need, a fixture that fails its own check, a suite that ran no tests, or, in a suite with a `known` file, a test that skips without being an expected skip ends in exit 2 (§4.4, §4.7) |
 | R11 | Each component RFC names the suites that cover it | every RFC under `docs/internals/rfcs/` has a section naming its harness suites or groups (§4.9), once #2894 lands them there |
 
-"Green" means no new failures and no unexpected skips. Every failing test is either fixed or listed
-as a known failure, and in a suite that keeps a known-failure list every skipping test is listed
-as an expected skip, each with its reason.
+"Green" means no new failures, no unexpected skips and no listed test that passes. Every failing
+test is either fixed or listed as a known failure, and in a suite that keeps a known-failure list
+every skipping test is listed as an expected skip, each with its reason (§4.7).
 That's how the conformance suites already handle failures, and it's the only definition that lets
 a suite which reproduces open bugs be green.
 
@@ -760,7 +760,7 @@ dt report [RUN] --failures [--post]            only the new failures; --post ope
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE                           remove known failures and expected skips that no longer happen
-dt known import FILE.md                        convert a Markdown known-failure list to the YAML format, once
+dt known import FILE.md [--where AXIS=V,...]   convert a Markdown known-failure list to the YAML format, once
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
 dt docs [--check]                              write the documentation's suite tables, or check them
 ```
@@ -823,21 +823,21 @@ first version is narrow, so it can't flood the tracker as #1705's alarm did:
 
 | Flag | Effect |
 |---|---|
-| `--ci` | non-interactive; GitHub annotations for new failures; writes the job summary; a suite that can't run here is an error, not a skip |
+| `--ci` | non-interactive; GitHub annotations for new failures; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
 | `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on develop and the schedule, never on pull requests, §4.7) |
 | `--in host\|container\|auto` | where to run; `auto` uses `dtc` when the host lacks a need the container provides |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
 
 | Exit status | Meaning |
 |---|---|
-| 0 | no new failures and no unexpected skips (known, quarantined and flaky ones are reported, not counted) |
-| 1 | at least one new failure, a test that timed out included: once the fixture's check passed, a hung operation is a regression until shown otherwise |
-| 2 | something didn't run: unmet needs (with `--ci`), a fixture that failed its check or timed out, nothing ran, tests the cell's timeout left unstarted, or, in a suite with a `known` file, a test that skipped without being an expected skip |
+| 0 | no new failures, no unexpected skips and no unexpected passes (known, quarantined and flaky ones are reported, not counted) |
+| 1 | at least one new failure, a test that timed out included: once the fixture's check passed, a hung operation is a regression until shown otherwise. Also a listed test that passed (§4.7) |
+| 2 | something didn't run: unmet needs (with `--ci`), a fixture that failed its check or timed out, nothing ran, tests the cell's timeout left unstarted, a test whose output stopped before its result (§4.6), or, in a suite with a `known` file, a test that skipped without being an expected skip |
 | 3 | usage or registry error |
 
-Status 1 is a regression; status 2 is an environment problem or lost coverage. A cell with both
-exits 1, and its report lists both. The alert in §4.8 treats them differently, which is the main
-defence against another flood.
+Status 1 is a regression, or a list that no longer says what the server does; status 2 is an
+environment problem or lost coverage. A cell with both exits 1, and its report lists both. The
+alert in §4.8 treats them differently, which is the main defence against another flood.
 
 ### 4.5 Where a suite runs
 
@@ -946,12 +946,36 @@ There are six, each read by one reader in `dt`:
 
 | Format | Read from | Test case | Suites |
 |---|---|---|---|
-| `exit` | the exit status | the command, or each file in `tests` | lint, operator, system, fio-verify, bench-smoke, one-line suites |
+| `exit` | the exit status | each file or entry in `tests`; without `tests`, each command of a `cmd` list, named by its first line | lint, operator, system, fio-verify, bench-smoke, one-line suites |
 | `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache. A suite whose tests need root (e2e) runs as `go test -json -count=1 -exec 'sudo -n env ...'`, which builds as the user, runs each test binary under `sudo`, and gives the same events | each test and subtest, with skips and their reasons | unit, integration, e2e |
-| `junit` | a JUnit XML file the tool writes | each test case | pynfs (`--xml`) |
+| `junit` | every JUnit XML file the tool writes under `{out}` | each test case, named by its `code` attribute when it has one, as pynfs's lists are keyed on it, else by `classname.name` | pynfs (`--xml`) |
 | `tap` | the TAP each test file prints | each test file, as the known-failure lists name them | pjdfstest |
 | `subunit` | smbtorture's `test:`, `success:`, `failure:`, `error:` and `skip:` lines | each smbtorture test | smbtorture; its connection-failure filter and truncation handling move into Go with their test cases |
 | `trx` | WPTS's TRX file, including the tests it didn't execute | each WPTS test | wpts |
+
+**What a reader decides.** For every format but `exit`, the results the tool writes decide, not
+its exit status, which is non-zero whenever a test failed. Each reader keeps the rules of today's
+grader:
+- `tap`: a file whose TAP has a bail-out, a parse error or a plan it didn't meet is incomplete. A
+  file with clean TAP whose run still exits non-zero failed, as `prove` calls it dubious.
+- `junit`: pynfs writes its file only after a clean finish. It lists every test it knows: a
+  FAILURE as `<failure>`, an OMIT as `<skipped>`, and WARNING and UNSUPPORTED with no child, so
+  they pass, as they do today. The tests its flags didn't select are OMIT too, so pynfs's list
+  names them as expected skips (#2996).
+- `subunit`: a `test:` line with no result is incomplete. When an entry of `tests.txt` reaches its
+  timeout, the test it had open failed. A client that crashes (exit 129 or more) fails nothing by
+  its exit; the test it left open is incomplete. A failure in the client's own connection setup,
+  which the connection-failure filter finds, is incomplete too: there is no server result. The
+  self-contradictory `smb2.replay.channel-sequence` draw (`CSN 0x7fff`) is an expected skip the
+  reader grades itself.
+- `trx`: `Passed` passes; `Failed`, `Error`, `Timeout` and `Aborted` fail; `NotExecuted` and any
+  other outcome skip, with the outcome kept as `rawStatus`.
+
+A test whose output stopped before its result is graded `incomplete`, exit 2, and no known-failure
+entry excuses it. A cell whose tool wrote no results, or results with no test in them, is not run,
+exit 2, and so is one whose container didn't start (`docker run` exits 125 to 127). A name with
+several results in one cell is graded at each of them: smbtorture reports four subcases as
+`smb2.charset.Testing`, and three pass where one fails.
 
 The `system` suite is `exit` per scenario file. When another run holds its lock, `setup.sh` runs
 nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as not run, exit 2, and
@@ -962,18 +986,24 @@ per job from fio's JSON, and fails a job whose `error` field is non-zero, a fail
 included. `dfsbench-json` takes dfsbench's per-cell results. Numbers are recorded for `dt history`
 and never grade a run on their own (§4.10).
 
-**Grades in CTRF and JUnit.**
-- **A new failure** is `failed` in CTRF and a `<failure>` in JUnit.
-- **A known failure** is `skipped` with `rawStatus: failed`, its reason and issue in `extra`, and
-  `<skipped>` with the reason in JUnit. A quarantined test is shown the same way.
-- **An expected skip** is `skipped` with its reason.
-- **A skip that isn't expected** is `other`, with `extra.grade: unexpected_skip`, and makes the
-  cell exit 2.
-- **A test that failed and then passed on retry** is `passed` with `flaky: true` and its
-  `retries`, and a pass with a `flaky` property in JUnit.
-- **An unexpected pass** is `passed`, marked in `extra`.
+**Grades in CTRF and JUnit.** `dt` grades each result of each test, and writes the grade in
+`extra.grade`:
 
-CTRF and JUnit readers then count only new failures as failures.
+| Grade | The result | CTRF | JUnit | The cell |
+|---|---|---|---|---|
+| none | passed, and no entry of the `known` file matches it | `passed` | a pass | passes |
+| `new` | failed, and no known-failure entry matches it | `failed` | `<failure>` | exits 1 |
+| `known` | failed, and a known-failure entry matches it | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `unexpected_pass` | passed, and a known-failure or expected-skip entry matches it (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
+| `expected_skip` | skipped, and an expected-skip entry matches it | `skipped`, with the reason | `<skipped>` with the reason | passes |
+| `unexpected_skip` | skipped, in a suite with a `known` file, and no entry matches it | `other` | `<error>` | exits 2 |
+| `ungraded` | skipped, in a suite without a `known` file: a Go suite until it opts in (§4.7) | `skipped`, with the tool's reason | `<skipped>` | passes |
+| `incomplete` | its output stopped before its result | `other` | `<error>` | exits 2 |
+
+A test that failed and then passed on retry is `passed` with `flaky: true` and its `retries`, and a
+pass with a `flaky` property in JUnit. A quarantined test is shown as a known failure, with the
+grade `quarantined`. A reader of CTRF or JUnit then counts as failed only what makes the cell exit
+1, and as an error only what makes it exit 2.
 
 **Why CTRF, with JUnit beside it.** Decided in the 2026-10-08 call.
 - JUnit XML began with Java's JUnit. It has no formal specification, tools write it in their own
@@ -989,8 +1019,11 @@ So `summary.json` is CTRF, with our grading in its `extra` fields. The JUnit fil
 from it for whatever reads JUnit: Codecov, for one, which the unit job already uploads coverage to.
 CTRF is at version 0.1.0, so `dt` writes one pinned version (§7).
 
-**In CI**, `dt report --format md` goes to the job summary. One shared step replaces the ten inline
-summary steps, including the two that always print green. `summary.json` and `junit/` are uploaded
+**In CI**, a step after `dt run` that runs even when it failed or was stopped (`if: always()`)
+appends `dt report --format md` to the job summary. It is the summary's only writer: `dt run --ci`
+writes none, and `dt` rewrites `summary.json` after every cell, so a run that a timeout or a cancel
+stops still reports the cells it finished. This one shared step replaces the ten inline summary
+steps, including the two that always print green. `summary.json` and `junit/` are uploaded
 as artifacts. `dt history --ci` reads the last N develop runs' artifacts through the GitHub API;
 the default 90-day retention covers flake rates. Benchmark trends need longer, and can move to a
 data branch when they do.
@@ -1003,11 +1036,11 @@ converts the old lists once.
 
 ```yaml
 # test/posix/known.yaml
-- test: open/03.t
+- test: unlink/14.t
   status: fail                 # fail | skip
   fix: wontfix                 # planned | wontfix
-  category: env                # bug | feature | env | proto | permanent
-  reason: "PATH_MAX: the mount-point prefix pushes the absolute path over PATH_MAX in the client"
+  category: proto              # bug | feature | env | proto | permanent
+  reason: "NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1"
   where: { nfs: ["4", "4.1"] } # optional: the matrix values, tiers, options or OS it applies to
 - test: utimensat/09.t
   status: fail
@@ -1015,6 +1048,17 @@ converts the old lists once.
   category: proto
   reason: NFSv3 nfstime3 uses uint32 seconds and cannot represent values >= 2^32
   where: { nfs: ["3"] }
+```
+
+```yaml
+# test/nfs-conformance/pynfs/known.yaml
+- test: CSESS26
+  status: fail
+  fix: planned
+  category: bug
+  reason: EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation
+  issue: "#2340"               # required for a planned entry
+  where: { minor: ["1"] }
 ```
 
 ```yaml
@@ -1030,16 +1074,38 @@ converts the old lists once.
 - **Every entry says whether it will be fixed:** `fix: planned` or `fix: wontfix`. A missing
   `fix` is an error, so nothing is left unclassified by accident. Today the lists carry this in
   their Category column, with different words in each (`bug`, `feature`, `proto`, `env`, `suite`,
-  and WPTS's Expected and Permanent).
+  and WPTS's Expected and Permanent). `dt known import` maps them:
+
+  | Row in today's list | `category` | `fix` |
+  |---|---|---|
+  | `bug` | `bug` | `planned`, with the row's issue |
+  | `feature`, `proto`, `env` | the same | `wontfix` |
+  | pynfs's `suite`: a check a conformant server needn't pass | `proto` | `wontfix` |
+  | in WPTS's or smbtorture's "Permanently Unimplementable" appendix | `permanent` | `wontfix` |
+  | above smbtorture's appendix, where its policy requires an issue | `bug` | `planned`, with the row's issue |
 - **Every entry has a reason**, which says why it fails or skips, and a category. A reason helps
   whoever fixes a planned entry too, and no list today has an entry without one. The `where`
   field replaces today's separate lists per NFS version. Besides matrix values it takes `tier`,
   `option` and `os`, because some skips depend on those: Go tests skip under `-short`, which only
   PRs pass, and some skip on Windows.
-- **A planned entry needs an issue; a won't-fix entry doesn't.** Today most rows have no issue:
-  19 of 20 and 13 of 14 in the POSIX lists, 4 of 10 in pynfs's, and the WPTS list has no issue
-  column.
-- **One matcher.** The Go matcher shares golden fixtures with today's
+- **A planned entry names its issue, as `issue: "#1234"`; a won't-fix entry needn't.** Today most
+  rows have no issue: 19 of 20 and 13 of 14 in the POSIX lists, 4 of 10 in pynfs's, and the WPTS
+  list has no issue column.
+- **Importing the old lists.** `dt known import FILE.md --where AXIS=V` converts one Markdown list
+  into the suite's `known.yaml`, with `where` set from the flag. A suite's lists per version are
+  imported one by one (`KNOWN_FAILURES.md` with `--where nfs=3`, `KNOWN_FAILURES_V4.md` with
+  `--where nfs=4,4.1`), and entries that differ only in `where` merge into one. Rows that can't
+  name a test, such as a changelog table's rows or WPTS's status legend, are reported and left
+  out. So is a row whose tests all passed in the runs the first lists are written from; it leaves
+  the Markdown list in the same change.
+- **Markdown and YAML side by side.** A suite's scripts read its Markdown list until step 3
+  deletes them (§8), so both lists exist until then. A Go test of `dt` fails when a Markdown list
+  and the `known.yaml` entries imported from it don't name the same tests, so a change to one is
+  made to both. The Markdown lists go with the scripts.
+- **One matcher.** An entry's `test` matches as a row of today's lists does: an exact name; a
+  trailing `.*` as a prefix (`smb2.lock.*`); a shell glob (`flock/*`, `utimensat/0?.t`); and a
+  name `N` with neither a glob nor `.t` also matches `N.t` and `N/...` (`open/etxtbsy` matches
+  `open/etxtbsy.t`). The Go matcher shares golden fixtures with today's
   `test/common/known-failures_test.sh` until that goes, so the two parsers can't drift. Today
   `run.sh` resolves a suite's list but never passes it on, each runner picks its own file again,
   and WPTS's grader doesn't use the shared matcher at all. With `known` in the registry, `dt` reads
@@ -1050,8 +1116,9 @@ listed as an expected skip, with its reason. A skip that isn't listed makes the 
 The conformance suites and `system` have `known` files from the start. The Go suites have hundreds
 of skips (331 `Skip` calls on develop, and 71 test files that branch on `testing.Short()`), so
 they opt in package by package, starting with e2e (§9); until a Go suite opts in, its skips are
-reported and counted but not graded. This is what turns §1's silent
-cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance cases and the 11
+reported and counted but not graded (`ungraded`, §4.6). Step 2 grades the skips of the suites with
+a `known` file; how a Go package opts in is settled with e2e's list, after it. This is what turns
+§1's silent cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance cases and the 11
 Kerberos e2e subtests would each have shown as lost coverage the day they started skipping. The
 first lists are written from today's runs, each entry with a reason, so the suites start green and
 a new skip stands out.
@@ -1078,8 +1145,11 @@ well would run a failing test up to four times before the alert. A job that is r
 hand, writes its results under a directory of its own attempt (`RUN-a2`), so it never overwrites
 the first attempt's `summary.json`, which `dt history` reads.
 
-**Unexpected pass.** A known failure that passes, or an expected skip that runs and passes, is
-reported and doesn't fail the run. `dt known prune` removes it. A fix PR removes its own entry. An
+**Unexpected pass.** A known failure that passes, or an expected skip that runs and passes, fails
+the cell (exit 1): its entry no longer says what the server does, and a list that keeps it would
+hide the test's next regression. A fix PR removes its own entry, and its run fails until it does.
+A name with several results in a cell (§4.6) passes unexpectedly only if none of them failed. A
+test that fails on some runs and passes on others belongs in quarantine, not in the list. An
 expected skip that runs and fails is a new failure, unless a known-failure entry covers it too.
 
 **Scenarios.** Each one that fails today gets a known-failure entry naming its issue. The suite is
@@ -1276,8 +1346,8 @@ a percentage.
   the failing set. The cost is a red develop for one merge, not a lost regression.
 - **Expected-skip lists grow into a dumping ground.** Every entry needs a reason and a category,
   `dt known prune` removes the ones that no longer apply, and `dt history` shows skips per suite.
-- **The known-failure lists rot.** Bug entries name an issue, unexpected passes are reported, and
-  `dt known prune` removes them.
+- **The known-failure lists rot.** Bug entries name an issue, a listed test that passes fails the
+  run until its entry goes (§4.7), and `dt known prune` removes entries that match nothing.
 - **Quarantine hides real bugs.** Entries expire, need an issue, and quarantined results are still
   recorded and shown in `dt history`.
 - **Posted issues flood the tracker or leak.** §4.4's guardrails limit when and how often; issues
@@ -1323,7 +1393,18 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - CTRF with JUnit generated from it, and `dt report`.
 
    *Exit:* each conformance suite gives the same results through `dt` as through its scripts on 5
-   consecutive runs, every profile, and every CI test job publishes through `dt report`.
+   consecutive runs, every profile, and every CI job that runs a suite through `dt`, the lint jobs
+   and the parity jobs, publishes through `dt report`.
+   - **The same results,** per cell: the same verdict (green or not), the same new failures, the
+     same known failures and the same tests run. A difference whose cause is listed beforehand
+     doesn't reset the count: what `dt` grades that the scripts don't, such as skips and tests with
+     no result (§4.6, §4.7), and where the server runs (§4.2).
+   - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
+     `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch`. A last job compares the two
+     sides' results per cell.
+   - smbtorture's `badger-s3` cell is new (§4.3), so no script runs it: it needs 5 green runs.
+   - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
+     through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
@@ -1332,9 +1413,12 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
-     match on 5 consecutive runs, and the PR that removes the old job deletes that suite's scripts.
+     match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
+     the old job deletes that suite's scripts.
    - `run.sh`, `suites.json`, the NFS `sec=krb5` job and the Makefile's `test-*` targets go with
      the last of them.
+   - `dt known baseline` replaces the nightly job that pushes smbtorture's baseline file to
+     develop, which fails every night (#2997).
    - Make the gate required, in the same change that drops `Unit Tests (1.26.x)` and
      `Integration Tests (1.26.x)` from the ruleset (§4.8).
 
@@ -1345,8 +1429,9 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    the 9x long runs run nightly on the dedicated host, through `needs_by_test` and
    `dt run --tier nightly --place dedicated`. Then `fio-verify` against the fixture's mount.
    *Exit:* the merge tier includes the system scenarios, and has no new failures.
-5. **Alerting, flakes and issues.** The develop-status issue, quarantine, `dt history`, and
-   `dt report --failures --post`.
+5. **Alerting, flakes and issues.** The develop-status issue, quarantine, `dt history`,
+   `dt report --failures --post`, and `dt known prune`, which reads history, since one run can't
+   tell an entry that matches nothing from one whose test didn't run.
    *Exit:* two weeks with one alert per real regression and none from flakes.
 6. **Benchmarks.** `bench-smoke` and `unit --nonrace` nightly; tracked runs on the dedicated host.
 7. **Component RFCs name their suites.** Once #2894 lands them under `docs/internals/rfcs/`, each
