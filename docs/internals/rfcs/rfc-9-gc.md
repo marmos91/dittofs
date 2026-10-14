@@ -241,8 +241,8 @@ already permit, and never permits one.
 
 ### 2.1 References are the only authority
 
-A block's object **MAY** be deleted only when no ref, live or history, names a
-chunk whose record names that block, and only through the verified transition of
+A block's object **MAY** be deleted only when no ref, live, history or parked
+([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)), names a chunk whose record names that block, and only through the verified transition of
 [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes). Nothing else permits a delete, and nothing but refs prevents one.
 
 Two structures state the refs, and both change in the transaction that changes a
@@ -420,10 +420,13 @@ block's refusal does not fail the others.
 3. **Mark deleted** (retired → deleted). The deleter reads the `BR` prefix in
    `not_before` order up to store time and, per batch, in one transaction, moves
    each record still `retired` with `not_before` ≤ store time to `deleted` —
-   only after the verification of [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) passes for it.
+   only after the verification of [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) passes for it — and records the store time
+   of the move in the record.
 4. **Delete** the objects through the remote store's multi-object delete
    ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)), after reading the namespace claim and confirming that the last
-   `Recheck` passed ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). The store splits the call as its service needs, and
+   `Recheck` passed ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), and only for a name whose move to `deleted` precedes
+   the start of a `Recheck` that has since rewritten the claim with a fresh
+   nonce ([§3.7](#3.7%20Trash)). The store splits the call as its service needs, and
    each name's result is its own; a name missing from the service's reply is a
    failure ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)). For each success, one batched transaction records the
    store time of the success in the name's `BD` value.
@@ -775,6 +778,18 @@ last served, since every later claim put recorded its nonce first, and settles a
 that finds another installation's nonce fences itself as
 [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says.
 
+**An object is deleted only after a claim rewrite later than its `deleted`
+mark** ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 4). The nonce changes once per `Recheck`, so detection is
+only as fine as one period: a state captured after the last rewrite carries the
+claim's current nonce and is not detected as older. If the deleter could delete
+a name marked within that period, such a state, restored, would still show the
+name `retired`, no settling would run, and an adoption would resurrect a block
+whose object is gone. Waiting for a rewrite
+that started after the mark means every state that does not hold the name as
+`deleted` predates a nonce the claim has since moved past, so its restore is
+detected and settled. The cost is up to one `Recheck` period added to each
+delete.
+
 The trash does **not** catch a defect that dropped a ref together with its
 reverse key while something still needed it: the count and the index then agree,
 no check sees a mismatch, and nothing can recreate the ref. That defect is
@@ -870,6 +885,19 @@ target with one whole-block put. It uses no multipart upload and no server-side
 copy: a block is small enough for one put ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)), and a copy would carry
 the source's encoding and header, which the target must not reuse. Dead bytes are
 never read.
+
+**Staging.** What the compactor holds between its reads and its put — the
+chunks of the targets it is assembling — is GC's **relocation staging**, counted
+in bytes, under the rule a copying backup's copy staging follows
+([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound), [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing)). It is held in memory up to a budget derived,
+not set: the GC flow's cap of workers ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) × the largest encoded
+block, plus one target being assembled. Above it, staging spills to local disk
+under `backups.spill_path`, which **MUST NOT** be on a device that holds a
+journal, since spill filling a journal's device would answer writers no space
+([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). When memory plus spill reach `backups.spill_max`, a read is
+not issued: it waits for a put to release its target. With no spill path
+nothing spills, and reads wait at the memory budget. The spill is cleared at
+every start: no compaction resumes from it, a crash re-plans (the table below).
 
 **Example.** Three 4 MiB blocks, *B1*, *B2* and *B3*, of twelve chunks each, hold
 two, two and three live chunks: about 1.7 MiB live of 12 MiB stored.
@@ -1096,7 +1124,9 @@ its intent, not its age:
 
 - **An object named by an intent** is deleted only after the intent is abandoned,
   in a transaction that conflicts with the commit consuming it ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)). GC
-  abandons only an intent superseded under [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete); a live writer's intent is never touched by GC, however old.
+  abandons only an intent superseded under [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete), or one of a draining namespace,
+  which no share names and so has no live writer ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained)); a live writer's intent is
+  never touched by GC, however old.
 - **An object named by neither an intent nor a block record** is in the final
   state ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)): no put of its name can ever commit. The backstop writes its
   block record `retired`, with an empty chunk list and `not_before` = store
@@ -1327,7 +1357,7 @@ key column is that table's, repeated so a reader of this one need not switch.
 | --- | --- | --- | --- | --- |
 | block record, any state ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `B‖ns‖name` | authoritative | one per recorded block, with a carried list of at most `N` entries | pruning, after the object's successful delete and a later `Recheck` |
 | chunk record ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)) | `C‖ns‖hash` | authoritative | one per hash | pruning of the block it names, or a repoint by a carrying commit |
-| reverse ref index ([§2.1](#2.1%20References%20are%20the%20only%20authority)) | `CR‖ns‖hash‖share‖file‖offset‖died` | authoritative | one per live or history ref | the transaction that drops or moves its ref |
+| reverse ref index ([§2.1](#2.1%20References%20are%20the%20only%20authority)) | `CR‖ns‖hash‖share‖file‖offset‖died` | authoritative | one per live, history or parked ref ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) | the transaction that drops or moves its ref, or the parked-ref prune |
 | put intent ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)) | `I‖ns‖name` | authoritative | one per put in flight, plus one per put abandoned since the last pass | the commit that consumes it, or its abandonment |
 | retired index ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `BR‖ns‖not_before‖name` | derived | one per `retired` block | resurrection or the move to `deleted` |
 | deleted index ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `BD‖ns‖name` | derived | one per `deleted` block | pruning |
@@ -1378,7 +1408,7 @@ GC's records are of two kinds, and only one kind may be rebuilt freely:
 | Kind | Records | Rebuilt from | Who may rebuild |
 | --- | --- | --- | --- |
 | **derived** | `BR`, `BD`, `BC`, walk cursors | the block records' state, `not_before`, delete time, `dead`, size and generation | the audit's block walk, in place; or an operator's rebuild |
-| **authoritative, derivable** | `CR` | the forward refs and history refs, which it mirrors | an operator's rebuild, with the deleter held |
+| **authoritative, derivable** | `CR` | the forward refs, history refs and parked refs, which it mirrors | an operator's rebuild, with the deleter held |
 | **authoritative** | block, chunk and intent records, the lease, `Recheck` result, hold and suspect rows | nothing | never dropped by GC |
 
 **Derived keys are repaired where they are found.** The audit's block walk
@@ -1417,9 +1447,16 @@ a fixed short period (proposal: 5 min), independent of any other GC work, and
 also reads the namespace claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
 it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
 
-**Drift is a differing read, not an error.** A `Recheck` call that fails with a
-transient error — a throttle, a 5xx, a timeout — is retried as any small call
-is ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), and a `Recheck` that still cannot read a setting records
+**`Recheck` is a sequence of small calls, not one.** Each setting is read by
+its own call, and a version walk under the prefix runs one page per call
+([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); GC runs each through the flow's small-call path ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)),
+so each is one bounded request and is retried on its own. A walk over many
+versions then takes many bounded calls instead of one call that cannot finish
+within the bound.
+
+**Drift is a differing read, not an error.** A small call of a `Recheck` that
+fails with a transient error — a throttle, a 5xx, a timeout — is retried as any
+small call is ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), and a `Recheck` that still cannot read a setting records
 `passed` false without `drift`. Drift is raised only by a read that returns a
 setting differing from what the store requires, or after two consecutive
 periods whose `Recheck` could not read ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). A single unread period
@@ -1427,6 +1464,12 @@ only defers deletes and copies, since the deleter needs the last `Recheck` to
 have passed (below); puts go on. Raised on any error, one 503 would make the namespace's put
 direction unhealthy for a period, and a share at its journal limit would answer
 no space meanwhile, for a cause that clears by itself.
+
+**`Recheck` also brings the namespace's `keys` object up to date.** Each pass
+reads back the `keys` object in the namespace's bucket and, when its sequence
+lags the one the metadata store records, re-puts it under the key lock
+([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so a put lost or overwritten at the service is repaired
+within one period rather than at the next key change.
 
 **The claim is read before it is rewritten, and the nonce is recorded before it
 is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
@@ -1446,9 +1489,11 @@ newer nonce, which its own older record does not hold, and stops first.
 folder record this installation holds at a backup location ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)),
 the record's holder **MUST** run `Recheck` on that folder's store on GC's period,
 and again before each copy into the folder and each expiry sweep of it
-([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). A folder store whose `Recheck` fails, or last passed more than two
-periods ago, takes no copy and no sweep until one passes, and raises the store's
-drift condition, exactly as a namespace store does. Otherwise a folder store
+([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). A folder store whose last `Recheck` did not pass, or passed more
+than two periods ago, takes no copy and no sweep until one passes. Its drift
+condition follows the rule above, exactly as a namespace store's does: it is
+raised by a read that differs, or after two consecutive periods with no read,
+never by one failed `Recheck`. Otherwise a folder store
 registered once is trusted for the life of the process, and a drifted backup
 location is written and swept as if nothing had changed.
 
@@ -1522,8 +1567,8 @@ location is written and swept as if nothing had changed.
   ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)) and prunes them only after that.
 - **Recovery from a suspended setting.** A bucket whose versioning was turned on
   and then suspended cannot return to never-versioned. `Recheck` accepts it once
-  the store's version listing under the prefix finds no version other than
-  current ones ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), which the repair above produces. GC then
+  the store's version walk under the prefix, run a page per small call as
+  above, finds no version other than current ones ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), which the repair above produces. GC then
   writes the proof as the store's control object of role `repair`
   ([RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)), and `Recheck` accepts the suspended store only while that
   object exists and is not empty. If a later `Recheck` reads versioning enabled
@@ -1543,17 +1588,19 @@ continue into such a store once it drifts.
 ### 7.6 A namespace no share names is drained
 
 A namespace is deleted only when nothing can name its blocks again: no share's
-`Namespaces` names it, no parked ref does ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), no retained catalog
-backup does ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), and no folder record of the namespace
-(`NS‖ns‖bk‖`, [RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) holds a non-empty census or still lists a block a
-copying backup holds — in a plaintext namespace the census names no material,
-so it is empty while copies still list blocks, and the listing is what keeps
-the folder sweepable. This is the one drain gate: RFC 16's step 7, RFC 26 and
+`Namespaces` names it, no parked ref does ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), no backup record
+of the namespace that is neither `expired` nor `lost` names it ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), and no folder record of the namespace
+(`NS‖ns‖bk‖`, [RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) holds a non-empty census or a nonzero count of
+the blocks in its mark set — in a plaintext namespace the census names no
+material, so it is empty while retained copies still list blocks, and the
+count is what keeps the folder, and so the namespace's claim and folder records,
+until a sweep has removed them. This is the one drain gate: RFC 16's step 7, RFC 26 and
 RFC 27 cite it rather than restate it. A complete copying
-backup has released its use record, and its folder record is all that says it
-still needs the namespace's keys, claim and sweep. The check reads each of
-these with tracking — the parked refs, use records and folder records by
-`GuardRange` — and writes the drain mark `NS‖ns‖drain`. A share creation, clone
+backup has released its use record; its backup record and its folder record are
+what say it still needs the namespace's keys, claim and sweep. The check reads each of
+these with tracking — the parked refs, use records, backup records
+(`NS‖ns‖backup‖`) and folder records by `GuardRange` — and writes the drain
+mark `NS‖ns‖drain`. A share creation, clone
 or restore into a namespace reads that mark with tracking and is refused while it
 exists.
 
@@ -1563,8 +1610,14 @@ The check runs in the transaction that removes the last thing it reads:
   last shard record, so no crash between them leaves the check unrun
   ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), step 6);
 - a re-home's finish, for the namespace the share left ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace));
-- a catalog backup's expiry, which deletes its use record, and a folder sweep's
-  settle, which empties a folder record's census ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep));
+- a catalog backup's expiry, which deletes its use record; an operator's
+  statement that a location is lost (`LocationLost`), whose batches, after the
+  location's lost mark, mark its backups `lost`, delete their use records and
+  empty the census and block count of every folder record at that location
+  ([RFC 26 §2](rfc-26-catalog-backups.md#2.%20Catalog%20backups)) — the batch that empties a namespace's last such folder
+  record or deletes its last use record runs the check, and a folder record at a
+  lost location pins no drain; and a folder sweep's
+  settle, which empties a folder record's census or its count of marked blocks ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep));
 - the parked-ref prune ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace));
 - the deletion of a retired share's last detached snapshot ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting));
 - a folder sweep's settle in **any** namespace that removes the last listing of
@@ -1591,19 +1644,33 @@ the last runs the check. Then:
    and applied to all of the namespace's keys or to none — data key, chunk-ID
    key, chunking key, each retired one ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). It is not one
    transaction: it reads every namespace's folder census in batches within K,
-   and every retained export's material list as the metadata store's backup
-   state records it, never by reading a backup location. It first rewrites the
-   drain mark, which every copy that adds a census entry for this namespace's
-   material reads with tracking ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)); the transaction that
-   removes the keys re-reads the mark with tracking, so a census entry added
-   since the check began aborts it, and the check runs again. If any entry or
+   and every retained export's material list as the backup records
+   ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) record it, never by reading a backup location.
+
+   **The drain mark carries a check token.** The check first rewrites the mark
+   with a fresh token. Every copy transaction that adds a census entry for this
+   namespace's material, in any namespace's folder record, reads the mark with
+   tracking and, while it exists, writes a new token into it in the same
+   transaction ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)). The transaction that removes the keys reads
+   the mark with tracking, proceeds only if it still holds the token its own
+   check wrote, and rewrites the mark. Both commit orders are then caught: a
+   census entry committed at any point after the check began — before the
+   removal transaction started, or while it runs — has replaced the token, so
+   the removal finds another value, or conflicts, removes nothing and the check
+   runs again; a removal that commits first has written the mark a later copy
+   transaction read, so that copy aborts and finds the material gone. A mark
+   with no value would catch neither: a census entry committed before the
+   removal transaction's snapshot is no conflict for it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), and a
+   removal that only reads the mark writes nothing a copy read. If any entry or
    export names any key, it removes none. Checked one key at a time,
    a step that stops at the data key has already destroyed the chunk-ID and
    chunking keys, which no census lists, and the other namespace's retained
    backups can then be neither verified nor restored.
    Put intents are waited for because a share removed mid-re-home leaves
    objects named only by intents; the drain abandons them at once rather than
-   waiting for their epoch to be superseded ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)), and the abandonment's
+   waiting for their epoch to be superseded — a namespace no share names has no
+   live writer, so this is the one abandonment [§5.4](#5.4%20Age%20is%20not%20the%20guard)'s rule allows besides
+   supersession ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)), and the abandonment's
    deleter still holds the claim, which step 3 deletes only after.
 3. The claim and the other control objects are deleted, then every
    `NS‖ns` record, last of all the drain mark.
@@ -1691,6 +1758,8 @@ type Remote interface {
 	Delete(ctx context.Context, names []BlockName) []error         // one result per name
 	DeleteVersions(ctx context.Context, names []BlockName) []error // after versioning drift only
 	List(ctx context.Context, after BlockName) iter.Seq2[Info, error] // collection only
+	// Recheck's setting reads and version-walk pages each run as one small
+	// call through GC's flow (§7.5); deletes and listings go direct (§3.1).
 	Recheck(ctx context.Context) error
 	Claim(ctx context.Context) (Claim, error)
 }
@@ -1820,6 +1889,9 @@ the implementation, not by timing.
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) slow clock | Run the old installation's GC with its clock 5 % slow, partition it from the claim and take the claim over. Assert its last delete precedes the new installation's first put, adoption or delete. A wait of *T* plus an offset, with no rate stretch, overlaps them. |
 | [§3.7](#3.7%20Trash) metadata recovery within the trash | Snapshot the metadata store; then release files, compact blocks and run the deleter for less than one retention; restore the metadata store from the snapshot. Assert every ref resolves and reads, including those whose blocks were compaction sources. Let compaction sources skip the trash; assert the check fails. |
 | [§3.7](#3.7%20Trash) recovered retired blocks | Release a file so block *B* retires; snapshot the metadata store; let *B*'s `not_before` pass and the deleter remove it; restore the snapshot. Assert that before the first client call or adoption *B* is `deleted`, and that a clone naming one of *B*'s chunks is refused rather than resurrecting *B*. Leave a block retired whose `not_before` is still ahead: assert it stays `retired`. A recovery that serves the restored state as found resurrects a block with no object. |
+| [§3.7](#3.7%20Trash) restore within one `Recheck` period | Snapshot the metadata store just after a claim rewrite; retire block *B* with zero retention and let the deleter mark it `deleted`; restore the snapshot before the next claim rewrite. Assert the deleter issued no delete for *B* before a `Recheck` that started after the mark rewrote the claim, and that the restored store either still finds *B*'s object or is detected as older and settles *B*. |
+| [§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) census added during the key check | Start the drain's key check, let it read past folder record *F*, then commit a copy batch adding a census entry for the draining namespace's material to *F*, (a) before the key-removing transaction starts and (b) while it runs; then (c) commit the removal first and a copy batch after it. Assert in (a) and (b) the removal finds another token or conflicts, removes no key, and the re-run check finds the entry; in (c) the copy batch aborts. A mark with no token fails (a); a removal that does not rewrite the mark fails (c). Repeat in a plaintext namespace with a retained copying backup: assert the claim and folder records stay until a sweep removes its blocks. |
+| [§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move) staging bound | Compact into a store whose puts stall. Assert memory stays within the derived budget, memory plus spill never pass `backups.spill_max` and reads wait there, spill lies under `backups.spill_path` and is empty after a restart; with no spill path, assert nothing spills. |
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) reply | Return a multi-delete reply that omits one requested name. Assert that name stays `deleted` and is retried. |
 | [§5.3](#5.3%20It%20runs%20only%20where%20the%20namespace%20is%20proven) namespace | Point two stores at one bucket and prefix, run collection from one. Assert it refuses. |
 | [§6.2](#6.2%20Corrections) raise never lowers | Let a count rise between the walk's read and its correction. Assert the correction leaves it. Change a ref under the first of two lowering walks; assert no lowering. |

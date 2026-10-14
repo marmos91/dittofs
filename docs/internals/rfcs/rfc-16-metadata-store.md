@@ -267,10 +267,36 @@ type (
 // (§4.2); no file, ACL or usage record holds one, and this layer compares IDs
 // and never interprets a spelling.
 type Principal struct {
-	Kind PrincipalKind // User, Group, Special (owner, group, everyone, owner rights: fixed well-known IDs)
+	Kind PrincipalKind // User, Group, Special (a well-known principal: a fixed ID, below)
 	ID   PrincipalID
 }
 ```
+
+**Well-known principals have fixed IDs.** A stored ACL entry names its
+principal by ID, so every well-known principal an entry can name has one, fixed
+for all installations: fifteen zero bytes, then the byte below. No minted ID
+takes that form, since a minted ID is a random UUID with its version bits set.
+
+| Byte | Principal | Matches (RFC 7 §2.6 owns the rule) |
+| --- | --- | --- |
+| 0x01 | owner (`OWNER@`) | the file's owner |
+| 0x02 | group (`GROUP@`) | members of the file's group |
+| 0x03 | everyone (`EVERYONE@`, Everyone) | every caller |
+| 0x04 | owner rights | the file's owner, limiting what ownership grants |
+| 0x05 | creator owner | nothing at access time: an inheritable placeholder, replaced at create |
+| 0x06 | creator group | nothing at access time: an inheritable placeholder, replaced at create |
+| 0x07 | authenticated users | a caller whose identity the service marked `authenticated` |
+| 0x08 | administrators | a caller whose identity the service marked `admin` |
+| 0x09 | system | nothing a client can present |
+| 0x0A | network | every remote caller, which is every caller |
+| 0x0B | built-in users | a caller marked `authenticated` |
+
+How each is spelled on the wire — a SID, an NFSv4 `who` — is the adapters'
+([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). A deny entry naming a
+well-known principal with no row above is refused when it is stored. An
+inheritable deny naming creator owner or creator group is kept, inherit-only,
+since inheritance makes it an effective deny for the creator; a deny naming
+system is stored and never matches. The rule is RFC 7 §2.6's.
 
 Every other identity type sits beside the only entities that use it: the
 content identities (`ChunkHash`, `BlockName`, `JournalVersion`) and
@@ -289,7 +315,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 26](rfc-26-catalog-backups.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
-| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, Shard, Setting, ShareList | no — an export carries the principals its files and grants reference (§5, decision 8), and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
+| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, Shard, Setting, ShareList | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -376,7 +402,7 @@ type ExportPolicy struct {
 	Flavors     []AuthFlavor  // admitted, in preference order: SECINFO's answer
 	MinKerberos KerberosLevel // krb5, krb5i, krb5p; zero when Kerberos is not required
 	Clients     []ClientRule  // first match decides; no match refuses. Empty admits every client
-	Squash      Squash        // none, root, all; root squashes uid 0, and an AUTH_SYS caller is never privileged by an admin grant (ShareGrant)
+	Squash      Squash        // none, root, all; root squashes uid 0 — an AUTH_SYS caller's and a GSS principal mapped to it alike, which is privileged exactly when root is left unsquashed (RFC 7 §7.4) — and an AUTH_SYS caller is never privileged by an admin grant (ShareGrant)
 	Anonymous   Principal     // what a squashed caller becomes
 	SMB         SMBShareFlags // encrypt, hidden from enumeration, continuously available
 	Version     uint64        // raised by every change; the authorisation cache key carries it
@@ -488,7 +514,8 @@ type Shard struct {
 	Primary      Replica // node, journal identity and join incarnation (RFC 10 §2.2); JoinPoint and Learner unused
 	PrimaryEpoch uint64  // node epoch Primary was named under; a node whose lease lapsed is primary of nothing (RFC 11 §3.1)
 	Epoch        uint64  // ownership epoch: fences (RFC 10 §2.1)
-	Incarnation  uint64  // shard incarnation: raised each time a node or journal begins serving the shard as primary; feeds the write verifier and names the grace instance (RFC 11 §3.1)
+	Incarnation  uint64  // shard incarnation: raised each time a node or journal begins serving the shard as primary; feeds the write verifier (RFC 11 §3.1)
+	GraceInstance uint64 // set to Incarnation in the transaction of a start or failover that lost the shard's open state, and by nothing else: a handover, a batch move and an address arrival keep it. Names the grace instance; a stateid carries its low 5 bits (RFC 14 §2.1, §4.4)
 	Replicas     []Replica
 	Count        int // configured size of the replica set, primary included
 	Floor        int // fewest of primary and replicas, learners included, that acknowledge a write
@@ -609,9 +636,9 @@ step is the coordinator's, recorded in the state record `S‖id‖st`. A crash o
 failover of any of these primaries ([RFC 11](rfc-11-ownership.md)) resumes its part where its
 record says it stopped. Once `st` reaches step 3, each shard's primary runs
 steps 3 and 4 for its shard; a shard with no `rm` row has not begun. The
-coordinator moves `st` past step 4 only in a transaction that reads with
-tracking every shard record of the share and each one's `rm` row, and finds
-every one done. The set is fixed from step 1 on, since no shard is created for
+coordinator moves `st` past step 4 only once every shard record of the share and
+each one's `rm` row has been read with tracking and found done, in the batches
+below, never in one transaction over every shard. The set is fixed from step 1 on, since no shard is created for
 the share and no file moves between its shards after it (step 1's gates), so
 no shard can be left with undropped files while the removal goes on. Step 1
 records that set, read from the share's shard list (`S‖id‖shs‖shard`, written
@@ -629,7 +656,9 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
    keeps it, marked ended, so `ErrRehoming` still refuses a clone, catalog
    backup or move of the kept snapshots, whose history refs sit at both
    generations, which neither a clone ([RFC 12 §2.6](rfc-12-snapshots.md#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace)) nor an export can
-   carry — and raises `SL`.
+   carry. A re-home it ends that has parked refs writes their parking record
+   (`NS‖ns‖park‖ShareID`) in this same transaction, since the re-home's finish,
+   which would write it, never runs. It then raises `SL`.
    From this commit on, admission answers `ErrStale` for every
    call into the share ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), the pseudo-filesystem no longer shows it,
    and a new share may take the name. Every gate holds in both commit orders
@@ -670,7 +699,7 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
    ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), which joins the namespace calls admitted before the
    mark — a late `Create` among them — that never enter the engine. Every open, lock, lock waiter, caching
    grant, watch, layout and copy under the share then ends without a recall
-   (`DropShare`, [RFC 14 §11](rfc-14-open-state.md#11.%20Interface)): the adapter is told of each through
+   (`DropShare` with the removed reason, [RFC 14 §11](rfc-14-open-state.md#11.%20Interface)): the adapter is told of each through
    `Revoked`, and the holder's next call is `ErrStale` whatever it holds. No
    record of the dropped stateids is kept, so a stateid of the removed share is
    later answered bad stateid with no revoked-state flag for the client to clear
@@ -695,10 +724,27 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
    handle, **then** runs RFC 1's whole-tag `Forget` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), which is
    refused while a handle of the tag is open. A journal without the replication
    extension has no forget record kind: its node tracks the shard forgets in the
-   shards' `rm` rows (forgotten) and runs the whole-tag `Forget` after the last.
+   shards' `rm` rows and runs the whole-tag `Forget` before it moves the last
+   shard's row to forgotten — the `Forget` is durable and idempotent, so a crash
+   between the two runs it again, and a row that says forgotten never stands
+   for a tag the journal still holds. **(cluster)** A per-(shard, tag) forget
+   record stays live until its tag's whole-tag record exists; repack keeps it
+   ([RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)),
+   so a restart between the two still finds every shard recorded. At every start
+   a node runs the whole-tag `Forget` again for a tag its journal's `Stats`
+   still names whose share's `rm` rows all say forgotten, so no crash leaves the
+   tag's bytes dirty until step 6.
    Every other dirty byte is dropped
    without being offloaded. A primary that took the shard over after this step forgets the
-   tag again in its own journal before step 4. Last, it deletes every `MV`
+   tag again in its own journal before step 4. **(cluster)** Once a shard's `rm`
+   row reaches the forget phase, nothing new reaches the tag: the primary stops
+   the shard's tail copies and the repair scheduler joins no node to it; a
+   takeover re-issues none of the shard's operations and sends its `Forget` to
+   every member again; and a node holding the shard's forget record refuses
+   `Apply` and `Copy` for the shard
+   ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover)). Any of the three
+   would write bytes under a forgotten tag that no `Forget` reaches until the
+   node's next start after step 6. Last, it deletes every `MV`
    record naming its shard as giving or receiving, so no crashed move resumes;
    the ship of a batch that never committed was dropped with the tag.
 4. **Files**, per shard. Every file of the shard under `F‖ShareID` is dropped
@@ -719,7 +765,7 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
    ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 6. **The share's own records, then its shards.** Without kept snapshots, every
    `S‖id‖*` record but `st` is deleted, then the shards' `SH‖shard` records with
-   their `rq`, `xh`, `hw` and `rm` rows, since they name the primaries that drive
+   their `rq`, `rqx`, `xh`, `hw`, `fw` and `rm` rows, since they name the primaries that drive
    and resume the removal ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)). The root's shard record goes last, in
    one transaction with `st`, which raises `SL` and runs step 7's check, so no
    crash leaves shard rows with no record saying a removal is due, or a removal
@@ -778,9 +824,12 @@ func (t FileType) String() string               // "regular", "directory", …
 func (a Attrs) WithMode(m uint32) Attrs         // and WithOwner, WithGroup, WithTimes, WithSize, WithFlags
 func (a Attrs) Changes(f AttrMask) bool
 
-// Ranges: the overlap arithmetic every lock, removal and read uses.
+// Ranges and extents: the overlap arithmetic. A lock holds a ByteRange
+// (RFC 14); a removal, a clone spec and a read name an Extent (RFC 6).
 func (r ByteRange) End() int64
 func (r ByteRange) Overlaps(o ByteRange) bool   // and Contains, Intersect
+func (e Extent) End() int64
+func (e Extent) Overlaps(o Extent) bool         // and Contains, Intersect
 
 // Usage and quota.
 func (u Usage) Add(d Usage) Usage
@@ -840,7 +889,7 @@ type Principals interface {
 type ControlPlane interface {
 	Users(ctx context.Context, after string) iter.Seq2[User, error]
 	PutUser(ctx context.Context, u User) error
-	DeleteUser(ctx context.Context, p Principal) error // as DeleteGroup: the first transaction deletes the indexes (NX, PX) and marks the record deleted, bounded batches a restart resumes from that mark drop its grants (through GR), memberships (MR, M) and quota records, and the record goes last; a marked user is admitted nowhere
+	DeleteUser(ctx context.Context, p Principal) error // as DeleteGroup: the first transaction deletes the indexes (NX, PX) and marks the record deleted, bounded batches a restart resumes from that mark drop its grants (through GR), memberships (MR, M) and quota records, and the last transaction deletes the record with every version of the secret it names (SEC‖id‖*, through RFC 13 §7), so no password or NT hash outlives its user; a marked user is admitted nowhere
 	Groups(ctx context.Context, after string) iter.Seq2[Group, error]
 	PutGroup(ctx context.Context, g Group) error
 	AddMember(ctx context.Context, m Membership) error
@@ -852,6 +901,8 @@ type ControlPlane interface {
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition) error // §2.3.2
 	SetGrant(ctx context.Context, g ShareGrant) error // Access none deletes the grant and its GR key; Version is the writing commit's, so a re-created grant never repeats a Version an authorisation cache keyed on
 	PutExportPolicy(ctx context.Context, p ExportPolicy) error // raises Version, as SetGrant does
+	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, per principal and per project
+	SetQuota(ctx context.Context, share ShareID, q Quota) error         // a quota that limits nothing deletes it and its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace (RFC 7 §2.8)
 	Netgroups(ctx context.Context, after string) iter.Seq2[Netgroup, error]
 	PutNetgroup(ctx context.Context, n Netgroup) error // sets Version to the writing commit's, as SetGrant does
 	DeleteNetgroup(ctx context.Context, name string) error // rules naming it are not rewritten and fail closed (Netgroup)
@@ -995,7 +1046,7 @@ type Reader interface {
 	Before(prefix, key []byte) (kv KeyValue, ok bool, err error)
 	// Versions returns each key's change sequence, in one batched read
 	// (§4.1, "Every committed write carries a change sequence"). A key this
-	// transaction wrote has none yet: ErrUncommittedVersion.
+	// transaction wrote or deleted has none yet: ErrUncommittedVersion.
 	Versions(keys [][]byte) ([]uint64, error)
 }
 
@@ -1117,8 +1168,9 @@ of it inside the transaction with an error it does not retry; a backend on such 
 the store's read-your-writes off, or keep the versions in a separate keyspace
 whose writes count in the transaction's key budget (§4.1, limits), so no read
 of a transaction's own write ever reaches the store unfilled. `Versions` of a
-key the transaction wrote returns `ErrUncommittedVersion`, a named error, never
-a guess: it has no version until the commit. A scan that returns a version per
+key the transaction wrote or deleted returns `ErrUncommittedVersion`, a named
+error, never a guess: a `Delete` is a write, and the key's version changes only
+at the commit. A scan that returns a version per
 key is not required. A move's delta is
 the records whose change sequence is above its base cut's, under a share's
 prefixes and its namespace's content-addressed ones, found by a scan and one
@@ -1196,19 +1248,19 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 
 | Scope | Key | Entity or record |
 | --- | --- | --- |
-| **Per file** — all under `F‖ShareID‖FileID`, written `F‖id` below | `F‖id` | File: every field, FileData's included, one value |
+| **Per file** — all under `F‖ShareID‖FileID`, written `F‖id` below | `F‖id` | File: every field, FileData's included, one value — among them a directory's `Subdirs`, the directories it names, and `Incomplete`, set by a clone or restore of a file its snapshot lists incomplete ([RFC 7 §2.4](rfc-7-namespace-metadata.md#2.4%20Attributes%2C%20and%20who%20writes%20them), [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) |
 | | `F‖id‖acl` | ACL |
 | | `F‖id‖x‖name` | Xattr |
 | | `F‖id‖s‖streamID` | named stream link |
 | | `F‖id‖e‖digest‖key` | Entry, under its **parent** directory. `key` is the name folded by the share's fold rule (§4.6), the identity on a case-sensitive share; `digest` is the 63-bit keyed digest of `key` that orders a listing and is its resume cookie ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)); the fold is [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case)'s; the name's original bytes are in the value |
-| | `F‖id‖t‖unique` | directory time delta, carrying the cut it was written after (§4.4) |
-| | `F‖id‖h‖start`, `F‖id‖rm‖version` | Hole; Removal, with its extent, kind, the cut it was written after, its pruning cursor, `ovSpan` (the File's `MaxOverwrite` at phase 1), for a release `fileVersion` (the deleted File's `Version`), and for a clone its **clone spec** — source ShareID and FileID, source offset, destination offset, length and the change version `asOf` the source was read at — from which a clone resumes after a crash, its source range registration rebuilt ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)) ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)) |
+| | `F‖id‖t‖unique` | directory time delta, carrying the cut it was written after and a signed change to the directory's `Subdirs`, +1 or −1 when the entry it adds or removes names a directory (§4.4, [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps)) |
+| | `F‖id‖h‖start`, `F‖id‖rm‖version` | Hole, with its `born`, the cut it was written at — a clone batch's hole the clone's cut ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)); Removal, with its extent, kind, the cut it was written after, its pruning cursor, `ovSpan` (the File's `MaxOverwrite` at phase 1), `holeCredit` (phase 1 found more than K holes, so phase 2 gives their bytes back), for a release `fileVersion` (the deleted File's `Version`), and for a clone its **clone spec** — source ShareID and FileID, source offset, destination offset, length and the change version `asOf` the source was read at — from which a clone resumes after a crash, its source range registration rebuilt ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)) ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes), [§6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)) |
 | | `F‖id‖ov‖start` | Overwrite record: an extent of content whose existence was committed and which a later committed write replaced, with the newest such write's version; an offset in it whose covering ref's `newest` is below that version reads as uncarved. Written only by an existence commit, never for an append or a first write into a hole ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes), [§3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)) |
 | | `F‖id‖ref‖offset` | ChunkRef, live; its value carries `nsgen`, the generation of the share's namespace its chunk is counted in ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `F‖id‖H‖suffix‖died` | **history** of a versioned per-file record: the value it had, under its live key's suffix — `ref‖offset` (ChunkRef), 0x00 (File, §4.2.1), `acl`, `x‖name`, `s‖streamID`, `e‖digest‖key`, `h‖start`, `ov‖start` ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)) — then `died`, so one record's versions sit together and the history of one kind is in offset or name order. Records of one kind overlap across versions, so `Before` at an offset can return a later, shorter record and miss an earlier, longer one that also covers it: a snapshot read or a removal's dating finds the versions over offset *o* with one scan of the kind's keys from *o* − *L* to *o*, where *L* bounds every record of the kind — for refs the largest chunk maximum ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) over every namespace the share's `Namespaces` lists, so history refs cut under the old generation's larger maximum are still found while a re-home runs ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); for holes the File's `MaxSpan`, which every hole write raises, a removal's merged hole included, and for overwrite records its own bound, the File's `MaxOverwrite` ([RFC 7](rfc-7-namespace-metadata.md)), so one long hole never widens the overwrite scan; a removal's phase 2, which may run after a release deleted the File, takes it from its removal record's `ovSpan` ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)) — never a scan of the file's whole history ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
 | | `F‖id‖fx`, `F‖id‖fo` | fences: the (shard, epoch) the file's commits must carry ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit), [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)); every offload commit writes `fo`. Per-file and range shards, and their records, are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)) |
 | | `F‖id‖rel` | pending release: written by the final unlink, deleted only by the release transaction; holds no holder list, the holders are the `op‖` records ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
-| | `F‖id‖op‖openID` | durable Open (only the cases RFC 14 makes durable: keeps an unlinked file alive, SMB persistent handle, a clone's source open — its own kind, which grace end never closes and only the clone's last batch deletes, [RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)); a persistent open's value holds every field, its principal, delete-on-close principal, create GUID, app instance, timeout and lock sequences included, and the lease covering it with its key, parent key, kind and epoch ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
+| | `F‖id‖op‖openID` | durable Open (only the cases RFC 14 makes durable: keeps an unlinked file alive, SMB persistent handle, a clone's source open — its own kind, naming the destination and the clone's version, which grace end never closes and only the clone's last batch deletes, [RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)); a persistent open's value holds every field, its principal, delete-on-close principal, create GUID, app instance, timeout and lock sequences included, and the lease covering it with its key, parent key, kind and epoch ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | | `F‖id‖op‖openID‖l‖start‖lockID` | durable Lock, only under a persistent open, so closing the open drops one prefix; `lockID` is minted per lock, so two locks of one open at one offset — two lock owners, or stacked shared locks — are two keys, and a scan still returns them in offset order ([RFC 14](rfc-14-open-state.md)) |
 | | `F‖id‖dp` | delete pending, with the entry it will remove and the principal that marked it, as which the unlink runs; written only while the file has a persistent open, deleted by that entry's unlink or by a clear ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) |
 | **Per share** — under `S‖ShareID` | `S‖id‖info` | Share: name, path, root and configuration, the fields `PutShare` writes (§3), and the journal tag, written once when the share arrives |
@@ -1221,17 +1273,17 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `S‖id‖sc‖shard` | SubCut: `klatest`, the newest live subtree cut covering that shard, and the cut time of the latest subtree cut covering it, which a later cut's time must exceed by one second ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)); raised only by a cut, behind the shard's gate, lowered only by a deletion ([RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)) |
 | | `S‖id‖hd‖shard‖died‖FileID‖suffix` | died index: one empty key per history record of the share, ref or namespace, keyed first by the shard the version was superseded in and then by `died`, `suffix` being the history key's, written and deleted with it; a snapshot deletion walks it from its cut in each shard the cut covers, and in no other ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)) |
 | | `S‖id‖hr‖cut‖shard` | hold record: the shard's journals still hold content of that cut not yet offloaded; written by the cut, and for the receiving shard by a move's commit that ships held versions ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) |
-| | `S‖id‖use‖cut‖useID` | use record: its kind — `clone`, `restore`, `backup`, `copy` or `move` — reading that snapshot, the deadline its reader renews, which a `move` record has none of, and for a complete `backup` its expiry time, which installation-wide expiry reads; while one exists the snapshot cannot be deleted ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) |
+| | `S‖id‖use‖cut‖useID` | use record: its kind — `clone`, `restore`, `backup`, `copy` or `move` — reading that snapshot, the deadline its reader renews, which a `move` record has none of, and for a `backup` or `copy` the backup's ID, whose backup record (`NS‖ns‖backup`, below) holds its retention and the expiry time that installation-wide expiry reads; while one exists the snapshot cannot be deleted ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) |
 | | `S‖id‖rh` | re-home record: the new namespace, the cursor and the pass number of a running re-home, or ended, on a share retired with detached snapshots during one ([§2.3.2](#2.3.2%20Removing%20a%20share)), which the deletion of its last detached snapshot deletes; its existence refuses new clones, new catalog backups and moves of either namespace with `ErrRehoming`, while snapshots, copying backups and reads of existing snapshots go on ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `S‖id‖or‖shard` | `old_refs`, per shard: the share's refs still at the old generation during a re-home, folded like usage: a transaction that writes or drops such a ref writes the change in its usage delta (`S‖id‖ud‖…`), never to this key (§4.4) |
 | | `S‖id‖ut‖shard`, `S‖id‖pu‖principal‖shard`, `S‖id‖pj‖project‖shard` | folded usage, **per shard**: share, with its `history_bytes`, principal, project; each written only by its shard's fold, and a reader sums a prefix scan over the shards (§4.4) |
 | | `S‖id‖ud‖shard‖unique` | usage delta, not yet folded, per shard (§4.4) |
-| | `S‖id‖qt‖principal-or-project` | Quota: `Hard`, `Soft`, `Grace`, `Advisory` ([RFC 7](rfc-7-namespace-metadata.md)) |
-| | `S‖id‖qx‖principal-or-project` | when usage first exceeded the soft limit; deleted when it falls back under ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
+| | `S‖id‖qt‖target` | Quota: `Hard`, `Soft`, `Grace`, `Advisory` ([RFC 7](rfc-7-namespace-metadata.md)); `target` is a principal, a project, or the share as a whole, which `FilesystemInfo.Quota` reports. Written by `SetQuota` (§3) |
+| | `S‖id‖qx‖target` | when usage first exceeded the soft limit; deleted when it falls back under; a `SetQuota` that changes the soft limit rewrites it at the change's time if usage is above the new limit and deletes it otherwise ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
 | | `S‖id‖vf‖bucket‖version‖FileID`, `S‖id‖vf‖bucket‖version‖FileID‖unique` | version-floor index: **one entry per File, at its stored `Version`**, written by every transaction that raises that `Version`, at the version the filesystem service drew from the engine under the file's accept lock ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)) for a namespace call — an existence commit, an attribute, flag, ACL or xattr change, a link change — which deletes the entry it supersedes; and one entry per unfolded directory-time delta at the delta's version, under its own unique suffix, written blind with the delta and replaced by the directory's own entry when the fold absorbs it. No ref has an entry: a File's `Version` is at least every version its refs and `Applied` carry. `bucket` is the file's identity hashed into one of *B* fixed buckets, so a share's commits spread over *B* key ranges ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor), [RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)) |
 | | `S‖id‖fnc` | numeric file-id allocator: the next unreserved number, reserved in ranges by shard primaries, so the protocol's numeric id is injective ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)); the number itself is a File field |
 | | `S‖id‖shs‖shard` | the share's shard list: one empty key per shard of the share, written in the transaction that creates the shard and deleted with the shard record ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)); the removal records it at step 1 and advances its gate over it in batches ([§2.3.2](#2.3.2%20Removing%20a%20share)) |
-| | `S‖id‖vl` | version limit: one `Version`, below which the share's journal may issue versions, written by the engine before the journal serves the share and raised, in its own transaction, before it is reached. Several journals serve one share's shards, each with its own counter, so every raise is a tracked read that writes the larger of the stored value and its own, never a blind write: a journal whose counter lags never lowers the limit another journal has reported versions under; a journal opens above it as well as above the floor ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)) |
+| | `S‖id‖vl` | version limit: one `Version`, below which the share's journal may issue versions, written by the engine before the journal serves the share and raised, in its own transaction, before it is reached. Several journals serve one share's shards, each with its own counter, so every write of it — the first at start, the one at an attach, and every raise — is a tracked read that writes the larger of the stored value and its own, never a blind write: a journal whose counter lags never lowers the limit another journal has reported versions under; a journal opens above it as well as above the floor ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)) |
 | **Per namespace** — content-addressed, one partition per remote key namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)) | `C‖ns‖hash`, `B‖ns‖name` | Chunk, Block (with its GC state: `live`, `retired`, `deleted`, and its carried chunk list) |
 | | `CR‖ns‖hash‖ShareID‖FileID‖offset‖died` | reverse ref index: one empty-valued key per live (`died` zero) or history ref, written in the ref's transaction; authoritative for "which refs name this chunk", and the refcount is its cache ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
 | | `I‖ns‖name` | put intent: domain, domain ID, epoch, and the writer's node epoch for a shard ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |
@@ -1239,13 +1291,15 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `NS‖ns‖gc‖lease‖partition`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per GC partition with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
 | | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, and the last one it wrote; a `Recheck` reads the claim and compares it with these before any rewrite. Every claim put on any path — start, `Recheck`, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
-| | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; its value names its kind; a move's holds the step it reached, the list of its base cuts, which are the only snapshots the move deletes, and a deadline A renews ([RFC 13](rfc-13-configuration.md)'s move pause deadline row); a recovery import's holds none of these — an interrupted import restarts from scratch, never resumes from its staging — and is never aborted by a deadline, only the operator's release ends it ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)); GC reads it before every pass and batch, and every relocation, delete or collection commit reads it with a tracked `Get` and refuses while it exists ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
-| | `NS‖ns‖drain` | drain mark: the namespace is being emptied after no share names it; refuses a share creation, clone or restore into it and resumes the drain after a crash ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)); deleted last |
+| | `NS‖ns‖gc‖pause` | GC pause record: while it exists the namespace gets no relocation, delete or collection; its value names its kind; a move's holds the step it reached, the list of its base cuts, which are the only snapshots the move deletes, and a deadline A renews; both ends delete each base cut — its use record, then the snapshot — before they delete this record, so a crash never leaves a base cut that no record names ([RFC 13](rfc-13-configuration.md)'s move pause deadline row); a recovery import's holds none of these — an interrupted import restarts from scratch, never resumes from its staging — and is never aborted by a deadline, only the operator's release ends it ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)); GC reads it before every pass and batch, and every relocation, delete or collection commit reads it with a tracked `Get` and refuses while it exists ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step), [RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
+| | `NS‖ns‖drain` | drain mark: the namespace is being emptied after no share names it. It holds the current **check token**: the drain's key check writes a fresh one when it starts, every copy batch that adds a census entry reads the mark with tracking and writes a new one, and the key-removal transaction reads it with tracking, proceeds only if it still holds its own check's token, and rewrites it — so a census entry and a removal conflict in both commit orders. It refuses a share creation, clone or restore into it and resumes the drain after a crash ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)); deleted last |
 | | `NS‖ns‖gc‖cursor‖walk‖partition` | walk cursor per kind of walk (audit, block walk, index rebuild) and GC partition ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)), so a restarted walk resumes; derived |
-| | `NS‖ns‖pk‖ShareID‖FileID‖offset‖died` | parked ref: a ref a re-home dropped from namespace `ns` while an unexpired catalog backup taken before the re-home finished still needs it, filed under `ns`'s prefix and owned by `ns`'s installation, so moving the re-homed share neither carries nor drops it; it keeps its chunk count and reverse key in `ns`, is seen by no read, snapshot or listing, only by `ns`'s GC; it carries the latest expiry time of the catalog backups it serves, and is dropped when that time passes ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
-| | `NS‖ns‖key‖kind‖keyID` | namespace key record: kind (`chunk-id-key`, `chunking-key`, `export-key`, `data-key`), ID, fingerprint, the ID of the master key that wraps it — the immutable, version-qualified ID the key service reports for that wrap ([RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted)), a copy kept for lookup of the one inside the wrapped bytes, which is the one that counts; a record whose two differ is refused as corrupt — the wrapped bytes, and state — `current`, `retired` or `destroyed`; a destroyed key keeps only ID, fingerprint and state. Every key is wrapped but one: a non-encrypting namespace's chunk-ID key, held in the clear, with no master key ID. Each record reaches the namespace's `keys` control object before it becomes current; a backup location's `keys` object must hold it before that location's next copy or backup starts, but does not gate the rotation. Not a secret: a wrapped key is useless without the master key, which is never here, and the one clear key hides nothing its plaintext blocks do not already show ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
-| | `NS‖ns‖keyseq‖target` | the namespace's key lock and, per `keys` object it writes — the namespace's own, or a backup location's — the last sequence put there. Every writer of a `keys` object (rotation, re-wrap, destroy, a copier bringing a location's object up to date) reads and rewrites this row with tracking in the transaction that decides the put, so two writers conflict and never put one sequence twice ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys), [RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)) |
-| | `NS‖ns‖bk‖location` | folder record: the copy or sweep holding the namespace's block folder at a backup location, its deadline, the **lease number** raised at every take, which every sweep commit reads, and the folder's census of (material ID, fingerprint) ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) |
+| | `NS‖ns‖pk‖ShareID‖FileID‖offset‖died` | parked ref: a ref a re-home dropped from namespace `ns` while an unexpired catalog backup taken before the re-home finished still needs it, filed under `ns`'s prefix and owned by `ns`'s installation, so moving the re-homed share neither carries nor drops it; it keeps its chunk count and reverse key in `ns`, is seen by no read, snapshot or listing, only by `ns`'s GC; it carries no time: the share's parking record below holds it, and the prune drops the share's parked refs in batches once that time passes ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
+| | `NS‖ns‖park‖ShareID` | parking record: one per (namespace, share) whose refs are parked in `ns`, holding the latest expiry time of the catalog backups those refs serve. A re-home's finish writes it, `Extend` of such a backup raises it in its own transaction, and the prune reads it; it is deleted with the last parked ref of the share. One record rather than a time on each ref, since a share parks one ref per ref it held and no transaction within K rewrites them all ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace), [RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) |
+| | `NS‖ns‖key‖kind‖keyID` | namespace key record: kind (`chunk-id-key`, `chunking-key`, `export-key`, `data-key`), ID — an export key's ID is its generation, 8 bytes big-endian, a counter one above the previous export key's, followed by a minted ID's bytes, which the wrap's associated data binds under the master key, so "newer export key" means a higher generation and no holder of a retired key can mint one ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) —, fingerprint, the ID of the master key that wraps it — the immutable, version-qualified ID the key service reports for that wrap ([RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted)), a copy kept for lookup of the one inside the wrapped bytes, which is the one that counts; a record whose two differ is refused as corrupt — the wrapped bytes, and state — `current`, `retiring` (an export key a rotation has replaced while any location is not yet re-sealed), `retired` or `destroyed`; a destroyed key keeps only ID, fingerprint and state. Every key is wrapped but one: a non-encrypting namespace's chunk-ID key, held in the clear, with no master key ID. Each record reaches the namespace's `keys` control object before it becomes current; a backup location's `keys` object must hold it before any state, export or progress version is written there, but does not gate the rotation. Not a secret: a wrapped key is useless without the master key, which is never here, and the one clear key hides nothing its plaintext blocks do not already show ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
+| | `NS‖ns‖keyseq‖target` | the namespace's key lock and, per `keys` object it writes — the namespace's own, or a backup location's — the last sequence put there. Every writer of a `keys` object (rotation, re-wrap, destroy, and every writer of a version at a location, which brings that location's object up to date first: [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) reads and rewrites this row with tracking in the transaction that decides the put, so two writers conflict and never put one sequence twice. A recovery import raises each row above the highest sequence it found at that object, so the dead installation's versions never outrank the new ones. A `keys` object's versions are ordered by export-key generation, then sequence, not by RFC 4 §4.15's highest sequence alone ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys), [RFC 4 §4.13](rfc-4-remote-tier.md#4.13%20Control%20objects)) |
+| | `NS‖ns‖bk‖location` | folder record: the copy or sweep holding the namespace's block folder at a backup location, its deadline, the **lease number** raised at every take, which every sweep commit reads, the folder's census of (material ID, fingerprint), and the count of blocks in its mark set, raised by each copy transaction that adds blocks and recomputed by a settle — both emptied, in batches, by an operator's statement that the location is lost —, which RFC 9 §7.6's drain gate reads ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) |
+| | `NS‖ns‖backup‖backupID` | backup record: one per backup of the namespace's shares, under the namespace so it moves with it. The transaction that starts the backup writes it with kind, share, snapshot, location and the retention fixed then; its state — `writing`, `complete`, `damaged`, `failed`, `expired` or `lost` — each written here before any state version at the location; before the backup is marked `complete` at its location one transaction records the export's digest, its manifest section's MAC, the head's version at an immutable location, the material IDs the export names, which the drain reads until expiry ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), and the expiry time, which `Extend` raises; an operator's statement that a location is lost marks its backups `lost` here only. A share's backup records move with the share, as its use records and snapshots do: a move's delta carries them, and a re-home's or move's finish re-keys them under the destination namespace, each still naming the namespace its parking record lives in. A recovery import writes one per backup it imports, from its authenticated `complete` state. Re-seals, the next export's digest list and the drain read these, never what a location returns, and a location version that differs is a health condition. Expiry deletes it last, after the export is removed ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot), [RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) |
 | **Server-wide** | `U‖principal`, `G‖principal` | User, Group, keyed by `PrincipalID` |
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
 | | `GR‖principal‖ShareID` | grant reverse index: one empty key per `ShareGrant`, so deleting a principal finds its grants without a scan of every share; server-wide, so an export carries no row of it and an import writes one per grant it publishes |
@@ -1255,14 +1309,14 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `SL` | ShareList: one version per installation |
 | | `TG` | share-tag counter: the next journal tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), raised in the transaction that records a share's tag and never lowered, so no tag is given twice; a recovery import opens every adopted journal (after `Restamp`) before publishing any share, raises it above every tag their `Stats` name ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), and only then mints tags ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 | | `IN` | Installation: the installation's identity, written once by the explicit initialisation step, which writes the same ID into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); its instance part and recorded machine-generation identifier; and the active version of every shared format but the store format, which `\x00format` holds, each raised only by the control plane's gate (§2.3, §4.6) |
-| | `NSM` | the NSM state number, one per installation; raised durably before the grace of any failover that lost NLM locks ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
+| | `NSM` | the NSM state number, one per installation; raised durably before the grace of any failover that lost NLM locks, and at a moved address's arrival above the larger of the move delta's number and its own ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) |
 | | `PX‖scheme‖id` | protocol-ID index → `PrincipalID`, unique per scheme; `scheme` is one of `uid`, `gid`, `sid` (binary form) and `krb`, a Kerberos principal as `name@REALM`, compared byte for byte as the KDC spells it; with the User or Group record, the only place a protocol spelling is stored (§2.2) |
 | | `N‖node`, `N‖node‖exp`, `N‖node‖clk` | Node: its roles, binary version, the version range it reads and writes for every shared format, failure domain, node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease (cluster): the lease's expiry, which a renewal writes with its journals' generations and nothing else, and a resume rewrites with the node record ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). On a single node the node record's epoch rises at every start and no lease is written ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). Clock ceiling, only on a backend without a timestamp oracle: the bound `Now` stays under, raised once a second (§4.1); its own key, so raising it conflicts with no fenced commit |
-| | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, join incarnation), its epoch, its shard incarnation and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
+| | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, join incarnation), its epoch, its shard incarnation, its grace instance and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard‖rq‖requestID` | (cluster) request record: a namespace mutation's request ID and result, written in its transaction and expiring after the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)), so a retry after a takeover is answered, not applied again ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)) |
-| | `RQX‖expiry‖shard‖requestID` | (cluster) request-record expiry index: one empty key per request record, written and deleted with it, so the primary sweeps expired records on the retry window by one ordered scan ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) |
-| | `SH‖shard‖fw‖random` | (cluster) forwarding entry: a stateid's or SMB persistent `FileId`'s random bits whose record a batch move took to another shard → the receiving shard; written by the batch's commit at the giving shard, deleted when the state it names ends ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries), [RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)) |
-| | `SH‖shard‖xh‖opID` | (cluster) cross-shard hold record: a participant's hold for one prepared operation, with its deadline; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
+| | `SH‖shard‖rqx‖expiry‖requestID` | (cluster) request-record expiry index: one empty key per request record, written and deleted with it, so the shard's primary sweeps its own expired records on the retry window by one ordered scan of its own range ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). Keyed per shard, so each primary inserts at the tail of its own range only, at its own shard's mutation rate; one installation-wide time-ordered range would put every namespace mutation of the installation on one region |
+| | `SH‖shard‖fw‖ref` | (cluster) forwarding entry: a tagged reference to a record a batch move took to another shard — a stateid's 64 random bits, or an SMB persistent `FileId`'s `OpenID` — → the receiving shard; written by the batch's commit at the giving shard, deleted lazily once the receiving shard reports no such record, by a periodic sweep, and by a move back of the record (RFC 14 §10) ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries), [RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)) |
+| | `SH‖shard‖xh‖opID` | (cluster) cross-shard hold record: a participant's hold for one prepared operation, with its deadline, written by a fenced transaction that also rewrites, at the shard's current epoch, the fences of the files it holds that still name an older one, so a primary that stayed through a raise leaves the coordinator's commit no stale fence to fail on; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
 | | `SH‖shard‖rm` | the share removal's progress on this shard: step 3, offloaded, forgotten, step 4 with its cursor, or done ([§2.3.2](#2.3.2%20Removing%20a%20share)); absent before the shard's step 3 starts |
 | | `SH‖shard‖hw` | (cluster) each replica's acknowledged committed-point mark, persisted by the primary on a period; never lowered, raises no epoch ([RFC 10 §7.2](rfc-10-journal-replication.md#7.2%20Removal)) |
 | | `J‖journal` | a journal, keyed by journal identity: the node and device it lives on, written when the journal is created and before anything in it is acknowledged, so a start that finds no journal or another one there refuses its shares ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); and, from the replication extension on, its generation, raised at every open, lease acquisition and lease renewal, and by a primary that finds itself rolled back ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)) |
@@ -1348,8 +1402,8 @@ are the prefix's. No separator byte is written.
   `S`, `SH`, `SEC`, `SLOT` — are different bytes, so no kind is a prefix of
   another.
 - **Sub-kind**: one byte, unique among its siblings at its position, from the
-  second table. The labels are also chosen so that none is a prefix of a
-  sibling's: `ref`, `rel`, `rm`; `op`, `ov`; `ut`, `ud`, `use`; `qt`, `qx`.
+  second table. The labels are names only, so `rq` and `rqx` are two codes like
+  any other two.
 - **Integer** — offset, `start`, cut, `born`, `died`, shard, generation,
   bucket, digest, epoch, sequence, a GC partition, a record's own `Version` (a Secret's, a
   grant's), a repair partition (`RS‖partition`), a POSIX uid or gid (`PX‖uid`,
@@ -1359,15 +1413,19 @@ are the prefix's. No separator byte is written.
 - **Journal version** — every content version the journal assigned, wherever it
   is stored: `F‖id‖rm‖version`, `S‖id‖vf‖bucket‖version‖FileID`, and in values a
   ref's `oldest` and `newest`, an overwrite record's and a Hole's `version`, a
-  File's `Version` and `Applied`, a clone spec's `asOf`, a share's version limit. A `JournalVersion`, 16 bytes big-endian,
+  File's `Version` and `Applied`, a clone spec's `asOf` and a clone source open's `CloneVersion`, a share's version limit. A `JournalVersion`, 16 bytes big-endian,
   the epoch half then the counter half, so it sorts as the one 128-bit number
   [RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions) compares. In this format the epoch half is zero: a key or
   value carrying a non-zero epoch fails to decode, as a journal record carrying
   one fails the open, and is reported as a codec error (§4.3), never read as a
   smaller number.
 - **Identifier** — FileID, ShareID, PrincipalID, NamespaceID, NodeID, JournalID,
-  and the open, lock, use, operation, request, client and move IDs: raw bytes at
-  its fixed length, 16 for every minted ID, a Secret's ID (`SEC‖id`) among them. `ChunkHash` and `BlockName` are raw
+  a backup's ID, and the lock, use, operation, client and move IDs: raw bytes at
+  its fixed length, 16 for every minted ID, a Secret's ID (`SEC‖id`) among them.
+  An open ID is an integer, since it shares SMB's 8-byte persistent `FileId`
+  with the shard number ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). A request ID is a byte
+  string, since it is composed of several fields
+  ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). `ChunkHash` and `BlockName` are raw
   at the fixed lengths [RFC 6](rfc-6-block-metadata.md#2.%20The%20records) gives them.
 - **Byte string** — an entry's folded key, an xattr name, a user, group, share
   or netgroup name, a path, a setting key, a SID, a Kerberos principal, a
@@ -1378,10 +1436,13 @@ are the prefix's. No separator byte is written.
   another's, whatever component follows. A string sorts before every longer
   string it begins, since `0x00 0x01` sorts below `0x00 0xFF` and below any
   other byte that can follow.
-- **Tagged** component — `principal-or-project`, a setting's `scope`: one tag
-  byte from the last row of the second table, then the tagged value in its own
-  encoding above — a PrincipalID, a project number as an integer, the scope's
-  ID as an identifier, nothing for the installation scope. `unique` in a delta key is the
+- **Tagged** component — a quota's `target`, a setting's `scope`, a forwarding
+  entry's `ref`: one tag byte from the last row of the second table, then the
+  tagged value in its own encoding above — a PrincipalID, a project number as an
+  integer, nothing for a share-wide quota or the installation scope, the scope's
+  ID as an identifier, a stateid's random bits or an `OpenID` as an integer. The
+  empty value keeps the share-wide quota's key off the prefix of every other
+  quota key: its tag byte differs. `unique` in a delta key is the
   writer's NodeID, node epoch and sequence, 32 bytes.
 - **Suffix** — the history key `F‖id‖H‖suffix‖died` and the died index's
   trailing `suffix` hold the live key's own encoding after `F‖id`. In the
@@ -1395,17 +1456,17 @@ are the prefix's. No separator byte is written.
 | Store | `\x00` 0x00, followed by the bytes `format`; nothing else is under 0x00 |
 | Per file, per share | `F` 0x01, `S` 0x02 |
 | Per namespace | `C` 0x10, `CR` 0x11, `B` 0x12, `BR` 0x13, `BD` 0x14, `BC` 0x15, `I` 0x16, `NS` 0x17 |
-| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `RQX` 0x39 |
+| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38; 0x39 unassigned |
 
 | Under | Sub-kind codes |
 | --- | --- |
 | `F‖id` | none for the File itself; `acl` 0x01, `x` 0x02, `s` 0x03, `e` 0x04, `t` 0x05, `h` 0x06, `rm` 0x07, `ov` 0x08, `ref` 0x09, `H` 0x0A, `fx` 0x0B, `fo` 0x0C, `rel` 0x0D, `op` 0x0E, `dp` 0x0F; under `op‖openID`, `l` 0x01 |
 | `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16, `vl` 0x17, `shs` 0x18 |
-| `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06, `keyseq` 0x07 |
-| `N‖node`, `SH‖shard`, `CL‖clientID` | `exp` 0x01, `clk` 0x02; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05; `sh` 0x01 |
+| `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06, `keyseq` 0x07, `park` 0x08, `backup` 0x09 |
+| `N‖node`, `SH‖shard`, `CL‖clientID` | `exp` 0x01, `clk` 0x02; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05, `rqx` 0x06; `sh` 0x01 |
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | protocol: NFSv4.0 0x01, NFSv4.1 0x02, SMB 0x03, NLM 0x04 |
-| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); `principal-or-project` tag: principal 0x01, project 0x02; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
+| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
 (§4.6): changing any of them is a format bump, and a code once assigned is never
@@ -1467,7 +1528,16 @@ never a principal's. The charge is `File.Charged` ([RFC 7](rfc-7-namespace-metad
 commit and removal that changes it writes the difference as a usage delta in
 the same transaction, and `chown` moves the whole `Charged` from the old owner
 and group to the new ones. So a charge is always read from one field, never
-recomputed by scanning holes.
+recomputed by scanning a file's holes. The one bounded read of holes is a
+removal's first phase, which lowers `Charged` by its extent's bytes less the
+holes among them and reads at most K holes to know them; past K it lowers
+`Charged` by the whole extent below `size`, and its later batches give back the
+masked holes' bytes as usage deltas — the removal's `holeCredit` — so usage
+reads low until the removal is done ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)).
+The `File` record, which phase 1 writes and every existence commit of the file
+reads, orders that read against those commits; a clone's batches give back a
+source hole's bytes the same way, so a clone's usage reads high only while it
+runs ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)).
 
 The deltas are in the same transaction as the change, so a crash loses
 nothing and needs no rebuild.
@@ -1475,16 +1545,18 @@ nothing and needs no rebuild.
 **Quota is enforced by reservation.** Bytes are charged at the existence
 commit, but a write is admitted long before, so a check against committed
 totals alone lets every staged, uncommitted byte in the journal through. Each
-primary therefore holds an in-memory **reservation** per principal and per
-project: a write reserves the bytes it may add before it is acknowledged, the
+primary therefore holds an in-memory **reservation** per principal, per
+project and per share: a write reserves the bytes it may add before it is acknowledged, the
 check is totals + unfolded deltas + this primary's reservations against the
-limit, and the reservation is released when the existence commit charging those
-bytes lands. A crash drops the reservations with the uncommitted writes they
+limit — the principal's, the project's and the share-wide quota's
+(`S‖id‖qt` with the share tag), whose usage is the sum of the per-shard
+`S‖id‖ut‖shard` totals — and the reservation is released when the existence
+commit charging those bytes lands. A crash drops the reservations with the uncommitted writes they
 covered, and replay re-reserves what it replays.
 
 > decision: quota fails open by a stated bound, not exactly. One primary sees
-> only its own reservations, so where one principal writes through several
-> shards concurrently the overshoot is at most the reservation slack each such
+> only its own reservations, so where one principal, project or share is written
+> through several shards concurrently the overshoot is at most the reservation slack each such
 > primary may hold beyond the committed total, summed over those primaries; with one
 > shard it is zero. Tighten it by leasing each primary a slice of the remaining
 > quota if a deployment shows overshoot past its slack.
@@ -1651,8 +1723,8 @@ tiers are the [index](rfc-index.md)'s.
 
 | Suite | Runs against | Proves |
 | --- | --- | --- |
-| **KV conformance** | every `KV` implementation (embedded, replicated, and an in-memory fake used only by this suite's own tests) | `Update` is atomic and retried; **writer first**: G guards *k* and writes *j*, W writes *k*, both from snapshots taken before either commits; W commits, then G — assert G aborts; **guard first**: the same, G committing first — assert both commit, and that W is ordered after G (a suite asserting W aborts rejects every conforming backend, and no rule may rely on it); **two guards, either order**: T1 and T2 each guard *k* and write a key of their own; commit T1 then T2, then T2 then T1, and once with T1 committing between T2's snapshot and T2's `Guard` — assert all commit; repeat with `GuardRange` over a prefix holding *k*; **range guard**: T guards prefix *P* with no key under it, another transaction creates *P*‖*x* and commits, T commits — assert T aborts; a key created outside *P* does not abort it; **removal against create**, at the KV level: R scans *P* and finds it empty, `GuardRange(P)` and writes *d*; C guards *d* and writes *P*‖*x*; run both commit orders from snapshots taken before either commits — assert exactly one commits and never both, so no key is left under *P* beside a written *d*; drop R's `GuardRange` and the guard-first order commits both; **read-only**: no caller's transaction that calls `Guard` or `GuardRange` writes nothing — the counting wrapper of §6.3 asserts it over the entity suite;  **lost update**: two transactions each `Get` one key and `Set` it to the value read plus one, from one snapshot — exactly one commits first and the other retries, so the key ends two higher; **write skew**: two transactions each `Get` the key the other `Set`s, from one snapshot — one aborts; a blind `Set` of one key by two transactions conflicts, on a backend that checks only reads too; a `Scan` registers nothing, and a range invariant gated on a point record holds (§4.1); `Now` never runs backward across commits in order on one node, nor across a restart with the clock stepped back, and on an idle store it advances with real time; `Versions` returns, for one key written by commits in order, increasing sequences, and for a key the calling transaction wrote `ErrUncommittedVersion`; `Get`, `Scan` and `Before` of a key the transaction wrote return what it wrote, on a backend over a store that fills versions in at commit too; `Scan` sees a transaction's own writes and nothing uncommitted; `Before` returns the greatest key below its argument under the prefix — a transaction's own writes and deletes included, nothing uncommitted, nothing outside the prefix, `ok` false on an empty prefix or at its first key — and another transaction's later write to the key it returned does not abort the reader; `Limits` is honest (a transaction at each limit commits, one past it is refused, a transaction whose writes fit but whose guards and reads take it past `TxnBytes` is refused, one held open past `Age` aborts); a returned `Update` survives a power loss of the store's node, and on the replicated store the loss of its leader (§4.1, §6.4) |
-| **Entity conformance** | the store over each real `KV` | every rule in §1.2 and every invariant of RFC 6 §9 and RFC 7 §10, through the §3 interfaces only |
+| **KV conformance** | every `KV` implementation (embedded, replicated, and an in-memory fake used only by this suite's own tests) | `Update` is atomic and retried; **writer first**: G guards *k* and writes *j*, W writes *k*, both from snapshots taken before either commits; W commits, then G — assert G aborts; **guard first**: the same, G committing first — assert both commit, and that W is ordered after G (a suite asserting W aborts rejects every conforming backend, and no rule may rely on it); **two guards, either order**: T1 and T2 each guard *k* and write a key of their own; commit T1 then T2, then T2 then T1, and once with T1 committing between T2's snapshot and T2's `Guard` — assert all commit; repeat with `GuardRange` over a prefix holding *k*; **range guard**: T guards prefix *P* with no key under it, another transaction creates *P*‖*x* and commits, T commits — assert T aborts; a key created outside *P* does not abort it; **removal against create**, at the KV level: R scans *P* and finds it empty, `GuardRange(P)` and writes *d*; C guards *d* and writes *P*‖*x*; run both commit orders from snapshots taken before either commits — assert exactly one commits and never both, so no key is left under *P* beside a written *d*; drop R's `GuardRange` and the guard-first order commits both; **read-only**: no caller's transaction that calls `Guard` or `GuardRange` writes nothing — the counting wrapper of §6.3 asserts it over the entity suite;  **lost update**: two transactions each `Get` one key and `Set` it to the value read plus one, from one snapshot — exactly one commits first and the other retries, so the key ends two higher; **write skew**: two transactions each `Get` the key the other `Set`s, from one snapshot — one aborts; a blind `Set` of one key by two transactions conflicts, on a backend that checks only reads too; a `Scan` registers nothing, and a range invariant gated on a point record holds (§4.1); `Now` never runs backward across commits in order on one node, nor across a restart with the clock stepped back, and on an idle store it advances with real time; `Versions` returns, for one key written by commits in order, increasing sequences, and for a key the calling transaction wrote or deleted `ErrUncommittedVersion`; `Get`, `Scan` and `Before` of a key the transaction wrote return what it wrote, on a backend over a store that fills versions in at commit too; `Scan` sees a transaction's own writes and nothing uncommitted; `Before` returns the greatest key below its argument under the prefix — a transaction's own writes and deletes included, nothing uncommitted, nothing outside the prefix, `ok` false on an empty prefix or at its first key — and another transaction's later write to the key it returned does not abort the reader; `Limits` is honest (a transaction at each limit commits, one past it is refused, a transaction whose writes fit but whose guards and reads take it past `TxnBytes` is refused, one held open past `Age` aborts); a returned `Update` survives a power loss of the store's node, and on the replicated store the loss of its leader (§4.1, §6.4) |
+| **Entity conformance** | the store over each real `KV` | every rule in §1.2 and every invariant of RFC 6 §9 and RFC 7 §10, through the §3 interfaces only; **refusal by a rule**: a create or rename onto a name that exists answers `ErrExist`, and only for a key the request names — seed the store with a state that breaches a constraint no request names (two Files holding one protocol file number, say), then run a request that trips over it, such as a truncate: assert an I/O-class error and a health condition naming the records, never `ErrExist`, since `SETATTR` has no such answer and the breach is the server's own ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries), I8) |
 
 Routing conformance and the partition-and-kill harness are stated once, in
 [RFC 15](rfc-15-topology.md), and are gated on the first view that ships remote; this RFC adds
@@ -1671,7 +1743,8 @@ chown, set-ACL.
 After every step the store and the model **MUST** agree on every entity reached
 through `Inspect`, and after every sequence:
 
-- every file's `Nlink` equals the entries naming it;
+- every file's `Nlink` equals the entries naming it, and every directory's
+  `Subdirs`, with its unfolded deltas, the entries in it that name a directory;
 - every chunk's `Refcount` equals the live and history refs naming it, found by
   a full walk;
 - usage per share and per principal equals the sum of `File.Charged` over the

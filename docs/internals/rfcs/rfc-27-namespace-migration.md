@@ -376,27 +376,38 @@ freeze carries only what changed since.
    serves** (step 8, claim `owned`), never before: until then B holds the share
    only staged and answers for none of it. The move does not repoint it. At A,
    every call on a moved share then fails:
-   - **SMB.** A ends only the moved shares' trees and their opens, revoked as
-     `RevokedMoved` and answered `STATUS_NETWORK_NAME_DELETED`, as a share
-     removal does ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); the connection
-     and its trees on other shares stay. A client that reaches B reconnects its
-     persistent opens there, whose records and whose installation-wide client
-     records the delta carries (step 6); durable and resilient handles are
-     refused and reopened, as after a failover ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
+   - **SMB.** A's release (step 7) ends only the moved shares' trees: it calls
+     [RFC 14](rfc-14-open-state.md)'s `DropShare` for each with reason `moved`, which revokes
+     their opens as `RevokedMoved`, answered `STATUS_NETWORK_NAME_DELETED`,
+     answers every waiting lock and outstanding change notification on them, and
+     drops A's in-memory opens and deny modes, as a share removal does with
+     reason `removed` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). A move keeps FileIDs, so a
+     later move back to A meets none of them. The connection and its trees on
+     other shares stay. A client that reaches B reconnects its persistent opens
+     there, whose records and whose installation-wide client records the delta
+     carries (step 6); durable and resilient handles are refused and reopened,
+     as after a failover ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). B starts a moved persistent open's
+     timeout at the first tree connect to its share at B from the open's own
+     client (its `ClientGuid`), not when B serves and not at another client's
+     connect, so an operator's repoint and each client's name cache cannot close
+     it before that client arrives; an open whose client never connects to its
+     share is closed `migration.reconnect_wait` after B serves.
    - **NFS.** NFS has no referral to another installation (RFC 21 §7.4), and B
      is a different server owner and scope holding no state of A's clients. Share
      identities and FileIDs are kept ([§2.5](#2.5%20Versions%20and%20FileIDs%20on%20import)), so handles taken at A
      resolve at B; no open, lock or delegation is carried. If the address stays
      at A, a call on a moved share there is answered stale (`NFS4ERR_STALE`,
-     `NFS3ERR_STALE`) and the client remounts at B. If the operator moves A's
-     address to B, an NFSv4 client finds a new server owner and recovers as
-     after a server restart with no state, and an NFSv3 client sees no error at
-     all, so B **MUST** tell its NLM hosts their locks are gone: the delta
-     carries the NLM client records of the moved shares (step 6), and B, once
-     it serves, sends each a restart notification at the record's `Notify`
-     ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)), as for a failover, and starts the moved shares in
-     grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), so the hosts reclaim before any new lock
-     is granted rather than two clients each believing they hold one lock.
+     `NFS3ERR_STALE`) and the client remounts at B. The operator **MAY** move
+     A's address to B instead, but only an address that serves no share outside
+     the moved namespace: clients of A's other namespaces would follow it and
+     find every handle stale. Then an NFSv4 client finds a different server
+     owner and scope; B holds no client record for it, so every reclaim is
+     refused and its state is lost — opens, byte-range locks and delegations
+     alike, a held lock reported to its application as an I/O error — and its
+     opens succeed again once B's grace ends ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)). An NFSv3
+     client sees no error at all, so B **MUST** tell its NLM hosts their locks
+     are gone when the address arrives (step 10): the delta carries the NLM
+     client records of the moved shares, with A's NSM state number (step 6).
 
    No NFS call is held for the whole freeze; NFS calls on a moved share do fail
    outright at A once it has released.
@@ -417,14 +428,19 @@ freeze carries only what changed since.
    - every put intent ([RFC 9 §3.2](rfc-9-gc.md#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)), and the principals the delta names;
    - the installation-wide client records ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) that the moved shares'
      persistent opens name, so such an open reaches B naming a client B holds.
+     B merges each with the one it already holds for the same protocol and
+     owner ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)), so a client of both reconnects to one record, and
+     never imports a record's node fields, which name A's nodes;
    - the NLM client records whose locks name a moved share
-     ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)), with their `Notify`, so B can send each host a
-     restart notification (step 4); the locks themselves are not carried.
+     ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)), with their `Notify`, and A's NSM state number, so B
+     can send each host a restart notification the host honours (step 10); the
+     locks themselves are not carried.
 7. **Ready at B, then release.** B stages the delta over the base
    ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)), applying its changes to the indexes and counts it built from
    the base, verifies it, and reports **ready**: everything but the publish is
    done. Only then does A write the claim `released` with the digest over base
-   and delta, and record the namespace `released`. Everything up to ready runs
+   and delta, record the namespace `released`, and call `DropShare` with reason
+   `moved` for each moved share (step 4). Everything up to ready runs
    inside `migration.freeze_timeout`, and a failure or a timeout before it
    aborts the move as below; no unbounded or unabortable step follows the
    release.
@@ -448,9 +464,34 @@ freeze carries only what changed since.
    reload at A that still declares the namespace or its shares refuses to
    re-create them on a prefix B now claims, naming the move
    ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)), until the operator removes the declaration.
+10. **The address arrives at B**, only when the operator moves A's address
+    (step 4). The operator states it to B (`AddressArrived`, [§3.1](#3.1%20Interfaces)), and B
+    then, in this order: raises its NSM state number above the larger of A's,
+    which the delta carries, and its own ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)); opens a new grace
+    for the moved shares ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), which does not advance any shard's
+    grace instance and signals no NFSv4 client: it exists for NLM reclaims,
+    and an NFSv4 client arriving by the address holds no record at B; and only
+    then sends each NLM host
+    the delta names a restart notification from that address, at the record's
+    `Notify`, as for a failover. The hosts then reclaim to the address they
+    know, in a grace that is open, before any new lock is granted, rather than
+    two clients each believing they hold one lock. Notifying when B publishes
+    would come from an address no host knows, before the handles there resolve,
+    and a host ignores a later notification whose state number equals the last
+    it saw; a number at or below A's is ignored too.
 
-B drops the GC pause record at publish, then deletes each move use record and its
-base cut as an ordinary snapshot. The freeze lasts the drain plus the delta. The
+After publish, B deletes each base cut the pause record lists, one at a time:
+its move use record, then the snapshot as an ordinary deletion, whose last
+transaction also removes it from the list. B deletes the GC pause record only
+once the list is empty. The pause record is the only record of which snapshots
+are base cuts, and a base cut's move use record has no deadline, so deleting the
+pause record first would leave a cut a crash had not yet reached held for good;
+in this order B's start finds the list and resumes. The publish rewrites the
+pause record's step to this cleanup, which is resumed at every start and never
+aborted by a deadline, and the pause's gate does not defer these deletions,
+since they are the move's own. GC at B stays paused until the last cut is gone.
+
+The freeze lasts the drain plus the delta. The
 delta exports only the changes since the base, but selecting them is one
 sequential scan of the namespace's keys filtered by change sequence: metadata
 reads only, no remote I/O.
@@ -462,9 +503,9 @@ reads only, no remote I/O.
 The pause from step 2 grows the namespace by what relocation and deletes would have reclaimed during the
 pre-seed.
 
-**Aborting.** Before A writes the claim `released` in step 7, A **MAY** abort: it records the namespace `serving`,
-deletes the GC pause record, deletes each move use record and then its base cut,
-and reopens the gates; B drops its staging.
+**Aborting.** Before A writes the claim `released` in step 7, A **MAY** abort: it records the namespace `serving`
+and reopens the gates; deletes each base cut its pause record lists, as B does
+after publish, and only then the GC pause record; and B drops its staging.
 After that write, A **MUST NOT** re-claim, reopen or write the namespace unless the
 operator states that B has not published the import, which A cannot learn itself;
 it then writes the claim `owned` at a higher epoch. A move keeps share identities
@@ -483,7 +524,7 @@ protocol state does not, but for SMB persistent opens (step 4).
 | 4 | `move-delta`: 3×10⁴ records with change sequence above cut 20's — among them the kept part of a ref a truncate narrowed at t1, still `born` 12 — all share-prefix records, intents; 5 s | stages it over the base, applies it to the indexes and counts built at t1, verifies; ready | calls wait |
 | 5 | claim `released` with the digest | — | calls retried |
 | 6 | — | publishes; claim `owned` at epoch 4; serves | reconnect to B: 40 s after t3 |
-| 7 | drops its records | drops the pause record; deletes the move use record, then base cut 20 | — |
+| 7 | drops its records | deletes base cut 20's move use record, then the snapshot, removing it from the pause record's list; then deletes the pause record | — |
 
 ### 2.3 GC across installations on one bucket
 
@@ -582,8 +623,8 @@ which to forget: the engine resolves them by
 [RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s rule for unclaimed tags, at
 [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) step 5, once every share the store serves is attached and
 before any imported share serves: a tag no share record of the store names is
-stranded, offered for salvage first where [RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore) orders it,
-then passed to `Forget` by name. A tag of a share not yet attached — one whose
+stranded, exported for salvage, then passed to `Forget` by name
+([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A tag of a share not yet attached — one whose
 dirty data waits out an outage — is claimed by its share record, and is never
 forgotten because another share attached first.
 
@@ -769,13 +810,22 @@ and writing the bytes.
    live remainder and history piece are two refs at *g* and add one, as a split
    does ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)), or drops it, which lowers it. The re-home then runs
    catch-up passes until a fold of the counter ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) reads zero.
-   Once `closing` is set, only a transaction that already holds a ref at *g* can
+   Admission of a clone or copy reads the re-home record but is no
+   transaction, so a clone admitted just before `closing` can still write refs at
+   *g* after it: the finish first waits for every clone or copy into the share
+   admitted before `closing` to be done, then runs one more catch-up pass
+   ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
+   Once `closing` is set and those clones are done, only a transaction that already holds a ref at *g* can
    raise the counter, so a folded zero stays zero, and the finish transaction
    reads the `closing` flag and the folded record of each shard's counter
    (`S‖id‖or‖shard`, [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)) — one key per shard, never the counter's
    unfolded deltas — and requires every one
    zero; it makes N' the share's only namespace, deletes the
-   re-home record, and lifts the refusals. It also runs N's drain check
+   re-home record, and lifts the refusals. Before that transaction, in batches within K, the
+   finish re-keys the share's backup records from
+   under N to under N′ ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), each still naming N as the
+   namespace its export was taken in, so a later move of the share carries them
+   beside its use records; the parking record stays in N. It also runs N's drain check
    ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) as RFC 9 states it, whose key destruction is all or nothing, reading with tracking what that check
    reads, so an N nothing names any longer is drained rather than
    kept with its claim and keys — the case a re-home made to replace exposed keys
@@ -791,10 +841,15 @@ re-home's behalf.
 backup of the share taken before the re-home finished expires, the parked refs
 are dropped from N in batches ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), decrementing each chunk, and N
 can then empty. Those backups' use records belong to the share and move with
-it, so the parking does not wait on them: the finish records, with the parked
-refs under N's prefix, the latest expiry time those backups recorded
-([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), and N's installation prunes from that time, whether or
-not the share is still there. An `Extend` of one of them raises it. Until then a recovery import of such a backup resolves its hints
+it, so the parking does not wait on them. Instead one **parking record** per
+(N, share), `NS‖N‖park‖ShareID` under N's prefix ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), holds the latest expiry time of
+those backups: the finish writes it, reading each one's backup record
+([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) with tracking; an `Extend` of one of them raises it in
+its own transaction; and N's installation prunes the share's parked refs once
+that time passes, whether or not the share is still there, deleting the record
+in the prune's last transaction. Parked refs carry no time: there are as many
+as the share has refs, about 1.7 × 10⁸ for a 40 TiB share, and no transaction
+within K could raise them all. Until then a recovery import of such a backup resolves its hints
 in N as it would before the re-home, and finds every block they name. N is not
 deleted while it holds parked refs; a move of N carries them, being under N's
 prefix, and a move of the re-homed share carries none. The parking
@@ -905,6 +960,9 @@ type Migration interface {
 	Import(ctx context.Context, r io.Reader) (ImportReport, error)                     // base, then delta
 	Drop(ctx context.Context, ns NamespaceID, imported Digest) error                   // step 9
 	Abort(ctx context.Context, ns NamespaceID, notPublished bool) error                // after step 7 only with notPublished
+	// AddressArrived is the operator's statement, at B, that A's address now
+	// reaches B: B raises its NSM number, opens a grace and notifies (step 10).
+	AddressArrived(ctx context.Context, ns NamespaceID, addr netip.Addr) error
 	// ReleasePin deletes A's export pin on a master key for one move, once the
 	// operator states B holds no retained export naming it (§2.4).
 	ReleasePin(ctx context.Context, ns NamespaceID, move MoveID, masterKey MasterKeyID) error
@@ -928,6 +986,9 @@ What other components gain:
   captures, with its keys, when it is carved, and an intent step that refuses a
   plan keyed under another namespace ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)); the share's parked refs
   under the old namespace's own prefix.
+- **Open state** ([RFC 14](rfc-14-open-state.md)): `DropShare` takes a reason, `removed` or
+  `moved`; A's release runs it with `moved` for each moved share, which revokes
+  as `RevokedMoved` ([§2.2](#2.2%20The%20move%2C%20step%20by%20step), step 4).
 - **The journal at a move** ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)): the drop calls `Forget` on the moved
   shares' tags in every journal; before an imported share serves, the engine
   `Forget`s by name every tag no share record names ([§2.5](#2.5%20Versions%20and%20FileIDs%20on%20import)).
@@ -939,7 +1000,8 @@ Moves and re-homes are control-plane records, set through the API
 class [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) gives each: `migration.*` per installation, and
 a re-home's rate. The shape below is how a provisioning file declares them
 ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
-Its three numbers are proposals, not measurements: `freeze_timeout` is settled
+Its four numbers are proposals, not measurements: `reconnect_wait` is settled
+by the longest repoint-to-reconnect time the move test's clients show, `freeze_timeout` is settled
 by the move benchmark of [§5.5](#5.5%20Benchmarks%20and%20targets) (freeze to B serving, against the
 namespace's key count), `hold_reply` by the longest wait an NFS client tolerates
 before its own retry, and `rehome.rate` by the re-home benchmark's p99 write
@@ -950,6 +1012,7 @@ migration:
   freeze_timeout: 5m            # bound on a move's freeze, through B's ready (§2.2)
   hold_reply: 1s                # longest an NFS call waits in the freeze before ErrDelay; SMB is held pending
                                 # up to freeze_timeout + 35 s, as for ErrGrace (§2.2, RFC 17 §3.2)
+  reconnect_wait: 1h            # a moved persistent open whose own client never connects to its share at B closes then (§2.2)
 rehome:
   rate: 100MiB/s                # a re-home's copy rate; 0 pauses it (§2.7)
 ```
@@ -968,7 +1031,8 @@ stated in the one that owns its subject; the numbers missing here are theirs.
 | S26 | During a re-home every ref of the share names the namespace its chunk is counted in, by that namespace's chunk ID. A switch adopts in the new namespace and drops from the old in one transaction, keeping extent, version, `born` and `died`, so no snapshot's or live read's bytes change. The re-home finishes only when no ref names the old namespace, decided from a folded counter that cannot rise once the re-home is closing. |
 | S32 | A claim carries the holder's instance nonce; a holder reads the claim before it rewrites it and records the new nonce before it puts it; a process that reads its own identity with a nonce it did not record stops writing and deleting at once, and an installation started on a copy holds no namespace until an operator states which copy it is. |
 | S38 | An offer uses the namespace and keys it captured when carved; no put lands N-keyed chunk IDs in another namespace. A copy taken mid-re-home carries both namespaces, puts every block into the new namespace's folder, and is honoured by that folder's sweep; a ref the re-home drops from N stays counted there while a catalog backup taken before the re-home finished is unexpired. |
-| S39 | After a move's drop, no journal of the old installation holds an extent or removal marker of the moved shares, and a journal attaching an imported share holds none of its tag's extents before it serves. B's work after A's release is one publish and the claim. |
+| S39 | After a move's drop, no journal of the old installation holds an extent or removal marker of the moved shares, and a journal attaching an imported share holds none of its tag's extents before it serves. B's work after A's release is one publish and the claim. A move's base cuts are each deleted before the pause record that lists them. |
+| S41 | After a move, no SMB open, waiting lock or change notification on a moved share stays at A; B's NLM notification is sent from the moved address only after B's NSM number exceeds A's and a grace for the moved shares is open. Parked refs are pruned only from their parking record's time, which every `Extend` of a backup they serve raises. |
 
 ## 5. Test plan and benchmarks
 
@@ -1007,12 +1071,14 @@ expired; a claim read that stopped a stale image before its put.
 | `S-snap-rehome-crash-<step>` | the re-home crashes after each step and between a batch's puts and its switch; it resumes at its cursor, and N''s GC collects the orphaned puts |
 | `S-snap-rehome-straddle` | an offload carved under N mints names and puts after the write namespace changed: it puts into N with N-keyed IDs, the primary's join makes it commit before the acknowledgement, and every read of it verifies; hand the intent step a plan keyed under N for a put into N': refused `ErrScopeMismatch` |
 | `S-snap-rehome-sole` | the only share of its namespace is re-homed into a namespace with a different chunking target and encryption on; it serves throughout, every snapshot reads back, its refs are re-cut, and the old namespace ends empty |
+| `S-snap-rehome-backup-extend` | a share with catalog backups expiring at T1 is re-homed; after the finish an `Extend` puts a legal hold on one, to T2: its parked refs are not pruned at T1, and a recovery import of it after T1 reads back |
 | `S-snap-rehome-backup` | copying backups run every day of a long re-home; each lists blocks of N′'s folder only, sealed in either namespace, and carries both namespaces' IDs and key records, a restore from one taken mid-way reads back, and N′'s sweep keeps every block it lists while N's sweep deletes none of N′'s; new catalog backups are refused and counted. A share with a 90-day catalog backup is re-homed at once: its refs are parked in N, a recovery import of that backup reads back after the re-home finished, and N empties only once the backup expires |
 | `S-snap-rehome-finish-load` | the finish runs while 64 writers write the share: it commits on each shard's folded counter alone, without a range read; a server-side copy by reference from N after `closing` is refused `ErrCrossNamespace` and the client copies the bytes, and the finish still sees zero |
 | `S-snap-cloned-vm` | two copies of one installation start from one disk image |
-| `S-snap-move-freeze-reply` | calls during a move's freeze are answered retry-later after `hold_reply` over NFS, kept pending over SMB within `freeze_timeout` plus 35 s, never answered `STATUS_DISK_FULL`; at release A ends only the moved share's SMB trees, and a tree on another share over the same connection keeps working; with the client's name pointed at B, persistent handles reconnect at B naming a client B holds and durable ones are refused; an NFS call on the moved share at A is answered stale, and the client remounted at B reads every file by its old handle |
+| `S-snap-move-freeze-reply` | calls during a move's freeze are answered retry-later after `hold_reply` over NFS, kept pending over SMB within `freeze_timeout` plus 35 s, never answered `STATUS_DISK_FULL`; at release A ends only the moved share's SMB trees, and a tree on another share over the same connection keeps working; a waiting byte-range lock and an outstanding CHANGE_NOTIFY on the moved share are each answered at release, and A holds no open or deny mode of the share afterwards; with the client's name pointed at B 30 minutes after B serves, persistent handles reconnect at B naming a client B holds and durable ones are refused, and starting the timeout when B serves closes them first; an NFS call on the moved share at A is answered stale, and the client remounted at B reads every file by its old handle |
 | `S-snap-move-abort-cut` | a base cut aborts at its gate during the pre-seed and a policy tick then takes an ordinary snapshot at the same cut number: it carries no move use record, and the move's end deletes only the base cuts its pause record lists |
-| `S-snap-move-nlm-notify` | an NFSv3 client holds an NLM lock on a moved share and the operator moves A's address to B once B serves: B sends the host a restart notification, the host reclaims in B's grace, and a second client's lock request on that range waits; skip the notification and both clients hold the lock |
+| `S-snap-move-nlm-notify` | an NFSv3 client holds an NLM lock on a moved share, and B's NSM number is below A's; the operator moves A's address to B an hour after B serves and states it: B raises its NSM number above A's, opens a grace, then notifies from that address; the host reclaims in that grace, and a second client's lock request on that range waits; notify at publish instead, or with B's own number, and both clients hold the lock. An NFSv4 client holding a lock on the moved share: its reclaim at B is refused, its application sees an I/O error on the lock, and its open succeeds after B's grace |
+| `S-snap-move-cleanup-crash` | B crashes after publish while deleting the second of three base cuts: its start finds the pause record's list and deletes the rest, then the pause record; delete the pause record first and the third cut is held for good |
 | `S-snap-move-pause-deadline` | A crashes during the pre-seed: the scheduler finds the pause record's deadline past and resumes or aborts the move; a recovery import's pause record, which has no deadline, is left alone |
 
 ### 5.3 Group A — lost or wrong content
@@ -1024,6 +1090,7 @@ expired; a claim read that stopped a stale image before its put.
 | S17 | Move a namespace to B, back to A, and to B again: FileIDs preserved. Restore one backup twice: two shares, disjoint FileIDs. Move A→B, overwrite a file at B, move back: A reads B's bytes, and A's journals held no extent of the share between the drop and the return. Skip step 9's `Forget`: A serves its stale extent. Give an old record of the tag a version above the forget's: it is still dropped, since `Forget` covers by sequence number. Replace it with a per-file `Delete`: after A→B→A a restart's `Since` yields the markers and an untouched file loses its content. Crash A between the `Forget` calls and the record drop, and plant a stale extent of the tag: the engine's start `Forget`s it by name before the imported share serves, and never serves it. |
 | S20 | `S-snap-move-preseed` under the model-based run on A during the pre-seed: after the move B's records equal A's at the freeze, and the delta holds no record unchanged since the base. `S-snap-move-delta-seq`: select the delta by `born` and `died`, and B misses the narrowed ref. `S-snap-move-gc-pause`: pause in memory only, and B maps a relocated chunk to its deleted block. `S-snap-move-refuses` with a share created before the pause commits: drop the pause transaction's tracked reads of `ShareList`, and the move ends with no base cut of the share and B without it. |
 | S26 | `S-snap-rehome` and `S-snap-rehome-crash-<step>` under the model-based run: every snapshot and the live share read back their model copies at every step, and after the finish no ref names N and the audit of both namespaces is clean. Skip the catch-up passes: finish refuses, since `old_refs` is not zero. |
+| S41 | `S-snap-move-freeze-reply`, `S-snap-move-nlm-notify`, `S-snap-move-cleanup-crash` and `S-snap-rehome-backup-extend` as their rows state, each with the failing variant its row names. |
 | S32 | `S-snap-cloned-vm`: start two copies of one installation's disk, on a platform that reports a clone and on one that does not. With the report, the copy holds no namespace. Without it, within one `Recheck` period exactly one copy writes and deletes, and the other has alerted. Restore a day-old image of a running installation, on a platform that reports nothing: it stops at its first start, before any put, and the original keeps writing; rewrite the claim before reading it, and the original is the one fenced. Crash the holder between its put and recording the nonce: at restart it recognises its own claim. |
 
 ### 5.4 Group B — cost and wedging

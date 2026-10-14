@@ -12,13 +12,13 @@
 <rect x="16" y="72" width="180" height="48" rx="3" class="k"/><text x="28" y="92" class="h">master key</text><text x="28" y="108" class="s">in the material provider</text>
 <path d="M196 96H236" class="ar"/><text x="28" y="136" class="s">unwraps each namespace key</text>
 <rect x="238" y="64" width="200" height="30" rx="3" class="k"/><text x="248" y="84" class="m">namespace data key</text>
-<rect x="238" y="98" width="200" height="30" rx="3" class="k"/><text x="248" y="118" class="m">namespace header key</text>
+<rect x="238" y="98" width="200" height="30" rx="3" class="k"/><text x="248" y="118" class="m">namespace chunk-ID key</text>
 <rect x="238" y="132" width="200" height="30" rx="3" class="k"/><text x="248" y="152" class="m">namespace chunking key</text>
 <text x="238" y="182" class="s">each stored wrapped, with a fingerprint</text>
 <path d="M438 79H488" class="ar"/>
 <rect x="490" y="60" width="394" height="42" rx="3" class="p"/><text x="502" y="78" class="h">AES-256-GCM-SIV (RFC 8452)</text><text x="502" y="94" class="s">IV derived from the exact bytes sealed, so any input is safe</text>
 <path d="M438 113H488" class="ar"/>
-<rect x="490" y="106" width="394" height="30" rx="3" class="c"/><text x="502" y="126" class="s">keys the chunk hashes written in block headers (sealed)</text>
+<rect x="490" y="106" width="394" height="30" rx="3" class="c"/><text x="502" y="126" class="s">keys the chunk IDs block headers carry (BLAKE3 keyed)</text>
 <path d="M438 147H488" class="ar"/>
 <rect x="490" y="140" width="394" height="30" rx="3" class="a"/><text x="502" y="160" class="s">keys the chunk boundaries (RFC 2 §6)</text>
 <text x="16" y="220" class="h">Why not AES-GCM with a fixed nonce</text>

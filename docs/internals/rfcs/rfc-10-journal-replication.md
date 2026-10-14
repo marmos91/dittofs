@@ -224,7 +224,7 @@ does not replicate.
 | **holds durably** | a node holds an operation durably once its journal has synced the record of it to the journal's device ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so the operation survives a crash or power loss of that node. It says nothing of the remote tier: content synced there is *offloaded* |
 | **acknowledged** | answered to the client as done — a write's reply, a stable write, a flush or a synchronous metadata operation. Only what the client was told counts; an operation the primary assigned but did not answer is not acknowledged |
 | **epoch** | the shard's **ownership epoch**: a number in the shard record, carried by every version and message ([§6](#6.%20Fencing)). **This is the one statement of what raises it; every other RFC cites it.** It is raised by every change to the record that must fence a sender: a takeover, a handover, a relinquish ([§7.2](#7.2%20Removal)), a replica joining or removed, a learner cleared, and the raise before a move. Two record changes raise none, because nothing else can hold the shard: a node's re-claim of a shard with no replica ([§10](#10.%20A%20single%20node)) and a journal attach on one node ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)); both raise the shard incarnation only. Others raise neither, because they change no member and fence no sender: an override of the shard's replica count or floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)), and an operator's acknowledgement that a relinquished shard's replicas are lost ([§7.2](#7.2%20Removal)); each is a compare-and-swap on the record, and the claim or write that relies on it reads it there |
-| **shard incarnation** | a second number in the shard record, raised every time a node or journal begins serving the shard as primary, the re-claim included, and by nothing else. It fences nothing; it is an input of the write verifier ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)) and names a grace instance ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
+| **shard incarnation** | a second number in the shard record, raised every time a node or journal begins serving the shard as primary, the re-claim included, and by nothing else. It fences nothing; it is an input of the write verifier ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)). A start that lost the shard's open state copies it into the record's `GraceInstance`, which names the grace instance; a handover raises the incarnation and leaves `GraceInstance` alone ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
 | **join incarnation** | raised each time a node joins a shard as a replica; with the node and its journal identity it names one membership, so a node that left and returned is never taken for the copy that left ([§7.3](#7.3%20Joining)) |
 | **committed point** | per shard, the newest version `v` such that every member that is not a learner durably holds every operation at or below `v`, every learner durably holds every operation from its join point up to `v`, and metadata records every removal at or below `v`. The primary sends it to its replicas, and each keeps it durably. A learner's missing tail, which lies below its join point, therefore never holds the point back |
 | **seal** | steps 3 and 4 of a takeover ([§9.2](#9.2%20Takeover)): reconciling the kept replicas above the baseline and re-issuing what was uncertain under the new epoch |
@@ -241,7 +241,10 @@ and every receiver and every fence record compares it. The node epoch names one
 lease of one node, and the node-record guard on every commit compares it
 ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 6). The shard
 incarnation tells clients that the serving primary changed, through the write
-verifier and the grace instance. A put intent is superseded once the shard record
+verifier; the shard record's `GraceInstance`, set to the incarnation only by a
+start that lost the shard's open state and carried unchanged by a handover,
+which ships the table, names the grace instance a stateid is judged against
+([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). A put intent is superseded once the shard record
 no longer names the (node, node epoch) it was written under as primary
 ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)), never by the
 epoch alone and never by the incarnation; a primary that stays through a raise
@@ -432,6 +435,33 @@ would keep the share's dirty content, never offered and never evictable, until
 its next start. A removed replica that comes back holds a tag no share claims
 and resolves it at its next start ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
 
+**The whole-tag `Forget` runs before a row reads forgotten, and again at every
+start while it is owed.** A member acknowledges a shard's `Forget` once its
+forget record is durable and, when that record was the last the node awaited
+for the tag, once RFC 1's whole-tag `Forget` has returned; the primary advances
+the shard's `rm` row to forgotten only on every member's acknowledgement. RFC 1's
+`Forget` is durable and idempotent, so at every start a node runs it again for
+any tag its journal's `Stats` still names whose share's `rm` rows read forgotten
+for every shard the node serves in that journal: a crash between the last row
+and the call then costs one call at the next start, not the tag's bytes until
+the share's records are gone. A forget record is live, and carried forward by
+repack ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), until the journal holds its tag's whole-tag forget
+record, so repack never drops the evidence the whole-tag call waits on. A
+journal of the first format version has no forget record kind and one shard
+per tag: its shard's primary runs the whole-tag `Forget` and then advances the
+row ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), step 3).
+
+**(cluster)** **Nothing reaches a shard's tag once its row is at forget.** From
+the moment the coordinator moves the share to its forget phase, a shard's
+primary sends no tail copy of it and the repair scheduler joins no node to it
+([§7.3](#7.3%20Joining), [§7.4](#7.4%20Repair)): a learner's tail copy or a new
+member's join after its forget record would land live, never evictable, under a
+tag the node has already forgotten. A takeover of a shard in that phase skips
+the re-issue of [§9.2](#9.2%20Takeover) and re-sends `Forget` to every member
+instead, and a node that holds a shard's forget record refuses `Apply` and the
+join's copy for that shard with `ErrForgotten`, so a message sent before the
+phase and delivered after it adds nothing.
+
 **Settling** needs no new record. A node calls RFC 1's `Settle` on a shard's files
 at the committed point it has persisted, which drops removal markers at or below
 it ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)), and settles again after a restart. No marker is needed for what
@@ -608,11 +638,11 @@ exchange messages — this layer's and forwarded calls alike
 mutually authenticated by credentials the installation issues per node, and
 encrypted. A receiver **MUST** refuse a message whose authenticated sender is not
 the node the message names, and a message about a shard from a node the shard
-record does not list. Without it, one forged durability notice makes a replica
+record does not list. Without it, one forged offload notice makes a replica
 release dirty content, and no epoch check catches a forger that copies the
 current epoch.
 
-Every message this layer sends — an operation batch, a durability notice, an
+Every message this layer sends — an operation batch, a offload notice, an
 install, a seal request, a newest-version query — carries the epoch it was sent
 under. **The receiver enforces it:**
 
@@ -727,6 +757,14 @@ silent one. **Silence removals run before answer removals**: with replica B
 silent and replica C lagging, the primary removes B first, keeping C, which
 answered; removing C first would leave dead B the only replica, which keep-one
 then protects, and the primary would relinquish to it.
+**An answer removal first re-proves the replica it keeps.** An answer within
+the removal bound shows the primary was not isolated then, not that the replica
+is alive now: B dead for less than one removal bound still counts, so C would
+be removed and the primary relinquish to dead B. So before the compare-and-swap
+of a lag or pressure removal, the primary sends the replica it keeps a probe and
+removes the lagging one only on that replica's answer to it; with no answer
+within the answer bound, the kept replica is the silent one, and it is removed
+first, keeping the lagging replica, which answered.
 A primary that has heard from no replica of
 a shard within the bound cannot tell its own isolation from their loss, so it
 removes none and **relinquishes** the shard instead: it stops acknowledging,
@@ -840,6 +878,10 @@ cluster's, divided evenly among the partitions. It **MUST**:
 - be disabled cluster-wide by one setting, for maintenance that would otherwise
   start a storm of joins.
 
+It joins no node to a shard whose share is in its removal's forget phase
+([§2.3](#2.3%20The%20journal%20extension)): the share is going, and a join after a member's forget record
+would leave live content under a forgotten tag.
+
 The scheduler only chooses; each join is the primary's procedure of [§7.3](#7.3%20Joining).
 
 ## 8. Reads
@@ -938,7 +980,10 @@ When the primary's node lease lapses, a replica takes over:
    holds there under the new epoch and replicates it like any operation: its
    bytes, or a removal where a removal marker is the newest thing it holds. An extent
    metadata already covers at or above the uncertain version is never re-issued as
-   a removal. Every kept replica then converges on the claimant's view.
+   a removal. Every kept replica then converges on the claimant's view. A shard
+   whose share is in its removal's forget phase skips this step and re-sends
+   `Forget` to every member instead ([§2.3](#2.3%20The%20journal%20extension)): its tag is being dropped, and a
+   re-issue would land live under a tag a member has already forgotten.
 5. **Existence.** It re-applies existence for the shard's files it holds —
    `Since(id, applied)` for each ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)) — writing each file's fence records at
    the new epoch first, in commits that wait until every kept replica durably
@@ -994,10 +1039,11 @@ waits for no lease:
    ([RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)) — and sends every replica the
    committed point covering it;
 3. it writes the record naming the new primary at the next epoch, by
-   compare-and-swap, and sends the new primary the shard's open-state table; the
-   dedup table is not shipped, since the new primary looks a retry up on a miss
-   in the durable request records and journal request entries it shares
-   ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). On an unknown outcome it
+   compare-and-swap, and sends the new primary the shard's open-state table with
+   the dedup entries of the open-state calls, which leave no durable result; the
+   rest of the dedup table is not shipped, since the new primary looks a journal
+   operation's or a namespace mutation's retry up on a miss in the journal
+   request entries and durable request records ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). On an unknown outcome it
    re-reads the record before doing anything else, so it never resumes writes
    under a record that has moved;
 4. the new primary installs the epoch on every replica, re-applies existence as
@@ -1223,7 +1269,7 @@ type Replicated interface {
 	Delete(ctx context.Context, file FileID) (Version, error)
 	Sync(ctx context.Context, file FileID) error                               // a client's flush, §4
 	ReadAt(ctx context.Context, file FileID, p []byte, off int64) (int, error) // §8
-	Durable(ctx context.Context, file FileID, ext []Extent, oldest, newest Version) error // §5
+	Offloaded(ctx context.Context, file FileID, ext []Extent, oldest, newest Version) error // §5: an offload commit landed; tells the replicas
 	Hold(ctx context.Context, share ShareID, cut SnapshotCut, marks map[FileID]Version) error // §2.3
 	Unhold(ctx context.Context, share ShareID, cut SnapshotCut) error
 }
@@ -1231,8 +1277,8 @@ type Replicated interface {
 // Peer is one replica as the primary sees it, or the primary as a replica asks
 // it. Every call carries the shard and its epoch and is fenced by §6.
 type Peer interface {
-	Apply(ctx context.Context, s ShardID, e Epoch, ops []Op, committed Version) error // §4
-	Copy(ctx context.Context, s ShardID, e Epoch, ops []Op) error                     // §7.3: a learner's tail; refused once it is no longer a learner
+	Apply(ctx context.Context, s ShardID, e Epoch, ops []Op, committed Version) error // §4; ErrForgotten once it holds the shard's forget record (§2.3)
+	Copy(ctx context.Context, s ShardID, e Epoch, ops []Op) error                     // §7.3: a learner's tail; refused once it is no longer a learner, and with ErrForgotten once it holds the shard's forget record (§2.3)
 	MarkOffloaded(ctx context.Context, s ShardID, e Epoch, file FileID, ext []Extent, oldest, newest Version) error // §5
 	Install(ctx context.Context, s ShardID, e Epoch) (committed Version, err error) // §6
 	Above(ctx context.Context, s ShardID, e Epoch, v Version) iter.Seq2[Op, error]   // §9.2
@@ -1251,6 +1297,7 @@ var (
 	ErrUnderReplicated = errors.New("replication: below the floor")
 	ErrForward         = errors.New("replication: forward to the primary")
 	ErrGateClosed      = errors.New("replication: the installation's replication gate is closed")
+	ErrForgotten       = errors.New("replication: this node holds the shard's forget record")
 )
 ```
 
@@ -1280,8 +1327,8 @@ Each invariant is stated where its rule lives; the model checks them as properti
 | R17 | No journal writes an extension record before the installation's replication gate opens, and the gate never closes | [§2.3](#2.3%20The%20journal%20extension) |
 | R18 | A node other than the primary serves an extent only where every extent within it carries the version the primary named for it | [§8](#8.%20Reads) |
 | R19 | The committed point counts a learner only from its join point; the floor counts learners | [§2.1](#2.1%20Terms), [§7.1](#7.1%20Count%2C%20floor%20and%20placement) |
-| R20 | The ownership epoch fences, the node epoch guards commits and supersedes put intents, and the shard incarnation drives the write verifier and the grace instance; no rule reads one for another's job | [§2.1](#2.1%20Terms) |
-| R21 | A primary removes a replica for silence only while another, a learner included, answers it within the removal bound, removes silent replicas before answering ones, and removes regardless only one that is amnesiac or below its mark; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by another node's takeover or operator acknowledgement, never by a claim from the relinquishing node, under any node epoch, or from its journal | [§7.2](#7.2%20Removal) |
+| R20 | The ownership epoch fences, the node epoch guards commits and supersedes put intents, and the shard incarnation drives the write verifier, and `GraceInstance` alone, advanced only at a loss of open state, names the grace instance; no rule reads one for another's job | [§2.1](#2.1%20Terms) |
+| R21 | A primary removes a replica for silence only while another, a learner included, answers it within the removal bound, removes silent replicas before answering ones, removes a lagging one only after the replica it keeps answers a probe sent for that removal, and removes regardless only one that is amnesiac or below its mark; one that hears from none ends its put intents and relinquishes the shard, which leaves relinquished only by another node's takeover or operator acknowledgement, never by a claim from the relinquishing node, under any node epoch, or from its journal | [§7.2](#7.2%20Removal) |
 | R22 | An operation's request ID and result survive its eviction, settling and repack, on every member, until the retry window has passed | [§2.3](#2.3%20The%20journal%20extension) |
 | R23 | A node's self-fence by its own clock falls before a successor may serve, at the clock-rate bound ρ: `(L − δ) × (1 + ρ) < L + δ`, the successor's wait being `L + δ` on its own monotonic clock from the reply to a read that saw the lease's expiry record unchanged since, so it rests on no clock offset | [§3](#3.%20What%20it%20assumes%20of%20shard%20placement) item 3, [§9.2](#9.2%20Takeover) step 1 |
 
@@ -1297,9 +1344,10 @@ Every metric is labelled by shard where it is per shard, and by share.
 | time replication adds to an acknowledgement | `replication_ack_seconds` | histogram |
 | replicas per shard, labelled `learner`; below the floor raises a health condition | `replication_replicas` | gauge |
 | under-replicated shards, and shards waiting for the repair scheduler | `replication_under_replicated`, `replication_repair_queue` | gauge |
-| refusals, labelled `reason` = `stale_epoch`, `committed`, `divergent`, `not_listed`, `amnesiac` or `pressure` | `replication_refusals_total` | counter |
+| refusals, labelled `reason` = `stale_epoch`, `committed`, `divergent`, `not_listed`, `amnesiac`, `pressure` or `forgotten` | `replication_refusals_total` | counter |
 | bytes taken by `Apply`, labelled `outcome` = `applied` or `older` | `journal_applied_bytes_total` | counter |
-| record changes, labelled `kind` = `takeover`, `handover`, `remove`, `join` or `covered`, and `outcome` = `ok`, `stale` or `unknown` | `replication_record_changes_total` | counter |
+| record changes, labelled `kind` = `takeover`, `handover`, `remove`, `join`, `covered` or `relinquish`, and `outcome` = `ok`, `stale` or `unknown` | `replication_record_changes_total` | counter |
+| relinquished shards waiting for a takeover or the operator's `AckLost`; a shard relinquished longer than the gather interval raises a health condition naming it and the relinquishing node, since only a returning replica or the operator ends it ([§7.2](#7.2%20Removal)) | `replication_relinquished` | gauge |
 | takeover time, lease expiry to writable | `replication_takeover_seconds` | histogram |
 | seal duration, and the bytes it re-issued | `replication_seal_seconds`, `replication_seal_bytes_total` | histogram, counter |
 | join to learner flag cleared, and the tail bytes, labelled `by` = `copy` or `offload` | `replication_tail_seconds`, `replication_tail_bytes_total` | histogram, counter |
@@ -1439,7 +1487,7 @@ set and an epoch, and every message is fenced by it.
 | `S-tied-gather` | two replicas gather equal committed points; only the one first in the shard's slot order claims, and if both claim on differing gathers the conditional claim lets one win; over 10³ tied shards, claims follow slot order rather than all landing on the lowest node ID |
 | `S-loss-point-gather` | a replica's journal loses an acknowledged operation in a failed sync window while its committed point is above it; the primary dies. Assert the replica is counted at its loss point, a replica holding the operation claims, and the operation survives. A gather by committed point alone loses it |
 | `S-repair-before-lost` | the claimant's own journal lost an operation below the baseline that a kept replica holds; assert the claimant pulls it before serving and no read of it fails as Lost |
-| `S-forged-notice` | a node that is not listed for a shard, and then one with a stolen node ID but no credential, sends a durability notice; assert both are refused and the replica keeps its dirty content |
+| `S-forged-notice` | a node that is not listed for a shard, and then one with a stolen node ID but no credential, sends a offload notice; assert both are refused and the replica keeps its dirty content |
 | `S-renew-unknown-outcome` | a renewal's swap lands and its reply is lost; assert the node re-reads the generation, renews from it, and its journal is not declared amnesiac. A blind retry fails this |
 | `S-store-stall-resume` | the store stalls for longer than a lease and returns; no takeover claims meanwhile. Assert every node resumes its lease at the same node epoch, no shard fails over, no grace runs and no write verifier changes |
 | `S-lost-node-batched` | a node primary of 10³ shards is lost; assert each surviving replica sends one gather per peer and claims in batched transactions, and measure time to all shards writable |
@@ -1454,9 +1502,13 @@ set and an epoch, and every message is fenced by it.
 | `S-retry-after-eviction` | a write is acknowledged, offloaded and evicted on every member, its reply lost; the primary fails over; a second write lands on the same bytes; the first is retried within the window. Assert the retry is answered from the request entry and the second write's bytes survive |
 | `S-resume-rollback` | a primary's VM is imaged while it holds its lease and restored after the lease lapsed, with no takeover between; assert its resume's generation swap loses and it serves nothing from that journal |
 | `S-clock-rate-bound` | a node's clock runs slow at exactly ρ; assert its self-fence falls before a successor serves. A start with settings that break `(L − δ) × (1 + ρ) < L + δ` is refused |
-| `S-clock-offset-takeover` | on a store whose `Now` is each node's clock, set the claimant's wall clock 2 s ahead of the old primary's and its monotonic clock ρ fast, the old primary's clock true — offsetting both would put the rates 2ρ apart, past the bound; stop the old primary's renewals by a journal stall that trips its watchdog ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) while the store stays reachable, so it self-fences at `L − δ`, not at half the lease; assert the claim commits no sooner than that self-fence in the old primary's time. A claim that compares the stored expiry with the claimant's `Now` commits first |
+| `S-clock-offset-takeover` | on a store whose `Now` is each node's clock, set the claimant's wall clock 2 s ahead of the old primary's and its monotonic clock ρ fast, the old primary's clock true — offsetting both would put the rates 2ρ apart, past the bound; stop the old primary's renewals by a journal stall that trips its watchdog ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) while the store stays reachable, so it self-fences at `L − δ`, not at half the lease. The stalled primary keeps issuing store calls throughout — its renewals fail but its reads of the store still answer — so its reach fence stays satisfied and only the lease fence can stop it, which is what separates the two; assert the claim commits no sooner than that self-fence in the old primary's time. A claim that compares the stored expiry with the claimant's `Now` commits first |
 | `S-removal-vs-takeover` | a primary's removal and a replica's claim race on one record |
 | `S-forget-replica-down` | a share is removed while one replica of its shard is down; assert the shard's removal step completes only once that replica is removed from the set, the other replica holds none of the share's content after its `Forget`, and the down replica, on its return, resolves the unclaimed tag at its next start. A step that completes on the primary's `Forget` alone leaves the live replica holding the share's dirty content |
+| `S-forget-two-shards-one-journal` | a share has shards A and B whose replica sets share one node N; A's rows reach forget while B still offloads; assert N keeps the tag until B's forget record, then runs the whole-tag `Forget`. Crash N between its last forget record and the call: assert the next start runs it, and that repack between the two keeps both forget records. A gate per shard drops B's dirty content with A's `Forget` |
+| `S-forget-then-tail` | a learner joins shard B, then B's share reaches its forget phase mid-tail; B's primary fails over during it. Assert no tail copy or join follows the phase, the new primary skips the re-issue and re-sends `Forget`, and a delayed `Apply` or `Copy` reaching a member holding the forget record is refused `ErrForgotten`. Each, admitted, leaves live bytes under a forgotten tag |
+| `S-keep-one-ordering` | replica B silent, replica C lagging: B is removed first, keeping C. Then kill B one millisecond before C's lag removal falls due, within the removal bound of B's last answer: assert the probe to B goes unanswered, B is removed for silence and C kept. Keep-one that counts B's earlier answer removes C and relinquishes to dead B |
+| `S-relinquish-ack-lost` | a primary relinquishes a shard whose replicas are then lost for good; assert the shard is reported relinquished past the gather interval as a health condition, the relinquishing node's claim is refused, and after `AckLost` it claims on its one copy and the condition clears |
 | `S-learner-orphaned` | the primary dies before a learner's tail is covered; the claim drops the learner, which discards and joins again |
 | `S-join-during-takeover` | a join and a claim race; the loser re-reads |
 | `S-move-during-failover` | files moving between shards when either shard's primary fails mid-batch |
@@ -1484,7 +1536,9 @@ lost at open, at lease acquisition and at renewal; `ErrDivergent` was returned t
 primary; a learner was dropped by a claim; a commit in flight was aborted by the
 node-record guard; an operation was refused at or below the committed point; a
 replica was dropped from a gather by its persisted mark; an unknown
-compare-and-swap outcome was resolved by re-reading.
+compare-and-swap outcome was resolved by re-reading; a lag removal waited on a
+probe of the replica it keeps; a start re-ran an owed whole-tag `Forget`; an
+`Apply` was refused `ErrForgotten`; a relinquished shard left by `AckLost`.
 
 **Properties** every check asserts:
 

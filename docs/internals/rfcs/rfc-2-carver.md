@@ -1017,7 +1017,9 @@ the file. Which namespaces hold a chunking key, and how, is
   ([§4.3](#4.3%20Key%20scope)), and every share of the namespace cuts under the same key;
 - what it leaves visible is block sizes, repetition, and every chunk's length,
   which the clear envelopes give a bucket reader. Keying hides which file the
-  lengths belong to; it does not hide the lengths.
+  lengths belong to, and only from a bucket reader who can cause no write into
+  the namespace and knows none of its stored content (below); it does not hide
+  the lengths.
 
 **What the key protects against: observers who know nothing stored.** Recent
 work [5] recovers the keys of deployed keyed-chunking schemes, gear-table ones
