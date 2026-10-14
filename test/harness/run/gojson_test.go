@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -111,7 +113,7 @@ func TestGoJSONBuildFailure(t *testing.T) {
 }
 
 // A process left holding the events file can't hold dt: it reads to the
-// file's end once the command exits.
+// file's end once the command exits, and the leftover is killed.
 func TestFollowedIgnoresLeftovers(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the leftover is started through sh")
@@ -119,9 +121,26 @@ func TestFollowedIgnoresLeftovers(t *testing.T) {
 	var res results
 	var out bytes.Buffer
 	start := time.Now()
-	cmd := exec.Command("sh", "-c", `sleep 30 & echo '{"Action":"pass","Package":"p","Test":"TestA"}'`)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", `sleep 30 & echo $! > `+pidFile+`; echo '{"Action":"pass","Package":"p","Test":"TestA"}'`)
+	killTree(cmd)
 	if _, err := followed(cmd, filepath.Join(t.TempDir(), "events.json"), &res, &out); err != nil {
 		t.Fatal(err)
+	}
+	pid, _ := os.ReadFile(pidFile)
+	if n, err := strconv.Atoi(strings.TrimSpace(string(pid))); err != nil {
+		t.Errorf("leftover pid %q: %v", pid, err)
+	} else {
+		// A killed leftover lingers until init reaps it; one left alive
+		// sleeps on for 30 seconds.
+		p, _ := os.FindProcess(n)
+		for end := time.Now().Add(5 * time.Second); p.Signal(syscall.Signal(0)) == nil && time.Now().Before(end); {
+			time.Sleep(50 * time.Millisecond)
+		}
+		if p.Signal(syscall.Signal(0)) == nil {
+			_ = p.Kill()
+			t.Error("the leftover outlived the command")
+		}
 	}
 	if took := time.Since(start); took > 10*time.Second {
 		t.Errorf("took %s: the leftover held dt", took)
@@ -431,5 +450,18 @@ func TestBinBuildFailure(t *testing.T) {
 	log, _ := os.ReadFile(filepath.Join(dir, "logs", "g.log"))
 	if o.Result != NotRun || !strings.Contains(o.Note, "dfs and dfsctl didn't build") || !strings.Contains(string(log), "notDefined") {
 		t.Errorf("outcome %+v\nlog:\n%s", o, log)
+	}
+}
+
+// {bin} is there for a root cell's commands; elsewhere dt doesn't provide it,
+// and a command it can't fill leaves the cell not run.
+func TestBinPlaceholder(t *testing.T) {
+	fakeSudo(t)
+	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"})
+	if o, out, _ := goRun(t, "suites:\n  g: { cmd: \"go test ./a/... -args {bin}\", format: go-json, needs: [root] }\n", files); o.Result != Passed {
+		t.Errorf("root cell: %+v\n%s", o, out)
+	}
+	if o, _, _ := goRun(t, "suites:\n  g: { cmd: \"go test ./a/... -args {bin}\", format: go-json }\n", files); o.Result != NotRun || !strings.Contains(o.Note, "{bin}") {
+		t.Errorf("a cell that doesn't run as root: %+v", o)
 	}
 }
