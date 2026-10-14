@@ -51,7 +51,7 @@ suites:
     tier: pr
     cmd:
       sh: |
-        git ls-files -s | while read -r mode _ _ f; do
+        git -c core.quotePath=false ls-files -s | while read -r mode _ _ f; do
           [ -f "$f" ] || continue
           case "${f##*/}" in
             *.sh) ;;
