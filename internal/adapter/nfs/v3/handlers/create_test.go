@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
@@ -14,7 +15,7 @@ import (
 // TestCreate_RFC1813 tests CREATE handler behaviors per RFC 1813 Section 3.3.8.
 //
 // CREATE creates a new regular file. It supports three modes:
-// - UNCHECKED: Create or truncate existing file
+// - UNCHECKED: Create, or keep an existing file (resized only when a size is given)
 // - GUARDED: Fail if file exists
 // - EXCLUSIVE: Use verifier for idempotent creation
 
@@ -44,29 +45,155 @@ func TestCreate_UncheckedNewFile(t *testing.T) {
 	assert.NotNil(t, fx.GetHandle("newfile.txt"), "File should exist after CREATE")
 }
 
-// TestCreate_UncheckedExistingFile tests UNCHECKED mode truncates existing file.
-func TestCreate_UncheckedExistingFile(t *testing.T) {
+// uncheckedCreate issues an UNCHECKED CREATE of name with attr, as root.
+func uncheckedCreate(t *testing.T, fx *handlertesting.HandlerTestFixture, name string, attr *metadata.SetAttrs) *handlers.CreateResponse {
+	t.Helper()
+	resp, err := fx.Handler.Create(fx.ContextWithUID(0, 0), &handlers.CreateRequest{
+		DirHandle: fx.RootHandle,
+		Filename:  name,
+		Mode:      types.CreateUnchecked,
+		Attr:      attr,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status, "UNCHECKED CREATE of an existing entry should succeed")
+	return resp
+}
+
+// readAll reads the whole file through the READ handler.
+func readAll(t *testing.T, fx *handlertesting.HandlerTestFixture, handle []byte) []byte {
+	t.Helper()
+	resp, err := fx.Handler.Read(fx.ContextWithUID(0, 0), &handlers.ReadRequest{Handle: handle, Count: 1 << 16})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status)
+	return resp.Data[:resp.Count]
+}
+
+// TestCreate_UncheckedExistingFile_NoSizeKeepsFile tests that an UNCHECKED
+// CREATE naming an existing file, with no size in its attributes, leaves the
+// file as it is. That is what a client sends for open(O_CREAT) without
+// O_TRUNC, as for an append: the attributes it carries must not reset the
+// file, and the size returned must be the real one, because an O_APPEND write
+// is placed at it.
+func TestCreate_UncheckedExistingFile_NoSizeKeepsFile(t *testing.T) {
 	fx := handlertesting.NewHandlerFixture(t)
+	fx.CreateFile("existing.txt", []byte("ABCDE"))
 
-	// Setup: Create existing file with content
-	fx.CreateFile("existing.txt", []byte("original content"))
+	mode := uint32(0600)
+	resp := uncheckedCreate(t, fx, "existing.txt", &metadata.SetAttrs{Mode: &mode})
 
-	mode := uint32(0644)
-	req := &handlers.CreateRequest{
+	assert.EqualValues(t, 5, resp.Attr.Size, "the reply must carry the existing size")
+	assert.EqualValues(t, 0644, resp.Attr.Mode&0o7777, "the mode of an existing file must not change")
+	assert.Equal(t, []byte("ABCDE"), readAll(t, fx, resp.FileHandle), "the existing data must survive")
+
+	// The client appends at the size the reply gave it.
+	wresp, err := fx.Handler.Write(fx.ContextWithUID(0, 0), &handlers.WriteRequest{
+		Handle: resp.FileHandle,
+		Offset: resp.Attr.Size,
+		Count:  5,
+		Stable: 2, // FILE_SYNC
+		Data:   []byte("abcde"),
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, wresp.Status)
+	assert.Equal(t, []byte("ABCDEabcde"), readAll(t, fx, resp.FileHandle), "an append must land after the existing data")
+}
+
+// TestCreate_UncheckedExistingDirectory_NoSize tests that an UNCHECKED CREATE
+// naming an existing directory, with no size, answers with the directory's
+// own handle and attributes rather than an error, and leaves it in place.
+func TestCreate_UncheckedExistingDirectory_NoSize(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	dir := fx.CreateDirectory("existing-dir")
+
+	resp := uncheckedCreate(t, fx, "existing-dir", &metadata.SetAttrs{})
+
+	assert.Equal(t, []byte(dir), []byte(resp.FileHandle), "the reply must carry the directory's own handle")
+	assert.EqualValues(t, types.NF3DIR, resp.Attr.Type)
+	assert.Equal(t, metadata.FileTypeDirectory, fx.GetFile("existing-dir").Type, "the directory must stay a directory")
+}
+
+// TestCreate_UncheckedExistingSymlink_NoSize tests the same for an existing
+// symlink: its own handle and attributes, and its target unchanged.
+func TestCreate_UncheckedExistingSymlink_NoSize(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	link := fx.CreateSymlink("existing-link", "some/target")
+
+	resp := uncheckedCreate(t, fx, "existing-link", &metadata.SetAttrs{})
+
+	assert.Equal(t, []byte(link), []byte(resp.FileHandle), "the reply must carry the symlink's own handle")
+	assert.EqualValues(t, types.NF3LNK, resp.Attr.Type)
+	assert.Equal(t, "some/target", fx.GetFile("existing-link").LinkTarget, "the symlink's target must not change")
+}
+
+// TestCreate_UncheckedExistingFile_ReadOnlyShare tests that an UNCHECKED
+// CREATE naming an existing file on a read-only share fails with ROFS even
+// without a size, so a client opening the file for writing learns it at open.
+func TestCreate_UncheckedExistingFile_ReadOnlyShare(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	fx.CreateFile("existing.txt", []byte("ABCDE"))
+
+	store, err := fx.MetadataService.GetStoreForShare(fx.ShareName)
+	require.NoError(t, err)
+	opts, err := store.GetShareOptions(context.Background(), fx.ShareName)
+	require.NoError(t, err)
+	readOnly := *opts
+	readOnly.ReadOnly = true
+	require.NoError(t, store.UpdateShareOptions(context.Background(), fx.ShareName, &readOnly))
+
+	resp, err := fx.Handler.Create(fx.ContextWithUID(0, 0), &handlers.CreateRequest{
 		DirHandle: fx.RootHandle,
 		Filename:  "existing.txt",
 		Mode:      types.CreateUnchecked,
-		Attr: &metadata.SetAttrs{
-			Mode: &mode,
-		},
-	}
-	resp, err := fx.Handler.Create(fx.ContextWithUID(0, 0), req)
-
-	// Verify - UNCHECKED should succeed and truncate
+		Attr:      &metadata.SetAttrs{},
+	})
 	require.NoError(t, err)
-	assert.EqualValues(t, types.NFS3OK, resp.Status, "UNCHECKED should succeed on existing file")
-	// File should be truncated to 0
-	assert.EqualValues(t, uint64(0), resp.Attr.Size, "File should be truncated")
+	assert.EqualValues(t, types.NFS3ErrRofs, resp.Status)
+	assert.Equal(t, []byte("ABCDE"), fx.ReadContent("existing.txt"), "the existing data must survive")
+}
+
+// TestCreate_UncheckedExistingFile_NilAttrKeepsFile tests the same with no
+// attributes at all.
+func TestCreate_UncheckedExistingFile_NilAttrKeepsFile(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	fx.CreateFile("existing.txt", []byte("ABCDE"))
+
+	resp := uncheckedCreate(t, fx, "existing.txt", nil)
+
+	assert.EqualValues(t, 5, resp.Attr.Size)
+	assert.Equal(t, []byte("ABCDE"), readAll(t, fx, resp.FileHandle))
+}
+
+// TestCreate_UncheckedExistingFile_ZeroSizeTruncates tests that a size of
+// zero, which a client sends for O_TRUNC, empties the existing file.
+func TestCreate_UncheckedExistingFile_ZeroSizeTruncates(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	fx.CreateFile("existing.txt", []byte("original content"))
+
+	size := uint64(0)
+	resp := uncheckedCreate(t, fx, "existing.txt", &metadata.SetAttrs{Size: &size})
+
+	assert.EqualValues(t, 0, resp.Attr.Size, "a size of zero must truncate")
+	assert.Empty(t, readAll(t, fx, resp.FileHandle))
+}
+
+// TestCreate_UncheckedExistingFile_SizeResizes tests that a non-zero size
+// shortens or extends the existing file to it, and that the request's other
+// attributes are still ignored.
+func TestCreate_UncheckedExistingFile_SizeResizes(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	fx.CreateFile("existing.txt", []byte("ABCDE"))
+
+	short := uint64(3)
+	mode := uint32(0600)
+	resp := uncheckedCreate(t, fx, "existing.txt", &metadata.SetAttrs{Size: &short, Mode: &mode})
+	assert.EqualValues(t, 3, resp.Attr.Size)
+	assert.EqualValues(t, 0644, resp.Attr.Mode&0o7777, "only the size is applied to an existing file")
+	assert.Equal(t, []byte("ABC"), readAll(t, fx, resp.FileHandle))
+
+	long := uint64(6)
+	resp = uncheckedCreate(t, fx, "existing.txt", &metadata.SetAttrs{Size: &long})
+	assert.EqualValues(t, 6, resp.Attr.Size)
+	assert.Equal(t, []byte("ABC\x00\x00\x00"), readAll(t, fx, resp.FileHandle), "an extension reads back as zeros")
 }
 
 // TestCreate_GuardedNewFile tests creating a new file with GUARDED mode.

@@ -82,9 +82,10 @@ postgres-migration/
 k8s/dittofs-operator/Dockerfile.cross
 k8s/dittofs-operator/manager-linux-amd64
 
-# dt's results, and the build its shim runs
+# dt's results, the build its shim runs, and the environment commands' state
 test/harness/results/
 test/harness/.bin/
+test/harness/state/
 
 # SMB Conformance test results and local-mode build artifacts
 test/smb-conformance/results/

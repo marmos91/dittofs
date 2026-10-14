@@ -18,7 +18,7 @@ import (
 //
 // The CREATE procedure creates a new regular file in a specified directory.
 // It supports three creation modes:
-//   - UNCHECKED: Create file or truncate if exists
+//   - UNCHECKED: Create file, or open it if it exists (truncating only when a size is given)
 //   - GUARDED: Create only if file doesn't exist
 //   - EXCLUSIVE: Create with verifier for idempotent retry
 //
@@ -36,7 +36,7 @@ type CreateRequest struct {
 
 	// Mode specifies the creation mode.
 	// Valid values:
-	//   - CreateUnchecked (0): Create or truncate existing file
+	//   - CreateUnchecked (0): Create, or keep an existing file (resized only when Attr.Size is set)
 	//   - CreateGuarded (1): Fail if file exists
 	//   - CreateExclusive (2): Use verifier for idempotent creation
 	Mode uint32
@@ -167,7 +167,7 @@ func (h *Handler) Create(
 	var fileHandle metadata.FileHandle
 	var fileAttr *metadata.FileAttr
 	// createDirWcc holds the parent-directory WCC captured atomically when a new
-	// file is created (H9). Nil for the truncate-existing path (parent dir
+	// file is created (H9). Nil for the resize-existing path (parent dir
 	// unchanged) and for early returns.
 	var createDirWcc *metadata.DirWcc
 
@@ -250,12 +250,11 @@ func (h *Handler) Create(
 		fileHandle, fileAttr, createDirWcc, err = createNewFile(authCtx, metaSvc, parentHandle, req)
 
 	case types.CreateUnchecked:
-		// UNCHECKED: Create or truncate existing
+		// UNCHECKED: create, or reuse the existing file
 		if fileExists {
-			// Truncate existing file
 			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, blockStore, metaSvc, existingFile, req)
+			fileAttr, err = resizeExistingFile(authCtx, blockStore, metaSvc, existingFile, req)
 		} else {
 			// Create new file
 			fileHandle, fileAttr, createDirWcc, err = createNewFile(authCtx, metaSvc, parentHandle, req)
@@ -327,7 +326,7 @@ func (h *Handler) Create(
 	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, fileAttr)
 
 	// H9: prefer the parent-directory WCC captured atomically with the create.
-	// For the truncate-existing path (createDirWcc nil) the parent dir is
+	// For the resize-existing path (createDirWcc nil) the parent dir is
 	// unchanged, so dirWccPair falls back to a fresh read.
 	dirWccBefore, nfsDirAttr := h.dirWccPair(ctx, metaSvc, parentHandle, createDirWcc, dirWccBefore)
 
@@ -457,23 +456,30 @@ func createNewFile(
 	return fileHandle, &createdFile.FileAttr, dirWcc, nil
 }
 
-// truncateExistingFile truncates an existing file and updates attributes.
+// resizeExistingFile handles an UNCHECKED CREATE that names an existing file.
 //
-// For UNCHECKED mode when file exists, this:
-//  1. Determines target size (from Attr.Size or 0)
-//  2. Updates file metadata using SetFileAttributes
-//  3. Truncates content (if block store is available)
+// Only a size in the request is applied: the file is truncated or extended to
+// it. Every other attribute in the request is ignored, and without a size the
+// file is left exactly as it is. This is what knfsd does (it masks the
+// attributes down to the size for an existing file), and what a client needs:
+// a client may send CREATE UNCHECKED for open(O_CREAT) and sets a size of
+// zero only for O_TRUNC, so applying the request wholesale would empty a file
+// opened for append and reset its mode and ownership.
+//
+// On a read-only share it fails with ErrReadOnly even without a size, as knfsd
+// fails any CREATE on a read-only export: a client opening the file for writing
+// learns it at open, not at its first write.
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
 //   - blockStore: Block store engine for truncation
 //   - metaSvc: Metadata service for file operations
-//   - existingFile: Existing file to truncate
+//   - existingFile: The existing file
 //   - req: Create request with attributes
 //
 // Returns:
-//   - Updated file attributes and error
-func truncateExistingFile(
+//   - The file's attributes after the operation, and an error
+func resizeExistingFile(
 	authCtx *metadata.AuthContext,
 	blockStore *engine.Store,
 	metaSvc *metadata.Service,
@@ -481,45 +487,38 @@ func truncateExistingFile(
 	req *CreateRequest,
 ) (*metadata.FileAttr, error) {
 	fileHandle, _ := metadata.EncodeFileHandle(existingFile)
+	if metaSvc.ShareIsReadOnly(authCtx, fileHandle) {
+		return nil, &metadata.StoreError{Code: metadata.ErrReadOnly, Message: "read-only share"}
+	}
+	// decision: with no size there is no permission check here, because nothing
+	// changes: the reply only reports the name's current attributes, which a
+	// LOOKUP would return too. Writing to the file is still gated by WRITE and
+	// ACCESS. That includes an existing directory or symlink, which is answered
+	// with its own handle and attributes rather than an error, as knfsd answers
+	// it. With a size, a directory gets ISDIR and a symlink INVAL from
+	// SetFileAttributes, where knfsd answers OK and changes nothing; a client
+	// refuses O_TRUNC on a directory before sending, so only a hand-built request
+	// sees the difference. Revisit if this path ever applies anything besides
+	// the size.
+	//
+	// existingFile comes from this request's Lookup, which reads through
+	// GetFile and so already carries the size of writes not yet committed.
+	if req.Attr == nil || req.Attr.Size == nil {
+		return &existingFile.FileAttr, nil
+	}
+	targetSize := *req.Attr.Size
+
 	return common.WithFilePayloadScope(authCtx, metaSvc, blockStore, fileHandle, func(authCtx *metadata.AuthContext) (*metadata.FileAttr, error) {
 		existingFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
 		if err != nil {
 			return nil, err
 		}
-		// Build SetAttrs for the update
-		setAttrs := &metadata.SetAttrs{}
-
-		// Determine target size
-		targetSize := uint64(0) // Default: truncate to empty
-		if req.Attr != nil && req.Attr.Size != nil {
-			targetSize = *req.Attr.Size
-		}
-		setAttrs.Size = &targetSize
-
-		// Apply other requested attributes from request
-		if req.Attr != nil {
-			if req.Attr.Mode != nil {
-				setAttrs.Mode = req.Attr.Mode
-			}
-			if req.Attr.UID != nil {
-				setAttrs.UID = req.Attr.UID
-			}
-			if req.Attr.GID != nil {
-				setAttrs.GID = req.Attr.GID
-			}
-			if req.Attr.Atime != nil {
-				setAttrs.Atime = req.Attr.Atime
-			}
-			if req.Attr.Mtime != nil {
-				setAttrs.Mtime = req.Attr.Mtime
-			}
-		}
 
 		// Update file metadata using metaSvc
 		// This includes permission checking. The returned WCC describes the file
-		// being truncated; the CREATE response's directory WCC is unaffected because
-		// truncating an existing entry does not modify the parent directory.
-		if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
+		// being resized; the CREATE response's directory WCC is unaffected because
+		// resizing an existing entry does not modify the parent directory.
+		if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &targetSize}); err != nil {
 			return nil, fmt.Errorf("update file metadata: %w", err)
 		}
 
@@ -527,8 +526,8 @@ func truncateExistingFile(
 		if existingFile.PayloadID != "" {
 			// Thread the file's pre-truncate FileAttr.Blocks snapshot so the
 			// engine reaps RefCount on every block dropped past targetSize —
-			// without it the truncated tail chunks leak on the remote forever
-			// (#832). existingFile was fetched (via Lookup → GetFile) BEFORE
+			// without it the truncated tail chunks leak on the remote forever.
+			// existingFile was fetched (via Lookup → GetFile) BEFORE
 			// SetFileAttributes pruned the store copy, so its Blocks list still
 			// reflects the full pre-truncate extent. Returned []ChunkRef is
 			// discarded — the canonical FileAttr.Blocks is reconciled at flush.

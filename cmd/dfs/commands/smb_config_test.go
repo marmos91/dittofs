@@ -38,6 +38,19 @@ func TestApplyParsedSMBConfig_LeavesModeUnsetWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestApplyParsedSMBConfig_RefusesMalformedEncryption(t *testing.T) {
+	for _, enc := range []any{
+		map[string]any{"mode": "required"},
+		map[string]any{"encryption_mode": 1},
+		"required",
+	} {
+		var cfg smb.Config
+		if err := applyParsedSMBConfig(&cfg, map[string]any{"encryption": enc}); err == nil {
+			t.Errorf("encryption %v accepted, mode = %q", enc, cfg.Encryption.Mode)
+		}
+	}
+}
+
 func TestCreateSMBAdapter_RejectsUnknownEncryptionMode(t *testing.T) {
 	cfg := &models.AdapterConfig{
 		Type: "smb",
