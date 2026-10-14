@@ -22,11 +22,6 @@ type clock struct {
 }
 
 func (c *clock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
-func (c *clock) add(d time.Duration) {
-	c.mu.Lock()
-	c.t = c.t.Add(d)
-	c.mu.Unlock()
-}
 
 // cfix is one share with a namespace, on a store whose clock the test moves.
 type cfix struct {
@@ -44,7 +39,11 @@ func newContentFix(t *testing.T, wrap func(kv.KV) kv.KV) *cfix {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	var store kv.KV = db
 	if wrap != nil {
 		store = wrap(db)

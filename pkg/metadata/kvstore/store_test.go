@@ -19,7 +19,11 @@ func memKV(t *testing.T) kv.KV {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	return db
 }
 

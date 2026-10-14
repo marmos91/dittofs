@@ -13,7 +13,11 @@ func TestCountingFlagsGuardOnlyUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	c := &kv.Counting{KV: s}
 	ctx := context.Background()
 	if err := c.Update(ctx, func(tx kv.Txn) error { return tx.Guard([]byte("k")) }); err != nil {

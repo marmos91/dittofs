@@ -77,7 +77,7 @@ func Open(opts Options) (*Store, error) {
 	var y *syncer
 	if !bo.InMemory {
 		if y, err = newSyncer(db, opts.Dir); err != nil {
-			db.Close()
+			_ = db.Close() // the open already failed; that error is the one returned
 			return nil, err
 		}
 	}
@@ -118,12 +118,12 @@ func Open(opts Options) (*Store, error) {
 		return err
 	}); err != nil {
 		s.closeSync()
-		db.Close()
+		_ = db.Close() // the open already failed; that error is the one returned
 		return nil, err
 	}
 	if err := s.raiseCeiling(); err != nil {
 		s.closeSync()
-		db.Close()
+		_ = db.Close() // the open already failed; that error is the one returned
 		return nil, err
 	}
 	go s.ceilingLoop()

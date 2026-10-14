@@ -27,7 +27,11 @@ func BenchmarkDurableCommits(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer s.Close()
+			defer func() {
+				if err := s.Close(); err != nil {
+					b.Error(err)
+				}
+			}()
 			var wg sync.WaitGroup
 			start := time.Now()
 			b.ResetTimer()
@@ -63,7 +67,11 @@ func benchDir(b *testing.B) string {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { os.RemoveAll(dir) })
+	b.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			b.Error(err)
+		}
+	})
 	return dir
 }
 
@@ -72,7 +80,11 @@ func deviceSyncsPerSec(b *testing.B, dir string) float64 {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			b.Error(err)
+		}
+	}()
 	buf := make([]byte, 4096)
 	n, start := 0, time.Now()
 	for time.Since(start) < time.Second {

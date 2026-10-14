@@ -87,7 +87,7 @@ const DigestKeyLen = 32
 // can choose names that collide.
 func Digest(key *[DigestKeyLen]byte, folded []byte) uint64 {
 	h := blake3.New(8, key[:])
-	h.Write(folded)
+	_, _ = h.Write(folded) // a hash never fails a write
 	d := binary.BigEndian.Uint64(h.Sum(nil)) >> 1
 	return max(d, 3)
 }

@@ -13,7 +13,9 @@ import (
 func TestUpcaseTablePinned(t *testing.T) {
 	h := sha256.New()
 	for _, u := range upcasePairs {
-		binary.Write(h, binary.BigEndian, u)
+		if err := binary.Write(h, binary.BigEndian, u); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if got, want := hex.EncodeToString(h.Sum(nil)), upcaseTableHash; got != want {
 		t.Fatalf("upcase table hash %s, want %s: a changed table is a new fold rule", got, want)

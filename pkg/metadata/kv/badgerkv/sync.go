@@ -193,7 +193,9 @@ func syncFile(path string, dataOnly bool) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	// The sync below is what says whether the data is durable; a close
+	// after it changes nothing on disk.
+	defer func() { _ = f.Close() }()
 	if dataOnly {
 		return datasync(f)
 	}

@@ -655,7 +655,7 @@ func testVersions(t *testing.T, s kv.KV) {
 		}
 		for _, key := range []string{"k", "other"} {
 			if _, err := tx.Versions(byteKeys([]string{"absent", key})); !errors.Is(err, kv.ErrUncommittedVersion) {
-				return fmt.Errorf("Versions of %s after this transaction wrote it: %v, want ErrUncommittedVersion", key, err)
+				return fmt.Errorf("versions of %s after this transaction wrote it: %v, want ErrUncommittedVersion", key, err)
 			}
 		}
 		return nil
@@ -674,7 +674,7 @@ func testNow(t *testing.T, s kv.KV) {
 		if err := s.Update(ctx(t), func(tx kv.Txn) error {
 			now = tx.Now()
 			if !tx.Now().Equal(now) {
-				return errors.New("Now moved within one transaction")
+				return errors.New("store time moved within one transaction")
 			}
 			return tx.Set([]byte("k"), []byte("v"))
 		}); err != nil {

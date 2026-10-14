@@ -93,8 +93,6 @@ func deletedKey(ns entity.NamespaceID, name entity.BlockName) []byte {
 	return keys.ID(keys.ID([]byte{keys.KindBD}, ns[:]), name[:])
 }
 
-func deletedPrefix(ns entity.NamespaceID) []byte { return keys.ID([]byte{keys.KindBD}, ns[:]) }
-
 func gcPauseKey(ns entity.NamespaceID) []byte {
 	return append(keys.ID([]byte{keys.KindNS}, ns[:]), keys.NSGc, keys.GcPause)
 }

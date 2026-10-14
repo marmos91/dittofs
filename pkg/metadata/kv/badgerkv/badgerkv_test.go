@@ -22,7 +22,11 @@ func open(t *testing.T, opts Options) *Store {
 func TestConformance(t *testing.T) {
 	kvtest.Run(t, func(t *testing.T) kv.KV {
 		s := open(t, Options{})
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() {
+			if err := s.Close(); err != nil {
+				t.Error(err)
+			}
+		})
 		return s
 	})
 }
@@ -34,7 +38,11 @@ func TestConformanceOnDisk(t *testing.T) {
 	}
 	kvtest.Run(t, func(t *testing.T) kv.KV {
 		s := open(t, Options{Dir: t.TempDir()})
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() {
+			if err := s.Close(); err != nil {
+				t.Error(err)
+			}
+		})
 		return s
 	})
 }
@@ -50,9 +58,15 @@ func TestCommitSurvivesReopen(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	s = open(t, Options{Dir: dir})
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err := s.View(context.Background(), func(r kv.Reader) error {
 		v, err := r.Get([]byte("k"))
 		if err == nil && string(v) != "v" {
@@ -99,11 +113,17 @@ func TestNowAcrossRestartWithClockSteppedBack(t *testing.T) {
 	clock := &fakeClock{t: start}
 	s := open(t, Options{Dir: dir, Clock: clock.now})
 	before := txnNow(t, s)
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	clock.set(start.Add(-time.Hour))
 	s = open(t, Options{Dir: dir, Clock: clock.now})
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if after := txnNow(t, s); after.Before(before) {
 		t.Fatalf("Now went from %v to %v across a restart", before, after)
 	}
@@ -113,7 +133,11 @@ func TestNowStaysUnderCeiling(t *testing.T) {
 	start := time.Unix(1_800_000_000, 0)
 	clock := &fakeClock{t: start}
 	s := open(t, Options{Clock: clock.now})
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 
 	// The clock jumps past the ceiling before the next raise: Now holds at
 	// the ceiling rather than pass it.
@@ -133,7 +157,11 @@ func TestNowStaysUnderCeiling(t *testing.T) {
 // Concurrent commits share syncs: fewer syncs run than commits.
 func TestConcurrentCommitsShareSyncs(t *testing.T) {
 	s := open(t, Options{Dir: t.TempDir()})
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	before := s.sync.syncs.Load()
 	const writers = 32
 	var wg sync.WaitGroup

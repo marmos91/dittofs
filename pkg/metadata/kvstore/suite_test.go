@@ -15,7 +15,11 @@ func badger(opts badgerkv.Options) kvstoretest.Opener {
 		if err != nil {
 			tb.Fatal(err)
 		}
-		tb.Cleanup(func() { db.Close() })
+		tb.Cleanup(func() {
+			if err := db.Close(); err != nil {
+				tb.Error(err)
+			}
+		})
 		return db
 	}
 }
@@ -46,7 +50,11 @@ func BenchmarkStore(b *testing.B) {
 				if err != nil {
 					tb.Fatal(err)
 				}
-				tb.Cleanup(func() { os.RemoveAll(d) })
+				tb.Cleanup(func() {
+					if err := os.RemoveAll(d); err != nil {
+						tb.Error(err)
+					}
+				})
 				return badger(badgerkv.Options{Dir: d})(tb)
 			})
 		})
