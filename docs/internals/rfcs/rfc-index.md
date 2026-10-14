@@ -48,8 +48,8 @@ order: each part builds on the ones before it.
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
 | RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
-| RFC 21 | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
-| RFC 22 | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
+| [RFC 21](rfc-21-nfs.md) | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
+| [RFC 22](rfc-22-smb.md) | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
@@ -346,7 +346,7 @@ until it does.
    decision.** The harness's "tracked, not gated" stands; the decision —
    fixed, or accepted with its reason beside the result — is what keeps a slow
    drift from becoming the baseline unnoticed ([Test tiers](#Test%20tiers)).
-3. **An xfstests suite.** RFC 21 relies on it for the
+3. **An xfstests suite.** [RFC 21](rfc-21-nfs.md) relies on it for the
    filesystem semantics no protocol suite covers.
 4. **NFSv3 mounted with locks for the lock rows.** A `nolock` mount answers
    every lock locally, so a lock row run on it tests the client, not the server.
