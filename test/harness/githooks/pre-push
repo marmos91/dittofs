@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The harness's git hook, which `dt hooks install --container` installs: the
 # repository's own hook of the same name, run in the dtc container, so the
-# machine needs no Go toolchain.
+# machine needs no Go toolchain. Every hook here is this same file: change
+# them together.
 set -euo pipefail
 REPO="$(git rev-parse --show-toplevel)"
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
