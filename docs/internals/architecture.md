@@ -1272,10 +1272,14 @@ threading, so changes to the read/write path stay confined to the helpers.
 
 ### Operator surfaces
 
-- `dfsctl store block audit-refcounts <share>` runs the refcount
-  reconciliation audit (`∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)`),
-  emits aggregate counts as structured slog INFO, and persists the
-  last-run summary at `<localStore>/audit-state/last-inv02.json`. See
+- `dfsctl store block audit-refcounts <share>` runs the manifest
+  consistency audit: every block reference in `FileAttr.Blocks` must have
+  a backing `FileChunk` row at the same offset with the same hash. It
+  reports `total_refs`, `backed_refs` and `dangling_refs`; a non-zero
+  dangling count is corruption and the command exits non-zero. It does
+  not look for leaked blocks. It emits aggregate counts as structured slog
+  INFO and persists the last-run summary at
+  `<localStore>/audit-state/last-inv02.json`. See
   `docs/guide/cli.md` for the full reference and `docs/guide/faq.md` for operator
   guidance.
 - The cache has no operator-facing config knobs: its RAM budget is
