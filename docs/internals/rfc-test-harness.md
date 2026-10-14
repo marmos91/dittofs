@@ -278,8 +278,10 @@ and the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
 the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the fixture's
-variables (`KRB5CCNAME`, the server's address and ports), `DITTOFS_E2E_BIN` and `PATH`. Today's
-e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`.
+variables (`KRB5CCNAME`, the server's address and ports), the variables of the services the suite
+needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its `service:` need found rather
+than starting its own), `DITTOFS_E2E_BIN` and `PATH`. Today's e2e job does the same by hand, with
+`sudo -E env "PATH=$PATH" ...`.
 
 ## 4. Design
 
