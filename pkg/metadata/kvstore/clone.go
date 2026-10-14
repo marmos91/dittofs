@@ -245,7 +245,7 @@ func adopt(tx kv.Txn, share entity.ShareID, file entity.FileID, f *entity.File, 
 				continue
 			}
 			e := entity.Extent{Offset: s.Offset - sp.SrcOff + sp.DstOff, Length: s.Length}
-			h, err := mergedHole(tx, share, file, *f, ms, e, m.Version)
+			h, err := mergedHole(tx, share, file, *f, ms, e, m.Version, m.Cut)
 			if err != nil {
 				return err
 			}

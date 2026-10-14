@@ -47,16 +47,19 @@ func decodeRef(file entity.FileID, offset int64, b []byte) (entity.ChunkRef, err
 	return c, checkEpochs(r, c.Oldest, c.Newest)
 }
 
-// hole is one extent below size never written, or deallocated, and the
-// version of the operation that made it, which tells a removal not done the
-// holes it removes from the ones made after it.
+// hole is one extent below size never written, or deallocated, the version
+// of the operation that made it, which tells a removal not done the holes it
+// removes from the ones made after it, and born, the cut the transaction
+// that wrote it read, which dates it for snapshots. A piece cut from a hole
+// keeps both.
 type hole struct {
 	entity.Extent
 	Version entity.JournalVersion
+	Born    entity.SnapshotCut
 }
 
 func encodeHole(h hole) []byte {
-	return codec.NewWriter(v1).Uint64(uint64(h.End())).Fixed(h.Version[:]).Encode()
+	return codec.NewWriter(v1).Uint64(uint64(h.End())).Fixed(h.Version[:]).Uint64(uint64(h.Born)).Encode()
 }
 
 func decodeHole(start int64, b []byte) (hole, error) {
@@ -66,6 +69,7 @@ func decodeHole(start int64, b []byte) (hole, error) {
 	}
 	h := hole{Extent: entity.ExtentOf(start, int64(r.Uint64()))}
 	h.Version = readVersion(r)
+	h.Born = entity.SnapshotCut(r.Uint64())
 	return h, checkEpochs(r, h.Version)
 }
 

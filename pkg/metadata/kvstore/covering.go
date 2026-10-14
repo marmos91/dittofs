@@ -194,7 +194,7 @@ func (ms masks) apply(holes []hole, refs []entity.ChunkRef, ovs []overwrite) ([]
 	var hs []hole
 	for _, h := range holes {
 		for _, x := range ms.visible(h.Version, h.Extent) {
-			hs = append(hs, hole{Extent: x, Version: h.Version})
+			hs = append(hs, hole{Extent: x, Version: h.Version, Born: h.Born})
 		}
 	}
 	var rs []entity.ChunkRef

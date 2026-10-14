@@ -228,3 +228,45 @@ func TestOverwrites(t *testing.T) {
 		t.Errorf("applied %d %v", v.Counter(), err)
 	}
 }
+
+// RFC 6 §2.4: a hole carries the cut it was born at, and every piece cut
+// from it, by a write landing inside it or a truncate across it, keeps it.
+func TestHoleBornSurvivesCuts(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	f.exist(file, write(1, 0, mib), write(2, 9*mib, mib)) // a hole over [1, 9) MiB
+	if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) error {
+		return tx.Set(holeKey(f.share, file, mib), encodeHole(hole{Extent: entity.ExtentOf(mib, 9*mib), Version: entity.VersionOf(2), Born: 7}))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.exist(file, write(3, 4*mib, mib)) // splits it in two
+	f.remove(file, truncate(4, 7*mib))  // cuts the second piece at the new size
+	var n int
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		pre := holesPrefix(f.share, file)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			start, err := startOf(pre, row.Key)
+			if err != nil {
+				return err
+			}
+			h, err := decodeHole(start, row.Value)
+			if err != nil {
+				return err
+			}
+			n++
+			if h.Born != 7 {
+				t.Errorf("hole %v born at %d, want 7", h.Extent, h.Born)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n < 3 {
+		t.Errorf("%d hole records, want the split and cut pieces", n)
+	}
+}

@@ -287,7 +287,7 @@ func TestCoveringClasses(t *testing.T) {
 	a, b := chunk(1), chunk(2)
 	f.commit(file, carry(a, b), ref(0, 4*mib, a, 1, 2), ref(10*mib, mib, b, 1, 2))
 	rows(t, f.s,
-		holeKey(f.share, file, 4*mib), encodeHole(hole{entity.ExtentOf(4*mib, 10*mib), entity.VersionOf(2)}),
+		holeKey(f.share, file, 4*mib), encodeHole(hole{Extent: entity.ExtentOf(4*mib, 10*mib), Version: entity.VersionOf(2)}),
 		overwriteKey(f.share, file, mib), encodeOverwrite(overwrite{Extent: entity.ExtentOf(mib, 2*mib), Version: entity.VersionOf(3)}))
 	got := f.spans(file, 0, 32*mib) // past the size: clamped to it
 	want := []struct {

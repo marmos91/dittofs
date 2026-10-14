@@ -383,10 +383,10 @@ func (s *existState) removeHoles(e entity.Extent) int64 {
 		filled += h.Intersect(e).Length
 		s.dropHole(h.Offset)
 		if h.Offset < e.Offset {
-			s.setHole(hole{Extent: entity.ExtentOf(h.Offset, e.Offset), Version: h.Version})
+			s.setHole(hole{Extent: entity.ExtentOf(h.Offset, e.Offset), Version: h.Version, Born: h.Born})
 		}
 		if h.End() > e.End() {
-			s.setHole(hole{Extent: entity.ExtentOf(e.End(), h.End()), Version: h.Version})
+			s.setHole(hole{Extent: entity.ExtentOf(e.End(), h.End()), Version: h.Version, Born: h.Born})
 		}
 	}
 	return filled

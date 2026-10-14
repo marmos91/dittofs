@@ -199,7 +199,7 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 		f.Size = ext.Offset
 	case !live.IsEmpty():
 		ext = live
-		h, err := mergedHole(tx, share, file, f, ms, ext, op.Version)
+		h, err := mergedHole(tx, share, file, f, ms, ext, op.Version, 0)
 		if err != nil {
 			return err
 		}
@@ -317,7 +317,7 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 				continue
 			}
 			for _, x := range []entity.Extent{entity.ExtentOf(h.Offset, edge), entity.ExtentOf(edge, h.End())} {
-				if err := tx.Set(holeKey(share, file, x.Offset), encodeHole(hole{Extent: x, Version: h.Version})); err != nil {
+				if err := tx.Set(holeKey(share, file, x.Offset), encodeHole(hole{Extent: x, Version: h.Version, Born: h.Born})); err != nil {
 					return err
 				}
 			}
@@ -350,8 +350,13 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 // removal masks is never joined, and may touch the merged hole until that
 // removal's phase 2 drops it. The merged hole's key replaces a masked hole
 // starting there.
-func mergedHole(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, v entity.JournalVersion) (hole, error) {
-	m := hole{Extent: e, Version: v}
+//
+// ponytail: a deallocate's merged hole is born at cut 0, like every hole and
+// overwrite record an existence commit writes, since no snapshot cut is
+// recorded yet; a clone's batches pass the removal's cut. Pass the cut the
+// transaction read when cuts land.
+func mergedHole(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, v entity.JournalVersion, born entity.SnapshotCut) (hole, error) {
+	m := hole{Extent: e, Version: v, Born: born}
 	joined, err := edgeHoles(tx, share, file, f, ms, e)
 	if err != nil {
 		return hole{}, err
