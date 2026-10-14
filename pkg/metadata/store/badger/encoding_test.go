@@ -3,6 +3,7 @@ package badger
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,8 +346,10 @@ func TestDecodeFile_RetiredObjectID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, enc, reEnc, "re-encoding must not write the retired field back")
 
-	// A legacy JSON blob carries it as "object_id"; that must decode too.
-	jsonBlob := []byte(`{"id":"` + orig.ID.String() + `","share_name":"/s","size":5,"object_id":[1,2,3]}`)
+	// A legacy JSON blob carries it as "object_id", in the "blake3:<hex>" form
+	// older binaries wrote; that must decode too.
+	jsonBlob := []byte(`{"id":"` + orig.ID.String() + `","share_name":"/s","size":5,"object_id":"blake3:` +
+		strings.Repeat("2a", 32) + `"}`)
 	gotJSON, err := decodeFile(jsonBlob)
 	require.NoError(t, err)
 	assert.Equal(t, orig.ID, gotJSON.ID)

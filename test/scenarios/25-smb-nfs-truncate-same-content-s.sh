@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Truncating two files that hold the same content (B-01). a.bin and b.bin are the same 8 MiB, so
-# dedup gives them one chunk list. A truncate that drops chunks records an ObjectID (the hash over the
-# remaining chunk list), and every metadata store requires ObjectIDs to be unique. Truncated to the
-# same size, both files would get the same ObjectID: the first truncate succeeds, the second must too.
-# The ObjectID follows the chunks kept, not the exact size, so any size cutting inside the same chunk
-# collides as well. Fails today: the second truncate answers NFS4ERR_DELAY and keeps doing so, and
-# b.bin stays 8 MiB. Control: c.bin, the same content cut to 6 MB, keeps more chunks, so its
-# ObjectID differs and its truncate succeeds.
+# dedup gives them one chunk list. Truncated to the same size, both keep the same chunks, and both
+# truncates must succeed: nothing derived from a file's content may stop two files from holding the
+# same chunks. A store used to give each truncated file a hash of its remaining chunk list and require
+# it to be unique, so the second truncate answered NFS4ERR_DELAY on every try and b.bin stayed 8 MiB.
+# Control: c.bin, the same content cut to 6 MB, keeps more chunks.
 NFS='nfs://127.0.0.1/test'
 OPT='?version=4&uid=1000&gid=1000'
 
