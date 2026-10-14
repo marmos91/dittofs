@@ -121,8 +121,8 @@ NFSTEST-MODULE nfstest_posix
 NFSTEST-DONE 1
 EOF
 
-# The real tables, listed as the manifest lists them: a row only v4.0 needs
-# must excuse its failure on v4.0 and on no v4.1 set.
+# Tables layered as the manifest layers them: a row in the v4.0-only overlay
+# must excuse its failure when that overlay is graded in, and only then.
 cat >"$WORK/nfstest.log" <<'EOF'
 NFSTEST-MODULE nfstest_dio
     TEST: Running test 'vectored_io'
@@ -132,11 +132,17 @@ NFSTEST-MODULE nfstest_dio
 1 tests (0 passed, 1 failed)
 NFSTEST-DONE 1
 EOF
-T="$SCRIPT_DIR/KNOWN_FAILURES"
+HEADER='| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|'
+T="$WORK/table"
+printf '%s\n' "$HEADER" >"$T.md"
+printf '%s\n' "$HEADER" >"${T}_V4.md"
+printf '%s\n' "$HEADER" '| dio/vectored_io: traceback: Exception: Packet trace file is empty: use --trcdelay option to give tcpdump time to flush buffer to packet trace | suite | v4.0 only | - |' >"${T}_V40.md"
+printf '%s\n' "$HEADER" '| dio/[rw]size: traceback: Exception: mount.nfs: requested NFS version or transport protocol is not supported for /tmp/dittofs-test | env | the remount | - |' >"${T}_V3.md"
 if "$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$T.md:${T}_V4.md:${T}_V40.md" >"$WORK/output" 2>&1; then
-    echo "ok: the v4.0 tables excuse the v4.0-only row"
+    echo "ok: the v4.0 overlay excuses its row"
 else
-    echo "FAIL: the v4.0 tables excuse the v4.0-only row"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
+    echo "FAIL: the v4.0 overlay excuses its row"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
 fi
 "$SCRIPT_DIR/parse-results.sh" "$WORK/nfstest.log" "$T.md:${T}_V4.md" >"$WORK/output" 2>&1
 if [[ $? -eq 1 ]]; then
@@ -148,7 +154,7 @@ fi
 # On a fresh host the first NFSv3 remount makes systemd start rpc-statd, which
 # adds its own line to mount.nfs's stderr and so to the exception. The name
 # takes the type from the first line and the text from the last, so it is the
-# same with or without that line, and the exact v3 row matches both.
+# same with or without that line, and one exact row matches both.
 cat >"$WORK/multiline.log" <<'EOF'
 NFSTEST-MODULE nfstest_dio
     TEST: Running test 'rsize'
@@ -166,9 +172,9 @@ NFSTEST-MODULE nfstest_dio
 NFSTEST-DONE 1
 EOF
 if "$SCRIPT_DIR/parse-results.sh" "$WORK/multiline.log" "$T.md:${T}_V3.md" >"$WORK/output" 2>&1; then
-    echo "ok: the v3 remount row matches a multi-line exception message too"
+    echo "ok: one row matches a multi-line exception message too"
 else
-    echo "FAIL: the v3 remount row matches a multi-line exception message too"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
+    echo "FAIL: one row matches a multi-line exception message too"; cat "$WORK/output"; FAILURES=$((FAILURES + 1))
 fi
 
 # The name itself: the type from the message's first line, the text from its

@@ -17,14 +17,9 @@
 # two suites take it differently: cthon04 through `mount -o`, nfstest through
 # its own --port flag.
 #
-# decision: every NFSv3 set mounts with nolock. A kernel NFSv3 client finds the
-# lock manager through rpcbind on port 111, and on a single host the client's
-# own lockd owns that registration the moment a locking mount activates — so a
-# v3 lock request would reach the local lockd, not DittoFS, and a lock test
-# would pass against the wrong server (test/e2e/nlm_locking_test.go hits the
-# same wall). Locking is exercised on the v4 sets, where it is in-protocol.
-# Withdraw this when these suites run the client in its own network namespace,
-# as test/e2e/framework/netns.go already does for the NLM interop tests.
+# No set mounts with nolock: the client runs in a network namespace of its own
+# (netns.sh), with its own rpcbind, so an NFSv3 client's lock manager traffic
+# reaches DittoFS rather than the client's own lockd.
 
 # option_set_names — every set, in the order the manifest lists them.
 option_set_names() {
@@ -36,7 +31,7 @@ option_set_names() {
 option_set_opts() {
     case "$1" in
     default) echo "" ;;
-    v3) echo "vers=3,tcp,mountproto=tcp,nolock" ;;
+    v3) echo "vers=3,tcp,mountproto=tcp" ;;
     v4.0) echo "vers=4.0" ;;
     v4.1) echo "vers=4.1" ;;
     v4.1-noac) echo "vers=4.1,noac" ;;
