@@ -240,7 +240,7 @@ import (
 func TestHow(t *testing.T) {
 	for k, want := range map[string]string{
 		"DT_FAKE_SUDO": "1", "DT_SPACES": "two words", "DT_QUOTE": "it's",
-		"GOPROXY": "", "GOFLAGS": "", "GOCACHE": "", "GOMODCACHE": "", "TMPDIR": "",
+		"DITTOFS_E2E_SKIP_KERBEROS": "", "GOPROXY": "", "GOFLAGS": "", "GOCACHE": "", "GOMODCACHE": "", "TMPDIR": "",
 	} {
 		if got := os.Getenv(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
@@ -272,11 +272,12 @@ const rootSuite = `suites:
 
 // The root path runs every package's binary through go test's -exec under
 // sudo, two packages named nfs included, in its package's directory, with the
-// suite's environment, quotes and spaces intact, and DITTOFS_E2E_BIN, but no
-// Go settings, and leaves only its events behind; TEST names reach the
-// binaries as -run (section 3).
+// suite's environment, quotes and spaces intact, and DITTOFS_E2E_BIN, but none
+// of the caller's own variables, Go's settings included, and leaves only its
+// events behind; TEST names reach the binaries as -run (section 3).
 func TestRootPath(t *testing.T) {
 	fakeSudo(t)
+	t.Setenv("DITTOFS_E2E_SKIP_KERBEROS", "1")
 	o, out, dir := goRun(t, rootSuite, rootModule)
 	if o.Result != Passed || o.Note != "4 passed, 0 failed, 0 skipped" {
 		t.Errorf("outcome %+v\n%s", o, out)
