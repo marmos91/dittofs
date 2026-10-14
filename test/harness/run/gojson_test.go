@@ -289,7 +289,8 @@ func TestRootPath(t *testing.T) {
 	}
 }
 
-// Cancelling the root path sends SIGINT, so the tests' own cleanup runs.
+// Cancelling the root path sends SIGINT, so the tests' own cleanup runs, and
+// the cell didn't run: an interrupt is no failure.
 func TestRootPathCancel(t *testing.T) {
 	fakeSudo(t)
 	dir := t.TempDir()
@@ -342,7 +343,18 @@ func TestWait(t *testing.T) {
 	if _, err := os.Stat(cleaned); err != nil {
 		t.Error("the tests' cleanup didn't run: they weren't interrupted")
 	}
-	if o := rep.Outcomes[0]; o.Result != Failed || !strings.Contains(o.Note, "interrupted") {
+	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "interrupted") || rep.Status() != 2 {
+		t.Errorf("outcome %+v, status %d", o, rep.Status())
+	}
+}
+
+// A go-json cell stopped at its limit failed, as a test that timed out does.
+func TestGoJSONCellLimit(t *testing.T) {
+	minute = 50 * time.Millisecond
+	t.Cleanup(func() { minute = time.Minute })
+	files := map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": "package w\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestWait(t *testing.T) { time.Sleep(time.Minute) }\n"}
+	o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", files)
+	if o.Result != Failed || !strings.Contains(o.Note, "stopped at the cell's limit") {
 		t.Errorf("outcome %+v", o)
 	}
 }

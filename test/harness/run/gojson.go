@@ -2,6 +2,7 @@ package run
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,10 +23,11 @@ import (
 const sudoGrace = 2 * time.Minute
 
 // goJSON runs a go-json cell's commands and grades the cell from their
-// events (section 4.6): a failed test, package or command fails it, a cell
-// where no test ran didn't run, and skips are reported, not graded. names,
-// when given, are the tests to run; one that didn't run is named, and the
-// cell didn't run unless it failed.
+// events (section 4.6): a failed test, package or command fails it, as does
+// the cell's limit, a cell where no test ran or that was interrupted didn't
+// run, and skips are reported, not graded. names, when given, are the tests
+// to run; one that didn't run is named, and the cell didn't run unless it
+// failed.
 func (t tester) goJSON(names []string) (string, string) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
@@ -48,8 +50,10 @@ func (t tester) goJSON(names []string) (string, string) {
 		failed := res.failures()
 		code, err := t.goTest(argv, root, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d.json", i+1)), &res)
 		switch {
+		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
+			return Failed, res.note(append(problems, "stopped at the cell's limit"))
 		case t.ctx.Err() != nil:
-			return Failed, res.note(append(problems, stopped(t.ctx)))
+			return NotRun, res.note(append(problems, "interrupted"))
 		case err != nil:
 			problems = append(problems, fmt.Sprintf("`%s`: %v", shown, err))
 		case code != 0 && res.failures() == failed:
