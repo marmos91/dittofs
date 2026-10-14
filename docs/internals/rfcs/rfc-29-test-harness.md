@@ -1,6 +1,17 @@
-# RFC: one test harness, with a suite registry, one runner and one result format
+---
+rfc: 29
+title: "RFC 29 — one test harness, with a suite registry, one runner and one result format"
+component: test harness
+status: reviewed
+depends_on: []
+aliases:
+  - RFC 29
+tags:
+  - rfc
+---
+# RFC 29 — one test harness, with a suite registry, one runner and one result format
 
-**Status:** accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
+**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
 implemented yet; §8 orders the work.
 **Discussion:** #2975, and the pull request that settled §9.
 

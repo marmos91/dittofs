@@ -54,10 +54,17 @@ order: each part builds on the ones before it.
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
 | RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
+| **Testing** | | | |
+| [RFC 29](rfc-29-test-harness.md) | test harness | reviewed | the `dt` runner, the suite registry, fixtures, tiers, grading against known failures, the result format and how red is reported |
 
 RFC 26 and RFC 27 were split out of RFC 12. They sit with it under data management but are numbered after the
 planned RFC 18–25, whose numbers were already reserved, so the numbering is out of order there. RFC 28 was split out of RFC 1 the same way and sits
 with it under content.
+
+RFC 29 was written for the repository's test tooling before it joined the set, so it keeps
+its own layout: it has no `## Start here`, and it names the tools and files it is about,
+which the naming convention below allows only of an appendix elsewhere. It builds on no
+other RFC, RFC 0 included, so it is `reviewed` while the storage RFCs are still `draft`.
 
 [The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
 
@@ -91,6 +98,7 @@ graph LR
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
   R27["27 migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26 & R28
   R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R14
+  R29["29 test harness"]
   style R10 stroke-dasharray: 5 5
   style R11 stroke-dasharray: 5 5
   style R15 stroke-dasharray: 5 5
@@ -154,9 +162,9 @@ every RFC of this set are to be interpreted as in RFC 2119.
 
 ## Test tiers
 
-**The harness owns tiers, suites and grading.** [The test-harness RFC](../rfc-test-harness.md) is
+**The harness owns tiers, suites and grading.** [The test-harness RFC](rfc-29-test-harness.md) is
 the one owner of when tests run, which suites exist, the fixtures they run
-against, and how a run is graded — its tiers ([§4.3](../rfc-test-harness.md#4.3%20Tiers)), its
+against, and how a run is graded — its tiers ([§4.3](rfc-29-test-harness.md#4.3%20Tiers)), its
 registry, fixtures and grading. This index states what a storage RFC's checks
 are and what must not stand in for them, and what the storage RFCs need from the
 harness ([below](#What%20the%20storage%20RFCs%20need%20from%20the%20harness)); it keeps
@@ -313,7 +321,7 @@ than a private one per RFC.
    [RFC 27 §5](rfc-27-namespace-migration.md#5.%20Test%20plan%20and%20benchmarks) move onto it. Until then the composed harness,
    driven from seeds, stands in.
 4. **The protocol suites are the harness's**, with their tiers and fixtures
-   ([the test-harness RFC](../rfc-test-harness.md)). The protocol RFCs (RFC 21 and RFC 22) own
+   ([the test-harness RFC](rfc-29-test-harness.md)). The protocol RFCs (RFC 21 and RFC 22) own
    which tests each suite must pass and each suite's known-failure list, every
    entry naming the decision that makes it fail. A protocol check that tests a
    single-node rule runs on one node, even where a cluster row tests the same
