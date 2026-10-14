@@ -17,26 +17,22 @@ concurrency:
   # executing, not one still queued: a newer run replaces the pending one.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The tier each job's suite runs at: pr on pull requests, merge on pushes.
+env:
+  TIER: ${{ github.event_name == 'pull_request' && 'pr' || 'merge' }}
+
 # Ten jobs became three. Each one held a runner slot in a fan-out that queues
 # far longer than it executes, and seven of them spent most of their wall-clock
 # checking out and installing a Go toolchain to run a check lasting seconds.
 #
-# The grouping is by what a check needs, not by what it does: Go Checks is
-# everything that needs a toolchain, Repo Checks is everything that needs only
-# a full clone, ShellCheck owns its own path filter. Two consequences worth
-# knowing. Sharing one Go build cache means `go vet ./...` warms the compile
-# that required-tests.sh would otherwise pay for again. And every check step
-# carries `!cancelled()`, so one failing check no longer hides the rest — a red
-# job reports every check that failed, not just the first, which is the signal
-# ten separate jobs used to give for free. `!cancelled()` alone would be wrong:
-# writing any `if:` drops the implicit `success()` gate, so a failed checkout
-# would run every check against an empty directory and bury the one real error
-# under five spurious ones. Each check also requires the setup step it depends
-# on to have succeeded, which is skipped rather than failed when checkout goes,
-# so the one condition covers both.
-#
-# Every check below is a named step. When this job is red, the step name in the
-# log is the check that failed.
+# Each job runs one lint suite of test/suites.yaml with dt, which holds the
+# checks and their order. The grouping is by what a check needs, not by what
+# it does: Go Checks runs everything that analyses Go, Repo Checks everything
+# that needs a full clone, ShellCheck the shell scripts. Sharing one Go build
+# cache means `go vet ./...` warms the compile that required-tests.sh would
+# otherwise pay for again. dt runs every command of a suite even after one
+# fails, so a red job reports every check that failed, the signal ten separate
+# jobs used to give, and names each in the job summary.
 jobs:
   go-checks:
     name: Go Checks
@@ -49,165 +45,66 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      # Its Go problem matcher turns vet and golangci-lint findings in dt's
+      # output into annotations on the pull request.
       - name: Set up Go
-        id: go
         uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           cache: true  # Built-in Go module caching
 
-      - name: Run gofmt
-        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: |
-          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-            echo "The following files need formatting:"
-            gofmt -s -l .
-            exit 1
-          fi
-
-      - name: Run go vet
-        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: go vet ./...
-
-      # Test files behind a build tag are compiled by no check unless their own
-      # workflow runs, so one can stop compiling without anything going red.
-      # Vet every tagged test together; none of these tags excludes another.
-      - name: Vet the build-tagged tests
-        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...
-
-      - name: Check MS-FSCC / MS-FSA / MS-SMB2 citations
-        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: go run ./test/spec-citations
-
-      # The tests that pin an authorization or encryption gate are deleted by
-      # the same edit that reopens the gate, so the suite goes green over the
-      # regression. These are named in a manifest and run by name instead.
-      - name: Run every test named in the manifest
-        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: ./test/required-tests.sh
-
-      - name: golangci-lint
-        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+      - name: Install golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
-          args: --timeout=5m
-          # Analyse cold every run. The action's cache key covers go.sum, but
-          # its restore-key fallback does not: when a dependency bump changes
-          # go.sum the run misses its own key, restores the pre-bump analysis
-          # cache, and then saves a fact set built from it under the new key.
-          # Every later run gets an exact hit on that entry, and staticcheck
-          # loses the cross-package fact that t.Fatal never returns — which
-          # turns every `if x == nil { t.Fatal(...) }` guard into a spurious
-          # SA5011 nil-dereference report. Restoring is what breaks it, so the
-          # cache is skipped rather than pinned: costs ~20s (112s -> 134s).
+          install-only: true
+          # Analyse cold every run. The action restores and saves its analysis
+          # cache even when it only installs, and dt's run reads it. Its cache
+          # key covers go.mod, but its restore-key fallback does not: when a
+          # dependency bump changes go.mod the run misses its own key, restores
+          # the pre-bump analysis cache, and then saves a fact set built from it
+          # under the new key. Every later run gets an exact hit on that entry,
+          # and staticcheck loses the cross-package fact that t.Fatal never
+          # returns, which turns every `if x == nil { t.Fatal(...) }` guard into
+          # a spurious SA5011 nil-dereference report. Restoring is what breaks
+          # it, so the cache is skipped rather than pinned: costs ~20s.
           skip-cache: true
-          # Skip the action's online `config verify` — it fetches the config
-          # JSON schema over the network and times out intermittently, failing
-          # the job for reasons unrelated to the diff. golangci-lint still
-          # validates the config locally at runtime.
-          verify: false
+
+      - name: Build dt
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      - name: Run lint-go
+        run: '"$RUNNER_TEMP/dt" run lint-go --tier "$TIER" --ci'
 
   repo-checks:
     name: Repo Checks
     runs-on: ubuntu-latest
-    # Six checks whose separately measured maxima sum to about 70s: the
+    # Checks whose separately measured maxima sum to about 70s: the
     # conformance manifest 16s, the E2E harness self-test 34s, and the three
     # diff checks under 10s apiece.
     timeout-minutes: 10
 
     steps:
-      # Full history: two of the checks below diff against a merge base.
+      # Full history: the checks that compare with {base} diff against a
+      # merge base. On a push that base is the commit before it, which is
+      # how commits pushed straight to develop are checked too.
       - name: Checkout code
-        id: checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      # The conformance manifest is the single description of every suite.
-      # These are what stop the documentation tables drifting away from it
-      # again — the conformance workflow itself ignores docs-only changes, so
-      # it cannot.
-      - name: Check the generated documentation tables
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: ./test/conformance/check-docs.sh
+      # Only to build dt, which needs a few modules, so no cache to restore.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
 
-      - name: Test the common conformance runner
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: ./test/conformance/run_test.sh
+      - name: Build dt
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
-      - name: Test the shared known-failures parser
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: ./test/common/known-failures_test.sh
-
-      - name: Test the conformance admission lease
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: ./test/smb-conformance/compose-env_test.sh
-
-      # Splitting a package is only real if each piece can be tested on its
-      # own, so a new package that carries no test has been moved rather than
-      # separated. Pull requests only: the check needs a base branch to tell
-      # new from existing.
-      - name: Check that every new package carries a test
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.event_name == 'pull_request' }}
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: ./test/new-package-tests.sh "origin/${BASE_REF}"
-
-      # A docs: or chore(release): subject tells a reviewer that nothing
-      # executable moved, which makes it the one diff nobody opens. Commit
-      # 83e532d78, titled `docs(planning): wave 4 fix-wave 1 landed`, carried
-      # 830 deletions across 15 files and reverted the security fixes from
-      # #2523 and #2526 — green, because the regression tests were deleted in
-      # the same commit.
-      # Runs on push as well as on pull requests, and the push case is the one
-      # that matters: 83e532d78 had no pull request behind it. Planning commits
-      # are pushed straight to develop, so a pull-request-only check would have
-      # watched the incident go by. The range is the pushed commits, or the
-      # pull request's commits back to the merge base.
-      - name: Check that a docs commit changes only documentation
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        env:
-          BASE: >-
-            ${{ github.event_name == 'pull_request'
-                && format('origin/{0}', github.base_ref)
-                || github.event.before }}
-        run: |
-          # A branch's first push reports an all-zero "before" and has no range.
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            echo "no base commit for this event; nothing to check"
-            exit 0
-          fi
-          ./test/commit-type-matches-diff.sh "$BASE"
-
-      # The trailer arrives by default rather than by choice: the agent harness
-      # instructs sessions to append an AI co-author line, the project forbids
-      # it, and which instruction a session followed is invisible in the diff.
-      # It reached develop once already, from a branch whose author had removed
-      # it before the merge — a squash body concatenates the individual commit
-      # messages, so a cleanup landing after the squash cleans nothing. Sharing
-      # the range above means this also covers pushes straight to develop.
-      - name: Check that no commit credits an AI tool
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        env:
-          BASE: >-
-            ${{ github.event_name == 'pull_request'
-                && format('origin/{0}', github.base_ref)
-                || github.event.before }}
-        run: |
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            echo "no base commit for this event; nothing to check"
-            exit 0
-          fi
-          ./test/no-ai-attribution.sh "$BASE"
-
-      # The E2E harness is what decides whether a failing suite is visible at
-      # all, so it is exercised against deliberately failing, wedged and
-      # false-green stand-in test commands on every change.
-      - name: Run harness self-test
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: .github/scripts/run-e2e-selftest.sh
+      - name: Run lint-repo
+        run: '"$RUNNER_TEMP/dt" run lint-repo --tier "$TIER" --ci'
 
   shellcheck:
     name: ShellCheck
@@ -217,26 +114,31 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-        with:
-          # Full history so dorny/paths-filter can resolve the merge-base
-          # against main on push events. A shallow clone intermittently fails
-          # to reach it (git exit 128) when develop has diverged far from main.
-          fetch-depth: 0
 
-      # The filter and the scan were two jobs, which cost a queue wait between
-      # them to decide whether the second should start at all. In one job the
-      # filter is a step, and skipping the scan costs nothing.
-      - name: Check for .sh file changes
-        uses: dorny/paths-filter@v4
-        id: filter
+      # Only to build dt, which needs a few modules, so no cache to restore.
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
-          filters: |
-            shell:
-              - '**/*.sh'
+          go-version: "1.26.x"
+          cache: false
 
-      - name: Run ShellCheck
-        if: steps.filter.outputs.shell == 'true'
-        uses: ludeeus/action-shellcheck@2.0.0
-        with:
-          scandir: .
-          severity: warning
+      # Pinned by version and checksum, so a new release can't turn the job
+      # red on its own.
+      - name: Install ShellCheck
+        env:
+          VERSION: v0.11.0
+          SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/$VERSION/shellcheck-$VERSION.linux.x86_64.tar.xz"
+          echo "$SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-$VERSION" >> "$GITHUB_PATH"
+
+      - name: Build dt
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      # On every change: the scan takes seconds, and a filter on *.sh paths
+      # would miss the scripts without an extension.
+      - name: Run shellcheck
+        run: '"$RUNNER_TEMP/dt" run shellcheck --tier "$TIER" --ci'

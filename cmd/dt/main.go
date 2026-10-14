@@ -46,6 +46,7 @@ func newRoot(out io.Writer) *cobra.Command {
 	}
 	root.SetOut(out)
 	root.AddCommand(newList(), newPlan(), newRun())
+	root.AddCommand(newEnv()...)
 	return root
 }
 
