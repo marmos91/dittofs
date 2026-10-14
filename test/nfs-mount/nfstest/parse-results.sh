@@ -135,4 +135,8 @@ awk '
 
 [[ -s "$WORK/results" ]] || ungraded "no PASS or FAIL lines in the log"
 
+# Keep the per-assertion verdicts beside the grade: baseline-knfsd.sh reads
+# them, and they make two runs' results easy to diff.
+[[ -n "$RESULTS_DIR" && -d "$RESULTS_DIR" ]] && cp "$WORK/results" "$RESULTS_DIR/results.tsv"
+
 "$SCRIPT_DIR/../grade.sh" "$WORK/results" "$KNOWN_FAILURES_FILE" "$RESULTS_DIR"

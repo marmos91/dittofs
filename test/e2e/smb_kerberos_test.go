@@ -104,7 +104,11 @@ func TestSMBKerberos(t *testing.T) {
 	framework.WaitForServer(t, smbPort, 30*time.Second)
 
 	// Install system Kerberos configuration for client tools
-	installSMBKerberosSystemConfig(t, kdc)
+	if runtime.GOOS == "linux" {
+		if err := kdc.InstallSystemKerberos(t); err != nil {
+			t.Logf("Warning: %v", err)
+		}
+	}
 
 	// Run test matrix
 	t.Run("TestSMBKerberosAuth", func(t *testing.T) {
@@ -421,53 +425,4 @@ func setupSMBKerberosShare(t *testing.T, runner *helpers.CLIRunner, shareName st
 	require.NoError(t, err)
 	_, err = runner.CreateShare(shareName, metaStore, blockStore)
 	require.NoError(t, err)
-}
-
-// installSMBKerberosSystemConfig installs the test KDC's krb5.conf and keytab to system locations.
-func installSMBKerberosSystemConfig(t *testing.T, kdc *framework.KDCHelper) {
-	t.Helper()
-
-	if runtime.GOOS != "linux" {
-		// On macOS, skip system-level config installation
-		return
-	}
-
-	// Store original files for restoration
-	origKrb5Conf, _ := os.ReadFile("/etc/krb5.conf")
-	origKeytab, _ := os.ReadFile("/etc/krb5.keytab")
-
-	t.Cleanup(func() {
-		if len(origKrb5Conf) > 0 {
-			_ = os.WriteFile("/etc/krb5.conf", origKrb5Conf, 0644)
-		} else {
-			_ = os.Remove("/etc/krb5.conf")
-		}
-		if len(origKeytab) > 0 {
-			_ = os.WriteFile("/etc/krb5.keytab", origKeytab, 0600)
-		} else {
-			_ = os.Remove("/etc/krb5.keytab")
-		}
-	})
-
-	// Install test krb5.conf
-	krb5ConfData, err := os.ReadFile(kdc.Krb5ConfigPath())
-	if err != nil {
-		t.Logf("Warning: cannot read krb5.conf: %v", err)
-		return
-	}
-
-	if err := os.WriteFile("/etc/krb5.conf", krb5ConfData, 0644); err != nil {
-		t.Logf("Warning: cannot install test krb5.conf (need root): %v", err)
-	}
-
-	// Copy keytab to system location
-	keytabData, err := os.ReadFile(kdc.KeytabPath())
-	if err != nil {
-		t.Logf("Warning: cannot read keytab: %v", err)
-		return
-	}
-
-	if err := os.WriteFile("/etc/krb5.keytab", keytabData, 0600); err != nil {
-		t.Logf("Warning: cannot install test keytab (need root): %v", err)
-	}
 }

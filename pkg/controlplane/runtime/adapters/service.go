@@ -167,17 +167,25 @@ func (s *Service) DeleteAdapter(ctx context.Context, adapterType string) error {
 //
 // The reload preserves the running adapter — and with it the live TCP
 // listener and any in-flight connections — when the new config keeps the
-// same listen address (bind address + port) and the adapter stays enabled.
-// A stop/start is only performed when the listen address actually changes or
-// the enabled state flips; other configuration is applied by the live
-// settings reload path or on the next rebind. This keeps a config change
-// (e.g. re-enabling an already-running adapter) from momentarily dropping the
-// accept socket and cutting existing sessions.
+// same listen address (bind address + port), the adapter stays enabled, and
+// the SMB encryption mode is unchanged. A stop/start is performed when the
+// listen address changes, the enabled state flips, or encryption_mode
+// changes. This keeps a config change that the running adapter already
+// reflects (e.g. re-enabling an already-running adapter) from momentarily
+// dropping the accept socket and cutting existing sessions.
+//
+// encryption_mode is refused before the write. The constructor panics on an
+// unknown mode, and this path does not build an adapter when the listener
+// stays up, so a stored bad mode would be found only on the next start.
 //
 // A failed restart is returned, not logged: the caller must not see success for
 // an adapter that is down. The new config stays persisted — it is the requested
 // state, and the next start retries it from the store.
 func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid adapter config: %w", err)
+	}
+
 	if err := s.store.UpdateAdapter(ctx, cfg); err != nil {
 		return fmt.Errorf("failed to update adapter config: %w", err)
 	}
@@ -187,9 +195,14 @@ func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 	// A stopping or cancelled entry is on its way out, so its listener is not
 	// reusable even though the entry is still in the map.
 	serving := ok && !entry.stopping && !entry.cancelled
+	// decision: a changed encryption_mode restarts the adapter instead of
+	// writing the live handler. Request paths read the mode with no lock, so
+	// an in-place store would race. Drop the restart when the handler
+	// publishes the mode atomically.
+	preserve := serving && cfg.Enabled && sameListenAddr(entry, cfg) && !smbEncryptionModeChanged(entry.config, cfg)
 	s.mu.RUnlock()
 
-	if serving && cfg.Enabled && sameListenAddr(entry, cfg) {
+	if preserve {
 		logger.Info("Adapter listen address unchanged; preserving listener across reload",
 			"type", cfg.Type, "port", entry.adapter.Port())
 		return nil
@@ -229,6 +242,23 @@ func sameListenAddr(entry *adapterEntry, cfg *models.AdapterConfig) bool {
 		return false
 	}
 	return resolvePort(cfg.Type, cfg.Port) == entry.adapter.Port()
+}
+
+// smbEncryptionModeChanged reports whether next selects a different SMB
+// encryption mode than the one the running adapter was built with. An unset
+// mode is "preferred", which is what the constructor fills in. A config that
+// cannot be read counts as a change so the factory, not the preserved
+// listener, decides.
+func smbEncryptionModeChanged(prev, next *models.AdapterConfig) bool {
+	if next == nil || next.Type != "smb" {
+		return false
+	}
+	prevMode, prevOK := prev.EffectiveSMBEncryptionMode()
+	nextMode, nextOK := next.EffectiveSMBEncryptionMode()
+	if !prevOK || !nextOK {
+		return true
+	}
+	return prevMode != nextMode
 }
 
 // adapterBindAddress returns the configured bind address, or "" when the

@@ -46,7 +46,9 @@ func DefaultPort(adapterType string) int {
 // can actually build: the adapter constructors treat an out-of-range port as a
 // programmer error and panic on it, and the type decides which constructor runs
 // at all, so both have to be refused before a row is persisted or a start is
-// attempted.
+// attempted. An SMB encryption_mode outside the modes the constructor keeps is
+// the same class of error: the constructor panics on it, and a reload that
+// keeps the listen address stores the row without building the adapter.
 func (a *AdapterConfig) Validate() error {
 	// Only the types with a known default port have a constructor in the
 	// adapter factory, so a type without one has no adapter to build.
@@ -56,7 +58,61 @@ func (a *AdapterConfig) Validate() error {
 	if a.Port < 0 || a.Port > 65535 {
 		return fmt.Errorf("invalid port %d: must be 0-65535", a.Port)
 	}
+	if a.Type == "smb" {
+		mode, err := a.smbEncryptionMode()
+		if err != nil {
+			return err
+		}
+		if mode != "" {
+			if err := ValidateSMBEncryptionMode(mode); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// ValidateSMBEncryptionMode accepts the modes the SMB constructor keeps after
+// it fills an empty mode with "preferred". Empty is not one of them.
+func ValidateSMBEncryptionMode(mode string) error {
+	switch mode {
+	case "disabled", "preferred", "required":
+		return nil
+	default:
+		return fmt.Errorf("invalid encryption_mode %q: must be one of disabled, preferred, required", mode)
+	}
+}
+
+// EffectiveSMBEncryptionMode returns the mode the SMB constructor will run.
+// An unset mode is "preferred". ok is false when the config JSON cannot be read.
+func (a *AdapterConfig) EffectiveSMBEncryptionMode() (string, bool) {
+	if a == nil || a.Type != "smb" {
+		return "preferred", true
+	}
+	mode, err := a.smbEncryptionMode()
+	if err != nil {
+		return "", false
+	}
+	if mode == "" {
+		return "preferred", true
+	}
+	return mode, true
+}
+
+// smbEncryptionMode returns the nested encryption.encryption_mode, or "" when
+// the field is absent. A non-object encryption value is absent: the factory
+// ignores it the same way.
+func (a *AdapterConfig) smbEncryptionMode() (string, error) {
+	parsed, err := a.GetConfig()
+	if err != nil {
+		return "", fmt.Errorf("invalid config: %w", err)
+	}
+	enc, ok := parsed["encryption"].(map[string]any)
+	if !ok {
+		return "", nil
+	}
+	mode, _ := enc["encryption_mode"].(string)
+	return mode, nil
 }
 
 // TableName returns the table name for AdapterConfig.

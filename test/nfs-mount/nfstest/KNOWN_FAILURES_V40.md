@@ -6,4 +6,6 @@ Failures expected under the `v4.0` option set and no other, graded together with
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| dio/vectored_io: traceback: Exception: Packet trace file is empty: use --trcdelay option to give tcpdump time to flush buffer to packet trace | unverified | deterministic: from vectored_io_057 on (the vectored WRITE cases) the capture holds no packets at all, not even the OPEN, though the writes succeed; the v4.1 sets capture these cases fine | [#2981](https://github.com/marmos91/dittofs/issues/2981) |
+| dio/vectored_io: traceback: Exception: Packet trace file is empty: use --trcdelay option to give tcpdump time to flush buffer to packet trace | bug | deterministic: from vectored_io_057 on (the vectored WRITE cases) the capture holds no packets at all, not even the OPEN, though the writes succeed; the v4.1 sets, and knfsd on v4.0, capture these cases fine | [#3095](https://github.com/marmos91/dittofs/issues/3095) |
+| delegation/basic08: DELEGRETURN should be sent after the close | unverified | v4.0 only; knfsd grants no write delegation on v4.0, so there is nothing to compare against | [#3096](https://github.com/marmos91/dittofs/issues/3096) |
+| delegation/basic1[12]: DELEGRETURN should be sent after the close | unverified | as basic08 | [#3096](https://github.com/marmos91/dittofs/issues/3096) |

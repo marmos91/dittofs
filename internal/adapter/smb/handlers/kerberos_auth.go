@@ -62,7 +62,11 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 
 	// Authenticate via shared service (handles AP-REQ parsing, verification,
 	// replay detection, and subkey preference).
-	authResult, err := h.KerberosService.Authenticate(apReqBytes, smbPrincipal)
+	authResult, err := h.KerberosService.AuthenticateFromClient(
+		apReqBytes,
+		smbPrincipal,
+		ctx.ClientAddr,
+	)
 	if err != nil {
 		logger.Info("Kerberos authentication failed", "error", err)
 		return NewErrorResult(types.StatusLogonFailure), nil
@@ -399,7 +403,11 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
-	authResult, err := h.KerberosService.Authenticate(apReqBytes, smbPrincipal)
+	authResult, err := h.KerberosService.AuthenticateFromClient(
+		apReqBytes,
+		smbPrincipal,
+		ctx.ClientAddr,
+	)
 	if err != nil {
 		logger.Info("Kerberos bind: authentication failed", "error", err)
 		return NewErrorResult(types.StatusLogonFailure), nil

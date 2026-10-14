@@ -49,6 +49,15 @@ NFSTEST-MODULE nfstest_posix
 NFSTEST-DONE 1
 EOF
 
+# The normalised verdicts are kept beside the grade for baseline-knfsd.sh.
+if grep -qxF $'FAIL\tposix/read: file st_atime should be updated' "$WORK/results/results.tsv" 2>/dev/null &&
+    grep -qxF $'PASS\tposix/read: read should succeed' "$WORK/results/results.tsv"; then
+    echo "ok: results.tsv holds the per-assertion verdicts"
+else
+    echo "FAIL: results.tsv holds the per-assertion verdicts"; cat "$WORK/results/results.tsv" 2>&1
+    FAILURES=$((FAILURES + 1))
+fi
+
 # The pass/fail tally moves between runs and "|" would end the table cell, so
 # neither may reach the name a blacklist entry has to match.
 run_case "name normalisation" 1 "posix/open: opening existent file should return an error when O_EXCL+O_CREAT is used" "graded 1 0 0" <<'EOF'
