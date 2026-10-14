@@ -141,8 +141,8 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int) error {
 		return err
 	}
 	spec := sp
-	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit, Clone: &spec}
-	if err := tx.Set(removalKey(share, file, op.Version), encodeRemoval(m)); err != nil {
+	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit, Shard: f.Shard, Clone: &spec}
+	if err := putRemoval(tx, share, file, m); err != nil {
 		return err
 	}
 	return tx.Set(cloneOpenKey(share, file, op.Version, sp), encodeEmpty())

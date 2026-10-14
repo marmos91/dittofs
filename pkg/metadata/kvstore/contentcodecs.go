@@ -103,7 +103,7 @@ func encodeRemoval(m entity.Removal) []byte {
 	if m.Kind == entity.RemoveRelease {
 		w.Fixed(m.FileVersion[:])
 	}
-	w.Bool(m.Clone != nil)
+	w.Uint64(m.Shard).Bool(m.Clone != nil)
 	if c := m.Clone; c != nil {
 		w.Fixed(c.SrcShare[:]).Fixed(c.Src[:]).Uint64(uint64(c.SrcOff)).Uint64(uint64(c.DstOff)).Uint64(uint64(c.Len)).Fixed(c.AsOf[:])
 	}
@@ -127,6 +127,7 @@ func decodeRemoval(version entity.JournalVersion, b []byte) (entity.Removal, err
 	if m.Kind == entity.RemoveRelease {
 		m.FileVersion = readVersion(r)
 	}
+	m.Shard = r.Uint64()
 	if r.Bool() {
 		c := &entity.CloneSpec{SrcShare: entity.ShareID(readFileID(r)), Src: readFileID(r)}
 		c.SrcOff, c.DstOff, c.Len = int64(r.Uint64()), int64(r.Uint64()), int64(r.Uint64())

@@ -102,8 +102,8 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 	// The file's version-index entry stays at its Version, which the removal
 	// record carries as FileVersion until the prune deletes both.
 	m := entity.Removal{Version: op.Version, Extent: entity.ExtentOf(0, entity.EndOfFile), Kind: entity.RemoveRelease,
-		OvSpan: f.MaxOverwrite, FileVersion: f.Version}
-	return tx.Set(removalKey(share, file, op.Version), encodeRemoval(m))
+		OvSpan: f.MaxOverwrite, FileVersion: f.Version, Shard: f.Shard}
+	return putRemoval(tx, share, file, m)
 }
 
 // noDurableOpen refuses a file with a durable open, guarding the range of
@@ -170,8 +170,8 @@ func (s *Store) pruneReleased(ctx context.Context, share entity.ShareID, file en
 				return err
 			}
 			if more = len(ks) > 0; !more {
-				ks = [][]byte{removalKey(share, file, m.Version), existenceFenceKey(share, file), offloadFenceKey(share, file),
-					floorKey(share, file, m.FileVersion)}
+				ks = append(removalKeys(share, file, m), existenceFenceKey(share, file), offloadFenceKey(share, file),
+					floorKey(share, file, m.FileVersion))
 			}
 			for _, k := range ks {
 				if err := tx.Delete(k); err != nil {
@@ -200,17 +200,23 @@ func releasedKeys(r kv.Reader, share entity.ShareID, file entity.FileID, v entit
 		if bytes.HasPrefix(row.Key, his) || slices.ContainsFunc(keep, func(k []byte) bool { return bytes.Equal(k, row.Key) }) {
 			continue
 		}
-		if bytes.HasPrefix(row.Key, rms) {
-			if v, _, err := keys.ReadVersion(row.Key[len(rms):]); err != nil {
-				return nil, err
-			} else if m, err := decodeRemoval(v, row.Value); err != nil {
-				return nil, err
-			} else if m.Kind == entity.RemoveClone && !m.Done {
-				continue // a clone not done is never pruned
-			}
-		}
 		if len(ks)+2 > limit {
 			break
+		}
+		if bytes.HasPrefix(row.Key, rms) {
+			v, _, err := keys.ReadVersion(row.Key[len(rms):])
+			if err != nil {
+				return nil, err
+			}
+			m, err := decodeRemoval(v, row.Value)
+			if err != nil {
+				return nil, err
+			}
+			if m.Kind == entity.RemoveClone && !m.Done {
+				continue // a clone not done is never pruned
+			}
+			ks = append(ks, removalKeys(share, file, m)...)
+			continue
 		}
 		ks = append(ks, bytes.Clone(row.Key))
 		if bytes.HasPrefix(row.Key, deltas) {

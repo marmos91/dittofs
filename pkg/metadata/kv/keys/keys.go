@@ -108,6 +108,7 @@ const (
 	SFnc  byte = 0x16
 	SVl   byte = 0x17 // version limit
 	SPr   byte = 0x19 // pending-release index: S‖id‖pr‖shard‖file; 0x18 is the RFC's shs
+	SRr   byte = 0x1A // unfinished-removal index: S‖id‖rr‖shard‖file‖version
 )
 
 // Sub-kinds under NS‖ns, and under NS‖ns‖gc.

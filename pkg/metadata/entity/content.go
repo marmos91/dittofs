@@ -249,7 +249,16 @@ type Removal struct {
 	// FileVersion is the deleted File's Version, Kind RemoveRelease only: it
 	// names the File's version-floor entry, which the prune deletes.
 	FileVersion JournalVersion
-	Clone       *CloneSpec // Kind RemoveClone only
+	// Shard is the shard the removal's index entry was written under: the
+	// File's at phase 1.
+	//
+	// decision: the record carries the shard because the prune must delete
+	// the index entry under it, and a release's prune runs after the File
+	// that holds the shard is gone. A move of the file to another shard must
+	// therefore rewrite this field with the entry it re-keys. Drop it if the
+	// prune ever learns the shard another way.
+	Shard uint64
+	Clone *CloneSpec // Kind RemoveClone only
 }
 
 // Masks reports whether the removal hides content at version v over e: it is

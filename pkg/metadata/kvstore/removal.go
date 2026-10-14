@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"fmt"
+	"iter"
 	"slices"
 	"time"
 
@@ -51,6 +52,45 @@ func removals(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.R
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// putRemoval writes a new removal record with its entry in the share's
+// unfinished-removal index, under m.Shard.
+func putRemoval(tx kv.Txn, share entity.ShareID, file entity.FileID, m entity.Removal) error {
+	if err := tx.Set(removalKey(share, file, m.Version), encodeRemoval(m)); err != nil {
+		return err
+	}
+	return tx.Set(removalIndexKey(share, m.Shard, file, m.Version), encodeEmpty())
+}
+
+// removalKeys are the two keys a removal's prune deletes: its record and
+// its index entry. The entry goes with the prune, not with done, so a crash
+// between the two still leaves recovery the prune to resume.
+func removalKeys(share entity.ShareID, file entity.FileID, m entity.Removal) [][]byte {
+	return [][]byte{removalKey(share, file, m.Version), removalIndexKey(share, m.Shard, file, m.Version)}
+}
+
+// UnfinishedRemoval names a removal record not yet pruned.
+type UnfinishedRemoval struct {
+	File    entity.FileID
+	Version entity.JournalVersion
+}
+
+// UnfinishedRemovals lists the removals in one shard of a share that are not
+// yet pruned, for a primary's recovery after a crash, from that shard's range
+// of the unfinished-removal index: one key per removal, whatever the share's
+// size, in pages. Recovery resumes phase 2 of each not done and the prune of
+// each done.
+func (c Content) UnfinishedRemovals(ctx context.Context, share entity.ShareID, shard uint64) iter.Seq2[UnfinishedRemoval, error] {
+	prefix := keys.Uint64(shareKey(share, keys.SRr), shard)
+	return pages(ctx, c.s.kv, prefix, nil, func(_ kv.Reader, row kv.KeyValue) (UnfinishedRemoval, error) {
+		id, rest, err := keys.ReadID(row.Key[len(prefix):], keys.IDLen)
+		if err != nil {
+			return UnfinishedRemoval{}, err
+		}
+		v, _, err := keys.ReadVersion(rest)
+		return UnfinishedRemoval{File: entity.FileID(id), Version: v}, err
+	})
 }
 
 // masks is a set of a file's removals, each hiding the refs, holes and
@@ -218,8 +258,8 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	if live.IsEmpty() {
 		return nil // a deallocate past the end of file removes nothing
 	}
-	m := entity.Removal{Version: op.Version, Extent: ext, Kind: op.Kind, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit}
-	return tx.Set(removalKey(share, file, op.Version), encodeRemoval(m))
+	m := entity.Removal{Version: op.Version, Extent: ext, Kind: op.Kind, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit, Shard: f.Shard}
+	return putRemoval(tx, share, file, m)
 }
 
 // rewriteFences reads both of a file's fences, tracked, and writes them
@@ -698,8 +738,10 @@ func (c Content) PruneRemovals(ctx context.Context, share entity.ShareID, file e
 				released = &m
 				return nil // the release is the file's last removal
 			}
-			if err := tx.Delete(removalKey(share, file, m.Version)); err != nil {
-				return err
+			for _, k := range removalKeys(share, file, m) {
+				if err := tx.Delete(k); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

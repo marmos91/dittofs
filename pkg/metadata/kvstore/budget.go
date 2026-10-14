@@ -56,6 +56,7 @@ func worstCosts() (perKey []cost, fixed []cost) {
 		Cursor: big, Clone: &entity.CloneSpec{SrcOff: big, DstOff: big, Len: big, AsOf: v}}
 	fixed = []cost{
 		keyCost(removalKey(share, file, v), encodeRemoval(removal)),
+		keyCost(removalIndexKey(share, math.MaxUint64, file, v), encodeEmpty()),
 		keyCost(existenceFenceKey(share, file), encodeFence(fence{math.MaxUint64, math.MaxUint64})),
 		keyCost(offloadFenceKey(share, file), encodeFence(fence{math.MaxUint64, math.MaxUint64})),
 		{key: len(fileKey(share, file)), value: 1 << 10}, // the File record a batch may rewrite

@@ -155,6 +155,14 @@ func releaseIndexKey(share entity.ShareID, shard uint64, id entity.FileID) []byt
 	return keys.ID(keys.Uint64(shareKey(share, keys.SPr), shard), id[:])
 }
 
+// removalIndexKey is a removal record's entry in its share's
+// unfinished-removal index, under the shard it was written in, so a
+// primary's recovery finds its shards' removals without reading the share's
+// files.
+func removalIndexKey(share entity.ShareID, shard uint64, file entity.FileID, v entity.JournalVersion) []byte {
+	return keys.Version(keys.ID(keys.Uint64(shareKey(share, keys.SRr), shard), file[:]), v)
+}
+
 // streamsPrefix holds a file's named stream links, F‖id‖s‖streamID: each
 // stream is a file of its own, under its own ID.
 func streamsPrefix(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FS) }

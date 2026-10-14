@@ -349,3 +349,75 @@ func TestHoleCredit(t *testing.T) {
 		}
 	})
 }
+
+// RFC 6 §6.4's recovery reads one shard's range of the unfinished-removal
+// index. An entry is written with its removal and stays until the prune, not
+// until done, so a removal done but not pruned is still found. A released
+// file's prune drops the entries of every removal it had.
+func TestUnfinishedRemovals(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	unfinished := func(shard uint64) []UnfinishedRemoval {
+		t.Helper()
+		var out []UnfinishedRemoval
+		for u, err := range f.s.Content().UnfinishedRemovals(ctx, f.share, shard) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, u)
+		}
+		return out
+	}
+	file, other := f.file(0), f.file(0)
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		x := f.get(file)
+		x.Shard = 4
+		return tx.Set(fileKey(f.share, file), encodeFile(x))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.exist(file, write(1, 0, 4*mib))
+	f.exist(other, write(1, 0, 4*mib))
+	f.remove(file, truncate(2, mib))
+	f.remove(other, truncate(2, mib))
+	if got := unfinished(4); len(got) != 1 || got[0] != (UnfinishedRemoval{file, entity.VersionOf(2)}) {
+		t.Fatalf("shard 4 after phase 1: %v", got)
+	}
+	if got := unfinished(0); len(got) != 1 || got[0].File != other {
+		t.Fatalf("shard 0 after phase 1: %v", got)
+	}
+	f.resume(file)
+	if m := f.removals(file); len(m) != 1 || !m[0].Done {
+		t.Fatalf("removal after resume: %+v", m)
+	}
+	if got := unfinished(4); len(got) != 1 {
+		t.Errorf("a removal done but not pruned left the index: %v", got)
+	}
+	if err := f.s.Content().PruneRemovals(ctx, f.share, file, entity.VersionOf(2)); err != nil {
+		t.Fatal(err)
+	}
+	if got := unfinished(4); len(got) != 0 {
+		t.Errorf("shard 4 after the prune: %v", got)
+	}
+
+	// A released file whose prune meets an older removal not done, which
+	// the release's own prune deletes with the file's other keys.
+	f.unlinked(other)
+	f.remove(other, release(4))
+	f.resume(other)
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		return putRemoval(tx, f.share, other, entity.Removal{Version: entity.VersionOf(3), Kind: entity.RemoveTruncate,
+			Extent: entity.ExtentOf(0, entity.EndOfFile)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := unfinished(0); len(got) != 3 {
+		t.Fatalf("shard 0 after the release: %v", got)
+	}
+	if err := f.s.Content().PruneRemovals(ctx, f.share, other, entity.VersionOf(4)); err != nil {
+		t.Fatal(err)
+	}
+	if got := unfinished(0); len(got) != 0 {
+		t.Errorf("shard 0 after the release's prune: %v", got)
+	}
+}
