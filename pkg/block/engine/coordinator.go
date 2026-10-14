@@ -14,11 +14,15 @@ import (
 // metadata-store backend at construction time.
 //
 // Transaction ownership rule (BLOCKER-1/2/3 resolution, 2026-04-26)
-// the engine NEVER opens a metadata txn. The CALLER (common.CloneWholeFile
-// for the clone path; common.WriteToBlockStore for the adapter path) opens
-// the txn around the engine call. The coordinator's IncrementRefCount,
-// DecrementRefCountAndReap and DecrementRefCountAndReapMany operations run
-// inside that caller-owned txn.
+// the engine NEVER opens a metadata txn. Each coordinator operation runs in
+// one of two modes:
+//   - Caller-owned: the clone path (common.CloneWholeFile) and the adapter
+//     write path (common.WriteToBlockStore) open the txn around the engine
+//     call and bind it to ctx with metadata.WithTx; IncrementRefCount and the
+//     decrements run inside it, so the caller's rollback undoes them.
+//   - Coordinator-owned: the engine's Truncate and Delete reclaim path binds
+//     no txn, so DecrementRefCountAndReap and DecrementRefCountAndReapMany
+//     open their own (one per row, or one for the whole set).
 //
 // PayloadID is passed as a `string` rather than a strongly-typed
 // block.PayloadID to avoid type-system churn across every
