@@ -124,6 +124,20 @@ func (ms masks) masked(v entity.JournalVersion, e entity.Extent) bool {
 	return len(ms.visible(v, e)) == 0
 }
 
+// owed reports whether h's bytes are owed back to Charged by whatever
+// transaction drops or replaces it: the oldest removal not done that masks
+// it is the one whose phase 1 saw it live, and that phase 1 charged it off
+// with the rest of its extent when it had more holes than it reads. A newer
+// removal's phase 1 saw it as absent, so it owes nothing for it.
+func (ms masks) owed(h hole) bool {
+	for _, m := range ms {
+		if m.Masks(h.Version, h.Extent) {
+			return m.HoleCredit
+		}
+	}
+	return false
+}
+
 // holeSpan and ovSpan are how far below an offset a hole or an overwrite
 // record over it may start: records of a kind overlap only while a removal
 // masks some of them, and none is longer than the file's MaxSpan or
@@ -230,19 +244,22 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 			return err
 		}
 		f.Charged -= charged
-		if err := narrowStraddlers(tx, share, file, f, ms, live, op.Kind == entity.RemoveTruncate); err != nil {
+		back, err := narrowStraddlers(tx, share, file, f, ms, live, op.Kind == entity.RemoveTruncate)
+		if err != nil {
 			return err
 		}
+		f.Charged += back
 	}
 	switch {
 	case op.Kind == entity.RemoveTruncate:
 		f.Size = ext.Offset
 	case !live.IsEmpty():
 		ext = live
-		h, err := mergedHole(tx, share, file, f, ms, ext, op.Version, 0)
+		h, back, err := mergedHole(tx, share, file, f, ms, ext, op.Version, 0, entity.ExtentOf(0, entity.EndOfFile))
 		if err != nil {
 			return err
 		}
+		f.Charged += back
 		f.MaxSpan = max(f.MaxSpan, h.Length)
 	}
 	was := f.Version
@@ -282,21 +299,24 @@ func rewriteFences(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 }
 
 // chargedIn is the bytes of e, below size, that the file is charged for:
-// e less its holes and the extents of deallocations not yet done, which
-// read as holes. A masked hole lies inside one of those, or past size.
+// e less its visible holes. A masked hole lies past size, under a visible
+// hole — the merged hole of the deallocate that masks it — or under data a
+// later write put there, so none of it counts. A deallocate's extent is not
+// free in itself: a write after its phase 1 may have filled part of it.
 //
-// It reads at most k holes. Past that it charges all of e, less, for a
-// deallocate (joinsEdges), the holes its merged hole joins at e's edges,
-// which phase 2 never sees, and reports credit: phase 2 gives back each
-// masked hole's bytes as it drops it, so usage reads low, never high, until
-// the removal is done.
+// It reads at most k holes. Past that it charges all of e less the inside
+// parts of the holes at its edges, which phase 1 itself narrows or joins,
+// and, for a deallocate (replaces), less the hole its merged hole's key
+// replaces; none of those is left masked. It then reports credit: each
+// masked hole's bytes are given back by whichever transaction drops or
+// replaces it, so usage reads low, never high, until the removal is done.
 //
 // ponytail: up to k hole reads keep Charged exact for a file with fewer
 // holes in the extent, and a TRIM-fragmented file reads low until its
 // removal is done. Keep a hole-bytes total per fixed range of the file, which
 // phase 1 could sum in O(1), when a quota decision is traced to usage reading
 // low during a long removal.
-func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, k int, joinsEdges bool) (charged int64, credit bool, err error) {
+func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, k int, replaces bool) (charged int64, credit bool, err error) {
 	recs, more, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), ms.holeSpan(f), k, func(start int64, v []byte) (hole, int64, error) {
 		h, err := decodeHole(start, v)
 		return h, h.End(), err
@@ -306,24 +326,34 @@ func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.F
 	}
 	if more {
 		n := e.Length
-		if joinsEdges {
-			joined, err := edgeHoles(r, share, file, f, ms, e)
-			if err != nil {
+		edges, err := edgeHoles(r, share, file, f, ms, e)
+		if err != nil {
+			return 0, false, err
+		}
+		atStart := false // the merged hole's key holds an edge hole already
+		for _, h := range edges {
+			n -= h.Intersect(e).Length
+			atStart = atStart || h.Offset <= e.Offset
+		}
+		if replaces && !atStart {
+			if b, ok, err := get(r, holeKey(share, file, e.Offset)); err != nil {
 				return 0, false, err
-			}
-			for _, h := range joined {
-				n -= h.Intersect(e).Length
+			} else if ok {
+				h, err := decodeHole(e.Offset, b)
+				if err != nil {
+					return 0, false, err
+				}
+				if !ms.masked(h.Version, h.Extent) {
+					n -= h.Intersect(e).Length
+				}
 			}
 		}
 		return n, true, nil
 	}
 	var free []entity.Extent
 	for _, rec := range recs {
-		free = append(free, rec.value.Extent)
-	}
-	for _, m := range ms {
-		if m.Kind == entity.RemoveDeallocate {
-			free = append(free, m.Extent)
+		if h := rec.value; !ms.masked(h.Version, h.Extent) {
+			free = append(free, h.Extent)
 		}
 	}
 	n := e.Length
@@ -333,38 +363,55 @@ func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.F
 	return n, false, nil
 }
 
-// narrowStraddlers cuts each visible overwrite record, and each visible
-// hole when holes is set, that crosses an edge of e in two at that edge, so
-// every one is either inside e, and masked, or outside it: no later write or
-// commit can then leave a piece of a masked record where phase 2 has
-// already passed. That is at most two records of each kind. A deallocate
+// narrowStraddlers cuts each visible overwrite record that crosses an edge
+// of e in two at that edge, so every one is either inside e, and masked, or
+// outside it: no later write or commit can then leave a piece of a masked
+// record where phase 2 has already passed. When holes is set it narrows each
+// visible hole crossing an edge to its parts outside e instead, leaving no
+// masked piece inside: phase 1 counts that piece's bytes itself, so nothing
+// owes them back later. That is at most two records of each kind, and back
+// is the bytes owed for a masked hole a piece's key replaces. A deallocate
 // joins its edge holes into its merged hole instead.
-func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, holes bool) error {
+func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, holes bool) (back int64, err error) {
+	if holes {
+		hs, err := edgeHoles(tx, share, file, f, ms, e)
+		if err != nil {
+			return 0, err
+		}
+		for _, h := range hs {
+			if !h.Overlaps(e) {
+				continue // touches e, outside it already
+			}
+			if h.Offset >= e.Offset {
+				if err := tx.Delete(holeKey(share, file, h.Offset)); err != nil {
+					return 0, err
+				}
+			}
+			for _, x := range []entity.Extent{entity.ExtentOf(h.Offset, min(h.End(), e.Offset)), entity.ExtentOf(max(h.Offset, e.End()), h.End())} {
+				if x.Length <= 0 {
+					continue
+				}
+				if x.Offset != h.Offset {
+					b, err := replacedHole(tx, share, file, ms, x.Offset)
+					if err != nil {
+						return 0, err
+					}
+					back += b
+				}
+				if err := tx.Set(holeKey(share, file, x.Offset), encodeHole(hole{Extent: x, Version: h.Version, Born: h.Born})); err != nil {
+					return 0, err
+				}
+			}
+		}
+	}
 	for _, edge := range []int64{e.Offset, e.End()} {
 		if edge >= f.Size {
 			continue
 		}
 		at := entity.Extent{Offset: edge, Length: 1}
-		var hs []hole
-		if holes {
-			var err error
-			if hs, err = holesOver(tx, share, file, at, ms.holeSpan(f)); err != nil {
-				return err
-			}
-		}
-		for _, h := range hs {
-			if h.Offset >= edge || ms.masked(h.Version, h.Extent) {
-				continue
-			}
-			for _, x := range []entity.Extent{entity.ExtentOf(h.Offset, edge), entity.ExtentOf(edge, h.End())} {
-				if err := tx.Set(holeKey(share, file, x.Offset), encodeHole(hole{Extent: x, Version: h.Version, Born: h.Born})); err != nil {
-					return err
-				}
-			}
-		}
 		os, err := overwritesOver(tx, share, file, at, ms.ovSpan(f))
 		if err != nil {
-			return err
+			return 0, err
 		}
 		for _, o := range os {
 			if o.Offset >= edge || ms.masked(o.Version, o.Extent) {
@@ -374,12 +421,12 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 				piece := o
 				piece.Extent = x
 				if err := tx.Set(overwriteKey(share, file, x.Offset), encodeOverwrite(piece)); err != nil {
-					return err
+					return 0, err
 				}
 			}
 		}
 	}
-	return nil
+	return back, nil
 }
 
 // mergedHole writes e as one hole at v — a deallocate's extent, or a
@@ -388,31 +435,59 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 // are at most two, read at the edges, so it costs O(1) however many holes
 // lie inside e: those stay, masked, for phase 2 to drop. A hole another
 // removal masks is never joined, and may touch the merged hole until that
-// removal's phase 2 drops it. The merged hole's key replaces a masked hole
-// starting there.
+// removal's phase 2 drops it. Only holes inside bound are joined: a clone's
+// batches join none outside the clone's extent, which its last transaction
+// joins. The merged hole's key replaces a masked hole starting there, and
+// back is that hole's bytes when they are owed (see owed).
 //
 // ponytail: a deallocate's merged hole is born at cut 0, like every hole and
 // overwrite record an existence commit writes, since no snapshot cut is
 // recorded yet; a clone's batches pass the removal's cut. Pass the cut the
 // transaction read when cuts land.
-func mergedHole(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, v entity.JournalVersion, born entity.SnapshotCut) (hole, error) {
-	m := hole{Extent: e, Version: v, Born: born}
-	joined, err := edgeHoles(tx, share, file, f, ms, e)
+func mergedHole(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, v entity.JournalVersion, born entity.SnapshotCut, bound entity.Extent) (m hole, back int64, err error) {
+	m = hole{Extent: e, Version: v, Born: born}
+	edges, err := edgeHoles(tx, share, file, f, ms, e)
 	if err != nil {
-		return hole{}, err
+		return hole{}, 0, err
 	}
+	joined := slices.DeleteFunc(edges, func(h hole) bool { return !bound.Contains(h.Extent) })
 	for _, h := range joined {
 		m.Extent = entity.ExtentOf(min(m.Offset, h.Offset), max(m.End(), h.End()))
 	}
+	own := false
 	for _, h := range joined {
 		if h.Offset == m.Offset {
+			own = true
 			continue // the merged hole's own key
 		}
 		if err := tx.Delete(holeKey(share, file, h.Offset)); err != nil {
-			return hole{}, err
+			return hole{}, 0, err
 		}
 	}
-	return m, tx.Set(holeKey(share, file, m.Offset), encodeHole(m))
+	if !own {
+		if back, err = replacedHole(tx, share, file, ms, m.Offset); err != nil {
+			return hole{}, 0, err
+		}
+	}
+	return m, back, tx.Set(holeKey(share, file, m.Offset), encodeHole(m))
+}
+
+// replacedHole is the bytes owed back for the masked hole a hole written at
+// start replaces, if there is one: the transaction that replaces it gives
+// them back.
+func replacedHole(r kv.Reader, share entity.ShareID, file entity.FileID, ms masks, start int64) (int64, error) {
+	b, ok, err := get(r, holeKey(share, file, start))
+	if err != nil || !ok {
+		return 0, err
+	}
+	h, err := decodeHole(start, b)
+	if err != nil {
+		return 0, err
+	}
+	if ms.masked(h.Version, h.Extent) && ms.owed(h) {
+		return h.Length, nil
+	}
+	return 0, nil
 }
 
 // edgeHoles are the visible holes that straddle or touch e's edges, at most
@@ -450,13 +525,15 @@ const batchItemKeys = 10
 // extent below that version; and advances the cursor. Phase 1 left no hole
 // or overwrite record crossing an edge, so those it drops lie wholly inside.
 // A clone's batches also adopt the source's carved refs over what they
-// reached and write its holes there, each joined with a hole it touches,
-// giving their bytes back to Charged and raising MaxSpan; the source's
-// records starting in a batch count toward its bound like the
-// destination's. A clone's last batch deletes its open of the source. A
-// deallocate's merged hole, written in phase 1, already holds every hole it
-// touched. Content at or above the removal's version is never touched, so a
-// re-run is harmless.
+// reached and write its holes there, each joined with a hole an earlier
+// batch wrote, never past the extent; the source's records starting in a
+// batch count toward its bound like the destination's. A clone's last batch
+// deletes its open of the source. A deallocate's merged hole, written in
+// phase 1, already holds every hole it touched. What a batch changes in
+// Charged — the bytes of each hole it drops that are owed back, a clone's
+// source holes — goes into the removal's charge, and no batch writes the
+// File but the last (see finishRemoval). Content at or above the removal's
+// version is never touched, so a re-run is harmless.
 //
 // ponytail: nothing moves to history, because no snapshot cut is recorded
 // yet, so a dropped ref is dated by nothing and an overwrite record is
@@ -564,15 +641,14 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 			return false, err
 		}
 	}
-	before := f
 	for _, rec := range holes {
 		h := rec.value
 		if reaches(h.Offset, h.Extent) && h.Version.Less(m.Version) && m.Extent.Contains(h.Extent) {
 			if err := tx.Delete(holeKey(share, file, h.Offset)); err != nil {
 				return false, err
 			}
-			if m.HoleCredit {
-				f.Charged += h.Length // phase 1 charged it off with the rest
+			if ms.owed(h) {
+				m.Charge += h.Length // a phase 1 charged it off with the rest
 			}
 		}
 	}
@@ -589,17 +665,7 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 		if live {
 			dst = &f
 		}
-		if err := adopt(tx, share, file, dst, m, batch, ms, nss, deltas); err != nil {
-			return false, err
-		}
-	}
-	// A released file's charge went with it, and its holes' bytes go
-	// nowhere.
-	if live && (f.Charged != before.Charged || f.MaxSpan != before.MaxSpan) {
-		if err := putFile(tx, f.Version, f); err != nil {
-			return false, err
-		}
-		if err := chargeFile(tx, share, &before, &f); err != nil {
+		if err := adopt(tx, share, file, dst, &m, batch, ms, nss, deltas); err != nil {
 			return false, err
 		}
 	}
@@ -622,11 +688,82 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 				return false, err
 			}
 		}
+		if live {
+			if err := finishRemoval(tx, share, f, ms[1:], m); err != nil {
+				return false, err
+			}
+		}
 	}
 	if err := tx.Set(removalKey(share, file, m.Version), encodeRemoval(m)); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// finishRemoval is the one write of the File a removal's phase 2 makes, in
+// the transaction that sets it done: it folds the charge the batches
+// gathered into Charged and the usage, and for a clone joins the holes its
+// batches wrote at the extent's edges with the destination's holes outside
+// it, raising MaxSpan to the result. A writer busy elsewhere in the file
+// then contends with one transaction per removal, not with every batch.
+//
+// decision: a removal whose file is released before it is done folds its
+// charge nowhere, nor into the usage. The release took the file's Charged
+// off the usage as it stood, low by every give-back still owed, and the
+// usage was low by the same bytes, so the two cancel and the usage is exact
+// without them. A release's own charge is always zero: no older removal is
+// left not done when its batches run, and it sets no holeCredit itself.
+// Revisit if a removal can run behind a newer one.
+func finishRemoval(tx kv.Txn, share entity.ShareID, f entity.File, ms masks, m entity.Removal) error {
+	before := f
+	f.Charged += m.Charge
+	if m.Kind == entity.RemoveClone {
+		joined, err := joinCloneEdges(tx, share, &f, ms, m.Extent)
+		if err != nil {
+			return err
+		}
+		f.Charged += joined
+	}
+	if f.Charged == before.Charged && f.MaxSpan == before.MaxSpan {
+		return nil
+	}
+	if err := putFile(tx, f.Version, f); err != nil {
+		return err
+	}
+	return chargeFile(tx, share, &before, &f)
+}
+
+// joinCloneEdges joins a hole a clone's batches wrote at each edge of e
+// with the visible destination hole outside it that it touches, raising
+// f's MaxSpan to each joined hole, and reports the bytes owed back for a
+// masked hole a joined hole's key replaced.
+func joinCloneEdges(tx kv.Txn, share entity.ShareID, f *entity.File, ms masks, e entity.Extent) (int64, error) {
+	var back int64
+	done := map[int64]bool{}
+	for _, at := range []entity.Extent{entity.ExtentOf(e.Offset, e.Offset+1), entity.ExtentOf(e.End()-1, e.End())} {
+		hs, err := holesOver(tx, share, f.ID, at, max(1, f.MaxSpan))
+		if err != nil {
+			return 0, err
+		}
+		for _, h := range hs {
+			if done[h.Offset] || !e.Contains(h.Extent) || ms.masked(h.Version, h.Extent) || h.Offset != e.Offset && h.End() != e.End() {
+				continue
+			}
+			done[h.Offset] = true
+			j, b, err := mergedHole(tx, share, f.ID, *f, ms, h.Extent, h.Version, h.Born, entity.ExtentOf(0, entity.EndOfFile))
+			if err != nil {
+				return 0, err
+			}
+			if j.Offset != h.Offset {
+				if err := tx.Delete(holeKey(share, f.ID, h.Offset)); err != nil {
+					return 0, err
+				}
+			}
+			back += b
+			f.MaxSpan = max(f.MaxSpan, j.Length)
+		}
+	}
+	return back, nil
 }
 
 // fileOrGone reads a file's record, a released file reading as the zero

@@ -243,9 +243,13 @@ type Removal struct {
 	// history scan needs once a release has deleted the File.
 	OvSpan int64
 	// HoleCredit says phase 1 found more holes in the extent than it reads,
-	// charged off all its bytes, and left phase 2 to give back each masked
-	// hole's bytes as it drops it.
+	// charged off all its bytes, and left each masked hole's bytes to be
+	// given back by whichever transaction drops or replaces it.
 	HoleCredit bool
+	// Charge is the change to the File's Charged the phase-2 batches have
+	// gathered — hole bytes given back, a clone's source holes taken off —
+	// which the transaction that sets Done folds in once.
+	Charge int64
 	// FileVersion is the deleted File's Version, Kind RemoveRelease only: it
 	// names the File's version-floor entry, which the prune deletes.
 	FileVersion JournalVersion

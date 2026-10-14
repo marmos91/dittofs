@@ -149,7 +149,7 @@ func commitExistence(tx kv.Txn, p PendingExistence, first, budget int, fresh boo
 		return 0, 0, err
 	}
 	st := &existState{tx: tx, share: p.Share, file: p.File, size: f.Size, f: f, orig: f, was: f.Version, fenced: fenced, epoch: p.Epoch, ms: ms,
-		holes: map[int64]hole{}, stored: map[int64]hole{}, ovs: map[int64]overwrite{},
+		holes: map[int64]hole{}, stored: map[int64]hole{}, masked: map[int64]hole{}, ovs: map[int64]overwrite{},
 		dirtyH: map[int64]bool{}, dirtyO: map[int64]bool{}}
 	i := first
 	for ; i < len(p.Ops); i++ {
@@ -201,6 +201,7 @@ type existState struct {
 	size        int64          // size before the commit: below it, outside stored holes, is committed content
 	holes       map[int64]hole // by start, as the commit leaves them; absent and dirty means deleted
 	stored      map[int64]hole // as stored before the commit
+	masked      map[int64]hole // masked holes read, which a record written or deleted at their key replaces
 	ovs         map[int64]overwrite
 	dirtyH      map[int64]bool
 	dirtyO      map[int64]bool
@@ -256,7 +257,11 @@ func (s *existState) load(w entity.Extent) error {
 			return err
 		}
 		for _, h := range hs {
-			if !s.dirtyH[h.Offset] && !s.ms.masked(h.Version, h.Extent) {
+			switch {
+			case s.dirtyH[h.Offset]:
+			case s.ms.masked(h.Version, h.Extent):
+				s.masked[h.Offset] = h
+			default:
 				s.holes[h.Offset], s.stored[h.Offset] = h, h
 			}
 		}
@@ -432,8 +437,14 @@ func (s *existState) setOv(o overwrite) {
 func (s *existState) dropOv(start int64) { delete(s.ovs, start); s.dirtyO[start] = true }
 
 // flush writes the File, its fence when it had none, and every changed hole
-// and overwrite record.
+// and overwrite record. A changed hole key that held a masked hole replaces
+// it, and gives back its bytes when they are owed (see owed).
 func (s *existState) flush() error {
+	for start := range s.dirtyH {
+		if h, ok := s.masked[start]; ok && s.ms.owed(h) {
+			s.f.Charged += h.Length
+		}
+	}
 	if !s.fenced {
 		if err := s.tx.Set(existenceFenceKey(s.share, s.file), encodeFence(fence{Epoch: s.epoch})); err != nil {
 			return err

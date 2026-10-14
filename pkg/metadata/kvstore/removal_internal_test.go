@@ -421,3 +421,116 @@ func TestUnfinishedRemovals(t *testing.T) {
 		t.Errorf("shard 0 after the release's prune: %v", got)
 	}
 }
+
+// exactCharged is what a file with no removal left to finish is charged:
+// its size less its holes, read from its hole records.
+func (f *cfix) exactCharged(file entity.FileID) int64 {
+	f.t.Helper()
+	n := f.get(file).Size
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		pre := holesPrefix(f.share, file)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			start, err := startOf(pre, row.Key)
+			if err != nil {
+				return err
+			}
+			h, err := decodeHole(start, row.Value)
+			if err != nil {
+				return err
+			}
+			n -= h.Length
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return n
+}
+
+// RFC 6 §6.2: a hole credit follows the hole, not the batch. With K forced
+// to 4 and holeCredit set, a masked hole's bytes are given back by whichever
+// transaction drops or replaces it, and the edge holes phase 1 cuts are
+// counted by phase 1 itself, so Charged and usage are exact once every
+// removal is done. No phase-2 batch but the last writes the File.
+func TestHoleCreditOtherPaths(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		after func(f *cfix, file entity.FileID) // between phase 1 and phase 2
+		op    RemoveOp
+		exact int64
+	}{
+		// The truncate cuts [3.5, 4) off a hole at the new size; a grow then
+		// writes a hole at that key.
+		{"truncate across a straddling hole, then a grow", func(f *cfix, file entity.FileID) {
+			f.exist(file, grow(31, 5*mib))
+		}, truncate(30, 7*mib/2), 2 * mib},
+		// A write into the merged hole splits it, and the piece after the
+		// write lands on the key of a masked hole.
+		{"a write over a masked hole's key", func(f *cfix, file entity.FileID) {
+			f.exist(file, write(31, 6*mib, mib))
+		}, dealloc(30, 2*mib, 16*mib), 4 * mib},
+		// A later truncate cuts the first removal's merged hole at its edge
+		// while the first one's masked holes are still there.
+		{"a later overlapping truncate", func(f *cfix, file entity.FileID) {
+			f.remove(file, truncate(31, 9*mib))
+		}, dealloc(30, 2*mib, 16*mib), mib},
+		// The truncate leaves a masked hole starting at the new size; a
+		// clone past the end of file writes its gap hole at that key.
+		{"a clone's gap hole over a masked hole's key", func(f *cfix, file entity.FileID) {
+			src := f.file(0)
+			f.exist(src, write(1, 0, mib))
+			f.clone(f.cloneOp(src, file, 0, 10*mib, mib, 31))
+		}, truncate(30, 3*mib), 3 * mib},
+		// A write leaves the masked hole at 5 MiB under data, with no
+		// visible hole touching it; a later deallocate starting there writes
+		// its merged hole at that key.
+		{"a deallocate's merged hole over a masked hole's key", func(f *cfix, file entity.FileID) {
+			f.exist(file, write(31, 4*mib, 2*mib))
+			f.remove(file, dealloc(32, 5*mib, mib/2))
+		}, dealloc(30, 2*mib, 16*mib), 9 * mib / 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newContentFix(t, nil)
+			file := f.file(0)
+			var ops []PendingOp
+			for i := range int64(11) {
+				ops = append(ops, write(uint64(i+1), 2*i*mib, mib)) // holes at [2i+1, 2i+2) MiB
+			}
+			f.exist(file, ops...)
+			f.s.SetKeyBudget(4)
+			f.remove(file, c.op)
+			if rs := f.removals(file); len(rs) != 1 || !rs[0].HoleCredit {
+				t.Fatalf("removal %+v, want holeCredit", rs)
+			}
+			c.after(f, file)
+			doneCount := func() (n int) {
+				for _, m := range f.removals(file) {
+					if m.Done {
+						n++
+					}
+				}
+				return n
+			}
+			for more := true; more; {
+				before, was := f.get(file), doneCount()
+				if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) (err error) {
+					more, err = f.s.resumeBatch(tx, f.share, file)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if got := f.get(file); doneCount() == was && got.Version != before.Version {
+					t.Errorf("a batch that finished no removal wrote the File: Charged %d → %d", before.Charged, got.Charged)
+				}
+				f.checkUsage()
+			}
+			if got, want := f.get(file).Charged, f.exactCharged(file); got != want || got != c.exact {
+				t.Errorf("Charged %d once done, holes give %d, want %d; holes %s", got, want, c.exact, f.holeRecords(file))
+			}
+			f.checkUsage()
+		})
+	}
+}

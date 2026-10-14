@@ -95,8 +95,10 @@ func TestCloneJoinRaisesMaxSpan(t *testing.T) {
 
 // RFC 6 §6.6 and RFC 8 §9.1 step 4: a clone's phase 1 writes O(1) keys
 // however many holes the source has, recording the whole extent as existing
-// and charged; the batches write the holes within the key budget and give
-// their bytes back. A clone of a destination still being cloned waits.
+// and charged, and raises MaxSpan to its length; the batches write the holes
+// within the key budget and gather their bytes in the removal's charge,
+// which only the last batch, setting done, folds into the File. A clone of a
+// destination still being cloned waits.
 func TestCloneHolesInPhase2(t *testing.T) {
 	var w *writesKV
 	f := newContentFix(t, func(db kv.KV) kv.KV { w = &writesKV{KV: db}; return w })
@@ -127,13 +129,23 @@ func TestCloneHolesInPhase2(t *testing.T) {
 
 	budget := 5*batchItemKeys + 4 // one record of each kind per batch
 	f.s.SetKeyBudget(budget)
+	before := f.get(dst)
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error { _, err := f.s.resumeBatch(tx, f.share, dst); return err }); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get(dst); got.Version != before.Version || got.Charged != before.Charged {
+		t.Errorf("a batch before the last wrote the File: %+v", got)
+	}
+	if m := f.removals(dst); len(m) != 1 || m[0].Charge >= 0 {
+		t.Errorf("the first batch gathered no charge: %+v", m)
+	}
 	w.max = 0
 	f.resume(dst)
 	if w.max > budget {
 		t.Errorf("a batch wrote %d keys, budget %d", w.max, budget)
 	}
 	f.want(dst, "after the clone", f.layout(src))
-	if got := f.get(dst); got.Charged != writes*mib || got.MaxSpan != mib {
+	if got := f.get(dst); got.Charged != writes*mib || got.MaxSpan != (2*writes-1)*mib {
 		t.Errorf("charged %d, max span %d", got.Charged, got.MaxSpan)
 	}
 	if got := strings.Count(f.holeRecords(dst), "@50"); got != writes-1 {
@@ -248,5 +260,41 @@ func TestCloneRefusals(t *testing.T) {
 	}
 	if rs := f.removals(src); len(rs) != 0 {
 		t.Errorf("a refused clone left a removal: %+v", rs)
+	}
+}
+
+// RFC 6 §6.6: a clone's batches join no hole outside its extent; the
+// transaction that sets done joins the holes they wrote at its edges with
+// the destination's holes outside, raising MaxSpan to the result, and
+// Charged is exact then.
+func TestCloneJoinsEdgeHolesAtDone(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		dst, src      []PendingOp
+		holes         string
+		charged, span int64
+	}{
+		{"left", []PendingOp{write(1, 0, mib), grow(2, 4*mib)}, []PendingOp{write(1, mib, mib)},
+			"[1,5)@50", 2 * mib, 4 * mib},
+		// Phase 1 cuts the destination's hole at both edges; the right piece
+		// rejoins the source hole the last batch writes at the extent's end.
+		{"right", []PendingOp{write(1, 0, mib), grow(2, 10*mib)}, []PendingOp{write(1, 0, mib), grow(2, 2*mib)},
+			"[1,4)@2 [5,10)@50", 2 * mib, 9 * mib},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newContentFix(t, nil)
+			src, dst := f.file(0), f.file(0)
+			f.exist(dst, c.dst...)
+			f.exist(src, c.src...)
+			f.clone(f.cloneOp(src, dst, 0, 4*mib, 2*mib, 50))
+			f.resume(dst)
+			if got := f.holeRecords(dst); got != c.holes {
+				t.Errorf("holes %s, want %s", got, c.holes)
+			}
+			if got := f.get(dst); got.Charged != c.charged || got.MaxSpan != c.span {
+				t.Errorf("charged %d, max span %d; want %d, %d", got.Charged, got.MaxSpan, c.charged, c.span)
+			}
+			f.checkUsage()
+		})
 	}
 }

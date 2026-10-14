@@ -266,7 +266,7 @@ func TestHoleBornSurvivesCuts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if n < 3 {
-		t.Errorf("%d hole records, want the split and cut pieces", n)
+	if n != 2 {
+		t.Errorf("%d hole records, want the two split pieces, the second cut at the new size", n)
 	}
 }
