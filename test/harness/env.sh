@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# The environment commands, which dt hands to this script with their arguments
-# (docs/internals/rfc-test-harness.md, section 4.4). They start and stop the
-# containers the suites use, so they stay shell.
+# The environment commands, which dt hands to this script with their arguments.
+# They start and stop the containers the suites use, so they stay shell.
 #
 #   dt services up|down|status [localstack|postgres|kmip]
 #   dt stack up [--memory]|down [-v]|status|logs|mount|umount
@@ -221,6 +220,15 @@ STACK_HOST=127.0.0.1
 $HOSTNET || STACK_HOST=host.docker.internal
 # Linux needs root to mount; macOS mounts user-owned mount points without it.
 as_root() { if ((EUID == 0)); then "$@"; else sudo "$@"; fi; }
+# mounted DIR: something is mounted on DIR. The mount table is read whole first:
+# a grep -q that stops at its first match can kill mount with SIGPIPE, which
+# pipefail turns into a no.
+mounted() { [[ "$(mount)" == *" on $1 "* ]]; }
+# unmount DIR, by force if a plain unmount fails.
+unmount() {
+    if [[ "$OS" == Darwin ]]; then umount "$1" || diskutil unmount force "$1"
+    else as_root umount "$1" || as_root umount -f -l "$1"; fi
+}
 
 stack_compose() { (cd "$REPO" && docker compose "$@"); }
 
@@ -247,7 +255,7 @@ cmd_stack() {
     local profile=s3-backend
     case "$action:$#:${1:-}" in
         up:0:|down:0:|down:1:-v|status:0:|logs:0:|mount:0:|umount:0:) ;;
-        up:1:--memory) profile=default ;;
+        up:1:--memory) profile= ;;
         *) die "$usage" ;;
     esac
     if $IN_CONTAINER && [[ "$action" == mount || "$action" == umount ]]; then
@@ -263,9 +271,10 @@ cmd_stack() {
             if ! stack_compose ps --status running --services 2>/dev/null | grep -qx dittofs; then
                 stack_ports_free
             fi
-            info "starting compose stack (profile: $profile)"
-            if [[ "$profile" == default ]]; then stack_compose up -d --build
-            else COMPOSE_PROFILES="$profile" stack_compose up -d --build; fi
+            info "starting compose stack (profile: ${profile:-default})"
+            # Set even when empty, so a COMPOSE_PROFILES the caller exported
+            # can't add a profile to the one asked for.
+            COMPOSE_PROFILES="$profile" stack_compose up -d --build
             wait_for "bootstrap" 90 bootstrap_done
             stack_compose logs bootstrap 2>/dev/null | tail -3
             stack_dev_user
@@ -280,7 +289,7 @@ cmd_stack() {
         logs) stack_compose logs --tail=200 dittofs ;;
         mount)
             mkdir -p "$NFS_MNT" "$SMB_MNT"
-            if mount | grep -q " on $NFS_MNT "; then info "NFS already mounted at $NFS_MNT"
+            if mounted "$NFS_MNT"; then info "NFS already mounted at $NFS_MNT"
             elif [[ "$OS" == Darwin ]]; then
                 mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolocks,noresvport 127.0.0.1:/export "$NFS_MNT" \
                     && info "NFSv3 mounted at $NFS_MNT"
@@ -288,7 +297,7 @@ cmd_stack() {
                 as_root mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolock 127.0.0.1:/export "$NFS_MNT" \
                     && info "NFSv3 mounted at $NFS_MNT"
             fi
-            if mount | grep -q " on $SMB_MNT "; then info "SMB already mounted at $SMB_MNT"
+            if mounted "$SMB_MNT"; then info "SMB already mounted at $SMB_MNT"
             elif [[ "$OS" == Darwin ]]; then
                 mount_smbfs -N "//${STACK_USER}:${STACK_USER_PW}@127.0.0.1:12445/export" "$SMB_MNT" \
                     && info "SMB mounted at $SMB_MNT (user $STACK_USER)"
@@ -299,12 +308,12 @@ cmd_stack() {
             fi
             ;;
         umount)
-            local m
+            local m failed=0
             for m in "$NFS_MNT" "$SMB_MNT"; do
-                mount | grep -q " on $m " || continue
-                if [[ "$OS" == Darwin ]]; then { umount "$m" || diskutil unmount force "$m"; } && info "unmounted $m"
-                else { as_root umount "$m" || as_root umount -f -l "$m"; } && info "unmounted $m"; fi
-            done; true ;;
+                mounted "$m" || continue
+                if unmount "$m"; then info "unmounted $m"; else err "could not unmount $m"; failed=1; fi
+            done
+            return "$failed" ;;
     esac
 }
 
@@ -314,9 +323,10 @@ bootstrap_done() { stack_compose ps -a bootstrap --format '{{.State}} {{.ExitCod
 # creates the share.
 stack_dev_user() {
     local bin uid
-    # Built each time, so it matches the checkout; a binary per platform, since
-    # the host and a dtc container share the checkout.
-    bin="$STATE/bin/$(uname -s)-$(uname -m)/dfsctl"
+    # Built each time, so it matches the checkout. The host and a dtc container
+    # share the checkout, so each has its own binary: one per platform, and the
+    # container's apart even on the same platform, since it builds as root.
+    bin="$STATE/bin/$(uname -s)-$(uname -m)${DT_IN_CONTAINER:+-dtc}/dfsctl"
     (cd "$REPO" && go build -o "$bin" ./cmd/dfsctl)
     export XDG_CONFIG_HOME="$STATE/dfsctl"
     "$bin" login --server "http://$STACK_HOST:8080" --username admin --password "$STACK_ADMIN_PW" >/dev/null
@@ -335,21 +345,28 @@ stack_dev_user() {
 # keep the server's log, stop the server by the PID file it wrote, never by name,
 # and clear the /tmp state it leaves. /tmp is everyone's and a PID can be reused,
 # so it signals only a PID from a file of the caller's that names a process
-# still running `dfs ... start`.
+# still running `dfs ... start`. A live PID it can't recognise, such as a dfs
+# started from a path with a space in it, keeps its file, so that server can
+# still be found and stopped.
 host_teardown() {
-    local pidf=/tmp/dittofs-server.pid pid p
+    local pidf=/tmp/dittofs-server.pid pid p keep=
     if [[ -f "$pidf" && -O "$pidf" ]]; then
         pid="$(cat "$pidf")"
-        if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && is_dfs_start "$pid"; then
-            kill -TERM "$pid" 2>/dev/null || true
-            for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-            if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
-            info "stopped host dfs (pid $pid)"
+        if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+            if is_dfs_start "$pid"; then
+                kill -TERM "$pid" 2>/dev/null || true
+                for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+                if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+                info "stopped host dfs (pid $pid)"
+            else
+                keep="$pidf"
+                warn "pid $pid in $pidf is running, but not as 'dfs ... start': left running and kept the file. If it is the server: sudo $REPO/test/posix/teardown-posix.sh"
+            fi
         fi
     fi
     [[ -f /tmp/dittofs-posix-server.log ]] && cp /tmp/dittofs-posix-server.log "$STATE/dfs-server-$(date +%Y%m%d-%H%M%S).log"
     for p in /tmp/dittofs-posix-* /tmp/dittofs-admin-password "$pidf"; do
-        [[ -e "$p" ]] || continue
+        [[ -e "$p" && "$p" != "$keep" ]] || continue
         if [[ -O "$p" ]]; then rm -rf "$p"
         else warn "$p is owned by $(owner_of "$p"); clear it with: sudo $REPO/test/posix/teardown-posix.sh"; fi
     done
@@ -370,13 +387,17 @@ smb_stack_down() {
     proj="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
         awk -F'|' -v d="$dir" '$1 ~ /^smb-conformance/ && $2 == d {print $1; exit}')"
     [[ -n "$proj" ]] || return 0
-    (cd "$dir" && docker compose -p "$proj" --profile '*' down -v >/dev/null 2>&1) &&
+    if (cd "$dir" && docker compose -p "$proj" --profile '*' down -v >/dev/null 2>&1); then
         info "removed leftover SMB conformance stack $proj"
+    else
+        warn "could not remove leftover SMB conformance stack $proj: in $dir, docker compose -p $proj --profile '*' down -v shows why"
+    fi
 }
 
 # Stop everything the harness can leave running: a host dfs, the compose stack
 # and its mounts, a leftover SMB conformance stack and the services. --volumes
-# also drops the stack's data volumes. dtc sessions are listed, not stopped.
+# also drops the stack's data volumes. dtc sessions are listed, not stopped. A
+# stop that fails is reported, and the rest still run.
 cmd_cleanup() {
     local volumes=false
     case "$#:${1:-}" in
@@ -384,13 +405,17 @@ cmd_cleanup() {
         1:--volumes) volumes=true ;;
         *) die "usage: dt cleanup [--volumes]" ;;
     esac
+    host_teardown  # first: it needs no Docker
     docker_ok
-    host_teardown
     if docker ps -a --format '{{.Label "com.docker.compose.project"}}' | grep -qx dittofs; then
         $IN_CONTAINER || cmd_stack umount || true
-        if $volumes; then stack_compose --profile s3-backend down -v >/dev/null 2>&1
-        else stack_compose --profile s3-backend down >/dev/null 2>&1; fi
-        info "stopped the compose stack$($volumes && echo ' and dropped its volumes')"
+        local down=(down)
+        if $volumes; then down+=(-v); fi
+        if stack_compose --profile s3-backend "${down[@]}" >/dev/null 2>&1; then
+            info "stopped the compose stack$($volumes && echo ' and dropped its volumes')"
+        else
+            warn "could not stop the compose stack: 'dt stack ${down[*]}' shows why"
+        fi
     fi
     smb_stack_down
     cmd_services down
