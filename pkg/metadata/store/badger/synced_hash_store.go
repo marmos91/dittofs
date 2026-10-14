@@ -179,7 +179,7 @@ func (s *BadgerMetadataStore) IsSynced(ctx context.Context, hash block.ContentHa
 // marker value with the current time as 8 big-endian nanos. Idempotent and
 // first-write-wins: re-applying an already-marked hash is a no-op that
 // preserves the original timestamp, so EnumerateSynced reports when the hash
-// was FIRST mirrored — the grace anchor for the LIST-free sweep. Markers
+// was FIRST mirrored, the grace anchor for the LIST-free sweep. Markers
 // written before timestamps existed carry an empty value and decode to a zero
 // time (fail-closed: the sweep leaves them for the periodic reconcile).
 func (s *BadgerMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {

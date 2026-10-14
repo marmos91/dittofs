@@ -11,7 +11,7 @@ import (
 //
 // The names below are package metadata's error API. Callers across the tree —
 // every protocol adapter, the control-plane API handlers, the block engine and
-// the metadata store — construct, compare and type-switch on them as
+// the metadata store: construct, compare and type-switch on them as
 // metadata.StoreError, metadata.ErrNotFound, metadata.IsNotFoundError and the
 // rest.
 //
