@@ -920,7 +920,7 @@ type MetadataService struct {
 
 // Usage by protocol handlers
 metaSvc := metadata.New()
-metaSvc.RegisterStoreForShare("/export", memoryStore)
+metaSvc.RegisterStoreForShare("/export", inMemoryBadgerStore)
 metaSvc.RegisterStoreForShare("/archive", badgerStore)
 
 // High-level operations (with business logic)
