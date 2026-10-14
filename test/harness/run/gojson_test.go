@@ -145,6 +145,17 @@ func TestFlip(t *testing.T) {
 	}
 }
 
+// TEST names go before an -args, after which go test passes everything to
+// the test binaries as it is, so they still select the tests.
+func TestGoJSONNamesBeforeArgs(t *testing.T) {
+	for _, args := range []string{"-args", "--args"} {
+		o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./... "+args+" extra, format: go-json }\n", goModule, "TestPass")
+		if want := "1 passed, 0 failed, 0 skipped"; o.Result != Passed || o.Note != want {
+			t.Errorf("%s: outcome %+v, want passed with %q", args, o, want)
+		}
+	}
+}
+
 // A package that doesn't build fails the cell and says so.
 func TestGoJSONBuildFailure(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "b/b_test.go": "package b\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) { undefined() }\n"}

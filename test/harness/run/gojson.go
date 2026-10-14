@@ -43,7 +43,13 @@ func (t tester) goJSON(names []string) (string, string) {
 			return NotRun, err.Error()
 		}
 		if len(names) > 0 {
-			argv = append(argv, "-run", runPattern(names))
+			// go test passes everything after -args to the test binaries as
+			// it is, so -run goes before it.
+			at := slices.IndexFunc(argv, func(a string) bool { return a == "-args" || a == "--args" })
+			if at < 0 {
+				at = len(argv)
+			}
+			argv = slices.Insert(argv, at, "-run", runPattern(names))
 		}
 		shown := strings.Join(argv, " ")
 		failed := res.failures()
