@@ -426,7 +426,7 @@ jobs:
       - name: Install NFS client and suite dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y nfs-common libtirpc-dev pkg-config time tcpdump
+          sudo apt-get install -y nfs-common rpcbind openssh-server iproute2 libtirpc-dev pkg-config time tcpdump
 
       # The suites come from git.linux-nfs.org over git://. Caching them keys
       # on fetch.sh, which holds the pinned revisions, so a re-pin refetches

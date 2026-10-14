@@ -22,27 +22,41 @@ func writeFile(t *testing.T, path, body string) {
 }
 
 // fakeTools puts fakes first on PATH, so no test here can reach a real
-// container or a real port, whatever the code under test does:
-//   - docker records each call in the returned file and exits with
-//     FAKE_DOCKER_STATUS, 1 unless a test sets it, failing any call that
-//     contains FAKE_DOCKER_FAIL;
-//   - lsof, ss and nc report every port free.
+// container, a real port or a real mount, whatever the code under test does:
+//   - docker records each call in the returned file, prefixed with the
+//     COMPOSE_PROFILES it got, if any, and exits with FAKE_DOCKER_STATUS, 1
+//     unless a test sets it, failing any call that contains FAKE_DOCKER_FAIL;
+//   - lsof, ss and nc report every port free;
+//   - mount with no arguments prints the file FAKE_MOUNTS, an empty table
+//     unless a test sets it; any other mount, and umount, mount_smbfs,
+//     diskutil and sudo, record the call and exit with FAKE_MOUNT_STATUS, 0
+//     unless a test sets it.
 //
 // HOME is a temporary directory too, so nothing under the real one is touched.
 func fakeTools(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
 	calls := filepath.Join(bin, "calls")
-	writeFile(t, filepath.Join(bin, "docker"), "#!/bin/sh\necho \"docker $*\" >> '"+calls+"'\n"+
+	writeFile(t, filepath.Join(bin, "docker"), "#!/bin/sh\n"+
+		"echo \"${COMPOSE_PROFILES:+COMPOSE_PROFILES=$COMPOSE_PROFILES }docker $*\" >> '"+calls+"'\n"+
 		"if [ -n \"$FAKE_DOCKER_FAIL\" ]; then case \"$*\" in *\"$FAKE_DOCKER_FAIL\"*) exit 1 ;; esac; fi\n"+
 		"exit \"${FAKE_DOCKER_STATUS:-1}\"\n")
 	writeFile(t, filepath.Join(bin, "lsof"), "#!/bin/sh\nexit 1\n")
 	writeFile(t, filepath.Join(bin, "ss"), "#!/bin/sh\nexit 0\n")
 	writeFile(t, filepath.Join(bin, "nc"), "#!/bin/sh\nexit 1\n")
+	for _, name := range []string{"mount", "umount", "mount_smbfs", "diskutil", "sudo"} {
+		writeFile(t, filepath.Join(bin, name), "#!/bin/sh\n"+
+			"if [ \"$(basename \"$0\")\" = mount ] && [ $# -eq 0 ]; then exec cat \"${FAKE_MOUNTS:-/dev/null}\"; fi\n"+
+			"echo \"$(basename \"$0\") $*\" >> '"+calls+"'\n"+
+			"exit \"${FAKE_MOUNT_STATUS:-0}\"\n")
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("FAKE_DOCKER_STATUS", "")
 	t.Setenv("FAKE_DOCKER_FAIL", "")
+	t.Setenv("FAKE_MOUNTS", "")
+	t.Setenv("FAKE_MOUNT_STATUS", "")
+	t.Setenv("COMPOSE_PROFILES", "")
 	return calls
 }
 
@@ -362,5 +376,58 @@ func TestDtcWithoutTimezone(t *testing.T) {
 	var exit *exec.ExitError
 	if argv := takeCalls(t, filepath.Join(docker, "argv")); !errors.As(err, &exit) || exit.ExitCode() != 4 || !strings.HasSuffix(argv, "\nlist\n") {
 		t.Errorf("dtc list: %v, docker run arguments %q; want docker run's exit status 4\n%s", err, argv, out)
+	}
+}
+
+// dt stack up --memory starts no profile, even with COMPOSE_PROFILES exported.
+// The fake docker fails the up, so the run stops there.
+func TestStackUpMemory(t *testing.T) {
+	script, _ := envCopy(t)
+	calls := fakeTools(t)
+	t.Setenv("FAKE_DOCKER_STATUS", "0")
+	t.Setenv("FAKE_DOCKER_FAIL", "up -d")
+	t.Setenv("COMPOSE_PROFILES", "s3-backend")
+	out, _ := envRun(t, script, "stack", "up", "--memory")
+	got := takeCalls(t, calls)
+	if !strings.Contains(got, "\ndocker compose up -d --build\n") {
+		t.Errorf("the up isn't free of profiles:\n%s\n%s", got, out)
+	}
+}
+
+// dt stack mount and umount read the whole mount table, so a long one still
+// shows what is mounted, and a failed unmount fails umount.
+func TestStackMounts(t *testing.T) {
+	script, _ := envCopy(t)
+	calls := fakeTools(t)
+	t.Setenv("FAKE_DOCKER_STATUS", "0")
+	t.Setenv("DT_IN_CONTAINER", "") // inside dtc, mount and umount only point to the host
+	nfs := filepath.Join(os.Getenv("HOME"), "mnt", "dittofs-nfs")
+	smb := filepath.Join(os.Getenv("HOME"), "mnt", "dittofs-smb")
+	// Both mounts first, then far more than a pipe holds: a grep -q that
+	// stops at the first line kills the rest of the listing with SIGPIPE.
+	mounts := filepath.Join(t.TempDir(), "mounts")
+	writeFile(t, mounts, "x on "+nfs+" (nfs)\nx on "+smb+" (smbfs)\n"+
+		strings.Repeat("filler on /filler (apfs)\n", 50000))
+	t.Setenv("FAKE_MOUNTS", mounts)
+
+	out, status := envRun(t, script, "stack", "mount")
+	if status != 0 || !strings.Contains(out, "NFS already mounted") || !strings.Contains(out, "SMB already mounted") {
+		t.Errorf("stack mount: exit status %d, want 0 and both already mounted\n%s", status, out)
+	}
+	takeCalls(t, calls)
+
+	if out, status := envRun(t, script, "stack", "umount"); status != 0 {
+		t.Errorf("stack umount: exit status %d\n%s", status, out)
+	}
+	got := takeCalls(t, calls)
+	for _, m := range []string{nfs, smb} {
+		if !strings.Contains(got, "umount "+m+"\n") {
+			t.Errorf("no umount of %s among the calls:\n%s", m, got)
+		}
+	}
+
+	t.Setenv("FAKE_MOUNT_STATUS", "1")
+	if out, status := envRun(t, script, "stack", "umount"); status == 0 || !strings.Contains(out, "could not unmount "+nfs) {
+		t.Errorf("stack umount with every unmount failing: exit status %d\n%s", status, out)
 	}
 }

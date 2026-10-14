@@ -8,9 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// envCommands are the environment commands, which stay shell
-// (docs/internals/rfc-test-harness.md, section 4.4): dt hands each, with its
-// arguments, to test/harness/env.sh.
+// envCommands are the environment commands. They start and stop containers, so
+// they stay shell: dt hands each, with its arguments, to test/harness/env.sh.
 var envCommands = []struct{ name, short string }{
 	{"services", "Start, stop or show the services the suites use: localstack, postgres, kmip"},
 	{"stack", "Start, stop, show or mount the compose stack: a server with its S3 on Localstack"},

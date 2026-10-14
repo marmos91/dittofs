@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          ca-certificates curl git jq netcat-openbsd procps lsof iproute2 sudo \
-         nfs-common rpcbind kmod \
+         nfs-common rpcbind kmod openssh-server iptables \
          build-essential libtirpc-dev pkg-config \
          python3 tcpdump time \
     && rm -rf /var/lib/apt/lists/*
