@@ -18,14 +18,14 @@ var ErrHeld = errors.New("kvstore: file still held")
 
 // releasePhase1 is a release's first transaction. It re-checks the file's
 // holders inside itself — no entry, its pending release recorded, no durable
-// open of it or of a stream, the open records range-guarded so an open
-// committing first aborts it — then deletes the File, its ACL, xattrs,
-// stream links, delete-pending record and pending release, writes a pending
-// release for each stream, and records the removal of [0, ∞), which masks
-// the refs until Resume drops them and carries the File's Version, which
-// names its version-index entry. The fences, that entry and the rest of the
-// file's prefix go when that removal is pruned. A file already gone was released
-// before, and a replay changes nothing.
+// open of it or of a stream, no clone onto it not done, the open and removal
+// records range-guarded so either committing first aborts it — then deletes
+// the File, its ACL, xattrs, stream links, delete-pending record and pending
+// release, writes a pending release for each stream, and records the removal
+// of [0, ∞), which masks the refs until Resume drops them and carries the
+// File's Version, which names its version-index entry. The fences, that
+// entry and the rest of the file's prefix go when that removal is pruned. A
+// file already gone was released before, and a replay changes nothing.
 func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uint64, op RemoveOp) error {
 	if err := rewriteFences(tx, share, file, epoch); err != nil {
 		return err
@@ -56,6 +56,17 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 			return err
 		}
 		streams = append(streams, entity.FileID(id))
+	}
+	// An unfinished clone onto the file holds it, as an open does. Its
+	// removal records are found by scan, so their range is guarded: a clone
+	// whose phase 1 commits after this snapshot aborts the release.
+	if err := tx.GuardRange(removalsPrefix(share, file)); err != nil {
+		return err
+	}
+	if cloning, err := cloneRunning(tx, share, file); err != nil {
+		return err
+	} else if cloning {
+		return ErrHeld
 	}
 	for _, id := range append([]entity.FileID{file}, streams...) {
 		if err := noDurableOpen(tx, share, id); err != nil {
@@ -179,7 +190,7 @@ func (s *Store) pruneReleased(ctx context.Context, share entity.ShareID, file en
 // its last batch: every key under its prefix but its history, its fences and
 // the release's removal at v, with a delta's index entry beside the delta.
 func releasedKeys(r kv.Reader, share entity.ShareID, file entity.FileID, v entity.JournalVersion, limit int) ([][]byte, error) {
-	his, deltas := historyPrefix(share, file), deltasPrefix(share, file)
+	his, deltas, rms := historyPrefix(share, file), deltasPrefix(share, file), removalsPrefix(share, file)
 	keep := [][]byte{existenceFenceKey(share, file), offloadFenceKey(share, file), removalKey(share, file, v)}
 	var ks [][]byte
 	for row, err := range r.Scan(fileKey(share, file), nil) {
@@ -188,6 +199,15 @@ func releasedKeys(r kv.Reader, share entity.ShareID, file entity.FileID, v entit
 		}
 		if bytes.HasPrefix(row.Key, his) || slices.ContainsFunc(keep, func(k []byte) bool { return bytes.Equal(k, row.Key) }) {
 			continue
+		}
+		if bytes.HasPrefix(row.Key, rms) {
+			if v, _, err := keys.ReadVersion(row.Key[len(rms):]); err != nil {
+				return nil, err
+			} else if m, err := decodeRemoval(v, row.Value); err != nil {
+				return nil, err
+			} else if m.Kind == entity.RemoveClone && !m.Done {
+				continue // a clone not done is never pruned
+			}
 		}
 		if len(ks)+2 > limit {
 			break

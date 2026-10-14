@@ -12,6 +12,25 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
+// destinationFree refuses, with ErrDelay, a truncate, deallocate or clone of
+// a file a clone is still writing: a batch applies its refs with no check
+// against a removal that began after the clone's, so a punch between two
+// batches would read cloned bytes again. The fences the caller rewrites
+// order it against the clone's phase 1, so the untracked scan of the
+// removal records sees every clone that committed before it.
+func destinationFree(r kv.Reader, share entity.ShareID, file entity.FileID) error {
+	if cloning, err := cloneRunning(r, share, file); err != nil || !cloning {
+		return err
+	}
+	return entity.ErrDelay
+}
+
+// cloneRunning reports whether a clone onto the file is not done.
+func cloneRunning(r kv.Reader, share entity.ShareID, file entity.FileID) (bool, error) {
+	ms, err := masksOf(r, share, file)
+	return slices.ContainsFunc(ms, func(m entity.Removal) bool { return m.Kind == entity.RemoveClone }), err
+}
+
 // removals reads a file's removal records, in version order. A file has a
 // handful at most, so the scan is not bounded.
 func removals(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.Removal, error) {
@@ -146,6 +165,9 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	}
 	if !f.Applied.Less(op.Version) {
 		return nil // already applied
+	}
+	if err := destinationFree(tx, share, file); err != nil {
+		return err
 	}
 	before := f
 	ms, err := masksOf(tx, share, file)

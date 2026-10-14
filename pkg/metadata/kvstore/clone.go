@@ -89,6 +89,9 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 	if !f.Applied.Less(op.Version) {
 		return nil // applied before, its source perhaps gone since
 	}
+	if err := destinationFree(tx, share, file); err != nil {
+		return err
+	}
 	before := f
 	src, err := fileIn(tx, sp.SrcShare, sp.Src)
 	if err != nil {

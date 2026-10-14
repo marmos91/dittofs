@@ -143,6 +143,48 @@ func TestCloneHolesInPhase2(t *testing.T) {
 	f.checkCounts()
 }
 
+// RFC 6 §6.6's destination-held row: until a clone is done, a punch, a
+// truncate, a clone onto its destination and the destination's release all
+// wait, and the clone's removal is not pruned. Once it is done the punch
+// goes through and its range reads as a hole, not cloned bytes.
+func TestCloneDestinationHeld(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	src, other, dst := f.file(0), f.file(0), f.file(0)
+	a := chunk(1)
+	f.exist(src, write(1, 0, 4*mib))
+	f.commit(src, carry(a), ref(0, 4*mib, a, 1, 1))
+	f.exist(other, write(1, 0, mib))
+	f.clone(f.cloneOp(src, dst, 0, 0, 4*mib, 5))
+
+	ex := f.s.Existence()
+	if err := ex.Remove(ctx, f.share, dst, 0, dealloc(6, mib, mib), nil); !errors.Is(err, entity.ErrDelay) {
+		t.Errorf("punch during the clone: %v", err)
+	}
+	if err := ex.Remove(ctx, f.share, dst, 0, truncate(6, mib), nil); !errors.Is(err, entity.ErrDelay) {
+		t.Errorf("truncate during the clone: %v", err)
+	}
+	if err := ex.Clone(ctx, f.cloneOp(other, dst, 0, 0, mib, 6), nil); !errors.Is(err, entity.ErrDelay) {
+		t.Errorf("clone onto the destination during the clone: %v", err)
+	}
+	f.unlinked(dst)
+	if err := ex.Remove(ctx, f.share, dst, 0, release(6), nil); !errors.Is(err, ErrHeld) {
+		t.Errorf("release during the clone: %v", err)
+	}
+	if err := f.s.Content().PruneRemovals(ctx, f.share, dst, entity.VersionOf(99)); err != nil {
+		t.Fatal(err)
+	}
+	if rs := f.removals(dst); len(rs) != 1 || rs[0].Done {
+		t.Fatalf("the clone's removal was pruned while not done: %+v", rs)
+	}
+
+	f.resume(dst)
+	f.remove(dst, dealloc(6, mib, mib))
+	f.resume(dst)
+	f.want(dst, "punched after the clone", "carved[0,1) hole[1,2) carved[2,4)")
+	f.checkCounts()
+}
+
 // A clone over existing content masks and drops what was there below its
 // version, and leaves alone what was written after it.
 func TestCloneOverContent(t *testing.T) {
