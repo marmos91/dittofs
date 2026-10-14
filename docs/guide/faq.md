@@ -257,12 +257,14 @@ garbage that survives a transient is reclaimed on the next run.
 
 Triggers:
 
-- Periodic GC is not yet wired. There is no scheduler; schedule via cron
-  until one ships.
+- Periodic, on by default. The server runs GC every `gc.auto_interval`
+  (default 15m; values in (0, 1m) are refused) unless `gc.auto_enabled` is
+  false. See [Garbage Collection](garbage-collection.md#automatic-gc-default).
 - On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
   most recent run with `dfsctl store block gc-status <share>`. The
-  mark-sweep is global across every share that targets the same remote, so
-  `<share>` selects which remote(s) to scan.
+  mark-sweep is global across every share that targets the same remote, and
+  every run scans every remote. `<share>` only selects where the run
+  summary is written.
 
 See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
 and [CONFIGURATION.md](configuration.md) for the full design and every

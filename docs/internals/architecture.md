@@ -530,13 +530,17 @@ Mark is idempotent, so resume-on-restart is intentionally not built.
 
 ### Triggers and observability
 
-- **Periodic GC is not yet wired.** There is no scheduler; schedule via
-  cron until one ships.
+- **Periodic** via the background scheduler, on by default. `dfs start`
+  runs GC every `gc.auto_interval` (default 15m; values in (0, 1m) are
+  refused) unless `gc.auto_enabled` is false. See
+  [Garbage Collection](../guide/garbage-collection.md#automatic-gc-default).
 - **On-demand** via `dfsctl store block gc <share> [--dry-run]`;
   `--dry-run` skips DELETEs and prints up to `gc.dry_run_sample_size`
   candidate keys (default 1000). The mark-sweep is global across every
-  share that targets the same remote, so the `<share>` argument selects
-  which remote(s) to scan rather than scoping the live set to one share.
+  share that targets the same remote, and every run scans every remote.
+  The `<share>` argument only selects where the run summary
+  (`last-run.json`) is written; it does not choose the remotes or scope
+  the live set to one share.
 - **Observability** via structured slog INFO at start/end with `run_id`,
   `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`, and
   `error_count`, plus a persisted summary at
