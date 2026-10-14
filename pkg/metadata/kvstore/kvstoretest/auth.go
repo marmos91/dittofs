@@ -1,6 +1,8 @@
 package kvstoretest
 
 import (
+	"github.com/marmos91/dittofs/pkg/metadata/kvstore"
+	"slices"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -193,5 +195,73 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 	must(t, errOf(files.SetACL(ctx, f.admin, h, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: read, Who: entity.Owner}}})))
 	if err := files.Authorize(ctx, alice, h, entity.WriteACL); err != nil {
 		t.Errorf("without owner rights the owner lost its implicit write ACL: %v", err)
+	}
+}
+
+// RFC 7 §2.6's inheritance row: a subdirectory bob creates in alice's
+// directory gets an effective "bob: full" and keeps "CREATOR OWNER: full"
+// inherit-only, the file bob creates in it gets "bob: full" and nothing for
+// alice, and Finance keeps modify on both; the umask is ignored there and
+// applied in a parent with nothing inheritable.
+func testInheritance(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	finance := f.group("finance")
+	alice := f.member("alice", entity.Principal{})
+	bob := f.member("bob", entity.Principal{}, finance)
+	const full = entity.ReadData | entity.WriteData | entity.AppendData | entity.Execute | entity.Delete | entity.DeleteChild |
+		entity.ReadNamedAttrs | entity.WriteNamedAttrs | entity.WriteAttributes | entity.WriteACL | entity.WriteOwner
+	const modify = entity.ReadData | entity.WriteData | entity.AppendData | entity.Execute | entity.Delete
+	inherits := entity.ACEFileInherit | entity.ACEDirInherit
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	top, _ := f.create(alice, pub, "projects", directory(0o755))
+	must(t, errOf(files.SetACL(ctx, alice, top, entity.ACL{Entries: []entity.ACE{
+		{Type: entity.ACEAllow, Mask: full, Who: entity.Owner}, // alice's own, not inherited
+		{Type: entity.ACEAllow, Flags: inherits, Mask: full, Who: entity.CreatorOwner},
+		{Type: entity.ACEAllow, Flags: inherits, Mask: modify, Who: finance},
+	}})))
+
+	sub, _ := f.create(bob, top, "bobs", kvstore.NewFile{Type: entity.Directory, Mode: 0o777, Umask: 0o022})
+	doc, _ := f.create(bob, sub, "doc", kvstore.NewFile{Type: entity.Regular, Mode: 0o777, Umask: 0o022})
+	has := func(acl entity.ACL, who entity.Principal, mask entity.AccessMask, effective bool) bool {
+		return slices.ContainsFunc(acl.Entries, func(e entity.ACE) bool {
+			return e.Type == entity.ACEAllow && e.Who == who && e.Mask&mask == mask && e.Effective() == effective
+		})
+	}
+	subACL, err := files.ACL(ctx, f.admin, sub)
+	must(t, err)
+	if !has(subACL, bob.Principal, full, true) || !has(subACL, entity.CreatorOwner, full, false) {
+		t.Errorf("the subdirectory should hold an effective bob: full and an inherit-only CREATOR OWNER: full: %+v", subACL.Entries)
+	}
+	docACL, err := files.ACL(ctx, f.admin, doc)
+	must(t, err)
+	if !has(docACL, bob.Principal, full, true) {
+		t.Errorf("the file should hold bob: full: %+v", docACL.Entries)
+	}
+	for _, acl := range []entity.ACL{subACL, docACL} {
+		if slices.ContainsFunc(acl.Entries, func(e entity.ACE) bool { return e.Who == alice.Principal }) {
+			t.Errorf("alice, whose directory it was, got an entry: %+v", acl.Entries)
+		}
+		if !has(acl, finance, modify, true) {
+			t.Errorf("finance lost modify: %+v", acl.Entries)
+		}
+	}
+	if err := files.Authorize(ctx, bob, doc, entity.WriteData|entity.Delete); err != nil {
+		t.Errorf("bob cannot write or delete his own file: %v", err)
+	}
+
+	// alice's own subfolder keeps CREATOR OWNER for its children, so a file
+	// bob creates there is bob's, not "alice: full".
+	shared, _ := f.create(alice, top, "shared", directory(0o777))
+	bobs, _ := f.create(bob, shared, "notes", regular(0o777))
+	bobsACL, err := files.ACL(ctx, f.admin, bobs)
+	must(t, err)
+	if !has(bobsACL, bob.Principal, full, true) || slices.ContainsFunc(bobsACL.Entries, func(e entity.ACE) bool { return e.Who == alice.Principal }) {
+		t.Errorf("bob's file in alice's subfolder should hold bob: full and nothing for alice: %+v", bobsACL.Entries)
+	}
+
+	_, plain := f.create(bob, pub, "plain", kvstore.NewFile{Type: entity.Regular, Mode: 0o777, Umask: 0o022})
+	if plain.Mode&0o777 != 0o755 {
+		t.Errorf("with nothing inherited the umask left mode %o, want 755", plain.Mode&0o777)
 	}
 }

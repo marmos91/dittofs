@@ -222,6 +222,73 @@ func (a ACL) WithMode(mode uint32) ACL {
 	return out
 }
 
+// Inherit is the ACL a new file, or a new directory when dir, created under a
+// directory holding a, gets, as RFC 8881 §6.4.3 and MS-DTYP 2.5.3.4 derive
+// it; ok is false when nothing is inherited, and the new file's mode then
+// governs with no stored ACL.
+//   - A new file gets an effective copy of each file-inherit entry.
+//   - A new directory gets an effective copy of each directory-inherit
+//     entry, which, unless it is no-propagate, it also keeps for its own
+//     children; a file-inherit entry passes through it inherit-only.
+//   - In an effective copy CREATOR OWNER and CREATOR GROUP become owner and
+//     group; the copy that propagates keeps them, inherit-only.
+//   - mode then applies as an and, limiting the effective allow entries'
+//     read, write and execute rights as chmod's merge would — the owner's
+//     class to the owner bits, everyone to the other bits, the rest to the
+//     group bits — never adding an entry or a right.
+//
+// Audit and alarm entries are inherited by the same rules, unlimited.
+func (a ACL) Inherit(dir bool, owner, group Principal, mode uint32) (ACL, bool) {
+	out := ACL{
+		Entries: inherit(a.Entries, dir, owner, group),
+		Audit:   inherit(a.Audit, dir, owner, group),
+	}
+	if len(out.Entries) == 0 && len(out.Audit) == 0 {
+		return ACL{}, false
+	}
+	for i, e := range out.Entries {
+		if !e.Effective() || e.Type != ACEAllow {
+			continue
+		}
+		limit := rights(mode >> 3)
+		switch e.Who {
+		case Owner:
+			limit = rights(mode >> 6)
+		case Everyone:
+			limit = rights(mode)
+		}
+		out.Entries[i].Mask &^= modeRWX &^ limit
+	}
+	return out, true
+}
+
+func inherit(es []ACE, dir bool, owner, group Principal) []ACE {
+	const flow = ACEFileInherit | ACEDirInherit | ACENoPropagate | ACEInheritOnly
+	var out []ACE
+	for _, e := range es {
+		file, sub := e.Flags&ACEFileInherit != 0, e.Flags&ACEDirInherit != 0
+		propagates := dir && e.Flags&ACENoPropagate == 0
+		effective := (!dir && file) || (dir && sub)
+		if effective {
+			c := e
+			c.Flags = c.Flags&^flow | ACEInherited
+			switch c.Who {
+			case CreatorOwner:
+				c.Who = owner
+			case CreatorGroup:
+				c.Who = group
+			}
+			out = append(out, c)
+		}
+		if propagates && (file || sub) {
+			c := e
+			c.Flags = c.Flags | ACEInheritOnly | ACEInherited
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // Stored is the ACL as the store keeps it: an inheritable entry naming
 // CREATOR OWNER or CREATOR GROUP is inherit-only, since those match no caller
 // and act only through inheritance, which turns them into effective entries

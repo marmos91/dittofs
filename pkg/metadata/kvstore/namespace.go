@@ -137,8 +137,14 @@ func (n Namespace) Lookup(ctx context.Context, id entity.Identity, dir entity.Ha
 // the requested mode, and optionally an owner, a group and times the request
 // names. Verifier makes the create exclusive.
 type NewFile struct {
-	Type     entity.FileType
-	Mode     uint32
+	Type entity.FileType
+	Mode uint32
+	// Umask is the client's umask where the protocol carries it apart from
+	// the mode, as NFSv4.2's mode_umask does: applied to Mode when the
+	// directory gives the new file no inherited ACL, and ignored when it
+	// does, so an inherited grant is not cut by a umask meant for a parent
+	// without one.
+	Umask    uint32
 	Target   []byte
 	Device   entity.DeviceID
 	Attrs    entity.Attrs // owner, group, birth, access and modify, when the request names them
@@ -198,6 +204,18 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 		f, err := newFile(tx, id, d, fileID, number, nf)
 		if err != nil {
 			return err
+		}
+		acl, inherited, err := inheritedACL(tx, d, f)
+		if err != nil {
+			return err
+		}
+		if inherited {
+			f.Mode = f.Mode&^0o777 | acl.Mode()
+			if err := tx.Set(aclKey(share, f.ID), encodeACL(acl)); err != nil {
+				return err
+			}
+		} else {
+			f.Mode &^= nf.Umask & 0o777
 		}
 		if err := putFile(tx, entity.JournalVersion{}, f); err != nil {
 			return err
@@ -272,6 +290,23 @@ func newFile(tx kv.Txn, id entity.Identity, d entity.File, fileID entity.FileID,
 		return f, err
 	}
 	return f, f.Validate()
+}
+
+// inheritedACL is the ACL a new file f gets from its directory d's stored
+// ACL, by RFC 7 §2.6's inheritance at create, with f's requested mode applied
+// as an and; inherited is false when d holds no entry that applies, and f's
+// mode then governs with no stored ACL.
+func inheritedACL(r kv.Reader, d, f entity.File) (acl entity.ACL, inherited bool, err error) {
+	b, ok, err := get(r, aclKey(d.Share, d.ID))
+	if err != nil || !ok {
+		return entity.ACL{}, false, err
+	}
+	parent, err := decodeACL(b)
+	if err != nil {
+		return entity.ACL{}, false, err
+	}
+	acl, inherited = parent.Inherit(f.IsDir(), f.Owner, f.Group, f.Mode)
+	return acl, inherited, nil
 }
 
 func createGroup(r kv.Reader, id entity.Identity, d entity.File) (entity.Principal, error) {

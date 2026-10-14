@@ -88,3 +88,62 @@ func TestACLValid(t *testing.T) {
 		}
 	}
 }
+
+// RFC 8881 §6.4.3 and RFC 7 §2.6's inheritance at create.
+func TestInherit(t *testing.T) {
+	alice, staff, finance := NewUser(), NewGroup(), NewGroup()
+	parent := ACL{Entries: []ACE{
+		{Type: ACEAllow, Flags: ACEFileInherit | ACEDirInherit | ACEInheritOnly, Mask: modeRWX | Delete, Who: CreatorOwner},
+		{Type: ACEAllow, Flags: ACEFileInherit | ACEDirInherit, Mask: modeRead | modeWrite, Who: finance},
+		{Type: ACEAllow, Flags: ACEDirInherit | ACENoPropagate, Mask: modeRead, Who: staff},
+		{Type: ACEAllow, Mask: modeRWX, Who: Everyone}, // not inheritable
+	}}
+
+	file, ok := parent.Inherit(false, alice, staff, 0o777)
+	if !ok {
+		t.Fatal("a file inherited nothing")
+	}
+	want := []ACE{
+		{Type: ACEAllow, Flags: ACEInherited, Mask: modeRWX | Delete, Who: alice},
+		{Type: ACEAllow, Flags: ACEInherited, Mask: modeRead | modeWrite, Who: finance},
+	}
+	if !slices.Equal(file.Entries, want) {
+		t.Errorf("a file inherits\n %+v\nwant\n %+v", file.Entries, want)
+	}
+
+	dir, _ := parent.Inherit(true, alice, staff, 0o777)
+	creatorKept := false
+	for _, e := range dir.Entries {
+		if e.Who == CreatorOwner {
+			creatorKept = !e.Effective() && e.Inheritable()
+		}
+		if e.Who == staff && e.Inheritable() {
+			t.Error("a no-propagate entry propagated past the new directory")
+		}
+	}
+	if !creatorKept {
+		t.Errorf("the propagating copy lost CREATOR OWNER or was effective: %+v", dir.Entries)
+	}
+	if !slices.ContainsFunc(dir.Entries, func(e ACE) bool { return e.Who == staff && e.Effective() }) {
+		t.Errorf("a directory-inherit entry gave the new directory nothing: %+v", dir.Entries)
+	}
+
+	// A requested 0640 limits but never adds: alice, a named owner principal,
+	// and finance keep only the group bits' read; nothing new appears.
+	limited, _ := parent.Inherit(false, alice, staff, 0o640)
+	for _, e := range limited.Entries {
+		if e.Mask&modeRWX != modeRead {
+			t.Errorf("mode 0640 left %v with %v", e.Who, e.Mask&modeRWX)
+		}
+		if e.Mask&Delete == 0 && e.Who == alice {
+			t.Error("the mode took away a right outside read, write and execute")
+		}
+	}
+	if len(limited.Entries) != len(file.Entries) {
+		t.Errorf("the mode added or removed entries: %+v", limited.Entries)
+	}
+
+	if _, ok := (ACL{Entries: []ACE{{Type: ACEAllow, Flags: ACEDirInherit, Mask: modeRead, Who: staff}}}).Inherit(false, alice, staff, 0o644); ok {
+		t.Error("a file inherited a directory-only entry")
+	}
+}
