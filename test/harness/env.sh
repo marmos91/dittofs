@@ -6,6 +6,7 @@
 #   dt services up|down|status [localstack|postgres|kmip]
 #   dt stack up [--memory]|down [-v]|status|logs|mount|umount
 #   dt cleanup [--volumes]
+#   dt hooks install [--container]|uninstall|status
 #
 # Their state, such as the KMIP certificates and environment and the stack's
 # dfsctl login, is kept in
@@ -400,9 +401,33 @@ cmd_cleanup() {
     if [[ -n "$left" ]]; then warn "still running: $(tr '\n' ' ' <<<"$left")"; else info "no harness containers running"; fi
 }
 
+# --- git hooks ---------------------------------------------------------------------
+# install runs the repository's own .githooks on this machine; --container points
+# git at test/harness/githooks, which run them in the dtc container instead, so
+# the machine needs no Go toolchain. uninstall is install. Both paths are
+# relative, so each worktree runs its own hooks; a branch that predates the
+# harness has no harness hooks to run.
+cmd_hooks() {
+    local usage="usage: dt hooks install [--container]|uninstall|status"
+    local action="${1:-status}" path=.githooks
+    case "$action:$#:${2:-}" in
+        install:1:|uninstall:1:|status:0:|status:1:) ;;
+        install:2:--container) path=test/harness/githooks ;;
+        *) die "$usage" ;;
+    esac
+    case "$action" in
+        install|uninstall)
+            git -C "$REPO" config core.hooksPath "$path"
+            info "core.hooksPath -> $path" ;;
+        status)
+            echo "core.hooksPath = $(git -C "$REPO" config --get core.hooksPath || echo '(unset)')" ;;
+    esac
+}
+
 case "${1:-}" in
     services) shift; cmd_services "$@" ;;
     stack) shift; cmd_stack "$@" ;;
     cleanup) shift; cmd_cleanup "$@" ;;
-    *) die "usage: env.sh services|stack|cleanup [ARGS]" ;;
+    hooks) shift; cmd_hooks "$@" ;;
+    *) die "usage: env.sh services|stack|cleanup|hooks [ARGS]" ;;
 esac

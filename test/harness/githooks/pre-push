@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# The harness's git hook, which `dt hooks install --container` installs: the
+# repository's own hook of the same name, run in the dtc container, so the
+# machine needs no Go toolchain.
+set -euo pipefail
+REPO="$(git rev-parse --show-toplevel)"
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+hook="$(basename "$0")"
+if [ "${DT_IN_CONTAINER:-}" != 1 ]; then
+    DITTOFS_REPO="$REPO" exec "$HARNESS/bin/dtc" shell "$HARNESS/githooks/$hook" "$@"
+fi
+exec "$REPO/.githooks/$hook" "$@"
