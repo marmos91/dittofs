@@ -148,7 +148,7 @@ func (y *syncer) syncFiles() error {
 		}
 	}
 	if created {
-		if err := syncFile(y.dir, false); err != nil {
+		if err := syncDir(y.dir); err != nil {
 			return err
 		}
 	}
@@ -184,9 +184,10 @@ func parseFile(name string) (kind string, fid int, ok bool) {
 
 // syncFile syncs path, only its data when dataOnly. A file gone since the
 // listing was a memtable WAL Badger deleted once its memtable reached a synced
-// table, so it has nothing left to sync.
+// table, so it has nothing left to sync. It opens the file for writing, which
+// Windows needs to flush it; it writes nothing.
 func syncFile(path string, dataOnly bool) error {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
