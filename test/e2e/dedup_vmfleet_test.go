@@ -101,9 +101,10 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// A fresh on-disk directory per run is the clean slate: no chunk rows
-	// from a prior run can pre-claim the payload's chunks before the first
-	// clone is written (false-negative regime).
+	// A fresh metadata directory and a fresh bucket per run keep a prior
+	// run's state out of the measurement: old cas/ objects would lower the
+	// measured reduction, and old sync markers would skip uploads and
+	// inflate it.
 	metaName := helpers.UniqueTestName("vmfleet-meta")
 	_, err := cli.CreateMetadataStore(metaName, "badger",
 		helpers.WithMetaDBPath(filepath.Join(t.TempDir(), "badger")))

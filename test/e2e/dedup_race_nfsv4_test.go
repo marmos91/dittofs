@@ -97,9 +97,9 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	// ---- One on-disk badger metadata store ----
-	// A fresh directory per run is the clean slate: no chunk rows from a
-	// prior run can pre-claim the payload's chunks before the donor write and
-	// mask the Pending-donor window this test reproduces.
+	// A fresh directory per run is the clean slate: no sync markers from a
+	// prior run can mark the payload's chunks durable before the donor write
+	// and mask the Pending-donor window this test reproduces.
 	metaName := helpers.UniqueTestName("dedup-nfsv4-meta")
 	_, err := cli.CreateMetadataStore(metaName, "badger",
 		helpers.WithMetaDBPath(filepath.Join(t.TempDir(), "badger")))
