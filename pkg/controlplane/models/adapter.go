@@ -100,16 +100,29 @@ func (a *AdapterConfig) EffectiveSMBEncryptionMode() (string, bool) {
 	return mode, true
 }
 
-// smbEncryptionMode returns the nested encryption.encryption_mode, or "" when
-// the field is absent or null. A present encryption value must be an object,
-// encryption_mode must be a string when present, and the object may only
-// contain encryption_mode and allowed_ciphers. A typo or a wrong JSON type
-// would otherwise leave the adapter on preferred.
+// smbEncryptionMode reads the encryption mode from the adapter's own config.
 func (a *AdapterConfig) smbEncryptionMode() (string, error) {
 	parsed, err := a.GetConfig()
 	if err != nil {
 		return "", fmt.Errorf("invalid config: %w", err)
 	}
+	return SMBEncryptionMode(parsed)
+}
+
+// SMBEncryptionMode returns the nested encryption.encryption_mode of a parsed
+// SMB adapter config, or "" when the field is absent or null. A non-null
+// encryption value must be an object, encryption_mode must be a string when
+// present, and the object may only contain encryption_mode and
+// allowed_ciphers. A typo or a wrong JSON type would otherwise leave the
+// adapter on preferred. It is the one reader of the field: the adapter build
+// and Validate both go through it.
+//
+// decision: a null encryption reads as unset, not as malformed, so rows
+// already stored with it keep starting.
+//
+// decision: unknown keys are refused inside the encryption object only; a
+// misspelled top-level key is still ignored.
+func SMBEncryptionMode(parsed map[string]any) (string, error) {
 	raw, present := parsed["encryption"]
 	if !present || raw == nil {
 		return "", nil
