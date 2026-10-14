@@ -387,7 +387,10 @@ func TestWait(t *testing.T) {
 	}
 }
 
-// A go-json cell stopped at its limit failed, as a test that timed out does.
+// A go-json cell stopped at its limit failed, as a test that timed out does,
+// and the test binary go test started is gone when the cell ends: where a
+// running process holds its directory, the module's temporary directory
+// couldn't be removed after the test otherwise.
 func TestGoJSONCellLimit(t *testing.T) {
 	minute = 50 * time.Millisecond
 	t.Cleanup(func() { minute = time.Minute })
