@@ -156,7 +156,7 @@
         {
           "name": "setup",
           "cmd": "posix/setup-posix.sh",
-          "args": ["{profile}", "--no-mount"],
+          "args": ["{profile}", "--no-mount", "--squash", "root_to_guest", "--default-permission", "read", "--test-user", "dfsnfstest:64000", "--system-rpcbind"],
           "root": true
         },
         {
@@ -197,7 +197,7 @@
         {
           "name": "setup",
           "cmd": "posix/setup-posix.sh",
-          "args": ["{profile}", "--no-mount"],
+          "args": ["{profile}", "--no-mount", "--squash", "root_to_guest", "--default-permission", "read", "--test-user", "dfsnfstest:64000", "--system-rpcbind"],
           "root": true
         },
         {

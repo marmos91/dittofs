@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run nfstest's dio and delegation modules against the Linux kernel NFS server,
-# for comparison with the DittoFS runs.
+# Run nfstest's dio and delegation modules, and nfstest_cache on NFSv3, against
+# the Linux kernel NFS server, for comparison with the DittoFS runs.
 #
 # Most of what those modules assert is what the kernel *client* puts on the
-# wire: which WRITEs it sends, whether it caches them, when it returns a
-# delegation. A failure against DittoFS is therefore one of two things, and
+# wire or sees: which WRITEs it sends, whether it caches them, when it returns
+# a delegation, when it notices another client's change. A failure against DittoFS is therefore one of two things, and
 # only a second server on the same kernel can tell them apart:
 #
 #   knfsd passes, DittoFS fails  -> ours: something in our replies changes
@@ -16,7 +16,7 @@
 # The modules run through run.sh, unchanged, so the two runs differ only in the
 # server. Each option set is graded against the same tables the DittoFS cell
 # uses, and baseline-knfsd.md records, per option set, every assertion knfsd
-# fails and what knfsd does on each dio/delegation row of those tables.
+# fails and what knfsd does on each dio/delegation/cache row of those tables.
 #
 # Linux only, and not containerised, for the reason baseline-knfsd.sh in
 # test/nfs-conformance/pynfs gives: knfsd's sockets belong to the kernel. On a
@@ -46,7 +46,7 @@
 # results.tsv or nfstest.log. Repeat it to compare several runs. A table row
 # whose pattern covers assertions knfsd passes as well as ones it fails speaks
 # for the client only on the latter, so the report then lists, per assertion,
-# every dio/delegation failure those runs have more often than knfsd, where
+# every dio/delegation/cache failure those runs have more often than knfsd, where
 # knfsd passed it at least once or never reached it.
 
 set -uo pipefail
@@ -55,6 +55,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=../option-sets.sh
 source "$SCRIPT_DIR/../option-sets.sh"
+# shellcheck source=../netns.sh
+source "$SCRIPT_DIR/../netns.sh"
 # shellcheck source=../../common/known-failures.sh
 source "$TEST_DIR/common/known-failures.sh"
 
@@ -120,10 +122,9 @@ run_knfsd() {
         { apt-get update -qq && apt-get install -y -qq nfs-kernel-server; } || die "could not install nfs-kernel-server"
     fi
 
-    # The address run.sh mounts from, computed the same way and handed to it,
-    # so the export can be limited to it.
-    SERVER="${NFSTEST_SERVER:-$(hostname -I | awk '{print $1}')}"
-    [[ -n "$SERVER" ]] || die "cannot determine this host's address; set NFSTEST_SERVER"
+    # run.sh's clients mount from their own network namespaces, on the subnet
+    # netns.sh puts behind the host bridge, so the export is limited to it.
+    CLIENTS="$NS_SUBNET.0/24"
 
     modprobe nfsd 2>/dev/null || true
     # An nfsd already serving is someone else's: cleanup leaves it running.
@@ -152,13 +153,14 @@ run_knfsd() {
 
     # No fsid=0: the export is then reachable at its own path over NFSv3 and
     # through the kernel's pseudo-root over NFSv4, so one --export serves every
-    # option set. no_root_squash because nfstest creates its files as root,
-    # which is why it goes to this host's own addresses and nowhere else.
-    log "Exporting $EXPORT_DIR to $SERVER and 127.0.0.1..."
+    # option set. Root is squashed, as DittoFS's export for these suites
+    # squashes it: nfstest runs as an ordinary user and only mounts as root,
+    # and the world-writable directory lets that user create its files.
+    log "Exporting $EXPORT_DIR to $CLIENTS..."
     mkdir -p "$EXPORT_DIR" /etc/exports.d
     chmod 777 "$EXPORT_DIR"
-    local opts="rw,insecure,no_root_squash,no_subtree_check"
-    echo "$EXPORT_DIR $SERVER($opts) 127.0.0.1($opts)" >"$EXPORTS_FILE"
+    local opts="rw,insecure,root_squash,no_subtree_check"
+    echo "$EXPORT_DIR $CLIENTS($opts)" >"$EXPORTS_FILE"
     systemctl start nfs-server 2>/dev/null || service nfs-kernel-server start 2>/dev/null || true
     rpc.nfsd 8 || die "rpc.nfsd failed to start"
     exportfs -ra
@@ -173,13 +175,19 @@ run_knfsd() {
     local v modules
     for v in "${variants[@]}"; do
         modules="dio"
-        [[ "$(option_set_version "$v")" != 3 ]] && modules+=",delegation"
+        # The same split run.sh makes by default: cache on NFSv3 only, where no
+        # delegation recall overrides the attribute-cache timing it checks.
+        if [[ "$(option_set_version "$v")" == 3 ]]; then
+            modules+=",cache"
+        else
+            modules+=",delegation"
+        fi
         mkdir -p "$RESULTS_ROOT/$v"
         log "Running $modules under option set $v against knfsd..."
         # An empty NFSTEST_MOUNTPORT leaves the v3 MOUNT port to rpcbind, where
         # knfsd's mountd registers. run.sh exits with the count of failures not on
         # the tables, which here is a finding, not an error.
-        NFS_PORT=2049 NFSTEST_SERVER="$SERVER" NFSTEST_EXPORT="$EXPORT_DIR" NFSTEST_MOUNTPORT="" \
+        NFS_PORT=2049 NFSTEST_EXPORT="$EXPORT_DIR" NFSTEST_MOUNTPORT="" \
             DITTOFS_RESULTS_DIR="$RESULTS_ROOT/$v" DITTOFS_KNOWN_FAILURES="$(tables "$v")" \
             "$SCRIPT_DIR/run.sh" --variant "$v" --modules "$modules" || true
     done
@@ -245,7 +253,7 @@ dittofs_tsv() {
     done
 }
 
-# compare_rows VARIANT KNFSD_TSV — one line per dio/delegation assertion that
+# compare_rows VARIANT KNFSD_TSV — one line per dio/delegation/cache assertion that
 # a --compare run fails more often than knfsd does, where knfsd passed it at
 # least once or never reached it: assertion, run, DittoFS's failure count, what
 # knfsd did, and the table row that holds it. An assertion name recurs within a
@@ -273,7 +281,7 @@ compare_rows() {
             printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$(basename "$d")" "$dfails" "$kv" "$row"
         done < <(awk -F'\t' '
             NR == FNR { total[$2]++; if ($1 != "PASS") kfail[$2]++; next }
-            $1 != "PASS" && $2 ~ /^(dio|delegation)\// { dfail[$2]++ }
+            $1 != "PASS" && $2 ~ /^(dio|delegation|cache)\// { dfail[$2]++ }
             END {
                 for (n in dfail)
                     if (dfail[n] > kfail[n] + 0 && (total[n] + 0 == 0 || total[n] > kfail[n] + 0))
@@ -288,8 +296,8 @@ OUT="$SCRIPT_DIR/baseline-knfsd.md"
     echo ""
     echo "Generated by \`baseline-knfsd.sh\`. Do not hand-edit."
     echo ""
-    echo "nfstest's \`dio\` and \`delegation\` modules mostly assert what the kernel"
-    echo "client sends. This is the same run.sh run against the Linux kernel server on"
+    echo "nfstest's \`dio\`, \`delegation\` and \`cache\` modules mostly assert what"
+    echo "the kernel client sends or sees. This is the same run.sh run against the Linux kernel server on"
     echo "the same kernel. A row whose every match knfsd fails too is about the client,"
     echo "not DittoFS. A row knfsd *passes*, and an assertion DittoFS fails more often"
     echo "than knfsd in a compared DittoFS run, is DittoFS-specific. *Not reached* means"
@@ -321,7 +329,7 @@ OUT="$SCRIPT_DIR/baseline-knfsd.md"
         IFS=':' read -ra tbls <<<"$(tables "$v")"
         for t in "${tbls[@]}"; do kf_load "$t"; done
         for pattern in "${!KF_KNOWN[@]}"; do
-            [[ "$pattern" == dio/* || "$pattern" == delegation/* ]] || continue
+            [[ "$pattern" == dio/* || "$pattern" == delegation/* || "$pattern" == cache/* ]] || continue
             echo "| \`$pattern\` | $(knfsd_verdict "$pattern" "$tsv") |"
         done | sort
         echo ""
