@@ -155,7 +155,7 @@ func TestFoldDirectoryIndex(t *testing.T) {
 		}
 	}
 	f.checkFloor()
-	if _, err := f.s.Namespace().FoldDirectory(ctx, f.share, rf.ID); err != nil {
+	if _, _, err := f.s.Namespace().FoldDirectory(ctx, f.share, rf.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.checkFloor()

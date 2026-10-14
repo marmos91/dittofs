@@ -44,7 +44,7 @@ func encodeFile(f entity.File) []byte {
 	}
 	return w.Fixed(f.Version[:]).Uint64(uint64(f.Size)).Uint64(uint64(f.Charged)).Fixed(f.Applied[:]).
 		Uint64(uint64(f.MaxSpan)).Uint64(uint64(f.MaxOverwrite)).
-		Uint32(f.Nlink).Fixed(f.Parent[:]).Uint64(f.Shard).Uint64(f.Project).Uint64(f.Number).
+		Uint32(f.Nlink).Int64(f.Subdirs).Fixed(f.Parent[:]).Uint64(f.Shard).Uint64(f.Project).Uint64(f.Number).
 		Bytes(f.CreateVerifier).Bytes(f.Target).Uint32(f.Device.Major).Uint32(f.Device.Minor).
 		Fixed(f.StreamOf[:]).Encode()
 }
@@ -67,6 +67,7 @@ func decodeFile(share entity.ShareID, id entity.FileID, b []byte) (entity.File, 
 	f.MaxSpan = int64(r.Uint64())
 	f.MaxOverwrite = int64(r.Uint64())
 	f.Nlink = r.Uint32()
+	f.Subdirs = r.Int64()
 	f.Parent = readFileID(r)
 	f.Shard, f.Project, f.Number = r.Uint64(), r.Uint64(), r.Uint64()
 	f.CreateVerifier = cloneOrNil(r.Bytes())
@@ -149,20 +150,22 @@ func decodeXattr(file entity.FileID, name, b []byte) (entity.Xattr, error) {
 	return x, r.Done()
 }
 
-// delta is one directory time change not yet folded into the directory's
-// record: the times and version the change set, and the cut it was written
-// after.
+// delta is one directory change not yet folded into the directory's
+// record: the times and version the change set, the cut it was written
+// after, and its change to the directory's Subdirs, +1 or −1 when the entry
+// it adds or removes names a directory.
 type delta struct {
 	Modify, Change time.Time
 	Version        entity.JournalVersion
 	Cut            uint64
+	Subdirs        int64
 }
 
 func encodeDelta(d delta) []byte {
 	w := codec.NewWriter(v1)
 	putTime(w, d.Modify)
 	putTime(w, d.Change)
-	return w.Fixed(d.Version[:]).Uint64(d.Cut).Encode()
+	return w.Fixed(d.Version[:]).Uint64(d.Cut).Int64(d.Subdirs).Encode()
 }
 
 func decodeDelta(b []byte) (delta, error) {
@@ -171,7 +174,7 @@ func decodeDelta(b []byte) (delta, error) {
 		return delta{}, err
 	}
 	d := delta{Modify: readTime(r), Change: readTime(r)}
-	d.Version, d.Cut = readVersion(r), r.Uint64()
+	d.Version, d.Cut, d.Subdirs = readVersion(r), r.Uint64(), r.Int64()
 	return d, checkEpochs(r, d.Version)
 }
 

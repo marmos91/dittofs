@@ -23,7 +23,7 @@ func fileCodecCases() []codecCase {
 		Owner: entity.Principal{Kind: entity.PrincipalUser, ID: pid}, Group: group,
 		Mode: 0o4755, Flags: entity.FlagHidden | entity.FlagImmutable,
 		Birth: old, Modify: t0, Change: t0, // Access left zero
-		Version: entity.VersionOf(9), Size: 5, Charged: 4096, Applied: entity.VersionOf(7), MaxSpan: 6, MaxOverwrite: 8, Nlink: 2,
+		Version: entity.VersionOf(9), Size: 5, Charged: 4096, Applied: entity.VersionOf(7), MaxSpan: 6, MaxOverwrite: 8, Nlink: 2, Subdirs: 3,
 		Shard: 3, Project: 4, Number: 42,
 		CreateVerifier: []byte("verifier"), Target: []byte("/a"),
 	}
@@ -33,7 +33,7 @@ func fileCodecCases() []codecCase {
 		Audit:   []entity.ACE{{Type: entity.ACEAudit, Flags: entity.ACEFailedAccess, Mask: entity.Delete, Who: group}},
 	}
 	e := entity.Entry{Parent: fid, Name: []byte("README"), Child: entity.FileID{15: 2}, Type: entity.Regular}
-	d := delta{Modify: t0, Change: t0, Version: entity.VersionOf(11), Cut: 1}
+	d := delta{Modify: t0, Change: t0, Version: entity.VersionOf(11), Cut: 1, Subdirs: -1}
 	uq := entity.Quota{Share: sid, Principal: entity.Principal{Kind: entity.PrincipalUser, ID: pid},
 		Hard: entity.Limit{Bytes: 10}, Soft: entity.Limit{Bytes: 8}, Advisory: entity.Limit{Files: 5000}, Grace: time.Hour}
 	pq := entity.Quota{Share: sid, Project: 7, Hard: entity.Limit{Files: 1000}}
@@ -44,7 +44,7 @@ func fileCodecCases() []codecCase {
 				"fffffffd49ef6f00" + "00000000" + "8000000000000000" + "00000000" + // birth 1601, access zero
 				"000000006b49d200" + "0000007b" + "000000006b49d200" + "0000007b" +
 				"00000000000000000000000000000009" + "0000000000000005" + "0000000000001000" +
-				"00000000000000000000000000000007" + "0000000000000006" + "0000000000000008" + "00000002" +
+				"00000000000000000000000000000007" + "0000000000000006" + "0000000000000008" + "00000002" + "0000000000000003" +
 				"00000000000000000000000000000000" + "0000000000000003" + "0000000000000004" + "000000000000002a" +
 				"087665726966696572" + "022f61" + "00000000" + "00000000" + "00000000000000000000000000000000",
 			func(b []byte) (any, error) { return decodeFile(sid, fid, b) }},
@@ -67,7 +67,7 @@ func fileCodecCases() []codecCase {
 		{"xattr", entity.Xattr{File: fid, Name: []byte("user.k"), Value: []byte("v")}, encodeXattr([]byte("v")), "01" + "0176",
 			func(b []byte) (any, error) { return decodeXattr(fid, []byte("user.k"), b) }},
 		{"delta", d, encodeDelta(d),
-			"01" + "000000006b49d200" + "0000007b" + "000000006b49d200" + "0000007b" + "0000000000000000000000000000000b" + "0000000000000001",
+			"01" + "000000006b49d200" + "0000007b" + "000000006b49d200" + "0000007b" + "0000000000000000000000000000000b" + "0000000000000001" + "ffffffffffffffff",
 			func(b []byte) (any, error) { return decodeDelta(b) }},
 	}
 }

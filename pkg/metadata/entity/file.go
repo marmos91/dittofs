@@ -44,6 +44,12 @@ type File struct {
 	// named stream have none.
 	Nlink uint32
 
+	// Subdirs is, for a directory, the number of its entries that name a
+	// directory, without the changes still in unfolded time deltas. It is
+	// signed so a fold always stores what the deltas sum to: a value below
+	// zero is a breach the recount repairs, never clamped in the record.
+	Subdirs int64
+
 	Parent FileID // Directory only: the directory holding its one entry; a root's is itself
 
 	Shard   uint64 // zero: the whole share is one shard
@@ -188,6 +194,16 @@ const (
 	AttrModify
 	AttrSize
 )
+
+// LinkCount is what an adapter reports as a directory's link count: 2 plus
+// its subdirectories, never below 2 while a recount repairs a negative
+// Subdirs. A file's is its Nlink.
+func (f File) LinkCount() uint64 {
+	if !f.IsDir() {
+		return uint64(f.Nlink)
+	}
+	return 2 + uint64(max(0, f.Subdirs))
+}
 
 // Attrs is a SetAttrs: the fields it names in Mask change, the rest are
 // untouched. The builders set the mask, so a caller cannot change a field

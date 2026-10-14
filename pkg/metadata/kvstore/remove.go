@@ -57,7 +57,7 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 		if err != nil {
 			return err
 		}
-		return touchDir(tx, share, d)
+		return touchDir(tx, share, d, -dirCount(child))
 	})
 	return out, err
 }
@@ -155,7 +155,7 @@ func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Hand
 		if err := putFile(tx, was, f); err != nil {
 			return err
 		}
-		return touchDir(tx, share, d)
+		return touchDir(tx, share, d, 0) // a link never names a directory
 	})
 }
 

@@ -209,7 +209,7 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 			return err
 		}
 		made = f
-		return touchDir(tx, share, d)
+		return touchDir(tx, share, d, dirCount(f))
 	})
 	if err != nil {
 		return nil, entity.File{}, err
@@ -317,15 +317,25 @@ func applyRequested(id entity.Identity, f entity.File, a entity.Attrs) (entity.F
 	return f, nil
 }
 
+// dirCount is 1 for a directory, the change one entry naming f makes to its
+// parent's Subdirs, and 0 for anything else.
+func dirCount(f entity.File) int64 {
+	if f.IsDir() {
+		return 1
+	}
+	return 0
+}
+
 // touchDir records that d's entries changed: a delta under d with the new
-// times and a version above d's, written without reading or rewriting d's
-// record beyond the read the caller already made. The delta has its own
-// version-index entry, which the fold that absorbs it will replace.
+// times, a version above d's and subdirs, the change in d's entries that name
+// a directory, written without reading or rewriting d's record beyond the
+// read the caller already made. The delta has its own version-index entry,
+// which the fold that absorbs it will replace.
 //
 // ponytail: the delta's unique part is 32 random bytes rather than the
 // writer's node ID, epoch and sequence, since the store has no node identity
 // yet. Switch to those once a node is registered at start.
-func touchDir(tx kv.Txn, share entity.ShareID, d entity.File) error {
+func touchDir(tx kv.Txn, share entity.ShareID, d entity.File, subdirs int64) error {
 	var unique [32]byte
 	rand.Read(unique[:])
 	now := tx.Now()
@@ -333,5 +343,5 @@ func touchDir(tx kv.Txn, share entity.ShareID, d entity.File) error {
 	if err := tx.Set(deltaFloorKey(share, d.ID, v, unique), encodeEmpty()); err != nil {
 		return err
 	}
-	return tx.Set(deltaKey(share, d.ID, unique), encodeDelta(delta{Modify: now, Change: now, Version: v}))
+	return tx.Set(deltaKey(share, d.ID, unique), encodeDelta(delta{Modify: now, Change: now, Version: v, Subdirs: subdirs}))
 }

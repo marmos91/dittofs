@@ -59,6 +59,7 @@ func Run(t *testing.T, open Opener) {
 		{"ShareStateRace", testShareStateRace},
 		{"UnlinkAndLink", testUnlinkAndLink},
 		{"RemoveDirectory", testRemoveDirectory},
+		{"Subdirs", testSubdirs},
 		{"RemoveDirectoryRacesCreate", testRemoveDirectoryRacesCreate},
 		{"RemovalRights", testRemovalRights},
 		{"NlinkIsExactlyItsEntries", testNlinkIsExactlyItsEntries},

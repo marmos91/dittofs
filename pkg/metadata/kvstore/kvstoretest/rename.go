@@ -180,3 +180,70 @@ func testRenameOverRacesCreate(t *testing.T, kvo Opener) {
 		}
 	}
 }
+
+// RFC 7 §4.1 and §12.1's link count row: a directory's link count is 2 plus
+// its subdirectories, the root's included, through a create, a move, a
+// rename over an empty directory and a remove, before and after a fold; and
+// RFC 16 §6.1's invariant, Subdirs with its deltas equals the entries that
+// name a directory.
+func testSubdirs(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	ns, files := f.s.Namespace(), f.s.Files()
+	links := func(h entity.Handle) uint64 {
+		t.Helper()
+		got, err := files.Get(ctx, f.admin, h)
+		must(t, err)
+		var dirs int64
+		for l, err := range ns.Entries(ctx, f.admin, h, 0) {
+			must(t, err)
+			if l.Entry.Type == entity.Directory {
+				dirs++
+			}
+		}
+		if got.Subdirs != dirs {
+			t.Errorf("Subdirs %d, entries naming a directory %d", got.Subdirs, dirs)
+		}
+		return got.LinkCount()
+	}
+	want := func(step string, h entity.Handle, n uint64) {
+		t.Helper()
+		if got := links(h); got != n {
+			t.Errorf("%s: link count %d, want %d", step, got, n)
+		}
+	}
+	a, _ := f.create(f.admin, f.root, "a", directory(0o755))
+	b, _ := f.create(f.admin, f.root, "b", directory(0o755))
+	f.create(f.admin, f.root, "x", regular(0o644))
+	want("two subdirectories and a file", f.root, 4)
+	f.create(f.admin, a, "c", directory(0o755))
+	want("a subdirectory created", a, 3)
+	_, err := ns.Rename(ctx, f.admin, a, []byte("c"), b, []byte("c"))
+	must(t, err)
+	want("moved out", a, 2)
+	want("moved in", b, 3)
+	f.create(f.admin, b, "e", directory(0o755))
+	want("another created", b, 4)
+	_, err = ns.Rename(ctx, f.admin, b, []byte("e"), b, []byte("d"))
+	must(t, err)
+	want("renamed in place", b, 4)
+	_, err = ns.Rename(ctx, f.admin, b, []byte("c"), b, []byte("d"))
+	must(t, err)
+	want("renamed over an empty directory", b, 3)
+	_, err = ns.Unlink(ctx, f.admin, b, []byte("d"))
+	must(t, err)
+	want("removed", b, 2)
+	for _, h := range []entity.Handle{f.root, a, b} {
+		_, id, err := h.Parse()
+		must(t, err)
+		for more := true; more; {
+			var recount bool
+			more, recount, err = ns.FoldDirectory(ctx, f.share.ID, id)
+			must(t, err)
+			if recount {
+				t.Error("a consistent directory asked for a recount")
+			}
+		}
+	}
+	want("root, folded", f.root, 4)
+	want("b, folded", b, 2)
+}

@@ -280,7 +280,7 @@ func testFoldDirectory(t *testing.T, kvo Opener) {
 	_, id, err := dir.Parse()
 	must(t, err)
 	for more := true; more; {
-		more, err = f.s.Namespace().FoldDirectory(ctx, f.share.ID, id)
+		more, _, err = f.s.Namespace().FoldDirectory(ctx, f.share.ID, id)
 		must(t, err)
 	}
 	f.c.Take()

@@ -144,13 +144,20 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 	if err := putFile(tx, was, child); err != nil {
 		return Orphaned{}, err
 	}
-	if err := touchDir(tx, share, sd); err != nil {
+	// The moved entry leaves sd and joins dd, and an empty directory it
+	// replaces leaves dd: in one directory the two touches are one.
+	left, joined := -dirCount(child), dirCount(child)
+	if replaced != nil {
+		joined -= dirCount(*replaced)
+	}
+	if dd.ID == sd.ID {
+		return out, touchDir(tx, share, sd, left+joined)
+	}
+	if err := touchDir(tx, share, sd, left); err != nil {
 		return Orphaned{}, err
 	}
-	if dd.ID != sd.ID {
-		if err := touchDir(tx, share, dd); err != nil {
-			return Orphaned{}, err
-		}
+	if err := touchDir(tx, share, dd, joined); err != nil {
+		return Orphaned{}, err
 	}
 	return out, nil
 }
