@@ -950,7 +950,9 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 // applyParsedSMBConfig copies the adapter JSON fields this process honors.
 // Signing was already copied. encryption_mode is documented on the same
 // object and has to be copied too: without it, start stays on the preferred
-// default and there is no way to select required.
+// default and there is no way to select required. It is read through the
+// same parser Validate uses, so a malformed encryption object is refused here
+// too instead of starting on preferred.
 //
 // An unknown mode is returned from here. smb.New panics on it, and this
 // string comes from a persisted adapter row. Boot has no recover above the
@@ -970,13 +972,15 @@ func applyParsedSMBConfig(smbCfg *smb.Config, parsedConfig map[string]any) error
 			smbCfg.Signing.Required = required
 		}
 	}
-	if encCfg, ok := parsedConfig["encryption"].(map[string]any); ok {
-		if mode, ok := encCfg["encryption_mode"].(string); ok && mode != "" {
-			if err := smb.ValidateEncryptionMode(mode); err != nil {
-				return err
-			}
-			smbCfg.Encryption.Mode = mode
+	mode, err := models.SMBEncryptionMode(parsedConfig)
+	if err != nil {
+		return err
+	}
+	if mode != "" {
+		if err := smb.ValidateEncryptionMode(mode); err != nil {
+			return err
 		}
+		smbCfg.Encryption.Mode = mode
 	}
 	return nil
 }

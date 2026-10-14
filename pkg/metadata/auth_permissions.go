@@ -404,6 +404,14 @@ func (s *Service) shareIsReadOnly(ctx *AuthContext, handle FileHandle) bool {
 	return err == nil && shareOpts != nil && shareOpts.ReadOnly
 }
 
+// ShareIsReadOnly reports whether the share the handle belongs to is
+// read-only at the store level, for a protocol path that must refuse with the
+// read-only status before it reaches any write. A per-user read-only grant on
+// a writable share does not count; see shareIsReadOnly.
+func (s *Service) ShareIsReadOnly(ctx *AuthContext, handle FileHandle) bool {
+	return s.shareIsReadOnly(ctx, handle)
+}
+
 // checkWritePermission checks write permission on a file.
 func (s *Service) checkWritePermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
