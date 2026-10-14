@@ -148,6 +148,13 @@ func deltasPrefix(share entity.ShareID, dir entity.FileID) []byte {
 
 func releaseKey(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FRel) }
 
+// releaseIndexKey is a pending release's entry in its share's index, under
+// the file's shard, so a primary's recovery finds its shards' releases
+// without reading the share's files.
+func releaseIndexKey(share entity.ShareID, shard uint64, id entity.FileID) []byte {
+	return keys.ID(keys.Uint64(shareKey(share, keys.SPr), shard), id[:])
+}
+
 // streamsPrefix holds a file's named stream links, F‖id‖s‖streamID: each
 // stream is a file of its own, under its own ID.
 func streamsPrefix(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FS) }

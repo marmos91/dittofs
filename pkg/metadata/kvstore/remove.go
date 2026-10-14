@@ -87,7 +87,7 @@ func dropEntry(tx kv.Txn, key []byte, child entity.File) (Orphaned, error) {
 	if child.Nlink > 0 {
 		return Orphaned{}, nil
 	}
-	return Orphaned{File: child.ID}, tx.Set(releaseKey(child.Share, child.ID), encodeRelease())
+	return Orphaned{File: child.ID}, putRelease(tx, child.Share, child.Shard, child.ID)
 }
 
 // provedEmpty refuses a directory that holds an entry, guarding its entries
@@ -159,37 +159,31 @@ func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Hand
 	})
 }
 
-// PendingReleases lists the files of a share that lost their last entry and
-// are not yet released, for recovery after a crash.
-//
-// ponytail: scans every file record of the share to find the release
-// records among them, so recovery costs the share's whole file count. Index
-// the pending releases under their own share-level prefix, a store format
-// addition, once a recovery of a large share shows it.
-func (n Namespace) PendingReleases(ctx context.Context, share entity.ShareID) iter.Seq2[entity.FileID, error] {
-	prefix := filesPrefix(share)
-	want := len(prefix) + keys.IDLen + 1
-	return func(yield func(entity.FileID, error) bool) {
-		var ids []entity.FileID
-		err := n.s.kv.View(ctx, func(r kv.Reader) error {
-			for row, err := range r.Scan(prefix, nil) {
-				if err != nil {
-					return err
-				}
-				if len(row.Key) == want && row.Key[want-1] == keys.FRel {
-					ids = append(ids, entity.FileID(row.Key[len(prefix):want-1]))
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			yield(entity.FileID{}, err)
-			return
-		}
-		for _, id := range ids {
-			if !yield(id, nil) {
-				return
-			}
-		}
+// putRelease writes a file's pending release and its index entry; dropRelease
+// deletes both. Every pending release is written and deleted through these,
+// so the index never misses one.
+func putRelease(tx kv.Txn, share entity.ShareID, shard uint64, id entity.FileID) error {
+	if err := tx.Set(releaseKey(share, id), encodeRelease()); err != nil {
+		return err
 	}
+	return tx.Set(releaseIndexKey(share, shard, id), encodeEmpty())
+}
+
+func dropRelease(tx kv.Txn, share entity.ShareID, shard uint64, id entity.FileID) error {
+	if err := tx.Delete(releaseKey(share, id)); err != nil {
+		return err
+	}
+	return tx.Delete(releaseIndexKey(share, shard, id))
+}
+
+// PendingReleases lists the files of a share that lost their last entry and
+// are not yet released, for recovery after a crash, from the share's
+// pending-release index: it reads one key per pending release, whatever the
+// share's size, in pages.
+func (n Namespace) PendingReleases(ctx context.Context, share entity.ShareID) iter.Seq2[entity.FileID, error] {
+	prefix := shareKey(share, keys.SPr)
+	return pages(ctx, n.s.kv, prefix, nil, func(_ kv.Reader, row kv.KeyValue) (entity.FileID, error) {
+		id, _, err := keys.ReadID(row.Key[len(prefix)+8:], keys.IDLen)
+		return entity.FileID(id), err
+	})
 }

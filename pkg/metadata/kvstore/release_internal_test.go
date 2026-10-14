@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -19,7 +20,27 @@ func (f *cfix) unlinked(file entity.FileID) {
 	f.t.Helper()
 	x := f.get(file)
 	x.Nlink = 0
-	rows(f.t, f.s, fileKey(f.share, file), encodeFile(x), releaseKey(f.share, file), encodeRelease())
+	if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) error {
+		if err := tx.Set(fileKey(f.share, file), encodeFile(x)); err != nil {
+			return err
+		}
+		return putRelease(tx, f.share, x.Shard, file)
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// pendingReleases is what recovery finds for the fixture's share.
+func (f *cfix) pendingReleases() []entity.FileID {
+	f.t.Helper()
+	var ids []entity.FileID
+	for id, err := range f.s.Namespace().PendingReleases(context.Background(), f.share) {
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // keysUnder lists every key left under a file's prefix.
@@ -45,7 +66,7 @@ func (f *cfix) keysUnder(file entity.FileID) [][]byte {
 func TestRelease(t *testing.T) {
 	f := newContentFix(t, nil)
 	ctx := context.Background()
-	file, stream := f.file(0), entity.NewFileID()
+	file, stream := f.file(0), f.file(0)
 	a := chunk(1)
 	f.exist(file, write(1, 0, 4*mib))
 	f.commit(file, carry(a), ref(0, 4*mib, a, 1, 1))
@@ -76,6 +97,10 @@ func TestRelease(t *testing.T) {
 		}
 		return nil
 	})
+
+	if got := f.pendingReleases(); !slices.Equal(got, []entity.FileID{stream}) {
+		t.Errorf("pending releases after the release %v, want the stream's", got)
+	}
 
 	f.remove(file, release(2)) // a replay finds the file gone
 	f.resume(file)
@@ -239,5 +264,26 @@ func TestReleaseRacesOpen(t *testing.T) {
 	op, rel = run(func() error { return openFile(file) }, func() error { return releaseFile(file) })
 	if rel != nil || !errors.Is(op, entity.ErrStale) {
 		t.Errorf("release first: open %v, release %v", op, rel)
+	}
+}
+
+// RFC 7 §4.3's recovery reads the share's pending-release index: one row
+// per pending release, however many files the share holds.
+func TestPendingReleasesIndex(t *testing.T) {
+	var c *kv.Counting
+	f := newContentFix(t, func(db kv.KV) kv.KV { c = &kv.Counting{KV: db}; return c })
+	var files []entity.FileID
+	for range 200 {
+		files = append(files, f.file(0))
+	}
+	f.unlinked(files[7])
+	f.unlinked(files[150])
+	c.Take()
+	got := f.pendingReleases()
+	if len(got) != 2 || !slices.Contains(got, files[7]) || !slices.Contains(got, files[150]) {
+		t.Errorf("pending releases %v", got)
+	}
+	if n := c.Take().Scanned; n != 2 {
+		t.Errorf("recovery scanned %d rows for 2 pending releases among 200 files", n)
 	}
 }

@@ -68,13 +68,20 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 			return err
 		}
 	}
-	for _, k := range [][]byte{fileKey(share, file), aclKey(share, file), deletePendingKey(share, file), releaseKey(share, file)} {
+	for _, k := range [][]byte{fileKey(share, file), aclKey(share, file), deletePendingKey(share, file)} {
 		if err := tx.Delete(k); err != nil {
 			return err
 		}
 	}
+	if err := dropRelease(tx, share, f.Shard, file); err != nil {
+		return err
+	}
 	for _, id := range streams {
-		if err := tx.Set(releaseKey(share, id), encodeRelease()); err != nil {
+		s, err := fileIn(tx, share, id)
+		if err != nil {
+			return err
+		}
+		if err := putRelease(tx, share, s.Shard, id); err != nil {
 			return err
 		}
 	}
