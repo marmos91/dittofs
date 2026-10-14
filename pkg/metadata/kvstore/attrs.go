@@ -133,10 +133,31 @@ func mayChange(r kv.Reader, id entity.Identity, f entity.File, a entity.Attrs) e
 	case a.Changes(entity.AttrGroup) && a.Group != f.Group && (!owner || !id.InGroup(a.Group)):
 		return merrs.NewPermissionDeniedError("change group")
 	case a.Mask&^(entity.AttrOwner|entity.AttrGroup) != 0 && !owner:
-		return merrs.NewPermissionDeniedError("only the owner changes the mode, flags or times")
+		if a.Mask&^times != 0 {
+			return merrs.NewPermissionDeniedError("only the owner changes the mode or flags")
+		}
+		// A non-owner sets times only through write attributes an ACL
+		// entry grants; one that a mode bit grants allows no set of a
+		// time the client gives.
+		//
+		// decision: setting the times to the server's time with write data
+		// alone, as utimensat's UTIME_NOW allows a writer, is refused too:
+		// Attrs carries a time, not whether it is the server's. Allow it once
+		// the call can say so.
+		ok, err := aclGrants(r, id, f, entity.WriteAttributes)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return merrs.NewPermissionDeniedError("only the owner, or write attributes in an ACL, changes the times")
+		}
 	}
 	return authorize(r, id, f, entity.WriteAttributes)
 }
+
+// times are the attributes a non-owner may set with write attributes from
+// an ACL entry.
+const times = entity.AttrBirth | entity.AttrAccess | entity.AttrModify
 
 // ACL is the file's access-control list: the stored one, or the one its
 // mode implies.

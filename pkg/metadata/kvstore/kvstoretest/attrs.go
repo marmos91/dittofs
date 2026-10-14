@@ -51,6 +51,54 @@ func testSetAttrsRights(t *testing.T, kvo Opener) {
 	}
 }
 
+// RFC 7 §2.6's "what a mode bit grants" row and §7.4's privileged execute:
+// a group member's GENERIC_WRITE open of a 0664 file is granted, but write
+// attributes from a mode bit sets no time, while one from an ACL entry does;
+// a privileged caller executes only what an x bit makes executable.
+func testModeBitRights(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	staff := f.group("staff")
+	alice := f.member("alice", entity.Principal{}, staff)
+	bob := f.member("bob", entity.Principal{}, staff)
+	carol := f.member("carol", entity.Principal{})
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	h, _ := f.create(alice, pub, "doc", kvstore.NewFile{Type: entity.Regular, Mode: 0o664, Attrs: entity.Attrs{}.WithGroup(staff)})
+	const genericWrite = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.WriteAttributes | entity.Synchronize
+	if err := files.Authorize(ctx, bob, h, genericWrite|entity.ReadData); err != nil {
+		t.Errorf("a group member's GENERIC_READ and GENERIC_WRITE open of a 0664 file: %v", err)
+	}
+	if err := files.Authorize(ctx, carol, h, genericWrite); err == nil {
+		t.Error("an outsider's GENERIC_WRITE open of a 0664 file was granted")
+	}
+	at := time.Unix(1_900_000_000, 0)
+	if _, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithModify(at)); err == nil {
+		t.Error("write attributes from a mode bit set a client's time")
+	}
+	acl := entity.ACL{Entries: []entity.ACE{
+		{Type: entity.ACEAllow, Mask: entity.ReadData | entity.ReadAttributes | entity.ReadACL | entity.Synchronize, Who: entity.Everyone},
+		{Type: entity.ACEAllow, Mask: entity.WriteAttributes, Who: bob.Principal},
+	}}
+	must(t, errOf(files.SetACL(ctx, alice, h, acl)))
+	if got, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithModify(at)); err != nil || !got.Modify.Equal(at) {
+		t.Errorf("write attributes from an ACL entry set a time: %v, %v", got.Modify, err)
+	}
+	if _, err := files.SetAttrs(ctx, bob, h, entity.Attrs{}.WithMode(0o666)); err == nil {
+		t.Error("a non-owner with write attributes changed the mode")
+	}
+
+	plain, _ := f.create(f.admin, pub, "plain", regular(0o644))
+	prog, _ := f.create(f.admin, pub, "prog", regular(0o744))
+	if err := files.Authorize(ctx, f.admin, plain, entity.Execute); err == nil {
+		t.Error("a privileged caller executes a file with no x bit")
+	}
+	for name, x := range map[string]entity.Handle{"a file with an x bit": prog, "a directory": pub} {
+		if err := files.Authorize(ctx, f.admin, x, entity.Execute); err != nil {
+			t.Errorf("a privileged caller executes %s: %v", name, err)
+		}
+	}
+}
+
 func errOf(_ entity.File, e error) error { return e }
 
 // RFC 7 §12.1's client time row and §9.4's clamp: a time the client gives

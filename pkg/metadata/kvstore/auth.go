@@ -13,10 +13,12 @@ const writeRights = entity.WriteData | entity.AppendData | entity.WriteNamedAttr
 	entity.WriteAttributes | entity.Delete | entity.WriteACL | entity.WriteOwner
 
 // The rights the mode decides, by the bit that grants them; the rest are
-// always granted or the owner's.
+// always granted or the owner's. A write bit grants write attributes to
+// whoever it applies to, as the mapped GENERIC_WRITE set needs at open; what
+// a non-owner may then set through it is mayChange's.
 const (
 	readRights  = entity.ReadData | entity.ReadNamedAttrs
-	writeBits   = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild
+	writeBits   = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild | entity.WriteAttributes
 	alwaysRight = entity.ReadAttributes | entity.ReadACL | entity.Synchronize
 	ownerRights = entity.WriteAttributes | entity.WriteACL | entity.WriteOwner
 	// An owner keeps the right to change attributes and the ACL whatever an
@@ -97,7 +99,9 @@ func flagsAllow(f entity.File, want entity.AccessMask) error {
 // Carry a has-ACL bit in the file record if path walks show it.
 func allows(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMask) (bool, error) {
 	if id.Privileged {
-		return true, nil
+		// Privilege skips the walk but runs nothing that no x bit makes
+		// executable, as root's execute does.
+		return want&entity.Execute == 0 || f.IsDir() || f.Mode&0o111 != 0, nil
 	}
 	want &^= alwaysRight
 	if id.Principal == f.Owner {
@@ -112,6 +116,20 @@ func allows(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMa
 	}
 	if !ok {
 		return want&^modeAllows(id, f) == 0, nil
+	}
+	acl, err := decodeACL(b)
+	if err != nil {
+		return false, err
+	}
+	return aclAllows(id, f, acl, want), nil
+}
+
+// aclGrants reports whether the file's stored ACL gives the caller every
+// right in want; a file with no stored ACL grants nothing this way.
+func aclGrants(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMask) (bool, error) {
+	b, ok, err := get(r, aclKey(f.Share, f.ID))
+	if err != nil || !ok {
+		return false, err
 	}
 	acl, err := decodeACL(b)
 	if err != nil {
