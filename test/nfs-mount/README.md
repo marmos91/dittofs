@@ -24,32 +24,65 @@ runners.
 | Name | Options | Adds over its base |
 |---|---|---|
 | `default` | none | what a plain `mount -t nfs` negotiates: NFSv4.2 against DittoFS (nfstest names it explicitly) |
-| `v3` | `vers=3,tcp,mountproto=tcp,nolock` | — |
+| `v3` | `vers=3,tcp,mountproto=tcp` | — |
 | `v4.0` | `vers=4.0` | — |
 | `v4.1` | `vers=4.1` | — |
 | `v4.1-noac` | `v4.1` + `noac` | no attribute caching |
 | `v4.1-smallio` | `v4.1` + `rsize=32768,wsize=32768` | many small READ/WRITEs |
 
-The NFSv3 sets use `nolock`, because on a single host the client's own lockd takes over the NLM
-registration and a v3 lock never reaches DittoFS. The reasoning is in `option-sets.sh`. Locking is
-tested on the v4 sets.
+No set uses `nolock`: NFSv3 locks reach DittoFS's lock manager, because the client has a network
+stack of its own (below).
+
+## Client and user
+
+The server runs on the host. The client runs in a network namespace of its own, joined to the host
+by a veth pair on the bridge `dfsnfs0`. See [`netns.sh`](netns.sh).
+
+| Who | Namespace | Address |
+|---|---|---|
+| `dfs`, and the host's `rpcbind` | host | `10.51.0.1` |
+| the client under test | `dfsnfs1` | `10.51.0.2` |
+| nfstest's second client, reached over ssh | `dfsnfs2` | `10.51.0.3` |
+
+Each client namespace gets a private `/run`, its own hostname, and its own `rpcbind` and
+`rpc.statd`. A client that shared the server's stack would fall short in three ways:
+- Its lockd would take over DittoFS's NLM registration in their shared rpcbind, so a v3 lock would
+  reach the client's own kernel.
+- nfstest could not tell client traffic from server traffic in a capture with `127.0.0.1` at both
+  ends.
+- A second client would be the same NFSv4 client to the server.
+
+The setup step registers DittoFS's MOUNT and NLM services with the host's rpcbind
+(`setup-posix.sh --system-rpcbind`).
+
+Only the mount is root's; the tests run as `dfsnfstest` (uid 64000). See
+[`test-user.sh`](test-user.sh).
+- **Squash:** the export squashes root (`root_to_guest`).
+- **Access:** `dfsnfstest` gets a read-write grant from the setup step (`--test-user`).
+- **cthon04:** runs each program as that user.
+- **nfstest:** runs as that user with passwordless `sudo`, which is how it expects to run. It stops
+  its packet captures with `sudo kill` on every process the capture started, and logs in to the
+  second client with an ssh key.
 
 ## What runs
 
 | Suite | Option set | Runs |
 |---|---|---|
-| cthon04 | all | basic `test1`–`test9`, general, special (15 programs) |
-| cthon04 | v4 sets | + lock `tlocklfs`, `tlock64` |
+| cthon04 | all | basic `test1`–`test9`, general, special (15 programs), lock `tlocklfs`, `tlock64` |
 | nfstest | all | `nfstest_posix`, `nfstest_dio` |
+| nfstest | `v3` | + `nfstest_cache` |
 | nfstest | v4 sets | + `nfstest_delegation` |
-| nfstest | `v4.0`, `v4.1` | + `nfstest_lock` |
+| nfstest | `v3`, `v4.0`, `v4.1` | + `nfstest_lock` |
 
 cthon04's own `runtests` stops a group at its first failure. [`cthon04/run.sh`](cthon04/run.sh)
 runs each program on its own instead, so one failure cannot hide the tests after it.
 
-`nfstest_cache`, the module that tests the `ac*` options directly, is not run. It needs a second
-client host, and on one host its two mounts collide. Any other module runs with
-`--modules`, e.g. `--modules posix,cache`.
+`nfstest_cache` and the recall tests of `nfstest_delegation` drive the second client. The second
+client's traffic is mirrored into the first client's interface, because nfstest checks both in the
+one capture it takes, as on a shared segment. `nfstest_cache` runs on NFSv3 only: on NFSv4 the
+second client's change recalls the first client's delegation, and the first revalidates at once,
+which is correct and defeats every timing check the module makes. Any other
+module runs with `--modules`, e.g. `--modules posix,alloc`.
 
 ## Grading
 
@@ -76,7 +109,7 @@ any failure of that program.
 
 In CI the suites are entries in [`test/conformance/suites.json`](../conformance/suites.json) and run
 in the `nfs-mount` job of `.github/workflows/conformance.yml`. That is an Ubuntu runner, with
-`sudo` for the mount. PRs run cthon04 on `memory`, five short jobs, one per option set. Everything
+`sudo` for the mount and the namespaces. PRs run cthon04 on `memory`, five short jobs, one per option set. Everything
 else runs only in the nightly, because a v4 nfstest cell takes tens of minutes: cthon04 on every
 profile, and nfstest on `memory` only. Most of what nfstest checks is client and protocol behaviour
 the storage backend shouldn't change; its first runs on `memory` and `badger-s3` gave the same
@@ -109,8 +142,9 @@ then can't be removed, and later runs block in `sync()`. Restarting the Docker V
 
 ## Comparing against knfsd
 
-Many nfstest `dio` and `delegation` assertions check what the kernel *client* sends: which
-WRITEs, whether it caches them, when it returns a delegation. A failure there only points at
+Many nfstest `dio`, `delegation` and `cache` assertions check what the kernel *client* sends or
+sees: which WRITEs, whether it caches them, when it returns a delegation, when it notices another
+client's change. `cache` runs on NFSv3 only, as in the DittoFS cells. A failure there only points at
 DittoFS if the Linux kernel server passes the same assertion on the same kernel.
 [`nfstest/baseline-knfsd.sh`](nfstest/baseline-knfsd.sh) runs those modules through the same
 `run.sh` against knfsd, under every option set, grades each set against DittoFS's tables, and

@@ -60,10 +60,8 @@ trap 'docker rm -f "$NAME" >/dev/null 2>&1' EXIT
 docker exec "$NAME" sh -c '
     modprobe nfs && modprobe nfsv4 || { echo "cannot load the nfs kernel modules" >&2; exit 1; }
     mkdir -p /run/rpc_pipefs && mount -t rpc_pipefs rpc_pipefs /run/rpc_pipefs
-    # A runner host starts statd on demand through systemd the first time an
-    # NFSv3 mount asks for locking; a container has no systemd. nfstest_dio
-    # remounts with its own options, without nolock, and needs it.
-    rpcbind && rpc.statd
+    # The clients run their own rpcbind and statd in their namespaces; the
+    # host needs only rpcbind, which the setup step starts if it is missing.
     mkdir -p /work'
 
 # Tracked files plus new ones not yet committed, minus anything ignored.
