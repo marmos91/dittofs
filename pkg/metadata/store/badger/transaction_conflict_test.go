@@ -17,11 +17,9 @@ import (
 // errors.As(*StoreError)) rather than leaking the raw badgerdb.ErrConflict
 // sentinel.
 //
-// Bug #1245-B: the raw sentinel leaked through, so the rollup persister's
-// mapObjectIDConflict (which only recognizes *StoreError{Code:ErrConflict}
-// or postgres 23505) could not classify the badger SSI hot-key abort as a
-// benign object_id conflict → the rollup ticker re-ran the same payloadID
-// forever (151 retries/24h) without converging.
+// Without the wrap, the raw sentinel leaks through and callers that classify
+// conflicts with IsConflictError or errors.As(*StoreError) cannot recognize an
+// exhausted SSI abort.
 func TestWithTransaction_RetryExhaustedConflictIsWrapped(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "metadata.db")
 	store, err := NewBadgerMetadataStoreWithDefaults(t.Context(), dbPath)

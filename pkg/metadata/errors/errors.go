@@ -93,7 +93,10 @@ const (
 	// ErrConnectionLimitReached indicates connection limit has been reached.
 	ErrConnectionLimitReached
 
-	// ErrConflict indicates a concurrent-write conflict: a Badger SSI abort.
+	// ErrConflict indicates a concurrent-write conflict: a Badger SSI abort, or
+	// a directory entry that changed under a rename or remove between the
+	// unlocked lookup and the transaction. Callers may retry; it never means a
+	// rule refused the write.
 	ErrConflict
 
 	// ErrCrossShare indicates a two-handle operation named handles from two

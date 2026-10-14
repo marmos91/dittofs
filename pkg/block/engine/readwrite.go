@@ -599,7 +599,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 
 	// Increment RefCount once per unique hash. Track seen so duplicate
 	// hashes (a single CAS object referenced by multiple ChunkRefs in
-	// the same file — file-level dedup) are bumped exactly
+	// the same file, e.g. repeated content) are bumped exactly
 	// once per CopyPayload call.
 	//
 	// ponytail: this is the only production call site that raises a RefCount,

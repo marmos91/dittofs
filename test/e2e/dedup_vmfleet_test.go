@@ -203,8 +203,7 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 	require.GreaterOrEqualf(t, reduction, minReduction,
 		"DEDUP-03 VIOLATION: storage reduction %.4f < required %.2f "+
 			"(pre_dedup_bytes=%d post_dedup_bytes=%d cas_keys=%d clones=%d). "+
-			"Either file-level dedup (BSCAS-05 short-circuit) and block-level "+
-			"dedup (Phase 11 GetByHash) both failed to engage, or the qcow2 "+
+			"Either chunk-level CAS dedup failed to engage, or the qcow2 "+
 			"clones diverged more than expected.",
 		reduction, minReduction, preDedupBytes, postDedupBytes, len(casObjects), len(clones))
 }

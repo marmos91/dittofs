@@ -192,9 +192,9 @@ func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn fu
 		return err
 	}
 	// Retries exhausted. Map the raw sentinel to StoreError{Code: ErrConflict}
-	// the way WithTransaction does: IsConflictError and the object-ID conflict
-	// rules match only the wrapped form, so returning the bare sentinel would
-	// leave an exhausted conflict unclassified.
+	// the way WithTransaction does: IsConflictError matches only the wrapped
+	// form, so returning the bare sentinel would leave an exhausted conflict
+	// unclassified.
 	return mapBadgerError(lastErr, "updateWithConflictRetry", "")
 }
 
