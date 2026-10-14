@@ -11,9 +11,9 @@ import (
 //
 // The names below are package metadata's error API. Callers across the tree —
 // every protocol adapter, the control-plane API handlers, the block engine and
-// all four metadata store backends — construct, compare and type-switch on
-// them as metadata.StoreError, metadata.ErrNotFound, metadata.IsNotFoundError
-// and the rest.
+// the metadata store — construct, compare and type-switch on them as
+// metadata.StoreError, metadata.ErrNotFound, metadata.IsNotFoundError and the
+// rest.
 //
 // The implementations live in pkg/metadata/errors and pkg/metadata/lock
 // because neither of those packages may import metadata: metadata imports

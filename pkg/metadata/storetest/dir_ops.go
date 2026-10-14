@@ -473,11 +473,11 @@ func txCreateRoot(shareName string) func(context.Context, metadata.Store, *metad
 
 // testLinkCountAgreesWithGetFile verifies that GetLinkCount reports the same
 // hard-link count as GetFile for an inode whose count was never explicitly
-// stored. Backends keep the count outside the inode record (a separate key or
-// a nullable column), so "never written" is a state both surfaces must resolve
-// the same way: a GetLinkCount answering 0 while GetFile answers 2 makes
-// read-modify-write callers persist a wrong count, and 0 reads as "fully
-// unlinked" to anything treating the count as a liveness signal.
+// stored. The store keeps the count outside the inode record, under a separate
+// key, so "never written" is a state both surfaces must resolve the same way:
+// a GetLinkCount answering 0 while GetFile answers 2 makes read-modify-write
+// callers persist a wrong count, and 0 reads as "fully unlinked" to anything
+// treating the count as a liveness signal.
 func testLinkCountAgreesWithGetFile(t *testing.T, factory StoreFactory) {
 	cases := []struct {
 		name  string
@@ -612,11 +612,11 @@ func testDeleteChildIsIdempotent(t *testing.T, factory StoreFactory) {
 // nothing else. Same entries, same order, same ids and handles, same cursor.
 //
 // Both modes are read twice over the same directory — once whole, once paged —
-// because the SQL backends answer NamesOnly with a different query than
-// WithAttrs, and a page boundary is where two queries that were meant to agree
-// stop agreeing. A cursor handed out by one mode has to resume the other in
-// the same place or a caller that switched modes would silently skip or repeat
-// a name.
+// because NamesOnly lets the store skip the per-entry inode read, so the two
+// modes can take different read paths, and a page boundary is where two paths
+// that were meant to agree stop agreeing. A cursor handed out by one mode has
+// to resume the other in the same place or a caller that switched modes would
+// silently skip or repeat a name.
 func testNamesOnlyMatchesWithAttrs(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	rootHandle := createTestShare(t, store, "/test")

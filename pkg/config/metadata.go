@@ -4,9 +4,9 @@ import "fmt"
 
 // MetadataConfig configures global, engine-specific metadata-store tunables.
 // These apply to every metadata store of the matching engine opened by the
-// server (the per-store path/connection details still live in the control-plane
-// database; this section carries operational knobs that are the same for every
-// store of an engine on this node).
+// server (each store's path still lives in the control-plane database; this
+// section carries operational knobs that are the same for every store of an
+// engine on this node).
 type MetadataConfig struct {
 	// Badger configures the BadgerDB metadata engine's in-memory caches.
 	Badger BadgerMetadataConfig `mapstructure:"badger" yaml:"badger"`
