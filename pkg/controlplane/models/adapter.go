@@ -101,7 +101,7 @@ func (a *AdapterConfig) EffectiveSMBEncryptionMode() (string, bool) {
 }
 
 // smbEncryptionMode returns the nested encryption.encryption_mode, or "" when
-// the field is absent. A present encryption value must be an object,
+// the field is absent or null. A present encryption value must be an object,
 // encryption_mode must be a string when present, and the object may only
 // contain encryption_mode and allowed_ciphers. A typo or a wrong JSON type
 // would otherwise leave the adapter on preferred.
@@ -111,7 +111,7 @@ func (a *AdapterConfig) smbEncryptionMode() (string, error) {
 		return "", fmt.Errorf("invalid config: %w", err)
 	}
 	raw, present := parsed["encryption"]
-	if !present {
+	if !present || raw == nil {
 		return "", nil
 	}
 	enc, ok := raw.(map[string]any)

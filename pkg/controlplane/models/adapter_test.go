@@ -19,6 +19,7 @@ func TestValidate_RefusesMalformedSMBEncryption(t *testing.T) {
 		{name: "unknown encryption key", raw: `{"encryption":{"mode":"required"}}`, want: `"mode"`, wantErr: true},
 		{name: "known keys", raw: `{"encryption":{"encryption_mode":"required","allowed_ciphers":[]}}`},
 		{name: "encryption absent", raw: `{}`},
+		{name: "encryption null is unset", raw: `{"encryption":null}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
