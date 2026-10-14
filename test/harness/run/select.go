@@ -1,6 +1,7 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -60,6 +61,10 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			}
 			cell := Cell{Cell: c, Unit: unit, Tier: at}
 			switch {
+			case len(tests) > 1 && goTests && slices.ContainsFunc(tests, func(n string) bool { return strings.Contains(n, "/") }):
+				// One -run pattern for several names would filter every
+				// matched test's subtests by each subtest name.
+				return nil, errors.New("name subtests one at a time")
 			case len(tests) > 0 && goTests:
 				cell.Tests = tests
 			case len(tests) > 0:

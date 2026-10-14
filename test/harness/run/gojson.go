@@ -28,6 +28,13 @@ const sudoGrace = 2 * time.Minute
 func (t tester) goJSON(names []string) (string, string) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	asRoot := slices.Contains(t.cell.Needs, "root") && os.Geteuid() != 0
+	if asRoot {
+		bin, err := t.buildBin()
+		if err != nil {
+			return NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err)
+		}
+		t.vals["bin"] = bin
+	}
 	var res results
 	var problems []string
 	for i, cmd := range t.cell.Unit.Cmd {
@@ -85,22 +92,34 @@ func (t tester) goTest(argv []string, asRoot bool, events string, res *results) 
 	return followed(cmd, events, res, t.out)
 }
 
-// sudo is the -exec program that runs a test binary as root. sudo resets the
-// environment, so it passes the suite's variables, its services' and PATH
-// explicitly, and a root build cache and an offline, read-only module setup
-// for tests that build as root, as go test words them.
-func (t tester) sudo() (string, error) {
-	modcache, err := exec.Command("go", "env", "GOMODCACHE").Output()
-	if err != nil {
-		return "", fmt.Errorf("go env GOMODCACHE: %w", err)
+// buildBin builds dfs and dfsctl as the user into the run's bin directory,
+// once per run, for a suite whose tests run as root: they take the binaries
+// from DITTOFS_E2E_BIN, so root never runs go build (section 3).
+func (t tester) buildBin() (string, error) {
+	bin := filepath.Join(filepath.Dir(t.vals["out"]), "bin")
+	names := []string{"dfs", "dfsctl"}
+	if !slices.ContainsFunc(names, func(n string) bool { _, err := os.Stat(filepath.Join(bin, n)); return err != nil }) {
+		return bin, nil // an earlier cell of this run built them
 	}
+	build := []string{"go", "build", "-o", bin + string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl"}
+	_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", strings.Join(build, " "))
+	code, err := execute(t.ctx, build, t.root, t.env, t.out)
+	if err == nil && code != 0 {
+		err = fmt.Errorf("go build exited %d", code)
+	}
+	return bin, err
+}
+
+// sudo is the -exec program that runs a test binary as root. sudo resets the
+// environment, so it passes the suite's variables, its services',
+// DITTOFS_E2E_BIN and PATH explicitly, as go test words them.
+func (t tester) sudo() (string, error) {
 	words := slices.Concat(
-		[]string{"sudo", "-n", "env", "PATH=" + os.Getenv("PATH"), "TMPDIR=" + os.TempDir(),
-			"GOMODCACHE=" + strings.TrimSpace(string(modcache)), "GOCACHE=" + filepath.Join(os.TempDir(), "dt-root-gocache"),
-			"GOFLAGS=-mod=readonly", "GOPROXY=off"},
+		[]string{"sudo", "-n", "env", "PATH=" + os.Getenv("PATH"), "DITTOFS_E2E_BIN=" + t.vals["bin"]},
 		t.own, needs.ServiceEnv(t.root, t.cell.Needs))
 	quoted := make([]string, len(words))
 	for i, w := range words {
+		var err error
 		if quoted[i], err = execQuote(w); err != nil {
 			return "", err
 		}

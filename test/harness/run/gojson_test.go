@@ -161,46 +161,57 @@ func TestGoPackages(t *testing.T) {
 	}
 }
 
-// fakeSudo puts a sudo on the PATH that drops -n, marks the environment and
-// runs the rest as the user, so the root path runs without real sudo. As
-// root, dt takes the plain path, so there's nothing to test.
+// fakeSudo puts a sudo on the PATH that drops -n, resets the environment as
+// sudo does, marks it, and runs the rest as the user, so the root path runs
+// without real sudo. As root, dt takes the plain path, so there's nothing to
+// test.
 func fakeSudo(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("the root path runs through sudo, as a user that isn't root")
 	}
 	dir := t.TempDir()
-	script := "#!/bin/sh\n[ \"$1\" = -n ] && shift\nDT_FAKE_SUDO=1 exec \"$@\"\n"
+	script := "#!/bin/sh\n[ \"$1\" = -n ] && shift\nexec env -i DT_FAKE_SUDO=1 \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// withBins adds the dfs and dfsctl a root suite needs built, as stubs.
+func withBins(files map[string]string) map[string]string {
+	out := map[string]string{"cmd/dfs/main.go": "package main\n\nfunc main() {}\n", "cmd/dfsctl/main.go": "package main\n\nfunc main() {}\n"}
+	for k, v := range files {
+		out[k] = v
+	}
+	return out
+}
+
 // rootModule has a package that checks how it was run, and two packages named
 // nfs, one at a versioned path, which go names nfs.test both.
-var rootModule = map[string]string{
+var rootModule = withBins(map[string]string{
 	"go.mod": goModule["go.mod"],
 	"a/a_test.go": `package a
 
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func TestHow(t *testing.T) {
 	for k, want := range map[string]string{
 		"DT_FAKE_SUDO": "1", "DT_SPACES": "two words", "DT_QUOTE": "it's",
-		"GOPROXY": "off", "GOFLAGS": "-mod=readonly",
+		"GOPROXY": "", "GOFLAGS": "", "GOCACHE": "", "GOMODCACHE": "", "TMPDIR": "",
 	} {
 		if got := os.Getenv(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}
 	}
-	if !strings.Contains(os.Getenv("GOCACHE"), "dt-root-gocache") {
-		t.Errorf("GOCACHE = %q, not root's own", os.Getenv("GOCACHE"))
+	for _, name := range []string{"dfs", "dfsctl"} {
+		if _, err := os.Stat(filepath.Join(os.Getenv("DITTOFS_E2E_BIN"), name)); err != nil {
+			t.Errorf("DITTOFS_E2E_BIN lacks %s: %v", name, err)
+		}
 	}
 	if wd, _ := os.Getwd(); filepath.Base(wd) != "a" {
 		t.Errorf("ran in %s, not the package's directory", wd)
@@ -211,7 +222,7 @@ func TestOther(t *testing.T) {}
 `,
 	"nfs/v3/v3_test.go":     "package nfs\n\nimport \"testing\"\n\nfunc TestV3(t *testing.T) {}\n",
 	"other/nfs/nfs_test.go": "package nfs\n\nimport \"testing\"\n\nfunc TestOtherNFS(t *testing.T) {}\n",
-}
+})
 
 const rootSuite = `suites:
   g:
@@ -223,9 +234,9 @@ const rootSuite = `suites:
 
 // The root path runs every package's binary through go test's -exec under
 // sudo, two packages named nfs included, in its package's directory, with the
-// suite's environment, quotes and spaces intact, and root's build settings,
-// and leaves only its events behind; TEST names reach the binaries as -run
-// (section 3).
+// suite's environment, quotes and spaces intact, and DITTOFS_E2E_BIN, but no
+// Go settings, and leaves only its events behind; TEST names reach the
+// binaries as -run (section 3).
 func TestRootPath(t *testing.T) {
 	fakeSudo(t)
 	o, out, dir := goRun(t, rootSuite, rootModule)
@@ -245,7 +256,7 @@ func TestRootPathCancel(t *testing.T) {
 	fakeSudo(t)
 	dir := t.TempDir()
 	started, cleaned := filepath.Join(dir, "started"), filepath.Join(dir, "cleaned")
-	files := map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": `package w
+	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "w/w_test.go": `package w
 
 import (
 	"os"
@@ -269,7 +280,7 @@ func TestWait(t *testing.T) {
 	_ = os.WriteFile(os.Getenv("DT_STARTED"), nil, 0o644)
 	time.Sleep(time.Minute)
 }
-`}
+`})
 	y := "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [root], env: { DT_STARTED: \"" + started + "\", DT_CLEANED: \"" + cleaned + "\" } }\n"
 	root, r := anyRepo(t, y, files)
 	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
@@ -303,12 +314,12 @@ func TestWait(t *testing.T) {
 // panics before any test. A test that calls os.Exit(0) fails, since go test
 // passes -test.paniconexit0. The same on both paths.
 func TestOutsideAnyTest(t *testing.T) {
-	files := map[string]string{
+	files := withBins(map[string]string{
 		"go.mod":        goModule["go.mod"],
 		"tm/tm_test.go": "package tm\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { m.Run(); os.Exit(3) }\n\nfunc TestFine(t *testing.T) {}\n",
 		"gp/gp_test.go": "package gp\n\nimport (\n\t\"os\"\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestMain(m *testing.M) {\n\tgo func() { panic(\"boom\") }()\n\ttime.Sleep(time.Second)\n\tos.Exit(m.Run())\n}\n\nfunc TestNever(t *testing.T) {}\n",
 		"ex/ex_test.go": "package ex\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestExit0(t *testing.T) { os.Exit(0) }\n",
-	}
+	})
 	check := func(t *testing.T, needs string) {
 		o, out, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: ["+needs+"] }\n", files)
 		for _, want := range []string{"TestExit0", "example.com/m/gp: failed outside any test", "example.com/m/tm: failed outside any test"} {
@@ -324,10 +335,18 @@ func TestOutsideAnyTest(t *testing.T) {
 	})
 }
 
-// TEST names select subtests too: each element of a name is anchored.
+// TEST names select subtests too: each element of a name is anchored, and
+// names are joined with |. A subtest is named alone, since one pattern for
+// several names would filter each matched test's subtests.
 func TestRunPatternSubtests(t *testing.T) {
-	if got, want := runPattern([]string{"TestA", "TestParent/bad"}), "^TestA$|^TestParent$/^bad$"; got != want {
-		t.Errorf("pattern %q, want %q", got, want)
+	for names, want := range map[string]string{"TestParent/bad": "^TestParent$/^bad$", "TestA TestB": "^TestA$|^TestB$"} {
+		if got := runPattern(strings.Fields(names)); got != want {
+			t.Errorf("pattern for %s: %q, want %q", names, got, want)
+		}
+	}
+	root, r := anyRepo(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", goModule)
+	if _, err := Select(root, r, "g", "", "pr", nil, nil, []string{"TestPass", "TestParent/bad"}); err == nil || err.Error() != "name subtests one at a time" {
+		t.Errorf("a subtest among other names: %v", err)
 	}
 	o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", goModule, "TestParent/bad")
 	if o.Result != Failed || o.Note != "0 passed, 2 failed, 0 skipped: TestParent/bad" {
@@ -379,5 +398,38 @@ func TestEndpoint(t *testing.T) {
 	o, out, _ := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [\"service:kmip\"] }\n", files)
 	if o.Result != Passed {
 		t.Errorf("outcome %+v\n%s", o, out)
+	}
+}
+
+// dfs and dfsctl are built once per run, for every root cell of it.
+func TestBinOncePerRun(t *testing.T) {
+	fakeSudo(t)
+	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"})
+	y := "groups: { both: [g, h] }\nsuites:\n  g: { cmd: go test ./a/..., format: go-json, needs: [root] }\n  h: { cmd: go test ./a/..., format: go-json, needs: [root] }\n"
+	root, r := anyRepo(t, y, files)
+	cells, err := Select(root, r, "both", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(out.String(), "[dt] $ go build"); n != 1 || rep.Status() != 0 {
+		t.Errorf("%d builds, status %d\n%s", n, rep.Status(), out.String())
+	}
+}
+
+// When dfs or dfsctl doesn't build, the root cell didn't run, and its log
+// has the build's output.
+func TestBinBuildFailure(t *testing.T) {
+	fakeSudo(t)
+	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"})
+	files["cmd/dfs/main.go"] = "package main\n\nfunc main() { notDefined() }\n"
+	o, _, dir := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [root] }\n", files)
+	log, _ := os.ReadFile(filepath.Join(dir, "logs", "g.log"))
+	if o.Result != NotRun || !strings.Contains(o.Note, "dfs and dfsctl didn't build") || !strings.Contains(string(log), "notDefined") {
+		t.Errorf("outcome %+v\nlog:\n%s", o, log)
 	}
 }
