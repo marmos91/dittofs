@@ -272,7 +272,7 @@ func TestRunDirsAreUnique(t *testing.T) {
 
 // Placeholders: a line splits at spaces and never through a shell, a whole
 // {args} or {packages} becomes one argument per item, an sh command gets its
-// values quoted, and a shell's ${VAR} is left alone (section 4.1).
+// values quoted, and a shell's ${VAR} is left alone.
 func TestFill(t *testing.T) {
 	vals := map[string]string{"out": "/r/o", "test": "it's.sh"}
 	lists := map[string][]string{"args": {"-short", "-v"}, "packages": {"./a", "./b"}}

@@ -116,7 +116,7 @@ func appendSummary(md string) error {
 }
 
 // alias is a command people use today, `dt NAME ARGS`, which is
-// `dt run NAME ARGS` (section 3).
+// `dt run NAME ARGS`.
 func alias(name string) *cobra.Command {
 	return &cobra.Command{
 		Use:                name + " [ARGS...]",

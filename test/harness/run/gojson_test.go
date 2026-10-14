@@ -54,7 +54,7 @@ func goRun(t *testing.T, y string, files map[string]string, tests ...string) (Ou
 // Each test and subtest is a test case: a failed one fails the cell, and the
 // note counts them and names the failed ones, without a parent whose subtest
 // failed. The tests' own output passes through as go test -v prints it, and
-// the events stay in a file (sections 3 and 4.6).
+// the events stay in a file.
 func TestGoJSONGradesEachTest(t *testing.T) {
 	o, out, dir := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", goModule)
 	if want := "2 passed, 3 failed, 1 skipped: TestFail, TestParent/bad"; o.Result != Failed || o.Note != want {
@@ -89,7 +89,7 @@ func TestGoJSONNeverReplaysTheCache(t *testing.T) {
 
 // A cell where no test ran didn't run, whether its -run matched nothing or
 // the tests named on the command line don't exist; a run of only skips
-// passes, since skips aren't graded (sections 4.4 and 9).
+// passes, since skips aren't graded.
 func TestGoJSONNothingRanAndSkips(t *testing.T) {
 	y := "suites:\n  g: { cmd: go test ./..., format: go-json }\n"
 	if o, _, _ := goRun(t, "suites:\n  g: { cmd: go test -run NoSuchTest ./..., format: go-json }\n", goModule); o.Result != NotRun || o.Note != "no tests ran" {
@@ -170,7 +170,7 @@ func TestFollowedIgnoresLeftovers(t *testing.T) {
 }
 
 // {packages} lists the packages whose tests the tag changes, and finding none
-// is an error (section 4.1).
+// is an error.
 func TestGoPackages(t *testing.T) {
 	root := t.TempDir()
 	for name, body := range map[string]string{
@@ -274,7 +274,7 @@ const rootSuite = `suites:
 // sudo, two packages named nfs included, in its package's directory, with the
 // suite's environment, quotes and spaces intact, and DITTOFS_E2E_BIN, but none
 // of the caller's own variables, Go's settings included, and leaves only its
-// events behind; TEST names reach the binaries as -run (section 3).
+// events behind; TEST names reach the binaries as -run.
 func TestRootPath(t *testing.T) {
 	fakeSudo(t)
 	t.Setenv("DITTOFS_E2E_SKIP_KERBEROS", "1")

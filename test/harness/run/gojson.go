@@ -23,11 +23,10 @@ import (
 const sudoGrace = 2 * time.Minute
 
 // goJSON runs a go-json cell's commands and grades the cell from their
-// events (section 4.6): a failed test, package or command fails it, as does
-// the cell's limit, a cell where no test ran or that was interrupted didn't
-// run, and skips are reported, not graded. names, when given, are the tests
-// to run; one that didn't run is named, and the cell didn't run unless it
-// failed.
+// events: a failed test, package or command fails it, as does the cell's
+// limit, a cell where no test ran or that was interrupted didn't run, and
+// skips are reported, not graded. names, when given, are the tests to run;
+// one that didn't run is named, and the cell didn't run unless it failed.
 func (t tester) goJSON(names []string) (string, string) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
@@ -77,9 +76,9 @@ func (t tester) goJSON(names []string) (string, string) {
 
 // goTest runs a go test command with -json -count=1 added after its go test,
 // so nothing replays from the test cache. For a suite that needs root, go
-// test builds as the user and runs each test binary through -exec under sudo
-// (section 3), with its own flags, in its package's directory; cancelling it
-// then sends SIGINT, so the tests' own cleanup runs.
+// test builds as the user and runs each test binary through -exec under
+// sudo, with its own flags, in its package's directory; cancelling it then
+// sends SIGINT, so the tests' own cleanup runs.
 func (t tester) goTest(argv []string, asRoot bool, events string, res *results) (int, error) {
 	added := []string{"-json", "-count=1"}
 	if asRoot {
@@ -109,7 +108,7 @@ func asRoot(c Cell) bool {
 
 // buildBin builds dfs and dfsctl as the user into {bin}, the run's bin
 // directory, once per run, for a suite whose tests run as root: they take the
-// binaries from DITTOFS_E2E_BIN, so root never runs go build (section 3).
+// binaries from DITTOFS_E2E_BIN, so root never runs go build.
 func (t tester) buildBin() error {
 	bin := t.vals["bin"]
 	names := []string{"dfs", "dfsctl"}
@@ -337,8 +336,8 @@ func runPattern(names []string) string {
 }
 
 // goPackages lists the packages whose tests the build tag changes: those
-// whose test files differ with the tag (section 4.1). Finding none is an
-// error, never an empty run.
+// whose test files differ with the tag. Finding none is an error, never an
+// empty run.
 func goPackages(root, tag string) ([]string, error) {
 	plain, err := testFiles(root)
 	if err != nil {
