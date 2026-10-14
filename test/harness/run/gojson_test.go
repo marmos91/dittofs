@@ -103,6 +103,25 @@ func TestGoJSONNothingRanAndSkips(t *testing.T) {
 	}
 }
 
+// A TEST name no test ran under is named in the note, even when another name
+// ran: the cell didn't run, or failed when a test failed. A subtest's name is
+// checked whole, so a parent that ran doesn't hide its mistyped subtest.
+func TestGoJSONNamedTestsThatDidntRun(t *testing.T) {
+	y := "suites:\n  g: { cmd: go test ./..., format: go-json }\n"
+	for _, c := range []struct {
+		names        []string
+		result, note string
+	}{
+		{[]string{"TestPass", "TestTypo"}, NotRun, "1 passed, 0 failed, 0 skipped; TestTypo didn't run"},
+		{[]string{"TestParent/typo"}, NotRun, "1 passed, 0 failed, 0 skipped; TestParent/typo didn't run"},
+		{[]string{"TestFail", "TestTypo"}, Failed, "0 passed, 1 failed, 0 skipped: TestFail; TestTypo didn't run"},
+	} {
+		if o, _, _ := goRun(t, y, goModule, c.names...); o.Result != c.result || o.Note != c.note {
+			t.Errorf("%s: %+v, want %s with %q", strings.Join(c.names, " "), o, c.result, c.note)
+		}
+	}
+}
+
 // A package that doesn't build fails the cell and says so.
 func TestGoJSONBuildFailure(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "b/b_test.go": "package b\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) { undefined() }\n"}

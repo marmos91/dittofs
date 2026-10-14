@@ -24,7 +24,8 @@ const sudoGrace = 2 * time.Minute
 // goJSON runs a go-json cell's commands and grades the cell from their
 // events (section 4.6): a failed test, package or command fails it, a cell
 // where no test ran didn't run, and skips are reported, not graded. names,
-// when given, are the tests to run.
+// when given, are the tests to run; one that didn't run is named, and the
+// cell didn't run unless it failed.
 func (t tester) goJSON(names []string) (string, string) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
@@ -55,9 +56,15 @@ func (t tester) goJSON(names []string) (string, string) {
 			problems = append(problems, fmt.Sprintf("`%s` exited %d", shown, code))
 		}
 	}
+	var notRun []string
+	if missing := slices.DeleteFunc(slices.Clone(names), res.ran); len(missing) > 0 {
+		notRun = append(notRun, strings.Join(missing, ", ")+" didn't run")
+	}
 	switch {
 	case res.failures() > 0 || len(problems) > 0:
-		return Failed, res.note(problems)
+		return Failed, res.note(append(problems, notRun...))
+	case len(notRun) > 0:
+		return NotRun, res.note(notRun)
 	case len(res.tests) == 0:
 		return NotRun, "no tests ran"
 	}
@@ -248,6 +255,17 @@ func (r *results) add(line []byte, w io.Writer) {
 		}
 		r.broken = append(r.broken, e.Package+": "+why)
 	}
+}
+
+// ran reports whether a test of that name, a subtest's whole, ran in any
+// package.
+func (r *results) ran(name string) bool {
+	for k := range r.tests {
+		if _, test, _ := strings.Cut(k, " "); test == name {
+			return true
+		}
+	}
+	return false
 }
 
 // failures counts the failed tests and the broken packages.
