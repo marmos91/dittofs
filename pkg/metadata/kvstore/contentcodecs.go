@@ -95,7 +95,7 @@ func decodeOverwrite(start int64, b []byte) (overwrite, error) {
 // A removal's value; its version is in its key.
 func encodeRemoval(m entity.Removal) []byte {
 	w := codec.NewWriter(v1).Uint64(uint64(m.Extent.Offset)).Uint64(uint64(m.Extent.End())).
-		Uint8(uint8(m.Kind)).Uint64(uint64(m.Cut)).Uint64(uint64(m.Cursor)).Bool(m.Done).Uint64(uint64(m.OvSpan))
+		Uint8(uint8(m.Kind)).Uint64(uint64(m.Cut)).Uint64(uint64(m.Cursor)).Bool(m.Done).Uint64(uint64(m.OvSpan)).Bool(m.HoleCredit)
 	if m.Kind == entity.RemoveRelease {
 		w.Fixed(m.FileVersion[:])
 	}
@@ -119,6 +119,7 @@ func decodeRemoval(version entity.JournalVersion, b []byte) (entity.Removal, err
 	m.Cursor = int64(r.Uint64())
 	m.Done = r.Bool()
 	m.OvSpan = int64(r.Uint64())
+	m.HoleCredit = r.Bool()
 	if m.Kind == entity.RemoveRelease {
 		m.FileVersion = readVersion(r)
 	}

@@ -151,11 +151,11 @@ func (e Existence) Remove(ctx context.Context, share entity.ShareID, file entity
 		if op.Kind == entity.RemoveRelease {
 			return releasePhase1(tx, share, file, epoch, op)
 		}
-		return removePhase1(tx, share, file, epoch, op)
+		return removePhase1(tx, share, file, epoch, op, e.s.k)
 	})
 }
 
-func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uint64, op RemoveOp) error {
+func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uint64, op RemoveOp, k int) error {
 	if err := rewriteFences(tx, share, file, epoch); err != nil {
 		return err
 	}
@@ -182,9 +182,11 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 		ext = entity.ExtentOf(ext.Offset, entity.EndOfFile)
 	}
 	live := ext.Intersect(entity.Extent{Length: f.Size}) // the part below size
+	credit := false
 	if !live.IsEmpty() {
-		charged, err := chargedIn(tx, share, file, f, ms, live)
-		if err != nil {
+		var charged int64
+		var err error
+		if charged, credit, err = chargedIn(tx, share, file, f, ms, live, k, op.Kind == entity.RemoveDeallocate); err != nil {
 			return err
 		}
 		f.Charged -= charged
@@ -216,7 +218,7 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	if live.IsEmpty() {
 		return nil // a deallocate past the end of file removes nothing
 	}
-	m := entity.Removal{Version: op.Version, Extent: ext, Kind: op.Kind, Cursor: ext.Offset, OvSpan: f.MaxOverwrite}
+	m := entity.Removal{Version: op.Version, Extent: ext, Kind: op.Kind, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit}
 	return tx.Set(removalKey(share, file, op.Version), encodeRemoval(m))
 }
 
@@ -242,14 +244,42 @@ func rewriteFences(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 // chargedIn is the bytes of e, below size, that the file is charged for:
 // e less its holes and the extents of deallocations not yet done, which
 // read as holes. A masked hole lies inside one of those, or past size.
-func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent) (int64, error) {
-	hs, err := holesOver(r, share, file, e, ms.holeSpan(f))
+//
+// It reads at most k holes. Past that it charges all of e, less, for a
+// deallocate (joinsEdges), the holes its merged hole joins at e's edges,
+// which phase 2 never sees, and reports credit: phase 2 gives back each
+// masked hole's bytes as it drops it, so usage reads low, never high, until
+// the removal is done.
+//
+// ponytail: up to k hole reads keep Charged exact for a file with fewer
+// holes in the extent, and a TRIM-fragmented file reads low until its
+// removal is done. Keep a hole-bytes total per fixed range of the file, which
+// phase 1 could sum in O(1), when a quota decision is traced to usage reading
+// low during a long removal.
+func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, k int, joinsEdges bool) (charged int64, credit bool, err error) {
+	recs, more, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), ms.holeSpan(f), k, func(start int64, v []byte) (hole, int64, error) {
+		h, err := decodeHole(start, v)
+		return h, h.End(), err
+	})
 	if err != nil {
-		return 0, err
+		return 0, false, err
+	}
+	if more {
+		n := e.Length
+		if joinsEdges {
+			joined, err := edgeHoles(r, share, file, f, ms, e)
+			if err != nil {
+				return 0, false, err
+			}
+			for _, h := range joined {
+				n -= h.Intersect(e).Length
+			}
+		}
+		return n, true, nil
 	}
 	var free []entity.Extent
-	for _, h := range hs {
-		free = append(free, h.Extent)
+	for _, rec := range recs {
+		free = append(free, rec.value.Extent)
 	}
 	for _, m := range ms {
 		if m.Kind == entity.RemoveDeallocate {
@@ -260,7 +290,7 @@ func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.F
 	for _, x := range mergeExtents(free) {
 		n -= x.Intersect(e).Length
 	}
-	return n, nil
+	return n, false, nil
 }
 
 // narrowStraddlers cuts each visible overwrite record, and each visible
@@ -322,31 +352,43 @@ func narrowStraddlers(tx kv.Txn, share entity.ShareID, file entity.FileID, f ent
 // starting there.
 func mergedHole(tx kv.Txn, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent, v entity.JournalVersion) (hole, error) {
 	m := hole{Extent: e, Version: v}
-	var joined []int64
-	for _, at := range []entity.Extent{entity.ExtentOf(max(0, e.Offset-1), e.Offset+1), entity.ExtentOf(e.End()-1, e.End()+1)} {
-		hs, err := holesOver(tx, share, file, at, ms.holeSpan(f))
-		if err != nil {
-			return hole{}, err
-		}
-		for _, h := range hs {
-			left := h.Offset < e.Offset && h.End() >= e.Offset
-			right := h.End() > e.End() && h.Offset <= e.End()
-			if !left && !right || ms.masked(h.Version, h.Extent) || slices.Contains(joined, h.Offset) {
-				continue
-			}
-			joined = append(joined, h.Offset)
-			m.Extent = entity.ExtentOf(min(m.Offset, h.Offset), max(m.End(), h.End()))
-		}
+	joined, err := edgeHoles(tx, share, file, f, ms, e)
+	if err != nil {
+		return hole{}, err
 	}
-	for _, start := range joined {
-		if start == m.Offset {
+	for _, h := range joined {
+		m.Extent = entity.ExtentOf(min(m.Offset, h.Offset), max(m.End(), h.End()))
+	}
+	for _, h := range joined {
+		if h.Offset == m.Offset {
 			continue // the merged hole's own key
 		}
-		if err := tx.Delete(holeKey(share, file, start)); err != nil {
+		if err := tx.Delete(holeKey(share, file, h.Offset)); err != nil {
 			return hole{}, err
 		}
 	}
 	return m, tx.Set(holeKey(share, file, m.Offset), encodeHole(m))
+}
+
+// edgeHoles are the visible holes that straddle or touch e's edges, at most
+// two, read at the edges: those a merged hole over e joins.
+func edgeHoles(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.File, ms masks, e entity.Extent) ([]hole, error) {
+	var out []hole
+	for _, at := range []entity.Extent{entity.ExtentOf(max(0, e.Offset-1), e.Offset+1), entity.ExtentOf(e.End()-1, e.End()+1)} {
+		hs, err := holesOver(r, share, file, at, ms.holeSpan(f))
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hs {
+			left := h.Offset < e.Offset && h.End() >= e.Offset
+			right := h.End() > e.End() && h.Offset <= e.End()
+			if !left && !right || ms.masked(h.Version, h.Extent) || slices.ContainsFunc(out, func(o hole) bool { return o.Offset == h.Offset }) {
+				continue
+			}
+			out = append(out, h)
+		}
+	}
+	return out, nil
 }
 
 // batchItemKeys is at most the keys one item a phase-2 batch reaches
@@ -477,11 +519,15 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 			return false, err
 		}
 	}
+	before := f
 	for _, rec := range holes {
 		h := rec.value
 		if reaches(h.Offset, h.Extent) && h.Version.Less(m.Version) && m.Extent.Contains(h.Extent) {
 			if err := tx.Delete(holeKey(share, file, h.Offset)); err != nil {
 				return false, err
+			}
+			if m.HoleCredit {
+				f.Charged += h.Length // phase 1 charged it off with the rest
 			}
 		}
 	}
@@ -495,20 +541,21 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	}
 	if m.Kind == entity.RemoveClone {
 		var dst *entity.File // a released destination takes no holes
-		before := f
 		if live {
 			dst = &f
 		}
 		if err := adopt(tx, share, file, dst, m, batch, ms, nss, deltas); err != nil {
 			return false, err
 		}
-		if live && (f.Charged != before.Charged || f.MaxSpan != before.MaxSpan) {
-			if err := putFile(tx, f.Version, f); err != nil {
-				return false, err
-			}
-			if err := chargeFile(tx, share, &before, &f); err != nil {
-				return false, err
-			}
+	}
+	// A released file's charge went with it, and its holes' bytes go
+	// nowhere.
+	if live && (f.Charged != before.Charged || f.MaxSpan != before.MaxSpan) {
+		if err := putFile(tx, f.Version, f); err != nil {
+			return false, err
+		}
+		if err := chargeFile(tx, share, &before, &f); err != nil {
+			return false, err
 		}
 	}
 	for gen, d := range deltas {

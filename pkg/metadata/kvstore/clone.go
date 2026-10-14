@@ -74,10 +74,10 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 			return err
 		}
 	}
-	return e.s.kv.Update(ctx, func(tx kv.Txn) error { return clonePhase1(tx, op) })
+	return e.s.kv.Update(ctx, func(tx kv.Txn) error { return clonePhase1(tx, op, e.s.k) })
 }
 
-func clonePhase1(tx kv.Txn, op CloneOp) error {
+func clonePhase1(tx kv.Txn, op CloneOp, k int) error {
 	sp, share, file := op.Spec, op.Share, op.File
 	if err := rewriteFences(tx, share, file, op.Epoch); err != nil {
 		return err
@@ -112,9 +112,10 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 	}
 	ext := entity.ExtentOf(sp.DstOff, sp.DstOff+sp.Len)
 	was := f.Version
+	credit := false
 	if live := ext.Intersect(entity.Extent{Length: f.Size}); !live.IsEmpty() {
-		charged, err := chargedIn(tx, share, file, f, ms, live)
-		if err != nil {
+		var charged int64
+		if charged, credit, err = chargedIn(tx, share, file, f, ms, live, k, false); err != nil {
 			return err
 		}
 		f.Charged -= charged
@@ -140,7 +141,7 @@ func clonePhase1(tx kv.Txn, op CloneOp) error {
 		return err
 	}
 	spec := sp
-	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, Clone: &spec}
+	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit, Clone: &spec}
 	if err := tx.Set(removalKey(share, file, op.Version), encodeRemoval(m)); err != nil {
 		return err
 	}

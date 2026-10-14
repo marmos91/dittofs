@@ -29,8 +29,9 @@ type startedRecord[T any] struct {
 // inside the extent. A positive span bounds every record's length: records
 // of the kind may overlap, as masked ones do while a removal is not done,
 // so the scan starts span below off, where any record over off starts.
-// Each is decoded by decode, which also reports its end.
-func recordsOver[T any](r kv.Reader, prefix []byte, off, end, span int64, decode func(start int64, v []byte) (T, int64, error)) ([]startedRecord[T], error) {
+// Each is decoded by decode, which also reports its end. A limit at or above
+// zero stops the read after that many records and reports more.
+func recordsOver[T any](r kv.Reader, prefix []byte, off, end, span int64, limit int, decode func(start int64, v []byte) (T, int64, error)) ([]startedRecord[T], bool, error) {
 	var out []startedRecord[T]
 	at := func(start int64) []byte { return keys.Uint64(slices.Clip(prefix), uint64(start)) }
 	after := at(off) // Scan resumes after its key: records starting past off
@@ -40,15 +41,15 @@ func recordsOver[T any](r kv.Reader, prefix []byte, off, end, span int64, decode
 			after = at(off - span)
 		}
 	} else if prev, ok, err := r.Before(prefix, at(off+1)); err != nil {
-		return nil, err
+		return nil, false, err
 	} else if ok {
 		start, err := startOf(prefix, prev.Key)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		v, recEnd, err := decode(start, prev.Value)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if recEnd > off {
 			out = append(out, startedRecord[T]{start, v})
@@ -56,24 +57,27 @@ func recordsOver[T any](r kv.Reader, prefix []byte, off, end, span int64, decode
 	}
 	for row, err := range r.Scan(prefix, after) {
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		start, err := startOf(prefix, row.Key)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if start >= end {
 			break
 		}
 		v, recEnd, err := decode(start, row.Value)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if recEnd > off {
+			if limit >= 0 && len(out) == limit {
+				return out, true, nil
+			}
 			out = append(out, startedRecord[T]{start, v})
 		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
 func startOf(prefix, key []byte) (int64, error) {
@@ -82,7 +86,7 @@ func startOf(prefix, key []byte) (int64, error) {
 }
 
 func refsOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) ([]entity.ChunkRef, error) {
-	recs, err := recordsOver(r, refsPrefix(share, file), e.Offset, e.End(), 0, func(start int64, v []byte) (entity.ChunkRef, int64, error) {
+	recs, _, err := recordsOver(r, refsPrefix(share, file), e.Offset, e.End(), 0, -1, func(start int64, v []byte) (entity.ChunkRef, int64, error) {
 		c, err := decodeRef(file, start, v)
 		return c, c.End(), err
 	})
@@ -94,7 +98,7 @@ func refsOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Ex
 }
 
 func holesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent, span int64) ([]hole, error) {
-	recs, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), span, func(start int64, v []byte) (hole, int64, error) {
+	recs, _, err := recordsOver(r, holesPrefix(share, file), e.Offset, e.End(), span, -1, func(start int64, v []byte) (hole, int64, error) {
 		h, err := decodeHole(start, v)
 		return h, h.End(), err
 	})
@@ -106,7 +110,7 @@ func holesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.E
 }
 
 func overwritesOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent, span int64) ([]overwrite, error) {
-	recs, err := recordsOver(r, overwritesPrefix(share, file), e.Offset, e.End(), span, func(start int64, v []byte) (overwrite, int64, error) {
+	recs, _, err := recordsOver(r, overwritesPrefix(share, file), e.Offset, e.End(), span, -1, func(start int64, v []byte) (overwrite, int64, error) {
 		o, err := decodeOverwrite(start, v)
 		return o, o.End(), err
 	})

@@ -241,6 +241,10 @@ type Removal struct {
 	// OvSpan is the File's MaxOverwrite at phase 1, the bound phase 2's
 	// history scan needs once a release has deleted the File.
 	OvSpan int64
+	// HoleCredit says phase 1 found more holes in the extent than it reads,
+	// charged off all its bytes, and left phase 2 to give back each masked
+	// hole's bytes as it drops it.
+	HoleCredit bool
 	// FileVersion is the deleted File's Version, Kind RemoveRelease only: it
 	// names the File's version-floor entry, which the prune deletes.
 	FileVersion JournalVersion

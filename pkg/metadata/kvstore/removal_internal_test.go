@@ -282,3 +282,70 @@ func TestPruneRemovals(t *testing.T) {
 		t.Errorf("after pruning at 2: %+v", rs)
 	}
 }
+
+// RFC 6 §6.2's phase 1 hole bound: with K forced to 4, a removal over 10
+// holes reads no more than K of them, charges off its whole extent and sets
+// holeCredit; Charged and usage read at or below their exact values while
+// phase 2 gives the holes back, and exactly them once it is done. A
+// deallocate's edge holes, joined into its merged hole in phase 1, are never
+// charged off. A release of such a file ends with usage exact.
+func TestHoleCredit(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		op    RemoveOp
+		exact int64 // Charged once the removal is done
+	}{
+		{"truncate", truncate(30, 0), 0},
+		{"deallocate inside holes at both edges", dealloc(30, 3*mib/2, 18*mib), 2 * mib},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newContentFix(t, nil)
+			file := f.file(0)
+			var ops []PendingOp
+			for i := range int64(11) {
+				ops = append(ops, write(uint64(i+1), 2*i*mib, mib)) // 10 holes between 11 writes
+			}
+			f.exist(file, ops...)
+			f.s.SetKeyBudget(4)
+			f.remove(file, c.op)
+			if rs := f.removals(file); len(rs) != 1 || !rs[0].HoleCredit {
+				t.Fatalf("removal %+v, want holeCredit", rs)
+			}
+			for more := true; more; {
+				if got := f.get(file).Charged; got > c.exact {
+					t.Errorf("Charged %d above its exact %d during phase 2", got, c.exact)
+				}
+				f.checkUsage()
+				if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) (err error) {
+					more, err = f.s.resumeBatch(tx, f.share, file)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := f.get(file).Charged; got != c.exact {
+				t.Errorf("Charged %d once done, want %d", got, c.exact)
+			}
+			f.checkUsage()
+		})
+	}
+
+	t.Run("release", func(t *testing.T) {
+		f := newContentFix(t, nil)
+		file := f.file(0)
+		var ops []PendingOp
+		for i := range int64(11) {
+			ops = append(ops, write(uint64(i+1), 2*i*mib, mib))
+		}
+		f.exist(file, ops...)
+		f.s.SetKeyBudget(4)
+		f.remove(file, truncate(30, mib)) // phase 1 only: usage reads low
+		f.unlinked(file)
+		f.remove(file, release(31))
+		f.resume(file)
+		f.checkUsage()
+		if u, err := f.s.Capacity().Usage(context.Background(), f.share); err != nil || u.Bytes != 0 {
+			t.Errorf("share usage %+v after releasing the only file, %v", u, err)
+		}
+	})
+}

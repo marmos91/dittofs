@@ -33,7 +33,7 @@ func contentCodecCases() []codecCase {
 	ref := entity.ChunkRef{File: fid, Offset: 4096, Length: 1 << 20, Chunk: hash, Skip: 512,
 		Oldest: entity.VersionOf(1), Newest: entity.VersionOf(2), Born: 3, NSGen: 1}
 	rm := entity.Removal{Version: entity.VersionOf(4), Extent: entity.Extent{Offset: 3 << 20, Length: entity.EndOfFile - 3<<20},
-		Kind: entity.RemoveClone, Cut: 2, Cursor: 3 << 20, OvSpan: 5,
+		Kind: entity.RemoveClone, Cut: 2, Cursor: 3 << 20, OvSpan: 5, HoleCredit: true,
 		Clone: &entity.CloneSpec{SrcShare: sid, Src: fid, SrcOff: 0, DstOff: 3 << 20, Len: 1 << 20, AsOf: entity.VersionOf(9)}}
 	release := entity.Removal{Version: entity.VersionOf(8), Extent: entity.ExtentOf(0, entity.EndOfFile),
 		Kind: entity.RemoveRelease, Done: true, FileVersion: entity.VersionOf(6)}
@@ -51,11 +51,11 @@ func contentCodecCases() []codecCase {
 			"01" + hexU64(2<<20) + v16(3) + hexU64(1),
 			func(b []byte) (any, error) { return decodeOverwrite(1<<20, b) }},
 		{"removal", rm, encodeRemoval(rm),
-			"01" + hexU64(3<<20) + hexU64(uint64(entity.EndOfFile)) + "04" + hexU64(2) + hexU64(3<<20) + "00" + hexU64(5) + "01" +
+			"01" + hexU64(3<<20) + hexU64(uint64(entity.EndOfFile)) + "04" + hexU64(2) + hexU64(3<<20) + "00" + hexU64(5) + "01" + "01" +
 				hex.EncodeToString(sid[:]) + hex.EncodeToString(fid[:]) + hexU64(0) + hexU64(3<<20) + hexU64(1<<20) + v16(9),
 			func(b []byte) (any, error) { return decodeRemoval(entity.VersionOf(4), b) }},
 		{"release removal", release, encodeRemoval(release),
-			"01" + hexU64(0) + hexU64(uint64(entity.EndOfFile)) + "03" + hexU64(0) + hexU64(0) + "01" + hexU64(0) + v16(6) + "00",
+			"01" + hexU64(0) + hexU64(uint64(entity.EndOfFile)) + "03" + hexU64(0) + hexU64(0) + "01" + hexU64(0) + "00" + v16(6) + "00",
 			func(b []byte) (any, error) { return decodeRemoval(entity.VersionOf(8), b) }},
 		{"fence", fence{Shard: 0, Epoch: 7}, encodeFence(fence{Epoch: 7}), "01" + hexU64(0) + hexU64(7),
 			func(b []byte) (any, error) { return decodeFence(b) }},
