@@ -136,6 +136,12 @@ func RunNLMAxisInterop(t *testing.T) map[string]NLMCaseResult {
 // buildE2EBinary compiles a command in the repo to a temp path and returns it.
 func buildE2EBinary(t *testing.T, root, pkg, name string) string {
 	t.Helper()
+	if path, ok, err := Prebuilt(name); ok {
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 	out := filepath.Join(t.TempDir(), name)
 	cmd := exec.Command("go", "build", "-o", out, pkg)
 	cmd.Dir = root

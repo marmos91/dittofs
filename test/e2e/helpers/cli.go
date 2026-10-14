@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/marmos91/dittofs/test/e2e/framework"
 )
 
 // dfsctlBuild ensures the dfsctl binary is built exactly once from the source
@@ -159,6 +161,10 @@ func (r *CLIRunner) getBinary() string {
 	// writing the shared field would be a data race (and buys nothing — the path
 	// is computed exactly once anyway).
 	dfsctlBuildOnce.Do(func() {
+		if path, ok, err := framework.Prebuilt("dfsctl"); ok {
+			dfsctlBuildPath, dfsctlBuildErr = path, err
+			return
+		}
 		projectRoot := findProjectRootForCLI()
 		out := filepath.Join(projectRoot, "dfsctl")
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/dfsctl/")
@@ -300,6 +306,13 @@ func RunDfs(t *testing.T, args ...string) ([]byte, error) {
 // findDfsBinaryForCLI locates the dfs binary, similar to findDfsBinary but without testing.T dependency.
 func findDfsBinaryForCLI(t *testing.T) string {
 	t.Helper()
+
+	if path, ok, err := framework.Prebuilt("dfs"); ok {
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 
 	// Check for dfs in PATH
 	if path, err := exec.LookPath("dfs"); err == nil {

@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/test/e2e/framework"
 )
 
 // ServerProcess manages a DittoFS server subprocess for E2E testing.
@@ -367,6 +369,13 @@ func (sp *ServerProcess) DumpLogs(t *testing.T) {
 // findDfsBinary locates the dfs binary, building it if necessary.
 func findDfsBinary(t *testing.T) string {
 	t.Helper()
+
+	if path, ok, err := framework.Prebuilt("dfs"); ok {
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 
 	// Always build a fresh binary from source to ensure E2E tests run against
 	// the current code, not a stale release (e.g. Homebrew install).

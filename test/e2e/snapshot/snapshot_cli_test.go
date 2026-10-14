@@ -25,6 +25,7 @@ import (
 	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/test/e2e/framework"
 )
 
 // CLI e2e suite — drives the built `dfsctl` binary against an
@@ -45,6 +46,10 @@ var (
 func buildDFSCtl(t *testing.T) string {
 	t.Helper()
 	cliBuildOnce.Do(func() {
+		if path, ok, err := framework.Prebuilt("dfsctl"); ok {
+			cliBinPath, cliBuildErr = path, err
+			return
+		}
 		dir, err := os.Getwd()
 		if err != nil {
 			cliBuildErr = fmt.Errorf("getwd: %w", err)
