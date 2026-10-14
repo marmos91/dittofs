@@ -176,14 +176,14 @@ func dropRelease(tx kv.Txn, share entity.ShareID, shard uint64, id entity.FileID
 	return tx.Delete(releaseIndexKey(share, shard, id))
 }
 
-// PendingReleases lists the files of a share that lost their last entry and
-// are not yet released, for recovery after a crash, from the share's
-// pending-release index: it reads one key per pending release, whatever the
-// share's size, in pages.
-func (n Namespace) PendingReleases(ctx context.Context, share entity.ShareID) iter.Seq2[entity.FileID, error] {
-	prefix := shareKey(share, keys.SPr)
+// PendingReleases lists the files in one shard of a share that lost their
+// last entry and are not yet released, for a primary's recovery after a
+// crash, from that shard's range of the pending-release index: it reads one
+// key per pending release, whatever the share's size, in pages.
+func (n Namespace) PendingReleases(ctx context.Context, share entity.ShareID, shard uint64) iter.Seq2[entity.FileID, error] {
+	prefix := keys.Uint64(shareKey(share, keys.SPr), shard)
 	return pages(ctx, n.s.kv, prefix, nil, func(_ kv.Reader, row kv.KeyValue) (entity.FileID, error) {
-		id, _, err := keys.ReadID(row.Key[len(prefix)+8:], keys.IDLen)
+		id, _, err := keys.ReadID(row.Key[len(prefix):], keys.IDLen)
 		return entity.FileID(id), err
 	})
 }

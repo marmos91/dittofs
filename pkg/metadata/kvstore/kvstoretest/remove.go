@@ -19,7 +19,9 @@ func isNotEmpty(err error) bool {
 func pending(t *testing.T, f *fs) []entity.FileID {
 	t.Helper()
 	var ids []entity.FileID
-	for id, err := range f.s.Namespace().PendingReleases(ctx, f.share.ID) {
+	root, err := f.s.Files().Get(ctx, f.admin, f.root)
+	must(t, err)
+	for id, err := range f.s.Namespace().PendingReleases(ctx, f.share.ID, root.Shard) {
 		must(t, err)
 		ids = append(ids, id)
 	}

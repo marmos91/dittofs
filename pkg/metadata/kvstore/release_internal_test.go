@@ -16,10 +16,13 @@ func release(v uint64) RemoveOp {
 
 // unlinked turns a file into one that has lost its last entry: Nlink zero
 // and its pending release recorded, as the final unlink leaves it.
-func (f *cfix) unlinked(file entity.FileID) {
+func (f *cfix) unlinked(file entity.FileID) { f.t.Helper(); f.unlinkedIn(file, 0) }
+
+// unlinkedIn is unlinked for a file placed in the given shard.
+func (f *cfix) unlinkedIn(file entity.FileID, shard uint64) {
 	f.t.Helper()
 	x := f.get(file)
-	x.Nlink = 0
+	x.Nlink, x.Shard = 0, shard
 	if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) error {
 		if err := tx.Set(fileKey(f.share, file), encodeFile(x)); err != nil {
 			return err
@@ -30,11 +33,11 @@ func (f *cfix) unlinked(file entity.FileID) {
 	}
 }
 
-// pendingReleases is what recovery finds for the fixture's share.
-func (f *cfix) pendingReleases() []entity.FileID {
+// pendingReleases is what recovery finds in one shard of the fixture's share.
+func (f *cfix) pendingReleases(shard uint64) []entity.FileID {
 	f.t.Helper()
 	var ids []entity.FileID
-	for id, err := range f.s.Namespace().PendingReleases(context.Background(), f.share) {
+	for id, err := range f.s.Namespace().PendingReleases(context.Background(), f.share, shard) {
 		if err != nil {
 			f.t.Fatal(err)
 		}
@@ -98,7 +101,7 @@ func TestRelease(t *testing.T) {
 		return nil
 	})
 
-	if got := f.pendingReleases(); !slices.Equal(got, []entity.FileID{stream}) {
+	if got := f.pendingReleases(0); !slices.Equal(got, []entity.FileID{stream}) {
 		t.Errorf("pending releases after the release %v, want the stream's", got)
 	}
 
@@ -267,8 +270,9 @@ func TestReleaseRacesOpen(t *testing.T) {
 	}
 }
 
-// RFC 7 §4.3's recovery reads the share's pending-release index: one row
-// per pending release, however many files the share holds.
+// RFC 7 §4.3's recovery reads one shard's range of the share's
+// pending-release index: one row per pending release in that shard, however
+// many files the share holds.
 func TestPendingReleasesIndex(t *testing.T) {
 	var c *kv.Counting
 	f := newContentFix(t, func(db kv.KV) kv.KV { c = &kv.Counting{KV: db}; return c })
@@ -278,12 +282,16 @@ func TestPendingReleasesIndex(t *testing.T) {
 	}
 	f.unlinked(files[7])
 	f.unlinked(files[150])
+	f.unlinkedIn(files[42], 3)
 	c.Take()
-	got := f.pendingReleases()
+	got := f.pendingReleases(0)
 	if len(got) != 2 || !slices.Contains(got, files[7]) || !slices.Contains(got, files[150]) {
-		t.Errorf("pending releases %v", got)
+		t.Errorf("pending releases in shard 0 %v", got)
 	}
 	if n := c.Take().Scanned; n != 2 {
 		t.Errorf("recovery scanned %d rows for 2 pending releases among 200 files", n)
+	}
+	if got := f.pendingReleases(3); !slices.Equal(got, []entity.FileID{files[42]}) {
+		t.Errorf("pending releases in shard 3 %v", got)
 	}
 }
