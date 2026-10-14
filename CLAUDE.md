@@ -108,11 +108,15 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    dispatch, type conversion. Permission checks, file ops, and directory traversal belong in
    `pkg/metadata/` and the store implementations. Don't inline business logic into handlers.
 
-2. **Every operation carries an `*metadata.AuthContext`.** Created in
-   `dispatch.go:ExtractAuthContext` for NFS and in the SMB session layer. It threads through
-   RPC → handler → store. Export-level squashing (`AllSquash`, `RootSquash`) is applied via
-   `ResolveSharePermission` (`internal/adapter/nfs/auth/share_permission.go`) and the SMB
-   Tree Connect check (`internal/adapter/smb/handlers/tree_connect.go`).
+2. **Every operation carries an `*metadata.AuthContext`.** For NFS it is built in two steps.
+   Dispatch copies the RPC credentials into a handler context (`middleware.ExtractHandlerContext`
+   for v3, `ExtractV4HandlerContext` for v4). The handler then builds the `*metadata.AuthContext`,
+   with share permission and squashing applied (`BuildAuthContextWithMapping` for v3, reached
+   through `GetCachedAuthContext`; `buildV4AuthContext` for v4). For SMB it is built in the SMB
+   session layer. It threads through handler → store. Export-level squashing (`AllSquash`,
+   `RootSquash`) is applied via `ResolveSharePermission`
+   (`internal/adapter/nfs/auth/share_permission.go`) and the SMB Tree Connect check
+   (`internal/adapter/smb/handlers/tree_connect.go`).
 
    The export auth-flavor policy (`AllowAuthSys`, `RequireKerberos`, `MinKerberosLevel`) lives in
    `CheckExportAccess` (`internal/adapter/nfs/auth/export_access.go`), which also applies the
