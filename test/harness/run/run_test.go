@@ -352,6 +352,7 @@ func TestBase(t *testing.T) {
 		{"true", "pull_request", "main", "", "origin/main"},
 		{"true", "push", "", "abc123", "abc123"},
 		{"true", "push", "", "0000000000000000000000000000000000000000", ""},
+		{"true", "merge_group", "", "", "def456"},
 		{"true", "schedule", "", "", ""},
 		{"true", "workflow_dispatch", "", "", ""},
 	}
@@ -360,7 +361,11 @@ func TestBase(t *testing.T) {
 		t.Setenv("GITHUB_EVENT_NAME", c.name)
 		t.Setenv("GITHUB_BASE_REF", c.baseRef)
 		t.Setenv("GITHUB_EVENT_PATH", event)
-		if err := os.WriteFile(event, []byte(`{"before":"`+c.before+`"}`), 0o644); err != nil {
+		body := `{"before":"` + c.before + `"}`
+		if c.name == "merge_group" {
+			body = `{"merge_group":{"base_sha":"def456","head_sha":"aaa"}}`
+		}
+		if err := os.WriteFile(event, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if got := base(); got != c.want {

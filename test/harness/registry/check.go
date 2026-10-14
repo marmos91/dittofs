@@ -22,6 +22,9 @@ var (
 	// Placeholders every cell may use; a cell's matrix axes add their own.
 	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "mount", "user", "password", "realm")
 
+	// runFlags are dt run's own flags, which no option may share a name with.
+	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "help")
+
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
 	// and dt run leave alone.
@@ -58,6 +61,9 @@ func (r *Registry) check(root string) []error {
 		for _, o := range s.Options {
 			if !nameRE.MatchString(o.Name) {
 				fail("option %s/%s: a name is [a-z0-9-]+", s.Name, o.Name)
+			}
+			if runFlags[o.Name] {
+				fail("option %s/%s: dt run has a flag of that name, and an option is a flag of its own", s.Name, o.Name)
 			}
 			if len(o.Options) > 0 {
 				fail("option %s/%s: an option has no options", s.Name, o.Name)

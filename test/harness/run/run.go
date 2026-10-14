@@ -376,10 +376,10 @@ func unsupported(u *registry.Suite) string {
 }
 
 // base is the ref a change is compared against (section 4.1): the base branch
-// of the pull request being checked, the commit before the push being
-// checked, or origin/develop when dt checks no event. It's "" when the event
-// has no change to check: a schedule, a dispatch, or a push without a
-// previous commit.
+// of the pull request being checked, a merge group's base commit, the commit
+// before the push being checked, or origin/develop when dt checks no event.
+// It's "" when the event has no change to check: a schedule, a dispatch, or a
+// push without a previous commit.
 func base() string {
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
 		return "origin/develop"
@@ -387,12 +387,21 @@ func base() string {
 	switch os.Getenv("GITHUB_EVENT_NAME") {
 	case "pull_request":
 		return "origin/" + os.Getenv("GITHUB_BASE_REF")
-	case "push":
+	case "push", "merge_group":
 		var event struct {
-			Before string `json:"before"`
+			Before     string `json:"before"`
+			MergeGroup struct {
+				BaseSHA string `json:"base_sha"`
+			} `json:"merge_group"`
 		}
 		data, err := os.ReadFile(os.Getenv("GITHUB_EVENT_PATH"))
-		if err == nil && json.Unmarshal(data, &event) == nil && strings.Trim(event.Before, "0") != "" {
+		if err != nil || json.Unmarshal(data, &event) != nil {
+			return ""
+		}
+		if event.MergeGroup.BaseSHA != "" {
+			return event.MergeGroup.BaseSHA
+		}
+		if strings.Trim(event.Before, "0") != "" {
 			return event.Before
 		}
 	}

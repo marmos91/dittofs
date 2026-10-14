@@ -37,6 +37,7 @@ func TestLoadRules(t *testing.T) {
 		{"unknown placeholders are refused", ok + "suites:\n  a: { cmd: 'run {nope}' }\n", "unknown placeholder {nope}"},
 		{"placeholders side by side are each checked", ok + "suites:\n  a: { cmd: 'run {out}{nope}' }\n", "unknown placeholder {nope}"},
 		{"tiers are known", ok + "suites:\n  a: { cmd: true, tier: weekly }\n", `tier "weekly"`},
+		{"an option isn't named like a dt run flag", ok + "suites:\n  a: { cmd: true, options: { ci: { cmd: false } } }\n", "dt run has a flag of that name"},
 		{"needs are known", ok + "suites:\n  a: { cmd: true, needs: [linx] }\n", `unknown need "linx"`},
 		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},
 		{"a selection names a value", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [] } } }\n", "selects no value"},
