@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -93,7 +93,7 @@ func TestMultiLineScriptNote(t *testing.T) {
 
 // Each test runs under its own limit; one that fails or times out fails the
 // cell, and the ones after it still run. A timed-out test's children die with
-// it.
+// it, those that made a process group of their own included.
 func TestTestsRunUnderTheirLimits(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { cmd: "sh {test}", tests: "t/*.sh", timeout: { test: 1s } }
@@ -102,10 +102,11 @@ func TestTestsRunUnderTheirLimits(t *testing.T) {
 		"t/b.sh": "exit 3\n",
 		"t/c.sh": "sleep 30 & echo $! > \"$0.pid\"; wait\n",
 		"t/d.sh": "echo ran > \"$0.ran\"\n",
+		"t/e.sh": "set -m; sleep 30 & echo $! > \"$0.pid\"; wait\n",
 	})
 	rep, _ := runTarget(t, root, r, "s", false)
 	note := rep.Outcomes[0].Note
-	for _, want := range []string{"t/b.sh: `sh t/b.sh` exited 3", "t/c.sh: timed out after 1s"} {
+	for _, want := range []string{"t/b.sh: `sh t/b.sh` exited 3", "t/c.sh: timed out after 1s", "t/e.sh: timed out after 1s"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note %q lacks %q", note, want)
 		}
@@ -113,15 +114,47 @@ func TestTestsRunUnderTheirLimits(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "t/d.sh.ran")); err != nil {
 		t.Error("the test after the failures didn't run")
 	}
-	pid, _ := os.ReadFile(filepath.Join(root, "t/c.sh.pid"))
-	n, err := strconv.Atoi(strings.TrimSpace(string(pid)))
+	for _, test := range []string{"t/c.sh", "t/e.sh"} {
+		if alive(t, filepath.Join(root, test+".pid")) {
+			t.Errorf("%s: the timed-out test's child outlived it", test)
+		}
+	}
+}
+
+// A command that exits but leaves a process holding its output still passes:
+// the process is killed, and dt doesn't wait on it.
+func TestLeftoversAreKilled(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { cmd: "sh {test}", tests: "t/*.sh" }
+`, map[string]string{"t/a.sh": "sleep 30 & echo $! > \"$0.pid\"\nexit 0\n"})
+	start := time.Now()
+	rep, _ := runTarget(t, root, r, "s", false)
+	took := time.Since(start)
+	if o := rep.Outcomes[0]; o.Result != Passed {
+		t.Errorf("outcome %+v", o)
+	}
+	if alive(t, filepath.Join(root, "t/a.sh.pid")) {
+		t.Error("the process the test left behind outlived it")
+	}
+	if took > 3*time.Second {
+		t.Errorf("took %s: dt waited on what the test left behind", took)
+	}
+}
+
+// alive reports whether the process whose pid is in file still runs. It only
+// looks: a pid can be reused, so a test never signals one.
+func alive(t *testing.T, file string) bool {
+	t.Helper()
+	data, err := os.ReadFile(file)
 	if err != nil {
-		t.Fatalf("child pid %q: %v", pid, err)
+		t.Fatal(err)
 	}
-	if p, _ := os.FindProcess(n); p.Signal(syscall.Signal(0)) == nil {
-		_ = p.Kill()
-		t.Error("the timed-out test's child outlived it")
+	pid := strings.TrimSpace(string(data))
+	if _, err := strconv.Atoi(pid); err != nil {
+		t.Fatalf("pid %q in %s", pid, file)
 	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", pid).Output()
+	return err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 }
 
 // When the cell's limit passes, the running test is stopped and the rest
@@ -143,10 +176,7 @@ func TestCellLimitStopsTheCell(t *testing.T) {
 // nothing ran exits 2; with --ci the cell didn't run, which is exit 2 and an
 // annotation (sections 4.4 and 4.5).
 func TestUnmetNeeds(t *testing.T) {
-	other := "windows"
-	if runtime.GOOS == "windows" {
-		other = "linux"
-	}
+	other := "windows" // repo skips the test there
 	root, r := repo(t, `groups: { g: [away, here] }
 suites:
   away: { cmd: "true", needs: [`+other+`] }
@@ -250,6 +280,9 @@ func TestFill(t *testing.T) {
 	if _, err := fill(registry.Command{Line: "run {packages}"}, vals, nil); err == nil || !strings.Contains(err.Error(), "{packages}") {
 		t.Errorf("a placeholder dt doesn't provide: %v", err)
 	}
+	if _, err := fill(registry.Command{Line: "{args}"}, vals, nil); err == nil {
+		t.Error("a command that fills to nothing has no error")
+	}
 }
 
 // Select: a group narrowed by --only and --skip, options by flag or by name,
@@ -301,6 +334,8 @@ suites:
 		{"g", "", []string{"z"}, nil},
 		{"a", "", nil, []string{"one.sh"}},
 		{"c", "", nil, []string{"three.sh"}},
+		{"c", "", nil, []string{"two.sh", "typo.sh"}},
+		{"a/z", "", nil, nil},
 	} {
 		if _, err := Select(root, r, bad.target, bad.option, "pr", bad.only, nil, bad.tests); err == nil {
 			t.Errorf("%+v: no error", bad)
@@ -317,6 +352,7 @@ func TestBase(t *testing.T) {
 		{"true", "pull_request", "main", "", "origin/main"},
 		{"true", "push", "", "abc123", "abc123"},
 		{"true", "push", "", "0000000000000000000000000000000000000000", ""},
+		{"true", "merge_group", "", "", "def456"},
 		{"true", "schedule", "", "", ""},
 		{"true", "workflow_dispatch", "", "", ""},
 	}
@@ -325,7 +361,11 @@ func TestBase(t *testing.T) {
 		t.Setenv("GITHUB_EVENT_NAME", c.name)
 		t.Setenv("GITHUB_BASE_REF", c.baseRef)
 		t.Setenv("GITHUB_EVENT_PATH", event)
-		if err := os.WriteFile(event, []byte(`{"before":"`+c.before+`"}`), 0o644); err != nil {
+		body := `{"before":"` + c.before + `"}`
+		if c.name == "merge_group" {
+			body = `{"merge_group":{"base_sha":"def456","head_sha":"aaa"}}`
+		}
+		if err := os.WriteFile(event, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if got := base(); got != c.want {
@@ -345,5 +385,129 @@ func TestNoBaseSkipsItsCommands(t *testing.T) {
 	rep, out := runTarget(t, root, r, "lint", false)
 	if rep.Outcomes[0].Result != Passed || !strings.Contains(out, "[dt] skipped, no change to check: no-such-check {base}") {
 		t.Errorf("outcome %+v\n%s", rep.Outcomes[0], out)
+	}
+}
+
+// The job summary is a table of every cell's outcome; a | in a note can't
+// break it.
+func TestMarkdown(t *testing.T) {
+	rep := Report{Outcomes: []Outcome{
+		{Cell: "lint-go", Result: Failed, Note: "`a | b` exited 1", Took: 2 * time.Second},
+		{Cell: "shellcheck", Result: Passed, Took: time.Second},
+	}}
+	want := "### dt run lint\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n" +
+		"| `lint-go` | failed | 2s | `a \\| b` exited 1 |\n| `shellcheck` | passed | 1s |  |\n"
+	if got := rep.Markdown("dt run lint"); got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A command that exits 75 ran nothing, as the scenarios' setup does when
+// another run holds their lock: the test didn't run, and the cell didn't run
+// unless another test failed (section 4.6).
+func TestExit75IsNotRun(t *testing.T) {
+	root, r := repo(t, `suites:
+  held: { cmd: "sh {test}", tests: "h/*.sh" }
+  mixed: { cmd: "sh {test}", tests: "m/*.sh" }
+`, map[string]string{"h/a.sh": "exit 75\n", "h/b.sh": "exit 0\n", "m/a.sh": "exit 75\n", "m/b.sh": "exit 1\n"})
+	rep, _ := runTarget(t, root, r, "held", false)
+	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "h/a.sh: `sh h/a.sh` exited 75: it ran nothing") || rep.Status() != 2 {
+		t.Errorf("held: %+v, status %d", o, rep.Status())
+	}
+	if rep, _ := runTarget(t, root, r, "mixed", false); rep.Outcomes[0].Result != Failed || rep.Status() != 1 {
+		t.Errorf("mixed: %+v, status %d", rep.Outcomes[0], rep.Status())
+	}
+}
+
+// An interrupt leaves the running test, and every test and cell after it, not
+// run: an interrupted run is no regression (section 4.4).
+func TestInterruptIsNotRun(t *testing.T) {
+	root, r := repo(t, `groups: { g: [slow, next] }
+suites:
+  slow: { cmd: "sh {test}", tests: "t/*.sh" }
+  next: { cmd: "true" }
+`, map[string]string{"t/a.sh": "sleep 30\n", "t/b.sh": "exit 0\n"})
+	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow, next := rep.Outcomes[0], rep.Outcomes[1]
+	if slow.Result != NotRun || !strings.Contains(slow.Note, "t/a.sh: interrupted") || !strings.Contains(slow.Note, "1 tests not started: interrupted") {
+		t.Errorf("slow: %+v", slow)
+	}
+	if next.Result != NotRun || rep.Status() != 2 {
+		t.Errorf("next: %+v, status %d", next, rep.Status())
+	}
+}
+
+// A command with a placeholder dt doesn't fill can't run, wherever it sits,
+// so the cell runs none of its commands.
+func TestUnfillableCommandIsNotRun(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { cmd: [ "touch ran", "run {bin}" ] }
+`, nil)
+	rep, _ := runTarget(t, root, r, "s", false)
+	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "{bin}") || rep.Status() != 2 {
+		t.Errorf("outcome %+v, status %d", o, rep.Status())
+	}
+	if _, err := os.Stat(filepath.Join(root, "ran")); err == nil {
+		t.Error("the cell ran a command before finding one it can't fill")
+	}
+}
+
+// A suite whose tests match nothing gives no cells, which is nothing to run:
+// exit 2, not a usage error.
+func TestNothingToRun(t *testing.T) {
+	root, r := repo(t, `groups: { g: [s] }
+suites:
+  s: { cmd: "true" }
+`, nil)
+	cells, err := Select(root, r, "g", "", "pr", nil, []string{"s"}, nil)
+	if err != nil || len(cells) != 0 {
+		t.Fatalf("cells %v, %v", cells, err)
+	}
+	var out bytes.Buffer
+	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out})
+	if err != nil || rep.Status() != 2 || !strings.Contains(out.String(), "[dt] nothing to run") {
+		t.Errorf("status %d, %v\n%s", rep.Status(), err, out.String())
+	}
+}
+
+// {out} is absolute, so a command finds it from whatever directory it runs
+// in, a relative results directory included; a dir that fills to an absolute
+// path, as {out} does, is used as it is.
+func TestPathsHoldFromAnyDir(t *testing.T) {
+	root, r := repo(t, `suites:
+  rel: { cmd: { sh: "echo x > {out}/got" }, dir: sub }
+  abs: { cmd: { sh: "pwd > here" }, dir: "{out}" }
+`, map[string]string{"sub/.keep": ""})
+	t.Chdir(root)
+	for _, suite := range []string{"rel", "abs"} {
+		cells, err := Select(root, r, suite, "", "pr", nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, err := Run(context.Background(), cells, Options{Root: root, Results: "results", Out: &bytes.Buffer{}})
+		if err != nil || rep.Outcomes[0].Result != Passed {
+			t.Errorf("%s: %+v, %v", suite, rep.Outcomes, err)
+		}
+		if !filepath.IsAbs(rep.Dir) {
+			t.Errorf("%s: run directory %q", suite, rep.Dir)
+		}
+	}
+}
+
+// An annotation's text can't end it early or break it: %, CR and LF are
+// escaped, and in its title : and , too.
+func TestAnnotation(t *testing.T) {
+	got := annotation("dt a:b,c", "100% done\nthen\rmore")
+	if want := "::error title=dt a%3Ab%2Cc::100%25 done%0Athen%0Dmore"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

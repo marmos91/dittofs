@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -35,7 +36,7 @@ func newRun() *cobra.Command {
 			}
 			var option []string
 			cmd.Flags().Visit(func(f *pflag.Flag) {
-				if options[f.Name] {
+				if options[f.Name] && f.Value.String() == "true" {
 					option = append(option, f.Name)
 				}
 			})
@@ -48,7 +49,10 @@ func newRun() *cobra.Command {
 				return err
 			}
 			if results == "" {
-				results = filepath.Join(root, "test", "harness", "results")
+				results = filepath.Join("test", "harness", "results")
+			}
+			if !filepath.IsAbs(results) {
+				results = filepath.Join(root, results)
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -64,6 +68,11 @@ func newRun() *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "results:", rep.Dir)
+			if ci {
+				if err := appendSummary(rep.Markdown("dt run " + strings.Join(args, " "))); err != nil {
+					return err
+				}
+			}
 			if s := rep.Status(); s != 0 {
 				return exitStatus(s)
 			}
@@ -74,7 +83,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these suites of the group")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these suites of the group")
 	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and problems are annotated")
-	cmd.Flags().StringVar(&results, "results", "", "where results go (default test/harness/results)")
+	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if r, err := load(); err == nil {
 		for _, s := range r.Suites {
@@ -87,6 +96,23 @@ func newRun() *cobra.Command {
 		}
 	}
 	return cmd
+}
+
+// appendSummary adds md to the job summary, when the run has one.
+func appendSummary(md string) error {
+	path := os.Getenv("GITHUB_STEP_SUMMARY")
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(md)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 func first(s []string) string {
