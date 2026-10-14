@@ -77,7 +77,7 @@ go test -race ./...
 # E2E (requires sudo + kernel NFS client)
 cd test/e2e && sudo ./run-e2e.sh           # all configs
 sudo ./run-e2e.sh --s3                      # include S3 via Localstack
-sudo ./run-e2e.sh --test TestCreateFile_1MB
+sudo ./run-e2e.sh --test TestNFSv4BasicOperations
 
 # Lint
 go fmt ./...
