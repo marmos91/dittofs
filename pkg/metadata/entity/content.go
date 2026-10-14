@@ -152,6 +152,7 @@ type Block struct {
 	Name       BlockName
 	State      BlockState
 	NotBefore  time.Time // store time: the earliest the deleter may delete it, set at retirement
+	MarkedAt   time.Time // store time of its move to deleted, which the delete compares with the next recheck; zero in any other state
 	Live       int64     // chunk records naming it with a nonzero refcount
 	Dead       int64     // bytes of carried chunks dead here
 	DeadAt     time.Time // store time Dead last grew

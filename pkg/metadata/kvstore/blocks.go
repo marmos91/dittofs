@@ -136,7 +136,7 @@ func (b Blocks) markDeleted(tx kv.Txn, name entity.BlockName) (bool, error) {
 	if err := tx.Delete(retiredKey(b.ns, blk.NotBefore, name)); err != nil {
 		return false, err
 	}
-	blk.State = entity.BlockDeleted
+	blk.State, blk.MarkedAt = entity.BlockDeleted, tx.Now()
 	if err := tx.Set(deletedKey(b.ns, name), encodeDeletedAt(time.Time{})); err != nil {
 		return false, err
 	}

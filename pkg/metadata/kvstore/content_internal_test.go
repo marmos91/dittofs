@@ -485,7 +485,7 @@ func TestDeleterLifecycle(t *testing.T) {
 	if rec, _ := f.chunkRec(a); rec.Block != k3 || rec.Refcount != 1 {
 		t.Errorf("A after a carrying commit: %+v", rec)
 	}
-	if blk, _ := f.block(k1); blk.State != entity.BlockRetired {
+	if blk, _ := f.block(k1); blk.State != entity.BlockRetired || !blk.MarkedAt.IsZero() {
 		t.Errorf("K1 resurrected by an offload: %+v", blk)
 	}
 	f.checkCounts()
@@ -494,6 +494,9 @@ func TestDeleterLifecycle(t *testing.T) {
 	f.due(k1)
 	if errs := blocks.MarkDeleted(ctx, []entity.BlockName{k1}); errs[0] != nil {
 		t.Fatalf("MarkDeleted(K1): %v", errs[0])
+	}
+	if blk, _ := f.block(k1); blk.State != entity.BlockDeleted || !blk.MarkedAt.Equal(f.clk.now()) {
+		t.Errorf("K1 after MarkDeleted: %+v, want deleted and marked at %v", blk, f.clk.now())
 	}
 	if err := blocks.Prune(ctx, []entity.BlockName{k1}); err == nil {
 		t.Error("pruned before the object's delete was recorded")

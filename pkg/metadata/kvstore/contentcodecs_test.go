@@ -37,7 +37,7 @@ func contentCodecCases() []codecCase {
 		Clone: &entity.CloneSpec{SrcShare: sid, Src: fid, SrcOff: 0, DstOff: 3 << 20, Len: 1 << 20, AsOf: entity.VersionOf(9)}}
 	release := entity.Removal{Version: entity.VersionOf(8), Extent: entity.ExtentOf(0, entity.EndOfFile),
 		Kind: entity.RemoveRelease, Done: true, FileVersion: entity.VersionOf(6)}
-	blk := entity.Block{Name: bname, State: entity.BlockRetired, NotBefore: t0, Live: 0, Dead: 10, DeadAt: t0,
+	blk := entity.Block{Name: bname, State: entity.BlockRetired, NotBefore: t0, MarkedAt: t0.Add(time.Second), Live: 0, Dead: 10, DeadAt: t0,
 		Size: 4 << 20, Generation: 1, Carried: []entity.Carried{{Hash: hash, Length: 100}}}
 	return []codecCase{
 		{"ref", ref, encodeRef(ref),
@@ -68,7 +68,7 @@ func contentCodecCases() []codecCase {
 			"01" + hex.EncodeToString(bname[:]) + hexU64(64) + hexU64(100) + hexU64(2) + hexU64(9),
 			func(b []byte) (any, error) { return decodeChunk(hash, b) }},
 		{"block", blk, encodeBlock(blk),
-			"01" + "01" + hexU64(1_800_000_000) + "00000000" + hexU64(0) + hexU64(10) + hexU64(1_800_000_000) + "00000000" +
+			"01" + "01" + hexU64(1_800_000_000) + "00000000" + hexU64(1_800_000_001) + "00000000" + hexU64(0) + hexU64(10) + hexU64(1_800_000_000) + "00000000" +
 				hexU64(4<<20) + "01" + "01" + hex.EncodeToString(hash[:]) + hexU64(100),
 			func(b []byte) (any, error) { return decodeBlock(bname, b) }},
 		{"intent", Intent{Domain: DomainShard, ID: 0, Epoch: 41, NodeEpoch: 3}, encodeIntent(Intent{Domain: DomainShard, Epoch: 41, NodeEpoch: 3}),

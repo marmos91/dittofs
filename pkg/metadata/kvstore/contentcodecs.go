@@ -210,6 +210,7 @@ func decodeChunk(h entity.ChunkHash, b []byte) (chunkRecord, error) {
 func encodeBlock(b entity.Block) []byte {
 	w := codec.NewWriter(v1).Uint8(uint8(b.State))
 	putTime(w, b.NotBefore)
+	putTime(w, b.MarkedAt)
 	w.Uint64(uint64(b.Live)).Uint64(uint64(b.Dead))
 	putTime(w, b.DeadAt)
 	w.Uint64(uint64(b.Size)).Uint8(b.Generation).Len(len(b.Carried))
@@ -225,6 +226,7 @@ func decodeBlock(name entity.BlockName, v []byte) (entity.Block, error) {
 		return entity.Block{}, err
 	}
 	b := entity.Block{Name: name, State: entity.BlockState(r.Uint8()), NotBefore: readTime(r)}
+	b.MarkedAt = readTime(r)
 	b.Live, b.Dead = int64(r.Uint64()), int64(r.Uint64())
 	b.DeadAt = readTime(r)
 	b.Size = int64(r.Uint64())
