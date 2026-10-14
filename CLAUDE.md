@@ -125,18 +125,22 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    builder does not either, because it runs its own netgroup check first with its own status. The
    flavor gates run per operation, not only at mount.
 
-   **NFSv4 needs a second gate, and it is not that one.** LOCK, LOCKT, LOCKU and
-   GET_DIR_DELEGATION act on the current filehandle without ever building an auth context, so
-   nothing in `buildV4AuthContext` reaches them. They are gated where a share handle *enters* the
-   compound, and there are exactly two such places: PUTFH, and a LOOKUP that crosses an export
+   **NFSv4 needs a second gate, and it is not that one.** A compound can enter a share's handle
+   and then run only operations that make no metadata call of their own (LOCK, LOCKT, LOCKU and
+   GET_DIR_DELEGATION among them), so the share is also gated where its handle *enters* the
+   compound. There are exactly two such places: PUTFH, and a LOOKUP that crosses an export
    junction out of the pseudo-fs. Both route through `shareEntryStatus`
    (`internal/adapter/nfs/v4/handlers/helpers.go`) — keep it that way rather than growing a second
    copy. Its two checks previously existed at one of the two sites only, which is how both a
    quiesced share and a netgroup-restricted one stayed reachable by walking the pseudo-fs.
 
    **That gate covers the share's enabled flag and its netgroup allowlist, not the flavor
-   policy.** `CheckExportAccess` still runs only where an auth context is built, so those four
-   operations reach a Kerberos-only share over AUTH_SYS on both entry paths. Do not write a
+   policy.** The flavor policy needs the request's auth flavor, so `CheckExportAccess` runs only
+   where an auth context is built. LOCK, LOCKT and LOCKU therefore call `refuseCurrentFHAccess`,
+   and GET_DIR_DELEGATION calls `CheckCurrentFHAccess`, just before they touch state. Both reach
+   `currentFHAccessStatus` (also in `helpers.go`), which runs `buildV4AuthContext` and so
+   `CheckExportAccess`. Those four operations are gated twice: at handle entry for the enabled
+   flag and the netgroup allowlist, and per operation for the flavor policy. Do not write a
    comment or a rule asserting the handle-entry path is fully gated: two comments claimed exactly
    that, in opposite directions, and both were wrong.
 
