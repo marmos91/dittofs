@@ -1,6 +1,9 @@
 package entity
 
-import "net/netip"
+import (
+	"net/netip"
+	"time"
+)
 
 // User and Group are principals with a name. A file refers to them only by
 // Principal, never by name, so renaming one touches no file, and deleting one
@@ -298,6 +301,30 @@ func (k *ScopeKind) UnmarshalText(b []byte) error { return enumUnmarshal(scopeKi
 // holes excluded and shared content counted in full, and files.
 type Usage struct {
 	Bytes, Files int64
+}
+
+// Quota is one share's limits on a user or group in it, or on a tree, a
+// project. Limits are written by the management API and usage is counted,
+// apart, because they have different writers. The store keeps them and
+// when usage first went above Soft; the filesystem service enforces them.
+type Quota struct {
+	Share     ShareID
+	Principal Principal     // a user or group quota; zero otherwise
+	Project   uint64        // a tree quota; zero otherwise
+	Hard      Limit         // refused beyond it
+	Soft      Limit         // allowed beyond it for Grace, then refused as Hard
+	Grace     time.Duration // how long usage may stay above Soft
+	Advisory  Limit         // never refused: crossing it only emits an event
+}
+
+// Limit is a byte and a file count; zero in either means no limit on it.
+type Limit struct {
+	Bytes, Files int64
+}
+
+// Unlimited reports a quota that limits nothing, which is no quota at all.
+func (q Quota) Unlimited() bool {
+	return q.Hard == Limit{} && q.Soft == Limit{} && q.Advisory == Limit{}
 }
 
 // SecretRef names a sealed credential; the zero ref names none.

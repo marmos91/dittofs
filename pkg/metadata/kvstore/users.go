@@ -245,8 +245,8 @@ func notFound(err error, p entity.Principal) error {
 }
 
 // deletePrincipal removes p's record, its index rows, the groups it is a
-// member of and its grants. Files keep naming p, as an unknown principal.
-// The membership and grant rows are found by scan, so their ranges are
+// member of, its grants and its quotas. Files keep naming p, as an unknown
+// principal. The membership and grant rows are found by scan, so their ranges are
 // guarded: a membership or grant added for p after this transaction's
 // snapshot makes one of the two conflict, rather than leave a row naming a
 // principal that no longer exists.
@@ -256,6 +256,9 @@ func notFound(err error, p entity.Principal) error {
 // Delete in batches sized from the store's limits, the record last, when a
 // principal can reach that many rows.
 func deletePrincipal(tx kv.Txn, p entity.Principal, record []byte, name string, ids entity.ProtocolIDs) error {
+	if err := dropQuotas(tx, p); err != nil {
+		return err
+	}
 	if err := dropPairs(tx, memberOfPrefix(p.ID), func(g []byte) []byte {
 		return memberKey(entity.PrincipalID(g), p.ID)
 	}); err != nil {

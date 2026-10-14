@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
@@ -290,6 +291,105 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	}
 	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: entity.NewUser(), Access: entity.AccessRead}); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant to a missing user: %v", err)
+	}
+}
+
+// RFC 16 §4.2's quota records (qt, qx) and RFC 17 §5.6: limits on a user,
+// a group or a project; when usage first went above the soft limit, kept
+// until it falls back, restarted by a new soft limit; a principal's
+// records go with it.
+func testQuotas(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, c := s.ControlPlane(), s.Capacity()
+	u, g := user("alice"), group("staff")
+	sh := share("photos", "/photos")
+	must(t, cp.PutUser(ctx, u))
+	must(t, cp.PutGroup(ctx, g))
+	must(t, cp.PutShare(ctx, sh))
+	uq := entity.Quota{Share: sh.ID, Principal: u.Principal, Hard: entity.Limit{Bytes: 10 << 30}, Soft: entity.Limit{Bytes: 8 << 30},
+		Grace: 7 * 24 * time.Hour, Advisory: entity.Limit{Files: 5000}}
+	pq := entity.Quota{Share: sh.ID, Project: 7, Hard: entity.Limit{Files: 1000}}
+	gq := entity.Quota{Share: sh.ID, Principal: g.Principal, Soft: entity.Limit{Bytes: 1 << 30}, Grace: time.Hour}
+	for _, q := range []entity.Quota{uq, pq, gq} {
+		must(t, cp.SetQuota(ctx, q))
+	}
+	var got []entity.Quota
+	for q, err := range cp.Quotas(ctx, sh.ID) {
+		must(t, err)
+		got = append(got, q)
+	}
+	if len(got) != 3 || got[2] != pq {
+		t.Fatalf("quotas %+v", got)
+	}
+
+	ut := kvstore.QuotaTarget{Principal: u.Principal}
+	soft := func(above bool) time.Time {
+		t.Helper()
+		since, err := c.SoftExceeded(ctx, sh.ID, ut, above)
+		must(t, err)
+		return since
+	}
+	sinceNow := func() time.Time {
+		t.Helper()
+		q, since, err := c.Quota(ctx, sh.ID, ut)
+		must(t, err)
+		if q.Hard != uq.Hard {
+			t.Errorf("quota %+v", q)
+		}
+		return since
+	}
+	if !sinceNow().IsZero() {
+		t.Error("above the soft limit before anything said so")
+	}
+	first := soft(true)
+	if first.IsZero() || !soft(true).Equal(first) || !sinceNow().Equal(first) {
+		t.Errorf("the first crossing at %v is not kept", first)
+	}
+	uq.Hard.Bytes = 20 << 30 // another limit keeps the grace running
+	must(t, cp.SetQuota(ctx, uq))
+	if !sinceNow().Equal(first) {
+		t.Error("a new hard limit restarted the grace")
+	}
+	uq.Soft.Bytes = 9 << 30 // a new soft limit restarts it
+	must(t, cp.SetQuota(ctx, uq))
+	if !sinceNow().IsZero() {
+		t.Error("a new soft limit kept the old crossing")
+	}
+	soft(true)
+	if !soft(false).IsZero() || !sinceNow().IsZero() {
+		t.Error("falling back under did not clear the crossing")
+	}
+
+	// A quota that limits nothing is deleted.
+	must(t, cp.SetQuota(ctx, entity.Quota{Share: sh.ID, Project: 7}))
+	if q, _, err := c.Quota(ctx, sh.ID, kvstore.QuotaTarget{Project: 7}); err != nil || !q.Unlimited() {
+		t.Errorf("a deleted quota reads %+v, %v", q, err)
+	}
+
+	// A deleted principal's quotas go with it.
+	gt := kvstore.QuotaTarget{Principal: g.Principal}
+	if _, err := c.SoftExceeded(ctx, sh.ID, gt, true); err != nil {
+		t.Fatal(err)
+	}
+	must(t, cp.DeleteGroup(ctx, g.Principal))
+	if q, since, err := c.Quota(ctx, sh.ID, gt); err != nil || !q.Unlimited() || !since.IsZero() {
+		t.Errorf("a deleted group's quota reads %+v since %v, %v", q, since, err)
+	}
+
+	invalid := func(err error) bool { return isCode(err, merrs.ErrInvalidArgument) }
+	for name, c := range map[string]struct {
+		q    entity.Quota
+		want func(error) bool
+	}{
+		"missing user":          {entity.Quota{Share: sh.ID, Principal: entity.NewUser(), Hard: entity.Limit{Files: 1}}, merrs.IsNotFoundError},
+		"missing share":         {entity.Quota{Share: entity.NewShareID(), Project: 1, Hard: entity.Limit{Files: 1}}, merrs.IsNotFoundError},
+		"principal and project": {entity.Quota{Share: sh.ID, Principal: u.Principal, Project: 1, Hard: entity.Limit{Files: 1}}, invalid},
+		"neither":               {entity.Quota{Share: sh.ID, Hard: entity.Limit{Files: 1}}, invalid},
+		"negative":              {entity.Quota{Share: sh.ID, Project: 1, Hard: entity.Limit{Bytes: -1}}, invalid},
+	} {
+		if err := cp.SetQuota(ctx, c.q); !c.want(err) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 
