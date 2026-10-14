@@ -1,7 +1,7 @@
 # nfstest knfsd baseline
 #
-# Runs nfstest's dio and delegation modules against the Linux kernel NFS server
-# on the same runner image the nightly nfstest cells use, and uploads
+# Runs nfstest's dio and delegation modules, and cache on NFSv3, against the
+# Linux kernel NFS server on the same runner image the nightly nfstest cells use, and uploads
 # test/nfs-mount/nfstest/baseline-knfsd.md. That file is committed by hand from
 # the artifact: it is the evidence the nfstest known-failure tables cite when a
 # row is about the kernel client rather than DittoFS.
@@ -42,7 +42,7 @@ jobs:
       - name: Install kernel NFS server and suite dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y nfs-kernel-server nfs-common tcpdump jq
+          sudo apt-get install -y nfs-kernel-server nfs-common rpcbind openssh-server iproute2 tcpdump jq
           sudo modprobe nfsd || echo "WARNING: could not load nfsd"
 
       - name: Cache the upstream suites
