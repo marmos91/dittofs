@@ -669,9 +669,10 @@ installation's own key records, retained exports and pins.
 moved back to an installation that once held it — A to B and back to A — arrives
 with FileIDs A's journals may have held, under the tag it had at A; it arrives
 with a new tag, since a tag is never given twice ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)). A's journals
-may still hold records under the old tag if step 9's `Forget` never ran, and
-would serve those stale, clean extents keyed by the same FileIDs over what B
-wrote since. Step 9's `Forget` makes this the rare case of a crash, not the
+may still hold records under the old tag if step 9's `Forget` never ran. The
+journal refuses every call on those files through the new tag
+([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), so the share fails loudly rather than serve stale, clean
+extents over what B wrote since. Step 9's `Forget` makes this the rare case of a crash, not the
 rule. The journal cannot know which tags a store claims, so it never decides
 which to forget: the engine resolves them by
 [RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s rule for unclaimed tags, at
@@ -1177,7 +1178,7 @@ expired; a claim read that stopped a stale image before its put.
 | --- | --- |
 | S12 | Two installations on one bucket, each holding one namespace, both running GC, relocation and collection for a day-tier run: neither deletes an object the other's records name. Configure both to hold one namespace: GC stops on the claim check. `S-snap-move-stale-gc`. |
 | S13 | Move a namespace while A's GC has retired blocks in the trash, deleted blocks awaiting their delete, and intents in flight. After the drop, A issues no delete; B resumes them, and deletes no retired block before its `not_before`. |
-| S17 | Move a namespace to B, back to A, and to B again: FileIDs preserved. Restore one backup twice: two shares, disjoint FileIDs. Move A→B, overwrite a file at B, move back: A reads B's bytes, and A's journals held no extent of the share between the drop and the return. Skip step 9's `Forget`: A serves its stale extent. Give an old record of the tag a version above the forget's: it is still dropped, since `Forget` covers by sequence number. Replace it with a per-file `Delete`: after A→B→A a restart's `Since` yields the markers and an untouched file loses its content. Crash A between the `Forget` calls and the record drop, and plant a stale extent of the tag: the engine's start `Forget`s it by name before the imported share serves, and never serves it. |
+| S17 | Move a namespace to B, back to A, and to B again: FileIDs preserved. Restore one backup twice: two shares, disjoint FileIDs. Move A→B, overwrite a file at B, move back: A reads B's bytes, and A's journals held no extent of the share between the drop and the return. Skip step 9's `Forget`: A refuses every call on the file with `ErrOtherShare` naming both tags, and never serves its stale extent. Give an old record of the tag a version above the forget's: it is still dropped, since `Forget` covers by sequence number. Replace it with a per-file `Delete`: after A→B→A a restart's `Since` yields the markers and an untouched file loses its content. Crash A between the `Forget` calls and the record drop, and plant a stale extent of the tag: the engine's start `Forget`s it by name before the imported share serves, and never serves it. |
 | S20 | `S-snap-move-preseed` under the model-based run on A during the pre-seed: after the move B's records equal A's at the freeze, and the delta holds no record unchanged since the base. `S-snap-move-delta-seq`: select the delta by `born` and `died`, and B misses the narrowed ref. `S-snap-move-gc-pause`: pause in memory only, and B maps a relocated chunk to its deleted block. `S-snap-move-refuses` with a share created before the pause commits: drop the pause transaction's tracked reads of `ShareList`, and the move ends with no base cut of the share and B without it. |
 | S26 | `S-snap-rehome` and `S-snap-rehome-crash-<step>` under the model-based run: every snapshot and the live share read back their model copies at every step, and after the finish no ref names N and the audit of both namespaces is clean. Skip the catch-up passes: finish refuses, since `old_refs` is not zero. `S-snap-rehome-finish-load` and `S-snap-rehome-backup-keys` as their rows state. |
 | S41 | `S-snap-move-freeze-reply`, `S-snap-move-nlm-notify`, `S-snap-move-ca-windows`, `S-snap-move-cleanup-crash`, `S-snap-rehome-backup-extend` and `S-snap-rehome-backup-expire` as their rows state, each with the failing variant its row names. |

@@ -334,6 +334,29 @@ raise the rebuilt store's counter above every tag their `Stats` name
 ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)). Otherwise a recovered share is
 given a stranded tag, and the journal serves the stranded records as its.
 
+**A file is its share's, and the journal checks it.** Each file's index entry
+carries the tag of the handle that first wrote, filled or cloned into it
+([§4](#4.%20The%20placement%20index)), rebuilt from the records' tags at recovery. Every call through a
+handle that names a `FileID` **MUST** be refused with `ErrOtherShare`, naming
+both tags, when the file's entry carries another tag, and **MUST** serve,
+append, change and offer nothing of that file. The check is on the file a
+call names as `id`: a clone resolves a source in another share (`SrcShare`)
+through that share's own handle ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), step 3). FileIDs are unique across the
+store ([RFC 0 §3](rfc-0-data-lifecycle.md#3.%20Identity)) and a move that keeps them refuses a collision
+([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)), so a correct installation never meets the refusal. It is there
+because uniqueness is the only other guard: a clone or restore that skipped its
+re-mint, or a move back whose drop never ran `Forget`, would otherwise serve one
+share's extents through another's handle after every permission check had
+passed, let its writes supersede them, and let an offload commit them under the
+wrong share's refs. The engine answers it with `ErrCorrupt`, never retried
+([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service)). A recovery that rebuilds one `FileID` under two tags, which
+only such a fault leaves, **MUST** refuse every call on that file through
+either tag, and name it in `Stats`, until one of the two is forgotten.
+
+> decision: the tag is checked per file, not per extent. A file belongs to one
+> share for its life, so one tag per file is the whole check, at a few bytes per
+> file. Revisit if anything ever moves a file between shares inside one journal.
+
 **`Close` ends a handle.** It refuses new calls through the handle and returns
 once every call already in flight on it has returned; the handle's extents stay
 held. `Forget` needs it, and a share's removal and a move's drop call it first.
@@ -368,9 +391,10 @@ older bytes are served. This is the journal's half of the attach rule, which
 arrives from another installation — a move back, a recovery import
 ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) — gets a new tag, so nothing is held under it, but the
 journal can still hold the share's own extents under the tag it had before it
-left, if that drop's `Forget` never ran. The index is keyed by `FileID`, so
-those stale, clean extents would be served over what the other installation
-wrote since. **The journal cannot tell such a tag from one whose share is
+left, if that drop's `Forget` never ran. Those files' entries carry the old tag,
+so every call on them through the new one is refused (above) until the old tag
+is forgotten: the share fails loudly instead of serving stale, clean extents
+over what the other installation wrote since. **The journal cannot tell such a tag from one whose share is
 merely not attached yet**: it has no dependency on the metadata store
 ([§1.1](#1.1%20Non-goals)), so it never decides on its own which tags to forget.
 The caller names them: before it serves an imported share it **MUST** have
@@ -961,6 +985,7 @@ walk can produce is omitted.
 | `Recovery` | value | how many segments the last open read by catalog and by scan, and how long it took ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
 | `LossGeneration` | value | raised on every loss of content not yet offloaded and every failed sync window; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
+| `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
 | `Shares` | per share | every tag that holds a record, attached or not ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§6](#6.%20Capacity)) |
 
 `DirtyBytes` against `HeldBytes` says whether anything is evictable at all, and
@@ -1243,7 +1268,8 @@ one in another segment — and a placement index entry need not correspond to a
 catalog entry: an active segment has no catalog until it seals.
 
 The rest of this section specifies the placement index. In memory, the journal
-maintains for each `FileID` an offset-ordered set of disjoint held extents, each
+maintains for each `FileID` the tag that owns it ([§3](#3.%20Interface)) and an offset-ordered set
+of disjoint held extents, each
 mapped to a record location and carrying its content version and offloaded bit,
 together with the file's removal markers ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), which carry a version and no
 location, and its **retained extents** ([§3.11](#3.11%20Snapshot%20holds)): superseded content still kept for
@@ -2504,6 +2530,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§3](#3.%20Interface) restamp after a lost store | `Init` a journal under installation I1 and write F; `Restamp` it to I2 with its own identity as `expect`; reopen. Assert `format` names I2, F still reads, and `Restamp` with another identity is refused and changes nothing. |
 | [§3](#3.%20Interface) forget leaves nothing to settle | Write files F and G under tag T, delete G and leave its marker unsettled; `Forget(T)`; crash and reopen. Assert no extent or marker of T is held, `Since` yields nothing for F or G, `RemovalMarkers` does not count them, and `Forget` was refused while a handle of T was open. Attach T again, write F at a higher version, crash and reopen: assert the new write is held. A drop that deletes per file leaves a marker that a later attach's `Since` yields as a removal. |
 | [§3](#3.%20Interface) unclaimed tag reported | Write dirty extents under tag T; reopen and attach no share for T. Assert `Stats().Shares` lists T with its held and dirty bytes, and that after `Forget(T)` it lists T no more. |
+| [§3](#3.%20Interface) a file is its share's | Write file F under tag A and attach tag B. Through B, call `ReadAt`, `WriteAt`, `Fill`, `Offload`, `Release`, `Truncate`, `Deallocate`, `Delete` and a clone into F: assert each is refused with `ErrOtherShare` naming A and B, `p` is untouched, no record is appended under B, and F's extents, versions and offloaded bits are unchanged. `Forget` A: assert a `WriteAt` on F through B now succeeds. Plant a record of F under B beside A's beneath the journal and reopen: assert `TagConflicts` names F with both tags, every call on F through either tag is refused, and forgetting one of them clears it. |
 | [§3](#3.%20Interface) stranded tag salvaged after serving | Fill a journal to 95% of its maximum under tag T, then rebuild the store by a recovery import so no share claims T, one of T's shares' namespaces encrypting. Start: assert T is stranded and reported before any share is served, serving starts without waiting for the export, no read through another tag's handle returns T's bytes, and none of T's extents is evicted. Assert the export lands under `salvage.path` keyed by `FileID` and offset, holds every held extent of T, with the import's old-to-new `FileID` map beside it, in a directory of mode 0700, and `Forget(T)` runs only after it. For the encrypting share's tag, and for a tag whose share's transforms the store no longer records, assert no plaintext byte of T is in the export, a wrapped salvage data key and the chain identity sit beside it, unwrapping that key with the installation's current master key opens every extent byte for byte, and a second export uses a different key; for a share with no transforms, assert the export is the stored bytes. Withhold the master key: assert the export fails as below, never in plaintext. Repeat with no `salvage.path`, with one on the journal's filesystem, and with the export's device full: assert each start refuses the misplaced path, a health condition names T, serving goes on, the export is retried, `Forget(T)` waits, and once a valid path with room is given the export completes and T is forgotten. |
 | [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) clone target survives a crash | `CloneTarget` file D with a spec; crash before any `Settle`; reopen. Assert `Since(D, 0)` yields the marker with its spec unchanged, and the extent reads `missing`. A marker that keeps only the extent hands the engine a plain removal and the destination reads zeros. |
 | [§5.3](#5.3%20A%20failed%20sync) header-only records are never failed | Write A and `Sync`; in one window, truncate A's file and release another offloaded extent; fail the sync and make reads of the failed segment return stale bytes. Assert both records are re-appended, no loss event names either, and both extents read `missing` before and after reopen, and the failed segment carries no seal marker. |

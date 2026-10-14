@@ -2526,7 +2526,7 @@ type Local interface {
 var (
     ErrLost        = errors.New("engine: content lost")       // §7.1, reported as data loss
     ErrUnavailable = errors.New("engine: remote unavailable") // §7.5, transient
-    ErrCorrupt     = errors.New("engine: content corrupt")    // §7.7
+    ErrCorrupt     = errors.New("engine: content corrupt")    // §7.7; also the journal's ErrOtherShare (RFC 1 §3), never retried
     ErrDelay       = errors.New("retry later")                             // §10.2; declared, with the Delay type that names its cause, in the errors package the engine and the filesystem service both import (RFC 17 §4.3)
     ErrNoSpace     = errors.New("engine: no space, none coming")          // §10.2
     ErrInvalid     = errors.New("engine: invalid request")                // §9.1, an overlapping clone within one file, a CLONE over clone_max_len
