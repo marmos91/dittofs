@@ -22,16 +22,22 @@ const retiredObjectIDDeleteBatch = 1000
 // index and returns how many it deleted.
 //
 // It runs on every open and after every restore, before the store serves. Once
-// the keys are gone this is a single seek that finds nothing, so it needs no
-// marker.
+// the keys are gone and compacted away this is a single seek that finds
+// nothing, so it needs no marker.
 //
 // decision: the keys are deleted by iterating the prefix in bounded batches,
 // not with DropPrefix. DropPrefix blocks every writer, flushes the memtables
 // and compacts the whole tree, a cost every open would pay even with
 // no key left. Overturn only if a store is found holding so many leftover keys
 // that batched deletes make the open noticeably slow.
+//
+// Each scan resumes just after the last key the previous batch deleted. A
+// deleted key stays in the tree as a tombstone until compaction, and the
+// iterator steps over tombstones one by one, so restarting every scan at the
+// prefix would make the whole drop quadratic in the number of keys.
 func dropRetiredObjectIDIndex(db *badgerdb.DB) (int, error) {
 	prefix := []byte(prefixRetiredObjectID)
+	start := prefix
 	total := 0
 
 	for {
@@ -45,7 +51,7 @@ func dropRetiredObjectIDIndex(db *badgerdb.DB) (int, error) {
 			it := txn.NewIterator(opts)
 			defer it.Close()
 
-			for it.Seek(prefix); it.ValidForPrefix(prefix) && len(keys) < retiredObjectIDDeleteBatch; it.Next() {
+			for it.Seek(start); it.ValidForPrefix(prefix) && len(keys) < retiredObjectIDDeleteBatch; it.Next() {
 				keys = append(keys, it.Item().KeyCopy(nil))
 			}
 
@@ -72,6 +78,8 @@ func dropRetiredObjectIDIndex(db *badgerdb.DB) (int, error) {
 		}
 
 		total += len(keys)
+		// The smallest key after the last one deleted.
+		start = append(keys[len(keys)-1], 0x00)
 	}
 
 	if total > 0 {
