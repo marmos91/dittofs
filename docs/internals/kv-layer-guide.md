@@ -116,7 +116,7 @@ flowchart LR
   root --> NSP["C CR B BR BD I NS ‖ namespace<br/>content-addressed"]
   F --> F1["(none) the File record<br/>acl · x‖name · e‖digest‖key<br/>t‖unique · rel · s‖stream · op‖open"]
   F --> F2["h‖start holes · ov‖start overwrites<br/>ref‖offset refs · rm‖version removals<br/>fx fo fences"]
-  S --> S1["info · st · nsg · g‖principal · xp · fnc<br/>vf‖bucket‖version‖file · vl<br/>ud‖shard‖unique · ut pu pj totals<br/>qt qx‖principal-or-project · pr‖shard‖file"]
+  S --> S1["info · st · nsg · g‖principal · xp · fnc<br/>vf‖bucket‖version‖file · vl<br/>ud‖shard‖unique · ut pu pj totals<br/>qt qx‖principal-or-project<br/>pr‖shard‖file · rr‖shard‖file‖version"]
 ```
 
 *Per-file records share one prefix, so a `GETATTR`, an existence commit or a file release touches one contiguous range.*
@@ -124,11 +124,12 @@ flowchart LR
 | Example key | Holds |
 |---|---|
 | F‖share‖dir‖e‖digest‖folded-name | One directory entry. The digest (keyed blake3 of the folded name) orders listings and is the NFS cookie. |
-| F‖share‖file‖rm‖version | A removal: its extent, kind, cursor and done flag, keyed by the journal version that made it. |
+| F‖share‖file‖rm‖version | A removal: its extent, kind, cursor, done flag and the `charge` its batches gathered, keyed by the journal version that made it. |
 | S‖share‖vf‖bucket‖version‖file | The version index: one entry per file at its stored `Version`, spread over 16 buckets. |
 | S‖share‖ud‖shard‖unique | One transaction's usage change, folded later into the shard's totals. |
 | S‖share‖qt‖01‖principal · qt‖02‖project · qt‖03 | A quota's limits on a user or group, a tree, or the whole share. Its twin under `qx` holds when usage first went above the soft limit. |
-| S‖share‖pr‖shard‖file | The pending-release index: one empty key per `F‖file‖rel`, so recovery finds them without reading the share's files. Added beyond the RFC. |
+| S‖share‖pr‖shard‖file | The pending-release index: one empty key per `F‖file‖rel`, so recovery finds them without reading the share's files. |
+| S‖share‖rr‖shard‖file‖version | The unfinished-removal index: one empty key per removal record not yet pruned. |
 | NX‖share‖fold(name) | Share name index: two names equal under the Windows upcase fold collide. |
 | C‖ns‖hash · CR‖ns‖hash‖share‖file‖off‖died | A chunk record and its reverse index: one empty key per ref naming the chunk. |
 
@@ -191,7 +192,7 @@ sequenceDiagram
 
 4. **Rename** (`rename.go`) is one transaction, with the loop check walking the destination's ancestors inside it.
 
-5. **Unlink** (`remove.go`) drops the entry and lowers `Nlink`. At zero it writes `F‖file‖rel`, the pending release, and its entry in the share's index, `S‖share‖pr‖shard‖file`. `PendingReleases` reads that index after a crash, one row per pending release, however many files the share holds. The engine later runs the release itself (step 11), which deletes the file and drops its content.
+5. **Unlink** (`remove.go`) drops the entry and lowers `Nlink`. At zero it writes `F‖file‖rel`, the pending release, and its entry in the share's index, `S‖share‖pr‖shard‖file`. After a crash, each primary's recovery calls `PendingReleases(share, shard)` for its own shards, one row per pending release, however many files the share holds. The engine later runs the release itself (step 11), which deletes the file and drops its content.
 
 6. **Directory times** are deltas under the directory, so creates never contend on its record. `Get` applies any unfolded ones; `FoldDirectory` folds them into the record in batches, and a `SetAttrs` on a directory folds first, so a time set explicitly holds.
 
@@ -339,15 +340,21 @@ sequenceDiagram
 
 - **A deallocate's merged hole is written in phase 1.** Written at the end of phase 2, it would cover a write that landed in between. Phase 1 also joins into it the at most two holes that touch or straddle its edges, read at the edges, so it stays O(1) and phase 2 has nothing left to join. A hole another removal still masks is never joined.
 
-- **Phase 1 cuts the records that cross the edges.** Afterwards every overwrite record, and for a truncate every hole, is either inside the extent, and masked, or outside it. Phase 2 then finds each batch's records with one seek, even for a release, where the File is already gone.
+- **Phase 1 cuts the records that cross the edges.** Afterwards every overwrite record is either inside the extent, and masked, or outside it. A hole crossing a truncate's or a clone's edge keeps only its parts outside the extent: phase 1 counts the inside part itself, so no masked piece is left to account for later. Phase 2 then finds each batch's records with one seek, even for a release, where the File is already gone.
 
 - **Two scan bounds, not one.** `MaxSpan` is the longest hole a file has had and `MaxOverwrite` its longest overwrite record. A lookup while a removal runs reaches back by each, so one long hole doesn't widen the overwrite scan. Each removal copies `MaxOverwrite` as its `ovSpan`, the bound phase 2's history scan will need once snapshots exist.
 
-- **Phase 1 reads at most K holes.** A truncate or deallocate lowers `Charged` by the bytes its extent removes, which means reading the holes inside it. Past K holes, as in a TRIM-fragmented image, phase 1 charges off the whole extent (less the edge holes a deallocate joins), sets the removal's `holeCredit`, and each phase-2 batch gives back the bytes of the masked holes it drops. Usage reads low, never high, until the removal is done.
+- **Phase 1 reads at most K holes.** A truncate or deallocate lowers `Charged` by the bytes its extent removes, which means reading the holes inside it. Past K holes, as in a TRIM-fragmented image, phase 1 charges off the whole extent less the edge holes it cuts or joins, which it reads whatever K, and sets the removal's `holeCredit`. Usage reads low, never high, until the removal is done.
+
+- **A hole credit follows the hole.** A masked hole's bytes are owed back when the oldest unfinished removal masking it set `holeCredit`. Whatever drops or replaces it gives them back: a phase-2 batch, or a write, grow, deallocate or clone whose hole lands on its key.
+
+- **Batches never write the File.** What a batch changes in `Charged` goes into the removal record's `charge`, and the transaction that sets `done` folds it into `Charged` and the usage once. A writer busy elsewhere in the file meets one transaction per removal, not every batch. A removal whose file was released meanwhile folds nothing: the release took the file's `Charged` off the usage as it stood, which cancels the owed bytes.
 
 - **Holes carry their cut.** Each hole records `born`, the snapshot cut its transaction read, and every piece cut from it keeps it. Until cuts exist it is 0, except a clone's holes, born at the clone's cut.
 
 - **An offload commit honours removals.** A pass offered before a truncate drops the parts of its refs past the cut, so a later truncate up reads zeros, not the old bytes.
+
+- **Recovery finds unfinished removals by shard.** Each removal record has an entry `S‖share‖rr‖shard‖file‖version`, written with it and deleted by its prune, not when it is done, so a crash between the two still leaves the prune to resume. `UnfinishedRemovals(share, shard)` lists one shard's. The record carries the shard, because a release's prune runs after the File is gone.
 
 - **Pruning waits for passes in flight.** `PruneRemovals` deletes done removals at or below the lowest version of the file's offloads in flight, reading the offload fence so a commit landing meanwhile orders against it.
 
@@ -373,17 +380,17 @@ The removal also carries the File's last `Version` as `fileVersion`: the File's 
 flowchart TB
   c(["Clone(src [0,12M) onto dst at 2M, v5)"]) --> refuse{"overlapping itself? past the<br/>source's end? across namespaces?"}
   refuse -- yes --> no["refused before anything changes"]
-  refuse -- no --> p1["phase 1, one transaction, O(1) keys:<br/>mask dst's extent as a deallocate does<br/>charge the whole extent<br/>Removal(dst, v5) with the clone spec<br/>a durable open of the source"]
+  refuse -- no --> p1["phase 1, one transaction, O(1) keys:<br/>mask dst's extent as a deallocate does<br/>charge the whole extent, MaxSpan ≥ its length<br/>Removal(dst, v5) with the clone spec<br/>a durable open of the source"]
   p1 --> wait["reads of dst's extent: ErrDelay<br/>release of the source: ErrHeld"]
-  p1 --> p2["Resume batches: read the source through<br/>its covering lookup, write each carved ref<br/>re-versioned at v5, count its chunk;<br/>write each source hole at v5, joined,<br/>and give its bytes back to Charged"]
-  p2 --> done(["last batch: delete the open,<br/>set done"])
+  p1 --> p2["Resume batches: read the source through<br/>its covering lookup, write each carved ref<br/>re-versioned at v5, count its chunk;<br/>write each source hole at v5, joined only<br/>inside the extent, its bytes into charge"]
+  p2 --> done(["last batch: delete the open, fold charge<br/>into Charged, join the edge holes, set done"])
 ```
 
 *A clone copies refs, not bytes. A destination ref written after the clone outranks the cloned one and is left alone.*
 
 - **The source's holes are written by the batches.** A source fragmented by TRIM can hold 10⁵ holes, too many for one transaction, so phase 1 writes none of them and doesn't even read them. The source's holes count toward each batch's bound, like the refs it adopts.
 
-- **Usage reads high until the clone is done.** Phase 1 charges the whole extent and each batch gives back the bytes of the holes it writes. A `decision:` comment at `Clone` records this, and RFC 6 now says so too.
+- **Usage reads high until the clone is done.** Phase 1 charges the whole extent, and the batches gather the bytes of the holes they write in the removal's `charge`, which the last one folds in. Phase 1 also raises `MaxSpan` to the clone's length, so no batch needs to write the File for it. A `decision:` comment at `Clone` records this, and RFC 6 now says so too.
 
 - **No write lands in the destination meanwhile.** The engine answers a write into the extent `ErrDelay` until the clone is done (RFC 8 §9.1), so a hole written by a later batch never covers newer bytes. The store holds the destination too: until the clone is done, a truncate, a deallocate or a clone onto it answers `ErrDelay`, its release counts the clone as a holder, and the release prune never deletes an unfinished clone removal.
 
@@ -428,7 +435,7 @@ stateDiagram-v2
   intended --> retired: Abandon (due after the put bound)
   live --> retired: last referenced chunk's count reaches 0<br/>not_before = now + 48h trash
   retired --> live: a count leaves 0 (resurrection)
-  retired --> deleted: MarkDeleted, after not_before,<br/>only if no reverse key names its chunks
+  retired --> deleted: MarkDeleted, after not_before,<br/>only if no reverse key names its chunks;<br/>records marked_at
   retired --> live: MarkDeleted finds a ref: ErrReferenced, recount
   deleted --> pruned: Deleted (object gone), then Prune
   pruned --> [*]
