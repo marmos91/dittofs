@@ -268,15 +268,18 @@ the fixture's mounts and unmounts, pjdfstest's `prove`, and restarting `rpc.gssd
 whose tests need root themselves, like e2e, which mounts from inside `go test`, runs with
 `go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs only each
 binary under `sudo -n`, in its package's directory and with the flags `go test` gives every
-binary. So the Go build cache and the results stay the user's, and the `root` need (§4.5) means
-passwordless sudo, not running `dt` under sudo.
+binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test binary;
+run as root, those builds would write root's files into the user's Go caches, and fail on the
+modules only the binaries use. So before a root suite runs, `dt` builds both as the user into
+`{bin}` and passes it as `DITTOFS_E2E_BIN`, and the e2e helpers take the binaries from there rather
+than building them. Root never runs `go build`: the Go caches and the results stay the user's,
+and the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
 
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
 the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the fixture's
-variables (`KRB5CCNAME`, the server's address and ports), `PATH`, and Go's `GOCACHE`,
-`GOMODCACHE`, `GOFLAGS=-mod=readonly`, `GOPROXY=off` and `TMPDIR`, since the e2e tests build `dfs`
-themselves. Today's e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`.
+variables (`KRB5CCNAME`, the server's address and ports), `DITTOFS_E2E_BIN` and `PATH`. Today's
+e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`.
 
 ## 4. Design
 
@@ -573,8 +576,8 @@ a registry error (exit 3).
 | each `matrix` key | the cell's value on that axis |
 | `{test}` | one test's file name or list entry |
 | `{args}` | the tier's `args` |
-| `{base}` | the ref a change is compared against: in CI, a pull request's base branch, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
-| `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout |
+| `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
+| `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
 | `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them |
 | `{out}` | the cell's results directory |
 | `{packages}` | the package list `packages` gives |
@@ -608,7 +611,9 @@ Rules `dt` enforces when it loads the file:
 - a `go-json` command begins with `go test`, so `dt` can add `-json -count=1` after it, and
   `-exec` to run each test binary under `sudo` when it needs root (§4.6);
 - every `matrix` axis is used by the cell's command, fixture or `env`, so an axis an option doesn't
-  need can't multiply identical cells.
+  need can't multiply identical cells;
+- no option is named like one of `dt run`'s flags (`--ci`, `--tier`, `--only` and the rest), since
+  each option is a flag of its own.
 
 **One file, or a file per test?** One registry of suites, and no per-test file. Merge conflicts in
 a central file come from adding tests, and tests are found from their own files. The registry only
@@ -1097,7 +1102,8 @@ One workflow, `tests.yml`, runs every registered suite:
   by intent: the commit before a push is as good a base for its merge base. Where there is no
   `{base}` (the schedule, `workflow_dispatch`, a push without a previous commit), the commands that
   use it are skipped, as `lint.yml` skips the commit checks today, and say so in the log. A
-  skipped command neither fails the cell nor leaves it not run: there is no change to check.
+  skipped command neither fails the cell nor leaves it not run: there is no change to check. A
+  cell whose every command is skipped this way passes.
 - **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
 
 **Merging.** Since 2026-10-08:
