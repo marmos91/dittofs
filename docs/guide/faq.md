@@ -177,59 +177,8 @@ each chunk is hashed with BLAKE3, and chunks are stored under a hash-keyed
 Two files that share a chunk reference the same stored object, so
 **chunk-level dedup is automatic** on write.
 
-On top of that, a **file-level dedup short-circuit** can skip uploading a
-file's chunks entirely when an identical file already exists (see the next
-two questions).
-
-### What's an ObjectID and when does it get computed?
-
-An `ObjectID` is a BLAKE3 Merkle root over a file's content-defined
-chunk hashes:
-
-    ObjectID = BLAKE3("dittofs:objectid:v1\x00" || h0 || h1 || ... || hN-1)
-
-where `hi` is the i-th `BlockRef.Hash` when `FileAttr.Blocks` is sorted
-by `Offset`. Two files with byte-identical content always have the
-same ObjectID; two files differing in even one byte have different
-ObjectIDs (FastCDC + BLAKE3 are both deterministic, so identical
-chunks yield identical hashes).
-
-DittoFS computes ObjectID **lazily — at file quiesce**, when every
-chunk has finished uploading to remote storage. Mid-write the
-ObjectID is the all-zero sentinel meaning "not yet quiesced". The
-post-Flush coordinator hook
-(`Syncer.persistFileChunksAfterFlush`) writes it in the same metadata
-transaction that updates `FileAttr.Blocks`/`Size`/`Mtime`. Partial
-flushes (some blocks still `Pending`) leave it at zero so the
-short-circuit lookup never returns a half-quiesced file.
-
-A non-zero ObjectID always reflects a fully-`Remote` consistent
-state. Empty files dedup to one canonical constant
-`BLAKE3("dittofs:objectid:v1\x00")`; files written before ObjectID existed
-keep the all-zero sentinel until their next full flush recomputes it.
-
-See
-[ARCHITECTURE.md — File-Level Dedup](../internals/architecture.md#file-level-dedup-objectid--merkle-root)
-for the full design.
-
-### Why doesn't my file dedup until I close it?
-
-DittoFS's file-level dedup short-circuit fires at quiesce, not on every
-write. Mid-write, blocks dedup at the *chunk* level (`GetByHash`) — if your
-write produces a chunk that already exists remotely, no PUT is issued.
-
-But the savings of skipping every chunk's upload entirely (file-level
-dedup) only kick in once the full file fingerprint exists — the
-ObjectID — and that fingerprint is computed at the post-Flush
-coordinator hook on `Close`/`Flush`/`fsync`, when the BlockRef list
-stabilizes.
-
-This is intentional: file-level dedup targets the workflow of cloning
-a VM image or copying a large file (where the whole content arrives
-in one burst). Random in-place writes inside a running VM benefit
-from the chunk-level path and don't get penalized waiting for a
-quiesce-only fingerprint. The trigger condition — "all blocks `Pending`
-AND no prior ObjectID" — explicitly excludes the running-VM hot path.
+There is no separate file-level dedup: a file identical to another simply
+shares all of its chunks the same way.
 
 ### How does garbage collection work?
 
