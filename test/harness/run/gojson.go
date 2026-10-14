@@ -27,13 +27,11 @@ const sudoGrace = 2 * time.Minute
 // when given, are the tests to run.
 func (t tester) goJSON(names []string) (string, string) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
-	asRoot := slices.Contains(t.cell.Needs, "root") && os.Geteuid() != 0
-	if asRoot {
-		bin, err := t.buildBin()
-		if err != nil {
+	root := asRoot(t.cell)
+	if root {
+		if err := t.buildBin(); err != nil {
 			return NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err)
 		}
-		t.vals["bin"] = bin
 	}
 	var res results
 	var problems []string
@@ -47,7 +45,7 @@ func (t tester) goJSON(names []string) (string, string) {
 		}
 		shown := strings.Join(argv, " ")
 		failed := res.failures()
-		code, err := t.goTest(argv, asRoot, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d.json", i+1)), &res)
+		code, err := t.goTest(argv, root, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d.json", i+1)), &res)
 		switch {
 		case t.ctx.Err() != nil:
 			return Failed, res.note(append(problems, stopped(t.ctx)))
@@ -92,14 +90,20 @@ func (t tester) goTest(argv []string, asRoot bool, events string, res *results) 
 	return followed(cmd, events, res, t.out)
 }
 
-// buildBin builds dfs and dfsctl as the user into the run's bin directory,
-// once per run, for a suite whose tests run as root: they take the binaries
-// from DITTOFS_E2E_BIN, so root never runs go build (section 3).
-func (t tester) buildBin() (string, error) {
-	bin := filepath.Join(filepath.Dir(t.vals["out"]), "bin")
+// asRoot reports whether a cell's go tests run as root through sudo: a
+// go-json suite that needs root, run by dt as a user.
+func asRoot(c Cell) bool {
+	return c.Unit.Format == "go-json" && slices.Contains(c.Needs, "root") && os.Geteuid() != 0
+}
+
+// buildBin builds dfs and dfsctl as the user into {bin}, the run's bin
+// directory, once per run, for a suite whose tests run as root: they take the
+// binaries from DITTOFS_E2E_BIN, so root never runs go build (section 3).
+func (t tester) buildBin() error {
+	bin := t.vals["bin"]
 	names := []string{"dfs", "dfsctl"}
 	if !slices.ContainsFunc(names, func(n string) bool { _, err := os.Stat(filepath.Join(bin, n)); return err != nil }) {
-		return bin, nil // an earlier cell of this run built them
+		return nil // an earlier cell of this run built them
 	}
 	build := []string{"go", "build", "-o", bin + string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl"}
 	_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", strings.Join(build, " "))
@@ -107,7 +111,7 @@ func (t tester) buildBin() (string, error) {
 	if err == nil && code != 0 {
 		err = fmt.Errorf("go build exited %d", code)
 	}
-	return bin, err
+	return err
 }
 
 // sudo is the -exec program that runs a test binary as root. sudo resets the
@@ -144,6 +148,8 @@ func execQuote(w string) (string, error) {
 // followed runs cmd with its output going to the file events, and passes the
 // events through res as they're written. A file, unlike a pipe, can't be held
 // open by a process the tests leave behind: dt reads to its end and stops.
+// What the command leaves running in its process group is killed when it
+// exits.
 func followed(cmd *exec.Cmd, events string, res *results, w io.Writer) (int, error) {
 	f, err := os.Create(events)
 	if err != nil {
@@ -154,7 +160,11 @@ func followed(cmd *exec.Cmd, events string, res *results, w io.Writer) (int, err
 	done := make(chan struct{})
 	read := make(chan error, 1)
 	go func() { read <- follow(events, done, func(line []byte) { res.add(line, w) }) }()
-	code, err := exitCode(cmd.Run())
+	err = cmd.Run()
+	if cmd.Process != nil {
+		killLeftovers(cmd)
+	}
+	code, err := exitCode(err)
 	close(done)
 	if rerr := <-read; err == nil {
 		err = rerr

@@ -20,19 +20,22 @@ func TestPlatforms(t *testing.T) {
 	}
 }
 
-// A port is met while it's free and unmet once something listens on it.
+// A port is met while it's free, and unmet once something listens on it, on
+// every address or on loopback alone.
 func TestPort(t *testing.T) {
-	l, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	if err := Check("", "port:"+strconv.Itoa(port)); err == nil {
-		t.Error("a port in use is met")
-	}
-	_ = l.Close()
-	if err := Check("", "port:"+strconv.Itoa(port)); err != nil {
-		t.Errorf("a free port: %v", err)
+	for _, addr := range []string{":0", "127.0.0.1:0"} {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+		if err := Check("", "port:"+port); err == nil {
+			t.Errorf("a port in use on %s is met", addr)
+		}
+		_ = l.Close()
+		if err := Check("", "port:"+port); err != nil {
+			t.Errorf("a free port: %v", err)
+		}
 	}
 }
 

@@ -142,6 +142,29 @@ func TestSplitNUL(t *testing.T) {
 	}
 }
 
+// checkout moves the test into a new checkout whose registry has a suite
+// with an option, one that fails, and one that needs another platform, so a
+// dt run there runs only these.
+func checkout(t *testing.T) {
+	t.Helper()
+	other := "windows"
+	if runtime.GOOS == "windows" {
+		other = "linux"
+	}
+	y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n" +
+		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
+		"  fails: { cmd: \"false\" }\n" +
+		"  away: { cmd: \"true\", needs: [" + other + "] }\n"
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "test"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "test", "suites.yaml"), []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+}
+
 // dt run's usage errors are plain errors, which main turns into exit status
 // 3; a run that didn't pass carries its own status.
 func TestRunStatuses(t *testing.T) {
@@ -154,10 +177,27 @@ func TestRunStatuses(t *testing.T) {
 			t.Errorf("dt %s: %v, want a usage error", strings.Join(args, " "), err)
 		}
 	}
-	// pjdfstest needs a fixture, which dt doesn't set up yet, so it didn't run.
-	var status exitStatus
-	if _, err := dt(t, "run", "pjdfstest", "--results", t.TempDir()); !errors.As(err, &status) || status != 2 {
-		t.Errorf("dt run pjdfstest: %v, want exit status 2", err)
+	checkout(t)
+	want := map[string]exitStatus{"away": 2} // skipped: nothing ran
+	if runtime.GOOS != "windows" {
+		want["fails"] = 1
+	}
+	for suite, code := range want {
+		var status exitStatus
+		if _, err := dt(t, "run", suite, "--results", t.TempDir()); !errors.As(err, &status) || status != code {
+			t.Errorf("dt run %s: %v, want exit status %d", suite, err, code)
+		}
+	}
+}
+
+// An option's flag runs its cells only when it's true.
+func TestRunOptionFlagChoosesItsCells(t *testing.T) {
+	checkout(t)
+	for args, want := range map[string]string{"--o": "[dt] s/o:", "--o=false": "[dt] s:"} {
+		out, _ := dt(t, "run", "s", args, "--results", t.TempDir())
+		if !strings.Contains(out, want) || (args == "--o=false" && strings.Contains(out, "s/o")) {
+			t.Errorf("dt run s %s:\n%s", args, out)
+		}
 	}
 }
 
@@ -201,5 +241,31 @@ func TestAliases(t *testing.T) {
 		if _, err := dt(t, name, "--"+option); err == nil || err.Error() != want {
 			t.Errorf("dt %s --%s: %v, want %q", name, option, err, want)
 		}
+	}
+}
+
+// With --ci, the run's outcomes are added to the job summary.
+func TestRunWritesTheJobSummary(t *testing.T) {
+	checkout(t)
+	summary := filepath.Join(t.TempDir(), "summary.md")
+	t.Setenv("GITHUB_STEP_SUMMARY", summary)
+	_, _ = dt(t, "run", "away", "--ci", "--results", t.TempDir())
+	got, err := os.ReadFile(summary)
+	if err != nil || !strings.Contains(string(got), "| `away` | not run |") {
+		t.Errorf("summary %q, %v", got, err)
+	}
+}
+
+// --results is relative to the checkout's root, wherever dt runs from.
+func TestRunResultsRelativeToRoot(t *testing.T) {
+	checkout(t)
+	if err := os.Mkdir("sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("sub")
+	out, _ := dt(t, "run", "away", "--results", "rel")
+	sep := string(filepath.Separator)
+	if !strings.Contains(out, sep+"rel"+sep) || strings.Contains(out, "sub"+sep+"rel") {
+		t.Errorf("results not under the root's rel:\n%s", out)
 	}
 }

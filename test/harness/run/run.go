@@ -64,6 +64,17 @@ func (r Report) Status() int {
 	return 0
 }
 
+// Markdown is the run's outcomes as a Markdown table under title, for a job
+// summary.
+func (r Report) Markdown(title string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### %s\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n", title)
+	for _, o := range r.Outcomes {
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", o.Cell, o.Result, o.Took, strings.ReplaceAll(o.Note, "|", `\|`))
+	}
+	return b.String()
+}
+
 // Options say where a run happens and writes.
 type Options struct {
 	Root    string    // the repository
@@ -79,25 +90,44 @@ var minute = time.Minute
 // o.Results. Cancelling ctx stops the cell running and the ones after it.
 func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	commit := gitShort(o.Root)
-	dir, err := newRunDir(o.Results, time.Now().UTC().Format("20060102T150405Z")+"-"+commit)
+	// Absolute, so {out} means the same from any directory a command runs in.
+	results, err := filepath.Abs(o.Results)
+	if err != nil {
+		return Report{}, err
+	}
+	dir, err := newRunDir(results, time.Now().UTC().Format("20060102T150405Z")+"-"+commit)
 	if err != nil {
 		return Report{}, err
 	}
 	rep := Report{Dir: dir}
+	if len(cells) == 0 {
+		_, _ = fmt.Fprintln(o.Out, "[dt] nothing to run")
+	}
 	for _, c := range cells {
 		start := time.Now()
 		result, note := runCell(ctx, c, o, rep.Dir, commit)
 		rep.Outcomes = append(rep.Outcomes, Outcome{c.Name, result, note, time.Since(start).Round(time.Second)})
 		_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, result, note)
 		if o.CI && (result == Failed || result == NotRun) {
-			_, _ = fmt.Fprintf(o.Out, "::error title=dt %s::%s: %s\n", c.Name, result, note)
+			_, _ = fmt.Fprintln(o.Out, annotation("dt "+c.Name, result+": "+note))
 		}
 	}
 	return rep, nil
 }
 
+// annotation is an error annotation with title and message, escaped as the
+// workflow command's format asks: properties also escape : and ,.
+func annotation(title, message string) string {
+	data := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
+	property := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C")
+	return "::error title=" + property.Replace(title) + "::" + data.Replace(message)
+}
+
 // runCell runs one cell and returns its result and a note on it.
 func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string, string) {
+	if ctx.Err() != nil {
+		return NotRun, "interrupted"
+	}
 	if why := unsupported(c.Unit); why != "" {
 		return NotRun, why
 	}
@@ -106,9 +136,6 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 			return NotRun, strings.Join(unmet, "; ")
 		}
 		return Skipped, strings.Join(unmet, "; ")
-	}
-	if ctx.Err() != nil {
-		return NotRun, "interrupted"
 	}
 	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
@@ -123,20 +150,16 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	if len(tests) == 0 {
 		return NotRun, "no tests found"
 	}
+	each := make([]time.Duration, len(tests))
+	for i, test := range tests {
+		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
+			return NotRun, err.Error()
+		}
+	}
 
 	slug := strings.ReplaceAll(c.Name, "/", "-")
 	out := filepath.Join(dir, slug)
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		return NotRun, err.Error()
-	}
-	log, err := os.Create(filepath.Join(dir, "logs", slug+".log"))
-	if err != nil {
-		return NotRun, err.Error()
-	}
-	defer func() { _ = log.Close() }()
-	_, _ = fmt.Fprintf(log, "[dt] cell %s, tier %s, commit %s\n", c.Name, c.Tier, commit)
-
-	vals := map[string]string{"base": base(), "out": out}
+	vals := map[string]string{"base": base(), "out": out, "test": ""}
 	for k, v := range c.Matrix {
 		vals[k] = v
 	}
@@ -148,6 +171,15 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 		}
 		lists["packages"] = pkgs
 	}
+	if asRoot(c) {
+		vals["bin"] = filepath.Join(dir, "bin") // goJSON builds it before the commands run
+	}
+	// A command dt can't fill can't run, whichever test it's for.
+	for _, cmd := range c.Unit.Cmd {
+		if _, err := fill(cmd, vals, lists); err != nil {
+			return NotRun, err.Error()
+		}
+	}
 	own, err := suiteEnv(c.Unit, c.Tier, vals, lists)
 	if err != nil {
 		return NotRun, err.Error()
@@ -158,8 +190,20 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 		if err != nil {
 			return NotRun, err.Error()
 		}
-		workdir = filepath.Join(o.Root, d)
+		workdir = d
+		if !filepath.IsAbs(d) {
+			workdir = filepath.Join(o.Root, d)
+		}
 	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return NotRun, err.Error()
+	}
+	log, err := os.Create(filepath.Join(dir, "logs", slug+".log"))
+	if err != nil {
+		return NotRun, err.Error()
+	}
+	defer func() { _ = log.Close() }()
+	_, _ = fmt.Fprintf(log, "[dt] cell %s, tier %s, commit %s\n", c.Name, c.Tier, commit)
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
 	defer cancel()
@@ -167,32 +211,35 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	if c.Unit.Format == "go-json" {
 		return t.goJSON(c.Tests)
 	}
-	var failures []string
+	var failed, notRun []string
 	unstarted := 0
-	for _, test := range tests {
+	for i, test := range tests {
 		if cellCtx.Err() != nil {
 			unstarted++
 			continue
 		}
-		limit, err := plan.TestLimit(c.Unit.Timeout, test, limits)
-		if err != nil {
-			return NotRun, err.Error()
-		}
-		if why := t.run(test, limit); why != "" {
-			failures = append(failures, why)
+		switch result, note := t.run(test, each[i]); result {
+		case Failed:
+			failed = append(failed, note)
+		case NotRun:
+			notRun = append(notRun, note)
 		}
 	}
-	notStarted := fmt.Sprintf("%d tests not started: %s", unstarted, stopped(cellCtx))
+	if unstarted > 0 {
+		notRun = append(notRun, fmt.Sprintf("%d tests not started: %s", unstarted, stopped(cellCtx)))
+	}
 	switch {
-	case len(failures) > 0 && unstarted > 0:
-		return Failed, strings.Join(failures, "; ") + "; " + notStarted
-	case len(failures) > 0:
-		return Failed, strings.Join(failures, "; ")
-	case unstarted > 0:
-		return NotRun, notStarted
+	case len(failed) > 0:
+		return Failed, strings.Join(append(failed, notRun...), "; ")
+	case len(notRun) > 0:
+		return NotRun, strings.Join(notRun, "; ")
 	}
 	return Passed, ""
 }
+
+// exitNotRun is the exit status of a command that ran nothing, as the
+// scenarios' setup does when another run holds their lock (section 4.6).
+const exitNotRun = 75
 
 // tester runs one cell's tests.
 type tester struct {
@@ -208,9 +255,10 @@ type tester struct {
 }
 
 // run runs every command for one test, all of them even after one fails, and
-// returns what failed, or "" when all passed. A limit of zero is no limit
-// but the cell's.
-func (t tester) run(test string, limit time.Duration) string {
+// says how the test went: failed when a command failed or the test ran out of
+// time, not run when a command ran nothing or the run was interrupted, else
+// passed. A limit of zero is no limit but the cell's.
+func (t tester) run(test string, limit time.Duration) (string, string) {
 	ctx := t.ctx
 	if limit > 0 {
 		var cancel context.CancelFunc
@@ -222,7 +270,7 @@ func (t tester) run(test string, limit time.Duration) string {
 	if test != "" {
 		prefix = test + ": "
 	}
-	var failed []string
+	var failed, notRun []string
 	for _, cmd := range t.cell.Unit.Cmd {
 		if t.vals["base"] == "" && uses(cmd, "base") {
 			_, _ = fmt.Fprintf(t.out, "[dt] skipped, no change to check: %s%s\n", cmd.Line, cmd.Sh)
@@ -230,7 +278,7 @@ func (t tester) run(test string, limit time.Duration) string {
 		}
 		argv, err := fill(cmd, t.vals, t.lists)
 		if err != nil {
-			return prefix + err.Error()
+			return NotRun, prefix + err.Error()
 		}
 		shown := strings.Join(argv, " ")
 		if cmd.Sh != "" {
@@ -242,19 +290,36 @@ func (t tester) run(test string, limit time.Duration) string {
 		_, _ = fmt.Fprintf(t.log, "[dt] exit %d after %s\n", code, time.Since(start).Round(time.Millisecond))
 		switch {
 		case ctx.Err() != nil && t.ctx.Err() == nil:
-			return fmt.Sprintf("%stimed out after %s", prefix, limit)
-		case ctx.Err() != nil:
-			return fmt.Sprintf("%s%s", prefix, stopped(t.ctx))
+			return Failed, fmt.Sprintf("%stimed out after %s", prefix, limit)
+		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
+			return Failed, prefix + "stopped at the cell's limit"
+		case t.ctx.Err() != nil:
+			return NotRun, prefix + "interrupted"
 		case err != nil:
-			failed = append(failed, fmt.Sprintf("`%s`: %v", shown, err))
+			failed = append(failed, fmt.Sprintf("`%s`: %v", firstLine(shown), err))
+		case code == exitNotRun:
+			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: it ran nothing", firstLine(shown), code))
 		case code != 0:
-			failed = append(failed, fmt.Sprintf("`%s` exited %d", shown, code))
+			failed = append(failed, fmt.Sprintf("`%s` exited %d", firstLine(shown), code))
 		}
 	}
-	if len(failed) == 0 {
-		return ""
+	switch {
+	case len(failed) > 0:
+		return Failed, prefix + strings.Join(append(failed, notRun...), ", ")
+	case len(notRun) > 0:
+		return NotRun, prefix + strings.Join(notRun, ", ")
 	}
-	return prefix + strings.Join(failed, ", ")
+	return Passed, ""
+}
+
+// firstLine names a command in a note by its first line, so a multi-line
+// script keeps the note, and an annotation made from it, on one line.
+func firstLine(s string) string {
+	first, rest, _ := strings.Cut(s, "\n")
+	if strings.TrimSpace(rest) != "" {
+		return first + " ..."
+	}
+	return first
 }
 
 // stopped says why the cell's context ended.
@@ -266,14 +331,43 @@ func stopped(ctx context.Context) string {
 }
 
 // execute runs one command with its output going to w, and returns its exit
-// status. A command that outlives ctx is killed with everything it started.
+// status. A command that outlives ctx is killed with everything it started,
+// and whatever a command leaves running in its process group is killed when
+// it exits.
 func execute(ctx context.Context, argv []string, dir string, env []string, w io.Writer) (int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = dir, env, w, w
-	// A leftover child holding the output open can't keep dt waiting.
-	cmd.WaitDelay = 5 * time.Second
+	cmd.Dir, cmd.Env = dir, env
+	// The command writes to a pipe of dt's own, not one exec makes, so Wait
+	// returns when the command exits, whatever it left holding the output.
+	r, pw, err := os.Pipe()
+	if err != nil {
+		return -1, err
+	}
+	cmd.Stdout, cmd.Stderr = pw, pw
 	killTree(cmd)
-	return exitCode(cmd.Run())
+	err = cmd.Start()
+	_ = pw.Close()
+	if err != nil {
+		_ = r.Close()
+		return -1, err
+	}
+	copied := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(w, r)
+		close(copied)
+	}()
+	err = cmd.Wait()
+	killLeftovers(cmd)
+	// What still holds the output now runs outside the command's group:
+	// give it a moment to finish writing, then stop reading.
+	select {
+	case <-copied:
+	case <-time.After(5 * time.Second):
+		_ = r.Close()
+		<-copied
+	}
+	_ = r.Close()
+	return exitCode(err)
 }
 
 // exitCode turns a command's error into its exit status, keeping the error
@@ -303,10 +397,10 @@ func unsupported(u *registry.Suite) string {
 }
 
 // base is the ref a change is compared against (section 4.1): the base branch
-// of the pull request being checked, the commit before the push being
-// checked, or origin/develop when dt checks no event. It's "" when the event
-// has no change to check: a schedule, a dispatch, or a push without a
-// previous commit.
+// of the pull request being checked, a merge group's base commit, the commit
+// before the push being checked, or origin/develop when dt checks no event.
+// It's "" when the event has no change to check: a schedule, a dispatch, or a
+// push without a previous commit.
 func base() string {
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
 		return "origin/develop"
@@ -314,12 +408,21 @@ func base() string {
 	switch os.Getenv("GITHUB_EVENT_NAME") {
 	case "pull_request":
 		return "origin/" + os.Getenv("GITHUB_BASE_REF")
-	case "push":
+	case "push", "merge_group":
 		var event struct {
-			Before string `json:"before"`
+			Before     string `json:"before"`
+			MergeGroup struct {
+				BaseSHA string `json:"base_sha"`
+			} `json:"merge_group"`
 		}
 		data, err := os.ReadFile(os.Getenv("GITHUB_EVENT_PATH"))
-		if err == nil && json.Unmarshal(data, &event) == nil && strings.Trim(event.Before, "0") != "" {
+		if err != nil || json.Unmarshal(data, &event) != nil {
+			return ""
+		}
+		if event.MergeGroup.BaseSHA != "" {
+			return event.MergeGroup.BaseSHA
+		}
+		if strings.Trim(event.Before, "0") != "" {
 			return event.Before
 		}
 	}
