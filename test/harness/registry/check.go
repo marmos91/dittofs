@@ -9,16 +9,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/marmos91/dittofs/test/harness/needs"
 )
 
 // Tiers in order: each contains the ones before it. manual never runs on its own.
 var Tiers = []string{"pr", "merge", "nightly", "manual"}
 
 var (
-	formats  = set("exit", "go-json", "junit", "tap", "subunit", "trx")
-	metrics  = set("fio-json", "dfsbench-json")
-	needs    = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
-	services = set("localstack", "postgres", "kmip")
+	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx")
+	metrics    = set("fio-json", "dfsbench-json")
+	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
 	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "mount", "user", "password", "realm")
 
@@ -237,13 +238,13 @@ func Placeholders(s string) []string {
 func checkNeed(n string) error {
 	kind, arg, hasArg := strings.Cut(n, ":")
 	switch {
-	case !hasArg && needs[n], n == "host:dedicated":
+	case !hasArg && plainNeeds[n], n == "host:dedicated":
 		return nil
 	case kind == "disk" || kind == "port":
 		if _, err := strconv.Atoi(arg); err == nil {
 			return nil
 		}
-	case kind == "service" && services[arg]:
+	case kind == "service" && needs.IsService(arg):
 		return nil
 	case kind == "cloud" && arg != "":
 		return nil

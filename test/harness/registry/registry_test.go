@@ -39,6 +39,7 @@ func TestLoadRules(t *testing.T) {
 		{"tiers are known", ok + "suites:\n  a: { cmd: true, tier: weekly }\n", `tier "weekly"`},
 		{"an option isn't named like a dt run flag", ok + "suites:\n  a: { cmd: true, options: { ci: { cmd: false } } }\n", "dt run has a flag of that name"},
 		{"needs are known", ok + "suites:\n  a: { cmd: true, needs: [linx] }\n", `unknown need "linx"`},
+		{"services are known", ok + "suites:\n  a: { cmd: true, needs: [\"service:nosuch\"] }\n", `unknown need "service:nosuch"`},
 		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},
 		{"a selection names a value", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [] } } }\n", "selects no value"},
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},

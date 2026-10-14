@@ -113,6 +113,13 @@ var services = map[string]struct {
 		localFile: "test/harness/state/kmip.env", parse: hostPort},
 }
 
+// IsService reports whether name is a service dt knows, which a
+// service:<name> need may name.
+func IsService(name string) bool {
+	_, ok := services[name]
+	return ok
+}
+
 // serviceVars are a service's variables, as NAME=value: dt's own when its
 // address is set, else the local service's.
 func serviceVars(root, name string) ([]string, error) {
@@ -145,6 +152,10 @@ func serviceVars(root, name string) ([]string, error) {
 // checkService meets a service need when its variables are there and its
 // address answers, so the tests can't skip it unseen.
 func checkService(root, name string) error {
+	s, ok := services[name]
+	if !ok {
+		return errors.New("no such service")
+	}
 	vars, err := serviceVars(root, name)
 	if err != nil {
 		return err
@@ -157,7 +168,6 @@ func checkService(root, name string) error {
 		}
 		return ""
 	}
-	s := services[name]
 	if s.enabled != "" && value(s.enabled) != "1" {
 		return fmt.Errorf("%s isn't 1", s.enabled)
 	}
