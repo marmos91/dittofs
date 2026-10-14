@@ -45,7 +45,7 @@ func newRoot(out io.Writer) *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.SetOut(out)
-	root.AddCommand(newList(), newPlan(), newRun(), alias("unit"), alias("integration"), alias("e2e"))
+	root.AddCommand(newList(), newPlan(), newRun(), newDoctor(), alias("unit"), alias("integration"), alias("e2e"))
 	root.AddCommand(newEnv()...)
 	return root
 }
@@ -55,7 +55,7 @@ func newList() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "Suites, options and groups, with their tier, format and needs",
+		Short: "Suites, options and groups, with their tier, format and needs, and whether they can run here",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			r, err := load()
@@ -71,21 +71,54 @@ func newList() *cobra.Command {
 				Format string   `json:"format"`
 				Needs  []string `json:"needs,omitempty"`
 				Job    string   `json:"job,omitempty"`
+				// RunsHere is whether this machine meets the suite's needs,
+				// and Unmet lists those it doesn't. UnmetByTest gives, per
+				// needs_by_test glob, the extra needs of those tests it
+				// doesn't meet.
+				RunsHere    bool                `json:"runs_here"`
+				Unmet       []string            `json:"unmet,omitempty"`
+				UnmetByTest map[string][]string `json:"unmet_by_test,omitempty"`
+			}
+			root, _ := repoRoot()
+			checked := checkNeeds(root, r)
+			unmet := func(list []string) []string {
+				var out []string
+				for _, n := range list {
+					if checked[n] != nil {
+						out = append(out, n)
+					}
+				}
+				return out
 			}
 			var suites []entry
 			for _, s := range r.Suites {
 				for _, u := range r.Units(s) {
 					if tier == "" || plan.RunsIn(u.Tier, tier) {
-						suites = append(suites, entry{u.Name, u.Tier, u.Format, u.Needs, u.Job})
+						e := entry{Name: u.Name, Tier: u.Tier, Format: u.Format, Needs: u.Needs, Job: u.Job,
+							Unmet: unmet(u.Needs), UnmetByTest: map[string][]string{}}
+						e.RunsHere = len(e.Unmet) == 0
+						for glob, list := range u.NeedsByTest {
+							if missing := unmet(list); len(missing) > 0 {
+								e.UnmetByTest[glob] = missing
+							}
+						}
+						suites = append(suites, e)
 					}
 				}
 			}
 			if asJSON {
 				return writeJSON(cmd.OutOrStdout(), map[string]any{"suites": suites, "groups": r.Groups})
 			}
-			rows := [][]string{{"SUITE", "TIER", "FORMAT", "NEEDS"}}
+			rows := [][]string{{"SUITE", "TIER", "FORMAT", "NEEDS", "HERE"}}
 			for _, e := range suites {
-				rows = append(rows, []string{e.Name, e.Tier, e.Format, strings.Join(e.Needs, " ")})
+				here := "yes"
+				if !e.RunsHere {
+					here = "no: " + strings.Join(e.Unmet, " ")
+				}
+				for _, glob := range slices.Sorted(maps.Keys(e.UnmetByTest)) {
+					here += "; not " + glob + ": " + strings.Join(e.UnmetByTest[glob], " ")
+				}
+				rows = append(rows, []string{e.Name, e.Tier, e.Format, strings.Join(e.Needs, " "), here})
 			}
 			rows = append(rows, nil, []string{"GROUP", "SUITES"})
 			for _, g := range slices.Sorted(maps.Keys(r.Groups)) {

@@ -30,6 +30,41 @@ var tools = map[string]map[string]string{
 	"knfsd":          {"linux": "exportfs"},
 }
 
+// hints say how to meet a need, by its kind.
+var hints = map[string]string{
+	"linux":          "run it on Linux, or in dtc",
+	"windows":        "run it on Windows",
+	"macos":          "run it on macOS",
+	"root":           "allow passwordless sudo",
+	"docker":         "install or start Docker",
+	"podman":         "install podman (the scenarios need 5.6 or later)",
+	"rpcbind":        "install and start rpcbind",
+	"knfsd":          "install the kernel NFS server (nfs-kernel-server)",
+	"nfs-client":     "install the NFS client (nfs-common)",
+	"smb-client":     "install the SMB client (cifs-utils)",
+	"nfs4-acl-tools": "install nfs4-acl-tools",
+	"kerberos":       "install the Kerberos client (krb5-user)",
+	"dm-flakey":      "install dmsetup",
+	"disk":           "free disk space",
+	"port":           "stop what listens on the port",
+	"host":           "run it on the dedicated host",
+	"cloud":          "provide the provider's credentials and infrastructure",
+}
+
+// Hint says how to meet need n. A service is started by dt services, and a
+// tool this platform has no program for is met by running where it has one,
+// not by installing it here.
+func Hint(n string) string {
+	kind, arg, _ := strings.Cut(n, ":")
+	switch {
+	case kind == "service":
+		return "dt services up " + arg
+	case tools[n] != nil && tools[n][runtime.GOOS] == "":
+		return "run it on Linux"
+	}
+	return hints[kind]
+}
+
 // Unmet returns each need the machine doesn't meet, with the reason. root is
 // the checkout, whose local services' values a service need falls back to.
 func Unmet(root string, list []string) []string {

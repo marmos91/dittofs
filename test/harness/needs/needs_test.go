@@ -135,3 +135,20 @@ func TestServiceFallback(t *testing.T) {
 		t.Errorf("kmip's variables: %q", got)
 	}
 }
+
+// A hint says how to meet a need: a tool this platform has no program for by
+// running where it has one, never by installing it here; the linux need in
+// dtc too; a service by starting it with dt services.
+func TestHint(t *testing.T) {
+	for need, bins := range tools {
+		if got := Hint(need); (bins[runtime.GOOS] == "") != (got == "run it on Linux") {
+			t.Errorf("%s on %s: %q", need, runtime.GOOS, got)
+		}
+	}
+	if got := Hint("linux"); !strings.Contains(got, "dtc") {
+		t.Errorf("linux: %q", got)
+	}
+	if got := Hint("service:kmip"); got != "dt services up kmip" {
+		t.Errorf("service:kmip: %q", got)
+	}
+}

@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/plan"
 )
 
@@ -72,23 +74,6 @@ func TestUsageErrors(t *testing.T) {
 	}
 }
 
-func TestListJSON(t *testing.T) {
-	out, err := dt(t, "list", "--json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		Suites []struct{ Name, Tier string } `json:"suites"`
-		Groups map[string][]string           `json:"groups"`
-	}
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Suites) == 0 || len(got.Groups["conformance"]) == 0 {
-		t.Fatalf("list: %+v", got)
-	}
-}
-
 func lines(s string) int { return strings.Count(s, "\n") }
 
 // A renamed file is listed under both paths, so moving it out of a suite's
@@ -143,18 +128,24 @@ func TestSplitNUL(t *testing.T) {
 }
 
 // checkout moves the test into a new checkout whose registry has a suite
-// with an option, one that fails, and one that needs another platform, so a
-// dt run there runs only these.
-func checkout(t *testing.T) {
+// with an option, one that fails, one that needs another platform, one that
+// needs this one and whose 9x tests need the dedicated host, and a group, so
+// a dt run there runs only these. Checking their needs probes nothing on the
+// machine. It returns this platform's need and the other one.
+func checkout(t *testing.T) (here, other string) {
 	t.Helper()
-	other := "windows"
-	if runtime.GOOS == "windows" {
-		other = "linux"
+	here, other = "linux", "windows"
+	switch runtime.GOOS {
+	case "windows":
+		here, other = "windows", "linux"
+	case "darwin":
+		here = "macos"
 	}
-	y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n" +
+	y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\ngroups: { g: [s, away] }\nsuites:\n" +
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
-		"  away: { cmd: \"true\", needs: [" + other + "] }\n"
+		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
+		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\"] } }\n"
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "test"), 0o755); err != nil {
 		t.Fatal(err)
@@ -163,6 +154,7 @@ func checkout(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(root)
+	return here, other
 }
 
 // dt run's usage errors are plain errors, which main turns into exit status
@@ -240,6 +232,77 @@ func TestAliases(t *testing.T) {
 		want := fmt.Sprintf("%s has no option %q", name, option)
 		if _, err := dt(t, name, "--"+option); err == nil || err.Error() != want {
 			t.Errorf("dt %s --%s: %v, want %q", name, option, err, want)
+		}
+	}
+}
+
+// dt list says whether each suite can run here, from its needs and, per
+// needs_by_test glob, from what those tests need beyond them; it lists the
+// groups too.
+func TestListRunsHere(t *testing.T) {
+	_, other := checkout(t)
+	out, err := dt(t, "list", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type suite struct {
+		RunsHere    bool                `json:"runs_here"`
+		Unmet       []string            `json:"unmet"`
+		UnmetByTest map[string][]string `json:"unmet_by_test"`
+	}
+	var got struct {
+		Suites []struct {
+			Name string `json:"name"`
+			suite
+		} `json:"suites"`
+		Groups map[string][]string `json:"groups"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]suite{
+		"s":      {RunsHere: true},
+		"s/o":    {RunsHere: true},
+		"fails":  {RunsHere: true},
+		"away":   {Unmet: []string{other}},
+		"partly": {RunsHere: true, UnmetByTest: map[string][]string{"9?-*.sh": {"host:dedicated"}}},
+	}
+	for _, s := range got.Suites {
+		if w, ok := want[s.Name]; !ok || !reflect.DeepEqual(s.suite, w) {
+			t.Errorf("%s: %+v, want %+v", s.Name, s.suite, w)
+		}
+		delete(want, s.Name)
+	}
+	if len(want) > 0 || !slices.Equal(got.Groups["g"], []string{"s", "away"}) {
+		t.Errorf("missing %v, groups %v:\n%s", want, got.Groups, out)
+	}
+	text, _ := dt(t, "list")
+	for _, line := range []string{"HERE", "no: " + other, "yes; not 9?-*.sh: host:dedicated"} {
+		if !strings.Contains(text, line) {
+			t.Errorf("dt list lacks %q:\n%s", line, text)
+		}
+	}
+}
+
+// dt doctor lists every need the registry names, per-test needs included,
+// whether this machine meets it, and how to meet one it doesn't.
+func TestDoctor(t *testing.T) {
+	here, other := checkout(t)
+	out, err := dt(t, "doctor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string][]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+		f := strings.Fields(line)
+		rows[f[0]] = f[1:]
+	}
+	if len(rows) != 3 || len(rows[here]) != 1 || rows[here][0] != "yes" {
+		t.Errorf("want rows for %s, %s and host:dedicated, %s met:\n%s", here, other, here, out)
+	}
+	for _, unmet := range []string{other, "host:dedicated"} {
+		if row := strings.Join(rows[unmet], " "); !strings.HasPrefix(row, "no ") || !strings.HasSuffix(row, needs.Hint(unmet)) {
+			t.Errorf("%s: %q, want unmet, why, and %q", unmet, row, needs.Hint(unmet))
 		}
 	}
 }

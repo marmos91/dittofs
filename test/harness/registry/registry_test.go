@@ -5,7 +5,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marmos91/dittofs/test/harness/needs"
 )
+
+// Every need the registry accepts says how to meet it, for dt doctor.
+func TestEveryNeedHasAHint(t *testing.T) {
+	all := []string{"disk:1", "port:1", "service:kmip", "cloud:aws"}
+	for n := range plainNeeds {
+		all = append(all, n)
+	}
+	for _, n := range all {
+		if err := checkNeed(n); err != nil {
+			t.Error(err)
+		}
+		if needs.Hint(n) == "" {
+			t.Errorf("%s has no hint", n)
+		}
+	}
+}
 
 // The repository's own registry loads and passes every rule.
 func TestRepositoryRegistryLoads(t *testing.T) {
