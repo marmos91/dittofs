@@ -311,7 +311,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 	pq := entity.Quota{Share: sh.ID, Project: 7, Hard: entity.Limit{Files: 1000}}
 	gq := entity.Quota{Share: sh.ID, Principal: g.Principal, Soft: entity.Limit{Bytes: 1 << 30}, Grace: time.Hour}
 	for _, q := range []entity.Quota{uq, pq, gq} {
-		must(t, cp.SetQuota(ctx, q))
+		must(t, cp.SetQuota(ctx, sh.ID, q))
 	}
 	var got []entity.Quota
 	for q, err := range cp.Quotas(ctx, sh.ID) {
@@ -346,12 +346,12 @@ func testQuotas(t *testing.T, kvo Opener) {
 		t.Errorf("the first crossing at %v is not kept", first)
 	}
 	uq.Hard.Bytes = 20 << 30 // another limit keeps the grace running
-	must(t, cp.SetQuota(ctx, uq))
+	must(t, cp.SetQuota(ctx, sh.ID, uq))
 	if !sinceNow().Equal(first) {
 		t.Error("a new hard limit restarted the grace")
 	}
 	uq.Soft.Bytes = 9 << 30 // a new soft limit restarts it
-	must(t, cp.SetQuota(ctx, uq))
+	must(t, cp.SetQuota(ctx, sh.ID, uq))
 	if !sinceNow().IsZero() {
 		t.Error("a new soft limit kept the old crossing")
 	}
@@ -361,7 +361,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 	}
 
 	// A quota that limits nothing is deleted.
-	must(t, cp.SetQuota(ctx, entity.Quota{Share: sh.ID, Project: 7}))
+	must(t, cp.SetQuota(ctx, sh.ID, entity.Quota{Project: 7}))
 	if q, _, err := c.Quota(ctx, sh.ID, kvstore.QuotaTarget{Project: 7}); err != nil || !q.Unlimited() {
 		t.Errorf("a deleted quota reads %+v, %v", q, err)
 	}
@@ -376,6 +376,20 @@ func testQuotas(t *testing.T, kvo Opener) {
 		t.Errorf("a deleted group's quota reads %+v since %v, %v", q, since, err)
 	}
 
+	// The share's own quota names neither a principal nor a project.
+	must(t, cp.SetQuota(ctx, sh.ID, entity.Quota{Hard: entity.Limit{Bytes: 1 << 40}}))
+	if q, _, err := c.Quota(ctx, sh.ID, kvstore.QuotaTarget{}); err != nil || q.Hard.Bytes != 1<<40 {
+		t.Errorf("the share-wide quota reads %+v, %v", q, err)
+	}
+	got = got[:0]
+	for q, err := range cp.Quotas(ctx, sh.ID) {
+		must(t, err)
+		got = append(got, q)
+	}
+	if len(got) != 2 || got[len(got)-1].Principal != (entity.Principal{}) || got[len(got)-1].Project != 0 {
+		t.Errorf("quotas with the share's own last: %+v", got)
+	}
+
 	invalid := func(err error) bool { return isCode(err, merrs.ErrInvalidArgument) }
 	for name, c := range map[string]struct {
 		q    entity.Quota
@@ -384,12 +398,40 @@ func testQuotas(t *testing.T, kvo Opener) {
 		"missing user":          {entity.Quota{Share: sh.ID, Principal: entity.NewUser(), Hard: entity.Limit{Files: 1}}, merrs.IsNotFoundError},
 		"missing share":         {entity.Quota{Share: entity.NewShareID(), Project: 1, Hard: entity.Limit{Files: 1}}, merrs.IsNotFoundError},
 		"principal and project": {entity.Quota{Share: sh.ID, Principal: u.Principal, Project: 1, Hard: entity.Limit{Files: 1}}, invalid},
-		"neither":               {entity.Quota{Share: sh.ID, Hard: entity.Limit{Files: 1}}, invalid},
 		"negative":              {entity.Quota{Share: sh.ID, Project: 1, Hard: entity.Limit{Bytes: -1}}, invalid},
 	} {
-		if err := cp.SetQuota(ctx, c.q); !c.want(err) {
+		if err := cp.SetQuota(ctx, c.q.Share, c.q); !c.want(err) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// RFC 16 §4.2's qx rule: a changed soft limit restarts its grace at the
+// change's time when usage is above the new limit, and clears it otherwise.
+func testQuotaSoftChange(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	cp, c := f.s.ControlPlane(), f.s.Capacity()
+	alice := f.member("alice", entity.Principal{})
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	for _, name := range []string{"a", "b", "c"} {
+		f.create(alice, pub, name, regular(0o644))
+	}
+	at := kvstore.QuotaTarget{Principal: alice.Principal}
+	set := func(files int64) time.Time {
+		t.Helper()
+		must(t, cp.SetQuota(ctx, f.share.ID, entity.Quota{Principal: alice.Principal, Soft: entity.Limit{Files: files}, Grace: time.Hour}))
+		_, since, err := c.Quota(ctx, f.share.ID, at)
+		must(t, err)
+		return since
+	}
+	if !set(5).IsZero() {
+		t.Error("3 files under a soft limit of 5 recorded a crossing")
+	}
+	if set(2).IsZero() {
+		t.Error("3 files over a new soft limit of 2 recorded no crossing")
+	}
+	if !set(10).IsZero() {
+		t.Error("a soft limit raised above usage kept the crossing")
 	}
 }
 

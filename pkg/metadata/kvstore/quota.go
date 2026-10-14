@@ -12,33 +12,33 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
-// QuotaTarget is what a quota limits in a share: a user or group, or a
-// project. Exactly one is set.
+// QuotaTarget is what a quota limits in a share: a user or group, a project,
+// or, with neither set, the share itself.
 type QuotaTarget struct {
 	Principal entity.Principal
 	Project   uint64
 }
 
-// The principal-or-project tag that starts a quota key's suffix.
+// The quota target tag that starts a quota key's suffix.
 const (
 	quotaPrincipal byte = 0x01
 	quotaProject   byte = 0x02
+	quotaShare     byte = 0x03
 )
 
-// quotaSuffix is t's tagged key component: the tag, then a PrincipalID or
-// the project number.
-//
-// ponytail: a share-wide quota has no tag in the key format, so only user,
-// group and project quotas are kept. Add one when the format gives the
-// share's own limit a key.
+// quotaSuffix is t's tagged key component: the tag, then a PrincipalID, the
+// project number, or nothing for the share's own quota, which keeps that key
+// off the prefix of every other.
 func quotaSuffix(t QuotaTarget) ([]byte, error) {
 	switch {
+	case t == QuotaTarget{}:
+		return []byte{quotaShare}, nil
 	case t.Project == 0 && (t.Principal.Kind == entity.PrincipalUser || t.Principal.Kind == entity.PrincipalGroup):
 		return keys.ID([]byte{quotaPrincipal}, t.Principal.ID[:]), nil
 	case t.Project != 0 && t.Principal == (entity.Principal{}):
 		return keys.Uint64([]byte{quotaProject}, t.Project), nil
 	}
-	return nil, merrs.NewInvalidArgumentError("a quota limits a user or group, or a project")
+	return nil, merrs.NewInvalidArgumentError("a quota limits a user or group, a project, or the share")
 }
 
 func quotaKey(share entity.ShareID, sub byte, suffix []byte) []byte {
@@ -81,21 +81,24 @@ func decodeQuota(share entity.ShareID, suffix, b []byte) (entity.Quota, error) {
 		if q.Project, _, err = keys.ReadUint64(suffix[1:]); err != nil {
 			return q, err
 		}
+	case quotaShare:
 	default:
 		return q, errMalformed
 	}
 	return q, r.Done()
 }
 
-// SetQuota writes a share's quota on a user, a group or a project, and a
-// quota that limits nothing deletes it. The share must be live, and a user
-// or group must exist: its record is read, so a deletion of it conflicts.
-//
-// decision: a changed soft limit restarts its grace, since the time usage
-// went above the old one says nothing about the new one; any other change
-// keeps it, so editing a hard limit never extends a grace already running.
-func (c ControlPlane) SetQuota(ctx context.Context, q entity.Quota) error {
-	suffix, err := quotaSuffix(QuotaTarget{q.Principal, q.Project})
+// SetQuota writes a share's quota on a user, a group, a project or the share
+// itself, and a quota that limits nothing deletes it and its crossing time.
+// The share must be live, and a user or group must exist: its record is
+// read, so a deletion of it conflicts. A changed soft limit restarts its
+// grace: the crossing time is rewritten at the change's time when usage is
+// above the new soft limit, and deleted otherwise. A change to any other
+// limit leaves a running grace alone.
+func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q entity.Quota) error {
+	q.Share = share
+	t := QuotaTarget{q.Principal, q.Project}
+	suffix, err := quotaSuffix(t)
 	if err != nil {
 		return err
 	}
@@ -117,7 +120,7 @@ func (c ControlPlane) SetQuota(ctx context.Context, q entity.Quota) error {
 		if err := liveShare(tx, q.Share); err != nil {
 			return err
 		}
-		if q.Project == 0 {
+		if q.Principal != (entity.Principal{}) {
 			if _, ok, err := get(tx, principalKey(q.Principal)); err != nil || !ok {
 				return notFound(err, q.Principal)
 			}
@@ -133,23 +136,50 @@ func (c ControlPlane) SetQuota(ctx context.Context, q entity.Quota) error {
 		if err != nil {
 			return err
 		}
+		old := entity.Quota{}
 		if ok {
-			old, err := decodeQuota(q.Share, suffix, b)
+			if old, err = decodeQuota(q.Share, suffix, b); err != nil {
+				return err
+			}
+		}
+		if !ok || old.Soft != q.Soft {
+			d, err := usageIn(tx, q.Share)
 			if err != nil {
 				return err
 			}
-			if old.Soft != q.Soft {
-				if err := tx.Delete(since); err != nil {
-					return err
-				}
+			if above(d.of(t), q.Soft) {
+				err = tx.Set(since, encodeSince(tx.Now()))
+			} else {
+				err = tx.Delete(since)
+			}
+			if err != nil {
+				return err
 			}
 		}
 		return tx.Set(key, encodeQuota(q))
 	})
 }
 
-// Quotas lists a share's quotas, the users' and groups' before the
-// projects'.
+// above reports usage past a limit in either of its counts; a zero count
+// limits nothing.
+func above(u entity.Usage, l entity.Limit) bool {
+	return l.Bytes > 0 && u.Bytes > l.Bytes || l.Files > 0 && u.Files > l.Files
+}
+
+// of is the usage a quota target is charged: a principal's, a project's, or
+// the share's.
+func (d usageDelta) of(t QuotaTarget) entity.Usage {
+	switch {
+	case t.Principal != (entity.Principal{}):
+		return d.Principals[t.Principal]
+	case t.Project != 0:
+		return d.Projects[t.Project]
+	}
+	return d.Share
+}
+
+// Quotas lists a share's quotas: the users' and groups', the projects', then
+// the share's own.
 func (c ControlPlane) Quotas(ctx context.Context, share entity.ShareID) iter.Seq2[entity.Quota, error] {
 	pre := shareKey(share, keys.SQt)
 	return pages(ctx, c.s.kv, pre, nil, func(_ kv.Reader, row kv.KeyValue) (entity.Quota, error) {

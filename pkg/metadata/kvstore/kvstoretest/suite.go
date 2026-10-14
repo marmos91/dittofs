@@ -39,6 +39,7 @@ func Run(t *testing.T, open Opener) {
 		{"SetShareState", testSetShareState},
 		{"GrantVersions", testGrantVersions},
 		{"Quotas", testQuotas},
+		{"QuotaSoftChange", testQuotaSoftChange},
 		{"ModeBitRights", testModeBitRights},
 		{"ExportPolicy", testExportPolicy},
 		{"NetgroupsAndSettings", testNetgroupsAndSettings},

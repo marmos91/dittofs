@@ -335,8 +335,17 @@ func (c Capacity) PrincipalUsage(ctx context.Context, share entity.ShareID, p en
 // rest, O(principals with usage in the share). Read the one principal's
 // prefix and the deltas alone when quota checks show it.
 func (s *Store) usageOf(ctx context.Context, share entity.ShareID) (out usageDelta, err error) {
+	err = s.kv.View(ctx, func(r kv.Reader) (err error) {
+		out, err = usageIn(r, share)
+		return err
+	})
+	return out, err
+}
+
+// usageIn is usageOf within one transaction.
+func usageIn(r kv.Reader, share entity.ShareID) (out usageDelta, err error) {
 	out = usageDelta{Principals: map[entity.Principal]entity.Usage{}, Projects: map[uint64]entity.Usage{}}
-	err = s.kv.View(ctx, func(r kv.Reader) error {
+	err = func() error {
 		for row, err := range r.Scan(shareKey(share, keys.SUt), nil) {
 			if err != nil {
 				return err
@@ -385,6 +394,6 @@ func (s *Store) usageOf(ctx context.Context, share entity.ShareID) (out usageDel
 			out.add(d)
 		}
 		return nil
-	})
+	}()
 	return out, err
 }
