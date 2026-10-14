@@ -819,8 +819,9 @@ and writing the bytes.
    raise the counter, so a folded zero stays zero, and the finish transaction
    reads the `closing` flag and the folded record of each shard's counter
    (`S‖id‖or‖shard`, [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)) — one key per shard, never the counter's
-   unfolded deltas — and requires every one
-   zero; it makes N' the share's only namespace, deletes the
+   unfolded deltas — and requires their sum to be
+   zero. A shard's own total need not be: a file moved between shards while the re-home runs leaves +1 at
+   one and −1 at the other, and only the sum counts refs at *g*. It makes N' the share's only namespace, deletes the
    re-home record, and lifts the refusals. Before that transaction, in batches within K, the
    finish re-keys the share's backup records from
    under N to under N′ ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), each still naming N as the

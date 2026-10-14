@@ -1116,7 +1116,7 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   characters (U+F001–U+F07F) are ordinary characters under this rule: they
   are stored and listed as themselves, never translated to the character they
   stand for, as a Windows server stores them, so a Mac saving `Q3: draft.docx`
-  succeeds and sees its own name. The SMB adapter's translation of them (RFC 22 [§12.3](#12.3%20What%20must%20not%20stand%20in), *Names SMB cannot carry*) applies on
+  succeeds and sees its own name. The SMB adapter's translation of them (RFC 22, section 12.3, *Names SMB cannot carry*) applies on
   `posix` shares only.
 
 **Neither names nor keys are normalised.** A stored name is the bytes given
