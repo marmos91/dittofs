@@ -193,8 +193,9 @@ func aclOf(r kv.Reader, f entity.File) (entity.ACL, error) {
 // two always agree. Setuid, setgid and sticky are kept from the file.
 func (f Files) SetACL(ctx context.Context, id entity.Identity, h entity.Handle, acl entity.ACL) (entity.File, error) {
 	if !acl.Valid() {
-		return entity.File{}, merrs.NewInvalidArgumentError("an ACL entry is of the wrong list or names nobody")
+		return entity.File{}, merrs.NewInvalidArgumentError("an ACL entry is of the wrong list, names nobody, or denies an unknown special principal")
 	}
+	acl = acl.Stored()
 	var out entity.File
 	err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
 		share, _, err := h.Parse()

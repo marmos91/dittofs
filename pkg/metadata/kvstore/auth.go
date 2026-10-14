@@ -104,22 +104,31 @@ func allows(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMa
 		return want&entity.Execute == 0 || f.IsDir() || f.Mode&0o111 != 0, nil
 	}
 	want &^= alwaysRight
-	if id.Principal == f.Owner {
-		want &^= ownerImplicit
-	}
 	if want == 0 {
 		return true, nil
 	}
+	// The owner's implicit rights hold unless the ACL names owner rights,
+	// so they are taken away only once it is read.
+	owner := id.Principal == f.Owner
 	b, ok, err := get(r, aclKey(f.Share, f.ID))
 	if err != nil {
 		return false, err
 	}
 	if !ok {
+		if owner {
+			want &^= ownerImplicit
+		}
 		return want&^modeAllows(id, f) == 0, nil
 	}
 	acl, err := decodeACL(b)
 	if err != nil {
 		return false, err
+	}
+	if owner && !acl.LimitsOwner() {
+		want &^= ownerImplicit
+	}
+	if want == 0 {
+		return true, nil
 	}
 	return aclAllows(id, f, acl, want), nil
 }
@@ -165,17 +174,29 @@ func aclAllows(id entity.Identity, f entity.File, acl entity.ACL, want entity.Ac
 	return false
 }
 
+// matches reports whether an entry naming who applies to the caller. The
+// well-known principals are matched by the identity's fields, never by
+// privilege: a privileged caller skips the walk. SYSTEM, CREATOR OWNER and
+// CREATOR GROUP match no caller, nor does a special principal with no number
+// above, whose allow grants nothing and whose deny is refused when stored.
 func matches(id entity.Identity, f entity.File, who entity.Principal) bool {
 	switch who {
-	case entity.Owner:
+	case entity.Owner, entity.OwnerRights:
 		return id.Principal == f.Owner
 	case entity.OwnerGroup:
 		return id.InGroup(f.Group)
-	case entity.Everyone:
+	case entity.Everyone, entity.Network:
 		return true
+	case entity.AuthenticatedUsers, entity.BuiltinUsers:
+		return id.Authenticated
+	case entity.Administrators:
+		return id.Admin
 	}
-	if who.Kind == entity.PrincipalGroup {
+	switch who.Kind {
+	case entity.PrincipalGroup:
 		return id.InGroup(who)
+	case entity.PrincipalSpecial:
+		return false
 	}
 	return id.Principal == who
 }

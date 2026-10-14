@@ -101,12 +101,33 @@ func (k PrincipalKind) String() string                { return enumString(princi
 func (k PrincipalKind) MarshalText() ([]byte, error)  { return enumMarshal(principalKinds, k) }
 func (k *PrincipalKind) UnmarshalText(b []byte) error { return enumUnmarshal(principalKinds, k, b) }
 
-// The specials ACLs name: the file's owner, its group, and everyone.
+// The well-known principals an ACL entry can name, each with a fixed ID:
+// fifteen zero bytes, then its number. No minted ID takes that form, since a
+// minted ID is a random UUID with its version bits set. Which caller each
+// matches is the access check's rule.
 var (
-	Owner      = Principal{PrincipalSpecial, PrincipalID{15: 1}}
-	OwnerGroup = Principal{PrincipalSpecial, PrincipalID{15: 2}}
-	Everyone   = Principal{PrincipalSpecial, PrincipalID{15: 3}}
+	Owner              = Principal{PrincipalSpecial, PrincipalID{15: 0x01}} // OWNER@: the file's owner
+	OwnerGroup         = Principal{PrincipalSpecial, PrincipalID{15: 0x02}} // GROUP@: members of the file's group
+	Everyone           = Principal{PrincipalSpecial, PrincipalID{15: 0x03}} // EVERYONE@, Everyone
+	OwnerRights        = Principal{PrincipalSpecial, PrincipalID{15: 0x04}} // the owner, limiting what ownership grants
+	CreatorOwner       = Principal{PrincipalSpecial, PrincipalID{15: 0x05}} // an inheritable placeholder, replaced at create
+	CreatorGroup       = Principal{PrincipalSpecial, PrincipalID{15: 0x06}}
+	AuthenticatedUsers = Principal{PrincipalSpecial, PrincipalID{15: 0x07}}
+	Administrators     = Principal{PrincipalSpecial, PrincipalID{15: 0x08}}
+	System             = Principal{PrincipalSpecial, PrincipalID{15: 0x09}}
+	Network            = Principal{PrincipalSpecial, PrincipalID{15: 0x0A}}
+	BuiltinUsers       = Principal{PrincipalSpecial, PrincipalID{15: 0x0B}}
 )
+
+// WellKnown reports whether p is one of the well-known principals above.
+func (p Principal) WellKnown() bool {
+	var prefix [15]byte
+	return p.Kind == PrincipalSpecial && [15]byte(p.ID[:15]) == prefix && p.ID[15] >= 0x01 && p.ID[15] <= 0x0B
+}
+
+// IsCreator reports CREATOR OWNER or CREATOR GROUP, which act only through
+// inheritance.
+func (p Principal) IsCreator() bool { return p == CreatorOwner || p == CreatorGroup }
 
 func NewUser() Principal  { return Principal{PrincipalUser, NewPrincipalID()} }
 func NewGroup() Principal { return Principal{PrincipalGroup, NewPrincipalID()} }

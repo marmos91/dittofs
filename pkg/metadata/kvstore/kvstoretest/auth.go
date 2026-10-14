@@ -121,3 +121,77 @@ func testRevokedGrantRefusesNextCall(t *testing.T, kvo Opener) {
 		t.Errorf("call after the grant was removed: %v", e)
 	}
 }
+
+// RFC 7 §2.6 and RFC 16 §2.2's well-known principals: each is matched by a
+// field of the identity, never by privilege; a deny naming an unknown
+// special principal is refused, an allow naming one grants nothing; an
+// inheritable CREATOR OWNER entry is kept inherit-only; and an owner-rights
+// entry withholds what ownership implies.
+func testWellKnownPrincipals(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	alice := f.member("alice", entity.Principal{})
+	bob := f.member("bob", entity.Principal{})
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	h, _ := f.create(alice, pub, "doc", regular(0o600))
+	set := func(es ...entity.ACE) error {
+		_, err := files.SetACL(ctx, alice, h, entity.ACL{Entries: es})
+		return err
+	}
+	read := entity.ReadData
+	authed, admin := bob, bob
+	authed.Authenticated, admin.Admin = true, true
+	for _, c := range []struct {
+		who          entity.Principal
+		yes, no      entity.Identity
+		name, reason string
+	}{
+		{entity.AuthenticatedUsers, authed, bob, "Authenticated Users", "an asserted identity"},
+		{entity.BuiltinUsers, authed, bob, "BUILTIN\\Users", "an asserted identity"},
+		{entity.Administrators, admin, bob, "Administrators", "a caller not marked admin"},
+	} {
+		must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: c.who}))
+		if err := files.Authorize(ctx, c.yes, h, read); err != nil {
+			t.Errorf("%s did not match its caller: %v", c.name, err)
+		}
+		if err := files.Authorize(ctx, c.no, h, read); err == nil {
+			t.Errorf("%s matched %s", c.name, c.reason)
+		}
+	}
+	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Network}))
+	if err := files.Authorize(ctx, bob, h, read); err != nil {
+		t.Errorf("NETWORK did not match every caller: %v", err)
+	}
+	for _, who := range []entity.Principal{entity.System, entity.CreatorOwner} {
+		must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: who}))
+		if err := files.Authorize(ctx, admin, h, read); err == nil {
+			t.Errorf("%v matched a caller", who)
+		}
+	}
+
+	unknown := entity.Principal{Kind: entity.PrincipalSpecial, ID: entity.PrincipalID{15: 0x42}}
+	if err := set(entity.ACE{Type: entity.ACEDeny, Mask: read, Who: unknown}); !isCode(err, merrs.ErrInvalidArgument) {
+		t.Errorf("a deny naming an unknown special principal was stored: %v", err)
+	}
+	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: unknown}))
+	if err := files.Authorize(ctx, bob, h, read); err == nil {
+		t.Error("an allow naming an unknown special principal granted")
+	}
+
+	must(t, set(entity.ACE{Type: entity.ACEDeny, Flags: entity.ACEFileInherit, Mask: read, Who: entity.CreatorOwner},
+		entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Owner}))
+	acl, err := files.ACL(ctx, alice, h)
+	must(t, err)
+	if len(acl.Entries) == 0 || acl.Entries[0].Effective() {
+		t.Errorf("an inheritable CREATOR OWNER deny was stored effective: %+v", acl.Entries)
+	}
+
+	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.OwnerRights}))
+	if err := files.Authorize(ctx, alice, h, entity.WriteACL); err == nil {
+		t.Error("an owner-rights entry left the owner its implicit write ACL")
+	}
+	must(t, errOf(files.SetACL(ctx, f.admin, h, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: read, Who: entity.Owner}}})))
+	if err := files.Authorize(ctx, alice, h, entity.WriteACL); err != nil {
+		t.Errorf("without owner rights the owner lost its implicit write ACL: %v", err)
+	}
+}

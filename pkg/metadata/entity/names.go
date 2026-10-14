@@ -96,6 +96,13 @@ type Identity struct {
 	// Privileged marks a caller allowed what an owner is not: an unsquashed
 	// root, or a principal the share grant names admin.
 	Privileged bool
+	// Authenticated marks a caller whose identity the service proved, as a
+	// Kerberos or NTLM one is and an asserted AUTH_SYS uid is not: it matches
+	// Authenticated Users and BUILTIN\Users.
+	Authenticated bool
+	// Admin marks a caller the share grant names admin: it matches
+	// Administrators, whether or not it is privileged.
+	Admin bool
 }
 
 // InGroup reports whether the caller is in g, through its credential group

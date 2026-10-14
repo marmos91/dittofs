@@ -28,6 +28,7 @@ func Run(t *testing.T, open Opener) {
 		{"Xattrs", testXattrs},
 		{"ImmutableAndAppendOnly", testImmutableAndAppendOnly},
 		{"StoredACLDecides", testStoredACLDecides},
+		{"WellKnownPrincipals", testWellKnownPrincipals},
 		{"RevokedGrantRefusesNextCall", testRevokedGrantRefusesNextCall},
 		{"CookieSurvivesDeletes", testCookieSurvivesDeletes},
 		{"ReadCosts", testReadCosts},

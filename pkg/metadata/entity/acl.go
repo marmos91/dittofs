@@ -222,11 +222,42 @@ func (a ACL) WithMode(mode uint32) ACL {
 	return out
 }
 
+// Stored is the ACL as the store keeps it: an inheritable entry naming
+// CREATOR OWNER or CREATOR GROUP is inherit-only, since those match no caller
+// and act only through inheritance, which turns them into effective entries
+// for the new file's owner or group.
+func (a ACL) Stored() ACL {
+	out := ACL{Flags: a.Flags, Entries: append([]ACE(nil), a.Entries...), Audit: append([]ACE(nil), a.Audit...)}
+	for i, e := range out.Entries {
+		if e.Who.IsCreator() && e.Inheritable() {
+			out.Entries[i].Flags |= ACEInheritOnly
+		}
+	}
+	return out
+}
+
+// LimitsOwner reports an effective entry naming owner rights: the owner then
+// gets what such entries grant, without the rights ownership implies.
+func (a ACL) LimitsOwner() bool {
+	for _, e := range a.Entries {
+		if e.Effective() && e.Who == OwnerRights {
+			return true
+		}
+	}
+	return false
+}
+
 // Valid reports whether every entry is of the list it sits in: allow and
-// deny in Entries, audit and alarm in Audit, each naming a principal.
+// deny in Entries, audit and alarm in Audit, each naming a principal. A deny
+// naming a special principal that is not well known is invalid: no caller
+// matches it, so every walk would skip it and it would fail open. An allow
+// naming one is valid and grants nothing.
 func (a ACL) Valid() bool {
 	for _, e := range a.Entries {
 		if (e.Type != ACEAllow && e.Type != ACEDeny) || e.Who.IsZero() {
+			return false
+		}
+		if e.Type == ACEDeny && e.Who.Kind == PrincipalSpecial && !e.Who.WellKnown() {
 			return false
 		}
 	}
