@@ -122,8 +122,8 @@ snapshot is deleted.
 **What this RFC promises.**
 
 - An object is deleted only after its block was marked `deleted` in a metadata
-  transaction that found no ref, live or snapshot history, naming any chunk the
-  block still holds.
+  transaction that found no ref, live, snapshot history or parked by a
+  re-home, naming any chunk the block still holds.
 - Nothing but refs keeps content alive or allows a delete: no pin list, no
   in-memory state, no lock. Time only postpones a delete.
 - Metadata is written before the object is deleted, so a crash at any point
@@ -421,7 +421,7 @@ block's refusal does not fail the others.
    `not_before` order up to store time and, per batch, in one transaction, moves
    each record still `retired` with `not_before` ≤ store time to `deleted` —
    only after the verification of [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) passes for it — and records the store time
-   of the move in the record.
+   of the move in the record's `marked_at` ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
 4. **Delete** the objects through the remote store's multi-object delete
    ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)), after reading the namespace claim and confirming that the last
    `Recheck` passed ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), and only for a name whose move to `deleted` precedes
@@ -888,16 +888,14 @@ never read.
 
 **Staging.** What the compactor holds between its reads and its put — the
 chunks of the targets it is assembling — is GC's **relocation staging**, counted
-in bytes, under the rule a copying backup's copy staging follows
-([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound), [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing)). It is held in memory up to a budget derived,
-not set: the GC flow's cap of workers ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) × the largest encoded
-block, plus one target being assembled. Above it, staging spills to local disk
-under `backups.spill_path`, which **MUST NOT** be on a device that holds a
-journal, since spill filling a journal's device would answer writers no space
-([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). When memory plus spill reach `backups.spill_max`, a read is
-not issued: it waits for a put to release its target. With no spill path
-nothing spills, and reads wait at the memory budget. The spill is cleared at
-every start: no compaction resumes from it, a crash re-plans (the table below).
+in bytes. It draws on the process's one **staging budget**, which every copy
+draws on too, with its memory part, its spill to `backups.spill_path` (a
+bootstrap fact checked against every journal at start,
+[RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) and its cap `backups.spill_max` stated once in
+[RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound); this section restates none of it. A relocation read is not
+issued until its reservation is granted, and its put releases it. The spill is
+cleared at every start: no compaction resumes from it, a crash re-plans (the
+table below).
 
 **Example.** Three 4 MiB blocks, *B1*, *B2* and *B3*, of twelve chunks each, hold
 two, two and three live chunks: about 1.7 MiB live of 12 MiB stored.
@@ -1469,7 +1467,10 @@ no space meanwhile, for a cause that clears by itself.
 reads back the `keys` object in the namespace's bucket and, when its sequence
 lags the one the metadata store records, re-puts it under the key lock
 ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so a put lost or overwritten at the service is repaired
-within one period rather than at the next key change.
+within one period rather than at the next key change. The repair is a write
+like any other: it puts a new version at the next sequence above both the one
+it read and the one recorded, as every writer of the object does ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), never a second version at a sequence
+already recorded, which a put whose reply was lost may still hold.
 
 **The claim is read before it is rewritten, and the nonce is recorded before it
 is put.** Each `Recheck` that rewrites the claim with a fresh instance nonce
@@ -1609,7 +1610,12 @@ The check runs in the transaction that removes the last thing it reads:
 - a share's removal, in the transaction that deletes its state record and its
   last shard record, so no crash between them leaves the check unrun
   ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share), step 6);
-- a re-home's finish, for the namespace the share left ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace));
+- a re-home's finish, for the namespace the share left, which also deletes the
+  use records of the share's pre-re-home catalog backups ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace));
+- every transaction that marks a backup record `expired` or `lost`, whatever
+  its kind and whether or not it still holds a use record — a backup whose use
+  record a re-home's finish already deleted reaches `expired` with nothing else
+  to run the check;
 - a catalog backup's expiry, which deletes its use record; an operator's
   statement that a location is lost (`LocationLost`), whose batches, after the
   location's lost mark, mark its backups `lost`, delete their use records and
@@ -1642,7 +1648,8 @@ the last runs the check. Then:
    being destroyed, and the sweep that removes the last such listing runs this
    step again. The check is **one check before any `Remove`**, decided once
    and applied to all of the namespace's keys or to none — data key, chunk-ID
-   key, chunking key, each retired one ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). It is not one
+   key, chunking key, export key, each retiring or retired one
+   ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census), [RFC 5 B.3](rfc-5-transforms.md#B.3%20Rotation)). It is not one
    transaction: it reads every namespace's folder census in batches within K,
    and every retained export's material list as the backup records
    ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) record it, never by reading a backup location.
@@ -1757,7 +1764,9 @@ type Blocks interface {
 type Remote interface {
 	Delete(ctx context.Context, names []BlockName) []error         // one result per name
 	DeleteVersions(ctx context.Context, names []BlockName) []error // after versioning drift only
-	List(ctx context.Context, after BlockName) iter.Seq2[Info, error] // collection only
+	// List reads one page of at most n blocks after the given name, with one
+	// request (RFC 4 §4.6); collection walks the store page by page.
+	List(ctx context.Context, after BlockName, n int) (page []Info, next BlockName, done bool, err error) // collection only
 	// Recheck's setting reads and version-walk pages each run as one small
 	// call through GC's flow (§7.5); deletes and listings go direct (§3.1).
 	Recheck(ctx context.Context) error
@@ -1891,7 +1900,7 @@ the implementation, not by timing.
 | [§3.7](#3.7%20Trash) recovered retired blocks | Release a file so block *B* retires; snapshot the metadata store; let *B*'s `not_before` pass and the deleter remove it; restore the snapshot. Assert that before the first client call or adoption *B* is `deleted`, and that a clone naming one of *B*'s chunks is refused rather than resurrecting *B*. Leave a block retired whose `not_before` is still ahead: assert it stays `retired`. A recovery that serves the restored state as found resurrects a block with no object. |
 | [§3.7](#3.7%20Trash) restore within one `Recheck` period | Snapshot the metadata store just after a claim rewrite; retire block *B* with zero retention and let the deleter mark it `deleted`; restore the snapshot before the next claim rewrite. Assert the deleter issued no delete for *B* before a `Recheck` that started after the mark rewrote the claim, and that the restored store either still finds *B*'s object or is detected as older and settles *B*. |
 | [§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) census added during the key check | Start the drain's key check, let it read past folder record *F*, then commit a copy batch adding a census entry for the draining namespace's material to *F*, (a) before the key-removing transaction starts and (b) while it runs; then (c) commit the removal first and a copy batch after it. Assert in (a) and (b) the removal finds another token or conflicts, removes no key, and the re-run check finds the entry; in (c) the copy batch aborts. A mark with no token fails (a); a removal that does not rewrite the mark fails (c). Repeat in a plaintext namespace with a retained copying backup: assert the claim and folder records stay until a sweep removes its blocks. |
-| [§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move) staging bound | Compact into a store whose puts stall. Assert memory stays within the derived budget, memory plus spill never pass `backups.spill_max` and reads wait there, spill lies under `backups.spill_path` and is empty after a restart; with no spill path, assert nothing spills. |
+| [§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move) staging bound | Compact into a store whose puts stall while a copying backup to another folder runs. Assert the two together stay within the one staging budget, memory plus spill never pass `backups.spill_max` and reads wait there, neither starving the other, spill lies under `backups.spill_path` and is empty after a restart; with no spill path, assert nothing spills. |
 | [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) reply | Return a multi-delete reply that omits one requested name. Assert that name stays `deleted` and is retried. |
 | [§5.3](#5.3%20It%20runs%20only%20where%20the%20namespace%20is%20proven) namespace | Point two stores at one bucket and prefix, run collection from one. Assert it refuses. |
 | [§6.2](#6.2%20Corrections) raise never lowers | Let a count rise between the walk's read and its correction. Assert the correction leaves it. Change a ref under the first of two lowering walks; assert no lowering. |
@@ -1901,10 +1910,11 @@ the implementation, not by timing.
 
 ### 11.2 Group B — model-based, with crashes
 
-A reference model holds, per namespace, every ref and reverse key, every chunk's
+A reference model holds, per namespace, every ref — live, history and parked — and reverse key, every chunk's
 refcount and block, every block's `live`, `dead`, state and carried list, every
 intent, and the set of objects in the store. A driver generates random sequences
 of writes, overwrites, truncates, releases, clones, snapshot cuts and deletions,
+re-home parks and parked-ref prunes,
 offload commits including adoptions, carried repeats and born-dead blocks,
 deleter drains, compactions, collections, audits, index rebuilds, lease changes,
 `Recheck` drift and clock advances, and applies each to the system and the model.
@@ -1913,9 +1923,9 @@ process at a random one, restarts it, and continues.
 
 | Invariant, checked after every step | Check |
 | --- | --- |
-| no loss | Every ref, live or history, resolves to a chunk record whose block's object exists and returns the ref's bytes. |
+| no loss | Every ref, live, history or parked, resolves to a chunk record whose block's object exists and returns the ref's bytes. |
 | no leak | After the sequence ends and a full drain past the retention, the store holds exactly the objects of `live` blocks, and no `retired` or `deleted` record, intent or suspect row remains. |
-| counts equal the index | Every refcount equals its `CR` keys; every `live` equals its nonzero chunk records; every `dead` equals its dead bytes. |
+| counts equal the index | Every refcount equals its `CR` keys, one per live, history and parked ref; every `live` equals its nonzero chunk records; every `dead` equals its dead bytes. |
 | index equals derivation | The `BR`, `BD` and `BC` keys equal those computed from the block records. |
 | state machine | Every block record's state changed only along `live` → `retired` → `deleted`, or `retired` → `live`, and is `retired` exactly when its `live` is zero. |
 

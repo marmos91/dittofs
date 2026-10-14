@@ -371,7 +371,9 @@ func (f *Flow) UploadRaw(ctx context.Context, name RawName, size int64, sum []by
 // at most the small-body cap (§2.10). Every call at a backup location that
 // is not a raw transfer runs through it (RFC 4 §4.15), as do a Recheck
 // pass's setting reads and version-walk pages (RFC 4 §4.11) and each batch
-// request of a backup folder sweep's deletes.
+// request of a backup folder sweep's deletes. d is DirGet for a read or a
+// listing page, DirPut for anything that changes the store: a put, a retention
+// extension or a delete batch.
 func (f *Flow) Small(ctx context.Context, d Direction, call func(ctx context.Context) error) error
 // FetchVersion is Fetch of one recorded version, verified like Fetch.
 func (f *Flow) FetchVersion(ctx context.Context, name BlockName, v Version, want []ChunkRange) iter.Seq2[Chunk, error]
@@ -533,8 +535,8 @@ namespace's material and hold plaintext, which the copier must not. So
   A destination that takes no up-front checksum and acknowledges with an MD5
   `ETag` is checked after the put: the store compares the `ETag` with the passed
   sum and fails the put as `ErrCorrupt` on a mismatch
-  ([RFC 4 C.3](rfc-4-remote-tier.md#C.3%20How%20the%20contract%20maps%20to%20S3)). The staging itself is counted against the copier's
-  budget ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound));
+  ([RFC 4 C.3](rfc-4-remote-tier.md#C.3%20How%20the%20contract%20maps%20to%20S3)). The staging itself is counted against the process's
+  staging budget ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound));
 - **`FetchVersion`** reads chunks of one recorded version, decoded and verified
   exactly as `Fetch` does; `Verify` and a restore from an immutable location use
   it ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)).
@@ -547,7 +549,7 @@ Every call at a backup location goes through a background flow on that
 location's stores: blocks, export parts and export heads as raw transfers,
 everything else through `Small` — state, key and progress objects, version
 listings, retention reads and extensions, a `Recheck` pass, and a folder
-sweep's deletes ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)). That holds for every caller, not only a copier: a
+sweep's block listing, one `List` page per call, and its deletes ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)). That holds for every caller, not only a copier: a
 plain catalog backup, the sweep and expiry, `Verify`, a restore and a key
 rotation's re-seal ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step), [RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)). Each store call
 makes one attempt ([RFC 4 §4.9](rfc-4-remote-tier.md#4.9%20No%20state%20across%20calls)), so each is run through `Small`: a
@@ -555,7 +557,13 @@ background transfer on the flow's workers, retried within the retry budget, held
 on throttling, refused by an unhealthy direction and charged at a fixed small
 size. One `503 SlowDown` during a burst of retention extensions then backs off
 instead of failing the backup, and the calls sit inside the client's connection
-sum ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), since they run on the same workers.
+sum ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), since they run on the same workers. A call that changes the
+store — a put, a retention extension, a delete batch — runs in the put
+direction and counts toward put health; a read or a listing page runs in the
+get direction. The one exception to the flow is the store's own open: the
+capability check and a location record's provocations run before the store is
+registered here, so they have no flow to run on
+([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)).
 
 **A small call is one bounded request.** `Small` runs an opaque closure, so the
 throughput floor, trickle rule and first-byte bound, which measure body bytes,
@@ -585,7 +593,10 @@ more than a block's, so the quantum, S18 and the time ceilings of [§2.4](#2.4%2
 for it unchanged. A head grows with its export and can pass the small-body cap,
 so it rides a raw transfer too ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)), and one that would pass the
 largest encoded block is cut into head parts like the export's
-([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), so every raw transfer stays within a block's size. For a raw transfer `name` is
+([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), so every raw transfer stays within a block's size. `FetchRaw` takes an
+exact size, so a head's size is recorded where its version is: the backup
+record keeps the export head's size beside its head version
+([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), and a read of a head never guesses it from a listing. For a raw transfer `name` is
 then the object's `RawName`, which the engine's `Store` resolves to the remote
 store's versioned-object calls.
 
@@ -764,24 +775,31 @@ its encoded bound, taken per direction as above. The whole process's bound is
 the uploader's number plus the fetcher's.
 
 Relocation reads its sources and then uploads a target, and what it holds
-between the two is not a transfer's: it is GC's **relocation staging**, bounded
-by GC's own budget and spilled to local disk above it ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)). The
-syncer's bound covers the fetch and the put; the staging between them is counted
-by GC, and **MUST** be, or this bound says nothing about the process. A copying
-backup's **copy staging**, filled by `FetchRaw` and read by `UploadRaw`
-([§1.3](#1.3%20Interface)), is the same: counted by the copier against its own budget
-([RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing)), and **MUST** be. That budget is in bytes: in memory, the copy
-flow's cap in the fetcher's pool ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) times the largest encoded block, plus
-two export parts, each at most that block ([§1.3](#1.3%20Interface)) — at the defaults 96 × about
-5 MiB, under 0.5 GiB per running copy. Above it staging spills to local disk
-under `backups.spill_path`, which **MUST NOT** be on a device that holds a
-journal ([RFC 1](rfc-1-journal.md)), so a slow destination never fills the device writers need;
-the spill is cleared at every start. Memory plus spill are capped by
-`backups.spill_max` ([RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing)): a `FetchRaw` is admitted only once the
-copier has reserved its `size` under that cap, and otherwise waits before it
-queues, holding no worker, until an `UploadRaw` frees staging. With no spill
-path nothing spills, and `FetchRaw` waits at the memory budget. GC's relocation staging takes the
-same rule ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
+between the two is not a transfer's: it is GC's **relocation staging**
+([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)). A copying backup's **copy staging**, filled by `FetchRaw` and
+read by `UploadRaw` ([§1.3](#1.3%20Interface)), is the same. The syncer's bound covers the
+fetch and the put; the staging between them is not a transfer's, so it **MUST**
+be counted, or this bound says nothing about the process.
+
+**Staging has one budget per process.** Every copy, to whatever folder or
+location, and GC's relocation draw on one **staging budget**, stated here once
+and cited by [RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move), [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) and [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings). It is in
+bytes: in memory, the per-flow cap in the fetcher's pool ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) times the
+largest encoded block, plus two export parts, each at most that block
+([§1.3](#1.3%20Interface)) — at the defaults 96 × about 5 MiB, under 0.5 GiB for the whole
+process, however many copies and relocations run. Above it staging spills to
+local disk under `backups.spill_path`, a bootstrap fact beside the journal
+devices that start checks against them ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), so a slow destination
+never fills the device writers need; the spill is cleared at every start.
+Memory plus spill are capped by `backups.spill_max`, one total for the process
+([RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing)). A `FetchRaw`, and a relocation's read of a source, is
+admitted only once its caller has reserved its `size` from the budget, and
+otherwise waits before it queues, holding no worker, until an `UploadRaw` or a
+relocation's put frees staging; reservations are granted in arrival order, so
+a copy cannot starve relocation or the reverse. With no spill path nothing
+spills, and every reservation waits at the memory budget. A per-copy or
+per-owner budget would add up across copies to different folders and
+relocation, and bound nothing the process holds.
 
 The limit belongs to the syncer, not to each store: memory runs out for the whole
 process, and only a limit set where all the transfers happen adds up to a number
@@ -1842,7 +1860,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) lone slow tail | On an idle store, give one fetch a first byte past the 90th percentile: it gets its one slow-tail retry, where a bare 5% share would round to none. |
 | [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to a fake immutable store: the bytes it saw equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Repeat from a CRC32C source to an MD5 destination: `FetchRaw` finds the staging against the source's CRC32C, re-fetches from byte 0, and returns the MD5 of correct bytes. To a destination with no up-front checksum, damage the staging after `FetchRaw`: the `ETag` the put returns mismatches the passed sum and `UploadRaw` fails `ErrCorrupt`. Hold a `Small` call's one request unanswered: the attempt fails at the small-call bound and is retried, never held for the copier's context. List 10⁴ versions through `Small`: one page per call, a retried page resuming after the last key returned. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
 | [§1.3](#1.3%20Interface) small-body cap | `Small` a get whose body is 256 KiB at 32 KiB/s: it completes inside the small-call bound. Over a 40 TiB copy, no progress object put and no listing page read through `Small` exceeds 256 KiB. Run a `Recheck` pass over a suspended store holding 10⁷ versions: every `Small` call reads one setting or one page and ends within the bound, and the pass resumes from its last page after a transient failure instead of restarting. |
-| [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) copy staging | Copy from a source at 200 MiB/s to a destination at 50 MiB/s: staging memory never exceeds the copy flow's cap times the largest encoded block plus two parts, spill never exceeds its cap and never lands on a journal's device, and `FetchRaw` waits, holding no worker, once memory plus spill reach the cap. Restart mid-copy: the spill is empty before the copy resumes. |
+| [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) copy staging | Copy from a source at 200 MiB/s to a destination at 50 MiB/s: staging memory never exceeds the per-flow cap times the largest encoded block plus two parts, spill never exceeds its cap and never lands on a journal's device, and `FetchRaw` waits, holding no worker, once memory plus spill reach the cap. Run two such copies to different folders and a GC relocation at once: their staging together stays within the same one budget, and each still progresses. Restart mid-copy: the spill is empty before the copy resumes. A design with a budget per copy holds twice it here. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) no put probe | Register a store with `PutProbe` false: over an hour no put probe reaches it. Fail every upload for the failure window: put-unhealthy, uploads refused; with no probe and no transfer, it turns healthy after its hold-down and the next upload is sent; fail that one too: unhealthy again with the hold-down doubled. A design that waits for a put probe here latches it unhealthy for good. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) cause per direction | Turn a store put-unhealthy with `ErrDenied` of cause quota, then another with cause access, a third with cause size, a fourth with `ErrTransient`, and raise a fifth's drift condition: `Flow.Health(Put)` wraps the quota cause, the access cause, the size cause, `ErrTransient` and `ErrDrift` in turn, and `Flow.Healthy(Put)` is false for all five. |
 | [§1.3](#1.3%20Interface) destroyed material | A fake store returning `ErrMaterialDestroyed` on every fetch for the failure window: each call fails unretried with that error, never `ErrCorrupt`, and the store stays get-healthy. |

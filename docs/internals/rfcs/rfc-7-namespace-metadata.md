@@ -251,16 +251,20 @@ type File struct {
 	Version JournalVersion
 
 	// Size, Charged, Applied, Modify and the Change a write sets are owned by
-	// the write path: only an existence commit sets them (§2.5, RFC 6 §3).
+	// the write path: only an existence commit sets them (§2.5, RFC 6 §3),
+	// except Charged, which the transaction that finishes a removal also
+	// sets (RFC 6 §2.4).
 	Size int64
 
 	// Charged is the bytes this file charges to Owner, Group and Project
 	// (§2.8): its logical bytes, holes excluded, in full whether or not its
 	// chunks are shared. The existence commit that moves Size or the holes
 	// moves Charged with them; a removal reads only the holes in its own
-	// extent, at most K of them, past which its phase 2 gives their bytes
-	// back (RFC 6 §6.2), never the file's; a clone's batches lower it by the
-	// source's holes (RFC 6 §6.6).
+	// extent, at most K of them, past which the masked holes' bytes are
+	// given back as they leave (RFC 6 §6.2), never the file's. What a
+	// removal's batches change, a clone's source holes included, gathers in
+	// its Removal record and is folded here once, by the transaction that
+	// sets it done (RFC 6 §2.4, §6.6).
 	Charged int64
 
 	// Applied is the newest journal version whose existence change this File
@@ -288,8 +292,10 @@ type File struct {
 	// Subdirs is the number of entries in this directory that name a
 	// directory (Type Directory only), so an adapter can report a POSIX link
 	// count without listing it (§4.1). It changes by delta, as the times do
-	// (§9.2): the stored value plus the deltas not yet folded.
-	Subdirs uint32
+	// (§9.2): the stored value plus the deltas not yet folded. Signed, so a
+	// fold always stores what the deltas sum to, below zero included; reads
+	// report 2 + max(0, Subdirs).
+	Subdirs int64
 
 	// Shard is the group of files one primary serves at a time
 	// (RFC 11). Zero, the default, means the whole share is one shard. Set at
@@ -306,8 +312,10 @@ type File struct {
 	// create, never changed, never reused in the share. Never zero.
 	Number uint64
 
-	// Incomplete is set by a clone or restore for a file its source snapshot
-	// lists incomplete (RFC 12 §2.3): reads of the file fail naming it rather
+	// Incomplete is set by a share-level clone or restore for a file its
+	// source snapshot lists incomplete (RFC 12 §2.3), never by a by-reference
+	// clone or copy, which refuses an Incomplete source with ErrIncomplete
+	// before anything changes (RFC 17 §5.9): reads of the file fail naming it rather
 	// than serve it as if whole. Versioned like every File field, so a
 	// snapshot of the clone still sees it; cleared by a truncate to zero, and
 	// gone with the file.
@@ -506,8 +514,9 @@ its deltas not yet folded, bounded by the fold backlog ([§9.2](#9.2%20Timestamp
 joined and nothing is computed. This is the one statement of its cost; others
 cite it. It is the write path's field — only an existence commit
 sets `Size`, `Charged`, `Applied`, `Modify` and the `Change` a write causes, and
-advances `Version` with them ([RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence)) — and every other operation leaves
-the write fields alone.
+advances `Version` with them ([RFC 6 §3](rfc-6-block-metadata.md#3.%20Existence)); `Charged` is also set by the
+transaction that finishes a removal ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)) — and every other operation
+leaves the write fields alone.
 
 Until the journal's writes to a file are committed, the committed `Size` lags
 them. `GETATTR` is therefore the filesystem service's join ([RFC 17](rfc-17-vfs.md)), made at the
@@ -636,36 +645,49 @@ Four inputs the walk meets are fixed for release 1, until RFC 19 replaces them:
 - **What a mode bit grants.** The mapped sets carry rights beyond reading and
   writing data, and a check needs every right it asks for
   ([MS-FSA](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/) 2.1.5.1.2.1), so a mode bit grants the whole of its set
-  to whoever it applies to, owner or not: a read bit grants read data, read
-  attributes, read extended attributes, read the ACL (`READ_CONTROL`) and
-  `SYNCHRONIZE`; a write bit grants write data, append, write extended
-  attributes, write attributes and `SYNCHRONIZE`; an execute bit grants
-  execute and `SYNCHRONIZE`. A group member's `GENERIC_READ` and `GENERIC_WRITE`
-  open of a 0664 file is therefore granted, as on a Windows server.
+  to whoever it applies to, owner or not. **Any** bit the caller holds grants
+  the minor rights every generic set carries — `SYNCHRONIZE`, read the ACL
+  (`READ_CONTROL`), read attributes and read extended attributes; beyond them a
+  read bit grants read data, a write bit write data, append, write extended
+  attributes and write attributes, and an execute bit execute. A group member's
+  `GENERIC_READ` and `GENERIC_WRITE` open of a 0664 file is therefore granted,
+  as on a Windows server, and so is a write-only `GENERIC_WRITE` open of a 0220
+  file or a `GENERIC_EXECUTE` open of a 0110 one, whose mapped sets carry those
+  minor rights too.
   Write attributes granted by a mode bit is granted at open, so the open
-  succeeds, but it lets a non-owner set only the times to the server's time: a
-  later set of a client-given time, of the DOS attributes, of the mode or of the
-  owner by a non-owner is refused `ErrPerm` at the set, as [§7.4](#7.4%20The%20identity%20arrives%20resolved) and
+  succeeds, and through that open it lets a non-owner set the times, client-given
+  ones included ([§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)); a later set of the DOS attributes, of the mode or of
+  the owner by a non-owner is refused `ErrPerm` at the set, as [§7.4](#7.4%20The%20identity%20arrives%20resolved) and
   [§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs) require.
 - **Well-known principals.** Each has a fixed principal ID ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)), so a
   stored entry can name it, and each is matched by a field of the identity
   ([§7.4](#7.4%20The%20identity%20arrives%20resolved)), never by privilege — a privileged caller skips the walk, so a
   principal matched only by privilege would grant nothing anyone walks:
 
-  | Principal | Matches |
-  | --- | --- |
-  | owner, group, everyone, owner rights | as above |
-  | **Authenticated Users**, **BUILTIN\Users** | a caller whose identity has `authenticated` set |
-  | **Administrators** | a caller whose identity has `admin` set |
-  | **NETWORK** | every caller: every caller arrives over the network |
-  | **SYSTEM** | no caller: nothing a client presents is the server's own system |
-  | **CREATOR OWNER**, **CREATOR GROUP** | no caller: they act only through inheritance (below) |
+  | Principal | Matches | SMB SID · NFSv4 `who` |
+  | --- | --- | --- |
+  | owner, group | as above | the file's owner or group SID · `OWNER@`, `GROUP@` |
+  | everyone | as above | `S-1-1-0` · `EVERYONE@` |
+  | owner rights | as above | `S-1-3-4` · none |
+  | **Authenticated Users** | a caller whose identity has `authenticated` set | `S-1-5-11` · `AUTHENTICATED@` |
+  | **BUILTIN\Users** | as Authenticated Users | `S-1-5-32-545` · none |
+  | **Administrators** | a caller whose identity has `admin` set | `S-1-5-32-544` · none |
+  | **NETWORK** | every caller: every caller arrives over the network | `S-1-5-2` · `NETWORK@` |
+  | **SYSTEM** | no caller: nothing a client presents is the server's own system | `S-1-5-18` · none |
+  | **CREATOR OWNER**, **CREATOR GROUP** | no caller: they act only through inheritance (below) | `S-1-3-0`, `S-1-3-1` · none |
+
+  The last column is how the adapters spell them on the wire
+  (RFC 21 and RFC 22); where it reads none, that protocol has no
+  spelling for it.
 
   An AUTH_SYS caller does not match Authenticated Users or BUILTIN\Users, though
   an entry naming its uid's own principal does: the uid is asserted by the
   client, not proven, and a named entry was written for that principal on an
   export that accepts asserted uids, while Authenticated Users promises a proof
-  the flavour never gave. A principal with no row in the table matches no
+  the flavour never gave. The cost lands on mixed shares: a tree whose ACL
+  grants only Authenticated Users, as Windows tools write it, is closed to every
+  AUTH_SYS client, which needs a named entry, its group's or everyone's instead.
+  A well-known principal with no row in the table matches no
   caller, and storing a **deny** entry that names one is refused with
   `ErrInvalid`: skipped by every walk, it would fail open. An allow entry naming
   one is stored and grants nothing. The principals in the table are stored in
@@ -831,11 +853,12 @@ changes `Charged` and the usage by the same delta. A truncate or a punch lowers
 the charge in its removal's phase 1, which reads up to K holes inside its
 extent, untracked, to learn how many of the removed bytes were charged, and
 writes O(1) keys whatever their number; past K it lowers the charge by the whole
-extent and its phase 2 gives the holes' bytes back as it drops them, so usage
-reads low, never high, until the removal is done ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). A clone
-charges the destination extent whole in its phase 1 and lowers it by each
-source hole as its batches write them, so usage reads high only while the clone
-runs ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)). No charge is computed by a scan of the file's holes
+extent, and each masked hole's bytes are given back by whichever transaction
+drops or replaces it, so usage reads low, never high, until the removal is done
+([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). A clone charges the destination extent whole in its phase 1, and
+its batches gather a lowering for each source hole they write, so usage reads
+high only while the clone runs ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)). What a removal's batches gather is
+folded into `Charged` and the usage once, by the transaction that sets it done. No charge is computed by a scan of the file's holes
 outside the extent changed.
 
 `chown` and `chgrp` move exactly `Charged` from the old principal to the new one
@@ -1180,11 +1203,16 @@ directory, a share's root included. A `Subdirs` that would go below zero is a
 consistency error, but unlike a wrong `Nlink`, which fails only the unlink that
 meets it, it **MUST NOT** wedge the directory ([RFC 6 §6.3](rfc-6-block-metadata.md#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)): a fold that would
 take it below zero raises a consistency health condition naming the directory
-and schedules a **recount** — a batched scan of the directory's entries, within
-the key budget K per transaction, that counts those naming a directory and
-rewrites `Subdirs` with the deltas folded so far — and until the recount
-commits, a read reports 2 + max(0, `Subdirs`) and never fails. The stored
-value is never clamped. An rmdir needs nothing new: its
+and schedules a **recount**, and until the recount commits a read reports
+2 + max(0, `Subdirs`) and never fails. The stored value is never clamped:
+`Subdirs` is signed, so the fold stores what the deltas sum to. The recount
+runs behind the directory's fold admission ([§9.2](#9.2%20Timestamps)): the primary stops
+admitting the directory's structural changes, lets those in flight finish,
+folds, scans the entries in batches within the key budget K, counting those
+that name a directory, and writes `Subdirs`, then admits the queued changes.
+With nothing admitted, no `mkdir` or `rmdir` lands in a range the scan has
+passed or not yet reached, so the count is exact. It pauses the directory's
+creates for the scan, a cost paid only after a consistency error. An rmdir needs nothing new: its
 child is empty, and the −1 is its parent's. A count read at `GETATTR` by
 listing would make every attribute read a scan of the directory.
 
@@ -1252,7 +1280,11 @@ grace ends with no reclaimed open ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%2
 deletes the pending release `F‖id‖rel` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); the removal then masks
 the refs, and its batches drop them. A crash
 anywhere between the unlink and that transaction leaves the record, and the
-primary's recovery releases every recorded file that no open holds. An unlink
+primary's recovery releases every recorded file that no open holds. It finds
+them through its shards' range of the pending-release index
+`S‖id‖pr‖shard‖file`, an entry written and deleted with each record
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), so a primary reads one row per pending release of its own shards
+and never scans the share's files. An unlink
 acknowledged with nothing recorded, and then forgotten, would leak every chunk
 of the file with nothing left to find them by — which is why the record is
 written even when the release follows at once.
@@ -1686,8 +1718,8 @@ service marks only these callers:
   that sets the owner to another principal, a set-security that writes the
   owner, group and DACL, a rename — as SMB servers apply their backup and
   restore privileges to the handle. Those requests reach this component with
-  the open they came through (`SetACL` and `Rename` take an open reference,
-  [§11.1](#11.1%20Interface)), so the handle's grant and privilege decide them, never a fresh
+  the open they came through (`SetAttrs`, `SetACL`, `Rename`, `Unlink` and the
+  xattr calls take an open reference, [§11.1](#11.1%20Interface)), so the handle's grant and privilege decide them, never a fresh
   unprivileged check. An ordinary open by the same principal, and every request
   on its handle, is evaluated unprivileged, and `MaximalAccess` is computed
   without the flag even on a backup-intent open.
@@ -1832,9 +1864,21 @@ with `via` is keyed on it ([§7.5](#7.5%20A%20cached%20decision%20is%20keyed%20b
 
 **Setting times.** A caller with **write data** on a file may set its `Access`
 and `Modify` to the server's time, as `utimensat` with `UTIME_NOW` allows a
-writer; setting them to a time the client gives needs ownership, **write
-attributes** granted by an ACL entry, or privilege; write attributes that only a
-mode bit grants does not ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)).
+writer. Setting them to a time the client gives needs ownership, **write
+attributes** granted by an ACL entry, or privilege — or a set made **through an
+open whose grant holds write attributes**, a mode bit's grant included
+([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)), which stores the client's times as given. That last route is SMB's: a
+set-information carries the open, and `FILE_BASIC_INFORMATION` has no "server
+time" value to fall back on, so a group member copying onto a 0664 file from
+Windows would otherwise be refused every time set. A set on no open — an NFS
+`SETATTR`, `utimensat` — keeps the owner rule, as POSIX has it.
+
+> decision: a write-attributes grant on an open lets its holder set
+> client-given times, as Windows does with `FILE_WRITE_ATTRIBUTES` and as Samba
+> does for any writer; a set on no open keeps POSIX's owner rule. The cost is
+> that a group writer over SMB can backdate a shared file's `Modify`, which
+> over NFS it cannot. Withdraw the open route if a backup or sync tool is
+> reported trusting `Modify` across a share both protocols write.
 
 ### 7.8 Immutable and append-only flags are enforced at the chokepoint
 
@@ -1892,7 +1936,10 @@ a third holder ([§4.4](#4.4%20There%20is%20no%20third%20holder)). When the last
 unlinks the recorded entry through `Unlink`, as a client would, with two
 differences: it runs as the principal of the open that set the delete mark, and
 it is authorised by that open's grant ([§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always)), not checked afresh, since the
-right to delete was decided when the mark was set. The open record stores that
+right to delete was decided when the mark was set. `Unlink` takes that open's
+reference ([§11.1](#11.1%20Interface)), its privilege included, so a delete on close through a
+backup-intent handle is not re-checked unprivileged against a DACL that
+excludes its caller. The open record stores that
 principal ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), so the unlink has an identity even when no client call
 causes it — a close by lease expiry, by revocation or at the end of grace. Run as
 whoever closed last, the unlink would let any principal holding an open of the
@@ -1906,8 +1953,12 @@ refuses new opens of it: `STATUS_DELETE_PENDING` over SMB, an access error over
 NFS. Otherwise a client fills a directory the deleting client was told is going,
 and the close-time unlink fails as not empty. A create that passed the check
 before the mark was set and commits after it is caught by the removal's own
-emptiness proof ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)): the unlink fails as not empty, the directory stays, and
-the failure is reported to the closing open, never as a silent leak.
+emptiness proof ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)): the unlink fails as not empty and the directory stays.
+**A refused deferred unlink** — not empty, or any other refusal — is logged at
+`Warn` naming the file and the open's principal, and counted
+(`namespace_deferred_unlink_refused_total`); the entry and the file stay. No
+client is told: the close it rode on has been answered, or had no client
+behind it ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)).
 
 ## 9. Attributes and what is not one
 
@@ -1944,14 +1995,20 @@ structural change of the directory runs ([RFC 15 §4.2](rfc-15-topology.md#4.2%2
 fold against them in memory. Once a fold is due, the primary stops admitting
 structural changes of that directory, which queue; it starts the fold when the
 ones in flight have committed or aborted, and admits the queued ones once the
-fold has committed. A change that touches two directories — a rename between
-them — is admitted at both at once or at neither: it is never held admitted at
-one while it queues at the other, so a rename A→B queued behind B's fold and one
-B→A queued behind A's never wait on each other's folds. Where both directories
-have one primary it admits them in one step under the directories' fixed order
-(by `FileID`); where they have two, the cross-primary call of [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)
-asks each in that order and releases the first if the second is not admitted
-at once, retrying after its fold. A change queued for admission holds no
+fold has committed. **A change that needs admission at several directories** —
+a rename between two, and a rename that moves a directory, which is admitted at
+that directory too — takes them in `FileID` order, the one lock order of
+[RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write), within the request's deadline; across two primaries the
+cross-primary call of [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) asks each in that order. It keeps those
+it holds while it waits at the next, which is safe because every change takes
+them in the same order: a rename A→B and one B→A, or two crossing moves — one
+moving X into Q, the other Q into X — never each hold what the other waits
+for. **A draining admission** — a fold, a directory's attribute change, a
+rename that moves a directory, a `Subdirs` recount — closes its directory and
+waits there for the changes in flight; it counts as held at that directory
+while it waits. A change that cannot take every admission by its deadline
+releases all it holds and answers `ErrDelay` with the cause `DelayConflict`
+([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A change queued for admission holds no
 accept lock: fold admission comes before the accept locks in the one lock order
 of [RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write) — the open-state serialisation of every file touched, in
 `FileID` order, then fold admission, then the accept locks, in `FileID` order —
@@ -1960,7 +2017,9 @@ admitted changes wait for. Waiting for a moment with nothing in flight would sta
 fold under a steady stream of creates, and the backlog, and every directory read
 that scans it, would grow without bound. Only a
 removal of the directory, which writes the record itself, still aborts a
-guarding create.
+guarding create. The same admission orders three other changes against the
+directory's creates: an attribute change of the directory and a rename that
+moves it ([§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)), and a recount of its `Subdirs` ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)).
 
 > decision: the fold pauses the directory's creates for one transaction; folds
 > are taken by backlog, not per create, so the pause is rare. Move the folded
@@ -2065,9 +2124,9 @@ that moves backward, or repeats, keeps a stale cache alive.
   a new file on another journal far behind it would keep a change attribute its
   own writes cannot move. That lock is the one
   rule for capturing NFSv3 pre-operation attributes; the layers above cite it
-  rather than restating it. The counter only rises. Every time a journal opens, and before it
-  serves a share it did not serve when it opened, it raises the counter above the
-  share's version floor ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+  rather than restating it. The counter only rises: a journal that opens, or
+  attaches a share it did not serve when it opened, does so by the attach rule
+  of [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile), which owns it.
 - **A version limit is durable before a version is used.** A version can be
   reported before anything that records it is durable: the overlay reports an
   unstable write's version before its journal record syncs, and a crash then
@@ -2078,8 +2137,8 @@ that moves backward, or repeats, keeps a stale cache alive.
   raised ahead of use; every write of it — at start, at attach and at each
   raise — is a tracked max-write, so journals serving different shards of one
   share never lower one another's limit. When it is raised, and the rule, are
-  stated once, in [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) — and a journal
-  that opens raises the counter above that limit as well as above the floor. A crash then
+  stated once, in [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), and the attach rule raises the counter
+  above the limit as well as the floor. A crash then
   skips the rest of a block, and never repeats a version any client saw.
 - **Every stored `Version` is in the floor.** A change that draws a `Version`
   **MUST** store it in the File in its own transaction — a `chmod` as much as an
@@ -2106,13 +2165,25 @@ that moves backward, or repeats, keeps a stale cache alive.
   the drawn one it refuses with `ErrVersionBehind` ([§11.1](#11.1%20Interface)), never surfaced
   to a caller; the filesystem service re-draws under the accept lock and
   retries within the call's deadline ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)). Holding the lock across the transaction instead
-  would make writes wait on metadata ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). For a **directory**, the
+  would make writes wait on metadata ([RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). **A write staged and not
+  yet committed counts as stored.** The check runs once, in the change's own
+  commit transaction, and refuses `ErrVersionBehind` when the File's stored
+  `Version`, or the highest version drawn by any write staged on the file and
+  not yet committed, is at or above the change's drawn version; the primary
+  supplies that staged version to the transaction as it commits. The overlay
+  already reports a staged write's version ([RFC 17 §5.7](rfc-17-vfs.md#5.7%20GetAttr)), so storing a
+  lower one under it would repeat that version with the new attributes. For a **directory**, the
   stored `Version` the check compares against is the larger of its record's and
-  every unfolded delta's, read in the same transaction: a create in the
-  directory that drew a higher version after an attribute change drew its own
-  has committed only a delta, and checked against the record alone the change
-  would store a lower `Version` that the delta's then hides, so the directory's
-  reported `Version` would stay put across it. A delta itself never stores over
+  every unfolded delta's, read in the same transaction, and a **directory's
+  attribute change, and a rename that moves a directory**, run behind the
+  directory's fold admission as a fold does ([§9.2](#9.2%20Timestamps)): the primary stops
+  admitting its structural changes, lets those in flight finish, then draws and
+  commits, and admits the queued ones. A create in the directory that drew
+  after the change and had committed only its delta would otherwise be missed
+  by the scan, which is untracked, and the change would store a lower
+  `Version` that the delta's then hides; guarding the delta range instead
+  would abort the change under every create burst until `DelayConflict`. The
+  pause is one transaction, as a fold's is. A delta itself never stores over
   the directory's `Version`, and the fold takes the maximum. A re-draw still
   refused when the call's deadline passes answers `ErrDelay` with the cause
   `DelayConflict` ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), never `ErrVersionBehind`. The overlay
@@ -2193,7 +2264,7 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 
 | # | Invariant |
 | --- | --- |
-| N1 | A file's `Nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. A directory's `Subdirs`, its folded value plus its unfolded deltas, equals its entries that name a directory and is what an adapter reports, as 2 + `Subdirs`, for its link count; an underflow raises a health condition and a recount, never fails a read, and is never clamped in the store. |
+| N1 | A file's `Nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. A directory's `Subdirs`, its folded value plus its unfolded deltas, equals its entries that name a directory and is what an adapter reports, as 2 + `Subdirs`, for its link count; `Subdirs` is signed; an underflow raises a health condition and a recount behind the directory's fold admission, never fails a read, and is never clamped in the store. |
 | N2 | A file is released when, and only when, it has a pending-release record, `Nlink` is zero and no open state references it; only the removal of its last entry, or its base's release for a named stream, writes that record, so a share root and a live file's streams are never released. Nothing else keeps a file alive. |
 | N3 | The transaction that removes a file's last entry writes its pending release, always, holding no holder list; only the release transaction — the engine's `Release`, which drops the refs — deletes it, so a restart or a new primary resumes it. Holders of an unlinked file are its durable opens ([RFC 14](rfc-14-open-state.md)); open state of a linked file is never written. |
 | N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction and guards every ancestor it reads. Create, link and rename-into guard the parent; removing a directory, or replacing it by rename, range-guards its entries and writes its record in the transaction that proves it empty, so a create racing it fails in either commit order. |
@@ -2204,11 +2275,11 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 | N9 | A release verifies inside its transaction that `Nlink` is zero, its pending release exists and no durable open names the file or a stream of it, range-guarding their durable open records; an open of a file that has lost its last entry (for a stream, whose base has) guards that File record; a file's streams are released with it, each as a file. |
 | N10 | Every wait in this component ends without operator action. |
 | N11 | A listing is ordered by a 63-bit keyed digest of each entry's key; its cookie is that digest, at least 3 with the top bit clear, and resolves with no stored state; no page ends inside a collision chain. |
-| N12 | `Size`, `Charged`, `Applied`, a file's `Modify` and its write `Change` are fields of the File, stored once, written only by an existence commit, which also advances `Version`; a directory's `Modify`, `Change` and `Version` advance instead by entry deltas folded into its record ([§9.2](#9.2%20Timestamps)); `GETATTR` is `Files.Get` with the engine's overlay applied by the filesystem service. This component calls no other component. |
+| N12 | `Size`, `Charged`, `Applied`, a file's `Modify` and its write `Change` are fields of the File, stored once, written only by an existence commit, which also advances `Version`, and, for `Charged` alone, by the transaction that finishes a removal ([RFC 6 §2.4](rfc-6-block-metadata.md#2.4%20FileData%20and%20holes)); a directory's `Modify`, `Change` and `Version` advance instead by entry deltas folded into its record ([§9.2](#9.2%20Timestamps)); `GETATTR` is `Files.Get` with the engine's overlay applied by the filesystem service. This component calls no other component. |
 | N13 | An entry is its own record, and no operation's cost grows with the size of its directory beyond the results it returns. |
 | N14 | Residency is not an attribute. |
 | N15 | `Mode` and the ACL agree after every transaction; `chmod` merges into the ACL as [RFC 8881 §6.4.1.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.4.1.1) specifies and never replaces it. |
-| N16 | A principal's usage is the sum of its files' `Charged`: each file's logical bytes, holes excluded, in full whether shared or not, unchanged by deduplication, compression or GC. While a removal or a clone runs it may differ by that operation's holes — low under a removal past K holes, high under a clone — and is exact once the operation is done. |
+| N16 | A principal's usage is the sum of its files' `Charged`: each file's logical bytes, holes excluded, in full whether shared or not, unchanged by deduplication, compression or GC. While a removal or a clone runs it may differ by that operation's holes — low under a removal past K holes, high under a clone — and is exact once the operation is done, whichever transaction drops or replaces a masked hole ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). |
 | N17 | On a case-insensitive share an entry is keyed by its folded name under the share's recorded fold rule, and stores the name as given. A share's fold rule never changes; names entering a share of another rule are creates under its rule, and one that folds onto an existing name fails as existing. |
 | N18 | A file's numeric id is its stored `Number`: allocated at create, never changed, never reused in its share; every protocol's numeric id is derived from it and nothing resolves a number to a file. |
 | N19 | An exclusive create stores its verifier in `CreateVerifier`, never in a time; a retry with the same verifier succeeds until the first `SetAttrs` clears it. |
@@ -2261,11 +2332,12 @@ type Namespace interface {
 	// Unlink and Rename report a file whose last entry they removed; its
 	// pending release is already written (§4.3), and the filesystem service
 	// runs the release once no open holds it.
-	Unlink(ctx context.Context, id Identity, v Versions, dir Handle, name []byte) (Orphaned, error)                                // §4; of a directory, range-guards its entries (§3.6)
-	// open: the open a rename came through (an SMB rename on a handle), whose
-	// grant and privilege decide it (§7.4, §7.7); nil otherwise.
+	// open, on Unlink and Rename: the open the call came through (an SMB
+	// rename on a handle, a delete on close), whose grant and privilege decide
+	// it (§7.4, §7.7, §8.2); nil otherwise.
+	Unlink(ctx context.Context, id Identity, v Versions, dir Handle, name []byte, open *OpenGrant) (Orphaned, error) // §4; of a directory, range-guards its entries (§3.6)
 	Rename(ctx context.Context, id Identity, v Versions, from Handle, fromName []byte, to Handle, toName []byte, open *OpenGrant) (Orphaned, error) // §5
-	PendingReleases(ctx context.Context, share ShareID) iter.Seq2[FileID, error] // recovery (§4.3)
+	PendingReleases(ctx context.Context, share ShareID, shard ShardID) iter.Seq2[FileID, error] // recovery: one shard's rows of the pending-release index (§4.3)
 }
 
 // Versions maps each File a call changes — the directories whose deltas it
@@ -2290,14 +2362,14 @@ type Orphaned struct{ File FileID }
 
 type Files interface {
 	Get(ctx context.Context, id Identity, h Handle) (File, error) // GETATTR: cost as §2.5 states
-	// open, on SetAttrs and SetACL: the open the request came through, as for
-	// Rename; nil for a request on no open.
+	// open, on SetAttrs, SetACL, SetXattr and RemoveXattr: the open the
+	// request came through, as for Rename; nil for a request on no open.
 	SetAttrs(ctx context.Context, id Identity, v JournalVersion, h Handle, a Attrs, open *OpenGrant) (File, error) // v: as for Namespace's mutating calls
 	ACL(ctx context.Context, id Identity, h Handle) (ACL, error) // synthesised from Mode if none stored (§2.6)
-	SetACL(ctx context.Context, id Identity, v JournalVersion, h Handle, acl ACL, open *OpenGrant) (File, error) // refuses a deny naming a well-known principal with no row in §2.6's table
+	SetACL(ctx context.Context, id Identity, v JournalVersion, h Handle, acl ACL, open *OpenGrant) (File, error) // ErrInvalid for a deny naming a well-known principal with no row in §2.6's table
 	Xattrs(ctx context.Context, id Identity, h Handle) iter.Seq2[Xattr, error]
-	SetXattr(ctx context.Context, id Identity, v JournalVersion, h Handle, x Xattr) error
-	RemoveXattr(ctx context.Context, id Identity, v JournalVersion, h Handle, name []byte) error
+	SetXattr(ctx context.Context, id Identity, v JournalVersion, h Handle, x Xattr, open *OpenGrant) error
+	RemoveXattr(ctx context.Context, id Identity, v JournalVersion, h Handle, name []byte, open *OpenGrant) error
 	Streams(ctx context.Context, id Identity, h Handle) iter.Seq2[File, error] // §2.7
 	// via is the directory h was resolved through, or zero; it lets delete and
 	// read attributes be granted from the parent (§7.7).
@@ -2369,6 +2441,7 @@ Metric names are shown without the deployment's prefix.
 | handles resolved stale ([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)) | `namespace_stale_handles_total` | counter |
 | `Nlink` and `Subdirs` underflows ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)); any nonzero value is an alert | `namespace_nlink_underflow_total` | counter |
 | pending-release records held ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) | `namespace_pending_releases` | gauge |
+| deferred unlinks refused after the last close ([§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later)); the entry stays | `namespace_deferred_unlink_refused_total` | counter |
 | releases, labelled `result`; a failure is retried, not dropped | `namespace_releases_total` | counter |
 | audit and quota events dropped by a slow sink ([§7.6](#7.6%20Decisions%20are%20observable)) | `namespace_events_dropped_total` | counter |
 | conflicts retried, by `op` | `namespace_conflict_retries_total` | counter |
@@ -2454,13 +2527,13 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§9.2](#9.2%20Timestamps) file pre-operation attributes | Two NFSv3 clients write one file in a loop at its primary. Assert every reply that carries pre-operation attributes has `before` equal to the attributes after the change immediately preceding it in the file's `Version` order. Capture under the commit serialisation only: the check fails. |
 | [§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later) delete-pending directory | Mark a directory delete on close over SMB; while the mark stands, create in it over SMB and over NFS, and rename a file into it. Assert each refused, and the directory removed at close. Race a create past the check: assert the close-time unlink fails as not empty and is reported. |
 | [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) name freed | Unlink a name and create it again as soon as the unlink is acknowledged, on every backend including a slow remote one. Assert the create never sees the name as taken and the parent's `Version` moved. |
-| [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) directory link count | In directory D create two subdirectories and a file, rename one subdirectory to another parent, rename a subdirectory over an empty one, and remove one; read D's link count over NFS before and after its fold, and the share root's. Assert it is 2 plus D's subdirectories at every step, folded or not, and that a fold forced to take `Subdirs` below zero raises a health condition naming D, a `GETATTR` of D still succeeds reporting at least 2, and a recount restores the true count with no operator action. A build that reports `Nlink` for a directory reads 1 throughout. |
-| [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) what a mode bit grants | On a 0664 file owned by alice of group `staff`, as bob, a `staff` member, open over SMB asking `GENERIC_READ` and `GENERIC_WRITE`, as a Linux SMB client sends it: assert granted. Through that handle set the times to the server's time: assert allowed; to a client time, the DOS attributes, the mode or the owner: assert `ErrPerm`. As a user outside `staff`, the same open: assert refused. |
+| [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) directory link count | In directory D create two subdirectories and a file, rename one subdirectory to another parent, rename a subdirectory over an empty one, and remove one; read D's link count over NFS before and after its fold, and the share root's. Assert it is 2 plus D's subdirectories at every step, folded or not, and that a fold forced to take `Subdirs` below zero raises a health condition naming D, a `GETATTR` of D still succeeds reporting at least 2, and a recount restores the true count with no operator action; run `mkdir` and `rmdir` in D throughout the recount and assert the count it writes is exact and the stored value read below zero before it. A build that stores `Subdirs` unsigned reports 2³² + 1 on the first underflow; one that recounts without holding D's admission writes a wrong count. A build that reports `Nlink` for a directory reads 1 throughout. |
+| [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) what a mode bit grants | On a 0664 file owned by alice of group `staff`, as bob, a `staff` member, open over SMB asking `GENERIC_READ` and `GENERIC_WRITE`, as a Linux SMB client sends it: assert granted. Through that handle set the times to the server's time and to a client time: assert both allowed and the client time stored as given; set the DOS attributes, the mode or the owner: assert `ErrPerm`. As bob over NFS, `SETATTR` `mtime` with `SET_TO_CLIENT_TIME`: assert refused. As a user outside `staff`, the same open: assert refused. |
 | [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) well-known principals | Store an ACL granting Administrators full and Authenticated Users read, with no other entry. As the share's `admin` over Kerberos without backup intent: assert full access through the walk; as another Kerberos user: read only; as that user's uid over AUTH_SYS: nothing, and with a named entry for its principal added: what the entry grants. Store a deny naming an unmodelled well-known principal: assert `ErrInvalid`; a deny for NETWORK: assert it refuses every caller. |
 | [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) inheritance | In alice's directory holding an inheritable "CREATOR OWNER: full" and "Finance: modify", bob creates a subdirectory and, in it, a file over NFSv4.2 with mode 0777 and umask 022. Assert the subdirectory holds an effective "bob: full" and an inherit-only "CREATOR OWNER: full", the file holds "bob: full" and nothing for alice, and Finance keeps modify on both. Create in a parent with no inheritable entry: assert the umask is applied to the mode. A build that replaces the propagating copy gives the file "alice: full". |
-| [§7.4](#7.4%20The%20identity%20arrives%20resolved) backup intent covers the handle | Over SMB as an authenticated `admin`, open a file whose DACL excludes the admin with backup intent, and through that handle set the owner, the group and a new DACL, then rename it: assert each succeeds. Open without the intent and set the DACL: assert refused. As root over Kerberos, mapped to uid 0, read a mode-0 file on an export with `no_root_squash`: assert allowed; with `root_squash`: refused. |
+| [§7.4](#7.4%20The%20identity%20arrives%20resolved) backup intent covers the handle | Over SMB as an authenticated `admin`, open a file whose DACL excludes the admin with backup intent, and through that handle set the owner, the group, a new DACL and an EA, then rename it: assert each succeeds. Open another such file with backup intent and delete on close, then close: assert the file is unlinked; make the unlink fail (a directory gaining an entry) and assert the entry stays, a `Warn` log names the file and `namespace_deferred_unlink_refused_total` rises. Open without the intent and set the DACL: assert refused. As root over Kerberos, mapped to uid 0, read a mode-0 file on an export with `no_root_squash`: assert allowed; with `root_squash`: refused. |
 | [§7.5](#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read) cache key after `chgrp` | Cache a delete-child decision for a group member through a 0775 directory, `chgrp` the directory to another group, delete again. Assert refused. A key holding only the directory's mode and ACL version serves the cached grant. |
-| [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) a drawn version is checked | Draw a `chmod`'s version, release the accept lock, accept and commit a write at a higher version, then let the `chmod` commit. Assert it re-draws and stores a `Version` above the write's, and the client never reads `Version` move backward or stay put across the `chmod`. Repeat on a directory, with a create in it committed between the `chmod`'s draw and its store: assert the `chmod` re-draws above the create's delta, so the directory's reported `Version` moves across it. Keep a write stream refusing every re-draw until the deadline: assert `ErrDelay` with `DelayConflict`. |
+| [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) a drawn version is checked | Draw a `chmod`'s version, release the accept lock, accept and commit a write at a higher version, then let the `chmod` commit. Assert it re-draws and stores a `Version` above the write's, and the client never reads `Version` move backward or stay put across the `chmod`. Repeat with a write accepted and staged after the `chmod`'s draw and not committed when the `chmod` commits: assert the `chmod`'s transaction refuses `ErrVersionBehind`, the service re-draws above the staged write's version, and the stored `Version` ends above it; a check that reads only the stored `Version` stores 101 under the overlay's 102. Repeat on a directory under a burst of creates in it (tens per millisecond): assert the `chmod` and a rename moving the directory each commit within one fold's pause, never `DelayConflict`, and the directory's reported `Version` moves across each; run two crossing moves, one moving X into Q and the other Q into X, under that burst: assert one commits and the other is refused by the loop check, neither waits past its deadline, and no admission stays closed; a check against an untracked delta scan stores a `Version` a create's delta hides. Keep a write stream refusing every re-draw until the deadline: assert `ErrDelay` with `DelayConflict`. |
 | [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) a create draws from the new file's journal | (cluster) Create a file whose parent's journal is far ahead of the journal that will serve the file; write it and read `Version` after each write. Assert `Version` rises with every write. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) share-wide quota and grace | Set a share-wide quota, list the share's quotas and find it; set every limit to zero and assert it is gone. Exceed a `Soft` limit, then change `Soft`: assert the grace restarts; change `Hard` only: assert the grace runs on. |
 

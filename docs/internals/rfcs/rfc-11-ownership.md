@@ -499,14 +499,21 @@ it can be fenced before its client addresses are taken over
   **shard incarnation**, which rises every time a node or journal begins serving
   the shard as primary and on nothing else: not on a raise before a move, not on
   a change of replicas. It fences nothing; it feeds the write
-  verifier ([§7](#7.%20Protocol%20state)). The shard record's separate **`GraceInstance`** names the
-  shard's current grace instance: it is set to the incarnation in the
-  transaction of a start that lost the shard's open state — a restart or a
-  failover — and carried unchanged by a handover or a batch move, which ship
-  the table, and by the grace a namespace move's address arrival opens
-  ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). A stateid carries its low bits, and a miss is
-  judged against it, never against the incarnation, which a handover raises; so a primary that serves a shard again after another
-  did never repeats a verifier it gave before.
+  verifier ([§7](#7.%20Protocol%20state)), so a primary that serves a shard
+  again after another did never repeats a verifier it gave before. The shard
+  record's separate **`GraceInstance`** names the shard's current grace
+  instance: it is set to the incarnation in the transaction of a start that
+  lost the shard's open state — a restart or a failover — and carried unchanged
+  by a handover or a batch move, which ship the table, and by the grace a
+  namespace move's address arrival opens
+  ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). A
+  handover whose old primary is lost after its compare-and-swap and before the
+  new primary holds the table is a loss of open state too: the new primary,
+  already named, runs grace as after a failover
+  ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)), and before it
+  serves it writes `GraceInstance` = its incarnation by compare-and-swap on the
+  shard record. A stateid carries the instance's low bits, and a miss is judged
+  against it, never against the incarnation, which a handover raises.
 - **An epoch never decreases for a file.** A shard's epoch **MUST** exceed that of
   every shard that previously held any of its files. A shard that receives files
   is therefore raised above every epoch they leave, before the first batch of a
@@ -709,7 +716,15 @@ one above G's by an ordinary change of R's record and installs it on R's replica
 
 1. **Freeze.** G's primary stops acknowledging writes, granting open state and
    serving reads for the batch's files, recalls their layouts, and drains what is
-   in flight for them. Calls for them wait; nothing else in G pauses.
+   in flight for them. Calls for them wait; nothing else in G pauses. A batch
+   skips a file that is the source or destination of an unfinished clone — one
+   whose source still holds its clone-kind open record
+   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) — and takes it in a later
+   batch once the clone is done, as it skips a file whose recorded shard is no
+   longer G ([§2.2](#2.2%20Automatic%20per-child%20shards)). A clone outlives
+   its request as background work the freeze does not drain, and `Export` knows
+   only removal markers, so moving either side would split it across shards,
+   which [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) forbids.
 2. **Ship.** G's primary sends R's primary each file's un-offloaded operations
    (`Export`, [RFC 10 §2.3](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)) — held superseded versions and their snapshot
    hold marks included ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)) — with the files' open-state
@@ -736,6 +751,14 @@ one above G's by an ordinary change of R's record and installs it on R's replica
      entries name ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), so a failover of R the moment after the commit
      already tells those clients to reclaim. Added after the commit, a failover
      between the two would lose their state in R with no client told;
+   - re-keys from G to R each namespace request record whose dedup entry the
+     batch shipped, with its expiry index entry (`SH‖shard‖rq‖requestID`,
+     `SH‖shard‖rqx‖expiry‖requestID`), and every per-shard index entry naming
+     a batch file, the pending-release index among them
+     ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)),
+     so R's own lookups, takeovers and recovery find them; left under G, a
+     retry after R's next takeover would run again and R's recovery would never
+     see the file's pending release;
    - advances the move record's cursor.
 
    If either epoch has changed, nothing commits: R's primary `Discard`s the
@@ -749,16 +772,25 @@ one above G's by an ordinary change of R's record and installs it on R's replica
    **forwarding entry** for each moved entry naming R, keyed by a tagged
    reference: the stateid's 64 random bits or, for an SMB persistent `FileId`,
    its `OpenID` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); G answers a call naming one with a routing error that
-   names R. A moved stateid keeps G's shard number and grace-instance bits, so
-   a miss at R is judged against G's current `GraceInstance`, which the
-   re-routed lookup carries, never against R's: a moved stateid later freed
-   then answers bad stateid, not stale. Without it, G answers a moved stateid as bad, breaking the promise
-   that a move hands state over unseen. The state lives at R, so G never sees
-   it end, and deleting the entry on R's close would write G's key on the close
-   path ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)). G deletes it **lazily**: when R answers a
-   re-routed call that it holds no such record, G deletes the entry in its own
-   transaction; and a periodic sweep at G's primary asks R about entries older
-   than the open-state lease and deletes those R no longer holds. A later move
+   names R. The forwarding entry also records R's `GraceInstance` at the
+   batch's commit, and G's routing error carries it to R with the re-routed
+   call. A moved stateid keeps G's shard number and grace-instance bits, which
+   name G's instance, not R's, so R judges a miss against the recorded
+   instance: stale while R is in grace or R's `GraceInstance` has moved past
+   it, since R then lost open state the client must reclaim; bad otherwise, as
+   for a moved stateid later freed. Without the entry, G answers a moved
+   stateid as bad, breaking the promise that a move hands state over unseen.
+   The state lives at R, so G never sees it end, and deleting the entry on R's
+   close would write G's key on the close path
+   ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)). G deletes it
+   **lazily**, and only on a bad answer from R: the front-end whose re-routed
+   call R answered bad reports it to G, and G's primary asks R itself about
+   that reference and deletes the entry in its own transaction if R answers
+   bad again; a stale answer keeps it, so the client's calls during R's grace
+   still reach R and learn to reclaim. A periodic sweep at G's primary asks R
+   the same about entries older than the open-state lease, and also deletes
+   one R answers stale for while R is out of grace: its client can no longer
+   reclaim, and G answering it bad costs nothing a stale answer would save. A later move
    of the same state from R onward writes R's own entry, so a chain G→R→Q costs
    one extra routing error per hop until the lazy delete reaches G; a move of
    it back to G deletes G's entry in that batch's commit, so nothing loops.
@@ -831,7 +863,8 @@ at the window's length it holds the peak mutation rate times 900 s, gigabytes
 that would stall the handover's freeze — so a new primary looks a journal
 operation's or a namespace mutation's retry up on a miss in the journal request
 entries and durable request records; the table travels, entry by entry, with
-the files of every batch. An entry is recorded
+the files of every batch, whose commit re-keys their request records under the
+receiving shard ([§4](#4.%20Moving%20files%20and%20primaries) step 3). An entry is recorded
 when its mutation is admitted, not when it has a result, so a retry that finds
 it still running waits for that result rather than running again. **It also survives a
 takeover (cluster):** a journal operation's record keeps its request ID and
@@ -1344,8 +1377,8 @@ var (
 | O3 | A shard record names its primary as (node, node epoch); a node whose lease lapsed is primary of nothing until it takes a shard over. |
 | O4 | A file's shard is set at create and changes only by a batched move; every file is in exactly one shard between batches. |
 | O5 | A node other than the primary, a replica included, serves only bytes carrying the version the primary names; a learner serves none. |
-| O6 | A stale route costs a refusal and a retry, never a wrong write; a retry is answered from the dedup table, keyed by request ID alone; a handover ships the open-state calls' entries with the open-state table and the rest are looked up on a miss in the journal request entries and durable request records; the table moves with the files of every batch. |
-| O7 | A failover starts grace for the shard and releases nothing before it ends; a handover or batch move hands open state over and starts none. |
+| O6 | A stale route costs a refusal and a retry, never a wrong write; a retry is answered from the dedup table, keyed by request ID alone; a handover ships the open-state calls' entries with the open-state table and the rest are looked up on a miss in the journal request entries and durable request records; the table moves with the files of every batch, and the batch's commit re-keys their request records under the receiving shard. |
+| O7 | A failover starts grace for the shard and releases nothing before it ends; a handover or batch move hands open state over and starts none, unless the handover's old primary is lost before the table arrives, which is a failover that advances `GraceInstance` before serving. |
 | O8 | The write verifier changes whenever the shard incarnation or the journal's loss generation changes, and is derived from no shard epoch; the shard incarnation rises every time a node begins serving the shard as primary, and on nothing else. |
 | O9 | Shard records and client state share no records. |
 | O10 | Every fenced commit is refused unless each file's fence record equals the (shard, epoch) it carries and the primary's node record, which it guards, holds the node epoch it carries unmarked; no fence is one record per shard. |
@@ -1454,7 +1487,7 @@ a claim or address mark waited out the claim hold.
 | `S-shard-session-id-collision` | two front-ends mint the same NFSv4.1 session ID and send the same slot and sequence to one primary; assert both calls are applied. A request ID without the front-end's node ID answers the second from the first's entry |
 | `S-shard-session-new-epoch` | a front-end paused past its lease is marked, re-acquires a higher node epoch and keeps its sessions; a call it forwarded under the old epoch lost its reply; the client retries on the same session, slot and sequence; assert it is answered from the first result. A request ID built from the front-end's current epoch applies it twice |
 | `S-shard-handover-open-state-retry` | an SMB `LOCK`, an NFSv4.1 `CLOSE` and a sequenced NFSv4.0 `LOCKU` each lose their reply while their shard is handed over; each is retried at the new primary; assert each is answered with its first result: no self-conflict, no bad stateid, no `BAD_SEQID`. A handover that ships no dedup entries fails all three |
-| `S-shard-forward-entry-life` | move a file with an open from G to R, close it at R, call G with the moved stateid: assert G re-routes, R answers no such record, and G deletes its entry. Move a second open G→R→Q: assert the call reaches Q. Move a third back to G: assert G's entry is gone after that batch. Remove the share: assert no forwarding entry remains |
+| `S-shard-forward-entry-life` | move a file with an open from G to R, close it at R, call G with the moved stateid: assert G re-routes, R answers bad stateid, and G deletes its entry. Move a fourth open G→R, fail R over, and call G with its stateid during R's grace: assert R answers stale, G keeps its entry, and the client's reclaim at R succeeds; a miss judged by G's instance answers bad and loses the lock. Move a second open G→R→Q: assert the call reaches Q. Move a third back to G: assert G's entry is gone after that batch. Remove the share: assert no forwarding entry remains |
 | `S-shard-cross-clone` | clone a file into a directory whose files land in another shard, once with the two shards on different primaries and once on one: assert NFSv4.2 `CLONE` answers `NFS4ERR_XDEV` and a `COPY` of the same range is copied server-side, with the source extent writable throughout |
 | `S-shard-hop-loop` | two front-ends with crossed stale caches: refused at the hop limit, then routed |
 | `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline, each deleting its hold record; a late commit is refused |
@@ -1472,6 +1505,9 @@ a claim or address mark waited out the claim hold.
 | `S-shard-repair-one-join` | lose the first replica of a per-child shard's slot; let repair restore the count, then let the node leave the placement set; assert the recomputed slot names the node repair joined, and the shard saw one join and one tail copy |
 | `S-shard-verifier-roundtrip` | hand a shard A → B → A with no restart; assert the write verifier A gives the second time differs from the first. A verifier from node, node epoch and process instance alone repeats |
 | `S-shard-slot-domains` | four nodes in two racks, replica count 2; assert every slot's nodes lie in different racks, and that a rack loss leaves every shard a replica |
+| `S-shard-handover-lost-table` | kill the old primary after a handover's compare-and-swap and before the new one holds the table, with an NFSv4.1 client that sent `RECLAIM_COMPLETE` since the last loss; assert the new primary writes `GraceInstance` before serving and the client's reclaims are accepted. A primary that keeps the old instance answers them `NO_GRACE` |
+| `S-shard-move-request-records` | an `REMOVE` in a directory commits and loses its reply, the directory moves G→R, then R fails over; assert the retry at R is answered from its request record, and that R's recovery finds a moved file's pending release. A request record left under G applies the remove twice (`NOENT`) |
+| `S-shard-move-running-clone` | admit a slow clone with both files in G, then mark their directory per-child; assert the batches skip both files until the clone is done and move them after, and that the source extent is never writable while the clone runs |
 | `S-shard-intent-reclaim` | a primary of a shard with no replica crashes between an intent and its put, restarts and re-claims; assert the intent is superseded by the node epoch and collected |
 
 **Properties** every run asserts:

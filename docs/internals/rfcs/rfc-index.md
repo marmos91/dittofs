@@ -120,7 +120,11 @@ every RFC of this set are to be interpreted as in RFC 2119.
   inside it, so that component is reviewed as one: none of its members is marked
   `reviewed` before all of its non-deferred members are. A deferred member holds
   the review back only through the rules a first-release RFC cites from it; one
-  cited only by **(cluster)** rules is reviewed with the cluster.
+  cited only by **(cluster)** rules is reviewed with the cluster. RFC 21 and
+  RFC 22, which live on the protocol branch stacked on this set, cite each other
+  and so form a second component of their own; that is intended — each adapter
+  states where it meets the other — and the two are reviewed together, after the
+  storage component they build on and never before it.
 - A rule that binds only in a cluster is marked **(cluster)** where it is
   stated, and links the single-node profile.
 - Normative text names no product, package or file. Products appear only in
@@ -150,8 +154,16 @@ every RFC of this set are to be interpreted as in RFC 2119.
 
 ## Test tiers
 
-Every RFC's test plan follows the rules here; an RFC states only what is
-specific to its component.
+**The harness owns tiers, suites and grading.** [The test-harness RFC](../rfc-test-harness.md) is
+the one owner of when tests run, which suites exist, the fixtures they run
+against, and how a run is graded — its tiers ([§4.3](../rfc-test-harness.md#4.3%20Tiers)), its
+registry, fixtures and grading. This index states what a storage RFC's checks
+are and what must not stand in for them, and what the storage RFCs need from the
+harness ([below](#What%20the%20storage%20RFCs%20need%20from%20the%20harness)); it keeps
+no tier or suite table of its own. Every RFC's test plan follows the rules here
+and the harness's; an RFC states only what is specific to its component. Where
+an RFC names a tier — per change, after merge, daily — it means the harness's
+tier that runs on every pull request, after every merge, and nightly.
 
 **What conformance is.** An implementation conforms when every **MUST** in its
 RFC holds. Each RFC's named checks are not that definition: they are evidence
@@ -174,7 +186,7 @@ red by accident. Passing them is necessary, not sufficient.
   sink whose writes always succeed, or an in-memory backend, is never the only
   backend under test for a check about durability, cost or crashes.
 - The remote tier under test is a local emulator of the remote service, and at
-  least one real service in the daily tier.
+  least one real service on a schedule.
 - A harness that constructs a component differently from production is never the
   only path under test.
 - Records built by hand are never the only input to a component whose input
@@ -195,14 +207,6 @@ to a tier that runs it. A check that timed out or was aborted is a failure,
 never a skip. A known-failure list names checks, not outcomes: an entry excuses
 one named check, and a check that fails in a way it does not name still fails
 the tier.
-
-**When tests run.**
-
-| Tier | Runs | Contains |
-| --- | --- | --- |
-| **Per change** | on every proposed change | unit, conformance, property and fuzz seeds, model-based tests at a fixed budget, and each RFC's counted checks; minutes, no timing, no external service |
-| **After merge** | after each merge to the integration branch | the protocol conformance suites ([Test harness](#Test%20harness), item 4), and benchmarks on the reference box, recorded; a benchmark result more than 10% worse than the last is reported and blocks the next change to that path until explained (below) |
-| **Daily** | once a day on the integration branch | benchmarks that need space or hours, soaks, longer fuzz and model runs, and tests against real backends |
 
 **Model tests.** A rule whose failure needs an interleaving — work split into
 batches, a race between two writers, a crash between two steps — is checked by a
@@ -268,12 +272,11 @@ measurements **MUST** be recorded there:
    p99, on every workload. Better on some and more than 5% worse on any one keeps
    A ([RFC 28 §2.6](rfc-28-journal-format.md#2.6%20Segments%20or%20staging%20files%2C%20chosen%20by%20benchmark)).
 
-**A regression blocks until explained.** A row more than 10% worse on a measured
-path, against the last recorded result on the reference box, blocks the change
-that caused it — or, where only the after-merge run sees it, the next change to
-that path — until the regression is explained: fixed, or accepted with its reason
-recorded beside the result. The after-merge run does not undo a merge; the
-explanation is what it waits for.
+**A regression is tracked, and explained.** Performance is tracked, not gated,
+as the harness has it. A row more than 10% worse on a measured path, against
+the last recorded result on the reference box, needs a recorded decision —
+fixed, or accepted with its reason beside the result — before the next result
+on that path becomes its baseline.
 
 ## Test harness
 
@@ -309,35 +312,41 @@ than a private one per RFC.
    the scenarios of [RFC 12 §5](rfc-12-snapshots.md#5.%20Test%20plan%20and%20benchmarks), [RFC 26 §6](rfc-26-catalog-backups.md#6.%20Test%20plan%20and%20benchmarks) and
    [RFC 27 §5](rfc-27-namespace-migration.md#5.%20Test%20plan%20and%20benchmarks) move onto it. Until then the composed harness,
    driven from seeds, stands in.
-4. **A tier for every protocol suite**, with the deployment it runs against.
-   Each runs against one single node composed as in production, its remote tier
-   a local emulator of the remote service unless the row says otherwise.
+4. **The protocol suites are the harness's**, with their tiers and fixtures
+   ([the test-harness RFC](../rfc-test-harness.md)). The protocol RFCs (RFC 21 and RFC 22) own
+   which tests each suite must pass and each suite's known-failure list, every
+   entry naming the decision that makes it fail. A protocol check that tests a
+   single-node rule runs on one node, even where a cluster row tests the same
+   rule across a failover: a row mixing the two is split, so a single-node rule
+   — a restart's grace and its reboot tests included — never loses its only wire
+   check to the deferred cluster.
 
-   | Suite | Tier | Deployment |
-   | --- | --- | --- |
-   | pynfs, NFSv4.0 and v4.1 server tests | after merge | single node; the protocol RFC's known-failure list |
-   | the Linux kernel NFS client: connectathon-style basic, general and lock tests, and a filesystem regression suite (xfstests) | daily | single node; kernel client over NFSv3, v4.0 and v4.1 |
-   | smbtorture, SMB2 and SMB3 groups | after merge | single node; the protocol RFC's known-failure list |
-   | real Windows and Linux SMB clients | daily | single node, once a day against a real remote service as well |
+## What the storage RFCs need from the harness
 
-   The protocol RFCs (RFC 21 and RFC 22) own which tests each
-   suite must pass and each suite's known-failure list, every entry naming the
-   decision that makes it fail; this table owns only when they run and against
-   what. A protocol check that tests a single-node rule runs here, on one node,
-   even where a cluster row tests the same rule across a failover: a row mixing
-   the two is split, so a single-node rule — a restart's grace and its reboot
-   tests included — never loses its only wire check to the deferred cluster.
+Each is a requirement the storage RFCs' checks rest on, with its reason. Where
+the harness does not yet meet one, the check that needs it is not evidence
+until it does.
 
-### Today's suites, mapped to the tiers
-
-*Non-normative: where the current code differs.* The existing suites carry
-over as follows; none is deleted until its tier row above runs instead.
-
-| Today | Becomes | Tier |
-| --- | --- | --- |
-| `pkg/metadata/storetest` conformance suite | the metadata store's conformance suite ([RFC 16 §6.1](rfc-16-metadata-store.md#6.1%20Two%20suites%2C%20layered%20like%20the%20code)), run on the fault-injecting store as well | per change |
-| `RemoteBlockStoreConformance` | the remote tier's conformance suite ([RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite)): against the emulator per change, against a real service daily | per change, daily |
-| `test/e2e` (kernel NFS client against a running server) | the kernel-client row above | daily |
+1. **A failing seeded model test keeps and replays its seed; it is never retried
+   into green or quarantined.** A model test that finds a rare interleaving
+   finds it once; a rerun draws another seed and passes, so a retry or a
+   quarantine files the bug as flakiness and loses the only input that shows it.
+2. **Performance is tracked, and a regression past 10% needs a recorded
+   decision.** The harness's "tracked, not gated" stands; the decision —
+   fixed, or accepted with its reason beside the result — is what keeps a slow
+   drift from becoming the baseline unnoticed ([Test tiers](#Test%20tiers)).
+3. **An xfstests suite.** RFC 21 relies on it for the
+   filesystem semantics no protocol suite covers.
+4. **NFSv3 mounted with locks for the lock rows.** A `nolock` mount answers
+   every lock locally, so a lock row run on it tests the client, not the server.
+5. **Fixtures use only settings RFC 13, 14 and 16 define.** No lease setting —
+   the client lease is not a setting ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)) — and no squash
+   `root_to_admin`, since a share squashes none, root or all
+   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)): a fixture with a setting the server does not have
+   tests a server that does not exist.
+6. **A known failure that passes fails the run.** The protocol RFCs' lists pass
+   when exactly those checks fail; an entry that no longer fails is a list that
+   no longer names the server's behaviour, and must be removed with the fix.
 
 ## Reference workloads
 

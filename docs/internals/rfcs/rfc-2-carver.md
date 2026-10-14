@@ -965,9 +965,11 @@ Each check is a pure function of a chunk stream, a stub lookup and settings.
 
 ## 6. Boundaries are public
 
-The boundary function and its settings are fixed constants in the source. Anyone
-can therefore work out where a given file's chunks will fall. **This layer does
-not hide which files a deployment holds.**
+The boundary function and its settings are fixed constants in the source. In a
+namespace that does not encrypt, anyone can therefore work out where a given
+file's chunks will fall; in one that does, the gear table is keyed, and anyone
+who knows some of its stored content can still recover it (below). **This layer
+does not hide which files a deployment holds.**
 
 The consequence is a known-file channel. The run of chunk sizes a file produces is
 a fingerprint, so an observer who can see object sizes and counts in the remote
@@ -994,9 +996,10 @@ claim otherwise.
 
 **With encryption, boundaries are keyed.** When a namespace encrypts, its chunk
 IDs are keyed under a wrapped key ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout), [RFC 5](rfc-5-transforms.md)) and its shares cut with a gear table
-expanded from a **chunking key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so an observer without it cannot predict where
-a candidate file's boundaries fall, and so cannot match the lengths it sees to
-the file. Which namespaces hold a chunking key, and how, is
+expanded from a **chunking key** ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so an observer without it — one who can
+cause no write into the namespace and knows none of its stored content (below)
+— cannot predict where a candidate file's boundaries fall, and so cannot match
+the lengths it sees to the file. Which namespaces hold a chunking key, and how, is
 [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s; this section restates none of it:
 
 - **Scope.** Keyed boundaries follow the namespace's encryption setting at

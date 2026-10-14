@@ -327,8 +327,11 @@ as [RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards) gives 
   check the operation against its open state, recall the caching grants it
   breaks, and hold the files until an outcome or a deadline in store time, no
   later than its own node lease expiry less the drift bound, and first commit a
-  durable hold record for the operation. Each answers yes with its (shard,
-  epoch) and (node, node epoch), or no.
+  durable hold record for the operation. Each participant draws, under each of
+  its files' accept locks, the version that file's change takes from its own
+  journal ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)),
+  and answers yes with those versions, its (shard, epoch) and (node, node
+  epoch), or no.
 - **Commit.** On every yes, the coordinator commits **one** metadata-store
   transaction that guards the fence records of every file and directory it
   changes at the (shard, epoch) each primary answered with, guards each
@@ -370,7 +373,11 @@ by-reference clone or copy whose source and destination are in different
 shards **MUST** therefore be refused at admission with `ErrCrossShard`
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), whatever their primaries are then: two shards
 that share a primary at admission can be split by the next failover or
-handover mid-clone. The adapters fall back without telling the client the
+handover mid-clone. A clone admitted within one shard is not split by a batch
+move either: a batch skips a file that is the source or destination of an
+unfinished clone until the clone is done
+([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). On
+`ErrCrossShard` the adapters fall back without telling the client the
 operation is missing: an NFSv4.2 `COPY` and an SMB copychunk become a
 server-side byte copy, reads at the source's primary and writes at the
 destination's; an NFSv4.2 `CLONE` answers `NFS4ERR_XDEV`, never
@@ -389,7 +396,7 @@ Every call a node forwards to a primary carries one envelope:
 
 | Field | Means |
 | --- | --- |
-| request ID | derived from the protocol's own retry identity, not from the connection, because an NFSv4 client retries only on a new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0, (client address, XID, procedure, checksum of the arguments), as a server's reply cache keys a retry; for NFSv4.1, (front-end node ID, the node epoch the session was created under, session, slot, sequence ID), since each front-end mints its own session IDs and nothing makes them unique across front-ends. Whatever its fields, a request ID is stored as one byte string ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)). The epoch is the session's, not the front-end's current one: a front-end marked lapsed re-acquires a higher node epoch without restarting, its sessions survive, and a retry on the same session, slot and sequence must still carry the ID its first send did. A retry carrying the same identity carries the same ID: for NFSv3 and NFSv4.0 on any connection and through any front-end that holds the client's address; for NFSv4.1 on any connection of its session, which lives at one front-end ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)). An SMB request is given an ID the front-end mints — its node ID and node epoch, the connection, and a number never reused on it — since SMB names its retries by open state instead (below); it is never derived from SMB message IDs, which are per connection, so two channels of one session can send two different requests under one (client GUID, session ID, message ID) |
+| request ID | derived from the protocol's own retry identity, not from the connection, because an NFSv4 client retries only on a new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0, (client address, XID, procedure, checksum of the arguments), as a server's reply cache keys a retry; for NFSv4.1, (front-end node ID, the node epoch the session was created under, session, slot, sequence ID), since each front-end mints its own session IDs and nothing makes them unique across front-ends. Whatever its fields, a request ID is stored as one byte string ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)) whose first byte tags its family — NFSv3, NFSv4.0, NFSv4.1 or SMB — so IDs of two families, whose fields can encode alike, never compare equal. The epoch is the session's, not the front-end's current one: a front-end marked lapsed re-acquires a higher node epoch without restarting, its sessions survive, and a retry on the same session, slot and sequence must still carry the ID its first send did. A retry carrying the same identity carries the same ID: for NFSv3 and NFSv4.0 on any connection and through any front-end that holds the client's address; for NFSv4.1 on any connection of its session, which lives at one front-end ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)). An SMB request is given an ID the front-end mints — its node ID and node epoch, the connection, and a number never reused on it — since SMB names its retries by open state instead (below); it is never derived from SMB message IDs, which are per connection, so two channels of one session can send two different requests under one (client GUID, session ID, message ID) |
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the front-end; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)) |
@@ -410,8 +417,9 @@ Every call a node forwards to a primary carries one envelope:
   retries it, and is no bound for the window. An entry is recorded when its
   mutation is admitted, so a retry that finds it still running waits for its
   result instead of running a second time. A handover ships only the entries
-  of open-state calls — an SMB `CLOSE` or `LOCK`, an NFSv4.1 `CLOSE` or `LOCKU`,
-  a sequenced NFSv4.0 operation — with the open-state table they apply to
+  of open-state calls — an SMB `CREATE`, `CLOSE` or `LOCK`, an NFSv4.1 `OPEN`,
+  `OPEN_DOWNGRADE`, `CLOSE`, `LOCK` or `LOCKU`, a sequenced NFSv4.0 operation —
+  with the open-state table they apply to
   ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)), since those calls leave no durable result to
   find again and a retry run twice would conflict with the client's own lock or
   answer a bad stateid or seqid; they are few next to writes. The rest of the
@@ -456,7 +464,10 @@ Every call a node forwards to a primary carries one envelope:
   a new request ID, and the primary, which holds the open ([RFC 14](rfc-14-open-state.md)),
   matches it as MS-SMB2 does: a create by its create GUID, a lock by the open's
   lock sequence, and every other operation on an open by the open's channel
-  sequence, refusing one whose channel sequence is stale (MS-SMB2 3.3.5.2.10).
+  sequence, refusing with `STATUS_FILE_NOT_AVAILABLE` a `WRITE`, `SET_INFO` or
+  `IOCTL` whose channel sequence is stale, or that replays one still in flight
+  under an earlier sequence — never holding it — and no other request
+  (MS-SMB2 3.3.5.2.10).
   The channel sequence and the counts of requests outstanding under it are
   fields of the `Open` record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), held at the primary and handed
   over with it. For a persistent open the channel sequence is durable, written
@@ -489,10 +500,10 @@ Every message between nodes — a forwarded call, a replication message
   peer whose credential the installation did not issue, or whose node record is
   decommissioned.
 - **Encrypted**, with integrity, so nothing on the network reads or alters a
-  forwarded write or a offload notice.
+  forwarded write or an offload notice.
 - **Bound to the sender.** A receiver **MUST** refuse a message that names a
   node other than the channel's authenticated peer. Without that, any node — or
-  anything that reaches the network — can forge a offload notice that makes a
+  anything that reaches the network — can forge an offload notice that makes a
   replica release dirty content, or a forwarded write under another node's name.
 
 Collocated, a node channel is a function call and none of this applies.
@@ -684,15 +695,19 @@ store gives no high availability, whatever the roles.
   another shard answers `NFS4ERR_XDEV`, a `COPY` of it is copied server-side
   and answers success with its count, and a later same-shard `CLONE` on the
   mount still clones; repeat with the two shards sharing a primary at
-  admission ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+  admission ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)). Then admit a
+  slow same-shard clone and mark its directory per-child while it runs: assert
+  the batch skips both files until the clone is done, then moves them.
 - **Multichannel message IDs:** two channels of one SMB session send two
   different writes under the same message ID. Assert both are applied (T3, T10).
   A table keyed on (client GUID, session ID, message ID) answers the second with
   the first's result and fails this.
 - **SMB replay on another channel:** lose the reply of a create and of a lock on
   one channel, replay each on a second channel. Assert one open and one lock;
-  replay a write with a stale channel sequence and assert it is refused; then
-  fail the primary over and replay it again on a persistent open, and assert it
+  replay a write with a stale channel sequence and assert it is refused, and a
+  read with a stale one and assert it is served; replay a write whose original
+  is still in flight and assert `STATUS_FILE_NOT_AVAILABLE` at once, not a hold; then
+  fail the primary over and replay the write again on a persistent open, and assert it
   is still refused (T10).
 - **No pNFS on one node:** against a single node, assert `EXCHANGE_ID` does not
   advertise a pNFS metadata server and `LAYOUTGET` answers `NFS4ERR_NOTSUPP` (T11).

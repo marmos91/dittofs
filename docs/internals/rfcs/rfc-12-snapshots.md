@@ -360,10 +360,12 @@ bytes, or has its rename waiting at the gate, and the snapshot shows the old
 > consistency.
 
 > ponytail: the pre-cut commit runs in two steps only when more than `G` files
-> of the shard are pending existence at the close ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), and otherwise runs
-> whole behind the closed gate, which then holds one group commit. Run the two
-> steps on every cut if gate-close time measures too long with `G` or fewer
-> pending.
+> of the shard are pending existence at the prepare, before the announce
+> ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), once per cut, and otherwise runs
+> whole behind the closed gate, which then holds one group commit. Run the
+> prepare's commits on every cut if gate-close time measures too long with `G`
+> or fewer pending, and repeat the pass if a backlog that refills between the
+> prepare and the close is seen refusing cuts at `gate_max`.
 
 **`died` is the successor's `born`.** When a transaction supersedes a version —
 an overwrite's offload commit, a truncate or deallocate, a release, a rename, a
@@ -501,7 +503,25 @@ admitted until it commits or its prepare's hold deadline ends it
 ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)), which bounds how long it keeps a gate from closing.
 
 The **coordinator** is the control plane's snapshot service. Taking snapshot *k*
-is four steps:
+is four steps, after one pass that runs before them:
+
+**Prepare, with the gate open.** Before the announce, and so outside
+`snapshots.cut_deadline`, the coordinator asks the primary of every shard of
+the share to prepare. Each primary syncs the share's streams in its journals.
+When more than `G` files of the shard are then pending existence — a
+small-file writer that never flushes leaves that backlog under `standard`
+([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), and an untar under
+`bounded` — it commits them with the gate open, up to provisional points, in
+as many group commits as they take, and replies. These are ordinary existence
+commits: they read cut *k* − 1 and need no exception to any rule of §2.2. The
+coordinator announces once every primary has replied, or once
+`cut_deadline` has passed since it asked, whichever comes first; a primary
+still in its pass when asked to close stops it there, and what it left is
+the pre-cut commit's. The pass runs **once** per cut: what arrives after it is
+committed behind the closed gate in step 2, within `gate_max`, and a backlog
+that refills past what `gate_max` can commit refuses the cut as a stalled
+store does. So the gate holds only what arrived since the pass, and the
+announce's deadline never covers it.
 
 1. **Announce.** The coordinator reads the share's state with tracking and
    refuses unless it is `enabled` or `quiesced`, so a cut and a share's removal
@@ -517,30 +537,39 @@ is four steps:
    share, as the shard records name them, to close. Each primary first syncs
    the share's streams in its journals with the gate still open, so on a share
    whose sync policy is `standard` ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), where no timer bounds what
-   is unsynced, the gate covers only what was written since that sync. When
-   more than `G` files of the shard are then pending existence — a small-file
-   writer that never flushes leaves that backlog under `standard`, and an untar
-   under `bounded` — it also commits them with the gate still open, up to
-   provisional points, in as many group commits as they take, so the closed
-   gate holds only what arrived since. It then
+   is unsynced, the gate covers only what was written since that sync. It
+   does not repeat the prepare's open-gate commits. It then
    closes its gate: new transactions wait at it, and those already admitted finish. It
    then takes its final cut points and commits the shard's pending existence up
-   to them — what remains after any provisional points — behind the closed gate, asking the group commit to run at once rather
+   to them — what remains after the prepare's provisional points — behind the closed gate, asking the group commit to run at once rather
    than at its next scheduled turn, within `snapshots.gate_max`
-   ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). A file whose existence commit fails alone — an undecodable File
+   ([§2.2](#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). That pre-cut commit also runs the
+   first phase of every clone whose journal step and copies lie below the cut
+   points, waiting within `gate_max`
+   ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)):
+   a write to the destination outside the clone's extent, acknowledged after
+   the clone's journal step and before the cut points, commits only after that
+   phase, and would otherwise land after the cut. A clone whose journal step
+   is below the cut points but whose copies are not — still running, or
+   waiting for space — or whose first phase cannot commit within `gate_max`
+   does not fail the shard's reply: its destination is listed **incomplete**,
+   as below. A file whose existence commit fails alone — an undecodable File
    record, a file the engine already backs off by itself
    ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) — does not fail the shard's reply: the primary names it, and
    the cut lists it in the Snapshot record as **incomplete**. A read of an
    incomplete file in the snapshot fails naming it, never serving the file as it
    was before the writes the cut could not commit. The list travels with every
-   copy of the snapshot: a clone ([§2.6](#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace)) marks the same files incomplete
-   in the new share — a flag on each one's `File` record
-   ([RFC 7 §2.4](rfc-7-namespace-metadata.md#2.4%20Attributes%2C%20and%20who%20writes%20them)), versioned like every other field, which a restore sets too, so a
-   snapshot of the new share sees the mark as it stood at its cut and its reads
-   of the file fail in turn —
-   whose reads of them fail the same way until the file is
-   truncated to zero or deleted, which clears the flag, and a catalog backup carries the list in its
-   export header, so a restore marks them too ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)). No copy serves
+   copy of the snapshot. A clone ([§2.6](#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace)) marks the same files incomplete
+   in the new share, and a catalog backup carries the list in its export
+   header, so a restore marks them too ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)). The mark is a flag on
+   each one's `File` record
+   ([RFC 7 §2.4](rfc-7-namespace-metadata.md#2.4%20Attributes%2C%20and%20who%20writes%20them)), versioned like every other field: reads of the
+   file in the new share fail the same way until it is truncated to zero or
+   deleted, which clears the flag, and a snapshot of the new share sees the
+   mark as it stood at its cut, so its reads of the file fail in turn. Only
+   these share-level copies carry the mark; a by-reference clone or copy of
+   one file from an incomplete source is refused before anything changes
+   ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)). No copy serves
    the pre-write version as current. The list is bounded, 16 files
    per shard; a shard with more refuses the close, as one with too much held
    does. One broken record so costs its own file in each snapshot, not every
@@ -1536,8 +1565,8 @@ scenarios add.
 | S11 | `S-snap-locked-delete`, `S-snap-clone-vs-delete`, `S-snap-backup-abandoned` (RFC 26). Crash expiry and abandonment after each step: a restore never succeeds from an expired or failed backup, and never reads a swept block. |
 | S21 | Rewrite a 10 GiB file hourly under a quota with hourly snapshots: charged usage stays at 10 GiB, `history_bytes` grows, and bytes freed if deleted for the oldest snapshot matches what its deletion frees. |
 | S22 | `S-snap-subtree-rename`, `S-snap-subtree-coexist` and `S-snap-subtree-nested` under the model-based run: each live snapshot of either kind reads back its model copy. `S-snap-subtree-stale-stamp`. Test coverage by klatest alone, ignoring `SubCut`: the subtree snapshot reads post-cut bytes. Allow the move of `S-snap-subtree-move-refused`: a later write drops history the subtree snapshot reads. |
-| S27 | Write with `UNSTABLE` and acknowledge, write a stable overwrite with no `COMMIT`, and take a snapshot at once, before any group commit is due: the snapshot has both writes. Write w1 then w2 to two files of one shard with the group commit stalled, and cut between them while the stall lasts: the snapshot holds w1 whenever it holds w2. Remove the pre-cut commit: the snapshot lacks both writes of the first case. Stall the store past `gate_max`: the cut is aborted, the gate reopens and writes keep being acknowledged. Write and flush `~tmp1` after the cut points and rename it over `report.docx` while the gate is closed: the snapshot shows the old `report.docx`, never a zero-length one. `S-snap-cut-failover`: a primary that starts closed after a takeover commits its recovery and pre-cut existence behind its own gate and replies; the snapshot holds every write acknowledged before the request. |
-| S28 | `S-snap-gate-bounds`: under sustained offload, with a group commit of 256 files and an offload commit filling the key budget K admitted at every close and taking 200 ms each, every hourly cut for a day commits. Cap the drain at 50 ms: every cut is refused. A prepared cross-shard transaction holds one shard past `gate_max`: the gate reopens by `gate_max`, the cut is refused and retried, and no write waited longer. Stop the coordinator after every gate closed: every gate reopens by `gate_max`. Stall the store with the gate closed: the gate stays closed until the store answers, then reopens by the abort, and no write the gate held committed under the old cut number. Refuse three ticks in a row: the health condition names the share. Leave 10⁴ files pending existence from a writer that never flushes, under `standard` and under `bounded`: every cut commits within `gate_max`, the backlog committed before the gate closed. |
+| S27 | Write with `UNSTABLE` and acknowledge, write a stable overwrite with no `COMMIT`, and take a snapshot at once, before any group commit is due: the snapshot has both writes. Write w1 then w2 to two files of one shard with the group commit stalled, and cut between them while the stall lasts: the snapshot holds w1 whenever it holds w2. Remove the pre-cut commit: the snapshot lacks both writes of the first case. Stall the store past `gate_max`: the cut is aborted, the gate reopens and writes keep being acknowledged. Write and flush `~tmp1` after the cut points and rename it over `report.docx` while the gate is closed: the snapshot shows the old `report.docx`, never a zero-length one. `S-snap-cut-failover`: a primary that starts closed after a takeover commits its recovery and pre-cut existence behind its own gate and replies; the snapshot holds every write acknowledged before the request. Clone part of a file into D, append to D outside the clone's extent and flush after the clone's journal step, and cut before its first phase commits: the snapshot holds the append, or lists D incomplete when the phase cannot commit within `gate_max`. |
+| S28 | `S-snap-gate-bounds`: under sustained offload, with a group commit of 256 files and an offload commit filling the key budget K admitted at every close and taking 200 ms each, every hourly cut for a day commits. Cap the drain at 50 ms: every cut is refused. A prepared cross-shard transaction holds one shard past `gate_max`: the gate reopens by `gate_max`, the cut is refused and retried, and no write waited longer. Stop the coordinator after every gate closed: every gate reopens by `gate_max`. Stall the store with the gate closed: the gate stays closed until the store answers, then reopens by the abort, and no write the gate held committed under the old cut number. Refuse three ticks in a row: the health condition names the share. Leave 10⁴ files pending existence from a writer that never flushes, under `standard` and under `bounded`: every cut commits within `gate_max`, the backlog committed by the prepare before the announce, so neither `cut_deadline` nor the gate covers it; assert the prepare ran once per cut. |
 | S33 | `S-snap-detach`: delete a share detaching its two snapshots; the share serves nothing and refuses writes; each snapshot restores; content no snapshot saw is released; deleting the second snapshot removes the share's records. |
 | S11 | Set a lock past `lock_max`: refused `ErrLockTooLong`. Shorten a governance lock with the override right: allowed, logged and counted; without it, and on a compliance lock: `ErrLocked`. |
 

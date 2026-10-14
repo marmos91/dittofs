@@ -508,9 +508,11 @@ type Store interface {
 	// delete marker (§4.5). Used only after a versioning drift.
 	DeleteVersions(ctx context.Context, names []Name) []error
 
-	// List yields every stored block once, in ascending name order, starting
-	// after the given name (the zero Name starts at the beginning).
-	List(ctx context.Context, after Name) iter.Seq2[Info, error]
+	// List reads one page, with one request, of at most n stored blocks in
+	// ascending name order, starting after the given name (the zero Name starts
+	// at the beginning); next is the last name of the page, and done is true
+	// once the walk has passed the last block (§4.6).
+	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
 
 	// Health makes one bounded probe round trip of direction d against the
 	// store's own namespace (§4.7): a probe put for Put, a probe get for Get.
@@ -807,12 +809,16 @@ A listing:
   (`after`), so a walk interrupted by a crash or a cancelled context resumes where
   it stopped instead of restarting over millions of blocks;
 - **MUST** report each block's size and the time the service stored it;
-- **MUST** stop when the caller breaks out of the loop or cancels `ctx`;
+- **MUST** make exactly one request per call and return at most `n` blocks;
 - **MUST** skip an entry under the block namespace whose key is not a block name,
   and count it ([§4.12](#4.12%20What%20a%20store%20makes%20observable)). It does not guess what such an entry is.
 
-Paging is internal. The store fetches pages as the caller iterates and holds at
-most one page in memory.
+A walk is a sequence of `List` calls, each one page, the next starting after the
+`next` the previous returned, so the caller holds at most one page and decides
+the page size. A caller that runs a page as one `Small` call
+([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — a backup folder's sweep — asks for at most 500 blocks, which
+keeps the reply under the small-body cap: a page of 1,000 keys with sizes and
+times is roughly 250–350 KB of listing on the S3 profile, an estimate.
 
 ### 4.7 Health is one probe call
 
@@ -1150,9 +1156,10 @@ go through `PutControl` and `GetControl`, by a fixed **role**:
   ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) — so two writers never put over each other's
   record, and each version carries a sequence and a MAC under the export key, as
   every versioned object at a backup location does ([§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location)). The bucket's
-  `keys` object keeps one version, so a put retried late could replace a newer
-  one; its writers and every `Recheck` pass read it back and repair it
-  ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)).
+  `keys` object keeps one version, as a mutable backup location's does, so a
+  put retried late could replace a newer one; every writer of either, and every
+  `Recheck` pass of the bucket's, reads it back under the key lock and repairs
+  it ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)).
 
 Roles are a closed set in code. A new role is a new constant and a new location,
 not a caller-chosen key, so control objects cannot become a second, unlisted
@@ -1183,9 +1190,12 @@ one:
   lock every block of an hourly policy for as long as a yearly one keeps its
   backups;
 - **requires a cap on the retention a put may set**, enforced by the service
-  for the location's credential — on S3, a bucket policy denying any put whose
-  remaining retention exceeds the location record's retention cap
-  ([Appendix C.1](#C.1%20Required%20service%20features)) — read at every open and provoked once per location record. The
+  for every principal but the record's break-glass one (below) — on S3, a
+  bucket policy denying any put whose remaining retention exceeds the location
+  record's retention cap ([Appendix C.1](#C.1%20Required%20service%20features)) — read at every open and provoked once
+  per location record. The policy's cap **MUST** equal the record's: a higher
+  one is no cap on what a stolen credential sets, and a lower one refuses every
+  put whose retention the record allows, failing the longest-kept backups. The
   cap is a whole number of days: the longest retention any policy writing
   there may set, plus one extension generation, `backups.max_copy_time` and one
   day of rounding margin ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)). Without it, a
@@ -1298,10 +1308,20 @@ cap is still there.
 **The provocations are the gate, against the real bucket.** With the cap, the
 record's creation provokes each object-lock behaviour an immutable location
 relies on — the over-cap put, the delete naming no version, each configuration
-write, and a `PutObjectRetention` lowering the health object's retain-until by
-one day — and the record is refused unless each is refused as stated. These are
-what admit a service as an immutable location, whatever service it is
-([§7.4](#7.4%20Services)): no step needs to identify it.
+write, a legal hold, an assumption of the break-glass principal (below), and a
+lowering of the health object's retain-until by one day — and the record is
+refused unless each is refused as stated. These are what admit a service as an
+immutable location, whatever service it is ([§7.4](#7.4%20Services)): no step needs to
+identify it. **The lowering tells compliance mode from governance.** It is sent
+with the service's flag for bypassing a governance-mode lock (on S3,
+`x-amz-bypass-governance-retention: true`), which a compliance-mode lock refuses
+whatever rights the caller holds and a governance-mode lock admits for a caller
+with the bypass right; and the record's creation then reads the health
+object's retention back and requires it to report compliance mode (on S3,
+`GetObjectRetention` answering `COMPLIANCE`). A lowering sent without the flag
+is refused by both modes, so it would admit a service that stores a compliance
+put as governance, and a location credential holding the bypass right could
+later strip every lock.
 
 **The settings may be read with a second credential.** Where the location's
 credential cannot read the bucket's settings — a bucket in a second account,
@@ -1324,14 +1344,51 @@ legal-hold deny apply to every principal but one break-glass principal**, not
 to the location's credential alone ([RFC 26 §2.4.4](rfc-26-catalog-backups.md#2.4.4%20Expiry%20and%20the%20sweep)): a credential of the
 owning account with retention rights, the inspection one included, could
 otherwise lock every version for a century and the open would still pass. The
-location record **declares** that principal ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)), and the open
-requires the exemption in both statements to name exactly it: an exemption of
-any other principal, or of more than one, fails the open, and a record whose
+location record **declares** that principal ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)), and a record whose
 break-glass principal is the location's credential or the inspection
 credential is refused when it is written. Otherwise a policy exempting the put
 credential would pass, and a stolen put credential could place legal holds,
 which never expire, on every version. A bucket whose policy lacks the
 legal-hold deny fails the open, as one lacking the cap does.
+
+**The denies are checked by effect, not by name.** Naming a principal is not
+excluding everything else: a principal that may assume the break-glass one,
+or a deny whose resource or condition does not reach the objects, passes a
+check by name and denies nothing. So the open accepts the cap's deny and the
+legal-hold deny only in the one form whose effect it can read off the policy:
+
+- **its exemption excludes exactly one identity.** The statement applies to
+  every principal, with one condition excluding exactly the break-glass
+  principal's identity and no other exclusion (on S3, `Principal: "*"` with
+  one `ArnNotEquals` on `aws:PrincipalArn` naming a single ARN). An exemption
+  in any other form, of any other principal, or of more than one, fails the
+  open;
+- **its resource covers what its actions act on, and it has no other
+  condition.** An object action's deny covers every object of the location's
+  root, a bucket action's the bucket itself (on S3, `arn:aws:s3:::bucket/*`
+  and `arn:aws:s3:::bucket` respectively, or a wildcard covering them); the
+  cap's deny carries only the retention condition, and the legal-hold deny and
+  the configuration denies none. A deny scoped to a narrower resource, or
+  carrying a template or any further condition, fails the open, since what it
+  leaves allowed cannot be read off the policy;
+- **the break-glass principal cannot be reached from the installation.** The
+  record's creation provokes, with the location's credential and with the
+  inspection credential, an assumption of the break-glass principal (on S3,
+  `sts:AssumeRole` of its ARN), and requires each refused. A break-glass role
+  whose trust admits the installation's account would otherwise make a stolen
+  location credential the break-glass principal, which may set compliance
+  retention for a century, past the cap. A credential returned by an
+  assumption that lands is discarded unused;
+- **a legal hold is provoked with the location's credential.** The record's
+  creation sends, with the location's credential, a legal hold on the health
+  object's recorded version with the hold off (on S3, `PutObjectLegalHold`
+  with `Status: OFF`), which changes nothing if it lands, and requires it
+  refused as the legal-hold deny states.
+
+The other denies exempt no one and name the principal they bind: the
+configuration denies name the location's credential, and the inspection deny
+names the inspection principal. Each is accepted only with a resource covering
+what its actions act on, as above, and no condition.
 
 > decision: a service whose cap or denies neither the location's credential nor
 > an inspection credential can read — held in an identity policy outside the
@@ -1417,7 +1474,18 @@ restore, a key rotation's re-seal, the `Recheck` pass — reaches the location's
 store through a background flow on it ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)): blocks and export parts as
 raw transfers, export heads too, every other call as a `Small` call, which retries, backs off and
 counts against the client's limit like a block ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)). None calls the store
-directly.
+directly, with one exception: the store's own open. The capability check, the
+location record's provocations and the open's health-object read and extension
+run before the store is registered with the syncer, so no flow exists to carry
+them; each is one attempt, and a failure fails the open, which its caller
+retries as it retries any open.
+
+> decision: a store's open calls the service directly, outside the syncer. Its
+> calls are a fixed handful per open, not per backup or per block, and a
+> failure fails the open rather than any transfer, so no retry budget,
+> throttle limit or health count is at stake. Route them through a flow if
+> opens become frequent enough — a `Recheck` reopening per pass, say — that
+> their requests show in a service's throttling.
 
 **Every location opens a location store, which holds no blocks.** A backup
 location is opened for a namespace, in its record's mode, as a store over the
@@ -1484,8 +1552,8 @@ in-memory store).
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that truncates a body under a `Content-Range` matching the request: the get fails with `ErrTransient`. | T |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | Delete a batch twice, including a never-written name: every result is `nil`. A batch of 2,500 (above the service's limit): every block gone. | |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | A transport that fails one key inside a batch: exactly that name's result is an error, the others `nil`. A batch whose response is dropped: every result is `ErrTransient`. | T |
-| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after 1,200 and resume from the last name: every block seen exactly once, in order, with size and time. | |
-| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Put a key that is not a block name under the block namespace: the listing skips it and counts it. Cancel mid-listing: iteration ends with the context's error. | |
+| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after 1,200 and resume from the last name: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. | |
+| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Put a key that is not a block name under the block namespace: the listing skips it and counts it. Cancel mid-page: the call ends with the context's error. | |
 | [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside) | After the whole suite, list the store's raw namespace: nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name. | |
 | [§4.13](#4.13%20Control%20objects) | Put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. | |
 | [§4.13](#4.13%20Control%20objects) | A control put through a transport that flips one byte fails with `ErrCorrupt`. | T |
@@ -1515,12 +1583,12 @@ in-memory store).
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | A bucket whose cap or legal-hold deny names only the location's credential, or which lacks the deny naming the inspection principal: the open is refused. With an inspection credential, `PutObjectRetention` and `PutObjectLegalHold` provoked once per record: both refused. With R 90 d, G 7 d and cap 100 d, every extension and the health target land at or before now plus 99 days and none is refused. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Put 10⁵ names reused on one day at an immutable location: their retain-untils are spread across `G` by each name's phase, no one generation end holding more than twice its share. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store: every `PutVersion` and `PutObject` request carries a compliance-mode retain-until at a generation's end; `Health(DirPut)` returns `ErrInvalid` and the transport sees no request; `ExtendRetention` to a time at or before the current retain-until returns `nil` after one retention read and sends no retention write. Advance a virtual clock past the lifecycle age with opens in between, and again with one process left up and only its `Recheck`s running: the location still opens and the get probe passes. A store that never extends the health object, or extends it only at open, stops opening here. | T |
-| [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | At an immutable location put one backup's state object three times, then have the transport add a delete marker over it as an expiring lifecycle rule would: `ListObjects` yields all three versions, `GetObject` by each returns its bytes, and a get of the current object is refused. At a mutable location a second put replaces the first, and `DeleteObjects` removes it. A block listing yields no versioned object. Re-put an older authentic state version on top of a newer one: the caller still takes the newer by its sequence. |
+| [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | At an immutable location put one backup's state object three times, then have the transport add a delete marker over it as an expiring lifecycle rule would: `ListObjects` yields all three versions, `GetObject` by each returns its bytes, and a get of the current object is refused. At a mutable location a second put replaces the first, and `DeleteObjects` removes it. A block listing yields no versioned object. Re-put an older authentic state version on top of a newer one: the caller still takes the newer by its sequence. | T |
 | [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | List 10⁴ state versions with `ListObjects` at 200 a page: each call sends one request and returns at most 200 entries; a page failed and retried resumes after the last key and version returned. `GetObject` an export part from byte 3 MiB: exactly the remaining bytes arrive, with the stored checksum. Open a catalog-only location: versioned objects, retention and the health object work; `Put`, `Get` and `List` of a block are `ErrInvalid` with no request. | T |
-| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | A bucket policy whose cap and legal-hold deny exempt the location's credential, or a second principal beside the record's declared break-glass one: the open is refused. A record declaring the location's or the inspection credential as its break-glass principal: refused when written. | T |
-| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Creating a location record: answer the over-cap provocation with `400 InvalidRequest` (a malformed date), then with `500` and then `403`: the first fails the record's creation naming the reply, the second is retried, the third counts as the cap's refusal. A transport that lets a `PutObjectRetention` lowering the health object's retain-until land: the record is refused. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | A bucket policy whose cap and legal-hold deny exempt the location's credential, or a second principal beside the record's declared break-glass one: the open is refused. A record declaring the location's or the inspection credential as its break-glass principal: refused when written. Each of these, with the declared break-glass principal: a legal-hold deny whose resource is the bucket alone, a deny carrying an extra condition, an exemption written as a `Principal` list rather than one `ArnNotEquals`, a policy cap one day below the record's: the open is refused. A break-glass role whose trust admits the location's credential: the `AssumeRole` provocation lands and the record is refused. A transport that lets the location credential's legal hold land: the record is refused. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Creating a location record: answer the over-cap provocation with `400 InvalidRequest` (a malformed date), then with `500` and then `403`: the first fails the record's creation naming the reply, the second is retried, the third counts as the cap's refusal. A transport that lets a `PutObjectRetention` lowering the health object's retain-until land: the record is refused. A transport that stores the health object in governance mode and refuses the lowering only when it carries no bypass header: the lowering, sent with the header, lands and the record is refused; one that refuses it but reports `GOVERNANCE` on the read-back: refused. A get of an absent key answered `403`: the open fails naming the missing list right. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | Create a location record while the read of an existing health object fails with `503`: the creation fails and no health object is put; retried, it adopts the existing nonce or version. Rotate the credential and prove it while the version exists, then let the version lapse: the next open under the rotated credential re-puts it; under a credential changed after it lapsed, the open is refused. | T |
-| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Run a `Recheck` pass on a suspended store holding 10⁶ versions and no repair proof: every `RecheckSetting` and `VersionsPage` call sends one request, no page is larger than its `n`, and a failure mid-walk resumes from the last marker. | T | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Run a `Recheck` pass on a suspended store holding 10⁶ versions and no repair proof: every `RecheckSetting` and `VersionsPage` call sends one request, no page is larger than its `n`, and a failure mid-walk resumes from the last marker. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Lower a backup location's lock or suspend its versioning between two copies: the folder record's holder runs `Recheck` before the next copy, finds the drift, and the copy fails before any put; the location's put direction is unhealthy until a `Recheck` passes. A design whose only `Recheck` caller is GC copies into the drifted folder. | T |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer puts with each quota or storage-full reply the profile lists, and with `507`: each is `ErrDenied` of cause `quota`. Answer with `403`: `ErrDenied` of cause `access`. Answer block puts with `413` with and without an error code, and with `400 EntityTooLarge`: each is `ErrDenied` of cause `size`, never `ErrInvalid`. Answer a `PutObject` and a `PutControl` the same way: each is `ErrInvalid`. `PutObject` a body one byte over the largest encoded block: `ErrInvalid` with no request sent. | T |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | Flip one byte of a ranged get's body: the codec reports `ErrCorrupt`, and the syncer's single re-get returns the chunk ([RFC 3 §7.1](rfc-3-syncer.md#7.1%20Group%20A%20%E2%80%94%20silent%20data%20loss)). Flip a byte of a whole-block get on a service that returns a response checksum: the get yields the body and then fails `ErrTransient` at its end, and the stored checksum it reports is the one the service stored, not one of the bytes sent. | T |
@@ -1581,8 +1649,9 @@ with those faults, so these profiles are the negative tests.
 A new service is supported once it passes the nightly row. Its results go into
 [Appendix B](#Appendix%20B%20%E2%80%94%20measurements). **An immutable backup location is admitted by its own bucket,
 not by its service's name.** The object-lock rows — the over-cap retention put,
-the versionless delete, the configuration writes and the lowering of a
-retain-until, each refused — are provoked against the real bucket when its
+the versionless delete, the configuration writes, the legal hold, the
+assumption of the break-glass principal and the governance-bypassing lowering
+of a retain-until, each refused, and the compliance mode read back — are provoked against the real bucket when its
 location record is created ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)), and the record is refused unless every one
 is refused as stated; no profile step needs to identify the service, which a
 compatible endpoint cannot be relied on to report. The same rows, measured in a
@@ -1613,7 +1682,7 @@ with every result.
 | Put of one block with and without a measuring pass | MB/s | report; the gap is what the second encode costs |
 | Steady load at a fixed pool size for 10 minutes | connections opened | no more than the pool size, plus one per connection the service closed (counted from the transport's close events) |
 | Health probe | requests | exactly one |
-| List of 100,000 blocks | requests, peak memory | one per page of 1,000, and at most one page held |
+| List of 100,000 blocks | requests, peak memory | one per page of the caller's `n` (1,000, and 500 through `Small`), and at most one page held |
 
 ## 8. Decisions and open questions
 
@@ -1743,7 +1812,8 @@ Docker. MinIO could not be pulled in this environment and was not measured.
 | Compliance-mode put with a retain-until above a bucket-policy cap on `s3:object-lock-remaining-retention-days`, and how the cap's whole days round | provoked at every location record's creation ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); lab run not yet made | same | same | same | same | same |
 | Delete naming no version, by a credential denied `s3:DeleteObject`, on a versioned locked bucket | provoked at every open ([Appendix C.4](#C.4%20The%20capability%20check)); lab run not yet made | same | same | same | same | same |
 | `PutBucketPolicy`, `DeleteBucketPolicy`, `PutBucketObjectLockConfiguration`, `PutLifecycleConfiguration`, `PutBucketVersioning` by a credential the bucket policy denies them | provoked at every location record's creation, all but `DeleteBucketPolicy`, which cannot be provoked without effect ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); lab run not yet made | same | same | same | same | same |
-| `PutObjectRetention` lowering a compliance-mode retain-until | provoked at every location record's creation ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); lab run not yet made | same | same | same | same | same |
+| `PutObjectRetention` lowering a compliance-mode retain-until, sent with `x-amz-bypass-governance-retention: true` by a credential holding `s3:BypassGovernanceRetention`; the mode `GetObjectRetention` then reports | provoked at every location record's creation ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); lab run not yet made | same | same | same | same | same |
+| `PutObjectLegalHold` by the location's credential, and `sts:AssumeRole` of a break-glass role whose trust admits the installation's account, under a policy in the one accepted form | provoked at every location record's creation ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); lab run not yet made | same | same | same | same | same |
 
 **Connection pool** (net/http client against a local TLS server adding 20 ms per
 request, 64 workers for 5 s each, 64 KiB responses)
@@ -1812,6 +1882,7 @@ its capability check.
 | `GetObject` with `Range` | get | `206` with the bytes asked for; `416` when the range starts past the end. A clamped overlong range is tolerated: the store checks lengths itself ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2 |
 | `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5`, `Quiet` false | delete | every key, absent ones included, listed as deleted; per-key errors reported per key; a key missing from the reply is a failure ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) | check step 3 |
 | `ListObjectsV2` with `prefix`, `max-keys`, `start-after` | list | ascending key order, every key once across pages, `LastModified` present | check step 4 |
+| `s3:ListBucket` granted to the store's credential on its bucket | get, every read by key | a get or retention read of an absent key answers `404`; without the right S3 answers `403`, which [Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3) reads as `ErrDenied`, so an absent block or object would count against health instead of reading `ErrNotFound` | check step 2, by a get of a key never written expecting `404`; at an immutable location, step 1, by a `GetObject` of an absent key |
 | `GetBucketVersioning` | open, `Recheck` | versioning never enabled: no status in the reply. A `Suspended` bucket still keeps the versions written while it was on, and object lock requires versioning, so this one check covers both; `Recheck` accepts `Suspended` where the repair proof exists, and otherwise once `ListObjectVersions` under the prefix finds only current versions ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) | check step 5 |
 | `DeleteObjects` with `VersionId`, `ListObjectVersions` | `DeleteVersions`, `Recheck` after drift | every version and delete marker of a name removed; listing reports every version under the prefix | only when versioning drifted; not checked at open |
 | `GetBucketLifecycleConfiguration` | open, `Recheck` | no rule that expires or transitions objects under the store's prefix: expiry deletes stored blocks, and a transition to an archive class makes gets fail. A rule counts as matching if its filter could match any object under the prefix — a shorter or empty prefix filter, or a tag or size filter the store's objects could meet | check step 5 |
@@ -1826,11 +1897,12 @@ these, and drops `DeleteObjects`:
 | --- | --- | --- |
 | `GetBucketVersioning` | `Enabled` | check step 5 |
 | `GetObjectLockConfiguration` | object lock enabled, and **no** default retention rule | check step 5 |
-| `GetBucketPolicy` | a statement denying the location's credential `s3:PutObject` and `s3:PutObjectRetention` whenever `s3:object-lock-remaining-retention-days` exceeds the location record's retention cap, with that cap or a lower one ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); and a statement denying it `s3:PutBucketPolicy`, `s3:DeleteBucketPolicy`, `s3:PutBucketObjectLockConfiguration`, `s3:PutLifecycleConfiguration` and `s3:PutBucketVersioning`; the cap's and a `s3:PutObjectLegalHold` deny's `Principal` covering every principal but exactly the break-glass principal the location record declares, never the location's or the inspection credential; where an inspection credential is named, a `Deny` whose `NotAction` leaves it only `s3:GetBucketPolicy`, `s3:GetBucketVersioning`, `s3:GetBucketObjectLockConfiguration`, `s3:GetLifecycleConfiguration`, `s3:GetEncryptionConfiguration` and `s3:GetIntelligentTieringConfiguration`, every read of step 5; the location's or the inspection credential must be allowed to read the policy, or the open refuses. A second-account bucket is admitted through the inspection credential ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | check step 5 at every open; the cap and the four put actions also provoked, once per location record, in step 1 |
+| `GetBucketPolicy` | a statement denying `s3:PutObject` and `s3:PutObjectRetention` whenever `s3:object-lock-remaining-retention-days` exceeds the location record's retention cap, with exactly that cap ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); a statement denying `s3:PutObjectLegalHold`; and a statement denying the location's credential `s3:PutBucketPolicy`, `s3:DeleteBucketPolicy`, `s3:PutBucketObjectLockConfiguration`, `s3:PutLifecycleConfiguration` and `s3:PutBucketVersioning`; the cap's and the legal-hold deny's exemption in the one form [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) reads by effect — `Principal: "*"` with one `ArnNotEquals` on `aws:PrincipalArn` naming exactly the break-glass principal the location record declares, never the location's or the inspection credential — and each deny's `Resource` covering `arn:aws:s3:::bucket/*` for its object actions and `arn:aws:s3:::bucket` for its bucket actions, with no condition but the cap's; where an inspection credential is named, a `Deny` whose `NotAction` leaves it only `s3:GetBucketPolicy`, `s3:GetBucketVersioning`, `s3:GetBucketObjectLockConfiguration`, `s3:GetLifecycleConfiguration`, `s3:GetEncryptionConfiguration` and `s3:GetIntelligentTieringConfiguration`, every read of step 5; the location's or the inspection credential must be allowed to read the policy, or the open refuses. A second-account bucket is admitted through the inspection credential ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) | check step 5 at every open; the cap and the four put actions also provoked, once per location record, in step 1 |
 | `GetBucketLifecycleConfiguration` | a `NoncurrentVersionExpiration` rule and an `Expiration` rule no younger than the record's lifecycle age, both covering the location's whole root (block folders, `exports/`, `progress/`, `keys/`, `control/`, `check/`); no transition | check step 5 |
 | `PutObject` with `x-amz-object-lock-mode: COMPLIANCE` and `x-amz-object-lock-retain-until-date`, returning `x-amz-version-id`; `GetObject` with `versionId` | `PutVersion`, `PutObject`, `GetVersion`, `GetObject` | check step 1, once per location record |
-| `GetObjectRetention` | `Retention`, `ObjectRetention`, and the read inside every extension | check step 1, once per location record |
-| `PutObjectRetention` | `ExtendRetention` and `ExtendObjectRetention`, compliance mode only, sent only when the read showed an earlier retain-until | check step 1, once per location record |
+| `GetObjectRetention` | `Retention`, `ObjectRetention`, and the read inside every extension; on the health object at record creation, `Mode: COMPLIANCE` | check step 1, once per location record |
+| `PutObjectRetention` | `ExtendRetention` and `ExtendObjectRetention`, compliance mode only, sent only when the read showed an earlier retain-until; a lowering sent with `x-amz-bypass-governance-retention: true` refused | check step 1, once per location record |
+| `PutObjectLegalHold` with `Status: OFF`, by the location's credential; `sts:AssumeRole` of the break-glass ARN, by the location's and the inspection credential | refused (`403`) | check step 1, once per location record |
 | `ListObjectVersions` under the location's `exports/`, `progress/` and `keys/` prefixes for the namespace | `ListObjects`: every version, delete markers skipped, resumable by key and version marker | check step 4, once per location record |
 | `DeleteObject` without `versionId`, on the location health object | refused (`403`); a delete with `versionId` is not sent, since the lock refuses it whatever the credential may do | check step 7 |
 
@@ -1914,7 +1986,8 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
    behaviour with size.
 2. Put a 10-byte object in the profile's storage class; get it at once, and
    expect it back, with that class reported; get bytes 2–5 and expect exactly 4
-   bytes; get from offset 20 and expect `416`.
+   bytes; get from offset 20 and expect `416`; get a key never written and
+   expect `404`, not `403`.
 3. Batch-delete two keys that exist and one that was never written, and expect
    all three reported deleted and the two keys gone from a listing. A service that
    rejects the batch operation is recorded, and the store deletes one key per
@@ -1948,8 +2021,10 @@ when the recorded health object version is missing and the open runs under the
 endpoint and credential that last proved the identity ([§4.7](#4.7%20Health%20is%20one%20probe%20call)). The
 location health object itself is put when the location record is created, at
 `<location>control/health`, and its version is stored in that record; the
-record's creation then provokes the over-cap put, the configuration puts and
-a lowering of that version's retain-until, each of which **MUST** be refused as
-[§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) states. The over-cap put counts as refused only when answered `403`
+record's creation then provokes the over-cap put, the configuration puts, a
+lowering of that version's retain-until sent with the governance-bypass
+header, a legal hold with the hold off, and the assumption of the break-glass
+ARN by both credentials, each of which **MUST** be refused as
+[§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) states, and reads that version's retention back as `COMPLIANCE`. The over-cap put counts as refused only when answered `403`
 with nothing stored ([Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3)'s access refusal), since it is the health
 object's own put differing only in its retain-until.
