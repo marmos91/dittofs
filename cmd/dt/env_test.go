@@ -152,6 +152,9 @@ func TestEnvRefusesBeforeDocker(t *testing.T) {
 		{[]string{"stack", "up", "--memory", "extra"}, "usage: dt stack"},
 		{[]string{"stack", "status", "junk"}, "usage: dt stack"},
 		{[]string{"cleanup", "--bogus"}, "usage: dt cleanup"},
+		{[]string{"hooks", "bogus"}, "usage: dt hooks"},
+		{[]string{"hooks", "install", "--bogus"}, "usage: dt hooks"},
+		{[]string{"hooks", "status", "junk"}, "usage: dt hooks"},
 		{[]string{"bogus"}, "usage: env.sh"},
 	}
 	for _, c := range cases {
@@ -232,6 +235,147 @@ func TestStackDownVolumes(t *testing.T) {
 	}
 	if got := takeCalls(t, calls); !strings.Contains(got, "docker compose --profile s3-backend down -v\n") {
 		t.Errorf("no down -v among the docker calls:\n%s", got)
+	}
+}
+
+// gitless clears the variables git sets for a hook, which a hook running these
+// tests exports, so git works on the test's own repository.
+func gitless(t *testing.T) {
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GIT_") {
+			t.Setenv(k, "")
+			_ = os.Unsetenv(k)
+		}
+	}
+}
+
+// tempRepo makes a throwaway git repository.
+func tempRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	return repo
+}
+
+// dt hooks install runs the repository's own hooks, --container the harness's,
+// which run them in dtc, and uninstall goes back to the repository's own. The
+// paths are relative, so each worktree runs its own. GIT_DIR pins every git
+// command to a throwaway repository, so no real one's hooks can change.
+func TestHooksInstall(t *testing.T) {
+	script, _ := envCopy(t)
+	gitless(t)
+	calls := fakeTools(t)
+	repo := tempRepo(t)
+	t.Setenv("GIT_DIR", filepath.Join(repo, ".git"))
+	t.Setenv("DITTOFS_REPO", repo)
+	hooksPath := func() string {
+		out, _ := exec.Command("git", "config", "--get", "core.hooksPath").Output()
+		return strings.TrimSpace(string(out))
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"install", "--container"}, "test/harness/githooks"},
+		{[]string{"install"}, ".githooks"},
+		{[]string{"install", "--container"}, "test/harness/githooks"},
+		{[]string{"uninstall"}, ".githooks"},
+	} {
+		if out, status := envRun(t, script, append([]string{"hooks"}, c.args...)...); status != 0 {
+			t.Fatalf("hooks %s: exit status %d\n%s", strings.Join(c.args, " "), status, out)
+		}
+		if got := hooksPath(); got != c.want {
+			t.Errorf("after hooks %s: core.hooksPath %q, want %q", strings.Join(c.args, " "), got, c.want)
+		}
+		if out, _ := envRun(t, script, "hooks", "status"); !strings.Contains(out, "core.hooksPath = "+c.want) {
+			t.Errorf("status after hooks %s:\n%s", strings.Join(c.args, " "), out)
+		}
+	}
+	if got := takeCalls(t, calls); got != "" {
+		t.Errorf("dt hooks called docker:\n%s", got)
+	}
+}
+
+// dtcDocker puts first on PATH a docker that passes dtc's checks and stands in
+// for the container: it records each call's command in dir/calls and, for run,
+// its arguments, one per line, in dir/argv and its input in dir/stdin, and
+// exits 4. dtc goes as far as docker run, and no further.
+func dtcDocker(t *testing.T) (dir string) {
+	t.Helper()
+	dir = t.TempDir()
+	writeFile(t, filepath.Join(dir, "docker"), "#!/bin/sh\necho \"docker $1\" >> '"+dir+"/calls'\ncase \"$1\" in\n"+
+		"context) echo unix:///var/run/docker.sock ;;\n"+
+		"run) printf '%s\\n' \"$@\" > '"+dir+"/argv'; cat > '"+dir+"/stdin'; exit 4 ;;\n"+
+		"esac\n")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DOCKER_HOST", "")
+	return dir
+}
+
+// A harness hook sends the repository's own hook of the same name to dtc, with
+// its arguments and input and the repository, and returns the container's exit
+// status; in the container it runs that hook with its arguments and input, and
+// returns its exit status.
+func TestHarnessHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hooks are bash")
+	}
+	gitless(t)
+	fakeTools(t)
+	docker := dtcDocker(t)
+	hook, err := filepath.Abs("../../test/harness/githooks/pre-push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inContainer := range []string{"", "1"} {
+		repo := tempRepo(t)
+		writeFile(t, filepath.Join(repo, ".githooks", "pre-push"), "#!/bin/sh\n{ echo \"$@\"; cat; } > ran\nexit 3\n")
+		t.Setenv("DT_IN_CONTAINER", inContainer)
+		cmd := exec.Command(hook, "origin", "url")
+		cmd.Dir, cmd.Stdin = repo, strings.NewReader("refs\n")
+		err := cmd.Run()
+		var exit *exec.ExitError
+		ran, _ := os.ReadFile(filepath.Join(repo, "ran"))
+		calls := takeCalls(t, filepath.Join(docker, "calls"))
+		argv := takeCalls(t, filepath.Join(docker, "argv"))
+		stdin := takeCalls(t, filepath.Join(docker, "stdin"))
+		if inContainer == "" {
+			// On this machine: docker run gets the hook, its arguments and its
+			// input, and the repository as git names it; the repository's hook
+			// doesn't run here.
+			top, _ := filepath.EvalSymlinks(repo)
+			if !errors.As(err, &exit) || exit.ExitCode() != 4 || len(ran) != 0 || stdin != "refs\n" ||
+				!strings.HasSuffix(argv, "\nshell\n"+hook+"\norigin\nurl\n") || !strings.Contains(argv, "\nDITTOFS_REPO="+top+"\n") {
+				t.Errorf("on this machine: %v, hook output %q, docker run input %q, arguments:\n%s\nwant docker run's exit status 4, input \"refs\\n\", and shell %s origin url for %s",
+					err, ran, stdin, argv, hook, top)
+			}
+			continue
+		}
+		if !errors.As(err, &exit) || exit.ExitCode() != 3 || string(ran) != "origin url\nrefs\n" || calls != "" {
+			t.Errorf("in the container: %v, hook output %q, docker calls %q; want the repository's hook and exit status 3", err, ran, calls)
+		}
+	}
+}
+
+// dtc reaches docker run when it can't read the host's timezone: TZ unset, and
+// /etc/localtime not a link, which a readlink that fails stands for.
+func TestDtcWithoutTimezone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("dtc is bash")
+	}
+	gitless(t)
+	fakeTools(t)
+	docker := dtcDocker(t)
+	writeFile(t, filepath.Join(docker, "readlink"), "#!/bin/sh\nexit 1\n")
+	t.Setenv("TZ", "")
+	_ = os.Unsetenv("TZ")
+	t.Setenv("DITTOFS_REPO", tempRepo(t))
+	out, err := exec.Command("../../test/harness/bin/dtc", "list").CombinedOutput()
+	var exit *exec.ExitError
+	if argv := takeCalls(t, filepath.Join(docker, "argv")); !errors.As(err, &exit) || exit.ExitCode() != 4 || !strings.HasSuffix(argv, "\nlist\n") {
+		t.Errorf("dtc list: %v, docker run arguments %q; want docker run's exit status 4\n%s", err, argv, out)
 	}
 }
 
