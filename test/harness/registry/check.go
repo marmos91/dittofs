@@ -22,9 +22,13 @@ var (
 	// Placeholders every cell may use; a cell's matrix axes add their own.
 	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "mount", "user", "password", "realm")
 
+	// runFlags are dt run's own flags, which no option may share a name with.
+	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "help")
+
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
-	// A {name}, or a shell ${VAR}, which placeholdersIn skips.
-	placeholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
+	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
+	// and dt run leave alone.
+	PlaceholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
 )
 
 func set(items ...string) map[string]bool {
@@ -57,6 +61,9 @@ func (r *Registry) check(root string) []error {
 		for _, o := range s.Options {
 			if !nameRE.MatchString(o.Name) {
 				fail("option %s/%s: a name is [a-z0-9-]+", s.Name, o.Name)
+			}
+			if runFlags[o.Name] {
+				fail("option %s/%s: dt run has a flag of that name, and an option is a flag of its own", s.Name, o.Name)
 			}
 			if len(o.Options) > 0 {
 				fail("option %s/%s: an option has no options", s.Name, o.Name)
@@ -97,6 +104,11 @@ func checkUnit(root string, u *Suite) []error {
 	}
 	if len(u.Cmd) == 0 && u.Image == "" {
 		fail("cmd is required unless an image provides one")
+	}
+	for _, c := range u.Cmd {
+		if strings.TrimSpace(c.Line+c.Sh) == "" {
+			fail("a command is blank")
+		}
 	}
 	if u.Format == "go-json" {
 		for _, c := range u.Cmd {
@@ -171,19 +183,19 @@ func checkUnit(root string, u *Suite) []error {
 	}
 	used := map[string]bool{}
 	for _, s := range u.allStrings() {
-		for _, p := range placeholdersIn(s) {
+		for _, p := range Placeholders(s) {
 			used[p] = true
 			if !placeholders[p] && !axes[p] {
 				fail("unknown placeholder {%s}", p)
 			}
 		}
 	}
-	if used["test"] && !u.Tests.set() {
+	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
 	}
 	inCell := map[string]bool{}
 	for _, s := range u.cellStrings() {
-		for _, p := range placeholdersIn(s) {
+		for _, p := range Placeholders(s) {
 			inCell[p] = true
 		}
 	}
@@ -210,11 +222,11 @@ func checkUnit(root string, u *Suite) []error {
 	return errs
 }
 
-// placeholdersIn returns the {name} placeholders in s, leaving out a shell
+// Placeholders returns the {name} placeholders in s, leaving out a shell
 // ${VAR} in an sh command.
-func placeholdersIn(s string) []string {
+func Placeholders(s string) []string {
 	var out []string
-	for _, m := range placeholderRE.FindAllStringSubmatch(s, -1) {
+	for _, m := range PlaceholderRE.FindAllStringSubmatch(s, -1) {
 		if !strings.HasPrefix(m[0], "$") {
 			out = append(out, m[1])
 		}
