@@ -2,7 +2,9 @@
 # dt: DittoFS's test harness, built from this checkout and run from its root
 # with the given arguments (docs/internals/rfc-test-harness.md, section 3). It
 # builds rather than using go run, which turns every failing exit status into 1.
+# A binary per platform: the host and a dtc container share the checkout.
 set -e
 cd "$(dirname "$0")/../../.."
-go build -o test/harness/.bin/dt ./cmd/dt
-exec test/harness/.bin/dt "$@"
+bin="test/harness/.bin/$(uname -s)-$(uname -m)/dt"
+go build -o "$bin" ./cmd/dt
+exec "$bin" "$@"
