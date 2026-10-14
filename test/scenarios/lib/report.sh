@@ -37,10 +37,22 @@ RUN_START="$(date +%s)"
 # then each of its lines that ran, e.g. "3.2<tab>line 12: dfsctl system drain-uploads". Each
 # command is traced as "+ <epoch seconds> <line> <command>" and lasts until the next one starts;
 # the last one lasts until END, when the run ended. A line that runs more than once, in a loop,
-# gets its times added up.
+# gets its times added up. A line ending in & starts a background job, whose trace comes from the
+# job and can land after the lines that follow: it gets no time of its own, and its trace moves
+# no other line's. Only the one-line form is recognised: a background job written over several
+# lines, or a line ending in "& # comment", is still timed like any other.
 times() {
     awk -v scenario="$HERE/$1" -v end="$2" '
+        BEGIN {
+            while ((getline text <scenario) > 0) {
+                n++
+                if (text ~ /[^&]&[ \t]*$/ && text !~ /^[ \t]*#/) background[n] = 1
+            }
+            close(scenario)
+            n = 0
+        }
         /^\++ [0-9]+\.[0-9]+ [0-9]+ / {
+            if ($3 in background) { took[$3] += 0; next }
             if (prev) took[line] += $2 - prev; else first = $2
             prev = $2
             line = $3
