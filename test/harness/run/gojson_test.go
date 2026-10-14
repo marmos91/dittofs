@@ -308,13 +308,17 @@ const rootSuite = `suites:
 // sudo, two packages named nfs included, in its package's directory, with the
 // suite's environment, quotes and spaces intact, and DITTOFS_E2E_BIN, but none
 // of the caller's own variables, Go's settings included, and leaves only its
-// events behind; TEST names reach the binaries as -run.
+// events behind; TEST names reach the binaries as -run. The -exec it prints
+// names the suite's variables without their values.
 func TestRootPath(t *testing.T) {
 	fakeSudo(t)
 	t.Setenv("DITTOFS_E2E_SKIP_KERBEROS", "1")
 	o, out, dir := goRun(t, rootSuite, rootModule)
 	if o.Result != Passed || o.Note != "4 passed, 0 failed, 0 skipped" {
 		t.Errorf("outcome %+v\n%s", o, out)
+	}
+	if strings.Contains(out, "two words") || !strings.Contains(out, "DT_SPACES=$DT_SPACES") {
+		t.Errorf("the -exec printed shows a variable's value, or not its name:\n%s", out)
 	}
 	if left, _ := os.ReadDir(filepath.Join(dir, "g")); len(left) != 1 || left[0].Name() != "go-test-1.json" {
 		t.Errorf("left in the cell's results: %v", left)

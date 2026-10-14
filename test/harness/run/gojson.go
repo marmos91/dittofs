@@ -86,16 +86,16 @@ func (t tester) goJSON(names []string) (string, string) {
 // sudo, with its own flags, in its package's directory; cancelling it then
 // sends SIGINT, so the tests' own cleanup runs.
 func (t tester) goTest(argv []string, asRoot bool, events string, res *results) (int, error) {
-	added := []string{"-json", "-count=1"}
+	added, shown := []string{"-json", "-count=1"}, []string{"-json", "-count=1"}
 	if asRoot {
-		run, err := t.sudo()
+		run, hidden, err := t.sudo()
 		if err != nil {
 			return -1, err
 		}
-		added = append(added, "-exec", run)
+		added, shown = append(added, "-exec", run), append(shown, "-exec", hidden)
 	}
+	_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", strings.Join(slices.Concat(argv[:2], shown, argv[2:]), " "))
 	argv = slices.Concat(argv[:2], added, argv[2:])
-	_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", strings.Join(argv, " "))
 	cmd := exec.CommandContext(t.ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = t.dir, t.env
 	if asRoot {
@@ -130,25 +130,31 @@ func (t tester) buildBin() error {
 	return err
 }
 
-// sudo is the -exec program that runs a test binary as root. sudo resets the
-// environment, so it passes the suite's variables, its services',
+// sudo is the -exec program that runs a test binary as root, and the same
+// program to print, with each variable but DITTOFS_E2E_BIN as NAME=$NAME, so
+// no value, a credential among them, reaches the terminal or the log. sudo
+// resets the environment, so it passes the suite's variables, its services',
 // DITTOFS_E2E_BIN and PATH explicitly, as go test words them.
-func (t tester) sudo() (string, error) {
+func (t tester) sudo() (run, shown string, err error) {
 	// decision: the caller's own environment stays behind. A variable set by
 	// hand to narrow the tests, such as DITTOFS_E2E_SKIP_KERBEROS, doesn't
 	// reach them, which fails closed: the tests it would skip run. What a
-	// suite needs goes in its env, which is passed.
+	// suite needs goes in its env, which is passed. Forward the caller's
+	// variables if narrowing a root suite by hand turns out to be needed.
 	words := slices.Concat(
 		[]string{"sudo", "-n", "env", "PATH=" + os.Getenv("PATH"), "DITTOFS_E2E_BIN=" + t.vals["bin"]},
 		t.own, needs.ServiceEnv(t.root, t.cell.Needs))
-	quoted := make([]string, len(words))
+	runs, shows := make([]string, len(words)), make([]string, len(words))
 	for i, w := range words {
-		var err error
-		if quoted[i], err = execQuote(w); err != nil {
-			return "", err
+		if runs[i], err = execQuote(w); err != nil {
+			return "", "", err
+		}
+		shows[i] = runs[i]
+		if name, _, isVar := strings.Cut(w, "="); isVar && name != "DITTOFS_E2E_BIN" {
+			shows[i] = name + "=$" + name
 		}
 	}
-	return strings.Join(quoted, " "), nil
+	return strings.Join(runs, " "), strings.Join(shows, " "), nil
 }
 
 // execQuote quotes a word of go test's -exec, which splits at spaces and
