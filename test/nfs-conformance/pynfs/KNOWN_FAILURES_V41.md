@@ -45,17 +45,18 @@ prerequisite collapsing elsewhere in the suite reads exactly like the fix you
 were hoping for. Remove the row on that reading and the test stops being graded
 while it is still broken, which is the one outcome this table exists to prevent.
 
-Check each backend separately, because a row can be backend-dependent: `OPEN4`
-passed on `memory` and failed on the SQL backends for as long as those dropped
-the create verifier. Memory-passes/SQL-fails is a diagnosis worth keeping, not a
-flake worth re-running.
+Check each backend separately, because a row can be backend-dependent: before
+the SQL metadata stores were removed, `OPEN4` passed on `memory` and failed on
+them for as long as they dropped the create verifier. One backend passing where
+another fails is a diagnosis worth keeping, not a flake worth re-running.
 
 ## Expected Failures
 
 This table was last walked out from the presubmit v4.1 run on both backends
-the suite covers there, memory and postgres-s3, with the `: PASS` verdict read
-from each `pynfs.log` artifact. The per-backend bar above still applies to
-future walk-outs.
+the suite covered there before the SQL metadata stores were removed, memory and
+postgres-s3, with the `: PASS` verdict read from each `pynfs.log` artifact. The
+presubmit now runs `memory` and `badger-s3`; the per-backend bar above still
+applies to future walk-outs.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
