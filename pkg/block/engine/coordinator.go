@@ -16,8 +16,9 @@ import (
 // Transaction ownership rule (BLOCKER-1/2/3 resolution, 2026-04-26)
 // the engine NEVER opens a metadata txn. The CALLER (common.CloneWholeFile
 // for the clone path; common.WriteToBlockStore for the adapter path) opens
-// the txn around the engine call. The coordinator's IncrementRefCount /
-// DecrementRefCount operations run inside that caller-owned txn.
+// the txn around the engine call. The coordinator's IncrementRefCount,
+// DecrementRefCountAndReap and DecrementRefCountAndReapMany operations run
+// inside that caller-owned txn.
 //
 // PayloadID is passed as a `string` rather than a strongly-typed
 // block.PayloadID to avoid type-system churn across every

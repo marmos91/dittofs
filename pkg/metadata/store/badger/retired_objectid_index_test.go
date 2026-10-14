@@ -1,12 +1,14 @@
 package badger
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,6 +33,33 @@ func countRetiredObjectIDKeys(t *testing.T, db *badgerdb.DB) int {
 		return nil
 	}))
 	return n
+}
+
+// writeLegacyObjectIDState makes a store look like an older binary wrote it:
+// one obj: key pointing at the file, and the file's record carrying field 21.
+func writeLegacyObjectIDState(t *testing.T, store *BadgerMetadataStore, id uuid.UUID) {
+	t.Helper()
+	require.NoError(t, store.db.Update(func(txn *badgerdb.Txn) error {
+		item, err := txn.Get(keyFile(id))
+		if err != nil {
+			return err
+		}
+		val, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+		oid := make([]byte, 32)
+		oid[0] = 0x2a
+		if err := txn.Set(keyFile(id), putField(val, fObjectID, oid)); err != nil {
+			return err
+		}
+		idBin, err := id.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return txn.Set([]byte(fmt.Sprintf("%s%064x", prefixRetiredObjectID, 0x2a)), idBin)
+	}))
+	require.Equal(t, 1, countRetiredObjectIDKeys(t, store.db))
 }
 
 // The cleanup deletes every leftover obj: key, across more than one batch, and
@@ -77,8 +106,8 @@ func TestDropRetiredObjectIDIndex(t *testing.T) {
 	assert.Zero(t, n, "a store with no obj: key left needs no work")
 }
 
-// A store written before #2924 holds obj: keys and file records that carry the
-// ObjectID field. Opening it with this binary drops the keys and still reads
+// A store written by an older binary holds obj: keys and file records that
+// carry the ObjectID field. Opening it with this binary drops the keys and still reads
 // every file.
 func TestOpenDropsRetiredObjectIDIndex(t *testing.T) {
 	ctx := context.Background()
@@ -92,29 +121,7 @@ func TestOpenDropsRetiredObjectIDIndex(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Make the store look like an older binary wrote it: an obj: key, and the
-	// root's record carrying field 21.
-	require.NoError(t, store.db.Update(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyFile(root.ID))
-		if err != nil {
-			return err
-		}
-		val, err := item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
-		oid := make([]byte, 32)
-		oid[0] = 0x2a
-		if err := txn.Set(keyFile(root.ID), putField(val, fObjectID, oid)); err != nil {
-			return err
-		}
-		idBin, err := root.ID.MarshalBinary()
-		if err != nil {
-			return err
-		}
-		return txn.Set([]byte(fmt.Sprintf("%s%064x", prefixRetiredObjectID, 0x2a)), idBin)
-	}))
-	require.Equal(t, 1, countRetiredObjectIDKeys(t, store.db))
+	writeLegacyObjectIDState(t, store, root.ID)
 	require.NoError(t, store.Close())
 
 	store, err = NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
@@ -127,6 +134,42 @@ func TestOpenDropsRetiredObjectIDIndex(t *testing.T) {
 	require.NoError(t, err)
 	got, err := store.GetFile(ctx, rootHandle)
 	require.NoError(t, err, "a record carrying field 21 must still be readable")
+	assert.Equal(t, root.ID, got.ID)
+	assert.Equal(t, metadata.FileTypeDirectory, got.Type)
+}
+
+// A dump taken by an older binary carries obj: keys and file records with the
+// ObjectID field. Restoring it drops the keys right away, without waiting for
+// the next open, and every file still reads.
+func TestRestoreDropsRetiredObjectIDIndex(t *testing.T) {
+	ctx := context.Background()
+	const share = "/legacy"
+
+	src, err := NewBadgerMetadataStoreWithDefaults(ctx, filepath.Join(t.TempDir(), "metadata.db"))
+	require.NoError(t, err)
+	root, err := src.CreateRootDirectory(ctx, share, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory, Mode: 0o755,
+	})
+	require.NoError(t, err)
+	writeLegacyObjectIDState(t, src, root.ID)
+
+	var dump bytes.Buffer
+	_, err = src.WriteSnapshot(ctx, &dump)
+	require.NoError(t, err)
+	require.NoError(t, src.Close())
+
+	dst, err := NewBadgerMetadataStoreWithDefaults(ctx, filepath.Join(t.TempDir(), "metadata.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = dst.Close() })
+
+	require.NoError(t, dst.RestoreSnapshot(ctx, bytes.NewReader(dump.Bytes())))
+
+	assert.Zero(t, countRetiredObjectIDKeys(t, dst.db), "restore must drop the retired index")
+
+	rootHandle, err := metadata.EncodeShareHandle(share, root.ID)
+	require.NoError(t, err)
+	got, err := dst.GetFile(ctx, rootHandle)
+	require.NoError(t, err, "a restored record carrying field 21 must still be readable")
 	assert.Equal(t, root.ID, got.ID)
 	assert.Equal(t, metadata.FileTypeDirectory, got.Type)
 }

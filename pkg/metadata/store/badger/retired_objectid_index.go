@@ -8,10 +8,10 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// prefixRetiredObjectID is the key prefix of the ObjectID index removed in
-// #2924: "obj:<hash>" -> file UUID. Nothing writes or reads it any more, but a
-// store written by an older binary, or restored from an older dump, still
-// holds such keys.
+// prefixRetiredObjectID is the key prefix of the retired ObjectID index:
+// "obj:<hash>" -> file UUID, a unique index over a hash of each file's chunk
+// list. Nothing writes or reads it any more, but a store written by an older
+// binary, or restored from an older dump, still holds such keys.
 const prefixRetiredObjectID = "obj:"
 
 // retiredObjectIDDeleteBatch bounds how many keys one transaction deletes, so a
@@ -27,7 +27,7 @@ const retiredObjectIDDeleteBatch = 1000
 //
 // decision: the keys are deleted by iterating the prefix in bounded batches,
 // not with DropPrefix. DropPrefix blocks every writer, flushes the memtables
-// and compacts the whole tree (#2809), a cost every open would pay even with
+// and compacts the whole tree, a cost every open would pay even with
 // no key left. Overturn only if a store is found holding so many leftover keys
 // that batched deletes make the open noticeably slow.
 func dropRetiredObjectIDIndex(db *badgerdb.DB) (int, error) {

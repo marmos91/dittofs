@@ -313,8 +313,8 @@ func TestDecodeFile_SchemaEvolution(t *testing.T) {
 	assert.Equal(t, orig.PayloadID, got.PayloadID)
 }
 
-// TestDecodeFile_RetiredObjectID pins the upgrade path of #2924: a record
-// written before the ObjectID was removed still carries field 21. It must
+// TestDecodeFile_RetiredObjectID pins the upgrade path for the retired ObjectID
+// field: a record written by an older binary still carries field 21. It must
 // decode with every other field intact, and re-encoding it must drop the field,
 // so the value disappears the next time the record is written.
 func TestDecodeFile_RetiredObjectID(t *testing.T) {

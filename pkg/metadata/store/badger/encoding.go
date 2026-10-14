@@ -45,7 +45,7 @@ import (
 // Server Config         "cfg:"   cfg:server                             MetadataServerConfig (JSON)
 // Filesystem Caps       "cap:"   cap:fs                                 FilesystemCapabilities (JSON)
 // Format Version        "fmt:"   fmt:store                              uint32 (big-endian binary)
-// Retired ObjectID idx  "obj:"   obj:<contentHash>                      dropped at open (retired_objectid_index.go)
+// Retired ObjectID idx  "obj:"   obj:<contentHash>                      dropped at open and restore (retired_objectid_index.go)
 // PayloadID Index       "pl:"    pl:<payloadID>                         file UUID (bytes)
 
 const (
@@ -273,7 +273,7 @@ const (
 	fEAs        = 18 // map[string][]byte (JSON)
 	fIdempotenc = 19 // uint64 (uvarint)
 	fBlocks     = 20 // []block.ChunkRef (JSON)
-	fObjectID   = 21 // retired: the ObjectID (#2924); decoded and discarded, never written
+	fObjectID   = 21 // retired: older binaries wrote the file's ObjectID here; decoded and discarded, never written
 	fDeletedAt  = 22 // *time.Time (MarshalBinary)
 	fOrigPath   = 23 // string
 	fDeletedBy  = 24 // string
@@ -492,9 +492,9 @@ func decodeFileBinary(b []byte) (*metadata.File, error) {
 				return nil, fmt.Errorf("decode blocks: %w", err)
 			}
 		case fObjectID:
-			// Retired field: records written before #2924 may still carry an
-			// ObjectID. Nothing reads it, so it is dropped here and disappears
-			// from the record on its next write.
+			// Retired field: a record written by an older binary may still
+			// carry an ObjectID. Nothing reads it, so it is dropped here and
+			// disappears from the record on its next write.
 		case fDeletedAt:
 			var t time.Time
 			if err := t.UnmarshalBinary(val); err != nil {

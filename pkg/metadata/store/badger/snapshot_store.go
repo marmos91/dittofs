@@ -405,8 +405,8 @@ func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	if err := clearPayloadIndexBackfilled(s.db); err != nil {
 		return fmt.Errorf("restore: %w", err)
 	}
-	// A dump taken before #2924 carries keys of the retired ObjectID index;
-	// drop them now rather than wait for the next open.
+	// A dump taken by an older binary carries keys of the retired ObjectID
+	// index; drop them now rather than wait for the next open.
 	if _, err := dropRetiredObjectIDIndex(s.db); err != nil {
 		return fmt.Errorf("restore: %w", err)
 	}

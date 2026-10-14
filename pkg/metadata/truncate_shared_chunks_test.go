@@ -103,9 +103,8 @@ func truncateSharedAssert(t *testing.T, svc *metadata.Service, h metadata.FileHa
 // Two files left with the same chunks after a size-down truncate must both
 // keep working. Truncate used to give each file an ObjectID computed from its
 // remaining chunk hashes, and the store kept ObjectIDs unique, so the second
-// truncate failed on every retry (#2924). The ObjectID is gone; these cases
-// pin that nothing derived from a file's content stops two files from holding
-// the same chunks.
+// truncate failed on every retry. These cases pin that nothing derived from a
+// file's content stops two files from holding the same chunks.
 func TestSetFileAttributes_TruncateFilesWithSharedChunks(t *testing.T) {
 	h1 := block.ChunkRef{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}
 	h2 := block.ChunkRef{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096}
