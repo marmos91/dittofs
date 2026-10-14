@@ -122,6 +122,29 @@ func TestGoJSONNamedTestsThatDidntRun(t *testing.T) {
 	}
 }
 
+// A test that failed under one of a cell's commands failed the cell, even
+// when a later command passed it.
+func TestGoJSONKeepsAFailure(t *testing.T) {
+	files := map[string]string{"go.mod": goModule["go.mod"], "f/f_test.go": `package f
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFlip(t *testing.T) {
+	if _, err := os.Stat("failed"); err != nil {
+		_ = os.WriteFile("failed", nil, 0o644)
+		t.Fatal("fails the first time")
+	}
+}
+`}
+	o, _, _ := goRun(t, "suites:\n  g: { cmd: [go test ./..., go test ./...], format: go-json }\n", files)
+	if want := "0 passed, 1 failed, 0 skipped: TestFlip"; o.Result != Failed || o.Note != want {
+		t.Errorf("outcome %+v, want failed with %q", o, want)
+	}
+}
+
 // A package that doesn't build fails the cell and says so.
 func TestGoJSONBuildFailure(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "b/b_test.go": "package b\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) { undefined() }\n"}

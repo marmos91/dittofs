@@ -228,7 +228,7 @@ type event struct {
 
 // results are a go-json cell's tests, from their events.
 type results struct {
-	tests    map[string]string // "package test" to its last pass, fail or skip
+	tests    map[string]string // "package test" to fail once a command failed it, else its last pass or skip
 	failedIn map[string]bool   // packages with a failed test
 	broken   []string          // packages that failed outside any test
 }
@@ -251,7 +251,9 @@ func (r *results) add(line []byte, w io.Writer) {
 		if r.tests == nil {
 			r.tests, r.failedIn = map[string]string{}, map[string]bool{}
 		}
-		r.tests[e.Package+" "+e.Test] = e.Action
+		if k := e.Package + " " + e.Test; r.tests[k] != "fail" {
+			r.tests[k] = e.Action
+		}
 		if e.Action == "fail" {
 			r.failedIn[e.Package] = true
 		}
