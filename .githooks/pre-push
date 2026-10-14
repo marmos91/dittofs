@@ -6,6 +6,9 @@ set -euo pipefail
 # time on a trivially-broken branch.
 #
 # Skip entirely: git push --no-verify, or DITTOFS_SKIP_PREPUSH=1.
+# DITTOFS_PREPUSH_TIMEOUT sets go test's -timeout (default 10m): the engine
+# and runtime packages alone take minutes under -race, and the changed
+# packages run in parallel.
 
 if [ -n "${DITTOFS_SKIP_PREPUSH:-}" ]; then
     exit 0
@@ -24,8 +27,11 @@ if [ -z "$CHANGED_GO" ]; then
     exit 0
 fi
 
-# Map changed files → unique package dirs.
-PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | sort -u | sed 's|^|./|')
+# Map changed files → unique package dirs. A package the branch deletes has
+# nothing left to test, so only dirs that still hold Go files are kept.
+PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | sort -u | while IFS= read -r dir; do
+    if ls "$dir"/*.go >/dev/null 2>&1; then echo "./$dir"; fi
+done)
 if [ -z "$PKGS" ]; then
     exit 0
 fi
@@ -48,7 +54,7 @@ test_packages() {
     [ -n "$packages" ] || return 0
 
     # shellcheck disable=SC2086  # intentional word-splitting
-    if ! (cd "$module" && go test -short -race -timeout=60s $packages); then
+    if ! (cd "$module" && go test -short -race -timeout="${DITTOFS_PREPUSH_TIMEOUT:-10m}" $packages); then
         echo "" >&2
         echo "pre-push: tests failed on changed packages in $module. 'git push --no-verify' skips." >&2
         exit 1
