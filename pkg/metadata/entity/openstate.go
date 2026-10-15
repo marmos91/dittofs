@@ -1,6 +1,13 @@
 package entity
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrSeqMisordered is an NFSv4.1 CREATE_SESSION whose sequence ID is neither
+// the last one applied, a replay, nor the next.
+var ErrSeqMisordered = errors.New("entity: create-session sequence out of order")
 
 // The durable part of open state: the records a lost process leaves behind
 // for the next one. Opens, locks and caching grants are otherwise volatile,

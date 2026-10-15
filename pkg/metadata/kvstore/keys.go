@@ -192,6 +192,8 @@ func clientShardKey(id entity.ClientID, shard uint64) []byte {
 	return keys.Uint64(append(clientKey(id), keys.CLSh), shard)
 }
 
+func clientShardsPrefix(id entity.ClientID) []byte { return append(clientKey(id), keys.CLSh) }
+
 // clientOwnerKey is the owner index: a client's own name for itself, under
 // its protocol, to its ClientID.
 func clientOwnerKey(p entity.Protocol, owner []byte) []byte {

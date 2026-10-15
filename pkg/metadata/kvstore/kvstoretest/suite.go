@@ -77,6 +77,9 @@ func Run(t *testing.T, open Opener) {
 		{"UsageFollowsOwner", testUsageFollowsOwner},
 		{"FoldDirectory", testFoldDirectory},
 		{"DirectoryTimeSet", testDirectoryTimeSet},
+		{"Clients", testClients},
+		{"CreateSession", testCreateSession},
+		{"ClientOwnerRace", testClientOwnerRace},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}
