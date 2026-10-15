@@ -1103,9 +1103,10 @@ converts the old lists once.
   and the `known.yaml` entries imported from it don't name the same tests, so a change to one is
   made to both. The Markdown lists go with the scripts.
 - **One matcher.** An entry's `test` matches as a row of today's lists does: an exact name; a
-  trailing `.*` as a prefix (`smb2.lock.*`); a shell glob (`flock/*`, `utimensat/0?.t`); and a
-  name `N` with neither a glob nor `.t` also matches `N.t` and `N/...` (`open/etxtbsy` matches
-  `open/etxtbsy.t`). The Go matcher shares golden fixtures with today's
+  trailing `.*`, which matches every name that starts with what comes before it (`smb2.lock.*`
+  matches `smb2.lock.rw` and also `smb2.locking`); a shell glob (`flock/*`, `utimensat/0?.t`); and
+  a pattern `N` with no `*` that doesn't end in `.t` also matches `N.t` and `N/...`
+  (`open/etxtbsy` matches `open/etxtbsy.t`, and `utimensat/0?` matches `utimensat/09.t`). The Go matcher shares golden fixtures with today's
   `test/common/known-failures_test.sh` until that goes, so the two parsers can't drift. Today
   `run.sh` resolves a suite's list but never passes it on, each runner picks its own file again,
   and WPTS's grader doesn't use the shared matcher at all. With `known` in the registry, `dt` reads
