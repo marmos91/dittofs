@@ -309,7 +309,16 @@ process, or to its container, are not pooled:
   headroom** — the garbage that lives between two collections;
 - **code, and memory-mapped files** whose pages the kernel can drop.
 
-The unpooled quarter of *L* (§2.3) is the margin for all three. It is not
+Two bounded consumers are not pooled either, because they are fixed by count:
+
+- **the event rings** of [RFC 25 §4.3](rfc-25-observability.md#4.3%20From%20the%20emit%20point%20to%20the%20spool):
+  16,384 `access` and 4,096 `quota` entries of at most 1 KiB each, allocated at
+  start — at most 20 MiB per node, whatever the load;
+- **management-API calls**, at most 64 at once
+  ([RFC 23 §4.3](rfc-23-control-plane.md#4.3%20Writes)), which draw on none of
+  the pools.
+
+The unpooled quarter of *L* (§2.3) is the margin for all of these. It is not
 reserved by anyone and nothing waits for it.
 
 ### 2.3 The pools
@@ -738,7 +747,7 @@ from here. The inventory, from the socket down:
 | held SMB requests | the hold budget and floor per key, the hold pool | [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone), §4.3 | `DelayHoldBudget` |
 | blocked lock waiters | the open-state pool | [RFC 14](rfc-14-open-state.md), §4.6 | `DelayResources` |
 | callbacks to clients | the writer's queue, the callback deadline | [RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver) | the client is not answering |
-| access-audit and quota events | the stream's fixed buffer | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks) | dropped and counted |
+| access-audit and quota events | rings of 16,384 and 4,096 entries of at most 1 KiB, allocated at start (§2.2) | [RFC 25 §4.4](rfc-25-observability.md#4.4%20Bounds%2C%20drops%20and%20gap%20records) | dropped, counted, a gap record written |
 | a write paced before capacity | the caller's deadline | [RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) | `ErrDelay` |
 | group commit | `G` files | [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) | the next group |
 | background work items | one entry per key | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler) | coalesced |
@@ -994,13 +1003,15 @@ not become a setting (§2.3's ponytail).
 
 ## 10. Observability
 
-Metric names are shown without the deployment's prefix.
+Metric names are shown without the `dittofs_` prefix the exporter adds; names,
+labels and histogram buckets follow
+[RFC 25 §2](rfc-25-observability.md#2.%20Metrics).
 
 | Answers | Metric | Type |
 | --- | --- | --- |
 | What limit is the node running under, and where did it come from? | `memory_limit_bytes{source}` | gauge |
 | How full is each pool, against its ceiling? | `memory_pool_reserved_bytes{pool}`, `memory_pool_ceiling_bytes{pool}` | gauge, gauge |
-| How often, and how long, does a reservation wait? | `memory_pool_waits_total{pool}`, `memory_pool_wait_seconds{pool}` | counter, histogram |
+| How often, and how long, does a reservation wait? | `memory_pool_waits_total{pool}`, `memory_pool_wait_seconds{pool}` | counter, histogram (`request`) |
 | How often is a call refused for memory, and by which rule? | `memory_pool_refusals_total{pool, rule}` — `rule` one of `share_cap`, `ceiling`, `deadline` | counter |
 | How close is the heap to the limit? | `memory_heap_live_bytes`, `memory_resident_bytes` | gauge, gauge |
 | Is background work waiting for CPU? | `cpu_background_tokens_in_use`, `cpu_background_waits_total` | gauge, counter |
