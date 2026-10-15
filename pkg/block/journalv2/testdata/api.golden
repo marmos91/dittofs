@@ -1,0 +1,20 @@
+package github.com/marmos91/dittofs/pkg/block/journalv2
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/core
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/durability
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/format
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/index
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/platform
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/reclaim
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/recovery
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/segment
+
+package github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage
+
