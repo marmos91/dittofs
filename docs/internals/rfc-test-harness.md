@@ -457,7 +457,7 @@ suites:
     needs: [linux, root, nfs-client]
   pynfs:
     format: junit                       # pynfs writes JUnit itself with --xml
-    cmd: "pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --maketree --xml {out}/junit.xml {names}"
+    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --maketree --xml {out}/junit.xml {names}"
     names: all                          # what {names} holds when a run names no tests
     matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
     select: { pr: { profile: [badger-s3] } }
@@ -586,7 +586,7 @@ placeholder is a registry error (exit 3).
 | `{args}` | the tier's `args` |
 | `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
-| `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. `dt` lays out `{tools}/pjdfstest/pjdfstest` beside `{tools}/pjdfstest/tests`, where pjdfstest's `misc.sh` looks for its binary, and puts the tools' `bin` directories first on the command's `PATH`, so `pynfs-4.{minor}` is found by name |
+| `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite that names `{tools}` gets them, and names each tool by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. `dt` lays out `{tools}/pjdfstest/pjdfstest` beside `{tools}/pjdfstest/tests`, where pjdfstest's `misc.sh` looks for its binary |
 | `{out}` | the cell's results directory |
 | `{packages}` | the package list `packages` gives |
 | `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{client2}` | from the fixture (§4.2) |
@@ -594,8 +594,8 @@ placeholder is a registry error (exit 3).
 For the pynfs cell `badger-s3/1`, for example:
 
 ```text
-cmd:  pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --maketree --xml {out}/junit.xml {names}
-runs: pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --uid 0 --gid 0 --maketree --xml test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
+cmd:  {tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --maketree --xml {out}/junit.xml {names}
+runs: test/harness/results/20261008T160000Z-0d8dbdd8/tools/pynfs/bin/pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --uid 0 --gid 0 --maketree --xml test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
 ```
 
 **smbtorture's test list.** `tests.txt` holds what `smbtorture/run.sh` holds today: each test or
