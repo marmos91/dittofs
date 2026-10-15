@@ -73,6 +73,8 @@ Everything above the backend talks to `kv.KV` (`pkg/metadata/kv/kv.go`). It is o
 
 `Limits()` reports the backend's ceilings (key size, value size, bytes and entries per transaction, maximum age). The store derives its batch size *K* from them at open (`kvstore/budget.go`): on Badger in memory, K is 214 keys. Every operation over many records — an existence commit, a removal's batches, a usage fold — splits itself to stay under K.
 
+`Close()` waits for the calls in flight, each of which completes as it would have. Every call after it fails with `kv.ErrClosed`, and a second `Close` does nothing.
+
 ## 3. Group commit
 
 *Why many writers share one disk sync.*
@@ -154,7 +156,7 @@ Values use one frame (`kv/codec`): a version byte, then fields in fixed order. D
 
 The store itself answers `VersionFloor`, `VersionLimit` and `RaiseVersionLimit` (`versionfloor.go`), which the engine reads when a journal opens or attaches a share. All views share helpers in `tx.go` and the transaction-level functions in each file, so one operation that spans areas (a rename that also writes a pending release) stays a single transaction.
 
-> **Authorization lives here, not in adapters.** Every namespace and file call runs `authorize` (`auth.go`) against the file it acts on: the share grant first, then the immutable and append-only flags, then the stored ACL or the mode. Removal needs *delete* on the file or *delete-a-child* on the directory, checked in `mayRemove`.
+> **Authorization lives here, not in adapters.** Every namespace and file call runs `authorize` (`auth.go`) against the file it acts on: the share grant first, then the immutable and append-only flags, then the stored ACL or the mode. Privilege skips the mode and ACL but never the grant: a read-only grant refuses a privileged caller's attribute change as it does anyone's. Changing a directory's entries (create, link, unlink, rename) needs search on it as well as write, as POSIX asks. Removal needs *delete* on the file or *delete-a-child* on the directory, checked in `mayRemove`.
 >
 > A mode bit grants its whole mapped set to whoever it applies to, so a write bit grants write attributes and a group member's `GENERIC_WRITE` open of a 0664 file succeeds; a non-owner then sets times only through write attributes an ACL entry grants. A privileged caller skips the walk but executes only what an x bit makes executable. The well-known principals have fixed IDs (fifteen zero bytes and a number) and are matched by fields of the caller's identity, never by privilege: Authenticated Users and BUILTIN\Users by `Authenticated`, Administrators by `Admin`, NETWORK by everyone, SYSTEM and the CREATOR principals by no one; an owner-rights entry takes away what ownership implies. A deny naming an unknown special principal is refused when stored, since every walk would skip it.
 >
@@ -481,16 +483,19 @@ flowchart TB
   internal["kvstore internal tests: content, removals,<br/>release, clone, floor and usage"]
   ks --> holding["holding wrapper:<br/>runs a second op between a<br/>transaction's reads and its commit"]
   ks --> counting["kv.Counting:<br/>keys read, written, scanned, seeks"]
-  internal --> sweeps["invariant sweeps after each scenario"]
+  ks --> check["Store.Check after every case"]
+  internal --> check
 ```
 
 1. **Forcing a commit order.** The `holding` wrapper (`kvstoretest/races.go`) pauses an `Update` after its function and before its commit, and runs the competing operation to completion in that pause. That deterministically makes the paused one commit second, then the test swaps roles.
 
 2. **Cost assertions.** `kv.Counting` counts what each operation touched, so tests assert "a create writes 6 keys and rewrites nothing", "a lookup reads 4 keys", "resolving a handle reads 1 key at any depth", "a folded directory's Get scans nothing".
 
-3. **Invariant sweeps.** Content tests end with `checkCounts`, which asserts three things over the whole share. Every refcount equals its reverse keys and refs, and every block is retired exactly when its live count is zero. The version index holds exactly one entry per file at its stored version, and no stray one (`checkFloor`). Folded usage plus unfolded deltas equals the files' `Charged` and count, for the share, every principal and every project (`checkUsage`).
+3. **Invariant checks.** `Store.Check` asserts three things over the whole store, in one read transaction. Every refcount equals its reverse keys and refs, and every block is retired exactly when its live count is zero. The version index holds exactly one entry per file at its stored version, and no stray one. Folded usage plus unfolded deltas equals the files' `Charged` and count, for each share, every principal and every project. Every conformance case and every content test ends with it.
 
 4. **Mutation checks.** For each guard and rule, the code was edited to remove it and the test was run to confirm it fails on its assertion, then restored. Several tests passed even with their rule removed at first, and were fixed before they were committed.
+
+5. **For other packages' tests.** `kvstoretest.NewFS` gives a store, a share, an administrator and the root in one call, and `NewHeldFS` the same over a held store, whose `Race` makes two operations commit in a chosen order. `kvstore.Regular`, `Dir`, `Symlink` and `Device` build a `NewFile`. `keys.Describe` renders a key by name, as `F‖share=3fa2c1d0‖file=9b1e44a7‖op‖9‖l‖100‖4`, and a namespace call's error is an `OpError` naming the operation, the directory and the name.
 
 > **What waits on other work.** Snapshots: until cuts exist, nothing moves to history and nothing is dated by a cut. Open state (RFC 14): the store holds its durable records, but the service that holds opens, locks and grants in memory, with leases and grace, is not built. The engine: quota reservations, the scheduling of folds, and the journal's own version counter, which the store's `Version` stands in for today. Each place that waits has a `ponytail:` comment naming what it skips.
 >
