@@ -32,7 +32,9 @@ func (n Namespace) FoldDirectory(ctx context.Context, share entity.ShareID, dir 
 		}
 		was := d.Version
 		folded := 0
-		if folded, more, err = foldDeltas(tx, &d, max(1, (n.s.k-2)/2)); err != nil || folded == 0 {
+		// Each delta is two deletes, and the record with its two
+		// version-index keys is three writes.
+		if folded, more, err = foldDeltas(tx, &d, max(1, (n.s.k-3)/2)); err != nil || folded == 0 {
 			return err
 		}
 		recount = d.Subdirs < 0
@@ -105,7 +107,7 @@ func foldDeltas(tx kv.Txn, d *entity.File, limit int) (folded int, more bool, er
 		if err != nil {
 			return 0, false, err
 		}
-		if limit >= 0 && len(keys) == limit {
+		if limit >= 0 && folded == limit {
 			more = true
 			break
 		}
@@ -115,13 +117,14 @@ func foldDeltas(tx kv.Txn, d *entity.File, limit int) (folded int, more bool, er
 		}
 		*d = applyDelta(*d, x)
 		keys = append(keys, bytes.Clone(row.Key), deltaFloorKey(d.Share, d.ID, x.Version, [32]byte(row.Key[len(pre):])))
+		folded++
 	}
 	for _, k := range keys {
 		if err := tx.Delete(k); err != nil {
 			return 0, false, err
 		}
 	}
-	return len(keys) / 2, more, nil
+	return folded, more, nil
 }
 
 // applyDelta is d with one delta applied: the latest times and the highest
