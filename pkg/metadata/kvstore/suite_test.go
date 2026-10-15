@@ -46,6 +46,18 @@ func TestStoreConformanceOnDisk(t *testing.T) {
 	})
 }
 
+func FuzzNamespace(f *testing.F) { kvstoretest.FuzzNamespace(f, badger(badgerkv.Options{})) }
+
+// The fuzz target's seeds on disk, every commit synced.
+func FuzzNamespaceOnDisk(f *testing.F) {
+	if testing.Short() {
+		f.Skip("syncs every commit")
+	}
+	kvstoretest.FuzzNamespace(f, func(tb testing.TB) kv.KV {
+		return badger(badgerkv.Options{Dir: tb.TempDir()})(tb)
+	})
+}
+
 // BenchmarkStore runs the store's benchmarks in memory, and on disk under
 // KV_BENCH_DIR when it is set: point it at a real device, since a tmpfs
 // syncs in no time and hides what a commit costs.

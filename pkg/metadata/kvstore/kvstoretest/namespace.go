@@ -46,6 +46,12 @@ func setupFS(t *testing.T, s *kvstore.Store, c *kv.Counting, fold entity.FoldRul
 	id := entity.Identity{Principal: admin.Principal, Privileged: true}
 	root, _, err := s.Files().Root(ctx, id, sh.ID)
 	must(t, err)
+	// Every case ends with the store's cross-record invariants holding.
+	t.Cleanup(func() {
+		if err := s.Check(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 	return &fs{t: t, s: s, c: c, share: sh, admin: id, root: root}
 }
 
