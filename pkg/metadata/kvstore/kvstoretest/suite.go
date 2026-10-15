@@ -52,6 +52,7 @@ func Run(t *testing.T, open Opener) {
 		{"RootAndResolve", testRootAndResolve},
 		{"Entries", testEntries},
 		{"CreateAndLookup", testCreateAndLookup},
+		{"OpError", testOpError},
 		{"CaseInsensitiveShare", testCaseInsensitiveShare},
 		{"OwnerAndGroupAtCreate", testOwnerAndGroupAtCreate},
 		{"ExclusiveCreate", testExclusiveCreate},

@@ -1,7 +1,9 @@
 package kvstoretest
 
 import (
+	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -238,5 +240,22 @@ func testGetAndGrant(t *testing.T, kvo Opener) {
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	if _, _, err := f.s.Namespace().Create(ctx, reader, pub, []byte("y"), regular(0o644)); !isDenied(err) {
 		t.Errorf("create under a read-only grant: %v", err)
+	}
+}
+
+// A namespace call's error names the call, the directory and the name, and
+// still answers the store's error checks.
+func testOpError(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	_, err := f.s.Namespace().Unlink(ctx, f.admin, f.root, []byte("missing"))
+	var oe *kvstore.OpError
+	if !errors.As(err, &oe) || oe.Op != "unlink" || string(oe.Name) != "missing" || !bytes.Equal(oe.Dir, f.root) {
+		t.Fatalf("unlink of a missing name: %#v", err)
+	}
+	if !merrs.IsNotFoundError(err) {
+		t.Errorf("the wrapped error lost its code: %v", err)
+	}
+	if want := "unlink " + f.root.String() + `/"missing": `; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("message %q, want it to start %q", err.Error(), want)
 	}
 }

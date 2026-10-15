@@ -25,9 +25,10 @@ type Orphaned struct{ File entity.FileID }
 // unlink takes the file's last entry, each is written durable in the same
 // transaction, since an open is the second holder of a file and the release
 // finds its holders only in the store.
-func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, open ...entity.Open) (Orphaned, error) {
+func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, open ...entity.Open) (_ Orphaned, err error) {
+	defer opError(&err, "unlink", dir, name)
 	var out Orphaned
-	err := n.s.kv.Update(ctx, func(tx kv.Txn) error {
+	err = n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		share, d, err := dirIn(tx, dir)
 		if err != nil {
 			return err
@@ -126,7 +127,8 @@ func provedEmpty(tx kv.Txn, d entity.File) error {
 // Link adds a name for an existing file. It refuses a directory, which has
 // exactly one entry, and a file with no entry left, which is released or
 // about to be: a link racing the release would name a deleted file.
-func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, target entity.Handle) error {
+func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, target entity.Handle) (err error) {
+	defer opError(&err, "link", dir, name)
 	return n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		share, d, err := dirIn(tx, dir)
 		if err != nil {

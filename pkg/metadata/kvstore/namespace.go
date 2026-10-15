@@ -99,9 +99,10 @@ func dirIn(r kv.Reader, h entity.Handle) (entity.ShareID, entity.File, error) {
 
 // Lookup resolves one name in a directory: one entry read and one file read,
 // after the caller's traverse right on the directory is checked.
-func (n Namespace) Lookup(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte) (entity.Handle, entity.File, error) {
+func (n Namespace) Lookup(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte) (_ entity.Handle, _ entity.File, err error) {
+	defer opError(&err, "lookup", dir, name)
 	var child entity.File
-	err := n.s.kv.View(ctx, func(r kv.Reader) error {
+	err = n.s.kv.View(ctx, func(r kv.Reader) error {
 		share, d, err := dirIn(r, dir)
 		if err != nil {
 			return err
@@ -177,7 +178,8 @@ func Device(t entity.FileType, mode uint32, dev entity.DeviceID) NewFile {
 // An exclusive create that finds the name taken returns the file there when
 // its verifier is the request's, the retry of a create whose reply was lost,
 // and fails as existing otherwise.
-func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, nf NewFile) (entity.Handle, entity.File, error) {
+func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, nf NewFile) (_ entity.Handle, _ entity.File, err error) {
+	defer opError(&err, "create", dir, name)
 	if nf.Type == entity.Stream || nf.Type.String() == "" {
 		return nil, entity.File{}, merrs.NewInvalidArgumentError("cannot create a " + nf.Type.String())
 	}
