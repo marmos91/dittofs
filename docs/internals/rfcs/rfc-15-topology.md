@@ -769,3 +769,4 @@ table.
 | A pNFS-native NAS exporting NFSv3 and SMB from its data nodes | the protocol role belongs with the data |
 | Distributed file systems publishing epoch-numbered maps | primary caches corrected by epoch refusal and pushed updates |
 | Clustered SMB servers with public-address takeover, and the SMB Witness protocol | floating addresses reset by acknowledgement; clients told where to move |
+| Scale-out NAS clusters behind one DNS-delegated name, with dynamic address failover | clients spread across protocol nodes by the cluster's own name server, and addresses moved on node loss as [§5.3](#5.3%20Client%20addressing) moves them; the contrast is lock state, which they keep in a lock manager spanning nodes and this design keeps at one primary per shard ([RFC 14 §3](rfc-14-open-state.md#3.%20One%20table%20per%20file%2C%20at%20one%20primary)) |

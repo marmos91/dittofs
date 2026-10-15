@@ -272,7 +272,7 @@ Two families of unit. The **bytes** units say where content is; the
 | file | a namespace object with an identity, attributes and refs keyed by offset over its carved content | refs | any size; one 30 GB file in the examples | metadata store | [RFC 7](rfc-7-namespace-metadata.md) |
 | share | one exported file tree with its own settings | files | two in the examples | metadata store | [RFC 16](rfc-16-metadata-store.md) |
 | shard | a set of files with one primary at a time | files of one share | one per share; one per child of a marked directory **(cluster)** | metadata store (its shard record) | [RFC 11](rfc-11-ownership.md), [§1.4](#1.4%20The%20single-node%20profile) |
-| slot | one of a fixed number of buckets a per-child shard's ID hashes into | per-child shards | 4,096, fixed when the installation is created; **(cluster)** | metadata store (the slot table) | [RFC 11](rfc-11-ownership.md) |
+| slot | one of a fixed number of buckets a shard's ID hashes into | every shard | 4,096, fixed when the installation is created; **(cluster)** | metadata store (the slot table) | [RFC 11](rfc-11-ownership.md) |
 | node | one DittoFS server process | the shards it is primary or replica of | one in the first release; several in a cluster | a host | [RFC 15](rfc-15-topology.md), [§1.4](#1.4%20The%20single-node%20profile) |
 | installation | every node that shares one metadata store and control plane | nodes, shares, namespaces | one | all of the above | [RFC 13](rfc-13-configuration.md) |
 
@@ -287,7 +287,7 @@ Two families of unit. The **bytes** units say where content is; the
    │ offload: carve                        ▼
    ▼                                     primary S1, replicas S2 and S3
  chunks (~256 KiB, named by hash)
-   │ pack, whole chunks only             per-child shard ──► one of 4096 slots
+   │ pack, whole chunks only                       shard ──► one of 4096 slots
    ▼                                     slot table: slot ──► ordered nodes
  block (~4 MiB) ── put into a namespace
                    (a prefix) in bucket dfs-data
@@ -365,7 +365,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **route envelope** | **(cluster)** what every forwarded call carries: request ID, shard and epoch, hop count | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) |
 | **floating address** / **SMB Witness** | **(cluster)** a client-facing address the cluster owns and a surviving protocol node takes over / the SMB protocol that tells a client an address moved or a node is draining | [RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing) |
 | **shard** | a set of files with one primary at a time; a share is one shard, and only in a cluster can a subtree or each child of a marked directory be its own. A file is never split across shards | [RFC 11 §2](rfc-11-ownership.md#2.%20Shards) |
-| **slot** / **slot table** | **(cluster)** one of a fixed number (4,096 by default) of buckets a per-child shard's ID hashes into / the record assigning each slot an ordered list of storage nodes, the first as primary, in proportion to capacity | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) |
+| **slot** / **slot table** | **(cluster)** one of a fixed number (4,096 by default) of buckets a shard's ID hashes into / the record assigning each slot an ordered list of storage nodes, the first as primary, in proportion to capacity | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) |
 | **primary** | the one storage node that orders and accepts a shard's writes, as its shard record names — as (node, node epoch), with the journal it holds the shard in. On a single node, that node is the primary of every share | [RFC 11 §3](rfc-11-ownership.md#3.%20The%20primary) |
 | **replica** | **(cluster)** a storage node other than the primary whose journal holds a copy of every write to the shard | [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms) |
 | **learner** | **(cluster)** a replica that has not yet been given the shard's older content: it counts for new writes but cannot take over, and a takeover drops it | [RFC 10 §7.3](rfc-10-journal-replication.md#7.3%20Joining) |

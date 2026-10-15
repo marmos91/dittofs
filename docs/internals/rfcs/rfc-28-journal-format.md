@@ -1197,6 +1197,10 @@ directory is trusted with its content.
 1. **Scrub.** Verification on read never checks content that is never read, so
    long-held dirty content can decay unnoticed; whether a paced background pass,
    taking the [§3.3](#3.3%20Torn%20and%20corrupt%20records) action on a failure, earns its disk bandwidth is undecided.
+   **(cluster)** Replication raises the stakes: a replica's copy is read mostly
+   at a takeover or a rejoin, so its decay is found exactly when it is the copy
+   that counts ([RFC 10 §9.1](rfc-10-journal-replication.md#9.1%20Why%20one%20replica%20suffices)). Mirrored disk arrays answer the same problem
+   with a paced patrol read.
 2. **Segment size** ([§2.2](#2.2%20Segments)). With descriptors bounded separately ([RFC 1 §7.4](rfc-1-journal.md#7.4%20Open%20descriptors)), segment
    size has two remaining effects, and both push the same way: it sets
    reclamation granularity, and it bounds the worst-case active-segment scan at

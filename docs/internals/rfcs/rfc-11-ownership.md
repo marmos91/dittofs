@@ -148,7 +148,7 @@ that node, at most one device's write bandwidth, on a single node too — and
 replicas add durability, not write throughput
 ([§1.1](#1.1%20What%20scaling%20is%20being%20designed%20for), [§2.1](#2.1%20One%20primary%20per%20shard)). Marking a directory
 gives each child directory created in it its own shard, and moves existing
-children over in batches; each such shard hashes to one of 4096 fixed slots,
+children over in batches; every shard hashes to one of 4096 fixed slots,
 and a slot table assigns slots to storage nodes in proportion to their
 capacity, so alice's and bob's shards land on different nodes
 ([§2.2](#2.2%20Automatic%20per-child%20shards)). An operator can also split chosen subtrees by hand.
@@ -181,7 +181,7 @@ proposed size cap does not fit profile shares ([§15](#15.%20Open%20questions)).
 - **node lease** — the one lease each storage node renews for all its shards; a
   node whose lease lapsed is primary of nothing ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
 - **slot table** — the record that assigns each of a fixed number of slots to
-  nodes, placing per-child shards ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+  nodes, placing every shard ([§2.2](#2.2%20Automatic%20per-child%20shards)).
 
 **What this RFC promises.**
 
@@ -314,6 +314,10 @@ after a failover, and the shard records go last, the root's last of all
 
 ![A share split into shards](img/rfc11-shards.svg)
 
+**(cluster)** Every shard, whatever its policy, is placed by slot
+([§2.2](#2.2%20Automatic%20per-child%20shards)): the policy decides which files share a shard, the slot which
+nodes serve it.
+
 **Shard records MUST NOT be per file.** The metadata store holds one shard record
 per share, per chosen subtree and per child of a marked directory. Shard records
 therefore grow with shares and directories, never with files.
@@ -369,8 +373,9 @@ A directory **MAY** be marked so that every child directory **created** in it
 starts a new shard. Files created directly in the marked directory stay in its
 shard, and a directory renamed into it keeps its own.
 
-- **Placement.** A per-child shard's ID hashes into one of a fixed number of
-  **slots** — the per-child shard slot count setting (proposal: 4096), fixed when
+- **Placement.** Every shard's ID — a share's and a chosen subtree's as well as
+  a per-child one — hashes into one of a fixed number of
+  **slots** — the shard slot count setting (proposal: 4096), fixed when
   the installation is created and never changed after. The **slot table**, a record in the metadata store
   ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), assigns each slot an ordered list of nodes from the
   **placement set** — the storage nodes that joined and were not decommissioned,
@@ -394,8 +399,8 @@ shard, and a directory renamed into it keeps its own.
   over ([§4](#4.%20Moving%20files%20and%20primaries)) to the node its slot names, and only once the dwell time has
   passed since its last planned change of primary ([§3.3](#3.3%20The%20primary%20follows%20the%20writer)). A node that returns
   within the delay therefore costs one failover and nothing more.
-- **One placement.** The slot table is the only placement of a per-child shard's
-  replicas. The repair scheduler ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)), restoring a shard's
+- **One placement.** The slot table is the only placement of a shard's
+  replicas, whatever its policy. The repair scheduler ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)), restoring a shard's
   count after a node is lost, **MUST** join the node the table would name in the
   lost node's place were it to leave the placement set — the slot's next node by
   the same capacity- and domain-weighted assignment — and a recomputation that
@@ -438,6 +443,12 @@ shard, and a directory renamed into it keeps its own.
   batches, each a transaction of at most K keys, rather than every shard record
   in one transaction: at 10⁵ per-child shards one transaction would track some
   2×10⁵ keys, past what a store's conflict tracking takes.
+
+> ponytail: slots balance shard counts by capacity, not load, and a share's own
+> shard can be far larger and busier than a per-child one, so two hot shares
+> can hash to one node. Add an operator pin — a shard's nodes named in its
+> record, overriding its slot — when share-level shards are measured unevenly
+> loaded across nodes.
 
 **No client operation writes a per-share key.** With 10^5 per-child shards in one share:
 
@@ -1388,7 +1399,7 @@ var (
 | O14 | During a batch move, the giving primary acknowledges no write to the batch's files from freeze until it refuses them after the commit; the receiving primary re-versions what it accepts under its own epoch, accepts ships only for an open batch, and discards its entries of a batch that did not commit; `Discard` names one shard. |
 | O15 | An operation across shards commits in one transaction, only after every other primary involved has checked and held its files and committed a hold record, only while each is still at the (shard, epoch) and node epoch it answered with, and only while every participant's hold record, which the commit guards, still exists; a participant grants nothing its hold refused until the deletion of its hold record has committed. |
 | O16 | No shard's primary changes by a planned move sooner than the dwell time after its previous planned change. |
-| O17 | A per-child shard's slot is fixed by its ID and the slot count, which never changes after installation creation; the slot table changes only by compare-and-swap, a rebalance hands over only the shards of slots whose nodes changed, and no shard record depends on the table for fencing. |
+| O17 | A shard's slot is fixed by its ID and the slot count, which never changes after installation creation; the slot table changes only by compare-and-swap, a rebalance hands over only the shards of slots whose nodes changed, and no shard record depends on the table for fencing. |
 | O18 | A slot's nodes lie in distinct failure domains whenever the placement set spans enough of them. |
 | O19 | A node renews only while its journals sync and its serving loop progresses, each within the stall bound; a shard whose primary hears from none of its replicas is relinquished, not renewed through. |
 | O20 | A lease that lapsed with its node record unmarked is resumed at the same node epoch by the process that held it, with no takeover, grace or verifier change, and serves nothing from a journal before that journal's generation swap in the resume has won; a resume and a claim on one node record never both commit; no node marks another lapsed within two renewal periods plus the drift bound of its own return to the store. |
@@ -1585,6 +1596,8 @@ Alternatives to one writer per shard are in [RFC 10 Appendix B](rfc-10-journal-r
 | --- | --- |
 | A separate lock service beside the metadata store | a second source of truth for who may write; shard records in the store are fenced by the same transactions that use them |
 | Leases held in memory by a lease manager | faster, but needs its own recovery; with shards as coarse as a share, claims are too rare for the store's latency to matter |
+| A gossip failure detector deciding that a node is lost | suspects a crash in well under a lease, but is a second source of truth for liveness beside the node lease, and the two disagree exactly in a partition. A claim must still wait out the lapsed lease ([§3.1](#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)), because only that stops the old primary granting, so a faster suspicion saves nothing; the lease length is the lever |
+| Placement only for per-child shards, leaving a share's shard and a subtree's to whichever node creates them | nothing would say where a share's shard belongs after a node joins or leaves, and the commonest shard — a share — would be the one shape a rebalance cannot move |
 | Two primaries per shard, one for the namespace and one for data | separate scaling, at the price of five cross-primary handoffs and a check-then-I/O race; kept as the upgrade of [§2.1](#2.1%20One%20primary%20per%20shard) |
 | Cross-shard rename and link refused with `EXDEV` | simplest, but a share is one filesystem to its clients, and applications that rename across directories would break wherever a split happened to fall |
 | A two-phase commit across primaries with a durable coordinator log | unnecessary: one store transaction commits the change; the prepare holds open state, bounded by a deadline and by a hold record the commit guards |

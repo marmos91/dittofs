@@ -587,6 +587,17 @@ before step 4; that is what makes one replica enough for a takeover ([§9.1](#9.
 A replica that cannot keep up is removed ([§7.2](#7.2%20Removal)); the primary **MUST NOT**
 acknowledge around it while it is listed.
 
+`ponytail:` acknowledgement waits for the slowest member, so a shard's write
+latency is its slowest replica's until removal on lag ([§7.2](#7.2%20Removal)) takes that
+replica out. Upgrade to acknowledgement at *k* of the shard's *n* members, a
+count kept in the shard record beside the floor, when lag removals or write tail
+latency show up on the reference deployment. It gives up [§9.1](#9.1%20Why%20one%20replica%20suffices): no one
+replica then holds every acknowledged operation, so the committed point becomes
+the newest version *k* members hold, and a claimant must gather from *n* − *k* + 1
+members before it claims — at three members acknowledging at two, both
+surviving replicas, where one suffices today — so a shard that lost its primary
+and one replica waits for the other rather than serving.
+
 **Metadata follows the replica set.** Until a write's existence is committed, the
 journal is its authority ([RFC 6 §3.4](rfc-6-block-metadata.md#3.4%20Ordering%20against%20the%20journal)). The primary group-commits existence within
 its bounded age, and at a stability point only for overwrites of committed
@@ -866,9 +877,30 @@ every replica that is not a learner, or is offloaded. A takeover before the tail
 is covered drops it, and it joins again under the new primary.
 
 `ponytail:` a returning node discards the shard's files and receives the whole
-un-offloaded tail again. Rejoin by delta — each file's divergence point, from
-which only newer operations are discarded and copied — when flapping nodes make
-catch-up show up in repair time.
+un-offloaded tail again, so a node back after a short absence copies as much as
+a new one. Upgrade to rejoin by delta when flapping nodes make catch-up show up
+in repair time. It needs no per-file epoch history if the primary keeps a
+**dirty-region map** for each member it removes, as a mirrored disk array keeps a
+write-intent bitmap for a disk that dropped out: a coarse set of (file,
+fixed-size region) pairs touched by any operation — write, truncate, deallocate,
+delete, removal — above the last operation that member acknowledged, kept from
+its removal on. Every such operation is still in the primary's journal at the
+removal, since nothing above the committed point is offloaded while the member
+is listed, so the map misses none. On rejoin the member discards only marked
+regions, and the tail copy of step 4 covers only those. What the sketch already
+knows it must solve:
+
+- the map is valid only while the primary that removed the member still serves
+  the shard under the same incarnation; after a takeover or a restart nobody
+  holds it, and the rejoin is the full one above;
+- the map is bounded in memory, and one that overflows its bound falls back to
+  the full rejoin;
+- content the member kept in unmarked regions may have been offloaded and
+  released while it was away, so the rejoin hands it the offload state of what
+  it kept, or the member reseeds that state from metadata
+  ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery));
+- held superseded versions and their hold marks ([§2.3](#2.3%20The%20journal%20extension)) in a marked region
+  are copied with it, never inferred from what the member kept.
 
 ### 7.4 Repair
 
@@ -940,8 +972,8 @@ When the primary's node lease lapses, a replica takes over:
    that lost an acknowledged operation never wins the gather from one that holds
    it. Of the rest, the one with the highest point claims, and among equal points
    the one that comes first in the shard's slot order — the order the slot table
-   lists the slot's nodes ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)), or, for a shard with no slot, the order
-   the shard record lists its replicas. A tie therefore lands where placement
+   lists the slot's nodes ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)), and after them, for a replica the slot
+   does not list — a repair's node — the order the shard record lists its replicas. A tie therefore lands where placement
    would put the shard anyway, not always on the lowest node ID, which would pile
    every tied takeover in the cluster onto one node. So replicas that gathered
    the same points agree on one claimant; where their gathers differ, the
@@ -1456,12 +1488,14 @@ set and an epoch, and every message is fenced by it.
 | PacificA (MSR-TR-2008-25) | replica set kept apart from data; commit at every replica; reconcile before serving |
 | Azure Storage stream layer (SOSP 2011) | all-replica acknowledgement; seal a failed writer, continue under a new set, repair in the background |
 | BookKeeper ensemble change | swap the failed node and continue from the first unacknowledged entry — a replica counting from its join point |
-| Kafka KIP-101, KIP-405, KIP-966 | truncation by epoch; copy only the local tail; takeover eligibility apart from acknowledgement, as learners are |
+| Kafka KIP-101, KIP-405, KIP-966, and its in-sync replica set | truncation by epoch; copy only the local tail; takeover eligibility apart from acknowledgement, as learners are; a follower that lags leaves the in-sync set and the leader acknowledges without it, a minimum in-sync count refuses writes below it, and an unclean election is an explicit choice — removal on lag ([§7.2](#7.2%20Removal)), the floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)) and the operator acknowledgement of lost replicas ([§7.2](#7.2%20Removal)) |
 | 3FS | a syncing target takes writes before reads; stop after half a lease without the manager |
 | Chain replication (OSDI 2004), CRAQ (ATC 2009) | a read away from the writer confirmed against its newest committed version |
 | Aurora (SIGMOD 2017, 2018) | one writer's versions make replica acknowledgements consistent |
 | GFS (SOSP 2003), HDFS lease recovery | replica-set version bumped before a new writer writes; stale replicas detected by version |
 | Ceph peering | reconcile and record before serving; recover the most degraded first |
+| PostgreSQL streaming replication, with a cluster manager (Patroni) holding the leader key under a TTL in a consensus store | the whole design in miniature, one shard per database cluster: the write-ahead log is the journal, the leader key the node lease, the timeline raised at promotion the epoch, and a strict synchronous mode that refuses writes below its standby count the floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); rewinding a returning old primary is rejoin by delta ([§7.3](#7.3%20Joining)), and quorum synchronous commit (`ANY k`) the upgrade [§4](#4.%20The%20write%20path) sketches |
+| Mirrored disk arrays (RAID 1, Linux md) | every mirror holds a write before it completes, and a degraded array keeps writing — the count and floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)); a write-intent bitmap resyncs only the regions dirtied while a member was absent — the rejoin upgrade of [§7.3](#7.3%20Joining); a paced patrol read finds decay in what is never read ([RFC 28 §5](rfc-28-journal-format.md#5.%20Open%20questions)) |
 | Frangipani (SOSP 1997) | a lease checked only by the sender is not a fence |
 | Assise (OSDI 2020) | a local log replicated before acknowledgement, published asynchronously |
 | FoundationDB (SIGMOD 2021), TigerBeetle, Antithesis | deterministic simulation; swizzle-clogging; a storage fault model; "sometimes" assertions |
@@ -1472,11 +1506,12 @@ set and an epoch, and every message is fenced by it.
 | --- | --- |
 | Every storage node writes, and journals order operations differently | Two writers of one extent leave journals holding different bytes with no version comparable across them. Ordering needs one writer per shard or consensus per write. |
 | Consensus per write through the metadata store's timestamp service | Moves consensus from rare events to every write. Reads of recent data then need a quorum or a metadata lookup, several nodes offload overlapping content, and `size` becomes contended. It buys nothing over forwarding to the primary, which costs the same hop replication already pays. |
-| Acknowledge at a quorum of the replica set | Hides a slow replica, but a replica can then miss acknowledged writes, so failover needs a read quorum and a durable truncation record. A slow replica is removed on lag instead ([§7.2](#7.2%20Removal)). |
+| Total-order agreement on every operation among all nodes by gossip, tolerating Byzantine members (hashgraph) | Pays for faults this design does not have: nodes are mutually authenticated ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)), so a member that misbehaves is a crash or a bug, not an adversary. It orders every operation across every node — the consensus per write above at a higher price — with finality in seconds where a write is acknowledged in milliseconds. |
+| Acknowledge at a quorum of the replica set | Hides a slow replica, but a replica can then miss acknowledged writes, so failover needs a read quorum and a durable truncation record. A slow replica is removed on lag instead ([§7.2](#7.2%20Removal)); acknowledgement at *k* of *n* is kept as the upgrade [§4](#4.%20The%20write%20path) sketches. |
 | Read leases for replicas | Saves one round trip per read on a node other than the primary, but costs a lease type, clean/dirty extent tracking, a wait of the longest read lease on every removal and takeover, and a second clock assumption that a drifting clock breaks. Removed; the round trip needs no extent tracking and no wait at a takeover ([§8](#8.%20Reads)). |
 | Promote a joining node only after it catches up | Needs a barrier that stops the shard's writes while the joining node confirms everything, and leaves a shard at its floor unwritable for the whole catch-up. Counting from a join point needs no pause, and offload covers the tail ([§7.3](#7.3%20Joining)). |
 | A lease per shard | 10⁴ renewals where one per node does, and 10⁴ lapsed leases after a whole-cluster restart. One node lease fences all of a node's shards at once. |
-| Rejoin by delta | A returning node could keep what it holds up to each file's divergence point and receive only newer operations. Deferred: it needs per-file epoch history ([§7.3](#7.3%20Joining)). |
+| Rejoin by delta | A returning node could keep what it holds up to each file's divergence point and receive only newer operations. Deferred. A dirty-region map the primary keeps from the member's removal, as a mirrored array's write-intent bitmap, does it without per-file epoch history; [§7.3](#7.3%20Joining) sketches it. |
 | A seal from the claimant's view alone | Re-issues a removal wherever the claimant holds nothing, including content it evicted after offload: an acknowledged write is destroyed. The seal takes the union above the highest committed point ([§9.2](#9.2%20Takeover)). |
 | Replicas read another's writes only after offload | Metadata shows a new size at once; reading the un-offloaded extent elsewhere must then wait for offload or ask the primary anyway. It also breaks close-to-open visibility unless close waits for offload. |
 | Erasure-coded journal content | Journal content is small, overwritten and short-lived: stripes need read-modify-write on partial writes, failover must reconstruct, and no replica holds whole data to serve reads. Erasure coding belongs at rest, where blocks are sealed. |
