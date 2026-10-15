@@ -258,8 +258,9 @@ func (s *Store) attempt(fn func(kv.Txn) error) error {
 // before t's does.
 //
 // ponytail: a range-guarded commit holds commitMu while the fresh snapshot
-// waits for the commits ahead of it to sync, stalling every other commit for
-// up to one sync, and it reads every version under its ranges. Both are
+// waits for the commits ahead of it to be written, which the store does not
+// sync first, stalling every other commit that long, and it reads every
+// version under its ranges. Both are
 // cheap while range guards stay rare (a directory removal); track ranges in
 // memory when a workload guards ranges often enough to show in a profile.
 func (s *Store) checkRanges(t *txn) error {
@@ -607,7 +608,10 @@ func (t *txn) write(key, value []byte, deleted bool) error {
 		t.count+1 > l.TxnEntries || t.bytes+len(key)+len(value) > l.TxnBytes {
 		return kv.ErrTooLarge
 	}
-	if _, err := get(t.w, key); err != nil && !errors.Is(err, kv.ErrNotFound) {
+	// The read registers the key for Badger's conflict check, which its Set
+	// does not, so two blind writers of one key conflict; the value it
+	// would copy is not needed.
+	if _, err := t.w.Get(key); err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
 		return err
 	}
 	key, value = bytes.Clone(key), bytes.Clone(value)
