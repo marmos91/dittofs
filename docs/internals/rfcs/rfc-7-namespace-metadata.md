@@ -742,7 +742,7 @@ Four inputs the walk meets are fixed here, and adopted by RFC 19, which fixes th
   | **NETWORK** | every caller: every caller arrives over the network | `S-1-5-2` · `NETWORK@` |
   | **SYSTEM** | no caller: nothing a client presents is the server's own system | `S-1-5-18` · none |
   | **CREATOR OWNER**, **CREATOR GROUP** | no caller: they act only through inheritance (below) | `S-1-3-0`, `S-1-3-1` · none |
-  | **ANONYMOUS LOGON** | a caller acting as the anonymous principal: an AUTH_NONE caller, an anonymous SMB session, a caller squashed to it (RFC 18 §2.1) | `S-1-5-7` · none |
+  | **ANONYMOUS LOGON** | a caller acting as the anonymous principal: an AUTH_NONE caller, an anonymous SMB session, a caller squashed to it (RFC 18 §2.1) | `S-1-5-7` · `ANONYMOUS@` |
 
   The last column is how the adapters spell them on the wire
   (RFC 21 and RFC 22); where it reads none, that protocol has no
@@ -1008,8 +1008,9 @@ principal gaining or losing a quota of its own: the time becomes the change's
 own if usage is above the new `Soft`, and is cleared if it is not, since when
 usage rose above the old limit says nothing about the new one. A change to
 any other field of the quota leaves a running grace as it was. `Advisory` is never refused. Crossing any limit, a grace that
-expires, and every refusal emit a quota event through the event hook
-([§7.6](#7.6%20Decisions%20are%20observable)), so an operator learns of a full tree before its users do.
+expires, and every refusal emit a quota event, which the filesystem service
+emits where it enforces the quota ([§7.6](#7.6%20Decisions%20are%20observable), [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)), so an operator learns
+of a full tree before its users do.
 
 ### 2.9 Methods on File and Entry
 
@@ -1933,19 +1934,22 @@ another link; keyed on the mode and ACL alone, it is served after the parent's
 
 ### 7.6 Decisions are observable
 
-The chokepoint **MUST** emit an access-audit event for every decision the
-share's audit policy selects ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), and, when that policy honours file
-entries, for every decision an audit or alarm entry of the file's ACL selects
-([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode), RFC 19 §3.7): principal, file, access asked, outcome. With no policy,
-no entry selects anything and no event is built ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)).
-Quota events ([§2.8](#2.8%20A%20share%20is%20one%20filesystem)) go through the same hook. The hook is a
-declared sink the filesystem service supplies ([RFC 17](rfc-17-vfs.md)); this component
-emits to it and never waits on it, so a slow consumer drops events, counted,
-rather than delaying a decision. The event stream's format and delivery — to a
-log, an antivirus scanner or a ransomware detector — are planned RFC 25's.
+The chokepoint emits nothing: it **MUST** return, with every decision of
+`Authorize`, whether an audit or alarm entry of the file's ACL selected it
+([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode), RFC 19 §3.7). The filesystem service is the one emitter
+([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)): it builds an access-audit event — principal, file, access
+asked, outcome — for every decision the share's audit policy selects
+([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), and, when that policy honours file entries, for every
+decision the chokepoint reports an entry selected. With no policy, no entry
+selects anything and no event is built. Quota events ([§2.8](#2.8%20A%20share%20is%20one%20filesystem)) are the service's
+too, emitted where it enforces the quota. A slow consumer drops events, counted
+at the sink, rather than delaying a decision. The event stream's format and
+delivery — to a log, an antivirus scanner or a ransomware detector — are
+RFC 25's.
 
-Because every decision is made here ([§7.1](#7.1%20One%20chokepoint)), one hook sees every access through
-every protocol; an audit emitted by an adapter would miss the others.
+Because every decision is made here ([§7.1](#7.1%20One%20chokepoint)) and the service makes every call to
+it, one emitter sees every access through every protocol; an audit emitted by
+an adapter would miss the others.
 
 ### 7.7 What a caller may be asked for, and what removing a name needs
 
@@ -2509,7 +2513,7 @@ type Files interface {
 	Streams(ctx context.Context, id Identity, h Handle) iter.Seq2[File, error] // §2.7
 	// via is the directory h was resolved through, or zero; it lets delete and
 	// read attributes be granted from the parent (§7.7).
-	Authorize(ctx context.Context, id Identity, h, via Handle, want Access) error // share grant, then mode or ACL, every call (§7.2, §7.4); rights of §7.7
+	Authorize(ctx context.Context, id Identity, h, via Handle, want Access) (audited bool, err error) // share grant, then mode or ACL, every call (§7.2, §7.4); rights of §7.7; audited: an audit or alarm entry of the file selected the decision, granted or refused (§7.6)
 	Granted(ctx context.Context, id Identity, h, via Handle) (Access, error)       // the whole granted set: NFS ACCESS, SMB MaximalAccess, MAXIMUM_ALLOWED (§2.6)
 	Root(ctx context.Context, id Identity, share ShareID) (Handle, File, error) // authorised against the share grant (§7.4)
 	Resolve(ctx context.Context, h Handle) (FileID, error)                     // ErrStale, ErrWrongShare
@@ -2530,12 +2534,6 @@ type Attrs struct {
 	Flags                 FileFlags
 	Birth, Access, Modify time.Time
 	Size                  int64
-}
-
-// Events is the hook the filesystem service supplies (§7.6). Emit never
-// blocks; an event it cannot take is dropped and counted.
-type Events interface {
-	Emit(e Event)
 }
 
 var (
@@ -2564,8 +2562,9 @@ invariant violation, not a name collision: it answers an I/O-class error
 `SETATTR` cannot answer "exists" and a client would read `EEXIST` from
 `ftruncate`. The conformance check is [RFC 16](rfc-16-metadata-store.md)'s, with the I8 row.
 
-This component declares no interface on the engine or on open state: `Events` is
-a sink, not a dependency, and a store built with none emits nothing. The joins
+This component declares no interface on the engine or on open state, and emits
+no event: it returns what selected a decision, and the filesystem service emits
+([§7.6](#7.6%20Decisions%20are%20observable)). The joins
 that need content or open state are the filesystem service's ([§1](#1.%20Purpose)).
 
 ### 11.2 Observability
@@ -2579,14 +2578,14 @@ Metric names are shown without the deployment's prefix.
 | pending-release records held ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)) | `namespace_pending_releases` | gauge |
 | deferred unlinks refused after the last close ([§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later)); the entry stays | `namespace_deferred_unlink_refused_total` | counter |
 | releases, labelled `result`; a failure is retried, not dropped | `namespace_releases_total` | counter |
-| audit and quota events dropped by a slow sink ([§7.6](#7.6%20Decisions%20are%20observable)) | `namespace_events_dropped_total` | counter |
 | conflicts retried, by `op` | `namespace_conflict_retries_total` | counter |
 
 No metric carries a share or principal label: at 10⁴ shares a share label
 multiplies every series by 10⁴. Per-share figures are read through the
 management API ([RFC 16](rfc-16-metadata-store.md)). Operation counts and latency are the filesystem
 service's (`vfs_op_seconds`), and quota refusals are counted where the
-quota is enforced, both in [RFC 17](rfc-17-vfs.md); this component does not count them again.
+quota is enforced, both in [RFC 17](rfc-17-vfs.md); this component does not count them again. Audit and quota
+events dropped are counted at the sink (RFC 25).
 
 An `Nlink` underflow logs the file at `Error`. A stale handle is routine for
 clients and logs at `Debug`.

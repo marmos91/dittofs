@@ -1916,7 +1916,7 @@ lines.
 | space amplification: stored bytes of live blocks over their referenced bytes | `gc_space_amplification_ratio` | gauge |
 | audit mismatches, labelled `check` (the rows of [§6.1](#6.1%20Coverage)) and `direction` = `high`, `low` or `lost`. Any `low` or `lost` is an alert | `gc_audit_mismatches_total` | counter |
 | refs dropped whose chunk record was absent | `gc_lost_dropped_total` | counter |
-| time since each hash range was last audited | `gc_audit_coverage_age_seconds` | gauge |
+| time since the namespace's least recently audited hash range was audited, one series per namespace; each range's age is read through the management API | `gc_audit_coverage_age_seconds` | gauge |
 | index keys missing, extra or in the wrong state, labelled `source` = `audit` or `check` | `gc_index_mismatches_total` | counter |
 | collection outcomes, labelled `source` = `intent` or `listing` and `result` = `retired` or `refused` | `gc_collection_total` | counter |
 | put intents older than one pass interval; one that only grows means abandonment stopped | `gc_intents_stale` | gauge |

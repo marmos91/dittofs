@@ -2654,7 +2654,7 @@ Metric names are shown without the deployment's prefix.
 | conflicts retried, by `op` | `blockmeta_conflict_retries_total` | counter |
 | removal records held, and those not done; a value that only grows means pruning or phase 2 stopped | `blockmeta_removals`, `blockmeta_removals_pending` | gauge, gauge |
 | phase-2 sub-transactions, by `kind`, and refs per sub-transaction | `blockmeta_batches_total`, `blockmeta_batch_refs` | counter, histogram |
-| history refs held, per share | `blockmeta_history_refs` | gauge |
+| history refs held, per share, under RFC 25's worst-n rule | `blockmeta_history_refs` | gauge |
 
 An underflow logs the record at `Error`. An audit mismatch logs the record, its
 stored and recomputed counts, at `Error` when low (sweep hazard) and `Warn` when

@@ -352,7 +352,7 @@ type Deps struct {
 	Engine   Content           // RFC 8's engine, or a fake in unit tests (§8)
 	Identity identity.Resolver // RFC 18 §6: real, or a fake in unit tests
 	Peers    Peers             // (cluster) the transport; nil on a single node, where every primary is this one
-	Events   metadata.Events   // RFC 7 §7.6's sink, or the null sink (§3.3)
+	Events   Events            // the node's event sink, or the null sink (§3.3)
 	Clock    clock.Clock
 	Metrics  *metrics.Registry
 	Logger   *slog.Logger
@@ -450,7 +450,7 @@ pkg/vfs/                     the contract adapters build against
   errors.go                  sentinels, *Delay, *QuotaError, *StateError, *CrossError, Errors() (§4.3);
                              re-exports, as aliases, the neutral content errors the engine also returns
   callbacks.go               Callbacks, Revocation (§3.2)
-  events.go                  Events, an alias of RFC 7's sink, and QuotaEvent (§3.3)
+  events.go                  Events, AccessEvent and QuotaEvent (§3.3)
   vfstest/                   Record, Null and RecordingCallbacks, hand-written (§8)
     suite/                   suite.Run: the conformance suite, one file per area (§8)
 internal/vfs/                the server, one file per operation; the gateway and its receive side
@@ -968,40 +968,65 @@ cannot enter.
 ### 3.3 Event hooks
 
 ```go
-// Events is RFC 7 §7.6's sink, declared beside the chokepoint and re-declared
-// here as an alias. The node supplies one; the chokepoint and the
-// service emit to it and never wait on it.
-type Events = metadata.Events // Emit(ctx, e Event): an AccessEvent or a QuotaEvent
+// Events is implemented by an event sink the node supplies. The chokepoint
+// emits nothing (RFC 7 §7.6); the server builds and emits every event, and
+// never waits on the sink.
+type Events interface {
+	Quota(ctx context.Context, e QuotaEvent)   // advisory threshold crossed, soft limit exceeded, grace expired, hard refusal, back under
+	Access(ctx context.Context, e AccessEvent) // one authorisation decision the audit policy selects
+}
 
 type AccessEvent struct {
-	Time     time.Time
-	Share    ShareID
-	Client   ClientID // zero for NFSv3
-	Identity Identity
-	Protocol Protocol
-	Op       Op
-	File     FileID
-	Name     []byte // the name acted on, for namespace operations
-	Want     Access
-	Allowed  bool
+	Time       time.Time
+	Share      ShareID
+	Client     ClientID   // zero for NFSv3
+	Addr       netip.Addr // the client's address
+	Identity   Identity
+	Protocol   Protocol
+	Op         Op
+	File       FileID
+	Name       []byte // the name acted on, for namespace operations
+	Want       Access
+	Allowed    bool
+	SelectedBy Selector // Policy: the share's audit policy; Entry: an audit or alarm entry of the file's ACL (RFC 19 §3.7)
+}
+
+// QuotaEvent is one quota transition or refusal. Transitions are emitted once
+// each; hard refusals are coalesced by the sink per share, scope, subject and
+// resource (RFC 25 §4.4), which stamps the count it coalesced.
+type QuotaEvent struct {
+	Time      time.Time
+	Share     ShareID
+	Scope     QuotaScope         // User, Group, Project or Share
+	Subject   Principal          // the user or group; zero for a project or share quota
+	Project   metadata.ProjectID // the tree; zero otherwise
+	Resource  QuotaResource      // Bytes or Files
+	Kind      QuotaEventKind     // AdvisoryCrossed, SoftExceeded, GraceExpired, HardRefused, BackUnder
+	Used      int64              // the usage judged, in the resource's unit
+	Soft      int64
+	Hard      int64
+	GraceEnd  time.Time          // zero when no grace runs
+	Writer    Identity           // the refused caller, for HardRefused only
 }
 ```
 
 `QuotaEvent` names the quota, the principal or project, and what happened:
-advisory threshold crossed, soft limit exceeded, grace expired, hard refusal.
-Both kinds are emitted from the one path every operation takes. **Access
-events are the chokepoint's**, emitted inside `Files.Authorize` and `Granted`
-as [RFC 7 §7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable)
-requires — only it knows which ACL entry selected a decision — from the
-resolved caller it is handed, which carries the protocol and client, and the
-file, access and outcome of its decision. **Quota events are the service's**,
-emitted where it enforces quota ([§5.6](#5.6%20Quota)). The service emits no
-access event of its own, so each decision is audited once, and no adapter or
-engine emits either, so no protocol can reach a file without appearing in the
-audit stream.
+advisory threshold crossed, soft limit exceeded, grace expired, hard refusal,
+back under. Both kinds are emitted from the one path every operation takes, by
+the server and nothing else. **The chokepoint emits nothing**
+([RFC 7 §7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable)):
+`Files.Authorize` returns its decision and whether an audit or alarm entry of
+the file selected it — only the chokepoint knows that — and the server builds
+the access event from the resolved caller, which carries the protocol and
+client, and the file, access and outcome, when the share's audit policy selects
+the decision or honours the entry (RFC 19 §3.7). Quota events are emitted where
+the server enforces quota ([§5.6](#5.6%20Quota)). Each decision is audited
+once, and no adapter, store or engine emits either, so no protocol can reach a
+file without appearing in the audit stream.
 
 - An event hook **MUST NOT** block or fail the operation. The sink queues, and
-  an event it cannot queue is dropped and counted (§7).
+  an event it cannot queue is dropped and counted by the sink (RFC 25's
+  `events_dropped_total`).
 - Which operations produce an access event — every decision, denials only,
   writes and namespace changes, per share — and whether the file's audit
   entries select events too (RFC 19 §3.7) is the audit policy, a setting
@@ -1337,7 +1362,8 @@ the handle or open it names, in this order:
    `ErrStale` once being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share));
 2. the share's `ExportPolicy` flavour rule — `ErrWrongSecurity`;
 3. its client rules, against the call's address and the netgroups it is in —
-   `ErrAccess`, or a narrowing to read-only;
+   `ErrAccess`, or a narrowing to read-only — and the policy's `ReadOnly` flag,
+   which narrows every caller to read-only;
 4. resolution, which turns the `Identity` into the caller it acts as on this
    share: map it to a principal, squash it, collect its groups, read its share
    access from the grants, and set its flags
@@ -1839,7 +1865,7 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 		}
 		used := q.committed(ctx, s, owner, f) + q.unfolded(ctx, s, owner, f) // committed totals plus unfolded deltas (RFC 16 §4.4)
 		if used+q.reserved(s, owner, f)+bytes > lim.Hard(q.clock) {         // soft limit as hard once its grace has run
-			q.events.Emit(ctx, QuotaEvent{ /* hard refusal */ })
+			q.events.Quota(ctx, QuotaEvent{ /* hard refusal */ })
 			return nil, &QuotaError{Scope: s}
 		}
 	}
@@ -2157,13 +2183,13 @@ Metric names are shown without the deployment's prefix.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| How fast is each operation, per protocol? | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| How fast is each operation, per protocol? `outcome` is `ok`, `error` or `delay` | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| Which errors does each operation answer? | `vfs_errors_total{op, error}`, `error` one of §4.3's neutral errors | counter |
 | How often are clients told to retry, and why? | `vfs_delayed_total{op, cause}` | counter |
 | How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{scope}`, `vfs_quota_reserved_bytes` | counter, gauge |
 | How often is a call refused admission, and by which check (§4.9)? | `vfs_admission_refusals_total{check}`: `state`, `flavor`, `client_rules`, `resolution` | counter |
 | How many calls are admitted and not yet answered — what a drain or a share removal waits for (§2.5, §4.9)? | `vfs_inflight_calls` | gauge |
 | Are callbacks failing? | `vfs_callback_errors_total{kind}` | counter |
-| Are events being lost? | `vfs_events_dropped_total{stream}` | counter |
 | How long do calls wait behind a running clone (§5.9)? | `vfs_clone_wait_seconds{outcome}` | histogram |
 | How often is a delete on close refused after its client closed (§5.3)? | `vfs_deferred_unlink_refusals_total` | counter |
 | **(cluster)** How many calls does the gateway forward, and how do they end? | `vfs_forwarded_total{op, outcome}`: `ok`, `rerouted`, `resent`, `failed` | counter |
@@ -2171,7 +2197,8 @@ Metric names are shown without the deployment's prefix.
 | **(cluster)** How often does `Serve` fence a call, or answer one from the dedup table? | `vfs_fenced_total{check}`: `node_epoch`, `shard_epoch`, `hop`; `vfs_dedup_hits_total` | counter |
 
 Operation latency, quota, forwarding, fence and dedup metrics are owned here
-and nowhere else. Held requests are the adapters'
+and nowhere else. Events dropped are counted at the sink, RFC 25's
+`events_dropped_total`, not here. Held requests are the adapters'
 ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)); recalls are RFC 14's.
 
 **Spans.** Each `Service` call opens one span, `vfs.<Op>`, carrying `op`,

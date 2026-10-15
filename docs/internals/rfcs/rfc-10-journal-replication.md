@@ -1478,7 +1478,8 @@ Each invariant is stated where its rule lives; the model checks them as properti
 
 Metric names are shown without the deployment's prefix.
 
-Every metric is labelled by shard where it is per shard, and by share.
+Gauges that are per shard are exported under RFC 25's worst-n rule; no
+histogram or counter carries a shard or share label.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
@@ -1487,14 +1488,14 @@ Every metric is labelled by shard where it is per shard, and by share.
 | replicas per shard, labelled `learner`; below the floor raises a health condition | `replication_replicas` | gauge |
 | under-replicated shards, and shards waiting for the repair scheduler | `replication_under_replicated`, `replication_repair_queue` | gauge |
 | refusals, labelled `reason` = `stale_epoch`, `committed`, `divergent`, `not_listed`, `amnesiac`, `pressure` or `forgotten` | `replication_refusals_total` | counter |
-| bytes taken by `Apply`, labelled `outcome` = `applied` or `older` | `journal_applied_bytes_total` | counter |
+| bytes taken by `Apply`, labelled `outcome` = `applied` or `older` | `replication_applied_bytes_total` | counter |
 | record changes, labelled `kind` = `takeover`, `handover`, `remove`, `join`, `covered` or `relinquish`, and `outcome` = `ok`, `stale` or `unknown` | `replication_record_changes_total` | counter |
 | relinquished shards waiting for a takeover or the operator's `AckLost`; a shard relinquished longer than the gather interval raises a health condition naming it and the relinquishing node, since only a returning replica or the operator ends it ([§7.2](#7.2%20Removal)) | `replication_relinquished` | gauge |
 | takeover time, lease expiry to writable | `replication_takeover_seconds` | histogram |
 | seal duration, and the bytes it re-issued | `replication_seal_seconds`, `replication_seal_bytes_total` | histogram, counter |
 | join to learner flag cleared, and the tail bytes, labelled `by` = `copy` or `offload` | `replication_tail_seconds`, `replication_tail_bytes_total` | histogram, counter |
 | reads on nodes other than the primary, labelled `result` = `served` or `forwarded` | `replication_remote_reads_total` | counter |
-| node clock offset from store time; self-fences, labelled `reason` = `lease`, `unreachable` or `clock` | `node_clock_offset_seconds`, `node_self_fences_total` | gauge, counter |
+| node clock offset from store time; self-fences are counted once, by RFC 8's `engine_self_fences_total` ([RFC 8 §14](rfc-8-engine.md#14.%20Observability)) | `replication_clock_offset_seconds` | gauge |
 
 The `node_` prefix is [RFC 23 §11](rfc-23-control-plane.md#11.%20Observability)'s,
 which lists these two under it; their names are unchanged.

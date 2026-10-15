@@ -210,7 +210,7 @@ are indicative; the rules around them are normative.
 type Client struct {
 	ID         ClientID
 	Protocol   protocol.Kind
-	Owner      []byte    // the client's own name for itself: NFSv4 co_ownerid or SETCLIENTID id, SMB ClientGuid, NLM host name; indexed (§2.1)
+	Owner      []byte    // the client's own name for itself: NFSv4 co_ownerid or SETCLIENTID id, SMB ClientGuid, an NLM host's caller_name with the source address it sends from; indexed (§2.1)
 	Verifier   [8]byte   // NFSv4 boot verifier, NLM host's NSM state number; a new one under the same Owner is a reboot
 	Principal  Principal // NFSv4: who established the client ID; the same Owner from another principal is refused. Zero for SMB and NLM (§2.1)
 	MachCred   MachCred  // NFSv4.1 state protection: SP4_MACH_CRED's principal and protected operations, or none
@@ -231,9 +231,11 @@ type Client struct {
 `ClientID` names one client instance as its protocol defines it: NFSv4's client
 ID from `EXCHANGE_ID` or `SETCLIENTID` (a machine plus a boot verifier), SMB's
 `ClientGuid`, and for NFSv3 locks an NLM host with its NSM state number. Every
-`ClientID` is issued by the server, an NLM host's too: the host name is its
-`Owner` and its NSM state number its `Verifier`, so a request with a new state
-number is a reboot like any other. A client that reboots is a new `ClientID`, which is how its stale state
+`ClientID` is issued by the server, an NLM host's too: the host's
+`caller_name` together with the source address it sends from is its `Owner`,
+since NLM carries no credential and a name alone could be written by any host
+(RFC 21 §6.1), and its NSM state number is its `Verifier`, so a request with a
+new state number is a reboot like any other. A client that reboots is a new `ClientID`, which is how its stale state
 is recognised and released.
 
 **A client record is found by its owner.** `EXCHANGE_ID`, `SETCLIENTID` and an
@@ -1479,9 +1481,10 @@ written when the client first takes state in a shard, not per open.
 **An imported client record merges by owner.** A namespace move's imported
 client record merges by (protocol, owner): a record the receiver holds keeps
 its `ClientID` and gains the imported shards, any other is minted there, and
-the imported opens are rewritten to that ID. An NLM record is imported
-unchanged, and a receiver's record for the same host under a lower state
-number is expired as a restart would expire it
+the imported opens and locks are rewritten to that ID. An NLM record merges
+the same way: its `Verifier` is the host's NSM state number (§2.1), so a
+receiver's record for the same owner under a lower state number is expired as
+a restart would expire it
 ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)). Node fields are
 never imported
 ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)).
