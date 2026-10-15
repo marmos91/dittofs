@@ -51,7 +51,7 @@ order: each part builds on the ones before it.
 | [RFC 21](rfc-21-nfs.md) | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
 | [RFC 22](rfc-22-smb.md) | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |
-| RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
+| [RFC 23](rfc-23-control-plane.md) | control plane | draft | the runtime that composes a node and applies records; resource lifecycles, shares above all; the management API — concurrency, idempotency, long-running operations, errors, versioning; API accounts, roles, tokens and the bootstrap administrator; the management audit; the CLI as an API client |
 | RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
 | RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
 | **Testing** | | | |
@@ -96,6 +96,7 @@ graph LR
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
+  R23["23 control plane"] --> R8 & R9 & R12 & R13 & R15 & R16 & R17 & R18 & R19 & R20 & R24 & R25 & R26 & R27 & R30
   R21["21 nfs"] --> R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R22 & R27 & R28
   R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R21 & R27 & R28
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
