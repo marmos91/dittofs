@@ -26,9 +26,18 @@ const (
 // numbers hands out IDs from ranges reserved in the store, one counter per
 // key, so issuing one does not write the counter's record each time: each
 // share's numeric file ids, and the server-wide client, open and lock IDs.
+// Each counter has a lock of its own, held across its reservation, so one
+// share reserving a range holds up only that share's creates.
 type numbers struct {
-	mu     sync.Mutex
-	ranges map[string]*[2]uint64 // by counter key: next, end
+	mu       sync.Mutex
+	counters map[string]*idRange // by counter key
+}
+
+// idRange is one key's current range: next, end.
+type idRange struct {
+	mu    sync.Mutex
+	r     [2]uint64
+	ready bool
 }
 
 // nextNumber issues a numeric file id of share that no other file of the
@@ -66,12 +75,19 @@ func (s *Store) nextID(ctx context.Context, kind byte) (uint64, error) {
 // never missing; a server-wide one starts at zero when it is (fresh).
 func (a *numbers) next(ctx context.Context, db kv.KV, key []byte, fresh bool, bound uint64, exhausted error) (uint64, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.ranges == nil {
-		a.ranges = map[string]*[2]uint64{}
+	if a.counters == nil {
+		a.counters = map[string]*idRange{}
 	}
-	r := a.ranges[string(key)]
-	if r == nil || r[0] == r[1] {
+	c := a.counters[string(key)]
+	if c == nil {
+		c = &idRange{}
+		a.counters[string(key)] = c
+	}
+	a.mu.Unlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.ready || c.r[0] == c.r[1] {
 		var start uint64
 		err := db.Update(ctx, func(tx kv.Txn) error {
 			b, err := tx.Get(key)
@@ -93,10 +109,9 @@ func (a *numbers) next(ctx context.Context, db kv.KV, key []byte, fresh bool, bo
 		if err != nil {
 			return 0, err
 		}
-		r = &[2]uint64{start, start + numberRange}
-		a.ranges[string(key)] = r
+		c.r, c.ready = [2]uint64{start, start + numberRange}, true
 	}
-	n := r[0]
-	r[0]++
+	n := c.r[0]
+	c.r[0]++
 	return n, nil
 }

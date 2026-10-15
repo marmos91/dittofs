@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 )
@@ -96,4 +101,66 @@ func TestIDsNeverReused(t *testing.T) {
 	if n, err := b.nextID(ctx, idOpen); err != nil || n <= last {
 		t.Fatalf("after reopen: %d, %v; want above %d", n, err, last)
 	}
+}
+
+// stallKV holds every Update until release is closed, once armed.
+type stallKV struct {
+	kv.KV
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *stallKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	if s.armed.Load() {
+		s.entered <- struct{}{}
+		<-s.release
+	}
+	return s.KV.Update(ctx, fn)
+}
+
+// A share reserving a range of numbers, which commits to the store, holds
+// up no other share's creates that have numbers in hand.
+func TestNumbersReserveAlone(t *testing.T) {
+	ctx := context.Background()
+	st := &stallKV{entered: make(chan struct{}), release: make(chan struct{})}
+	s := openStoreOver(t, func(db kv.KV) kv.KV { st.KV = db; return st })
+	a := newShare(t, s)
+	bs := entity.Share{ID: entity.NewShareID(), Name: "t", Path: "/t", Root: entity.NewFileID()}
+	if err := s.ControlPlane().PutShare(ctx, bs); err != nil {
+		t.Fatal(err)
+	}
+	b := bs.ID
+	if _, err := s.nextNumber(ctx, b); err != nil { // b holds a range
+		t.Fatal(err)
+	}
+	st.armed.Store(true)
+	go func() { _, _ = s.nextNumber(ctx, a) }() // a reserves, and stalls
+	<-st.entered
+	got := make(chan error, 1)
+	go func() { _, err := s.nextNumber(ctx, b); got <- err }()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("a create on one share waited for another share's reservation")
+	}
+	st.armed.Store(false)
+	close(st.release)
+}
+
+// openStoreOver opens a store over a fresh in-memory KV behind wrap.
+func openStoreOver(t *testing.T, wrap func(kv.KV) kv.KV) *Store {
+	t.Helper()
+	db := wrap(memKV(t))
+	if err := Init(context.Background(), db, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
