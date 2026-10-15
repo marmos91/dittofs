@@ -151,7 +151,8 @@ It depends on how the `badger` metadata store is configured:
 
 `badger` is the only metadata store type. A store row still naming `memory`,
 `sqlite` or `postgres` fails with `unsupported metadata store type "<x>": badger is
-the only metadata store type`; recreate it as `badger`. A distributed transactional
+the only metadata store type`; see the
+[metadata store migration guide](metadata-store-migration.md). A distributed transactional
 key-value store (TiKV preferred) is the planned backend for multi-node deployments;
 it is not implemented yet.
 

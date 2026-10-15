@@ -35,11 +35,9 @@ func ParseChunkOffset(id string) (uint64, bool) {
 // reports whether the ID belongs to payloadID at all.
 //
 // Membership is decided by the component boundary alone, not by the component
-// being a number. A row whose trailing component is not a decimal offset is
-// still this payload's row — it is a damaged one, and hiding it from callers
-// hides the damage. Conversely, payloadIDs are built from a share name and a
-// file path and so contain slashes, so "<payloadID>/<more>/<offset>" names a
-// chunk of a payload nested beneath this one and does not belong here.
+// being a number. A payloadID is built from a share name and a file path and so
+// contains slashes, so "<payloadID>/<more>/<offset>" names a chunk of a payload
+// nested beneath this one and does not belong here.
 func chunkSuffixFor(id, payloadID string) (string, bool) {
 	// Compared in place rather than against payloadID+"/": this runs per row,
 	// and building the prefix would allocate on each.

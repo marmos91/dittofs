@@ -930,10 +930,9 @@ func testGetQuotaUsagePerShare(t *testing.T, factory StoreFactory) {
 // client's verifier against the stored one, so a backend that reads it back as
 // zero answers EEXIST to every retry instead.
 //
-// The value deliberately sits above 2^63. The field is uint64 and the SQL
-// column is signed, so a backend that clamps rather than carrying the bit
-// pattern loses exactly the high half of the space and still passes a
-// small-value check.
+// The value deliberately sits above 2^63. The field is uint64, so a backend
+// that stores it signed and clamps rather than carrying the bit pattern loses
+// exactly the high half of the space and still passes a small-value check.
 //
 // Both paths are exercised because the insert and the update are separate
 // statements: wiring a column into one and forgetting the other is the failure

@@ -4,7 +4,7 @@ import "fmt"
 
 // MetadataConfig configures global, engine-specific metadata-store tunables.
 // These apply to every metadata store of the matching engine opened by the
-// server (each store's path still lives in the control-plane database; this
+// server (each store's own settings still live in the control-plane database; this
 // section carries operational knobs that are the same for every store of an
 // engine on this node).
 type MetadataConfig struct {
