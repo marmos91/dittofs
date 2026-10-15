@@ -1,0 +1,74 @@
+# Matcher cases: PATTERN<TAB>NAME<TAB>yes|no, whether NAME matches a list
+# holding only PATTERN. Blank lines and lines starting with "#" are skipped.
+
+# A name matches itself.
+WRT18	WRT18	yes
+WRT18	WRT1	no
+smb2.lock.lock1	smb2.lock.lock1	yes
+
+# A trailing ".*" matches every name starting with what comes before it, so
+# the dot isn't required: "smb2.lock.*" also matches "smb2.locking".
+smb2.lock.*	smb2.lock.lock1	yes
+smb2.lock.*	smb2.lock	yes
+smb2.lock.*	smb2.locking.x	yes
+smb2.lock.*	smb2.loc	no
+smb2.lock.*	smb2.lease.x	no
+
+# Shell patterns: "*" matches any string, "/" included.
+flock/*	flock/01.t	yes
+flock/*	flock/sub/02.t	yes
+flock/*	flock	no
+fcntl/lock*	fcntl/lock05.t	yes
+fcntl/lock*	fcntl/lock	yes
+fcntl/lock*	fcntl/unlock.t	no
+cache/*: Hard link count should have *	cache/nlink: Hard link count should have 3 entries	yes
+cache/*: Hard link count should have *	cache/nlink: Directory listing should have 3 entries	no
+
+# "?" matches any one character.
+utimensat/0?.t	utimensat/01.t	yes
+utimensat/0?.t	utimensat/10.t	no
+utimensat/0?.t	utimensat/0.t	no
+
+# "[...]" matches one character of a set, "[!...]" or "[^...]" one outside it.
+open/0[1-3].t	open/02.t	yes
+open/0[1-3].t	open/04.t	no
+open/0[!1-3].t	open/04.t	yes
+open/0[!1-3].t	open/02.t	no
+open/0[^1-3].t	open/04.t	yes
+open/0[13].t	open/03.t	yes
+open/0[13].t	open/02.t	no
+x[]a]	x]	yes
+x[a-]	x-	yes
+x[[:digit:]]	x7	yes
+x[[:digit:]]	xa	no
+x[!]]	x]	no
+# A "[" that no "]" closes is a plain character.
+x[a	x[a	yes
+x[a*	x[ab	yes
+x[a*	xa	no
+
+# A backslash makes the next character plain.
+a\*b	a*b	yes
+a\*b	axb	no
+a\?b	axb	no
+x\[a]	x[a]	yes
+# One ending the pattern is a plain backslash, except after a "*".
+a?\	ab\	yes
+a*\	ab\	no
+
+# A pattern with no "*" that doesn't end in ".t" also matches with ".t" after
+# it, and every name under it: "open/etxtbsy" matches "open/etxtbsy.t". This
+# holds for every list, so a pynfs code matches with ".t" after it too.
+open/etxtbsy	open/etxtbsy.t	yes
+open/etxtbsy	open/etxtbsy/sub/x	yes
+open/etxtbsy	open/etxtbsyx	no
+open/etxtbsy	open/etxtbsy.	no
+WRT18	WRT18.t	yes
+WRT18	WRT18/x	yes
+# "?" and "[...]" keep the suffixes; a "*" anywhere, even escaped, drops them.
+utimensat/0?	utimensat/09.t	yes
+open/0[1-3]	open/02/x	yes
+a*b	axb.t	no
+a\*b	a*b.t	no
+open/03.t	open/03.t.t	no
+open/03.t	open/03.t/x	no
