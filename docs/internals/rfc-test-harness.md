@@ -264,11 +264,11 @@ failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per 
 `go build -o`.
 
 `dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one:
-the fixture's mounts and unmounts, letting `{bin}/dfs` bind port 445 for WPTS (§4.2), pjdfstest's
-`prove`, and restarting `rpc.gssd`. A suite whose own `needs` name `root`, and whose format isn't
-`go-json`, runs each command as `sudo -n env NAME=value ... CMD`, as pjdfstest's `prove` must run;
-the needs a fixture implies (§4.2) don't make its commands run as root. A Go suite whose tests
-need root themselves, like e2e, which mounts from inside `go test`, runs with
+the fixture's mounts and unmounts, letting `{bin}/dfs` bind port 445 for WPTS (§4.2), restarting
+`rpc.gssd`, and the commands of a suite whose own `needs` name `root`. Unless its format is
+`go-json`, such a suite runs each command as `sudo -n env NAME=value ... CMD`, as pjdfstest's
+`prove` must run; the needs a fixture implies (§4.2) don't make its commands run as root. A Go
+suite whose tests need root themselves, like e2e, which mounts from inside `go test`, runs with
 `go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs only each
 binary under `sudo -n`, in its package's directory and with the flags `go test` gives every
 binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test binary;
@@ -468,7 +468,7 @@ suites:
     options:
       knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }   # an option replaces `matrix` too: knfsd has no profile
-        fixture: { server: knfsd, nfs: export }
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # as baseline-knfsd.sh sets knfsd up
         tier: manual
         blocking: false
   wpts:
@@ -582,12 +582,12 @@ placeholder is a registry error (exit 3).
 |---|---|
 | each `matrix` key | the cell's value on that axis |
 | `{test}` | one test's file name or list entry |
-| `{names}` | the tests a run names, on `dt run`'s command line or for a retry, else the suite's `names`. A named test that doesn't run leaves the cell not run (exit 2), so a scoped pynfs run that skipped what it named isn't a pass (§3) |
+| `{names}` | the tests a run names, on `dt run`'s command line or for a retry, else the suite's `names`. Only the tests a run names are graded; pynfs lists the others as OMIT. A named test that doesn't run leaves the cell not run (exit 2), so a scoped pynfs run that skipped what it named isn't a pass (§3) |
 | `{args}` | the tier's `args` |
 | `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
 | `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite that names `{tools}` gets them, and names each tool by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. `dt` lays out `{tools}/pjdfstest/pjdfstest` beside `{tools}/pjdfstest/tests`, where pjdfstest's `misc.sh` looks for its binary |
-| `{out}` | the cell's results directory |
+| `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do |
 | `{packages}` | the package list `packages` gives |
 | `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{client2}` | from the fixture (§4.2) |
 
@@ -595,7 +595,7 @@ For the pynfs cell `badger-s3/1`, for example:
 
 ```text
 cmd:  {tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --maketree --xml {out}/junit.xml {names}
-runs: test/harness/results/20261008T160000Z-0d8dbdd8/tools/pynfs/bin/pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --uid 0 --gid 0 --maketree --xml test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
+runs: /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/tools/pynfs/bin/pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --uid 0 --gid 0 --maketree --xml /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
 ```
 
 **smbtorture's test list.** `tests.txt` holds what `smbtorture/run.sh` holds today: each test or
@@ -665,7 +665,7 @@ carry a script that builds it.
 
 | Field | Meaning |
 |---|---|
-| `server` | `dfs` (the default), or `knfsd` for the pynfs comparison |
+| `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
 | `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` lets `{bin}/dfs` bind it with `sudo -n setcap cap_net_bind_service=+ep` (§3); `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
@@ -691,7 +691,7 @@ ordinary user with passwordless sudo (§3).
 share is the default `{share}`.
 
 ```yaml
-# test/smb-conformance/shares.yaml: the shares bootstrap.sh creates today
+# test/smb-conformance/shares.yaml: four of the eight shares bootstrap.sh creates
 - name: /smbbasic                                # the share smbtorture runs on unless told otherwise
 - { name: /smbencrypted, encrypt-data: true }
 - { name: /hideunread, access-based-enumeration: true }
@@ -700,8 +700,8 @@ share is the default `{share}`.
 
 In a `shares` file, `{user}` owns each share's root and holds the `admin` grant on it, as
 `wpts-admin` does today: ownership lets it write at the root, and `admin` lets `smb2.acls` take
-ownership. `{user2}` has the same password and no grant: WPTS's non-admin user, and the restricted
-principal of `smb2.acls.ACCESSBASED`.
+ownership. `{user2}` has a uid of its own, the same password and no grant: WPTS's non-admin user,
+and the restricted principal of `smb2.acls.ACCESSBASED`.
 
 **Settings.** A fixture sets only settings the server has. The storage RFCs (#2894) ask that
 fixtures use only the settings RFC 13, 14 and 16 define, which fix the NFSv4 lease at 90 seconds
@@ -714,8 +714,8 @@ root keeps its privileges, as both suites need.
 **Needs a fixture implies.** A fixture adds to its cell's `needs` what its fields require, so the
 cell doesn't start without them and `dt plan` places it where they're met: `service:localstack` for
 an S3 profile, `root` and `nfs-client` for an NFS mount, `root` and `smb-client` for an SMB mount,
-and `port:445` for `smb: { port: 445 }`. They are for the fixture's own steps: only a suite's own
-`needs` make its commands run as root (§3).
+and `root` and `port:445` for `smb: { port: 445 }`. They are for the fixture's own steps: only a
+suite's own `needs` make its commands run as root (§3).
 
 `dt` applies the adapter settings before enabling the adapter. Otherwise it restarts the adapter,
 because the server's settings watcher polls every 10 seconds and the tests would start before it
@@ -723,21 +723,22 @@ notices.
 
 The fixture gives the command these placeholders:
 - `{server}`: the address the tools reach it at, without a port. It's the host's non-loopback
-  address, so NFSv4.0 callbacks to the client can be dialled; DittoFS refuses loopback callback
+  address, so NFSv4.0 callbacks to the client can be dialed; DittoFS refuses loopback callback
   addresses, which is why pynfs's delegation tests can't run today (#2996). From a namespaced
   `client` it's the host's bridge address. Until step 3 the suites' scripts still reach their
-  server at `localhost`, and WPTS and smbtorture reach it inside the server's container. Where
-  results through `dt` differ from the scripts' because of the address or of where the server
-  runs, the parity check (§8) lists the difference with that cause.
+  server at `localhost`, and WPTS and smbtorture reach it inside the server's container. When
+  step 2's exit criterion compares results through `dt` with the scripts' (§8), a difference that
+  comes from the address, or from where the server runs, has its cause listed beforehand.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
-  unless a field sets one, so cells can run side by side (§4.4).
+  unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
+  port run one at a time.
 - `{client2}`: the second client's address, with `clients: 2`.
 - `{mount}` and `{realm}`.
 - `{share}`: the share a test runs on: its `share=` in a `.txt` list, else the fixture's first
   share, without its leading `/`.
 - `{user}` and `{password}`: a test user whose password is generated per run, in place of the
-  WPTS password now written in six places. `{user2}`: a second user with that password and no
-  grant.
+  WPTS password now written in six places. `{user2}`: a second user, with a uid of its own, that
+  password and no grant.
 
 Before the first test, the fixture checks itself, and a failed check ends the cell with exit 2,
 never a pass (R10):
