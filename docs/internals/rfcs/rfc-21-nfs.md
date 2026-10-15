@@ -1252,8 +1252,8 @@ client, are RFC 14's.
   which host sent a request: `caller_name` is whatever the sender writes. The
   client record of an NLM host **MUST** be keyed by `caller_name` together with
   the source address of the request that created it: both are its `Owner`
-  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the host's NSM state
-  number completes its `ClientID`. A request naming that
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), its `ClientID` is minted
+  as any client's is, and the host's NSM state number is its `Verifier`. A request naming that
   `caller_name` from another address is another client, and can neither test,
   unlock nor free the first host's locks. `NLM4_FREE_ALL` and NSM's
   `SM_NOTIFY` for a host release its locks only when they arrive from the
