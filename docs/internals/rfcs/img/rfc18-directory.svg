@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .bd{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+    </style>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A directory lookup: fresh from the cache, else ask; if that fails, stale within grace, else refuse.</text>
+
+  <rect x="30" y="170" width="110" height="44" rx="5" class="pr"/>
+  <text x="44" y="190" class="m">lookup</text><text x="44" y="206" class="s">name or SID</text>
+
+  <rect x="170" y="166" width="190" height="52" rx="5" class="am"/>
+  <text x="184" y="188" class="m">cached, under TTL?</text><text x="184" y="206" class="s">5 min; not-found 30 s</text>
+
+  <rect x="200" y="60" width="130" height="40" rx="5" class="sv"/>
+  <text x="214" y="84" class="m">use it</text>
+
+  <rect x="400" y="166" width="170" height="52" rx="5" class="st"/>
+  <text x="414" y="188" class="m">ask the directory</text><text x="414" y="206" class="s">one query per key, 5 s</text>
+
+  <rect x="400" y="52" width="250" height="56" rx="5" class="sv"/>
+  <text x="414" y="74" class="m">answer: refresh the entry</text><text x="414" y="94" class="s">not-found: cached 30 s</text>
+
+  <rect x="610" y="166" width="170" height="52" rx="5" class="am"/>
+  <text x="624" y="188" class="m">entry within grace?</text><text x="624" y="206" class="s">at most TTL + 15 min old</text>
+
+  <rect x="610" y="284" width="170" height="44" rx="5" class="am"/>
+  <text x="624" y="304" class="m">use stale</text><text x="624" y="320" class="s">counted</text>
+
+  <rect x="380" y="284" width="190" height="44" rx="5" class="bd"/>
+  <text x="394" y="304" class="m">refuse</text><text x="394" y="320" class="s">ErrUnavailable, never guest</text>
+
+  <path d="M142,192 L166,192" class="ln"/>
+  <path d="M265,164 L265,104" class="ln"/><text x="272" y="140" class="s">yes</text>
+  <path d="M362,192 L396,192" class="ln"/><text x="368" y="184" class="s">no</text>
+  <path d="M485,164 L485,112" class="ln"/><text x="492" y="140" class="s">answers</text>
+  <path d="M572,192 L606,192" class="ln"/><text x="576" y="184" class="e">fails</text>
+  <path d="M720,220 L720,280" class="ln"/><text x="728" y="254" class="s">yes</text>
+  <path d="M660,220 L660,250 L475,250 L475,280" class="ex"/><text x="560" y="244" class="e">no</text>
+
+  <text x="16" y="364" class="s">An error is never cached as not-found and never replaces a positive entry.</text>
+  <text x="16" y="382" class="s">A local Disabled flag is the store's, not the directory's, and takes effect within one second regardless.</text>
+</svg>
