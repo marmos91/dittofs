@@ -230,7 +230,7 @@ Outcome: names round-trip through one mapping; unknown ones fail visibly.
 - Errors fail closed. A store or directory error is never read as "unknown
   user", and unknown is never read as "guest".
 - Management-API roles grant nothing on files; that API's own sign-in is
-  planned RFC 23's.
+  [RFC 23 §5](rfc-23-control-plane.md#5.%20Authentication%20and%20authorization)'s.
 
 ---
 
@@ -269,8 +269,8 @@ This RFC **MUST NOT** be read as specifying:
 - the wire form of a handshake — RPCSEC_GSS framing, SPNEGO, NTLM messages,
   signing and encryption — which [RFC 21](rfc-21-nfs.md) and
   [RFC 22](rfc-22-smb.md) own;
-- how the management API authenticates its users, which is planned RFC 23's
-  (§8);
+- how the management API authenticates its users, which is
+  [RFC 23 §5](rfc-23-control-plane.md#5.%20Authentication%20and%20authorization)'s (§8);
 - where secrets are stored and how they rotate, which is
   [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)'s.
 
@@ -293,8 +293,9 @@ grant or quota can name, is one of these:
 
 **Anonymous** is the well-known principal an `AUTH_NONE` caller, an anonymous
 SMB session and a squashed caller act as, unless the share's policy names
-another (§6.2). Its uid and gid are 65534 and its SID is `S-1-5-7`
-(`ANONYMOUS LOGON`). It is never `authenticated` and never `admin`.
+another (§6.2). Its uid and gid are 65534, reserved to it (§2.3), its SID is
+`S-1-5-7` (`ANONYMOUS LOGON`), and its NFSv4 ACL name is `ANONYMOUS@`
+([RFC 19 §5.2](rfc-19-authorization.md#5.2%20Principals%20on%20the%20wire)). It is never `authenticated` and never `admin`.
 
 **Administrator is not a kind.** A principal is an administrator of a share
 when that share's grant names it `admin`
@@ -315,9 +316,9 @@ The schemes are:
 
 | Scheme | Spelling | Unique among | Who has one |
 | --- | --- | --- | --- |
-| `uid` | a 32-bit number | users | every user, always (§2.3) |
+| `uid` | a 32-bit number | users | every user but an API-only account (§8), always (§2.3) |
 | `gid` | a 32-bit number | groups | every group, always (§2.3) |
-| `sid` | a Windows SID, binary form | users and groups together | every user and group, always (§4.4) |
+| `sid` | a Windows SID, binary form | users and groups together | every user and group but an API-only account (§8), always (§4.4) |
 | `krb` | `name@REALM`, as the KDC spells it | users and machines | users that sign in with Kerberos under a name §4.2's rule does not derive; every machine |
 | user or group name | the record's `Name` | users; groups | every user and group |
 
@@ -342,13 +343,15 @@ The schemes are:
    allocates is drawn from a counter per scheme that only rises. An allocated
    ID **MUST NOT** be allocated again, even after its principal is deleted.
 3. A uid or gid the operator assigns, or the directory supplies, **MAY** be
-   any value no current principal holds. Assigning a deleted principal's uid
+   any value no current principal holds. 65534 is anonymous's uid and gid
+   (§2.1): it is never allocated, and is refused for any other principal. Assigning a deleted principal's uid
    to a new one is the operator's choice; it gives the new principal no file of
    the old one's, because files name principals, never uids.
 4. A missing uid or gid **MUST NOT** be filled with a default. A user created
    without one, or resolved from a directory that has none, gets one allocated
    from the range `identity.id_range` (default 1 000 000 to 1 999 999 999) in
-   the transaction that creates the record (§4.3).
+   the transaction that creates the record (§4.3). The one exception is an
+   API-only account, which holds no spelling at all (§8).
 
 > decision: a missing uid is allocated, never defaulted. A default makes every
 > principal without one the same principal to every check that reads a uid —
@@ -378,6 +381,9 @@ uses for its lease and state operations, or a Windows machine account
   record **MUST** mint a machine principal for it, with that `krb` spelling
   and no other. A Kerberos ticket is a KDC's proof, so only names the KDC
   issues can be minted.
+- It is held as a `User` record whose principal has kind `Machine`
+  ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)): no name, its `krb` spelling and no
+  other, no primary group and no secret.
 - A machine principal acts on files as the share's anonymous principal, unless
   the operator links the machine name to a user (§4.2). It is `authenticated`;
   a grant can name it.
@@ -723,7 +729,8 @@ A name with a service part (`nfs/build01`) never matches step 2 or 3.
 
 ### 4.4 SIDs
 
-- **Every user and group has a SID**, written with its record. A local
+- **Every user and group has a SID**, written with its record, but an
+  API-only account (§8). A local
   principal's SID is the installation's domain SID followed by a RID drawn
   from the RID counter (§2.3). A directory principal's SID is the directory's.
 - **The installation's domain SID** is `S-1-5-21-a-b-c`, where `a`, `b` and
@@ -741,7 +748,8 @@ A name with a service part (`nfs/build01`) never matches step 2 or 3.
 - **A SID with no principal behind it** — a client's security descriptor
   naming a user of a domain the installation does not know — is
   `ErrUnknownPrincipal` from `Find`. What a set of such a descriptor does is
-  [RFC 19](rfc-19-authorization.md)'s. A SID of the directory's domain is
+  [RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)'s:
+  the whole set is refused, until a principal is minted for such a SID. A SID of the directory's domain is
   resolved through the directory first, and minted as a directory principal if
   it names a user or group there (§5).
 - **A principal shown over SMB with no SID** — only a deleted one — is shown
@@ -770,7 +778,8 @@ decides the mapping
   decimal string maps by uid or gid, on any flavour. Any other string,
   including a name in another domain, **MUST** be refused `NFS4ERR_BADOWNER`.
 - The special names an ACL entry carries — `OWNER@`, `GROUP@`, `EVERYONE@` —
-  are not owner strings; they are [RFC 19](rfc-19-authorization.md)'s.
+  are not owner strings, nor is the `S-…@domain` form an ACL entry may spell;
+  they are [RFC 19 §5.2](rfc-19-authorization.md#5.2%20Principals%20on%20the%20wire)'s.
 
 > decision: numeric owner strings on `AUTH_SYS`. A client using `AUTH_SYS`
 > already names users by number, and its idmapper may know none of the
@@ -1050,7 +1059,8 @@ the value was derived from:
 
 A change to a `User`, `Group` or `Membership` record, or to any protocol-ID
 row, raises the installation's **principals generation**, a counter written in
-the same transaction. Every cached mapping and caller carries the generation
+the same transaction: the `PGEN` key, kind 0x3B
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). Every cached mapping and caller carries the generation
 it was built under.
 
 - A node **MUST** read the principals generation at least once a second, and
@@ -1067,15 +1077,22 @@ it was built under.
 ## 8. Management-API users
 
 The management API has users of its own: operators who create shares, users
-and grants. Their sign-in — passwords, tokens, roles, sessions — is planned
-RFC 23's. This RFC fixes only where the two meet:
+and grants. Their sign-in — passwords, tokens, roles, sessions — is
+[RFC 23 §5](rfc-23-control-plane.md#5.%20Authentication%20and%20authorization)'s. This RFC fixes only where the two meet:
 
-- **A role grants nothing on files.** An API role (administrator, operator)
-  **MUST NOT** make a principal `admin`, privileged or granted on any share.
+- **A role grants nothing on files.** An API role (`viewer`, `operator`,
+  `admin`, [RFC 23 §5.2](rfc-23-control-plane.md#5.2%20Roles)) **MUST NOT** make a principal `admin`, privileged or granted on any share.
   File access comes only from share grants (§6.4) and flavour (§6.5).
 - **An API user is not uid 0.** The API's bootstrap administrator **MUST NOT**
   be given uid 0, a share grant, or any spelling a file client could present,
   unless an operator gives it one.
+- **An API-only account is no file principal.** A `User` record created with a
+  role and no protocol spelling — the bootstrap administrator, a service
+  account ([RFC 23 §5.1](rfc-23-control-plane.md#5.1%20API%20accounts%20are%20principals%20with%20a%20role)) — is given none: no uid, gid
+  or SID is allocated for it (§2.3), no NT hash is kept, `Find` never returns
+  it, and no ACL entry or owner can name it, so it can sign in over no file
+  protocol. Giving it any spelling makes it a file user, and allocates the
+  spellings it still lacks in the same transaction.
 - An API user and a file principal **MAY** be one `User` record, sharing a
   name and password; the API reads its role, and file access reads its grants.
   A password change updates the NT hash with it while NTLM is on (§3.5).
@@ -1083,9 +1100,11 @@ RFC 23's. This RFC fixes only where the two meet:
 > decision: the two are kept apart by rule, not by separate records. One
 > record per person is what operators expect, and a separate store would
 > double every lookup. What must never happen is the API's administrator
-> reading every file because it was made root for convenience. Revisit if
-> planned RFC 23 needs API users that are not principals at all, such as
-> service accounts with tokens only.
+> reading every file because it was made root for convenience.
+> [RFC 23 §5.1](rfc-23-control-plane.md#5.1%20API%20accounts%20are%20principals%20with%20a%20role) answers the case this left open: a
+> service account with tokens only is a principal with no spellings, not a
+> second kind of user. Revisit if an API account is ever needed that is not a
+> `User` record.
 
 ## 9. Failure modes
 
@@ -1113,7 +1132,7 @@ RFC 23's. This RFC fixes only where the two meet:
 | --- | --- |
 | ID1 | Every comparison of identity compares `PrincipalID`s, never a spelling. |
 | ID2 | No ID given to a principal is given to another: `PrincipalID`, allocated uid, gid and RID alike. |
-| ID3 | No uid or gid is ever a default; every user has a uid, every group a gid, every user and group a SID. |
+| ID3 | No uid or gid is ever a default; every user has a uid, every group a gid, every user and group a SID — an API-only account aside, which has none (§8). 65534 is anonymous's alone. |
 | ID4 | A SID never changes once given. |
 | ID5 | Every cache of identity is keyed by everything its value was derived from, the proof's name and flavour included. |
 | ID6 | A store or directory error is never read as "no such principal", and never yields a guest, anonymous or default grant. |
@@ -1131,12 +1150,12 @@ RFC 23's. This RFC fixes only where the two meet:
 | Answers | Metric | Type |
 | --- | --- | --- |
 | How many sign-ins, by flavour and outcome? | `identity_authentications_total{protocol, flavor, outcome}` | counter |
-| How long does a sign-in take? | `identity_authentication_seconds{flavor}` | histogram |
+| How long does a sign-in take? | `identity_authentication_seconds{flavor}` | histogram (`request`) |
 | How often is a spelling unmapped? | `identity_unmapped_total{scheme}` | counter |
 | How often is a call refused for an undecidable identity? | `identity_unavailable_total{cause}` | counter |
 | How often are stale directory entries used? | `identity_directory_stale_total` | counter |
 | How often is a sign-in refused for the directory? | `identity_directory_refusals_total` | counter |
-| Directory queries and their latency | `identity_directory_queries_total{question, outcome}`, `identity_directory_seconds` | counter, histogram |
+| Directory queries and their latency | `identity_directory_queries_total{question, outcome}`, `identity_directory_seconds` | counter, histogram (`request`) |
 | Resolution cache effectiveness | `identity_cache_hits_total{cache}`, `identity_cache_misses_total{cache}` | counters |
 | How many principals were refused over the group cap? | `identity_group_cap_refusals_total` | counter |
 | How old is the principals generation each node serves? | `identity_generation_lag_seconds` | gauge |
