@@ -23,7 +23,7 @@
     <marker id="g" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4c8a58"/></marker>
   </defs>
   <rect width="960" height="740" fill="#ffffff"/>
-  <text x="16" y="26" class="t">A cluster: same binary, roles split across nodes, shards spread over storage nodes</text>
+  <text x="16" y="26" class="t">A cluster: three tiers — protocol nodes, storage nodes, and an external metadata store</text>
 
   <!-- clients -->
   <rect x="150" y="44" width="200" height="34" rx="17" class="ext"/>
@@ -42,8 +42,8 @@
   <text x="134" y="155" class="s">NFS / SMB adapters</text>
   <rect x="272" y="138" width="154" height="26" rx="4" class="vfs"/>
   <text x="282" y="155" class="s">filesystem service</text>
-  <text x="124" y="184" class="s">sessions, slots, reply cache: in memory only</text>
-  <text x="124" y="198" class="s">holds no file state; forwards each call</text>
+  <text x="124" y="184" class="s">router · sessions · reply caches · lease owner</text>
+  <text x="124" y="198" class="s">holds no file state; no bucket credentials</text>
 
   <rect x="520" y="110" width="330" height="96" rx="6" class="node"/>
   <text x="534" y="130" class="h">node P2 · role protocol</text>
@@ -58,8 +58,8 @@
   <path d="M200,207 L170,276" class="arr"/>
   <path d="M300,207 L440,276" class="arr"/>
   <path d="M680,207 L470,276" class="arr" style="stroke-dasharray:4 3"/>
-  <text x="208" y="244" class="al">route envelope: request ID,</text>
-  <text x="208" y="257" class="al">shard, epoch (RFC 15 §4.3)</text>
+  <text x="208" y="244" class="al">shard service, the one seam (RFC 15 §2.5):</text>
+  <text x="208" y="257" class="al">envelope with request ID, shard, epoch</text>
   <text x="590" y="244" class="al">a call goes to the primary of the file's shard</text>
 
   <!-- storage nodes -->
@@ -70,9 +70,9 @@
   <rect x="124" y="306" width="96" height="22" rx="11" class="pri"/><text x="172" y="321" class="pt" text-anchor="middle">primary: A</text>
   <rect x="228" y="306" width="108" height="22" rx="11" class="rp"/><text x="282" y="321" class="rt" text-anchor="middle">replica: B, C</text>
   <rect x="124" y="336" width="212" height="24" rx="4" class="data"/>
-  <text x="134" y="352" class="s">engine · open state · syncer · GC</text>
+  <text x="134" y="352" class="s">open state · metadata transactions</text>
   <rect x="124" y="366" width="212" height="24" rx="4" class="data"/>
-  <text x="134" y="382" class="s">journal on local NVMe (RFC 1)</text>
+  <text x="134" y="382" class="s">journal · engine · syncer · GC</text>
   <text x="124" y="410" class="s">orders every change to shard A's files</text>
   <!-- S2 -->
   <rect x="360" y="278" width="240" height="150" rx="6" class="node"/>
@@ -80,9 +80,9 @@
   <rect x="374" y="306" width="96" height="22" rx="11" class="pri"/><text x="422" y="321" class="pt" text-anchor="middle">primary: B</text>
   <rect x="478" y="306" width="108" height="22" rx="11" class="rp"/><text x="532" y="321" class="rt" text-anchor="middle">replica: A, C</text>
   <rect x="374" y="336" width="212" height="24" rx="4" class="data"/>
-  <text x="384" y="352" class="s">engine · open state · syncer · GC</text>
+  <text x="384" y="352" class="s">open state · metadata transactions</text>
   <rect x="374" y="366" width="212" height="24" rx="4" class="data"/>
-  <text x="384" y="382" class="s">journal on local NVMe (RFC 1)</text>
+  <text x="384" y="382" class="s">journal · engine · syncer · GC</text>
   <text x="374" y="410" class="s">orders every change to shard B's files</text>
   <!-- S3 -->
   <rect x="610" y="278" width="240" height="150" rx="6" class="node"/>
@@ -90,9 +90,9 @@
   <rect x="624" y="306" width="96" height="22" rx="11" class="pri"/><text x="672" y="321" class="pt" text-anchor="middle">primary: C</text>
   <rect x="728" y="306" width="108" height="22" rx="11" class="rp"/><text x="782" y="321" class="rt" text-anchor="middle">replica: A, B</text>
   <rect x="624" y="336" width="212" height="24" rx="4" class="data"/>
-  <text x="634" y="352" class="s">engine · open state · syncer · GC</text>
+  <text x="634" y="352" class="s">open state · metadata transactions</text>
   <rect x="624" y="366" width="212" height="24" rx="4" class="data"/>
-  <text x="634" y="382" class="s">journal on local NVMe (RFC 1)</text>
+  <text x="634" y="382" class="s">journal · engine · syncer · GC</text>
   <text x="624" y="410" class="s">orders every change to shard C's files</text>
 
   <!-- replication -->
@@ -105,9 +105,9 @@
   <!-- shared metadata -->
   <text x="16" y="530" class="role">SHARED</text>
   <rect x="110" y="476" width="400" height="104" rx="12" class="meta"/>
-  <text x="124" y="498" class="h">replicated metadata store (RFC 16)</text>
-  <text x="124" y="516" class="s">one transactional database every node uses:</text>
-  <text x="124" y="531" class="s">files, refs, blocks, shares, users, settings</text>
+  <text x="124" y="498" class="h">metadata store (RFC 16) — not a DittoFS node</text>
+  <text x="124" y="516" class="s">an external transactional store; storage nodes write it,</text>
+  <text x="124" y="531" class="s">protocol nodes read it: files, refs, blocks, shares, settings</text>
   <text x="124" y="551" class="s">shard records (who is primary, at which epoch), node leases,</text>
   <text x="124" y="566" class="s">slot table — changed only by compare-and-swap (RFC 11)</text>
   <path d="M230,429 L230,474" class="kv"/>
@@ -134,5 +134,5 @@
   <text x="32" y="644" class="l"><tspan font-weight="700">S1 lost.</tspan> S2 takes shard A over at a higher epoch from the journal it already holds; P1 forwards there. A stale S1 is refused by the epoch.</text>
   <text x="32" y="666" class="l"><tspan font-weight="700">P1 lost.</tspan> P2 takes its addresses; opens, locks and leases are untouched, because they live at the storage primaries.</text>
   <text x="32" y="688" class="l"><tspan font-weight="700" fill="#4c8a58">Green dashed arrows:</tspan> journal records ship to the shard's replicas; a write is acknowledged once the whole replica set holds it (RFC 10).</text>
-  <text x="32" y="710" class="l"><tspan font-weight="700">One machine, both roles</tspan> is the single-node install: the same picture with every arrow a function call.</text>
+  <text x="32" y="710" class="l"><tspan font-weight="700">One machine, both roles</tspan> is the single-node install: the same picture with every arrow a function call (RFC 15 §2.5).</text>
 </svg>

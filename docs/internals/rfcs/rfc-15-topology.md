@@ -124,7 +124,7 @@ address that belongs to the cluster and is held, for now, by P1.
 
 The whole cluster, with every role and what it shares:
 
-![A cluster: protocol nodes P1 and P2 behind floating addresses forward each call to the primary of the file's shard; storage nodes S1, S2, S3 are each primary of one shard and replica of the others, shipping journal records between them; all share a replicated metadata store and one S3 bucket](img/rfc0-cluster.svg)
+![A cluster: protocol nodes P1 and P2, each with adapters, the filesystem service, the router and client sessions, forward each call over the shard service to the primary of the file's shard; storage nodes S1, S2, S3, each running open state, namespace and block-metadata transactions, the journal, replication and the content subsystem, are each primary of one shard and replica of the others; both tiers call one external replicated metadata store, and only storage nodes reach the S3 bucket](img/rfc0-cluster.svg)
 
 ### The words you need
 
@@ -167,8 +167,8 @@ The whole cluster, with every role and what it shares:
 
 ### How the rest is organised
 
-[§2](#2.%20Roles) defines the roles, what each composes, and the start-up
-checks. [§3](#3.%20One%20primary%20per%20shard) is the one-primary rule.
+[§2](#2.%20Roles) defines the roles, what each composes, the start-up
+checks, and the cut between the tiers ([§2.5](#2.5%20The%20cut)). [§3](#3.%20One%20primary%20per%20shard) is the one-primary rule.
 [§4](#4.%20Where%20each%20call%20runs) says which node serves each call, what
 makes a call safe to route, how calls spanning two shards run, and the
 envelope. [§5](#5.%20Clients) covers clients: pNFS (parallel NFS), SMB and
@@ -270,6 +270,82 @@ Stop runs in reverse: adapters first, so no client call arrives at a component
 already closed; a `storage` node then hands its shards over ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries))
 before closing the content subsystem. [RFC 8 §2](rfc-8-engine.md#2.%20Composition) composes the content
 subsystem only; this section is the root above it.
+
+### 2.5 The cut
+
+A cluster has three tiers, and only two of them run DittoFS:
+
+- **protocol nodes**, the nodes with the `protocol` role;
+- **storage nodes**, the nodes with the `storage` role;
+- **the replicated metadata store**, an external transactional store that both
+  call as clients ([RFC 16](rfc-16-metadata-store.md)). It is not a role: no DittoFS node is a
+  metadata node ([RFC 11 §1](rfc-11-ownership.md#1.%20Purpose)).
+
+A node with both roles is one protocol node and one storage node in one process.
+This section says which component runs in which tier and which interface crosses
+between them; it binds every deployment, and on a node with both roles every
+crossing below is a function call.
+
+![The cut: a protocol tier of adapters, the filesystem service, the router and client sessions; a storage tier of shard primaries and replicas with open state, namespace and block-metadata transactions, the journal and its replication, the content subsystem and the control plane; an external replicated metadata store; the shard service as the only interface between the two DittoFS tiers](img/rfc15-cut.svg)
+
+| Tier | Composes | Holds | Reaches |
+| --- | --- | --- | --- |
+| **protocol** | the NFS and SMB adapters; authentication; the filesystem service ([RFC 17](rfc-17-vfs.md)); the router and its cache of shard records ([§6](#6.%20Learning%20primaries)); sessions, the NFSv4.1 slot tables and reply caches, SMB tree connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); a client's lease owner and its back channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)); floating addresses and SMB Witness ([§5.3](#5.3%20Client%20addressing)); **(cluster)** the pNFS metadata-server endpoint ([§5.1](#5.1%20pNFS)) | connections and session state, in memory only; no file state | clients; the metadata store, for reads and the few records below; storage nodes, through the shard service |
+| **storage** | shard primary and replica ([RFC 11](rfc-11-ownership.md)); open state, locks, caching grants and layouts ([RFC 14](rfc-14-open-state.md)); the namespace transactions ([RFC 7](rfc-7-namespace-metadata.md)) and block-metadata commits ([RFC 6](rfc-6-block-metadata.md)); the journal ([RFC 1](rfc-1-journal.md), [RFC 28](rfc-28-journal-format.md)) and its replication ([RFC 10](rfc-10-journal-replication.md)); the engine ([RFC 8](rfc-8-engine.md)), carver ([RFC 2](rfc-2-carver.md)), syncer ([RFC 3](rfc-3-syncer.md)), transforms ([RFC 5](rfc-5-transforms.md)) and remote tier ([RFC 4](rfc-4-remote-tier.md)); GC ([RFC 9](rfc-9-gc.md)); each shard's snapshot cut gate ([RFC 12](rfc-12-snapshots.md)); the repair scheduler ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)); the control plane and management API ([RFC 13](rfc-13-configuration.md)), catalog backups ([RFC 26](rfc-26-catalog-backups.md)) and namespace migration ([RFC 27](rfc-27-namespace-migration.md)); **(cluster)** the pNFS data server | journal devices; the un-offloaded tail of the shards it serves; open state in memory; the `storage` wrapping key | protocol nodes, through the shard service; other storage nodes, for replication and cross-shard prepares ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)); the metadata store, as a writer; the remote tier |
+| **metadata store** | none of DittoFS: it stores and orders the records the two tiers above read and write — files, refs, blocks, shares, principals, settings, shard records, node leases, the slot table, client records, durable opens, request records ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)) | every durable fact except file content | nothing; it is called |
+
+**Metadata logic runs on storage nodes; metadata lives in the store.** RFC 6 and
+RFC 7 define records and the transactions that change them. A shard's primary
+runs those transactions; the store only keeps and orders them. A protocol node
+reads the store — `Lookup`, `Entries`, `ACL`, `Authorize` and the other calls
+§4 serves at any node — and writes only node records — its own lease, and the
+lapsed mark on a lost protocol node before taking its addresses ([§5.3](#5.3%20Client%20addressing)) —
+the health condition of a primary it cannot reach
+([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)), and the client records it is lease owner of
+([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)). It **MUST NOT** write a file's,
+a directory's, a shard's or a share's record, nor any control-plane record: each
+of those is written by a storage node.
+
+**The shard service is the one seam.** The calls §4 serves at a shard's primary,
+`ControlPlane.*` and the cross-shard prepares together form the **shard
+service**, the only interface that crosses from a protocol node to a storage
+node. Below it sits everything that holds file state; above it, nothing does.
+Every call on it obeys [§4.1](#4.1%20Every%20call%20is%20safe%20to%20route) — values only, a cursor the caller holds,
+the route envelope ([§4.3](#4.3%20The%20route%20envelope)) — and travels on a node channel ([§4.4](#4.4%20Node%20channels)).
+Its encoding and versioning are open ([§11](#11.%20Open%20questions)).
+
+**The filesystem service stays on the protocol node.** One client call often
+spans shards — a path walk from a share's root into a per-child shard, a
+`READDIRPLUS` over children in several shards, a rename between two, an NFSv4
+compound or an SMB session over many files — so something above the shards
+must split it by shard. Placed on the storage nodes, that splitting would move
+into the adapters, which would then have to know shards; [RFC 17](rfc-17-vfs.md) keeps the
+topology invisible to them. The service holds nothing past a call
+([RFC 17 §1.1](rfc-17-vfs.md#1.1%20Non-goals)), so it costs nothing to run where the connections are.
+
+> decision: catalog backups ([RFC 26](rfc-26-catalog-backups.md)) and namespace migration
+> ([RFC 27](rfc-27-namespace-migration.md)) run on storage nodes, as control-plane work: both write
+> control-plane records and both read or write the remote tier, which only the
+> `storage` wrapping key unseals ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Overturned if either
+> gains a step that needs a client connection.
+
+> decision: in a split deployment a client's lease owner and its back channel
+> are protocol nodes, the nodes that hold its sessions, so renewing a client
+> costs no hop and a recall leaves through the node the client is connected to.
+> The cost is that a protocol node writes client records, which it otherwise
+> would not; a renewal writes nothing ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)), so these writes are
+> the rare ones — a new client, a moved owner or back channel. Overturned if
+> client-record writes from protocol nodes are measured contending with the
+> primaries' transactions.
+
+**What a write crosses.** A client write that reaches a protocol node which is
+not its shard's primary crosses the network four times before it is
+acknowledged — client to protocol node, protocol node to primary, primary to each
+of two replicas at the default count ([RFC 10 §7.1](rfc-10-journal-replication.md#7.1%20Count%2C%20floor%20and%20placement)) — and once more
+after, primary to the remote tier. A client whose protocol node runs on the
+primary's own node, or that holds a pNFS layout, skips the second crossing. A
+storage node's network is therefore sized for about four times its shards'
+client write rate.
 
 ## 3. One primary per shard
 
@@ -656,6 +732,7 @@ store gives no high availability, whatever the roles.
 | T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
 | T10 | An NFS request ID is the protocol's retry identity — (client address, XID, procedure, argument checksum) for NFSv3 and NFSv4.0, (front-end node ID, the node epoch the session was created under, session, slot, sequence ID) for NFSv4.1 — so an NFSv3 or NFSv4.0 retry on a new connection or through another front-end, and an NFSv4.1 retry on its session across a new node epoch of its front-end, carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. A handover ships the open-state calls' entries with the open-state table. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or the channel sequence and outstanding counts in its `Open`, the channel sequence durable for a persistent open. |
 | T11 | A single node advertises no pNFS and answers every layout operation with `NFS4ERR_NOTSUPP`. |
+| T12 | The shard service is the only interface between a protocol node and a storage node. A protocol node holds no file state and writes to the metadata store only node records (its own lease, a lost protocol node's lapsed mark), the health condition of a primary it cannot reach, and the client records it is lease owner of; every other record is written by a storage node. |
 
 ## 9. Conformance and benchmarks
 
@@ -675,6 +752,9 @@ store gives no high availability, whatever the roles.
   the same extent again, then heal the partition. Assert the late write is
   refused by node epoch and the second write's bytes survive (T7). A takeover
   that does not fence first fails this.
+- **The cut (cluster):** run a split cluster with the store's write log
+  attributed by node. Assert that every write from a protocol node is one T12 lists, and that no protocol node opens a
+  connection to the remote tier (T12).
 - **Node channels:** send a replication message and a forwarded call from a peer
   without an issued credential, and from an authenticated peer naming another
   node. Assert both refused (T9).

@@ -950,7 +950,11 @@ no primary expires a client on its own. When the lease owner expires the client,
 it releases the client's state at every shard its record names (§4.3). The lease
 owner is chosen when the record is created, among the nodes holding the client's
 sessions, and moves only by a compare-and-swap on the record when that node is
-lost; the new owner extends the lease by one period before it may expire it.
+lost; the new owner extends the lease by one period before it may expire it. In
+a split deployment the lease owner and the back channel are therefore
+`protocol` nodes, and these client-record writes are among the few a `protocol`
+node makes to the store
+([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)).
 Without one owner, a primary that sees nothing from a client busy elsewhere
 expires it and revokes state the client is still using.
 

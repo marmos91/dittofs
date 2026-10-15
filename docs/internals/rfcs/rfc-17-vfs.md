@@ -866,7 +866,10 @@ Repeating a mutation with the same arguments is **not** assumed to be safe.
 Every call on a file runs at the primary of the file's shard
 ([RFC 11](rfc-11-ownership.md)), which holds the file's namespace records, its open state and
 its content. A node with the `protocol` role only forwards
-([RFC 15](rfc-15-topology.md)).
+([RFC 15](rfc-15-topology.md)). The service is composed on the `protocol` role, over a local
+view of the shards its node is primary of and a remote view of the rest; the
+remote view is the shard service, the one interface that crosses to a storage
+node ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)). Adapters hold the service and never either view.
 
 The conflict check and the I/O it gates therefore run at one primary, with no
 hop between them. The primary **MUST** order them so that no lock, deny mode or

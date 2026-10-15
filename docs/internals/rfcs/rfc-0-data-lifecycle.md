@@ -125,9 +125,11 @@ machines. `protocol` nodes hold client connections and forward each call;
 `storage` nodes each own some shards and replicate their journals to each other;
 every node shares one replicated metadata store and one bucket.
 
-![A cluster: protocol nodes P1 and P2 behind floating addresses forward each call to the primary of the file's shard; storage nodes S1, S2, S3 are each primary of one shard and replica of the others, shipping journal records between them; all share a replicated metadata store and one S3 bucket](img/rfc0-cluster.svg)
+![A cluster: protocol nodes P1 and P2, each with adapters, the filesystem service, the router and client sessions, forward each call over the shard service to the primary of the file's shard; storage nodes S1, S2, S3, each running open state, namespace and block-metadata transactions, the journal, replication and the content subsystem, are each primary of one shard and replica of the others; both tiers call one external replicated metadata store, and only storage nodes reach the S3 bucket](img/rfc0-cluster.svg)
 
-The layers, and which node runs which, are drawn in [§1.3](#1.3%20The%20layers).
+The layers, and which node runs which, are drawn in [§1.3](#1.3%20The%20layers); which component
+runs in which tier, and the one interface between them, in
+[RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut).
 
 ### The words you need
 
@@ -360,7 +362,8 @@ Two families of unit. The **bytes** units say where content is; the
 | --- | --- | --- |
 | **installation** | all the nodes that share one metadata store and control plane; the widest scope a setting has. The first release's installation is one node | [RFC 13 §3](rfc-13-configuration.md#3.%20Scopes) |
 | **node** | one DittoFS server process, with one or both roles; only a `storage` node can be a primary or a replica | [RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment) |
-| **role** | what a node runs: `protocol` (adapters and the filesystem service, no state of its own) or `storage` (the metadata store's view, open state, the content subsystem and journals) | [RFC 15 §2](rfc-15-topology.md#2.%20Roles) |
+| **role** | what a node runs: `protocol` (adapters and the filesystem service, no state of its own) or `storage` (the metadata store's view, open state, the content subsystem and journals). The metadata store is not a role: it is an external store both call ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)) | [RFC 15 §2](rfc-15-topology.md#2.%20Roles) |
+| **shard service** | **(cluster)** the one interface between a protocol node and a storage node: the calls served at a shard's primary, control-plane calls and cross-shard prepares | [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut) |
 | **front-end** | **(cluster)** the node a client's call arrives at; when it is not the primary, it forwards the call there | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary) |
 | **route envelope** | **(cluster)** what every forwarded call carries: request ID, shard and epoch, hop count | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) |
 | **floating address** / **SMB Witness** | **(cluster)** a client-facing address the cluster owns and a surviving protocol node takes over / the SMB protocol that tells a client an address moved or a node is draining | [RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing) |
@@ -588,7 +591,12 @@ One binary serves every deployment. Which layers a node composes is set by its
 
 The default is both roles in one process, where every arrow in the picture is a
 local call; a split deployment runs protocol nodes in front of storage nodes
-over one replicated KV, and the same interfaces cross the network.
+over one replicated KV, and the same interfaces cross the network. The
+filesystem service stays with the adapters; the metadata store's logic — the
+namespace and block-metadata transactions — runs with open state on the storage
+node, and the replicated KV beneath it is no DittoFS node at all. The one
+interface between the two roles is the shard service
+([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)).
 
 **Each shard has one primary** ([RFC 11](rfc-11-ownership.md)). On a single node that node is
 the primary of every share; in a cluster, a primary holds one epoch, live while

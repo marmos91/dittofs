@@ -1500,7 +1500,9 @@ recomputed.
 
 ### 4.1 Interfaces
 
-Signatures are indicative; the obligations above are normative.
+Signatures are indicative; the obligations above are normative. **(cluster)**
+Backups, copies, verification and restore run on `storage` nodes, as
+control-plane work ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)).
 
 ```go
 type Backups interface {

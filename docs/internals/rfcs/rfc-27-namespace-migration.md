@@ -1027,7 +1027,9 @@ another installation alone.
 
 ### 3.1 Interfaces
 
-Signatures are indicative; the obligations above are normative.
+Signatures are indicative; the obligations above are normative. **(cluster)**
+A move and a re-home run on `storage` nodes, as control-plane work
+([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)).
 
 ```go
 // Rehome copies one share into a new namespace of its own (§2.7).
