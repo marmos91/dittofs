@@ -14,6 +14,7 @@ depends_on:
   - "[[rfc-20-adapters]]"
   - "[[rfc-21-nfs]]"
   - "[[rfc-22-smb]]"
+  - "[[rfc-25-observability]]"
 aliases:
   - RFC 19
   - authorization
