@@ -17,8 +17,12 @@ depends_on:
   - "[[rfc-15-topology]]"
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-17-vfs]]"
+  - "[[rfc-18-identity]]"
+  - "[[rfc-19-authorization]]"
   - "[[rfc-20-adapters]]"
   - "[[rfc-21-nfs]]"
+  - "[[rfc-24-resources]]"
+  - "[[rfc-25-observability]]"
   - "[[rfc-28-journal-format]]"
 aliases:
   - RFC 22
@@ -298,9 +302,9 @@ This document **MUST NOT**:
   ([RFC 7 §3.7](rfc-7-namespace-metadata.md#3.7%20No%20short%20names)) RFC 7's; share policy [RFC 16](rfc-16-metadata-store.md)'s;
 - decide admission, tree connect or share enumeration — [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees);
 - decide authentication, principals or the mapping of users to Windows
-  security identifiers (SIDs) — RFC 18 (planned); or the mapping between a
-  Windows security descriptor and the stored access control list (ACL) — RFC
-  19 (planned);
+  security identifiers (SIDs) — [RFC 18](rfc-18-identity.md#4.4%20SIDs); or
+  the mapping between a Windows security descriptor and the stored access
+  control list (ACL) — [RFC 19](rfc-19-authorization.md#6.%20SMB%20security%20descriptors);
 - restate MS-SMB2 framing, or the rows of the status table that follow from
   MS-SMB2, which the adapter holds and
   [RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) keeps total over
@@ -486,7 +490,9 @@ flight.
   64 KiB — and past either it draws on the node's one hold pool, a sixteenth
   of the process's memory limit, in which each held request is charged its
   write's bytes and at least 64 KiB
-  ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) owns the pool). The
+  ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) owns the pool, and
+  [RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)
+  which pool holds a held request's bytes). The
   count is the service's alone: the adapter passes, on every call of a
   connection, re-runs included, a hold policy whose `Key` names the
   connection as its `Holder`, whose `SlotBudget` is 256 and whose
@@ -528,7 +534,8 @@ one `protocol` node's memory; a client that loses the node signs in again.
 - `SESSION_SETUP` carries SPNEGO (the negotiation wrapper that picks an
   authentication method) with Kerberos or NTLMv2 (NT LAN Manager version 2).
   NTLMv1 and LM (LAN Manager) are refused. Which identity results, guest and anonymous
-  access, and whether NTLM is allowed at all are RFC 18's.
+  access, and whether NTLM is allowed at all are
+  [RFC 18 §3](rfc-18-identity.md#3.%20Authentication)'s.
 - A Kerberos ticket may list the client addresses it is valid from. Only its
   IPv4 and IPv6 entries restrict which client may use it: a ticket with none
   is accepted from any address, and a ticket with any **MUST** be refused
@@ -551,12 +558,15 @@ one `protocol` node's memory; a client that loses the node signs in again.
   encrypted. Only a client that cannot encrypt at all is refused at tree
   connect.
 
-- **A session without a key reaches only `IPC$`.** An anonymous or guest
-  session, if RFC 18 admits one, holds no session key and cannot sign, so it is
-  exempt from the signing requirement (MS-SMB2 3.3.5.5.3). Its `TREE_CONNECT`
-  to any share but `IPC$` **MUST** be `STATUS_ACCESS_DENIED`, whatever RFC 18
-  or the share's policy would otherwise admit, and on `IPC$` it reaches only
-  §5.2's services.
+- **A session without a key reaches only `IPC$`.** An anonymous session, and a
+  guest one, which
+  [RFC 18 §3.6](rfc-18-identity.md#3.6%20Anonymous%20and%20guest%20sessions)
+  sets up as anonymous, holds no session key and cannot sign, so it is exempt
+  from the signing requirement (MS-SMB2 3.3.5.5.3). Its `TREE_CONNECT` to any
+  share but `IPC$` **MUST** be `STATUS_ACCESS_DENIED`, whatever the share's
+  grants or policy would otherwise admit, and on `IPC$` it reaches only §5.2's
+  services. A session setup whose credential fails is never made anonymous or
+  guest; it fails.
 
 > decision: a keyless session is exempt from signing and confined to `IPC$`,
 > rather than refused outright, because the exemption is then worth only a
@@ -732,7 +742,7 @@ three services:
 | --- | --- | --- |
 | server service (srvsvc) | `NetShareEnumAll`, `NetShareGetInfo` (levels 0, 1, 2, 501, 1005), `NetSrvGetInfo` | the share list, filtered as [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) says |
 | workstation service (wkssvc) | `NetWkstaGetInfo` (100, 101) | the installation's name |
-| local security authority (lsarpc) | `OpenPolicy2`, `LookupSids2/3`, `LookupNames3/4`, `Close` | RFC 18's principals — the security tab cannot show names without it |
+| local security authority (lsarpc) | `OpenPolicy2`, `LookupSids2/3`, `LookupNames3/4`, `Close` | RFC 18's principals, spelled as [RFC 18 §4.6](rfc-18-identity.md#4.6%20Names) says — the security tab cannot show names without it |
 
 Every other call is answered `DCERPC_FAULT_OP_RNG_ERROR`. Witness is served over
 RPC on TCP, not on `IPC$` ([§14](#14.%20Witness)).
@@ -773,9 +783,9 @@ up its cache, and how a reconnect finds its open.
   `GENERIC_WRITE`, `GENERIC_EXECUTE` and `GENERIC_ALL` in `DesiredAccess`
   (MS-SMB2 2.2.13.1) **MUST** be mapped through the file generic mapping to
   `FILE_GENERIC_READ`, `FILE_GENERIC_WRITE`, `FILE_GENERIC_EXECUTE` and
-  `FILE_ALL_ACCESS` (MS-FSA 2.1.5.1.2) before `Open`, and so **MUST** the same
-  bits in an access mask of a descriptor a client sets, until RFC 19 owns that
-  mapping. Unmapped, no stored entry and no mode bit grants them, and a Linux
+  `FILE_ALL_ACCESS` (MS-FSA 2.1.5.1.2) before `Open`, and so are the same
+  bits in an access mask of a descriptor a client sets, by
+  [RFC 19 §2.4](rfc-19-authorization.md#2.4%20Rights)'s mapping. Unmapped, no stored entry and no mode bit grants them, and a Linux
   client, which sends `GENERIC_READ` and `GENERIC_WRITE` on its opens, is
   refused every open.
 - **The mapped sets' minor rights follow the mode's bits.** The mapped sets
@@ -1225,7 +1235,7 @@ two settings [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20s
 carrying its `DelayCause` and, for a freeze, its bound in `Until` —
 `DelayRecall`, `DelayClone`, `DelayFrozen`, `DelayMoved`, `DelayCapacity`,
 `DelayVersionLimit`, `DelayStoreStall`, `DelayQuotaSlack`, `DelayConflict`,
-`DelayHoldBudget`
+`DelayHoldBudget`, `DelayResources`
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) — and
 `errors.Is` still matches it as `ErrDelay`; grace is its own error,
 `ErrGrace`. `DelayMoved` ends the moved share's trees (§6.3). The adapter chooses the row below
@@ -1244,6 +1254,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrUnavailable` — a read, query or control request meeting a remote outage on a block not held locally ([RFC 8 §7.5](rfc-8-engine.md#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)) | held pending and re-run up to `smb_pending_cap`, as a store stall is; only there `STATUS_UNEXPECTED_IO_ERROR`. A `READ` whose verified bytes reach its `MinimumCount` is answered with them at once, short; one whose verified bytes fall below `MinimumCount` is held the same way, never answered short, since MS-SMB2 3.3.5.12 fails a read below `MinimumCount` and the client would see an error for a transient outage. `ErrLost` and `ErrCorrupt` are answered at once ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) |
 | `ErrIncomplete` — a read, through a snapshot or a copy made from one, of a file its cut lists as incomplete ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), or a copychunk or duplicate-extents from such a file, refused before anything changes ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) | `STATUS_UNEXPECTED_IO_ERROR` at once |
 | `ErrDelay` — the connection past its floor while the node's hold pool cannot take the request (`DelayHoldBudget`, §3.3) | `STATUS_INSUFFICIENT_RESOURCES` at once; nothing is held, never `STATUS_DISK_FULL` or `STATUS_FILE_LOCK_CONFLICT` |
+| `ErrDelay` — a node memory pool spent: the share's cap on the request buffers, open state, or a reply reservation's deadline (`DelayResources`, [RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) | `STATUS_INSUFFICIENT_RESOURCES` at once; never held, since holding it would spend the hold pool on the share short of memory |
 | `ErrBlocked` — a lock left waiting (§7) | pending, with no deadline; completed on grant, or after `CancelLock` |
 | `ErrStale` — the share is being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | `STATUS_NETWORK_NAME_DELETED` for every request on a tree connected to it, so the client drops the tree; a new `TREE_CONNECT` to its name, now free, is `STATUS_BAD_NETWORK_NAME`; a durable handle's reconnect is `STATUS_OBJECT_NAME_NOT_FOUND`. A request held pending on the share's state is answered when `Revoked` reports it with the share-removed reason ([RFC 14 §11](rfc-14-open-state.md#11.%20Interface), [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): an outstanding `CHANGE_NOTIFY` with `STATUS_NOTIFY_CLEANUP`, a waiting lock or any other with `STATUS_NETWORK_NAME_DELETED`; the waiter is already gone, so no `CancelLock` precedes it |
 | `ErrNoSpace` — a permanent capacity refusal, as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes it | `STATUS_DISK_FULL` at once |
@@ -1579,27 +1590,49 @@ with its mapping and limits.
 
 A Windows security descriptor holds a file's owner and group, its access
 control list (DACL, the discretionary ACL: who may do what), and its system ACL
-(SACL: which accesses are audited). Here it is RFC 7's ACL through RFC 19's
-mapping.
+(SACL: which accesses are audited). Here it is RFC 7's ACL through the one
+translation both adapters use
+([RFC 19 §6](rfc-19-authorization.md#6.%20SMB%20security%20descriptors)).
 
-- Owner and group security identifiers (SIDs) are RFC 18's principals.
-- The DACL is the ACL's entries.
+- Owner and group security identifiers (SIDs) are RFC 18's principals
+  ([RFC 18 §4.4](rfc-18-identity.md#4.4%20SIDs)); a deleted one is shown as the
+  null SID `S-1-0-0`.
+- The DACL is the ACL's access list and its flags. An effective `OWNER@` or
+  `GROUP@` entry is spelled with the owner's or group's SID, an inheritable one
+  as CREATOR OWNER or CREATOR GROUP, and an entry naming the owner's or group's
+  SID is stored back as `OWNER@` or `GROUP@`
+  ([RFC 19 §6.3](rfc-19-authorization.md#6.3%20Owner%20and%20group%20entries%20become%20%60OWNER%40%60%20and%20%60GROUP%40%60)).
 - The **SACL is the ACL's audit entries**
   ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)),
   stored with it; reading or writing it needs `ACCESS_SYSTEM_SECURITY` on the
-  open, which **MUST** be granted only to an administrator of the share (RFC
-  18, planned), never by the file's ACL or to its owner. A request for it by
-  anyone else is `STATUS_PRIVILEGE_NOT_HELD`. NFS gates the same entries the
+  open, which **MUST** be granted only to a caller whose identity has `admin`
+  set ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)),
+  never by the file's ACL, by ownership or by privilege alone. A request for it
+  by anyone else is `STATUS_PRIVILEGE_NOT_HELD`. NFS gates the same entries the
   same way ([RFC 21 §8.1](rfc-21-nfs.md#8.1%20Supported)), so neither protocol
   is a way round the other.
 - Audit entries never grant or deny; they select the access events the service
   emits ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)).
-- A query returns none of the parts the caller did not ask for.
+- A query returns none of the parts the caller did not ask for, and never a
+  label, attribute or scope part.
+- **What a set may carry is RFC 19's**
+  ([§6.4](rfc-19-authorization.md#6.4%20What%20is%20not%20supported),
+  [§2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)). A
+  set it refuses is refused whole and nothing is stored: object, callback,
+  mandatory-label, resource-attribute or scoped-policy entries, an entry kind or
+  revision the model does not hold, an audit entry in the DACL or an allow in
+  the SACL, a list of more than 128 entries or over 64 KiB, an entry naming a
+  SID no principal holds, or a deny naming a well-known principal that matches
+  no caller, are `STATUS_INVALID_SECURITY_DESCR`; an owner or group SID no
+  principal holds is `STATUS_INVALID_OWNER` or `STATUS_INVALID_PRIMARY_GROUP`
+  ([RFC 19 §6.1](rfc-19-authorization.md#6.1%20The%20parts)). A null DACL is
+  stored as allow `EVERYONE@` every right and read back so.
 - **Who may read and change a descriptor is the chokepoint's walk**
   ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)), not the adapter's: the
   file's owner holds `READ_CONTROL` and `WRITE_DAC` whatever the DACL denies,
   unless an entry for owner rights applies, so an owner can always repair a
-  DACL that locks it out. An open asking `MAXIMUM_ALLOWED`, the `MxAc` create
+  DACL that locks it out. An open asking `MAXIMUM_ALLOWED`
+  ([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximum%20allowed)), the `MxAc` create
   context and `MaximalAccess` are answered from `Files.Granted`, through the
   service's `Access`
   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), to which the adapter
@@ -1898,7 +1931,7 @@ restore; here they are the share's read-only snapshots
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §3.1 dialects | An SMB1-only and a 2.0.2-only negotiate are refused; a 3.1.1 client gets SHA-512 and its first shared cipher. | an SMB1 fallback left in |
-| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up an anonymous session and, where RFC 18 admits guests, a guest one: assert `TREE_CONNECT` to a data share is `STATUS_ACCESS_DENIED` and to `IPC$` succeeds. | a per-share signing flag, unsigned requests accepted, or a keyless session reaching data |
+| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up an anonymous session, and a guest one, which RFC 18 §3.6 makes anonymous: assert `TREE_CONNECT` to a data share is `STATUS_ACCESS_DENIED` and to `IPC$` succeeds. | a per-share signing flag, unsigned requests accepted, or a keyless session reaching data |
 | §4.4 client record | From one machine, sign in as alice and then bob on two connections with one `ClientGuid`: assert both sessions succeed under one client record, and that bob's durable reconnect naming alice's FileId is refused. | a principal kept on the SMB client record, or opens checked against it |
 | §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
 | §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |
@@ -1977,7 +2010,8 @@ with the status it is sent.
 
 ## 18. Observability
 
-Metric names are shown without the deployment's prefix.
+Metric names follow [RFC 25 §2](rfc-25-observability.md#2.%20Metrics) and are
+shown without the `dittofs_` prefix the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
@@ -2064,7 +2098,7 @@ Every share, whatever its policy:
 | `RqLs` v1 and v2 (lease request) | a lease request ([§6.2](#6.2%20Oplocks%20are%20leases)) |
 | `DHnQ`, `DH2Q`, `DHnC`, `DH2C` (durable request, reconnect) | durability and reconnect ([§6.4](#6.4%20Durable%20and%20persistent%20handles)) |
 | `AlSi` (allocation size) | allocation size ([§9.3](#9.3%20Timestamps%2C%20allocation%20and%20sparse%20files)) |
-| `SecD` (security descriptor) | an initial ACL through RFC 19 |
+| `SecD` (security descriptor) | the new file's ACL, owner and group, in place of the inherited ACL ([RFC 19 §6.1](rfc-19-authorization.md#6.1%20The%20parts)) |
 | `ExtA` (extended attributes) | initial extended attributes ([§9.5](#9.5%20Extended%20attributes)) |
 | `TWrp` (timewarp) | the snapshot at that time ([§15](#15.%20Previous%20Versions)) |
 | `AppInstanceId`, `AppInstanceVersion` | RFC 14's open identity; a second open with the same id, from another client that may read the file, closes the first (§6.4) |
@@ -2082,7 +2116,7 @@ Every share, whatever its policy:
 | directory | `Directory`, `FullDirectory`, `BothDirectory` and `IdBothDirectory` (short name empty), `IdFullDirectory`, `Names`, `IdExtdDirectory` |
 | file system | `FsVolume` (serial and object id from `ShareID`, or for a snapshot from the share and its ordinal (§15); label the share name), `FsSize`, `FsFullSize` (the caller's quota where one applies), `FsDevice`, `FsAttribute` (E.2), `FsControl` (quota), `FsObjectId`, `FsSectorSize` (4096) |
 | security | owner, group, DACL, SACL ([§11](#11.%20Security%20descriptors)) |
-| quota | `SMB2_0_INFO_QUOTA`: per-user quotas, by SID through RFC 18 |
+| quota | `SMB2_0_INFO_QUOTA`: per-user quotas, by SID through [RFC 18 §4.4](rfc-18-identity.md#4.4%20SIDs) |
 
 | Set | Classes |
 | --- | --- |
