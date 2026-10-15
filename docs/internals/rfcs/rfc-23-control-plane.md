@@ -425,7 +425,7 @@ that component's surface:
 | remote store | store configuration settings, its credential `Secret` | created; edited under RFC 13's classes; deleted only when no namespace names it | RFC 13 |
 | namespace | namespace settings and key records | created with its bound fields; deleted when no share names it and drained | [RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained) |
 | share | `Share` (info, state, namespaces), `ExportPolicy`, share settings | §3.2 | `ControlPlane` |
-| grant | `ShareGrant` | set; `none` deletes | `SetGrant` |
+| grant | `ShareGrant` | set, `none` included; removed by its own call | `SetGrant`, `DeleteGrant` |
 | quota | `Quota` | set; one that limits nothing deletes | `SetQuota` |
 | user, group, membership | `User`, `Group`, `Membership` | §3.5 | `ControlPlane` |
 | netgroup | `Netgroup` | put, delete | `ControlPlane` |
@@ -568,8 +568,12 @@ them and decides nothing about identity:
   the mark, from which the principal is admitted nowhere;
 - **disable** is a field of the user; it takes effect on every protocol within a
   second ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) and on the API at the next call (§5.3);
-- **grants** are `PUT /shares/{id}/grants/{principal}` with an access level;
-  `none` deletes. Netgroups are put and deleted whole; a client rule naming a
+- **grants** are `PUT /shares/{id}/grants/{principal}` with an access level,
+  `none` included: a `none` grant is stored and blocks the principal, distinct
+  from no grant ([RFC 18 §6.4](rfc-18-identity.md#6.4%20Share%20access%20from%20the%20grants)).
+  `DELETE /shares/{id}/grants/{principal}` removes the grant, through RFC 16's
+  `DeleteGrant`, so the principal falls through to its groups' grants. A grant
+  naming a machine principal is refused with `ErrInvalid` (§5.1). Netgroups are put and deleted whole; a client rule naming a
   deleted one fails closed (RFC 16).
 
 ### 3.6 Provisioned records
@@ -821,6 +825,10 @@ adds: its **role**. RFC 18 §8's rules bind it:
   ([RFC 18 §6.4](rfc-18-identity.md#6.4%20Share%20access%20from%20the%20grants)).
 - **An account and a file user MAY be one record**, sharing a name and
   password; the API reads its role, file access reads its grants.
+- **A machine principal is neither.** It holds no role, and setting a share
+  grant that names one is refused with `ErrInvalid`
+  ([RFC 18 §2.4](rfc-18-identity.md#2.4%20Machine%20principals)): a machine that
+  needs file access is linked to a user, and signs in as that user.
 - **A service account** — the Kubernetes operator, a backup script — is a
   `User` record with a role, no password, and **no protocol spelling**: no uid,
   gid, SID or Kerberos name. It signs in only with an API token (§5.3), and can
@@ -1111,6 +1119,7 @@ marked **(cluster)**.
 | §4.6 runner claim | **(cluster)** Start a credential rotation; kill the node that claims it; assert another storage node claims it after the claim expires and it completes, deleting the old version once. | an operation lost with its node |
 | §4.7 error table | For every error value in every closed set, provoke it through the API, or inject it at the seam where none can be provoked; assert each has a status and code, and `api_unmapped_errors_total` stays 0. | an error with no row |
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §11](rfc-18-identity.md#11.%20Conformance)) |
+| §3.5 grants | Grant `Finance` read on a share and alice, a member, `none`: assert alice refused. `DELETE` alice's grant: assert her grant gone and alice granted read through `Finance`. `PUT` a grant naming a machine principal: assert `400` `ErrInvalid` and no grant written. | `none` stored as no grant, or a machine granted file access |
 | §5.2 roles | For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. Demote the last admin: `409` `last_admin`. | a route missing its check |
 | §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |
