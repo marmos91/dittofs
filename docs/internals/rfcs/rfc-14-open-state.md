@@ -302,7 +302,7 @@ type Client struct {
 	ID         ClientID
 	Protocol   protocol.Kind
 	Owner      []byte    // the client's own name for itself: NFSv4 co_ownerid or SETCLIENTID id, SMB ClientGuid, NLM host name; indexed (§2.1)
-	Verifier   [8]byte   // NFSv4 boot verifier; a new one under the same Owner is a reboot
+	Verifier   [8]byte   // NFSv4 boot verifier, NLM host's NSM state number; a new one under the same Owner is a reboot
 	Principal  Principal // NFSv4: who established the client ID; the same Owner from another principal is refused. Zero for SMB and NLM (§2.1)
 	MachCred   MachCred  // NFSv4.1 state protection: SP4_MACH_CRED's principal and protected operations, or none
 	CSSeq      uint32    // NFSv4.1: the sequence ID of the last CREATE_SESSION applied (RFC 8881 §18.36.4)
@@ -319,8 +319,10 @@ type Client struct {
 
 `ClientID` names one client instance as its protocol defines it: NFSv4's client
 ID from `EXCHANGE_ID` or `SETCLIENTID` (a machine plus a boot verifier), SMB's
-`ClientGuid`, and for NFSv3 locks the NLM host name with the host's NSM state
-number. A client that reboots is a new `ClientID`, which is how its stale state
+`ClientGuid`, and for NFSv3 locks an NLM host with its NSM state number. Every
+`ClientID` is issued by the server, an NLM host's too: the host name is its
+`Owner` and its NSM state number its `Verifier`, so a request with a new state
+number is a reboot like any other. A client that reboots is a new `ClientID`, which is how its stale state
 is recognised and released.
 
 **A client record is found by its owner.** `EXCHANGE_ID`, `SETCLIENTID` and an
@@ -1228,7 +1230,7 @@ locks are held until it unlocks them or restarts. Restarts are told both ways by
 NSM, and both directions are this component's:
 
 - **The host restarted.** Every NLM request carries the host's NSM state number,
-  part of its `ClientID` ([§2.1](#2.1%20Client)). A restart notification from the host, or a
+  its client record's `Verifier` ([§2.1](#2.1%20Client)). A restart notification from the host, or a
   request with a new state number, expires the old `ClientID`, releasing every
   lock it held ([§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)).
 - **The server lost locks.** The installation holds one durable **NSM state

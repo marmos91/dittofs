@@ -1359,7 +1359,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `F‖id‖fx`, `F‖id‖fo` | fences: the (shard, epoch) the file's commits must carry ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit), [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)); every offload commit writes `fo`. Per-file and range shards, and their records, are deferred ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)) |
 | | `F‖id‖rel` | pending release: written by the final unlink, deleted only by the release transaction, each with its index entry `S‖id‖pr‖…` (below); holds no holder list, the holders are the `op‖` records ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)) |
 | | `F‖id‖op‖openID` | durable Open, written and deleted with its index entry `S‖id‖do‖…` (below) (only the cases RFC 14 makes durable: keeps an unlinked file alive, SMB persistent handle, a clone's source open — its own kind, naming the destination and the clone's version, which grace end never closes and only the clone's last batch deletes, [RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)); a persistent open's value holds every field, its principal, delete-on-close principal, create GUID, app instance, timeout and lock sequences included, and the lease covering it with its key, parent key, kind and epoch ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
-| | `F‖id‖op‖openID‖l‖start‖lockID` | durable Lock, only under a persistent open, so closing the open drops one prefix; `lockID` is minted per lock, so two locks of one open at one offset — two lock owners, or stacked shared locks — are two keys, and a scan still returns them in offset order ([RFC 14](rfc-14-open-state.md)) |
+| | `F‖id‖op‖openID‖l‖start‖lockID` | durable Lock, only under a persistent open, so closing the open drops one prefix; `lockID` is minted per lock from `IDS` (below), so two locks of one open at one offset — two lock owners, or stacked shared locks — are two keys, and a scan still returns them in offset order ([RFC 14](rfc-14-open-state.md)) |
 | | `F‖id‖dp` | delete pending, with the entry it will remove, the principal that marked it, as which the unlink runs, and the marking open's grant and privilege, which authorise it; written only while the file has a persistent open, deleted by that entry's unlink or by a clear ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) |
 | **Per share** — under `S‖ShareID` | `S‖id‖info` | Share: name, path, root and configuration, the fields `PutShare` writes (§3), and the journal tag, written once when the share arrives |
 | | `S‖id‖st` | the share's `State`; changed only by a conflict-tracked read-modify-write naming the state it expects (§3) |
@@ -1432,6 +1432,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `SEC‖id‖version` | Secret (§2.3), one key per version, the previous one kept only until every node reports the current one: envelope-encrypted, never dumped or exported |
 | | `CL‖clientID`, `CL‖clientID‖sh‖shard` | durable Client record. Its fields are **exactly** these, and the store **MUST** write no other: protocol, owner, boot verifier, principal (zero for an SMB record, which is keyed by `ClientGuid` alone and names a machine, not a user), state protection, the NFSv4.1 `CREATE_SESSION` sequence ID and its cached reply (`CSSeq`, `CSReply`: RFC 8881 §18.36.4 compares `csa_sequence` with them after any restart or failover), whether its state was revoked, and (cluster) lease owner, back-channel node, path-down flag and session holders ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client), [§8](rfc-14-open-state.md#8.%20What%20is%20durable)). `Expires` **MUST NOT** be written: it is volatile, held by the lease owner, so a renewal (`SEQUENCE`, `RENEW`) writes nothing; written, it would make 10⁵ clients cost 10⁵ writes per lease period. The record is rewritten only when one of its fields changes. One key per shard the client held state in (`Client.Shards`), checked on reclaim, whose value is the grace instance of the client's last `RECLAIM_COMPLETE` there and, for NFSv4.0, whether a loss of that shard's state is still to be signalled to the client ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)); for an NLM host also its notification address, so these records are the NSM monitor list ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
 | | `CLO‖protocol‖owner` | client owner index: the client's own name for itself → `ClientID`, unique, so `EXCHANGE_ID`, `SETCLIENTID` and an SMB negotiate find the record after any restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
+| | `IDS‖kind` | ID allocator, one per kind (client, open, lock): the next unreserved ID, reserved in ranges by the process that issues them, so an ID is never issued twice and issuing one writes nothing; a range left unused when the process stops is abandoned. A `ClientID` and an `OpenID` are unique across the installation ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); a `lockID` need only differ from every other lock under its open and offset, which a server-wide counter more than meets |
 | **Store** | `\x00format` | store format record (§4.6) |
 
 The table is **exhaustive**: every key the store writes has a row. A new
@@ -1441,6 +1442,11 @@ the primary's in-memory tables (quota reservations, routed-request dedup) are
 never written to the KV and so have none. A file's shard and its primary's epoch
 need no row of their own: the shard is a `File` field and the epoch is in the
 fences.
+
+> ponytail: every process issuing client, open and lock IDs reserves from the
+> same three `IDS‖kind` keys, one write per range, so in a cluster they are the
+> only server-wide keys an open's path can contend on. Widen the range, or give
+> each node a key of its own, when range reservations show up in a profile.
 
 Consequences:
 
@@ -1562,7 +1568,7 @@ are the prefix's. No separator byte is written.
 | Store | `\x00` 0x00, followed by the bytes `format`; nothing else is under 0x00 |
 | Per file, per share | `F` 0x01, `S` 0x02 |
 | Per namespace | `C` 0x10, `CR` 0x11, `B` 0x12, `BR` 0x13, `BD` 0x14, `BC` 0x15, `I` 0x16, `NS` 0x17 |
-| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38; 0x39 retired |
+| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A; 0x39 retired |
 
 | Under | Sub-kind codes |
 | --- | --- |
@@ -1572,6 +1578,7 @@ are the prefix's. No separator byte is written.
 | `N‖node`, `SH‖shard`, `CL‖clientID` | `exp` 0x01, `clk` 0x02; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05, `rqx` 0x06; `sh` 0x01 |
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | protocol: NFSv4.0 0x01, NFSv4.1 0x02, SMB 0x03, NLM 0x04 |
+| `IDS` | kind: client 0x01, open 0x02, lock 0x03 |
 | enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
