@@ -27,11 +27,8 @@ if [ -z "$CHANGED_GO" ]; then
     exit 0
 fi
 
-# Map changed files → unique package dirs. A package the branch deletes has
-# nothing left to test, so only dirs that still hold Go files are kept.
-PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | sort -u | while IFS= read -r dir; do
-    if ls "$dir"/*.go >/dev/null 2>&1; then echo "./$dir"; fi
-done)
+# Map changed files → unique package dirs.
+PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | sort -u | sed 's|^|./|')
 if [ -z "$PKGS" ]; then
     exit 0
 fi
@@ -51,6 +48,11 @@ done <<< "$PKGS"
 
 test_packages() {
     local module="$1" packages="$2"
+    # Go decides what is left to test: a package the branch deletes, or one
+    # whose files all need a build tag (e2e, kerberos), has no files to build
+    # and is dropped. One with errors stays, so go test reports them.
+    # shellcheck disable=SC2086  # intentional word-splitting
+    packages=$(cd "$module" && go list -e -f '{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles .InvalidGoFiles}}{{.ImportPath}}{{end}}' $packages)
     [ -n "$packages" ] || return 0
 
     # shellcheck disable=SC2086  # intentional word-splitting
