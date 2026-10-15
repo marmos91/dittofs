@@ -1,6 +1,6 @@
 // Package run runs the cells of a dt run: each test's commands under the
-// test's and the cell's limits, with their output passed through and logged
-// (docs/internals/rfc-test-harness.md, sections 4.4 and 4.6).
+// test's and the cell's limits, with their output passed through and logged,
+// and each test's results kept in the run's summary.
 package run
 
 import (
@@ -48,8 +48,8 @@ type Report struct {
 	Outcomes []Outcome
 }
 
-// Status is the run's exit status (section 4.4): 1 when a cell failed, else
-// 2 when one didn't run or nothing ran, else 0.
+// Status is the run's exit status: 1 when a cell failed, else 2 when one
+// didn't run or nothing ran, else 0.
 func (r Report) Status() int {
 	ran, notRun := false, false
 	for _, o := range r.Outcomes {
@@ -356,7 +356,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 var readers = map[string]report.Reader{}
 
 // exitNotRun is the exit status of a command that ran nothing, as the
-// scenarios' setup does when another run holds their lock (section 4.6).
+// scenarios' setup gives when another run holds their lock.
 const exitNotRun = 75
 
 // tester runs one cell's tests.
@@ -560,11 +560,11 @@ func unsupported(u *registry.Suite) string {
 	return ""
 }
 
-// base is the ref a change is compared against (section 4.1): the base branch
-// of the pull request being checked, a merge group's base commit, the commit
-// before the push being checked, or origin/develop when dt checks no event.
-// It's "" when the event has no change to check: a schedule, a dispatch, or a
-// push without a previous commit.
+// base is the ref a change is compared against: the base branch of the pull
+// request being checked, a merge group's base commit, the commit before the
+// push being checked, or origin/develop when dt checks no event. It's "" when
+// the event has no change to check: a schedule, a dispatch, or a push without
+// a previous commit.
 func base() string {
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
 		return "origin/develop"
