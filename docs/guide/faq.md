@@ -151,7 +151,8 @@ It depends on how the `badger` metadata store is configured:
 
 `badger` is the only metadata store type. A store row still naming `memory`,
 `sqlite` or `postgres` fails with `unsupported metadata store type "<x>": badger is
-the only metadata store type`; recreate it as `badger`. A distributed transactional
+the only metadata store type`; see the
+[metadata store migration guide](metadata-store-migration.md). A distributed transactional
 key-value store (TiKV preferred) is the planned backend for multi-node deployments;
 it is not implemented yet.
 
@@ -257,12 +258,16 @@ garbage that survives a transient is reclaimed on the next run.
 
 Triggers:
 
-- Periodic GC is not yet wired. There is no scheduler; schedule via cron
-  until one ships.
+- Periodic, on by default. The server runs GC every `gc.auto_interval`
+  (default 15m; values in (0, 1m) are refused) unless `gc.auto_enabled` is
+  false. See [Garbage Collection](garbage-collection.md#automatic-gc-default).
+  A scheduled run reports in the server log only; `gc-status` shows the last
+  on-demand run.
 - On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
   most recent run with `dfsctl store block gc-status <share>`. The
-  mark-sweep is global across every share that targets the same remote, so
-  `<share>` selects which remote(s) to scan.
+  mark-sweep is global across every share that targets the same remote, and
+  every run scans every remote. `<share>` only selects where the run
+  summary is written.
 
 See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
 and [CONFIGURATION.md](configuration.md) for the full design and every
@@ -277,8 +282,7 @@ other files via cross-file dedup — stay warm.
 
 If you are seeing whole-file cold misses after a write, that is a bug.
 File a report with the `dfsctl store block audit-refcounts <share>`
-output (see below) — refcount drift between `FileChunk.RefCount` and
-`FileAttr.Blocks` is the most common root cause.
+output (see below).
 
 The mechanism: `engine.WriteAt` returns the new `[]BlockRef`, the
 caller commits it in the same metadata transaction that updates
@@ -287,11 +291,14 @@ removedHashes)` with **only the hashes that disappeared from the
 file**. Hashes that survived (unchanged ranges) and hashes still
 referenced by other files via dedup remain in the cache.
 
-### How do I run the refcount audit?
+### How do I run the manifest audit (`audit-refcounts`)?
 
-The audit checks the invariant `∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)`
-— every block reference in `FileAttr.Blocks` across all files MUST be
-matched by a refcount on the corresponding `FileChunk`:
+The audit walks every file in the share and checks that each block
+reference in the file's manifest (`FileAttr.Blocks`) has a backing
+`FileChunk` row in the metadata store, at the same offset and with the
+same hash. A reference without one is a dangling reference: the file
+claims a chunk the store has no record of, so a read of that range
+returns zeros or fails.
 
 ```bash
 # Aggregate counts to stdout (text by default)
@@ -304,19 +311,20 @@ dfsctl store block audit-refcounts /archive -o json
 dfsctl store block audit-refcounts /archive -o yaml
 ```
 
-The output reports `share`, `started_at`, `duration_ms`,
-`total_files`, `total_refs`, `total_refcount`, and `delta`. **A non-zero
-`delta` indicates refcount drift** and SHOULD be triaged. The audit
-also persists its last-run summary at
-`<localStore>/audit-state/last-inv02.json`.
+The JSON output reports, under `result`: `share`, `started_at`,
+`completed_at`, `duration_ms`, `total_files`, `total_refs`, `backed_refs`,
+`dangling_refs`, and `delta` (equal to `dangling_refs`). The invariant is
+`dangling_refs == 0`. **A non-zero count is real corruption**: the command
+reports it and exits non-zero in every output format, so
+`audit-refcounts <share> || alert` works. The audit also persists its
+last-run summary at `<localStore>/audit-state/last-inv02.json`.
+
+The audit does not look for unreferenced (leaked) blocks. Use
+`dfsctl store block reconcile` for a read-only orphan report, or
+`dfsctl store block gc <share> --dry-run` to preview what GC would delete.
 
 The audit is **operator-invoked**, not periodic. Schedule via cron at
 the cadence that matches your operational risk tolerance.
-
-For belt-and-braces protection, the property-based fuzzer at
-`pkg/metadata/storetest/inv02_fuzz_test.go` runs against all three
-built-in backends in CI on every PR, asserting the refcount invariant at
-every quiescent point under concurrent create/delete/copy load.
 
 See [CLI.md](cli.md) for the full reference.
 
