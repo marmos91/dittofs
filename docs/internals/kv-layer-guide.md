@@ -2,7 +2,7 @@
 
 A guided tour of the three packages built on `feat/kv-layer`: what each layer owns, how a request travels through them, how a file's content is recorded, removed and cloned, how concurrent writers are kept correct, and how the tests prove it. Read the steps in order; each one builds on the previous.
 
-As of `b8a6577e`, 14 Oct 2026 · tracked in [#3119](https://github.com/marmos91/dittofs/issues/3119) · branch on draft PR [#3120](https://github.com/marmos91/dittofs/pull/3120) · design in the storage RFCs, [#2894](https://github.com/marmos91/dittofs/pull/2894)
+As of `5a6ee28c`, 15 Oct 2026 · tracked in [#3119](https://github.com/marmos91/dittofs/issues/3119) · branch on PR [#3120](https://github.com/marmos91/dittofs/pull/3120) · design in the storage RFCs, [#2894](https://github.com/marmos91/dittofs/pull/2894)
 
 ## 1. The layers
 
@@ -116,7 +116,7 @@ flowchart LR
   root --> NSP["C CR B BR BD I NS ‖ namespace<br/>content-addressed"]
   F --> F1["(none) the File record<br/>acl · x‖name · e‖digest‖key<br/>t‖unique · rel · s‖stream · op‖open"]
   F --> F2["h‖start holes · ov‖start overwrites<br/>ref‖offset refs · rm‖version removals<br/>fx fo fences"]
-  S --> S1["info · st · nsg · g‖principal · xp · fnc<br/>vf‖bucket‖version‖file · vl<br/>ud‖shard‖unique · ut pu pj totals<br/>qt qx‖principal-or-project<br/>pr‖shard‖file · rr‖shard‖file‖version"]
+  S --> S1["info · st · nsg · g‖principal · xp · fnc<br/>vf‖bucket‖version‖file · vl<br/>ud‖shard‖unique · ut pu pj totals<br/>qt qx‖principal-or-project<br/>pr‖shard‖file · rr‖shard‖file‖version<br/>do‖shard‖file‖openID"]
 ```
 
 *Per-file records share one prefix, so a `GETATTR`, an existence commit or a file release touches one contiguous range.*
@@ -394,6 +394,24 @@ flowchart TB
 
 - **No write lands in the destination meanwhile.** The engine answers a write into the extent `ErrDelay` until the clone is done (RFC 8 §9.1), so a hole written by a later batch never covers newer bytes. The store holds the destination too: until the clone is done, a truncate, a deallocate or a clone onto it answers `ErrDelay`, its release counts the clone as a holder, and the release prune never deletes an unfinished clone removal.
 
+### Open state that outlives a process
+
+*The durable part of RFC 14: what a restart or a new primary needs to find. The open-state service itself, which holds opens, locks and grants in memory at the file's primary, is the next block.*
+
+| Record | Key | Written |
+|---|---|---|
+| Client | `CL‖client`, its shards `CL‖client‖sh‖shard`, owner index `CLO‖protocol‖owner` | when a client is confirmed; rewritten only when a field changes, never on a renewal |
+| Durable open | `F‖file‖op‖openID`, index `S‖share‖do‖shard‖file‖openID` | only when it keeps a file with no entry alive, is SMB-persistent, or is a clone's hold on its source |
+| Durable lock | `F‖file‖op‖openID‖l‖offset‖lockID` | only beneath a persistent open, so closing the open drops it |
+| Delete pending | `F‖file‖dp` | only while the file has a persistent open |
+| NSM state number | `NSM` | raised, never lowered |
+
+- **An unlink makes a file's opens durable.** `Unlink` and `Rename` take the file's opens, which live only in memory, and write them durable in the transaction that takes its last entry, so the release finds them. `Opens.Delete` reports a file left with no entry and no open, for the caller to release.
+- **The release and an open race safely.** An open of a file with no entry reads the File record tracked, and the release range-guards the file's open records, so whichever commits second loses.
+- **A clone's hold is a real open.** It has an issued ID and names the destination and the clone's version; the clone's last batch closes it.
+- **IDs come from counters.** Client, open and lock IDs must be unique and never reused, but not random, so they come from server-wide counters reserved in ranges under `IDS‖kind`, a key the format didn't name yet.
+- **`CREATE_SESSION` is sequenced in the client record.** A replay of the last one, after a restart too, gets its cached reply.
+
 ## 12. Version floor and counters
 
 *Questions about a whole share, answered without a key that every commit rewrites (RFC 6 §8.3, RFC 16 §4.4).*
@@ -474,11 +492,11 @@ flowchart TB
 
 4. **Mutation checks.** For each guard and rule, the code was edited to remove it and the test was run to confirm it fails on its assertion, then restored. Several tests passed even with their rule removed at first, and were fixed before they were committed.
 
-> **What waits on other work.** Snapshots: until cuts exist, nothing moves to history and nothing is dated by a cut. Open state (RFC 14): a clone's open of its source and release's open check use placeholder records. The engine: quota reservations, the scheduling of folds, and the journal's own version counter, which the store's `Version` stands in for today. Each place that waits has a `ponytail:` comment naming what it skips.
+> **What waits on other work.** Snapshots: until cuts exist, nothing moves to history and nothing is dated by a cut. Open state (RFC 14): the store holds its durable records, but the service that holds opens, locks and grants in memory, with leases and grace, is not built. The engine: quota reservations, the scheduling of folds, and the journal's own version counter, which the store's `Version` stands in for today. Each place that waits has a `ponytail:` comment naming what it skips.
 >
-> **Open on #2894.** The RFC's seventh revision (`61824cff`) settled the link count, the share-wide quota key, deletes as writes, clone usage and the release's index entry, and the code follows it. Still open: whether `Subdirs` may be stored signed (the code assumes so), the pending-release index key added beyond the RFC, and how a call says "set the times to the server's time", which `Attrs` cannot express, so a writer without ownership cannot do it yet.
+> **Open on #2894.** The RFC's eighth revision (`d2914f13`) settled the signed `Subdirs`, the pending-release and unfinished-removal indexes, the removal's `shard` and `charge`, and the usage of a removal whose file is gone, and the code follows it. Still open: how a call says "set the times to the server's time", which `Attrs` cannot express, so a writer without ownership cannot do it yet, and where the client, open and lock ID counters live (`IDS‖kind` here).
 >
-> **Waiting on step 9.** A clone's open of its source as a real RFC 14 open record with an integer open ID, drawn versions and `ErrVersionBehind`, `File.Incomplete`, the health-condition sink, and deleting a user's secrets.
+> **Waiting on step 9.** The open-state service (RFC 14), drawn versions and `ErrVersionBehind`, `File.Incomplete`, the health-condition sink, and deleting a user's secrets.
 
 ### Running them
 
@@ -547,8 +565,8 @@ A throwaway benchmark, not committed, ran the same operations through both: the 
 
 | Area | Today | New |
 |---|---|---|
-| Byte-range locks, NLM and NSM, NFSv4 client recovery, grace | Yes | No: RFC 14's open state |
-| SMB durable handles | Yes | No: only a placeholder open, for clone |
+| Byte-range locks, NLM and NSM, NFSv4 client recovery, grace | Yes | The durable records only; the open-state service is not built (RFC 14) |
+| SMB durable handles | Yes | Records for persistent opens; no service uses them yet |
 | Snapshots | Yes | No: RFC 12 |
 | Quota limits and enforcement | Yes | Usage and user, group, project and share-wide limits are stored; enforcement is the filesystem service's, not built yet |
 | Backup and restore | Yes, a raw Badger dump | No |
