@@ -176,7 +176,7 @@ questions. Appendix A is prior art; Appendix B where the current code differs.
    once (§4.3). The writer appends it to the spool within a second.
 3. The external shipper that tails the spool has been down for a day. The spool
    reaches its byte bound; the oldest file is deleted. The node raises
-   `event_spool_trimmed` and writes a gap record naming the range of sequence
+   `event_gap` and writes a gap record naming the range of sequence
    numbers lost (§4.4, §4.6).
 4. An account holding the right to read the audit reads bob's refusal through
    the management API; a `viewer` cannot (§4.8).
@@ -644,9 +644,14 @@ For each role ([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role))
 
 - a node with the `protocol` role is ready once its adapters accept clients and
   the share list is loaded;
-- a node with the `storage` role is ready once it has joined the store and holds
-  no shard it cannot serve **(cluster)** — the readiness
-  [RFC 30 §4.4](rfc-30-kubernetes.md#4.4%20Health) gates a rolling upgrade on;
+- a node with the `storage` role is ready once it has joined the store
+  **(cluster)**. A shard it holds and cannot serve does not make it unready,
+  since sending clients elsewhere would not serve that shard either; it is the
+  shard's own condition, `shard_relinquished` or `replication_under_floor`
+  (§3.9). A rolling upgrade
+  ([RFC 30 §5.1](rfc-30-kubernetes.md#5.1%20Rolling%20upgrade)) waits on those
+  conditions as well as on readiness, so the one readiness answer serves traffic
+  and the upgrade alike;
 - a node with both roles is ready when both are.
 
 ### 3.7 What the health answers report
@@ -673,8 +678,10 @@ serves three answers. Their content is this:
 ### 3.8 Installation health (cluster)
 
 **(cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile))**
-On one node, the installation's health is the node's, computed in memory. With
-more than one:
+On one node, the installation's status is computed in memory by §3.3's rule —
+the worst of the node's, every share's and the installation scope's own
+conditions — so a share left unhealthy by a denied store makes the installation
+unhealthy on one node as in a cluster. With more than one:
 
 - each node writes its node-scope conditions, and those of the shares it is
   primary of, into its node-status record
@@ -757,7 +764,7 @@ A record is one JSON object (RFC 8259) on one line. The event's own fields are
 | --- | --- | --- |
 | `v` | sink | the record format's version, 1; a consumer refuses a version it does not know |
 | `stream` | sink | `access`, `quota`, `admin` |
-| `node`, `boot`, `seq` | sink | the node's ID, a random ID drawn at each process start, and a sequence number counted from 0 per stream and boot; `(node, boot, seq)` names a record uniquely and shows any gap |
+| `node`, `boot`, `seq` | sink | the node's ID, a random ID drawn at each process start, and a sequence number counted from 0 per stream and boot; `(node, stream, boot, seq)` names a record uniquely and shows any gap |
 | `time` | event | the event's time, RFC 3339 in UTC with nanoseconds |
 | `trace_id` | sink, from the call's context | the trace the decision ran in (§6), when sampled |
 | `share` | event | the share's ID and name |
@@ -794,36 +801,56 @@ lists what a quota event is for, but not its fields; §10 asks it to add
    stream's current spool file, in batches, syncing the file and making it visible
    every second.
 4. **Spool files** are rotated at 64 MiB or one hour, whichever comes first, and
-   named by stream, boot and first sequence number, so their names sort in order.
+   named by stream and a file number, zero-padded to 20 digits, one more than
+   the last file's. The next number is kept in a small file in the spool
+   directory, synced before a spool file is created, so names sort in write
+   order across restarts and after retention has deleted every file, and the
+   oldest file is the lowest number. A boot ID is random and a sequence number
+   restarts with it, so neither can order files.
 5. **The `admin` stream has no ring.** Each node's writer reads, in commit order,
    the audit records of requests that node took (their `node` field), and appends
-   them to the stream's spool, keeping its position in a node-local cursor synced
-   with each batch. A restart resumes at the cursor, so nothing is lost and a
-   record may be written twice across a crash; a consumer deduplicates by the
-   record's request ID. Each record is exported by one node, the one that took
-   its request **(cluster)**.
+   them to the stream's spool. Its position is a **cursor record in the metadata
+   store**, one per node that takes requests, advanced after each synced batch,
+   so it outlives the node. A restart resumes at the cursor, so nothing is lost
+   and a record may be written twice across a crash; a consumer deduplicates by
+   the record's request ID. **(cluster)** One writer at a time holds a node's
+   cursor: the node itself while its lease holds; once it is `node_lost`
+   (§3.8), the first live `storage` node to take the cursor by a conditional
+   write on its record, which then exports the lost node's records into its own
+   spool. A node that rejoins takes its cursor back the same way. Every advance
+   is conditional on holding the cursor, so a writer that has lost it stops at
+   its next batch, and a record both exported across the change is a duplicate
+   the request ID removes.
 
 ### 4.4 Bounds, drops and gap records
 
 - **When a ring is full, the new event is dropped**, counted in
   `events_dropped_total{stream, reason="ring_full"}`, and remembered as a range of
-  lost sequence numbers. The next record the writer appends is preceded by a
-  **gap record**: `stream`, `kind: "gap"`, the first and last sequence numbers
-  lost, the count, the time range, and the reason. So a consumer finds the loss in
+  lost sequence numbers. The writer writes a **gap record** in sequence
+  position: after every accepted record numbered below the range and before every
+  record above it, and at the end of its next batch when no later record has
+  arrived, so a gap is in the spool within a second of the loss whether or not
+  the stream goes on. It carries `stream`, `kind: "gap"`, the first and last
+  sequence numbers lost, the count, the time range, and the reason. So a consumer finds the loss in
   the stream itself, not only in a metric it may not watch.
 - The same holds for every other loss: `spool_full` when the writer cannot
-  append, `trimmed` when retention deletes a file (§4.6), and at start, `restart`,
-  a gap record with no count for the events of the last unsynced second before
-  the previous process ended. The `admin` stream loses records only to
-  `trimmed`: a full spool makes its writer wait, since its source is durable.
+  append, `trimmed` when the byte bound deletes a file (§4.6), and at start,
+  `restart`, a gap record with no count for the events of the last unsynced
+  second before the previous process ended. The `admin` stream loses records only
+  to `trimmed` and `expired`: a full spool makes its writer wait, since its source
+  is durable, and a record the audit's retention deletes before the cursor
+  reaches it is lost, written as an `expired` gap record naming the commit-time
+  range skipped. At the default `audit.retention` of 400 days that takes a writer
+  stopped for more than a year.
 - A gap in the access stream raises `event_gap` naming the stream (§3.9), cleared
   an hour after the last gap.
 - **Quota events are coalesced.** A transition — threshold crossed, soft limit
   exceeded, grace expired, back under — is emitted once per transition. Hard
-  refusals are coalesced per (share, scope, subject, resource): the first is
-  emitted at once, and the rest within the next 60 s are counted into one record
-  at the end of the window. A writer hammering a full quota produces one record a
-  minute, not one per write.
+  refusals are coalesced per (share, scope, subject, resource): the first after a
+  minute with none is emitted at once, and every later one is counted into a
+  summary record at the end of each 60 s window, counted from that first, that
+  saw any. A writer hammering a full quota for ten minutes produces eleven
+  records — the first, then one a minute — not one per write.
 
 > decision: the access stream drops rather than blocks. An access event is not
 > worth an operation: a sink that could block would let a slow consumer stall
@@ -840,15 +867,25 @@ lists what a quota event is for, but not its fields; §10 asks it to add
   second of the decision; a crash in between loses it, and the next start writes
   the `restart` gap record. Writing the event in the operation's own transaction
   would put a store write on every audited read.
-- **Order is per node and stream.** Within one `(node, boot)` sequence numbers
-  rise with the order the sink accepted events, which is the order of the
-  decisions on that node. Across nodes there is no order but `time`
+- **Order is per node and stream.** Within one `(node, stream, boot)` sequence
+  numbers rise with the order the sink accepted events, which is the order of
+  the decisions on that node. Across nodes there is no order but `time`
   **(cluster)**: a consumer merges by time and names records by
-  `(node, boot, seq)`.
+  `(node, stream, boot, seq)`.
 - **(cluster)** A quota transition is seen by every primary that writes for the
   subject, so it may be emitted by more than one node within the clock-offset
-  bound. A consumer that needs one record per transition deduplicates by (share,
-  scope, subject, kind) within a minute.
+  bound. A consumer that wants one record per transition suppresses repeats of
+  (share, scope, subject, resource, kind) within a minute. That is time-window
+  suppression, not an identity: a subject that crosses a limit, falls back under
+  and crosses it again within the minute loses the second crossing to it. A
+  subject's current quota state is read through the management API, not
+  rebuilt from the stream.
+
+> ponytail: quota transitions have no identity shared across primaries. Give
+> each limit a transition counter in the metadata store, raised in the commit
+> that moves usage across it and carried on the event — the soft limit's
+> first-exceeded time is such a record already — when a consumer needs exact
+> transitions rather than suppressed ones.
 
 > ponytail: no hash chain across records. A sequence number shows a deleted
 > record, not an edited one. Add a chained digest per spool file when a
@@ -862,14 +899,24 @@ lists what a quota event is for, but not its fields; §10 asks it to add
   which **MUST NOT** be on a journal's filesystem: a start that finds it there is
   refused, as RFC 13 refuses its other scratch paths. The spool would otherwise
   take the room the journal's capacity bound counts on.
-- A spool file is deleted once it is older than `events.retention` (default 7
-  days, proposed) or once the spool exceeds `events.max_bytes` (default 4 GiB per
-  node, proposed), oldest first. Both are settings of
+- A spool file is **retired** once it is older than `events.retention` (default
+  7 days, proposed), and **trimmed**, oldest first, while the spool exceeds
+  `events.max_bytes` (default 4 GiB per node, proposed). Both are settings of
   [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings).
-- Deleting a file writes a `trimmed` gap record. The node does not know what a
-  shipper has read, so a deletion is a loss as far as the stream is concerned.
+- Trimming writes a `trimmed` gap record and counts the records in
+  `events_dropped_total{reason="trimmed"}`: a file deleted for room before its
+  age is a shipper falling behind. Retiring writes no gap record and raises
+  nothing: it is the spool working as designed, and on a node with steady
+  traffic it happens every hour.
 - `event_spool_high` is raised above 80% of `events.max_bytes` — the warning that
   comes before a trim.
+
+> decision: retirement by age is not a loss. The node cannot tell a file a
+> shipper has read from one it has not, so it takes age as read: a shipper a
+> whole `events.retention` behind — a week by default — is an outage its own
+> monitoring sees long before. Overturned by a shipper that acknowledges what it
+> has read, which would let the node write a gap record for an unread file it
+> retires.
 
 > decision: the spool is a buffer for a shipper, not the archive. Keeping audit
 > records for months is the downstream store's job, with its own access control
@@ -1038,9 +1085,13 @@ them.
   that drops and counts (`health_spans_dropped_total`, §9) rather than block.
 
 > ponytail: head sampling only. A slow or failed request is kept only if it was
-> sampled. Add tail sampling — keep every trace that ends in an error or past the
-> p99 — in the collector, which can see the whole trace; DittoFS changes nothing
-> for it.
+> sampled. Tail sampling in the collector — keep every trace that ends in an
+> error or past the p99 — needs every trace to reach the collector, so it means
+> `tracing.sample_ratio` at 1: every request's spans exported, one per service
+> call, KV call and engine stage, with the export queue's bound and drops
+> limiting the cost instead of the ratio. Add it when an incident needs a failed
+> request head sampling missed, after measuring that export at ratio 1 on the
+> reference workload.
 
 ## 7. Alerting
 
@@ -1070,8 +1121,9 @@ inherit it: `store_put_unhealthy` on a store under 300 shares is one page naming
 the store and the count of shares, not 300.
 
 Alerts that read metrics directly are few and named here: a node that has stopped
-exporting (the scraper's own), `health_conditions` at the installation scope as a
-backstop for an alert route that failed, and the bug counters above.
+exporting (the scraper's own), `health_status{scope="installation"}` away from
+`healthy` for longer than the longest page delay, as a backstop for an alert
+route that failed, and the bug counters above.
 
 ## 8. Invariants
 
@@ -1087,7 +1139,7 @@ backstop for an alert route that failed, and the bug counters above.
 | O8 | Liveness reads no condition, store, network or disk. |
 | O9 | Readiness is false only while starting, draining, or with the metadata store lost. |
 | O10 | An event hook never blocks or fails an operation; every event dropped leaves a gap record in its stream and a count. |
-| O11 | Every record names its node, boot and sequence; within one boot sequence numbers have no gap that is not a gap record. |
+| O11 | Every record names its node, stream, boot and sequence; within one stream and boot sequence numbers have no gap that is not a gap record, and a gap record sits in sequence position. |
 | O12 | The spool is never on a journal's filesystem and is readable only by the service's account. |
 | O13 | The access and admin streams are readable only with the right to read the audit, and never appear in a log, a metric or a health answer. |
 | O14 | No log line, span, metric, health detail or record carries a secret or file content; no line at `Info` or above carries a user-chosen name. |
@@ -1100,7 +1152,7 @@ What this RFC itself exports. Metric names are shown without the prefix.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| this node's status and the installation's, as a state set | `health_status{scope, state}` | gauge |
+| this node's status and the installation's, as a state set (`scope` = `node`, `installation`) | `health_status{scope, state}` | gauge |
 | current conditions, by name and severity | `health_conditions{condition, severity}` | gauge |
 | shares by status, on this node | `health_shares{state}` | gauge |
 | condition raises and clears | `health_condition_transitions_total{condition, transition}` | counter |
@@ -1108,7 +1160,7 @@ What this RFC itself exports. Metric names are shown without the prefix.
 | series exported, and entity labels capped (§2.4) | `health_series`, `health_label_capped_total{metric}` | gauge, counter |
 | spans dropped by the export queue (§6.3) | `health_spans_dropped_total` | counter |
 | records accepted, by stream | `events_records_total{stream}` | counter |
-| records dropped, by stream and reason (`ring_full`, `spool_full`, `trimmed`) | `events_dropped_total{stream, reason}` | counter |
+| records dropped, by stream and reason (`ring_full`, `spool_full`, `trimmed`, `restart`; `expired` for `admin`) | `events_dropped_total{stream, reason}` | counter |
 | ring occupancy against its size | `events_ring_entries{stream}`, `events_ring_entries_limit{stream}` | gauge, gauge |
 | spool bytes against its bound, and the oldest file's age | `events_spool_bytes`, `events_spool_bytes_limit`, `events_spool_oldest_seconds` | gauge, gauge, gauge |
 | time from accept to synced in the spool | `events_write_seconds{stream}` | histogram (`request`) |
@@ -1171,14 +1223,14 @@ names, on the composed single-node harness of the [index](rfc-index.md#Test%20ha
 | §3.3 share does not set node | Deny puts on one store under one share of a hundred: assert the share unhealthy naming the store, the node's status unchanged by it, `health_shares{state="unhealthy"}` = 1, readiness and liveness true. | a readiness probe that restarts for a bucket policy |
 | §3.4 never latched | Make a store get-unhealthy, then fix it without touching DittoFS. Assert the condition clears within its owner's bound and the share returns healthy, with no operator action. | a latched condition |
 | §3.5 liveness | Stop the metadata store and the remote, fill the journal's device: assert liveness stays true throughout. Block the request scheduler: assert liveness fails within 60 s. | liveness on a dependency |
-| §3.6 readiness | Assert not ready during recovery, ready in grace, ready while self-fenced, not ready with the metadata store lost and while draining. | a node unreachable for reclaim |
+| §3.6 readiness | Assert not ready during recovery, ready in grace, ready while self-fenced, not ready with the metadata store lost and while draining. **(cluster)** Relinquish a shard on a storage node: assert the node stays ready and `shard_relinquished` is raised. | a node unreachable for reclaim; a probe stricter than §3.6 |
 | §3.9 registry | For every condition the suite can raise, assert its name is in the registry and its severity matches the registry's rule for the cause injected. | a condition no alert knows |
-| §4.3 never blocks | With the access policy at every decision, stop the writer; run 10⁵ operations. Assert operation latency unchanged within noise, `events_dropped_total{reason="ring_full"}` equal to the events beyond the ring, and, once the writer resumes, one gap record covering exactly those sequence numbers. | a blocking sink; a silent drop |
-| §4.4 coalescing | Hammer a full quota with 10⁴ writes in a minute. Assert one hard-refusal record carrying the count, not 10⁴. | a quota stream that floods |
-| §4.5 restart | Kill the process with events in the ring. Restart: assert a `restart` gap record and a new boot ID, and no sequence number reused within a boot. | a reused sequence after a crash |
-| §4.6 retention | Fill the spool past `events.max_bytes`: assert the oldest file deleted, a `trimmed` gap record, `event_spool_high` raised first. Put `events.path` on a journal's filesystem: assert the start refused. | a spool that eats journal capacity |
+| §4.3 never blocks | With the access policy at every decision, stop the writer; run 10⁵ operations. Assert operation latency unchanged within noise, `events_dropped_total{reason="ring_full"}` equal to the events beyond the ring, and, once the writer resumes, one gap record covering exactly those sequence numbers, after every record below them and before every record above. Stop again, drop, and emit nothing more: assert the gap record is written within a second of the writer resuming. | a blocking sink; a silent drop; a gap out of order |
+| §4.4 coalescing | Hammer a full quota with 10⁴ writes in a minute. Assert exactly two hard-refusal records: the first, at once, and one summary carrying the count of the rest. | a quota stream that floods |
+| §4.5 restart | Kill the process with events in the ring. Restart: assert a `restart` gap record and a new boot ID, no sequence number reused within a stream and boot, and spool file names still sorting in write order across the restart. | a reused sequence after a crash |
+| §4.6 retention | Fill the spool past `events.max_bytes`: assert the oldest file deleted, a `trimmed` gap record, `event_spool_high` raised first. Advance the clock past `events.retention` with the spool under its bound: assert the old files retired, no gap record and no `event_gap`. Put `events.path` on a journal's filesystem: assert the start refused. | a spool that eats journal capacity; a page for every hour of normal retention |
 | §4.8 access | As `viewer` and as `operator`, read the access and admin streams: refused. Change a share's audit policy: assert an `admin` record in the spool. Assert spool modes 0600/0700 and a start refused on a world-readable path. | audit data readable by any account |
-| §4.3 admin stream | Kill the node between an audited change and its export; restart. Assert the record is in the spool once the writer resumes, and nothing after the cursor is missing. | an admin record lost to a crash |
+| §4.3 admin stream | Kill the node between an audited change and its export; restart. Assert the record is in the spool once the writer resumes, and nothing after the cursor is missing. **(cluster)** Kill it and never restart it: assert, once it is `node_lost`, another storage node exports the record; restart it then, and assert one writer advances its cursor. | an admin record lost to a crash or to a node lost for good |
 | §5.4 never logged | Configure every secret-bearing record, plant known file names and known xattr contents, run the full suite at `Info`, and again at `Debug` for the second check. Search every line, span, health answer, metric and record: assert no secret anywhere, no content anywhere, no planted name at `Info` or above or outside the access stream. | a path in a warning; a token in a span |
 | §5.2 per-request lines | Run 10⁵ operations of every kind with clients provoking every expected error. Assert the count of lines at `Info` and above does not grow with the operation count. | a log line per request |
 | §5.2 debug expiry | Turn debug on for one component; advance the clock 15 minutes: assert it is off. | debug left on |

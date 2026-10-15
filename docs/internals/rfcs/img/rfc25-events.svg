@@ -59,21 +59,21 @@
   <text x="390" y="228" class="s">range of seq remembered</text>
   <path d="M530,209 L622,209 L622,146" class="ex"/>
   <text x="540" y="228" class="e">gap record written</text>
-  <text x="540" y="242" class="e">before the next event</text>
+  <text x="540" y="242" class="e">in sequence order</text>
 
   <path d="M789,144 L789,176" class="ex"/>
   <rect x="716" y="180" width="146" height="58" rx="5" class="bad"/>
   <text x="728" y="198" class="h">trimmed</text>
-  <text x="728" y="214" class="s">past retention or bytes:</text>
+  <text x="728" y="214" class="s">past the byte bound:</text>
   <text x="728" y="228" class="s">deleted, gap recorded</text>
-  <text x="40" y="262" class="s">At start: a "restart" gap record for the last unsynced second of the previous process.</text>
+  <text x="40" y="262" class="s">At start: a "restart" gap record for the last unsynced second of the previous process. A file past its age retires with no gap.</text>
 
   <rect x="24" y="296" width="852" height="74" rx="8" class="zone"/>
   <text x="36" y="314" class="s">admin stream: no ring, no drop</text>
   <rect x="40" y="322" width="230" height="40" rx="5" class="st"/>
   <text x="52" y="346" class="h">control plane's audit records</text>
   <rect x="294" y="322" width="250" height="40" rx="5" class="pr"/>
-  <text x="306" y="340" class="h">writer with a node-local cursor</text>
+  <text x="306" y="340" class="h">writer with a cursor in the store</text>
   <text x="306" y="354" class="s">this node's records, in commit order</text>
   <path d="M272,342 L290,342" class="ln"/>
   <path d="M546,342 L704,342 L704,130 L712,130" class="ln"/>
