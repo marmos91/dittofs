@@ -12,7 +12,7 @@ on:
   # Go builds here cache modules via actions/setup-go (cache: true, keyed on
   # go.sum) in each job below.
   push:
-    branches: [develop]
+    branches: [develop, feat/storage-v2]
     paths:
       - 'pkg/adapter/smb/**'
       - 'internal/adapter/smb/**'

@@ -2,9 +2,9 @@ name: Windows Build
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, feat/storage-v2]
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, feat/storage-v2]
     paths:
       - 'cmd/**/*.go'
       - 'pkg/**/*.go'
