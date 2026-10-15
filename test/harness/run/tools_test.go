@@ -13,12 +13,18 @@ import (
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// A suite whose tests are pjdfstest's, found below {tools}, and which runs
-// pynfs by its path there.
+// Suites of the test tools: pjd runs pjdfstest's tests, found below {tools},
+// and pynfs by its path there; only runs pjdfstest's tests alone, in two
+// cells; odd names a tool dt doesn't have.
 const toolsSuite = `suites:
   pjd:
     cmd: [ "sh {test}", "{tools}/pynfs/bin/pynfs-4.1 {test}" ]
     tests: "{tools}/pjdfstest/tests/*/*.t"
+  only:
+    cmd: "sh {test} {p}"
+    tests: "{tools}/pjdfstest/tests/*/*.t"
+    matrix: { p: [a, b] }
+  odd: { cmd: "{tools}/nosuch/run" }
   plain: { cmd: "true" }
 `
 
@@ -34,15 +40,17 @@ done
 "$maindir/pjdfstest" "$maindir"
 `
 
-// fakeTools writes pjdfstest and pynfs as nix builds them, under dir, and
-// returns the file their programs record each call in. The pjdfstest binary
-// is only in bin, so a test finds it only through the layout of {tools}.
+// fakeTools writes pjdfstest and pynfs under dir as nix builds them, the
+// pjdfstest binary in bin and beside its tests in share/pjdfstest, and returns
+// the file their programs record each call in.
 func fakeTools(t *testing.T, dir string) string {
 	t.Helper()
 	calls := filepath.Join(dir, "calls")
 	test := "#!/bin/sh\ndir=`dirname $0`\n. ${dir}/../misc.sh\n"
+	binary := "#!/bin/sh\necho \"pjdfstest $1\" >> " + calls + "\n"
 	files := map[string]string{
-		"pjdfstest/bin/pjdfstest":                        "#!/bin/sh\necho \"pjdfstest $1\" >> " + calls + "\n",
+		"pjdfstest/bin/pjdfstest":                        binary,
+		"pjdfstest/share/pjdfstest/pjdfstest":            binary,
 		"pjdfstest/share/pjdfstest/tests/misc.sh":        miscSh,
 		"pjdfstest/share/pjdfstest/tests/conf":           "",
 		"pjdfstest/share/pjdfstest/tests/chmod/00.t":     test,
@@ -157,10 +165,38 @@ func TestToolsInDtc(t *testing.T) {
 	}
 }
 
-// {tools}/pjdfstest holds a link to pjdfstest's binary beside a copy of its
-// tests directory whose directories are real and whose files are links, as
-// run-posix.sh's work directory has them, and {tools}/pynfs links to pynfs;
-// laying it out again replaces it.
+// A suite gets only the tools it names, each laid out once per run: a
+// pjdfstest suite runs without pynfs, and its second cell keeps the first's
+// link.
+func TestToolsOnlyNamed(t *testing.T) {
+	root, r := repo(t, toolsSuite, nil)
+	outs := t.TempDir()
+	fakeTools(t, outs)
+	if err := os.RemoveAll(filepath.Join(outs, "pynfs")); err != nil {
+		t.Fatal(err)
+	}
+	nixLog := fakeNix(t, outs)
+	rep, _ := runTarget(t, root, r, "only", false)
+	if len(rep.Outcomes) != 2 {
+		t.Fatalf("outcomes %+v", rep.Outcomes)
+	}
+	for _, o := range rep.Outcomes {
+		if o.Result != Failed || !strings.HasPrefix(o.Note, "open/00.t: ") {
+			t.Errorf("outcome %+v", o)
+		}
+	}
+	if got := lines(t, nixLog); len(got) != 1 || !strings.HasSuffix(got[0], " build .#pjdfstest --no-link --print-out-paths") {
+		t.Errorf("nix calls %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(rep.Dir, "tools", "pynfs")); err == nil {
+		t.Error("pynfs was laid out for a suite that doesn't name it")
+	}
+}
+
+// {tools}/pjdfstest links to pjdfstest's share/pjdfstest, its binary beside
+// its tests, and {tools}/pynfs to pynfs. A link already there is kept and
+// nothing is built for it, so laying out again never removes what another
+// cell uses.
 func TestToolsLayout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the tools are laid out where they run")
@@ -170,36 +206,31 @@ func TestToolsLayout(t *testing.T) {
 	fakeTools(t, dtcTools)
 	t.Setenv("DT_IN_CONTAINER", "1")
 	tools := t.TempDir()
-	out := filepath.Join(dtcTools, "pjdfstest")
+	links := map[string]string{
+		"pjdfstest": filepath.Join(dtcTools, "pjdfstest", "share", "pjdfstest"),
+		"pynfs":     filepath.Join(dtcTools, "pynfs"),
+	}
 	for range 2 {
-		if err := layOutTools(context.Background(), t.TempDir(), tools, &bytes.Buffer{}); err != nil {
+		if err := layOutTools(context.Background(), t.TempDir(), tools, []string{"pjdfstest", "pynfs"}, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	links := map[string]string{
-		"pynfs":                          filepath.Join(dtcTools, "pynfs"),
-		"pjdfstest/pjdfstest":            filepath.Join(out, "bin", "pjdfstest"),
-		"pjdfstest/tests/misc.sh":        filepath.Join(out, "share", "pjdfstest", "tests", "misc.sh"),
-		"pjdfstest/tests/conf":           filepath.Join(out, "share", "pjdfstest", "tests", "conf"),
-		"pjdfstest/tests/chmod/00.t":     filepath.Join(out, "share", "pjdfstest", "tests", "chmod", "00.t"),
-		"pjdfstest/tests/open/00.t":      filepath.Join(out, "share", "pjdfstest", "tests", "open", "00.t"),
-		"pjdfstest/tests/chmod/notes.md": filepath.Join(out, "share", "pjdfstest", "tests", "chmod", "notes.md"),
-	}
-	for name, target := range links {
-		if got, err := os.Readlink(filepath.Join(tools, filepath.FromSlash(name))); err != nil || got != target {
-			t.Errorf("%s: link to %q, %v; want %q", name, got, err, target)
+		for name, target := range links {
+			if got, err := os.Readlink(filepath.Join(tools, name)); err != nil || got != target {
+				t.Errorf("%s: link to %q, %v; want %q", name, got, err, target)
+			}
 		}
+		dtcTools = t.TempDir() // no tools here: laying out again builds nothing
 	}
-	for _, d := range []string{"pjdfstest/tests", "pjdfstest/tests/chmod", "pjdfstest/tests/open"} {
-		if fi, err := os.Lstat(filepath.Join(tools, filepath.FromSlash(d))); err != nil || !fi.IsDir() {
-			t.Errorf("%s isn't a directory: %v", d, err)
+	for _, p := range []string{"pjdfstest/pjdfstest", "pjdfstest/tests/misc.sh", "pjdfstest/tests/chmod/00.t", "pynfs/bin/pynfs-4.1"} {
+		if _, err := os.Stat(filepath.Join(tools, filepath.FromSlash(p))); err != nil {
+			t.Errorf("%s: %v", p, err)
 		}
 	}
 }
 
-// The registry's pynfs cells name {tools}, so they get the tools, and their
-// command's program is pynfs-4.{minor} there.
-func TestPynfsNamesItsTool(t *testing.T) {
+// The registry's pjdfstest and pynfs cells each name the one tool they use,
+// and pynfs's command runs pynfs-4.{minor} from it.
+func TestRegistryNamesItsTools(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the tools are laid out where they run")
 	}
@@ -208,31 +239,36 @@ func TestPynfsNamesItsTool(t *testing.T) {
 	fakeTools(t, dtcTools)
 	t.Setenv("DT_IN_CONTAINER", "1")
 	tools := t.TempDir()
-	if err := layOutTools(context.Background(), t.TempDir(), tools, &bytes.Buffer{}); err != nil {
+	if err := layOutTools(context.Background(), t.TempDir(), tools, []string{"pynfs"}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	r, err := registry.Load("../../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cells, err := Select("../../..", r, "pynfs", "", "pr", nil, nil, nil)
-	if err != nil || len(cells) != 2 {
-		t.Fatalf("pynfs: %+v, %v", cells, err)
-	}
-	for _, c := range cells {
-		if !c.Unit.Uses("tools") {
-			t.Errorf("%s doesn't name {tools}", c.Name)
+	for _, suite := range []string{"pjdfstest", "pynfs"} {
+		cells, err := Select("../../..", r, suite, "", "pr", nil, nil, nil)
+		if err != nil || len(cells) == 0 {
+			t.Fatalf("%s: %+v, %v", suite, cells, err)
 		}
-		vals := map[string]string{"tools": tools, "server": "10.0.0.1", "out": "/out", "minor": c.Matrix["minor"]}
-		argv, err := fill(c.Unit.Cmd[0], vals, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if want := filepath.Join(tools, "pynfs", "bin", "pynfs-4."+c.Matrix["minor"]); argv[0] != want {
-			t.Errorf("%s runs %q, want %q", c.Name, argv[0], want)
-		}
-		if fi, err := os.Stat(argv[0]); err != nil || fi.Mode()&0o111 == 0 {
-			t.Errorf("%s: %s isn't a program: %v", c.Name, argv[0], err)
+		for _, c := range cells {
+			if got := c.Unit.Tools(); !slices.Equal(got, []string{suite}) {
+				t.Errorf("%s names the tools %q", c.Name, got)
+			}
+			if suite != "pynfs" {
+				continue
+			}
+			vals := map[string]string{"tools": tools, "server": "10.0.0.1", "out": "/out", "minor": c.Matrix["minor"]}
+			argv, err := fill(c.Unit.Cmd[0], vals, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := filepath.Join(tools, "pynfs", "bin", "pynfs-4."+c.Matrix["minor"]); argv[0] != want {
+				t.Errorf("%s runs %q, want %q", c.Name, argv[0], want)
+			}
+			if fi, err := os.Stat(argv[0]); err != nil || fi.Mode()&0o111 == 0 {
+				t.Errorf("%s: %s isn't a program: %v", c.Name, argv[0], err)
+			}
 		}
 	}
 }
@@ -297,17 +333,23 @@ func TestToolsSelect(t *testing.T) {
 	}
 }
 
-// When the tools can't be had, the cell doesn't run, and says why: what nix
-// built lacks a tool's programs, or nix failed, or isn't installed.
+// When the tools can't be had, the cell doesn't run, and says why: it names
+// a tool dt doesn't have, what nix built lacks a tool's programs, or nix
+// failed, or isn't installed.
 func TestToolsMissing(t *testing.T) {
 	root, r := repo(t, toolsSuite, nil)
+	rep, _ := runTarget(t, root, r, "odd", false)
+	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != `the test tools: dt has no tool "nosuch"` || rep.Status() != 2 {
+		t.Errorf("no such tool: %+v", o)
+	}
+
 	outs := t.TempDir()
 	fakeTools(t, outs)
 	if err := os.RemoveAll(filepath.Join(outs, "pynfs", "bin")); err != nil {
 		t.Fatal(err)
 	}
 	fakeNix(t, outs)
-	rep, _ := runTarget(t, root, r, "pjd", false)
+	rep, _ = runTarget(t, root, r, "pjd", false)
 	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.HasPrefix(o.Note, "the test tools: ") || !strings.Contains(o.Note, filepath.Join("pynfs", "bin")) || rep.Status() != 2 {
 		t.Errorf("no pynfs programs: %+v", o)
 	}

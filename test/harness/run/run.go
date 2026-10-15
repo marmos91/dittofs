@@ -155,7 +155,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	if asRoot(c) {
 		vals["bin"] = filepath.Join(dir, "bin") // goJSON builds it before the commands run
 	}
-	if c.Unit.Uses("tools") {
+	if len(c.Unit.Tools()) > 0 {
 		vals["tools"] = filepath.Join(dir, "tools") // laid out below, before the tests are found
 	}
 	// A command dt can't fill can't run, whichever test it's for.
@@ -193,7 +193,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
 	defer cancel()
 	if vals["tools"] != "" {
-		if err := layOutTools(cellCtx, o.Root, vals["tools"], w); err != nil {
+		if err := layOutTools(cellCtx, o.Root, vals["tools"], c.Unit.Tools(), w); err != nil {
 			return NotRun, "the test tools: " + err.Error()
 		}
 	}

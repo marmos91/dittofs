@@ -69,8 +69,12 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 				// matched test's subtests by each subtest name.
 				return nil, errors.New("name subtests one at a time")
 			case len(tests) > 0 && (goTests || unit.Tests.Deferred()):
-				// Only the running cell finds these tests, and it reports a
-				// name that finds none.
+				// decision: only the running cell finds these tests, so each
+				// such suite of a group takes every name, and its cells don't
+				// run when a name picks none of their tests, as a go-json cell
+				// doesn't when go test finds no test of that name. --only
+				// narrows the group to the suite the names belong to. Withdraw
+				// this when the names can be checked before the cells run.
 				cell.Tests = tests
 				for _, name := range tests {
 					found[name] = true

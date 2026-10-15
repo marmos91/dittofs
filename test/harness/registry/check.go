@@ -30,6 +30,8 @@ var (
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
 	// and dt run leave alone.
 	PlaceholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
+	// toolRE matches where a suite names a test tool, as {tools}/pjdfstest.
+	toolRE = regexp.MustCompile(`\{tools\}/([A-Za-z0-9_.-]+)`)
 )
 
 func set(items ...string) map[string]bool {
@@ -235,9 +237,19 @@ func Placeholders(s string) []string {
 	return out
 }
 
-// Uses reports whether any of the suite's fields holds the placeholder name.
-func (u *Suite) Uses(name string) bool {
-	return slices.ContainsFunc(u.allStrings(), func(s string) bool { return slices.Contains(Placeholders(s), name) })
+// Tools returns the test tools the suite names, as {tools}/NAME in any of its
+// fields, each once and in order.
+func (u *Suite) Tools() []string {
+	var out []string
+	for _, s := range u.allStrings() {
+		for _, m := range toolRE.FindAllStringSubmatch(s, -1) {
+			if !slices.Contains(out, m[1]) {
+				out = append(out, m[1])
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 func checkNeed(n string) error {

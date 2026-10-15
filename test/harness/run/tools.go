@@ -12,46 +12,47 @@ import (
 	"strings"
 )
 
-// dtcTools is where the dtc image keeps its copies of the test tools, each
-// laid out as nix builds it, with its programs in bin. A variable, so the
-// tests can point it elsewhere.
+// dtcTools is where the dtc image keeps its copies of the test tools: a
+// directory per tool with its programs in bin, as in nix's output, and for
+// pjdfstest the share/pjdfstest nix's output has too. A variable, so the tests
+// can point it elsewhere.
 var dtcTools = "/opt"
 
-// layOutTools lays out {tools} at dir from the test tools at the revisions
-// flake.lock pins, pjdfstest and pynfs, each of which a suite names by its
-// path there. {tools}/pynfs links to pynfs as nix builds it. pjdfstest's
-// tests are copied as directories of links to its files, with a link to its
-// binary beside them: misc.sh looks for the binary in the directories above a
-// test, so it finds that link. Each cell lays it out afresh, over an earlier
-// cell's.
-func layOutTools(ctx context.Context, root, dir string, w io.Writer) error {
-	pjdfstest, err := toolOut(ctx, root, "pjdfstest", w)
-	if err != nil {
+// toolDirs maps each test tool to the directory of its output {tools}/NAME
+// links to: pjdfstest's share/pjdfstest holds its binary beside its tests,
+// where misc.sh looks for it, and pynfs's whole output holds bin/pynfs-4.x.
+var toolDirs = map[string]string{"pjdfstest": "share/pjdfstest", "pynfs": "."}
+
+// layOutTools makes {tools} at dir, with a link {tools}/NAME for each tool in
+// names, to the tool at the revision flake.lock pins. Each link is made once
+// per run: one already there, from an earlier cell, is kept.
+func layOutTools(ctx context.Context, root, dir string, names []string, w io.Writer) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	pynfs, err := toolOut(ctx, root, "pynfs", w)
-	if err != nil {
-		return err
+	for _, name := range names {
+		sub, ok := toolDirs[name]
+		if !ok {
+			return fmt.Errorf("dt has no tool %q", name)
+		}
+		link := filepath.Join(dir, name)
+		if _, err := os.Lstat(link); err == nil {
+			continue
+		}
+		out, err := toolOut(ctx, root, name, w)
+		if err != nil {
+			return err
+		}
+		if err := os.Symlink(filepath.Join(out, sub), link); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
 	}
-	binary := filepath.Join(pjdfstest, "bin", "pjdfstest")
-	if _, err := os.Stat(binary); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	if err := linkTree(filepath.Join(pjdfstest, "share", "pjdfstest", "tests"), filepath.Join(dir, "pjdfstest", "tests")); err != nil {
-		return err
-	}
-	if err := os.Symlink(binary, filepath.Join(dir, "pjdfstest", "pjdfstest")); err != nil {
-		return err
-	}
-	return os.Symlink(pynfs, filepath.Join(dir, "pynfs"))
+	return nil
 }
 
-// toolOut returns the directory a tool is laid out in: the dtc image's copy,
-// or what nix builds of the flake's package, which the nix store already
-// holds after the first build.
+// toolOut returns where a tool is, with its programs in bin: the dtc image's
+// copy, or what nix builds of the flake's package, which the nix store
+// already holds after the first build.
 func toolOut(ctx context.Context, root, name string, w io.Writer) (string, error) {
 	out := filepath.Join(dtcTools, name)
 	if os.Getenv("DT_IN_CONTAINER") != "1" {
@@ -75,22 +76,4 @@ func toolOut(ctx context.Context, root, name string, w io.Writer) (string, error
 		return "", err
 	}
 	return out, nil
-}
-
-// linkTree makes dst a copy of the directories under src with a link to each
-// of their files, as cp -rs does.
-func linkTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
-		}
-		return os.Symlink(path, filepath.Join(dst, rel))
-	})
 }
