@@ -921,9 +921,9 @@ test/harness/results/20261007T201500Z-d0efaa75/
     "tests": [
       { "name": "chmod/12.t", "suite": ["pjdfstest", "badger-s3", "4.1"], "status": "failed",
         "duration": 2140, "message": "not ok 7", "extra": { "grade": "new" } },
-      { "name": "open/03.t", "suite": ["pjdfstest", "badger-s3", "4.1"], "status": "skipped",
+      { "name": "unlink/14.t", "suite": ["pjdfstest", "badger-s3", "4.1"], "status": "skipped",
         "rawStatus": "failed", "duration": 860,
-        "extra": { "grade": "known", "reason": "PATH_MAX: the mount-point prefix pushes the path over the limit" } },
+        "extra": { "grade": "known", "reason": "NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1" } },
       { "name": "rename/09.t", "suite": ["pjdfstest", "badger-s3", "4.1"], "status": "passed",
         "duration": 3310, "flaky": true, "retries": 1 }
     ],
@@ -931,7 +931,8 @@ test/harness/results/20261007T201500Z-d0efaa75/
     "extra": {
       "run": "20261007T201500Z-d0efaa75", "dirty": false, "tier": "merge", "in": "host", "exit": 1,
       "cells": [
-        { "suite": "pjdfstest", "cell": "badger-s3/4.1", "result": "fail", "seconds": 912,
+        { "suite": "pjdfstest", "cell": "badger-s3/4.1", "result": "failed", "seconds": 912,
+          "note": "1 new failure: chmod/12.t",
           "log": "logs/pjdfstest-badger-s3-4.1.log", "junit": "junit/pjdfstest-badger-s3-4.1.xml" }
       ]
     }
@@ -939,7 +940,10 @@ test/harness/results/20261007T201500Z-d0efaa75/
 }
 ```
 
-The numbers and outcomes above are illustrative; the passing tests are left out.
+The numbers and outcomes above are illustrative; the passing tests are left out. A cell's `result`
+is `passed`, `failed`, `skipped` or `not run`, and its `note` says why, as `dt run` prints it. A
+cell that a cancel or an interrupt stops is `not run` and keeps no per-test results: what its
+tests report after the interrupt can come from the interrupt itself.
 
 **Formats.** A format is a standard way a tool reports per-test results, not a kind of suite.
 There are six, each read by one reader in `dt`:
