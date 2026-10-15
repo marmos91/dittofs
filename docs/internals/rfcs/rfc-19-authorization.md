@@ -309,8 +309,8 @@ of one of three kinds:
   is stored and grants nothing (RFC 7).
 
 Matching reads the identity [RFC 18](rfc-18-identity.md) resolved — the
-principal, its groups, the `authenticated` and `admin` flags — and nothing
-else. It never reads a UID, GID, SID or name: those are spellings, held on the
+principal, its groups, its deny-only principals (§3.3), the `authenticated`
+and `admin` flags — and nothing else. It never reads a UID, GID, SID or name: those are spellings, held on the
 User and Group records and in the protocol-ID index, and resolved to principals
 by RFC 18 before an entry is stored or a caller arrives. A caller resolved as
 the share's anonymous principal is that principal: it matches `EVERYONE@`,
@@ -568,6 +568,14 @@ Three cases the walk meets, stated here because RFC 7 does not:
   matching the owner. Both are walked, in order.
 - **The ACL a mode implies** is walked like any stored one. A file with no
   stored ACL has no second check path.
+
+A caller's deny-only principals — group SIDs the proof marked
+`SE_GROUP_USE_FOR_DENY_ONLY`, carried in its `DenyOnly`
+([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) —
+match deny entries only, as
+[RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)
+states: a deny naming one refuses the caller, and an allow entry naming one
+does not match.
 
 ### 3.4 Maximum allowed
 
