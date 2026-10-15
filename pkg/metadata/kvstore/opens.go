@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"iter"
@@ -160,4 +161,133 @@ func opensOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.Op
 		out = append(out, op)
 	}
 	return out, nil
+}
+
+// NextLockID issues a lock ID never issued before in this installation.
+func (s *Store) NextLockID(ctx context.Context) (entity.LockID, error) {
+	id, err := s.nextID(ctx, idLock)
+	return entity.LockID(id), err
+}
+
+// PutLock writes a durable lock beneath its open, which must be a
+// persistent open of the file: no other open's locks are stored, and
+// closing the open drops them with it.
+func (o Opens) PutLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.Lock) error {
+	if l.ID == 0 || l.Offset < 0 || l.Length <= 0 {
+		return merrs.NewInvalidArgumentError("a lock needs an ID, an offset and a length")
+	}
+	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
+		op, err := persistentOpen(tx, share, file, l.Open)
+		if err != nil {
+			return err
+		}
+		l.Open = op.ID
+		return tx.Set(lockKey(share, file, l.Open, l.Offset, l.ID), encodeLock(l))
+	})
+}
+
+// DeleteLock removes one durable lock.
+func (o Opens) DeleteLock(ctx context.Context, share entity.ShareID, file entity.FileID, l entity.Lock) error {
+	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
+		return tx.Delete(lockKey(share, file, l.Open, l.Offset, l.ID))
+	})
+}
+
+// Locks lists the durable locks beneath one open, in offset order.
+func (o Opens) Locks(ctx context.Context, share entity.ShareID, file entity.FileID, open entity.OpenID) (out []entity.Lock, err error) {
+	err = o.s.kv.View(ctx, func(r kv.Reader) error {
+		out = nil
+		pre := locksPrefix(share, file, open)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			offset, rest, err := keys.ReadUint64(row.Key[len(pre):])
+			if err != nil {
+				return err
+			}
+			id, _, err := keys.ReadUint64(rest)
+			if err != nil {
+				return err
+			}
+			l, err := decodeLock(open, int64(offset), entity.LockID(id), row.Value)
+			if err != nil {
+				return err
+			}
+			out = append(out, l)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// SetDeletePending records that a file is to be deleted at its last close:
+// durably only while the file has a persistent open, which carries the
+// promise across a failover; otherwise it is held with the opens, in
+// memory, and this refuses it. The open named is the marking one.
+func (o Opens) SetDeletePending(ctx context.Context, share entity.ShareID, file entity.FileID, by entity.OpenID, d entity.DeletePending) error {
+	return o.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if _, err := persistentOpen(tx, share, file, by); err != nil {
+			return err
+		}
+		return tx.Set(deletePendingKey(share, file), encodeDeletePending(d))
+	})
+}
+
+// ClearDeletePending removes a file's delete-pending record.
+func (o Opens) ClearDeletePending(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+	return o.s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Delete(deletePendingKey(share, file)) })
+}
+
+// DeletePending reads a file's delete-pending record; ok is false when it
+// has none.
+func (o Opens) DeletePending(ctx context.Context, share entity.ShareID, file entity.FileID) (d entity.DeletePending, ok bool, err error) {
+	err = o.s.kv.View(ctx, func(r kv.Reader) error {
+		b, found, err := get(r, deletePendingKey(share, file))
+		if err != nil || !found {
+			return err
+		}
+		ok = true
+		d, err = decodeDeletePending(b)
+		return err
+	})
+	return d, ok, err
+}
+
+// persistentOpen reads a durable open, tracked, refusing one that is not
+// persistent.
+func persistentOpen(tx kv.Txn, share entity.ShareID, file entity.FileID, id entity.OpenID) (entity.Open, error) {
+	b, ok, err := get(tx, openKey(share, file, id))
+	if err != nil {
+		return entity.Open{}, err
+	}
+	if !ok {
+		return entity.Open{}, merrs.NewNotFoundError(fmt.Sprintf("open %d", id), "open")
+	}
+	op, err := decodeOpen(file, id, b)
+	if err != nil {
+		return entity.Open{}, err
+	}
+	if op.Durability != entity.DurabilityPersistent {
+		return entity.Open{}, merrs.NewInvalidArgumentError("only a persistent open's state is stored")
+	}
+	return op, nil
+}
+
+// dropDeletePendingAt deletes child's delete-pending record when it names
+// the entry at key, which the caller is removing.
+func dropDeletePendingAt(tx kv.Txn, b bound, child entity.File, key []byte) error {
+	v, ok, err := get(tx, deletePendingKey(child.Share, child.ID))
+	if err != nil || !ok {
+		return err
+	}
+	d, err := decodeDeletePending(v)
+	if err != nil {
+		return err
+	}
+	at, err := b.entryKeyFor(child.Share, d.Parent, d.Name)
+	if err != nil || !bytes.Equal(at, key) {
+		return err
+	}
+	return tx.Delete(deletePendingKey(child.Share, child.ID))
 }

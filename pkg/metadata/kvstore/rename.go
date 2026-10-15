@@ -126,7 +126,7 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 
 	var out Orphaned
 	if replaced != nil {
-		if out, err = dropEntry(tx, dstKey, *replaced, open); err != nil {
+		if out, err = dropEntry(tx, b, dstKey, *replaced, open); err != nil {
 			return Orphaned{}, err
 		}
 	}

@@ -179,6 +179,10 @@ func lockKey(share entity.ShareID, file entity.FileID, open entity.OpenID, offse
 	return keys.Uint64(keys.Uint64(append(openKey(share, file, open), keys.OpL), uint64(offset)), uint64(id))
 }
 
+func locksPrefix(share entity.ShareID, file entity.FileID, open entity.OpenID) []byte {
+	return append(openKey(share, file, open), keys.OpL)
+}
+
 // durableOpenIndexKey is a durable open's entry in its share's index, under
 // the file's shard, so a new primary finds the shard's durable opens
 // without reading the share's files.

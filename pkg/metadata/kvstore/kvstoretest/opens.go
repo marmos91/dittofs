@@ -167,3 +167,110 @@ func testCloneHold(t *testing.T, kvo Opener) {
 		t.Errorf("the hold read after it closed: %v", err)
 	}
 }
+
+// RFC 14 §8: a lock is stored only beneath a persistent open, in offset
+// order, two at one offset being two keys; closing the open drops them.
+func testDurableLocks(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	opens := f.s.Opens()
+	_, file := f.create(f.admin, f.root, "a", regular(0o644))
+	p := f.newOpen(file.ID)
+	p.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, p))
+	plain := f.newOpen(file.ID)
+	must(t, opens.Put(ctx, f.share.ID, plain))
+	lock := func(open entity.OpenID, off int64, owner string) entity.Lock {
+		id, err := f.s.NextLockID(ctx)
+		must(t, err)
+		return entity.Lock{ID: id, Open: open, Owner: entity.LockOwner{Client: 1, Owner: []byte(owner)}, Offset: off, Length: 10}
+	}
+	if err := opens.PutLock(ctx, f.share.ID, file.ID, lock(plain.ID, 0, "x")); err == nil {
+		t.Error("a lock stored under an open that is not persistent")
+	}
+	l1, l2, l3 := lock(p.ID, 100, "x"), lock(p.ID, 0, "x"), lock(p.ID, 100, "y")
+	for _, l := range []entity.Lock{l1, l2, l3} {
+		must(t, opens.PutLock(ctx, f.share.ID, file.ID, l))
+	}
+	got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID)
+	must(t, err)
+	if len(got) != 3 || got[0].ID != l2.ID || got[1].ID != l1.ID || got[2].ID != l3.ID || string(got[2].Owner.Owner) != "y" {
+		t.Fatalf("locks %+v", got)
+	}
+	if ops, err := opens.Of(ctx, f.share.ID, file.ID); err != nil || len(ops) != 2 {
+		t.Errorf("the locks read as opens: %+v, %v", ops, err)
+	}
+	must(t, opens.DeleteLock(ctx, f.share.ID, file.ID, l1))
+	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 2 {
+		t.Errorf("locks after one unlock %+v, %v", got, err)
+	}
+	_, err = opens.Delete(ctx, f.share.ID, file.ID, p.ID)
+	must(t, err)
+	if got, err := opens.Locks(ctx, f.share.ID, file.ID, p.ID); err != nil || len(got) != 0 {
+		t.Errorf("locks after their open closed %+v, %v", got, err)
+	}
+}
+
+// RFC 14 §9.4: delete pending is stored only while the file has a
+// persistent open, and goes with the unlink of the entry it names, not
+// with the unlink of another name of the file.
+func testDeletePending(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	ns, opens := f.s.Namespace(), f.s.Opens()
+	h, file := f.create(f.admin, f.root, "a", regular(0o644))
+	must(t, ns.Link(ctx, f.admin, f.root, []byte("b"), h))
+	plain := f.newOpen(file.ID)
+	must(t, opens.Put(ctx, f.share.ID, plain))
+	_, rootID, err := f.root.Parse()
+	must(t, err)
+	dp := entity.DeletePending{Parent: rootID, Name: []byte("a"), By: f.admin.Principal, Access: 0x10000}
+	if err := opens.SetDeletePending(ctx, f.share.ID, file.ID, plain.ID, dp); err == nil {
+		t.Error("delete pending stored for an open that is not persistent")
+	}
+	p := f.newOpen(file.ID)
+	p.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, p))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, file.ID, p.ID, dp))
+	if got, ok, err := opens.DeletePending(ctx, f.share.ID, file.ID); err != nil || !ok || string(got.Name) != "a" || got.By != dp.By {
+		t.Fatalf("delete pending %+v, %v, %v", got, ok, err)
+	}
+	_, err = ns.Unlink(ctx, f.admin, f.root, []byte("b"))
+	must(t, err)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, file.ID); err != nil || !ok {
+		t.Errorf("the unlink of another name dropped it: %v, %v", ok, err)
+	}
+	_, err = ns.Unlink(ctx, f.admin, f.root, []byte("a"))
+	must(t, err)
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, file.ID); err != nil || ok {
+		t.Errorf("the unlink of its entry kept it: %v, %v", ok, err)
+	}
+
+	_, other := f.create(f.admin, f.root, "c", regular(0o644))
+	q := f.newOpen(other.ID)
+	q.Durability = entity.DurabilityPersistent
+	must(t, opens.Put(ctx, f.share.ID, q))
+	must(t, opens.SetDeletePending(ctx, f.share.ID, other.ID, q.ID, entity.DeletePending{Parent: rootID, Name: []byte("c")}))
+	must(t, opens.ClearDeletePending(ctx, f.share.ID, other.ID))
+	if _, ok, err := opens.DeletePending(ctx, f.share.ID, other.ID); err != nil || ok {
+		t.Errorf("after a clear: %v, %v", ok, err)
+	}
+}
+
+// RFC 14 §4.5: the NSM state number is one per installation, durable, and
+// never goes down.
+func testNSMState(t *testing.T, kvo Opener) {
+	s, c := newStore(t, kvo)
+	if n, err := s.NSMState(ctx); err != nil || n != 0 {
+		t.Fatalf("before any raise: %d, %v", n, err)
+	}
+	must(t, s.RaiseNSMState(ctx, 3))
+	for _, n := range []uint32{3, 1} {
+		if err := s.RaiseNSMState(ctx, n); !errors.Is(err, kvstore.ErrNSMNotRaised) {
+			t.Errorf("raise to %d: %v", n, err)
+		}
+	}
+	again, err := kvstore.Open(ctx, c)
+	must(t, err)
+	if n, err := again.NSMState(ctx); err != nil || n != 3 {
+		t.Errorf("after a restart: %d, %v", n, err)
+	}
+}

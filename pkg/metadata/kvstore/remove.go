@@ -58,7 +58,7 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 		if err := mayRemove(tx, id, d, child); err != nil {
 			return err
 		}
-		out, err = dropEntry(tx, key, child, open)
+		out, err = dropEntry(tx, b, key, child, open)
 		if err != nil {
 			return err
 		}
@@ -69,8 +69,9 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 
 // dropEntry deletes the entry at key naming child and takes one from
 // child's Nlink, refusing a non-empty directory. A last entry writes the
-// pending release, and makes durable each of open that opens child.
-func dropEntry(tx kv.Txn, key []byte, child entity.File, open []entity.Open) (Orphaned, error) {
+// pending release, and makes durable each of open that opens child. A
+// delete-pending record naming this entry goes with it.
+func dropEntry(tx kv.Txn, b bound, key []byte, child entity.File, open []entity.Open) (Orphaned, error) {
 	if child.IsDir() {
 		if err := provedEmpty(tx, child); err != nil {
 			return Orphaned{}, err
@@ -84,6 +85,9 @@ func dropEntry(tx kv.Txn, key []byte, child entity.File, open []entity.Open) (Or
 	child.Change = tx.Now()
 	child.Version = nextFileVersion(tx, child.Version)
 	if err := tx.Delete(key); err != nil {
+		return Orphaned{}, err
+	}
+	if err := dropDeletePendingAt(tx, b, child, key); err != nil {
 		return Orphaned{}, err
 	}
 	if err := putFile(tx, was, child); err != nil {
