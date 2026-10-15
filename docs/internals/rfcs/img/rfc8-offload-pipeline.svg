@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}.meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+.data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}.ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#a33a4d;stroke-width:1.2;stroke-dasharray:5 3;fill:none;marker-end:url(#h)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker></defs>
+<rect width="900" height="470" fill="#ffffff"/>
+<text x="16" y="26" class="t">The offload pipeline: every step has a deadline, a retry, and an outcome when it gives up.</text>
+<text x="16" y="46" class="s">One machine per pass; from Intent on, one per block. Every path ends reported durable, or Dirty and re-queued.</text>
+<g>
+<rect x="16" y="120" width="108" height="58" rx="4" class="a"/><text x="28" y="142" class="h">Capture</text><text x="28" y="158" class="s">guard, existence,</text><text x="28" y="171" class="s">open the offer</text>
+<rect x="140" y="120" width="108" height="58" rx="4" class="a"/><text x="152" y="142" class="h">Carve</text><text x="152" y="158" class="s">carver over</text><text x="152" y="171" class="s">each run</text>
+<rect x="264" y="120" width="108" height="58" rx="4" class="a"/><text x="276" y="142" class="h">Assemble</text><text x="276" y="158" class="s">plans; dedup</text><text x="276" y="171" class="s">oracle asked</text>
+<rect x="388" y="120" width="108" height="58" rx="4" class="k"/><text x="400" y="142" class="h">Intent</text><text x="400" y="158" class="s">mint name,</text><text x="400" y="171" class="s">record intent</text>
+<rect x="512" y="120" width="108" height="58" rx="4" class="k"/><text x="524" y="142" class="h">Put</text><text x="524" y="158" class="s">stream block</text><text x="524" y="171" class="s">from the offer</text>
+<rect x="636" y="120" width="108" height="58" rx="4" class="k"/><text x="648" y="142" class="h">Commit</text><text x="648" y="158" class="s">one txn per</text><text x="648" y="171" class="s">block, guarded</text>
+<rect x="760" y="120" width="124" height="58" rx="4" class="vfs"/><text x="772" y="142" class="h">Mark durable</text><text x="772" y="158" class="s">report extents;</text><text x="772" y="171" class="s">now evictable</text>
+</g>
+<path d="M124 149H138" class="arr"/><path d="M248 149H262" class="arr"/><path d="M372 149H386" class="arr"/><path d="M496 149H510" class="arr"/><path d="M620 149H634" class="arr"/><path d="M744 149H758" class="arr"/>
+<path d="M50 120C40 80 100 80 90 118" class="arr"/><text x="30" y="72" class="s">retry, backoff</text>
+<path d="M422 120C412 80 472 80 462 118" class="arr"/><text x="404" y="72" class="s">retry in place</text>
+<path d="M546 120C536 80 596 80 586 118" class="arr"/><text x="520" y="72" class="s">same name, same bytes</text>
+<path d="M670 120C660 80 720 80 710 118" class="arr"/><text x="660" y="72" class="s">retry on conflict</text>
+<rect x="16" y="300" width="604" height="54" rx="4" class="r"/>
+<text x="28" y="322" class="h">Dirty, file re-queued with RetryDue (jittered backoff, per file; never stops while owned)</text>
+<text x="28" y="340" class="s">what was reported stays reported; the next offer is a new attempt and mints a new name</text>
+<path d="M70 180V298" class="dash"/><text x="76" y="236" class="s">nothing offered</text>
+<path d="M194 180V298" class="dash"/><text x="200" y="256" class="s">pass ends</text>
+<text x="276" y="198" class="s">pure: an oracle</text><text x="276" y="212" class="s">error carries</text><text x="276" y="226" class="s">the chunk</text>
+<path d="M442 180V298" class="dash"/><text x="448" y="236" class="s">past bound:</text><text x="448" y="250" class="s">abandon</text>
+<path d="M566 180V298" class="dash"/><text x="572" y="236" class="s">past bound:</text><text x="572" y="250" class="s">abandon</text>
+<path d="M690 180C690 260 640 300 622 316" class="dash"/><text x="748" y="222" class="s">intent missing:</text><text x="748" y="236" class="s">re-offer; adoption</text><text x="748" y="250" class="s">refused: rest applies</text>
+<rect x="640" y="372" width="244" height="54" rx="4" class="p"/>
+<text x="652" y="394" class="h">stale epoch: stop the unit</text>
+<text x="652" y="412" class="s">not a retry; the new owner re-offers</text>
+<path d="M736 180V370" class="arr"/>
+<path d="M300 356C300 400 60 420 40 356" class="arr"/><text x="80" y="420" class="s">AgeTick or RetryDue → Capture again</text>
+<text x="16" y="458" class="s">Abandoning an attempt also abandons its intent (RFC 6 §7.6), so its object is collected without waiting for a new epoch.</text>
+</svg>
