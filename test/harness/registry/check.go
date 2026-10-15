@@ -235,6 +235,11 @@ func Placeholders(s string) []string {
 	return out
 }
 
+// Uses reports whether any of the suite's fields holds the placeholder name.
+func (u *Suite) Uses(name string) bool {
+	return slices.ContainsFunc(u.allStrings(), func(s string) bool { return slices.Contains(Placeholders(s), name) })
+}
+
 func checkNeed(n string) error {
 	kind, arg, hasArg := strings.Cut(n, ":")
 	switch {

@@ -238,16 +238,10 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 	var tests []string
 	limits := map[string]time.Duration{}
 	switch {
-	case u.Tests.Glob != "" && !strings.Contains(u.Tests.Glob, "{"):
-		m, err := filepath.Glob(filepath.Join(root, u.Tests.Glob))
-		if err != nil {
+	case u.Tests.Glob != "" && !u.Tests.Deferred():
+		var err error
+		if tests, err = Glob(root, filepath.Join(root, u.Tests.Glob), u.Exclude); err != nil {
 			return nil, nil, err
-		}
-		for _, p := range m {
-			rel, _ := filepath.Rel(root, p)
-			if !slices.ContainsFunc(u.Exclude, func(x string) bool { return match(x, rel) }) {
-				tests = append(tests, filepath.ToSlash(rel))
-			}
 		}
 	case len(u.Tests.Names) > 0:
 		tests = u.Tests.Names
@@ -275,6 +269,24 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 		tests = slices.DeleteFunc(slices.Clone(tests), func(t string) bool { return !match(narrow, t) })
 	}
 	return tests, limits, nil
+}
+
+// Glob returns the files pattern matches, each named by its path below dir
+// with forward slashes, without those an exclude glob matches by path or
+// file name.
+func Glob(dir, pattern string, exclude []string) ([]string, error) {
+	m, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	var tests []string
+	for _, p := range m {
+		rel, _ := filepath.Rel(dir, p)
+		if !slices.ContainsFunc(exclude, func(x string) bool { return match(x, rel) }) {
+			tests = append(tests, filepath.ToSlash(rel))
+		}
+	}
+	return tests, nil
 }
 
 func testsSource(u *registry.Suite, narrow string) string {
