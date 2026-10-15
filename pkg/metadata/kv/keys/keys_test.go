@@ -45,10 +45,10 @@ func TestCodesUnique(t *testing.T) {
 	for name, codes := range map[string][]byte{
 		"kind": {KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
 			KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
-			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP},
+			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS},
 		"F": {FAcl, FX, FS, FE, FT, FH, FRm, FOv, FRef, FHis, FFx, FFo, FRel, FOp, FDp, HisFile},
 		"S": {SInfo, SSt, SNsg, SG, SXp, SSnap, SCut, SLive, SSc, SHd, SHr, SUse, SRh, SOr, SUt, SPu,
-			SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SPr, SRr},
+			SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SPr, SRr, SDo},
 		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk, NSDrain},
 		"gc": {GcLease, GcRecheck, GcHold, GcSuspect, GcForward, GcPause, GcCursor},
 	} {

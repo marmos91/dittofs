@@ -71,3 +71,29 @@ func TestNumbersBounded(t *testing.T) {
 		t.Fatalf("past 2^48: %v", err)
 	}
 }
+
+// A client, open or lock ID is never zero, never issued twice within one
+// kind, and never reissued by a later process over the same store.
+func TestIDsNeverReused(t *testing.T) {
+	ctx := context.Background()
+	a := openStore(t)
+	seen := map[uint64]bool{}
+	var last uint64
+	for range numberRange + 2 {
+		n, err := a.nextID(ctx, idOpen)
+		if err != nil || n == 0 || seen[n] {
+			t.Fatalf("id %d, %v", n, err)
+		}
+		seen[n], last = true, n
+	}
+	if c, err := a.nextID(ctx, idClient); err != nil || c != 1 {
+		t.Errorf("first client id %d, %v: kinds share no counter", c, err)
+	}
+	b, err := Open(ctx, a.kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := b.nextID(ctx, idOpen); err != nil || n <= last {
+		t.Fatalf("after reopen: %d, %v; want above %d", n, err, last)
+	}
+}

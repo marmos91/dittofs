@@ -55,6 +55,7 @@ const (
 	KindCLO    byte = 0x36
 	KindTG     byte = 0x37
 	KindMKP    byte = 0x38
+	KindIDS    byte = 0x3A // server-wide ID allocators, IDS‖kind; 0x39 is retired
 )
 
 // Sub-kinds under F‖id. The File itself has none.
@@ -109,6 +110,7 @@ const (
 	SVl   byte = 0x17 // version limit
 	SPr   byte = 0x19 // pending-release index: S‖id‖pr‖shard‖file; 0x18 is the RFC's shs
 	SRr   byte = 0x1A // unfinished-removal index: S‖id‖rr‖shard‖file‖version
+	SDo   byte = 0x1B // durable-open index: S‖id‖do‖shard‖file‖openID
 )
 
 // Sub-kinds under NS‖ns, and under NS‖ns‖gc.

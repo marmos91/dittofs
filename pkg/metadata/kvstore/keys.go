@@ -170,6 +170,39 @@ func streamsPrefix(share entity.ShareID, id entity.FileID) []byte { return fileS
 // opensPrefix holds a file's durable opens, F‖id‖op‖openID.
 func opensPrefix(share entity.ShareID, id entity.FileID) []byte { return fileSub(share, id, keys.FOp) }
 
+func openKey(share entity.ShareID, file entity.FileID, id entity.OpenID) []byte {
+	return keys.Uint64(opensPrefix(share, file), uint64(id))
+}
+
+// lockKey is a durable lock beneath its persistent open, in offset order.
+func lockKey(share entity.ShareID, file entity.FileID, open entity.OpenID, offset int64, id entity.LockID) []byte {
+	return keys.Uint64(keys.Uint64(append(openKey(share, file, open), keys.OpL), uint64(offset)), uint64(id))
+}
+
+// durableOpenIndexKey is a durable open's entry in its share's index, under
+// the file's shard, so a new primary finds the shard's durable opens
+// without reading the share's files.
+func durableOpenIndexKey(share entity.ShareID, shard uint64, file entity.FileID, id entity.OpenID) []byte {
+	return keys.Uint64(keys.ID(keys.Uint64(shareKey(share, keys.SDo), shard), file[:]), uint64(id))
+}
+
+func clientKey(id entity.ClientID) []byte { return keys.Uint64([]byte{keys.KindCL}, uint64(id)) }
+
+func clientShardKey(id entity.ClientID, shard uint64) []byte {
+	return keys.Uint64(append(clientKey(id), keys.CLSh), shard)
+}
+
+// clientOwnerKey is the owner index: a client's own name for itself, under
+// its protocol, to its ClientID.
+func clientOwnerKey(p entity.Protocol, owner []byte) []byte {
+	return keys.String([]byte{keys.KindCLO, byte(p)}, owner)
+}
+
+func nsmKey() []byte { return []byte{keys.KindNSM} }
+
+// idKey is one server-wide ID allocator's next unreserved ID.
+func idKey(kind byte) []byte { return []byte{keys.KindIDS, kind} }
+
 func deletePendingKey(share entity.ShareID, id entity.FileID) []byte {
 	return fileSub(share, id, keys.FDp)
 }

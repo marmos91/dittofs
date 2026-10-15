@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -22,36 +23,70 @@ const (
 	numberRange = 1024
 )
 
-// numbers hands out each share's numeric file ids from ranges reserved in
-// the store, so creates do not all write the allocator record.
+// numbers hands out IDs from ranges reserved in the store, one counter per
+// key, so issuing one does not write the counter's record each time: each
+// share's numeric file ids, and the server-wide client, open and lock IDs.
 type numbers struct {
 	mu     sync.Mutex
-	ranges map[entity.ShareID]*[2]uint64 // next, end
+	ranges map[string]*[2]uint64 // by counter key: next, end
 }
 
 // nextNumber issues a numeric file id of share that no other file of the
 // share has ever had: from the current range, or a fresh one reserved in its
 // own transaction before it is used.
 func (s *Store) nextNumber(ctx context.Context, share entity.ShareID) (uint64, error) {
-	s.numbers.mu.Lock()
-	defer s.numbers.mu.Unlock()
-	if s.numbers.ranges == nil {
-		s.numbers.ranges = map[entity.ShareID]*[2]uint64{}
+	return s.numbers.next(ctx, s.kv, numberKey(share), false, maxNumber, ErrNumbersExhausted)
+}
+
+// The server-wide ID allocators, each under IDS‖kind.
+const (
+	idClient byte = 1
+	idOpen   byte = 2
+	idLock   byte = 3
+)
+
+// nextID issues a client, open or lock ID never issued before in this
+// installation, never zero, which names none.
+//
+// decision: the IDs come from server-wide counters under a key of their own,
+// IDS‖kind, which the format did not name: an ID that must be unique and
+// never reused, but not random, needs a counter, and reserving it in ranges
+// keeps an open from writing it. Move the counters if the format gives them
+// a home.
+func (s *Store) nextID(ctx context.Context, kind byte) (uint64, error) {
+	for {
+		n, err := s.numbers.next(ctx, s.kv, idKey(kind), true, math.MaxUint64-numberRange, ErrNumbersExhausted)
+		if err != nil || n != 0 {
+			return n, err
+		}
 	}
-	r := s.numbers.ranges[share]
+}
+
+// next issues the next ID under key. A counter a share's creation writes is
+// never missing; a server-wide one starts at zero when it is (fresh).
+func (a *numbers) next(ctx context.Context, db kv.KV, key []byte, fresh bool, bound uint64, exhausted error) (uint64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ranges == nil {
+		a.ranges = map[string]*[2]uint64{}
+	}
+	r := a.ranges[string(key)]
 	if r == nil || r[0] == r[1] {
 		var start uint64
-		err := s.kv.Update(ctx, func(tx kv.Txn) error {
-			key := numberKey(share)
+		err := db.Update(ctx, func(tx kv.Txn) error {
 			b, err := tx.Get(key)
-			if err != nil {
+			switch {
+			case fresh && errors.Is(err, kv.ErrNotFound):
+				start = 0
+			case err != nil:
 				return err
+			default:
+				if start, err = decodeCounter(b); err != nil {
+					return err
+				}
 			}
-			if start, err = decodeCounter(b); err != nil {
-				return err
-			}
-			if start+numberRange > maxNumber {
-				return ErrNumbersExhausted
+			if start+numberRange > bound {
+				return exhausted
 			}
 			return tx.Set(key, encodeCounter(start+numberRange))
 		})
@@ -59,7 +94,7 @@ func (s *Store) nextNumber(ctx context.Context, share entity.ShareID) (uint64, e
 			return 0, err
 		}
 		r = &[2]uint64{start, start + numberRange}
-		s.numbers.ranges[share] = r
+		a.ranges[string(key)] = r
 	}
 	n := r[0]
 	r[0]++
