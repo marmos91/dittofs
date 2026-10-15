@@ -484,18 +484,24 @@ flowchart TB
   ks --> holding["holding wrapper:<br/>runs a second op between a<br/>transaction's reads and its commit"]
   ks --> counting["kv.Counting:<br/>keys read, written, scanned, seeks"]
   ks --> check["Store.Check after every case"]
+  ks --> fuzz["FuzzNamespace: random ops<br/>against a model tree"]
+  ks --> stress["ConcurrentNamespace:<br/>writers racing on one tree"]
   internal --> check
 ```
 
 1. **Forcing a commit order.** The `holding` wrapper (`kvstoretest/races.go`) pauses an `Update` after its function and before its commit, and runs the competing operation to completion in that pause. That deterministically makes the paused one commit second, then the test swaps roles.
 
-2. **Cost assertions.** `kv.Counting` counts what each operation touched, so tests assert "a create writes 6 keys and rewrites nothing", "a lookup reads 4 keys", "resolving a handle reads 1 key at any depth", "a folded directory's Get scans nothing".
+2. **Cost assertions.** `kv.Counting` counts what each operation touched, so tests assert "a create writes 6 keys and rewrites nothing", "a lookup reads 4 keys", "resolving a handle reads 1 key at any depth", "a folded directory's Get scans nothing". `NamespaceCosts` pins the reads, writes, scans and range guards of every namespace call, so a change to an operation's cost shows in review rather than in a profile.
 
 3. **Invariant checks.** `Store.Check` asserts three things over the whole store, in one read transaction. Every refcount equals its reverse keys and refs, and every block is retired exactly when its live count is zero. The version index holds exactly one entry per file at its stored version, and no stray one. Folded usage plus unfolded deltas equals the files' `Charged` and count, for each share, every principal and every project. Every conformance case and every content test ends with it.
 
-4. **Mutation checks.** For each guard and rule, the code was edited to remove it and the test was run to confirm it fails on its assertion, then restored. Several tests passed even with their rule removed at first, and were fixed before they were committed.
+4. **A model to compare against.** `FuzzNamespace` reads its input as a stream of create, mkdir, link, unlink, rename and chmod over a few directories and colliding names. It applies each to the store and to a small model tree, and after each one compares whether it succeeded, every listing and every link count; at the end `Check` must pass. Its seeds run in a plain `go test`, in memory and on disk.
 
-5. **For other packages' tests.** `kvstoretest.NewFS` gives a store, a share, an administrator and the root in one call, and `NewHeldFS` the same over a held store, whose `Race` makes two operations commit in a chosen order. `kvstore.Regular`, `Dir`, `Symlink` and `Device` build a `NewFile`. `keys.Describe` renders a key by name, as `F‖share=3fa2c1d0‖file=9b1e44a7‖op‖9‖l‖100‖4`, and a namespace call's error is an `OpError` naming the operation, the directory and the name.
+5. **Writers racing for real.** `ConcurrentNamespace` runs eight writers of random namespace operations over one tree, so they conflict and retry, the path no single sequence takes. Afterwards every file's `Nlink` must equal its entries, every directory's link count its subdirectories, and `Check` must pass.
+
+6. **Mutation checks.** For each guard and rule, the code was edited to remove it and the test was run to confirm it fails on its assertion, then restored. Several tests passed even with their rule removed at first, and were fixed before they were committed.
+
+7. **For other packages' tests.** `kvstoretest.NewFS` gives a store, a share, an administrator and the root in one call, and `NewHeldFS` the same over a held store, whose `Race` makes two operations commit in a chosen order. `kvstore.Regular`, `Dir`, `Symlink` and `Device` build a `NewFile`. `keys.Describe` renders a key by name, as `F‖share=3fa2c1d0‖file=9b1e44a7‖op‖9‖l‖100‖4`, and a namespace call's error is an `OpError` naming the operation, the directory and the name.
 
 > **What waits on other work.** Snapshots: until cuts exist, nothing moves to history and nothing is dated by a cut. Open state (RFC 14): the store holds its durable records, but the service that holds opens, locks and grants in memory, with leases and grace, is not built. The engine: quota reservations, the scheduling of folds, and the journal's own version counter, which the store's `Version` stands in for today. Each place that waits has a `ponytail:` comment naming what it skips.
 >
@@ -505,7 +511,7 @@ flowchart TB
 
 ### Running them
 
-`go test -race ./pkg/metadata/kv/... ./pkg/metadata/entity/... ./pkg/metadata/kvstore/...` runs everything; add `-short` to skip the on-disk Badger run. `go test -bench . ./pkg/metadata/kvstore/` runs the store's benchmarks.
+`go test -race ./pkg/metadata/kv/... ./pkg/metadata/entity/... ./pkg/metadata/kvstore/...` runs everything; add `-short` to skip the on-disk Badger run. `go test -bench . ./pkg/metadata/kvstore/` runs the store's benchmarks, and `go test ./pkg/metadata/kvstore/ -run '^$' -fuzz '^FuzzNamespace$' -fuzztime 60s` fuzzes the namespace beyond its seeds.
 
 ## 15. Against today's store
 
