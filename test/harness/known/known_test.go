@@ -16,9 +16,8 @@ const testdata = "../../common/testdata"
 // sorted bytewise.
 func rows(l *List) []string {
 	var out []string
-	for _, name := range l.Names() {
-		reason, _ := l.Lookup(name)
-		out = append(out, name+"\t"+reason)
+	for _, r := range l.Rows() {
+		out = append(out, r.Name+"\t"+r.Reason)
 	}
 	slices.Sort(out)
 	return out
@@ -76,8 +75,7 @@ func TestTables(t *testing.T) {
 	}
 }
 
-// Each case in match.txt holds, through Match and through a list holding
-// only the pattern.
+// Each case in match.txt holds.
 func TestMatch(t *testing.T) {
 	cases := 0
 	for i, line := range lines(t, filepath.Join(testdata, "match.txt")) {
@@ -88,12 +86,8 @@ func TestMatch(t *testing.T) {
 		if len(f) != 3 || (f[2] != "yes" && f[2] != "no") {
 			t.Fatalf("match.txt:%d: %q isn't PATTERN<TAB>NAME<TAB>yes|no", i+1, line)
 		}
-		pattern, name, want := f[0], f[1], f[2] == "yes"
-		var l List
-		l.add(pattern, "a reason")
-		_, known := l.Lookup(name)
-		if got := Match(pattern, name); got != want || known != want {
-			t.Errorf("%q against %q: Match %v, Lookup %v, want %v", pattern, name, got, known, want)
+		if got := Match(f[0], f[1]); got != (f[2] == "yes") {
+			t.Errorf("%q against %q: %v, want %s", f[0], f[1], got, f[2])
 		}
 		cases++
 	}
@@ -143,11 +137,9 @@ func TestLoadMerges(t *testing.T) {
 			t.Fatalf("%q: %v", path, err)
 		}
 	}
-	if got, want := l.Names(), []string{"b", "a", "c"}; !slices.Equal(got, want) {
-		t.Errorf("names %q, want %q", got, want)
-	}
-	if got, _ := l.Lookup("a"); got != "overlay a" {
-		t.Errorf("a's reason is %q, want the overlay's", got)
+	want := []Row{{"b", "base b"}, {"a", "overlay a"}, {"c", "overlay c"}}
+	if got := l.Rows(); !slices.Equal(got, want) {
+		t.Errorf("rows %q, want %q", got, want)
 	}
 }
 
@@ -163,24 +155,5 @@ func TestLoadUnreadable(t *testing.T) {
 	var l List
 	if err := l.Load(path); err == nil {
 		t.Error("no error")
-	}
-}
-
-// A name's own row comes first; otherwise the first row, in the order the
-// names first appear, whose pattern matches.
-func TestLookup(t *testing.T) {
-	var l List
-	l.add("smb2.lock.*", "the family")
-	l.add("smb2.lock.lock1", "its own")
-	l.add("smb2.*", "wider")
-	for name, want := range map[string]string{
-		"smb2.lock.lock1": "its own",
-		"smb2.lock.lock2": "the family",
-		"smb2.read.eof":   "wider",
-		"smb3.x":          "",
-	} {
-		if got, known := l.Lookup(name); got != want || known != (want != "") {
-			t.Errorf("%s: %q, %v; want %q", name, got, known, want)
-		}
 	}
 }

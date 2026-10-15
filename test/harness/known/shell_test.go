@@ -2,7 +2,6 @@ package known
 
 import (
 	"io/fs"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -25,8 +24,6 @@ for name in "${!KF_REASON[@]}"; do printf '%s\t%s\0' "$name" "${KF_REASON[$name]
 		args = append(args, filepath.ToSlash(p))
 	}
 	cmd := exec.Command("bash", args...)
-	// A git hook running these tests exports GIT_DIR and the like.
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -91,6 +88,18 @@ func TestShellAgreesOnRealLists(t *testing.T) {
 		}
 	}
 	t.Logf("%d lists agree", n)
+}
+
+// Each table in the test data loads exactly the rows its .want file lists
+// through kf_load too, whichever of the two test suites a change runs.
+func TestShellTables(t *testing.T) {
+	tables, _ := filepath.Glob(filepath.Join(testdata, "*.md"))
+	for _, table := range tables {
+		want := lines(t, strings.TrimSuffix(table, ".md")+".want")
+		if d := differ(shellRows(t, table), want); d != "" {
+			t.Errorf("%s:%s", filepath.Base(table), d)
+		}
+	}
 }
 
 // The tables the test data can't hold load the same through kf_load.

@@ -1,11 +1,11 @@
 // Package known reads the Markdown known-failure lists and matches test names
-// against them, as test/common/known-failures.sh does: kf_load is Load,
-// kf_is_known and kf_reason are Lookup, and kf_match_pattern is Match. Both
-// run on the cases in test/common/testdata.
+// against them, as test/common/known-failures.sh does: kf_load is Load and
+// kf_match_pattern is Match. Both run on the cases in test/common/testdata.
 package known
 
 import (
 	"os"
+	"path"
 	"slices"
 	"strings"
 )
@@ -15,11 +15,17 @@ import (
 // which ones depending on the system's C library; Load trims only these.
 const space = " \t\n\v\f\r"
 
-// List holds the rows of one or more tables: each name, which may be a
-// pattern, with its reason.
+// Row is a row of a list: a test name, which may be a pattern, and why the
+// test fails.
+type Row struct {
+	Name, Reason string
+}
+
+// List holds the rows of one or more tables, one per name, in the order the
+// names first appear.
 type List struct {
-	names   []string          // in the order they first appear
-	reasons map[string]string // by name
+	rows  []Row
+	index map[string]int // by name
 }
 
 // Load adds the rows of the table in the file at path. A path that isn't a
@@ -91,36 +97,20 @@ func field(fields []string, i int) string {
 }
 
 func (l *List) add(name, reason string) {
-	if l.reasons == nil {
-		l.reasons = map[string]string{}
+	if i, ok := l.index[name]; ok {
+		l.rows[i].Reason = reason
+		return
 	}
-	if _, ok := l.reasons[name]; !ok {
-		l.names = append(l.names, name)
+	if l.index == nil {
+		l.index = map[string]int{}
 	}
-	l.reasons[name] = reason
+	l.index[name] = len(l.rows)
+	l.rows = append(l.rows, Row{name, reason})
 }
 
-// Names returns the rows' names, each once, in the order they first appear.
-func (l *List) Names() []string {
-	return slices.Clone(l.names)
-}
-
-// Lookup returns the reason of the row name matches, and whether one does.
-// The row named name itself comes first, then the first row, in the order
-// the names first appear, whose pattern matches. The shell tries the
-// patterns in its hash order instead, so when two patterns with different
-// reasons match one name, the reason it reports may differ; whether the name
-// is known never does.
-func (l *List) Lookup(name string) (string, bool) {
-	if reason, ok := l.reasons[name]; ok {
-		return reason, true
-	}
-	for _, pattern := range l.names {
-		if Match(pattern, name) {
-			return l.reasons[pattern], true
-		}
-	}
-	return "", false
+// Rows returns the rows, one per name, in the order the names first appear.
+func (l *List) Rows() []Row {
+	return slices.Clone(l.rows)
 }
 
 // Match reports whether name matches pattern, a row's name. A pattern
@@ -142,3 +132,21 @@ func Match(pattern, name string) bool {
 	}
 	return glob(pattern+".t", name) || glob(pattern+"/*", name)
 }
+
+// glob reports whether name matches pattern as the shell matches a case
+// pattern, for the patterns the lists use: "*" matches any string, "/"
+// included, and "?" any one character. path.Match's "*" stops at "/", so
+// glob hides "/" from it in both, and reads the shell's "[!" as "[^".
+//
+// decision: bracket expressions, character classes and backslash escapes
+// aren't supported, because no list uses them. They get path.Match's
+// reading, which agrees with the shell's on plain sets and escapes but not
+// on classes, a "]" or "-" at the edge of a set, an unclosed "[" or a
+// trailing backslash. A later check of known.yaml refuses such patterns.
+func glob(pattern, name string) bool {
+	ok, err := path.Match(shellPattern.Replace(pattern), strings.ReplaceAll(name, "/", "\x00"))
+	return err == nil && ok
+}
+
+// shellPattern turns a shell pattern into path.Match's, with "/" hidden.
+var shellPattern = strings.NewReplacer("/", "\x00", "[!", "[^")
