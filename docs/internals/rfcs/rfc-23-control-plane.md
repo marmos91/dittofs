@@ -332,8 +332,9 @@ make the share's existence depend on which node took the request.
 
 The API outlives the adapters on purpose: an operator watching a drain reads its
 progress through the API. A failure at any start step stops the start, closes
-what the earlier steps opened in reverse, and leaves the health endpoints
-reporting the step and its error until the process exits.
+what the earlier steps opened in reverse, and leaves `/health/ready`
+answering `not ready` and `/api/v1/health` naming the step and its error until
+the process exits.
 
 ### 2.3 The runtime reconciles; it does not take orders
 
