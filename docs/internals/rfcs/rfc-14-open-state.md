@@ -1323,6 +1323,16 @@ A server **SHOULD** offer a grant only when no other client holds the file open
 in a conflicting way, and **MUST NOT** offer one to a client without a working
 callback path, since a grant that cannot be recalled cannot be revoked in time.
 
+**No write grant on a setuid or setgid file.** A server **MUST NOT** offer a
+grant with write caching — an NFS write delegation, an SMB oplock or lease with
+write — on a file whose mode has the setuid or setgid bit, and **MUST** recall
+the write caching of any grant held on a file when a mode change sets either
+bit. A write clears both bits, and only the server can clear them: a write its
+holder buffers never reaches the server, and the Linux client does not clear
+them itself under a write delegation, so the bits would outlive the write.
+Read grants still pay for such files, which are executables, read far more
+than written.
+
 Grants pay for files one user works on: document editors (open, save, reopen),
 directory browsing (the handle grant keeps handles across the many small opens a
 browse does), builds and version control in a home directory, single-user
@@ -2068,6 +2078,7 @@ var (
 | L48 | Every durable open is recorded at `F‖id‖op‖openID` of the file or stream it opens, and every durable lock beneath its open; no other key records that a file is held open. A clone's source open is one, of its own kind, naming the destination and the clone's version: grace end never closes it, only the clone's last batch does. |
 | L49 | An NFSv4 stateid carries its type, the low 5 bits of the grace instance it was minted under, its shard and 64 random bits; the grace instance advances only on a loss of the shard's open state, never at a handover; a stateid that misses its shard's index is stale while the shard is in grace or when its bits name an earlier grace instance, and bad otherwise; a hit is served whatever its bits. |
 | L50 | An administrator's revoke releases the client's state as expiry does, but keeps its record, sessions and revoked stateids, each answered revoked until freed; a reclaim in a shard it released is refused, across a restart, until the client next takes state there, and an NLM host's revoke deletes its record. `DESTROY_CLIENTID` releases nothing: it is refused while a session or any state remains. |
+| L51 | No grant with write caching is offered on a file whose mode has the setuid or setgid bit, and a mode change that sets either bit recalls the write caching of every grant held on the file. |
 
 ## 13. Conformance
 
@@ -2111,6 +2122,7 @@ index's tiers.
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) lock replay | On a persistent open, take an exclusive lock with a sequence, drop the reply, fail the shard over, replay. Assert success, not `ErrLocked`, and one lock held. |
 | [§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens) app instance | Client A opens a file with an app instance and deny-all; client B opens it with the same app instance. Assert A's open, locks and lease are gone and B is granted; repeat with B's version not higher, assert B refused and A intact. A principal without read access to the file sends the same app instance; assert A's open is untouched and the create meets A's deny mode. A sends a second create with its own app instance; assert its first open is not closed. |
 | [§2.4](#2.4%20CachingGrant) lease key | Open a file twice from one client under one key, then under a second key. Assert the second open does not break the first's read-write-handle lease, the third does, and each break carries a higher epoch. Assert an NFS write delegation is never offered with the handle kind. |
+| [§5.4](#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays) no write grant on a setuid file | Over NFSv4 from a Linux client with delegations on, open a setuid file for write as a user other than its owner: assert no write delegation is offered, and that after a write and a close the mode has lost the setuid bit (pjdfstest `chmod/12.t`). Repeat with setgid, and with an SMB lease request for read-write caching. Grant a write delegation on a plain file, then chmod it setuid from another client: assert the delegation is recalled before the chmod returns. |
 | [§2.3](#2.3%20Lock) owners | Two NFSv4 lock-owners of one client lock one range exclusively: assert the second refused. One owner locks overlapping ranges: assert they merge, not conflict. Take an NLM lock: assert it is held with no open and refuses an overlapping NFSv4 lock. |
 | [§4.5](#4.5%20NLM%20locks%20and%20restart%20notification) NLM restart | Hold NLM locks from two hosts, fail the shard over. Assert the NSM state number rose before grace, both hosts were notified, their reclaims are granted and a non-reclaim lock is refused `ErrGrace`. Then send a restart notification from one host: assert its locks are released at once. |
 | [§2.7](#2.7%20Copy) lost copy | Start an asynchronous copy, fail the destination's shard over mid-copy, ask its status. Assert `ErrNoCopy`, never done. |

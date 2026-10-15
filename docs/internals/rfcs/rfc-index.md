@@ -347,11 +347,17 @@ until it does.
    filesystem semantics no protocol suite covers.
 4. **NFSv3 mounted with locks for the lock rows.** A `nolock` mount answers
    every lock locally, so a lock row run on it tests the client, not the server.
-5. **Fixtures use only settings RFC 13, 14 and 16 define.** No lease setting —
-   the client lease is not a setting ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)) — and no squash
+5. **Fixtures use only settings the RFCs define.** No lease setting —
+   the client lease is not a setting ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)) — no squash
    `root_to_admin`, since a share squashes none, root or all
-   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)): a fixture with a setting the server does not have
-   tests a server that does not exist.
+   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)), no switch that turns delegations off, since the server
+   offers no write grant where one would hide a POSIX semantic
+   ([RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays)), and no SMB encryption mode `preferred`, since encryption
+   is a share's flag (RFC 22 §5.1), so a suite that needs both encrypted and
+   plain traffic gets an encrypting share beside a plain one: a fixture with a
+   setting the server does not have tests a server that does not exist. Until
+   the server drops a setting, a fixture keeps it, and changes with the server
+   in the same pull request.
 6. **A known failure that passes fails the run.** The protocol RFCs' lists pass
    when exactly those checks fail; an entry that no longer fails is a list that
    no longer names the server's behaviour, and must be removed with the fix.

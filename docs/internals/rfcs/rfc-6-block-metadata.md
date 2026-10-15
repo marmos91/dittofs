@@ -532,7 +532,7 @@ tiering, or moving between buckets — `Block` gains a `Store` field then.
     FileData(file)         = { size, applied, Version, Charged, Modify, Change }   // fields of RFC 7's File value
     Hole(file, start)      = { end, version, born }
     Overwrite(file, start) = { end, version, born }
-    Removal(file, version) = { start, end, kind, cut, cursor, done, ovSpan, holeCredit, charge, fileVersion, clone }   // clone: { srcShare, src, srcOff, dstOff, len, asOf }, kind clone only
+    Removal(file, version) = { start, end, kind, cut, cursor, done, ovSpan, holeCredit, charge, shard, fileVersion, clone }   // clone: { srcShare, src, srcOff, dstOff, len, asOf }, kind clone only
 
 **FileData is not a record of its own.** It names the fields of the one `File`
 value ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) that only the write path sets: `size`, `applied`, the
@@ -1609,10 +1609,13 @@ part of the extent it reaches, from `cursor` to its own end:
 - adds to the removal record's `charge` what it changes in `Charged` — the
   bytes of each hole it drops whose give-back is owed (below), and a clone's
   lowering for each source hole it writes ([§6.6](#6.6%20Clone%20and%20server-side%20copy)) — and writes no File;
-- advances `cursor` to its end. The last sub-transaction sets `done`, folds
-  `charge` into the File's `Charged` — a release, whose File is gone, does
-  not — and in every case writes `charge` as one usage delta
-  ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)). It is the only batch that writes the File, so a writer
+- advances `cursor` to its end. The last sub-transaction sets `done` and, while
+  the File exists, folds `charge` into its `Charged` and writes `charge` as one
+  usage delta ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)). Where the File is gone — a release, or a removal
+  that finishes after its file's release — it writes neither: the release took
+  off the usage a `Charged` already low by every give-back still owed, while the
+  usage was low by the same bytes, so the usage already ends exact and a delta
+  would push it high. It is the only batch that writes the File, so a writer
   busy elsewhere in the file contends with one transaction per removal, not
   with every batch ([§5.1](#5.1%20No%20record%20is%20written%20by%20both%20paths)).
 
@@ -1734,7 +1737,10 @@ Phase 2 leaks rather than loses:
   through the share's per-shard unfinished-removal index
   `S‖id‖rr‖shard‖file‖version` — an entry the transaction that writes a
   `Removal` writes beside it and the one that **prunes** the removal deletes,
-  not the one that sets `done` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A primary's recovery lists its own
+  not the one that sets `done`. The record carries the entry's `shard`, the
+  File's shard at phase 1, since a release's prune runs with the File gone and
+  nothing else could name it; a batch move that re-keys the entry rewrites the
+  field with it ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)). A primary's recovery lists its own
   shards' entries and resumes phase 2 for a removal not done and the prune for
   one done: a release has no File and no later pass to prune it lazily, so an
   entry dropped at `done` would leave its removal record, fences, floor entry
@@ -2636,7 +2642,7 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) clone against a newer destination ref | With K forced to 2, clone into an extent; after phase 1, commit a destination ref at a version above the clone's into the extent before phase 2 reaches it — the engine refuses such writes, and this rule must hold without that refusal. Assert phase 2 leaves that ref, and the destination reads the write once the clone is done. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy), [§6.5](#6.5%20Who%20owns%20a%20ref) one cut per clone | With K forced to 2, clone a source part carved and part held only by the journal, and take a snapshot between two clone batches. Assert every cloned ref and every hole the batches write carries `born` equal to the clone's removal `cut`, and the snapshot reads either the whole clone or none of it, the journal-held runs included and never **Lost**. Repeat with a sparse source whose holes span many batches: assert the snapshot reads the source's holes, or the destination's prior content, as zeros or data and never as **Lost**, and that the destination's `Charged` and usage end at the extent's bytes less the source's holes. A clone that copies journal-held runs during phase 2 leaves them above the snapshot's hold mark. |
 | [§6.6](#6.6%20Clone%20and%20server-side%20copy) destination held | With K forced to 2, start a clone and, between two batches, punch, truncate, clone onto and unlink its destination. Assert each waits until the clone is done, the punched range then reads zeros, not cloned bytes, and the clone's `Removal` is never pruned while not done. |
-| [§6.2](#6.2%20Truncation%20and%20deallocation) phase 1 hole bound | With K forced to 4, truncate a file whose extent holds 10 holes. Assert phase 1 reads at most K holes and commits, sets `holeCredit`, and that `Charged` and usage read at or below their exact values during phase 2 and exactly them once it is done; release such a file and assert usage ends exact with no File. |
+| [§6.2](#6.2%20Truncation%20and%20deallocation) phase 1 hole bound | With K forced to 4, truncate a file whose extent holds 10 holes. Assert phase 1 reads at most K holes and commits, sets `holeCredit`, and that `Charged` and usage read at or below their exact values during phase 2 and exactly them once it is done; release such a file and assert usage ends exact with no File. Release it again while that truncate's phase 2 is still running: assert the truncate, finishing after the release, writes no usage delta and usage ends exact. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation), [§2.4](#2.4%20FileData%20and%20holes) hole credit under a busy writer | With K forced to 4, deallocate a range holding 10⁴ masked holes while a client keeps writing and flushing elsewhere in the file. Assert the removal reaches `done` within its bound, no phase-2 batch but the last writes the File, and `Charged` and usage are exact once done. A design whose batches write the File livelocks against the writer. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation) hole credit when a hole leaves by another path | With K forced to 4 and `holeCredit` set: truncate across an unwritten hole straddling the new size; deallocate a range whose edge holes the merged hole joins; write over the key of a masked hole; run a later overlapping removal that drops the first one's masked holes. In each case assert `Charged` and usage equal a recount from the file's holes once every removal is done. A design that gives a credit back only when the removal's own phase 2 drops the hole leaves `Charged` low for good. |
 | [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence) resurrection counts every chunk | Restore two chunks of one retired block in one batch. Assert the block's `live` is 2, not 1, and a later drop of one leaves it `live`. |
@@ -2817,7 +2823,7 @@ range-splitting backend's tail range.
 | **FileData** (fields of `File`) | `size` u64 · `applied` version (u128) · `Version` version (u128) · `Charged` u64 · `MaxSpan` u64, the longest hole the file has had · `MaxOverwrite` u64, the longest overwrite record it has had · `Modify`, `Change` (i64 ns) · the `File`'s `born` u64 | existence commit, which gives back a replaced masked hole's bytes when owed; removal phase 1, which lowers `Charged` and, for a deallocate, raises `MaxSpan` to its merged hole, edge holes joined, and for a clone to `len`, the longest hole its batches can write; the phase-2 transaction that sets `done`, which folds the removal's `charge` into `Charged` and, for a clone, joins the extent's edge holes and raises `MaxSpan` ([§6.2](#6.2%20Truncation%20and%20deallocation), [§6.6](#6.6%20Clone%20and%20server-side%20copy)) |
 | **Hole** | `end` u64 · `version` (u128), the operation that made it · `born` u64 (`SnapshotCut`) | existence commit; removal phase 1 (edge narrowing, a deallocate's merged hole with its edge holes joined) and phase 2 (drops; a clone's batches write the source's holes, born at the clone's `cut`) |
 | **Overwrite** | `end` u64 · `version` (u128) · `born` u64 | existence commit creates and splits; a removal masks from phase 1 and drops or narrows in phase 2; the primary's pruning deletes |
-| **Removal** | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cut` u64 (`SnapshotCut`) · `cursor` u64 · `done` bool · `ovSpan` u64, the File's `MaxOverwrite` at phase 1 · `holeCredit` bool, phase 1 found more than K holes and the masked holes' bytes are given back as they are dropped or replaced ([§6.2](#6.2%20Truncation%20and%20deallocation)) · `charge` i64, the change to `Charged` the batches have gathered, folded when `done` is set · for kind release, `fileVersion`, the deleted File's `Version`, which names its floor entry ([§6.4](#6.4%20Delete)) · for kind clone, the clone spec: `srcShare` ShareID, `src` FileID, `srcOff`, `dstOff`, `len` u64, `asOf` version (u128), the source's change version ([RFC 1 §3.2](rfc-1-journal.md#3.2%20Read)) | removal phase 1 creates; phase 2 advances and gathers `charge`; primary prunes |
+| **Removal** | `start`, `end` u64 · `kind` (truncate, deallocate, release, clone) · `cut` u64 (`SnapshotCut`) · `cursor` u64 · `done` bool · `ovSpan` u64, the File's `MaxOverwrite` at phase 1 · `holeCredit` bool, phase 1 found more than K holes and the masked holes' bytes are given back as they are dropped or replaced ([§6.2](#6.2%20Truncation%20and%20deallocation)) · `charge` i64, the change to `Charged` the batches have gathered, folded when `done` is set while the File exists · `shard`, the File's shard at phase 1, which names its `rr` entry for the prune ([§6.4](#6.4%20Delete)) · for kind release, `fileVersion`, the deleted File's `Version`, which names its floor entry ([§6.4](#6.4%20Delete)) · for kind clone, the clone spec: `srcShare` ShareID, `src` FileID, `srcOff`, `dstOff`, `len` u64, `asOf` version (u128), the source's change version ([RFC 1 §3.2](rfc-1-journal.md#3.2%20Read)) | removal phase 1 creates; phase 2 advances and gathers `charge`; primary prunes |
 | **Version index** | — (the key is `share‖bucket‖version‖file`): one entry per File at its stored `Version`, and one per unfolded directory delta | every transaction that raises a File's `Version`, deleting the entry it supersedes; a directory delta writes its own and its fold deletes it; never an offload commit |
 | **ChunkRef** (live) | `hash` (32 B, or zero ref) · `nsgen` u32 · `skip`, `length` u64 · `oldest`, `newest` versions (u128) · `born` u64 (`SnapshotCut`) | offload commit, removal phase 2, clone |
 | **ChunkRef** (history) | the ref's fields as they were, `died` set | a transaction superseding a ref a live snapshot sees |
