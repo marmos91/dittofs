@@ -1,12 +1,16 @@
 package kvstoretest
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // FuzzNamespace reads its input as a stream of namespace operations —
@@ -221,4 +225,116 @@ func compareTree(t *testing.T, fx *fs, dirs, plain []*mnode, step int, desc stri
 			t.Fatalf("step %d, %s: %v Nlink %d, model %d", step, desc, n.id, f.Nlink, n.links)
 		}
 	}
+}
+
+// Writers racing over one small tree: each runs random namespace operations
+// on shared directories and names, so they conflict and retry. Any of them
+// may fail as an operation of its own would, never otherwise; afterwards
+// every file's Nlink is its entries, every directory's link count its
+// subdirectories, and Check holds. This is the path a single sequence never
+// takes: the conflict and the retry.
+func testConcurrentNamespace(t *testing.T, kvo Opener) {
+	const writers, steps = 8, 150
+	fx := newFS(t, kvo, entity.FoldIdentity)
+	ns, files := fx.s.Namespace(), fx.s.Files()
+	var mu sync.Mutex
+	dirs, plain := []entity.Handle{fx.root}, []entity.Handle{}
+	for i := range 3 {
+		h, _ := fx.create(fx.admin, fx.root, fmt.Sprintf("d%d", i), directory(0o755))
+		dirs = append(dirs, h)
+	}
+	pick := func(rng *rand.Rand, from *[]entity.Handle) entity.Handle {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(*from) == 0 {
+			return nil
+		}
+		return (*from)[rng.IntN(len(*from))]
+	}
+	add := func(to *[]entity.Handle, h entity.Handle) { mu.Lock(); *to = append(*to, h); mu.Unlock() }
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for w := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rng := rand.New(rand.NewPCG(uint64(w), 7))
+			for range steps {
+				d, name := pick(rng, &dirs), []byte(opNames[rng.IntN(len(opNames))])
+				var err error
+				switch rng.IntN(5) {
+				case 0:
+					var h entity.Handle
+					if h, _, err = ns.Create(ctx, fx.admin, d, name, regular(0o644)); err == nil {
+						add(&plain, h)
+					}
+				case 1:
+					var h entity.Handle
+					if h, _, err = ns.Create(ctx, fx.admin, d, name, directory(0o755)); err == nil {
+						add(&dirs, h)
+					}
+				case 2:
+					if target := pick(rng, &plain); target != nil {
+						err = ns.Link(ctx, fx.admin, d, name, target)
+					}
+				case 3:
+					_, err = ns.Unlink(ctx, fx.admin, d, name)
+				case 4:
+					to := []byte(opNames[rng.IntN(len(opNames))])
+					_, err = ns.Rename(ctx, fx.admin, d, name, pick(rng, &dirs), to)
+				}
+				if err != nil && !expected(err) {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("a writer failed unexpectedly: %v", err)
+	}
+
+	// Walk the tree: every entry reachable from the root, every link count.
+	names := map[entity.FileID]uint32{}
+	queue := []entity.Handle{fx.root}
+	for len(queue) > 0 {
+		d := queue[0]
+		queue = queue[1:]
+		sub := uint64(0)
+		for l, err := range ns.Entries(ctx, fx.admin, d, 0) {
+			must(t, err)
+			names[l.Entry.Child]++
+			if l.Entry.IsDir() {
+				sub++
+				queue = append(queue, entity.NewHandle(fx.share.ID, l.Entry.Child))
+			}
+		}
+		got, err := files.Get(ctx, fx.admin, d)
+		must(t, err)
+		if got.LinkCount() != 2+sub {
+			t.Errorf("directory %v: link count %d with %d subdirectories", got.ID, got.LinkCount(), sub)
+		}
+	}
+	for _, h := range plain {
+		got, err := files.Get(ctx, fx.admin, h)
+		if errors.Is(err, entity.ErrStale) {
+			continue // released
+		}
+		must(t, err)
+		if got.Nlink != names[got.ID] {
+			t.Errorf("%v: Nlink %d, %d entries", got.ID, got.Nlink, names[got.ID])
+		}
+	}
+	must(t, fx.s.Check(ctx))
+}
+
+// expected is an error an operation meets on its own merits: a name taken
+// or missing, a directory not empty, a move under itself, a handle whose
+// file another writer removed. Anything else is a bug.
+func expected(err error) bool {
+	var se *merrs.StoreError
+	return errors.As(err, &se) || errors.Is(err, entity.ErrStale)
 }

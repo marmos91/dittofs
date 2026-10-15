@@ -68,6 +68,7 @@ func Run(t *testing.T, open Opener) {
 		{"RemovalRights", testRemovalRights},
 		{"WriteWithoutSearch", testWriteWithoutSearch},
 		{"NlinkIsExactlyItsEntries", testNlinkIsExactlyItsEntries},
+		{"ConcurrentNamespace", testConcurrentNamespace},
 		{"Rename", testRename},
 		{"RenameOver", testRenameOver},
 		{"RenameUnderItself", testRenameUnderItself},
