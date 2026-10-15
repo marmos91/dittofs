@@ -415,8 +415,8 @@ ref is a `ChunkRef` with `Died` set.
 | Blocks ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Block** | `(namespace, block name)` | GC state and `not_before`, live-chunk count, dead bytes and when they last grew, generation, size, encodings, carried chunk list | may this remote object be deleted, when, what does it carry, and how was it written? |
 | Placement ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)) | **Fence** `F_x`, `F_o` | `FileID` | the (shard, epoch) of the file's primary | is the writer on this path, or the namespace transaction guarding it, still the file's primary? |
 | Snapshots ([§6.5](#6.5%20Who%20owns%20a%20ref)) | **Cut** | `ShareID` | latest cut number `k`, newest live cut `klatest`, latest cut time, the cut a running deletion removes | which cut does a commit fall after, and must a superseded ref move to history? |
-| | **LiveCut** | `(ShareID, k)` | — | which cuts do live snapshots hold? |
-| | **Died index** | `(ShareID, died, FileID, suffix)` | — | which history must a snapshot deletion visit? One key per history record, ref or namespace ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
+| | **LiveCut** | `(ShareID, k)` | kind, share or subtree; the snapshot's ordinal; a subtree cut's covered set of shards | which cuts do live snapshots hold? |
+| | **Died index** | `(ShareID, shard, died, FileID, suffix)` | — | which history must a snapshot deletion visit? One key per history record, ref or namespace ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)) |
 | Sweep ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)) | **Put intent** | `(namespace, block name)` | domain, domain ID and epoch of the attempt, and the writer's node and node epoch for a shard | which minted names may still be put and committed? |
 | | **GC index keys** | `(namespace, block name)`, the retired one by `not_before` first, the compaction one by dead-ratio bucket first | — | which blocks are in the trash, await their delete, or are compaction candidates ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation))? Derived from the block records and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 
@@ -2652,7 +2652,7 @@ Metric names are shown without the deployment's prefix.
 | conflicts retried, by `op` | `blockmeta_conflict_retries_total` | counter |
 | removal records held, and those not done; a value that only grows means pruning or phase 2 stopped | `blockmeta_removals`, `blockmeta_removals_pending` | gauge, gauge |
 | phase-2 sub-transactions, by `kind`, and refs per sub-transaction | `blockmeta_batches_total`, `blockmeta_batch_refs` | counter, histogram |
-| history refs held, per share | `blockmeta_history_refs` | gauge |
+| history refs held, per share, under RFC 25's worst-n rule | `blockmeta_history_refs` | gauge |
 
 An underflow logs the record at `Error`. An audit mismatch logs the record, its
 stored and recomputed counts, at `Error` when low (sweep hazard) and `Warn` when
@@ -2892,7 +2892,7 @@ range-splitting backend's tail range.
 | **Namespace history** (RFC 7's records) | the record's value as it was, `died` in the key | a transaction superseding a record a live snapshot sees ([§6.5](#6.5%20Who%20owns%20a%20ref)) |
 | **Fence F_x / F_o** | `shard` ShardID and `epoch` u64: the (shard, epoch) of the file's primary | new primary; removals and releases; guarded by namespace transactions |
 | **Cut** | `k` u64 · `klatest` u64 · `cut time` (i64 ns) · `deleting` cut u64 (zero when none runs) | snapshot cut, snapshot deletion (behind the cut gate) |
-| **LiveCut** | — | snapshot cut creates, deletion removes |
+| **LiveCut** | kind (share or subtree) · the snapshot's ordinal · a subtree cut's covered set of shards | snapshot cut creates, deletion removes |
 | **Chunk** | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation and a carrying commit repoint; prune of its block deletes |
 | **Reverse ref** | — (the key is `hash‖share‖file‖offset‖died`) | every transaction that writes or deletes a ChunkRef or History record, in the same transaction |
 | **Block** | `state` (live, retired, deleted) · `not_before` (i64 ns, store time) · `marked_at` (i64 ns, store time of the move to `deleted`) · `live` u32 · `dead` u64 · `dead_at` (i64 ns) · `generation` u8 · `size` u64 · `encodings` list of (transform ID, version, material ID, fingerprint) · `carried` list of (hash 32 B, length u32), at most `N` | offload commit, relocation create; abandonment and the listing backstop create as `retired`; every count change across zero retires or resurrects; the deleter moves to `deleted`; pruning deletes |

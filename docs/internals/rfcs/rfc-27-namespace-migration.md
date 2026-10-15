@@ -1301,11 +1301,11 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| re-home progress per share: refs left at the old generation, bytes copied, passes | `rehome_old_refs`, `rehome_bytes_total`, `rehome_passes_total` | gauge, counter, counter |
+| re-home progress: refs left at the old generation, per share under RFC 25's worst-n rule; bytes copied and passes | `rehome_old_refs`, `rehome_bytes_total`, `rehome_passes_total` | gauge, counter, counter |
 | move phase per namespace (`preseed`, `freeze`, `released`, none), freeze duration, and whether the GC pause record is present | `move_phase`, `move_freeze_seconds`, `move_gc_paused` | gauge, histogram, gauge |
-| namespace claim state (1 when `owned` by this installation) | `namespace_owned` | gauge |
-| claim reads naming this installation with a nonce it did not write, and starts on a copied disk; any value is an alert | `namespace_claim_copy_total` | counter |
-| GC passes stopped by the claim check or its fence; any nonzero value is an alert | `gc_claim_refusals_total` | counter |
+| namespace claim state (1 when `owned` by this installation) | `claim_owned` | gauge |
+| claim reads naming this installation with a nonce it did not write, and starts on a copied disk; any value is an alert | `claim_copy_total` | counter |
+| GC passes stopped by the claim check or its fence; any nonzero value is an alert | `claim_gc_refusals_total` | counter |
 
 Logs: each move step and publish logs at `Info` with namespace and export digest,
 and each re-home pass with its counts. A move's freeze timeout and a claim

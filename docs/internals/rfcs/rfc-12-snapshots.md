@@ -1665,9 +1665,9 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 | Answers | Metric | Type |
 | --- | --- | --- |
 | snapshot outcomes, labelled `result` = `complete`, `hold_backlog`, `reserve`, `aborted`, `failed`, and `kind` = `share`, `subtree` | `snapshot_total` | counter |
-| cut gate held, per shard | `snapshot_gate_seconds` | histogram |
-| held bytes not yet offloaded, per share and per journal, and time from cut to `complete` | `snapshot_held_bytes`, `snapshot_complete_seconds` | gauge, histogram |
-| history bytes per share; history refs and records; those dropped by deletion | `snapshot_history_bytes`, `snapshot_history_refs`, `snapshot_history_records`, `snapshot_history_dropped_total` | gauge, gauge, gauge, counter |
+| cut gate held | `snapshot_gate_seconds` | histogram |
+| held bytes not yet offloaded, per share under RFC 25's worst-n rule and per journal, and time from cut to `complete` | `snapshot_held_bytes`, `snapshot_complete_seconds` | gauge, histogram |
+| history bytes per share, under RFC 25's worst-n rule; history refs and records; those dropped by deletion | `snapshot_history_bytes`, `snapshot_history_refs`, `snapshot_history_records`, `snapshot_history_dropped_total` | gauge, gauge, gauge, counter |
 | policy ticks, labelled `result` = `taken`, `skipped`, `pruned`, `locked` | `snapshot_policy_total` | counter |
 | deletions refused or deferred, labelled `reason` = `locked`, `held`, `busy` (another deletion of the share running), `moving` | `snapshot_delete_refused_total` | counter |
 | use records released at their deadline, labelled `reader` = `backup`, `clone`, `restore` | `snapshot_use_abandoned_total` | counter |
@@ -1675,7 +1675,7 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 | history moves retried on a conflict with a deletion's `LiveCut` | `snapshot_history_conflicts_total` | counter |
 | moves of files refused because a subtree snapshot covers the shard | `snapshot_subtree_move_refused_total` | counter |
 | cuts refused by the gate's ceiling; consecutive skipped ticks per policy, a health condition at 3 | `snapshot_gate_refused_total`, `snapshot_policy_skipped_consecutive` | counter, gauge |
-| governance-lock overrides, labelled by principal; any value is an audit event | `snapshot_lock_overrides_total` | counter |
+| governance-lock overrides; each is also an `admin` event-stream record naming the principal (RFC 25) | `snapshot_lock_overrides_total` | counter |
 
 Logs: each cut, completion and abort logs at `Info` with share, namespace and
 snapshot. A refused cut and a failed snapshot log at `Warn`, naming the bound; a

@@ -161,7 +161,7 @@ The whole cluster, with every role and what it shares:
   [RFC 10 §2.1](rfc-10-journal-replication.md#2.1%20Terms). A call carrying an
   older one is refused.
 - **Route envelope**: what every forwarded call carries: request ID, shard and
-  epoch, sending node and node epoch, hop count ([§4.3](#4.3%20The%20route%20envelope)).
+  epoch, sending node and node epoch, hop count, trace context ([§4.3](#4.3%20The%20route%20envelope)).
 - **Floating address**: a client-facing address owned by the cluster, taken
   over by a surviving protocol node ([§5.3](#5.3%20Client%20addressing)).
 - **SMB Witness**: the SMB protocol by which a cluster tells a client that an
@@ -565,6 +565,7 @@ Every call a node forwards to a primary carries one envelope:
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the front-end; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)) |
+| trace context | the sender's trace ID, parent span ID and sampled flag (RFC 25 §6.2); never part of the request ID |
 
 - The primary **MUST** refuse a call whose epoch is not its current one for the
   shard ([§6](#6.%20Learning%20primaries)), and one whose sending node epoch it has fenced.
@@ -921,7 +922,9 @@ table.
 ## 11. Open questions
 
 1. **Forwarding bounds.** A forwarding `protocol` node streams (item 3); how its
-   in-flight bytes are bounded is [RFC 24](rfc-index.md)'s.
+   in-flight bytes are bounded is answered by RFC 24 §5.4: the payload is the
+   request's receive buffer at the forwarding node, and the primary charges a
+   forwarded call to its own pools under the original client's key.
 2. **Striping one file across data servers** waits on per-file and range shards
    ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
 3. **The node-to-node wire format** is decided in outline: a typed RPC framework

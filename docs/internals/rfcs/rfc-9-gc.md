@@ -529,6 +529,11 @@ the compactor, the audit and collection are its sources. The scheduler batches,
 retries with backoff and jitter, bounds concurrency and applies rate limits; each
 source owns its durability, and GC's is the index keys. A restart resumes from
 them — `BD` first, then `BR` up to store time — with no scan of block records.
+The scheduler holds a fixed total of pending entries per instance — GC runs one
+instance per process, whatever the number of partitions it leases
+([§7.1](#7.1%20GC%20bounds%20its%20own%20work)) — and drops a post past it (RFC 24 §5.1); each GC source **MUST** then re-derive the dropped
+work from its index keys and cursors within its own bound, so a dropped item
+costs latency, never a deletion.
 
 ### 3.2 A retirement not yet deleted is durably recorded
 
@@ -1365,7 +1370,11 @@ refused, and every other block it passed was checked against its refs
 
 GC schedules through the shared work scheduler ([RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)), one instance
 per process, with one source each for the deleter, the compactor, the audit and
-collection of every lease partition it holds. The scheduler supplies the bounds; GC
+collection of every lease partition it holds. One instance, not one per
+partition, because the bounds below are per process and fairness is between
+namespaces: an instance per partition would multiply deletes in flight and
+pending entries by the partitions a node happens to lease, and could not share
+one budget across namespaces. The scheduler supplies the bounds; GC
 **MUST** configure and state them:
 
 - deletes in flight per process;
@@ -1916,7 +1925,7 @@ lines.
 | space amplification: stored bytes of live blocks over their referenced bytes | `gc_space_amplification_ratio` | gauge |
 | audit mismatches, labelled `check` (the rows of [§6.1](#6.1%20Coverage)) and `direction` = `high`, `low` or `lost`. Any `low` or `lost` is an alert | `gc_audit_mismatches_total` | counter |
 | refs dropped whose chunk record was absent | `gc_lost_dropped_total` | counter |
-| time since each hash range was last audited | `gc_audit_coverage_age_seconds` | gauge |
+| time since the namespace's least recently audited hash range was audited, one series per namespace; each range's age is read through the management API | `gc_audit_coverage_age_seconds` | gauge |
 | index keys missing, extra or in the wrong state, labelled `source` = `audit` or `check` | `gc_index_mismatches_total` | counter |
 | collection outcomes, labelled `source` = `intent` or `listing` and `result` = `retired` or `refused` | `gc_collection_total` | counter |
 | put intents older than one pass interval; one that only grows means abandonment stopped | `gc_intents_stale` | gauge |

@@ -1793,7 +1793,7 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| age of the newest complete backup per share, labelled `kind`; the alert for a policy that stopped | `backup_newest_age_seconds` | gauge |
+| age of the newest complete backup per share, under RFC 25's worst-n rule, with the oldest unlabelled, labelled `kind`; the alert for a policy that stopped | `backup_newest_age_seconds` | gauge |
 | copying backups' blocks, labelled `result` = `copied`, `reused`, `reresolved`; bytes put | `backup_copy_blocks_total`, `backup_copy_bytes_total` | counter, counter |
 | blocks and bytes held per block folder; blocks swept; sweeps stopped by an unreadable export, an alert | `backup_folder_blocks`, `backup_folder_bytes`, `backup_swept_total`, `backup_sweep_refused_total` | gauge, gauge, counter, counter |
 | verifications, labelled `result` = `ok`, `damaged` | `backup_verify_total` | counter |

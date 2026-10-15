@@ -310,13 +310,15 @@ Signatures are indicative; the obligations are normative. `Service` embeds the
 groups, so an adapter holds one value and a test can fake one group.
 
 `Identity` below is what the adapter authenticated — the protocol, the
-authentication flavour and Kerberos level, the principal or numeric IDs the
-credential carried, and the client's address — not yet mapped through any
-share's policy. The service resolves it per share (§4.9), and sets two fields
-on the identity it passes the metadata store: `authenticated` when the flavour
-proved who the caller is (Kerberos, an SMB session established by
-authentication), and `admin` when, on such a flavour, the share grant names the
-principal `admin` ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)). A Kerberos principal the ID mapping maps to
+authentication flavour and Kerberos level, the handshake's proof (RFC 18 §3.1)
+or the numeric IDs an `AUTH_SYS` credential carried, and the client's address —
+not yet mapped through any share's policy. The service resolves it per share
+(§4.9) into the caller RFC 18 §6.1 defines — principal, groups, share access
+narrowed by admission, and flags — and passes that to the metadata store as
+its identity. Among the flags, `authenticated` is set when the flavour proved
+who the caller is (Kerberos, an NTLMv2 SMB session), and `admin` when, on such
+a flavour, the share grant names the principal `admin`
+([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)); RFC 18 §6.5 decides which callers get each. A Kerberos principal the ID mapping maps to
 uid 0 is privileged exactly when the export leaves root unsquashed, as an
 AUTH_SYS root is. An `OpenRef` carries
 the `Identity` of the call that presents it, so calls that name only an open
@@ -335,6 +337,7 @@ type Service interface {
 	Locking
 	Volumes
 	Shares
+	Identities
 }
 
 // Clients: who is talking to us, and how to call them back (RFC 14).
@@ -400,10 +403,17 @@ type Data interface {
 
 // Locking: byte-range locks, caching grants, watches (RFC 14).
 type Locking interface {
-	Lock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive, wait, reclaim bool) error // wait: a conflict leaves a waiter (RFC 14), answered ErrLocked (NFSv4 polls) or ErrBlocked (NLM, SMB)
+	// Lock is all or nothing: if any range cannot be granted, the ranges this
+	// call took are released before it answers that range's error. wait is
+	// honoured only for a single range: a conflict leaves a waiter (RFC 14),
+	// answered ErrLocked (NFSv4 polls) or ErrBlocked (NLM, SMB).
+	Lock(ctx context.Context, o OpenRef, rs []metadata.LockRange, wait, reclaim bool) error
 	CancelLock(ctx context.Context, o OpenRef, r metadata.ByteRange) (granted bool, err error)     // drops a waiting lock, or reports it granted first; called before any answer to an ErrBlocked request but the grant (RFC 14 §2.10)
 	TestLock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive bool) (*metadata.Lock, error)
-	Unlock(ctx context.Context, o OpenRef, r metadata.ByteRange) error
+	// Unlock releases rs in order and stops at the first range the owner does
+	// not hold, ErrRangeNotLocked; the ranges before it stay unlocked. An NFSv4
+	// or NLM owner holds every sub-range it locked, so it never meets the error.
+	Unlock(ctx context.Context, o OpenRef, rs []metadata.ByteRange) error
 	ReturnGrant(ctx context.Context, c metadata.ClientID, g metadata.GrantID) error
 	AckBreak(ctx context.Context, c metadata.ClientID, g metadata.GrantID, to GrantKind) error
 	Watch(ctx context.Context, c metadata.ClientID, id Identity, dir Handle, recursive bool, filter metadata.ChangeMask) (metadata.WatchID, error)
@@ -428,7 +438,24 @@ type Volumes interface {
 	StatFS(ctx context.Context, id Identity, h Handle) (metadata.FilesystemInfo, error) // the share's, or the tighter of it and h's project (RFC 7 §2.8)
 	Quota(ctx context.Context, id Identity, h Handle, p metadata.Principal) (metadata.Usage, metadata.Quota, error) // p's own quota, else the share's default for its kind
 }
+
+// Identities: how an adapter encodes and decodes a principal — a file's owner,
+// an ACL entry's who, a quota's target, a name in an lsarpc lookup. It holds
+// no policy: squashing and grants are applied at admission (§4.9), not here.
+// The mapping is RFC 18 §4's; an adapter never derives one spelling from
+// another, and an error other than not-found reaches the client as a server
+// failure, never as an unknown principal.
+type Identities interface {
+	Spell(ctx context.Context, p metadata.Principal, scheme Scheme) (Spelling, error) // p's spelling in scheme: uid, gid, SID, Kerberos name, owner string; ErrNoSpelling when it has none
+	Find(ctx context.Context, s Spelling) (metadata.Principal, error)                 // the principal holding s; ErrUnknownPrincipal when none does
+}
 ```
+
+**A protocol request naming several ranges is one call.** An SMB `LOCK` of
+several elements is one `Lock` or one `Unlock` carrying every range in order;
+NFSv4 and NLM pass a one-element list. Rollback of a partial acquisition is the
+service's, never the adapter's: the ranges go to the file's one primary in one
+call, which takes them all or none ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)).
 
 Every open-state call names the `ClientID` it acts for, and the service
 **MUST** refuse, with `ErrNotYours`, an `OpenID`, `GrantID`, `WatchID`,
@@ -584,7 +611,7 @@ each waits on metadata commits, and none is a lack of space. One still
 `ErrDelay` with `DelayConflict` is held the same way up to `smb_pending_cap` and
 only there answered `STATUS_FILE_NOT_AVAILABLE`, the retry-later status a
 freeze or grace ends with: a conflict is contention, not a failure. One
-answered `ErrDelay` with `DelayHoldBudget` is never held: it is answered
+answered `ErrDelay` with `DelayHoldBudget` or `DelayResources` is never held: it is answered
 `STATUS_INSUFFICIENT_RESOURCES` at once (§4.3, §5.9). One answered `ErrUnavailable` — a read, query or
 IOCTL that needs content the remote tier cannot serve now — **MUST** be held and
 re-driven the same way up to `smb_pending_cap`, and only there answered
@@ -626,37 +653,64 @@ watch never reports names below a directory its holder cannot enter.
 // Events is implemented by an event sink supplied at composition. The
 // service calls it and never waits on it.
 type Events interface {
-	Quota(ctx context.Context, e QuotaEvent)   // advisory threshold crossed, soft limit exceeded, grace expired, hard refusal
+	Quota(ctx context.Context, e QuotaEvent)   // advisory threshold crossed, soft limit exceeded, grace expired, hard refusal, back under
 	Access(ctx context.Context, e AccessEvent) // one authorisation decision the audit policy selects
 }
 
 type AccessEvent struct {
-	Time     time.Time
-	Share    metadata.ShareID
-	Client   metadata.ClientID // zero for NFSv3
-	Identity Identity
-	Protocol Protocol
-	Op       Op
-	File     metadata.FileID
-	Name     []byte // the name acted on, for namespace operations
-	Want     Access
-	Allowed  bool
+	Time       time.Time
+	Share      metadata.ShareID
+	Client     metadata.ClientID // zero for NFSv3
+	Addr       netip.Addr        // the client's address
+	Identity   Identity
+	Protocol   Protocol
+	Op         Op
+	File       metadata.FileID
+	Name       []byte // the name acted on, for namespace operations
+	Want       Access
+	Allowed    bool
+	SelectedBy Selector // Policy: the share's audit policy; Entry: an audit or alarm entry of the file's ACL, which the chokepoint reports with its decision (RFC 7 §7.6, RFC 19 §3.7)
+}
+
+// QuotaEvent is one quota transition or refusal. Transitions are emitted once
+// each; hard refusals are coalesced by the sink per share, scope, subject and
+// resource (RFC 25 §4.4), which stamps the count it coalesced.
+type QuotaEvent struct {
+	Time      time.Time
+	Share     metadata.ShareID
+	Scope     QuotaScope         // User, Group, Project or Share
+	Subject   metadata.Principal // the user or group; zero for a project or share quota
+	Project   metadata.ProjectID // the tree; zero otherwise
+	Resource  QuotaResource      // Bytes or Files
+	Kind      QuotaEventKind     // AdvisoryCrossed, SoftExceeded, GraceExpired, HardRefused, BackUnder
+	Used      int64              // the usage judged, in the resource's unit
+	Soft      int64
+	Hard      int64
+	GraceEnd  time.Time          // zero when no grace runs
+	Writer    Identity           // the refused caller, for HardRefused only
 }
 ```
 
-Both streams are emitted from the one path every operation takes: access events
-where the service consults the chokepoint ([§4.6](#4.6%20One%20chokepoint)), quota events where it
-enforces the quota ([§5.6](#5.6%20Quota)). No adapter, store or engine emits either,
-so no protocol can reach a file without appearing in the audit stream.
+Both streams are emitted from the one path every operation takes, by this
+service and nothing else: access events where the service consults the
+chokepoint ([§4.6](#4.6%20One%20chokepoint)), quota events where it enforces the quota ([§5.6](#5.6%20Quota)). The chokepoint
+returns its decision, and with it whether an audit or alarm entry of the file's
+ACL selected it ([RFC 7 §7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable)); it never reads the share's audit policy.
+The service applies that policy to the decision and the entry flag, decides
+whether an event is due, and builds and emits it. No adapter,
+store or engine emits either, so no protocol can reach a file without appearing
+in the audit stream.
 
 - An event hook **MUST NOT** block or fail the operation. The sink queues, and
-  an event it cannot queue is dropped and counted (§7).
+  an event it cannot queue is dropped and counted by the sink (RFC 25's
+  `events_dropped_total`).
 - Which operations produce an access event — every decision, denials only,
-  writes and namespace changes, per share — is the audit policy, a setting
-  ([RFC 13](rfc-13-configuration.md)). With no policy, no access event is built.
-- Delivery, retention and the export format of both streams belong to the
-  planned observability RFC (RFC 25). This RFC fixes only where they are
-  emitted and what an event carries.
+  writes and namespace changes, per share — and whether the file's audit
+  entries select events too (RFC 19 §3.7) is the audit policy, a setting
+  ([RFC 13](rfc-13-configuration.md)). With no policy, no access event is built, whatever audit entries
+  a file holds.
+- Delivery, retention and the export format of both streams belong to RFC 25.
+  This RFC fixes only where they are emitted and what an event carries.
 
 ## 4. Rules
 
@@ -693,7 +747,7 @@ Adapters own, and the service never sees:
 ### 4.3 Errors are neutral values
 
 The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrPerm`, `ErrStale`,
-`ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`,
+`ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`, `ErrRangeNotLocked`,
 `ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrBlocked`, `ErrNotYours`, `ErrRevoked`, `ErrBadLayout`, `ErrWrongSecurity`, `ErrInvalid`, `ErrCrossNamespace`, `ErrCrossShard`, `ErrCrossProject`, `ErrInconsistent`, `ErrClientInUse`, `ErrClientBusy`, `ErrSeqMisordered`, `ErrStaleClient`, `ErrStaleState`, `ErrBadState`, RFC 14's `ErrNoReclaim`, `ErrReclaimRevoked`, `ErrDeletePending`, `ErrNoCopy` and `ErrBadSeqID`, `ErrIncomplete`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly", and every one the service returns is a
@@ -742,6 +796,7 @@ const (
 	DelayQuotaSlack                   // the reservation slack is spent (§5.6)
 	DelayConflict                     // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2)
 	DelayHoldBudget                   // the call's hold budget is spent, and the node's hold pool too where it may draw on it (§5.9)
+	DelayResources                    // a node memory pool is spent: the share cap, open state, or a reply reservation's deadline (RFC 24)
 )
 ```
 
@@ -754,7 +809,11 @@ or `NFS3ERR_JUKEBOX`, and NLM to `NLM4_DENIED_GRACE_PERIOD`; SMB holds the
 request pending and re-drives it (§3.2). `DelayHoldBudget` is answered at
 once and never held: NFSv4.1, the one NFS transport that passes a policy,
 maps it to `NFS4ERR_DELAY`, and SMB to `STATUS_INSUFFICIENT_RESOURCES`
-(RFC 22). **A transient refusal never becomes
+(RFC 22). `DelayResources` is answered at once and never held, like
+`DelayHoldBudget`, since holding it would spend the hold pool on the share that
+is short of memory: `NFS4ERR_DELAY` over NFSv4, `NFS3ERR_JUKEBOX` over NFSv3,
+`NLM4_DENIED_NOLOCKS` over NLM and `STATUS_INSUFFICIENT_RESOURCES` over SMB
+(RFC 24 §4.2). **A transient refusal never becomes
 `ErrNoSpace` because a deadline ran out**: a space refusal still `ErrDelay` when
 the caller's deadline passes is answered `ErrDelay` — the NFS client retries, for
 as long as the outage lasts — and an SMB request held pending for it is answered
@@ -880,7 +939,7 @@ parse or compare their contents.
 `Read` fills the caller's buffer and `Write` takes the caller's. The service
 passes them to the engine, which lends or streams below
 ([RFC 8](rfc-8-engine.md)); the service **MUST NOT** add a copy of its own. Buffer budgets
-are RFC 24's.
+are RFC 24 §3's.
 
 ### 4.6 One chokepoint
 
@@ -890,8 +949,10 @@ its only caller. An open-time grant ([RFC 7 §7.2](rfc-7-namespace-metadata.md#7
 with the open; the service evaluates it on the operations it gates.
 
 - **The share grant is checked on every call**, not only at mount or tree
-  connect. `Authorize` evaluates the caller's `ShareGrant` each time, and any
-  cache of authorisation results **MUST** include the grant, and the `via`
+  connect. The service reads the caller's grants at admission each time
+  (§4.9 step 4), `Authorize` applies the access they give as the share ceiling,
+  and any cache of authorisation results **MUST** include the share's grant-list
+  version, which a grant's deletion moves as well as its change, and the `via`
   directory below with its whole record's version — owner and group as well as
   mode and ACL, since the group bits and the sticky rule read them — in its
   key ([RFC 7 §7.5](rfc-7-namespace-metadata.md#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read)). A
@@ -980,19 +1041,32 @@ call to the share of the handle or open it names, in this order:
    `ErrStale` once being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share));
 2. the share's `ExportPolicy` flavour rule — `ErrWrongSecurity`;
 3. its client rules, against the call's address and the netgroups it is in —
-   `ErrAccess`, or a narrowing to read-only;
-4. squashing, which turns the `Identity` into the principal the call acts as on
-   this share.
+   `ErrAccess`, or a narrowing to read-only — and the policy's `ReadOnly` flag,
+   which narrows every caller to read-only;
+4. resolution, which turns the `Identity` into the caller it acts as on this
+   share: map it to a principal, squash it, collect its groups, read its share
+   access from the grants, and set its flags (RFC 18 §6). Step 3's narrowing to
+   read-only, by a client rule or `ReadOnly`, reaches the chokepoint as a field of that identity, since the
+   chokepoint evaluates no client rule (RFC 19 §3.2);
+5. the share's cap on the node's request buffers (RFC 24 §4.2) — `ErrDelay`
+   with `DelayResources`, at once — except a call that only releases state
+   (close, unlock, lock cancel, grant or layout return, freeing a state ID) or
+   reclaims it, with the operations that carry it, which steps 1–4 and
+   `Authorize` still gate (RFC 24 §4.2).
 
-Then `Authorize` evaluates the grant and the file (§4.6). **There is no call
+Then `Authorize` applies the share access as a ceiling and evaluates the file
+(§4.6). **There is no call
 that skips admission**: lock, unlock, test-lock, layout, watch, grant return and
 the calls that name only an open are admitted like a read. Admission is a
 property of the share a call reaches, not of how it reached it, so an NFSv4
 compound that `PUTFH`s a handle and one that walks the pseudo-filesystem into the
-share meet the same four checks. A compound crossing from one share into another
-is re-admitted, and re-squashed, at the crossing. The admission result may be
+share meet the same five checks. A compound crossing from one share into another
+is re-admitted, and re-squashed, at the crossing. The result of steps 1–4 may be
 cached per (share, identity) only with `ExportPolicy.Version`, the netgroups'
-versions and `ShareList.Version` in the key.
+versions, `ShareList.Version`, the share's grant-list version
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s `S‖id‖gv`) and the principals
+generation in the key, beside everything RFC 18 §7.1 lists; step 5 reads the
+pools as they are and is never cached.
 
 **A share's removal joins the calls admitted before it.** The service counts,
 per share at each primary, the calls it has admitted and not yet answered.
@@ -1290,7 +1364,9 @@ engine refuses a write for quota.
 - **Soft limits.** A quota's soft limit and grace time
   ([RFC 16](rfc-16-metadata-store.md)) are enforced here too. Crossing the
   advisory threshold or the soft limit emits a quota event (§3.3) and refuses
-  nothing; the metadata store records when the soft limit was first exceeded,
+  nothing. A grace that expires, a hard refusal and a fall back under a limit
+  each emit one too; whether they refuse is the hard limit's rule above and
+  the enforcement below. The metadata store records when the soft limit was first exceeded,
   and once the grace time has run from then the soft limit is enforced as the
   hard one. Falling back under it clears the record. The time is taken from
   the store's `Now` and compared with a later `Now`, which on a store whose
@@ -1428,11 +1504,13 @@ at one point in the source's history. The two kinds differ in atomicity:
    holds; SMB passes its connection as the key, with the per-connection
    figures RFC 22 states as a floor (`Pooled`). **Each node that counts holds
    keeps one hold pool**, which takes what pooled keys hold past their floors:
-   a sixteenth of the process's memory limit — the limit its runtime enforces,
-   or the host's memory where none is set — derived, not a setting; a test
+   a sixteenth of the process memory limit (RFC 24 §2.1) — derived, not a
+   setting; a test
    sizes it by setting that limit, 128 MiB giving an 8 MiB pool. A call
-   drawn on it is charged its write's bytes, and at least 64 KiB, one SMB
-   credit's size, so the pool bounds held calls as well as bytes. A call that
+   drawn on it is charged its whole receive reservation, buffer class and
+   overhead (RFC 24 §4.3); the per-key byte budget counts its write's bytes,
+   and at least 64 KiB, one SMB credit's size, so the pool bounds held calls
+   as well as bytes. A call that
    would pass a hard budget, or a pooled key's floor while the pool cannot take
    it, is answered `ErrDelay` with `DelayHoldBudget` at once, holds nothing,
    and is counted as a refusal (§7).
@@ -1507,15 +1585,16 @@ Metric names are shown without the deployment's prefix.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| How fast is each operation, per protocol? | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| How fast is each operation, per protocol? `outcome` is `ok`, `error` or `delay` | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| Which errors does each operation answer? | `vfs_errors_total{op, error}`, `error` one of §4.3's neutral errors | counter |
 | How often are clients told to retry? | `vfs_delayed_total{op, reason}` | counter |
 | How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{kind}`, `vfs_quota_reserved_bytes` | counter, gauge |
 | Are callbacks failing? | `vfs_callback_errors_total{kind}` | counter |
-| Are events being lost? | `vfs_events_dropped_total{stream}` | counter |
 | What is held, and how often is a call refused past its hold budget (§5.9)? | `vfs_held_calls`, `vfs_held_bytes`, `vfs_hold_pool_bytes`, `vfs_hold_refusals_total{protocol}` | gauge, gauge, gauge, counter |
 | How often is a delete on close refused after its client closed (§5.3)? | `vfs_deferred_unlink_refusals_total` | counter |
 
-Operation latency and quota metrics are owned here and nowhere else.
+Operation latency and quota metrics are owned here and nowhere else. Events
+dropped are counted at the sink, RFC 25's `events_dropped_total`, not here.
 Forwarding and epoch refusals are RFC 15's; recalls are RFC 14's.
 
 Each service call opens a trace span that parents the metadata store's and the
