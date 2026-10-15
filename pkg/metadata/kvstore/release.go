@@ -212,8 +212,12 @@ func releasedKeys(r kv.Reader, share entity.ShareID, file entity.FileID, v entit
 			if err != nil {
 				return nil, err
 			}
+			// decision: a clone not done is never pruned. It cannot meet a
+			// released file today: a clone holds its destination, whose release
+			// then answers ErrHeld, and a released file cannot be cloned onto.
+			// The skip stays so a future path to that state strands no record.
 			if m.Kind == entity.RemoveClone && !m.Done {
-				continue // a clone not done is never pruned
+				continue
 			}
 			ks = append(ks, removalKeys(share, file, m)...)
 			continue
