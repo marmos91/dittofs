@@ -13,6 +13,7 @@ depends_on:
   - "[[rfc-15-topology]]"
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-17-vfs]]"
+  - "[[rfc-20-adapters]]"
   - "[[rfc-22-smb]]"
   - "[[rfc-27-namespace-migration]]"
   - "[[rfc-28-journal-format]]"
@@ -38,27 +39,33 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
-**What this is.** NFS (Network File System) is the protocol Linux and Unix
-machines use to mount a remote directory as if it were a local disk. The client
-sends remote procedure calls over TCP — look up a name, open, read, write,
-lock, close — and the server answers each one. This RFC is the NFS adapter: the
-part of DittoFS that speaks those calls and translates each into a call on the
-filesystem service ([RFC 17](rfc-17-vfs.md)). It makes every choice the NFS
-specifications leave to the server — versions, session sizes, lease time, what
-survives a node failure — and says which record elsewhere each NFS object stands
-for. It owns no durable state of its own: names, file handles and attributes
-are [RFC 7](rfc-7-namespace-metadata.md)'s; client records, opens, locks and
+### In plain words
+
+NFS (Network File System) is the protocol Linux and Unix machines use to mount
+a remote directory as if it were a local disk. The client sends remote procedure
+calls over TCP — look up a name, open, read, write, lock, close — and the server
+answers each one. It is like ordering by phone from a warehouse: the caller asks
+one thing at a time, and the clerk on the line only takes the order and passes
+it to the stock room.
+
+This RFC is the NFS adapter, that clerk: the part of DittoFS that speaks those
+calls and translates each into a call on the filesystem service
+([RFC 17](rfc-17-vfs.md)). It makes every choice the NFS specifications leave
+to the server — versions, session sizes, lease time, what survives a node
+failure — and says which record elsewhere each NFS object stands for. It owns
+no durable state of its own: names, file handles and attributes are
+[RFC 7](rfc-7-namespace-metadata.md)'s; client records, opens, locks and
 delegations are [RFC 14](rfc-14-open-state.md)'s; which shares exist, who may
 mount them and the NFSv4 pseudo-filesystem (the read-only tree of directories
 that leads a client to each share) are [RFC 17](rfc-17-vfs.md)'s. Behind the
 service, writes land in a local journal and move to an object store in the
 background ([RFC 0](rfc-0-data-lifecycle.md)); NFS sees none of that.
 
-**How a client talks to the server, and what goes wrong.** Take the cluster:
-`protocol` nodes **P1** and **P2** hold client connections, and a storage node
-**S1** is the primary for `builds` — the one node that orders every change to
-its files. The Linux build server **build01** mounts `builds` over NFSv4.1 and
-untars a source tree of 40,000 small files.
+**The problem, with one example.** How a client talks to the server, and what
+goes wrong. Take the cluster: `protocol` nodes **P1** and **P2** hold client
+connections, and a storage node **S1** is the primary for `builds` — the one
+node that orders every change to its files. The Linux build server **build01**
+mounts `builds` over NFSv4.1 and untars a source tree of 40,000 small files.
 
 1. **Mount.** build01 connects to the cluster's floating address, which P1
    holds. It identifies itself (`EXCHANGE_ID`), gets a **client ID**, and opens a
@@ -86,44 +93,39 @@ untars a source tree of 40,000 small files.
 
 Two other designs were possible. If the session held the opens and locks, P1's
 loss would lose them too, and every client would have to reclaim its state in a
-grace period of at least 90 s, during which no new open or lock is granted. If the reply
-cache were stored and replicated, the retry would be exact, at the cost of one
-replicated write per create and rename — about 40,000 extra for this untar —
-to cover an event whose visible result matches an NFSv3 server reboot, which
-clients already tolerate. This RFC takes neither: state at the primary, reply
-cache in memory.
+grace period of at least 90 s, during which no new open or lock is granted. If
+the reply cache were stored and replicated, the retry would be exact, at the
+cost of one replicated write per create and rename — about 40,000 extra for
+this untar — to cover an event whose visible result matches an NFSv3 server
+reboot, which clients already tolerate. This RFC takes neither: state at the
+primary, reply cache in memory.
 
-```text
- build01 (Linux, NFSv4.1)  ── mounts dittofs:/builds via a floating address
-     │
-     ▼
- ┌──────────── P1 ────────────┐  dies   ┌──────────── P2 ────────────┐
- │ session, 64 slots          │ ──────► │ session 2, same client ID  │
- │ reply cache (memory only)  │ address │ reply cache starts empty   │
- └─────────────┬──────────────┘  moves  └─────────────┬──────────────┘
-               │      every call is forwarded to the file's primary
-               ▼                                      ▼
- ┌────────────────────── S1, primary of builds ──────────────────────┐
- │ RFC 14: client record, opens, locks, delegations, stateids        │
- │ RFC 7:  names, file handles, attributes, directory cookies        │
- └───────────────────────────────────────────────────────────────────┘
-```
+![build01 mounts builds through a floating address held by protocol node P1, whose memory holds session 1 with up to 64 slots and its reply cache. P1 dies; the address moves to P2, which answers NFS4ERR_BADSESSION, and build01 opens session 2 under the same client ID with an empty reply cache. Both nodes forward every call to S1, the primary of builds, which holds RFC 14's client record, opens, locks, delegations and stateids and RFC 7's names, file handles, attributes and directory cookies, untouched by the loss, so no grace runs. What is lost is exactly-once for the three requests in flight](img/rfc21-node-loss.svg)
 
 **The words you need.**
 
 - **`protocol` node / primary** — a node that holds client connections / the one
   storage node that orders a shard's writes ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
 - **File handle** — an opaque name for a file, the same on every node and after
-  restart ([RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)).
+  restart ([§7.1](#7.1%20File%20handles),
+  [RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)).
 - **Session, slot, reply cache** — NFSv4.1's way to run each request exactly
-  once: a resend in the same slot gets the stored reply.
+  once: a resend in the same slot gets the stored reply
+  ([§3.1](#3.1%20Slot%20tables), [§3.2](#3.2%20The%20reply%20cache%20is%20per%20session%2C%20in%20memory)).
 - **Client ID and lease** — who the client is, and how long its state is kept
-  while it is silent: 90 s ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)).
-- **Stateid** — the token naming an open, a lock or a delegation on the wire.
+  while it is silent: 90 s ([§5.1](#5.1%20Client%20ID%2C%20lease%20time%2C%20expiry),
+  [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)).
+- **Stateid** — the token naming an open, a lock or a delegation on the wire
+  ([§5.2](#5.2%20Stateids)).
 - **Delegation** — a promise that no other client is using a file, so the client
-  may cache it; recalled on conflict ([RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)).
+  may cache it; recalled on conflict ([§5.3](#5.3%20Delegations),
+  [RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)).
 - **Grace period** — a window after a primary loses state in which only
-  reclaims of held state are accepted ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
+  reclaims of held state are accepted ([§5.4](#5.4%20Grace%20on%20the%20wire),
+  [RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
+- **NLM, NSM** — NFSv3's side protocols: the Network Lock Manager takes locks,
+  and the Network Status Monitor tells peers of a restart
+  ([§6](#6.%20NFSv3%20locking%3A%20NLM%20and%20NSM)).
 
 **What this RFC promises.**
 
@@ -138,6 +140,49 @@ cache in memory.
   through a different node, the second sees the new data.
 - A client silent for 90 s loses all its state at once; nothing is kept for it.
   Every NFS program is served over TCP only.
+
+### Scenarios
+
+**build01 is paused for two minutes while holding a lock on `builds/.lock`.**
+
+1. Its lease is 90 s, renewed by each request; for two minutes it sends none
+   ([§5.1](#5.1%20Client%20ID%2C%20lease%20time%2C%20expiry)).
+2. The lease expires, and every open, lock and delegation it held is released
+   at once, whether or not another client wants them: there are no courtesy
+   clients ([§5.1](#5.1%20Client%20ID%2C%20lease%20time%2C%20expiry)).
+3. When it resumes, its next request is answered `NFS4ERR_BADSESSION` for its
+   session, or `NFS4ERR_BAD_STATEID` for a stateid, and it starts over.
+
+Outcome: the lock is gone when build01 resumes, even though nobody else asked
+for it.
+
+**build01 holds a delegation on `builds/Makefile` from S1, and P1 dies.**
+
+1. The delegation is held at S1, so it survives; the recall path does not. S1
+   reaches build01 through the `protocol` node the client record names for its
+   back channel, which was P1 ([§3.4](#3.4%20The%20back%20channel%20and%20where%20callbacks%20go)).
+2. A second client's conflicting request makes S1 send `CB_RECALL`. Until
+   build01 opens a session with a back channel on P2, the recall has nowhere to
+   go and fails.
+3. Once it does, the record names P2 and the recall arrives there. Had it never
+   done so, the delegation would have been revoked at the recall's deadline.
+
+Outcome: a callback follows the client to whichever node it last bound its back
+channel on.
+
+**build01 mounts `builds` over NFSv3 instead and takes an NLM lock; then S1 fails over.**
+
+1. The NLM lock is an RFC 14 lock under an anonymous open, so it conflicts with
+   NFSv4 and SMB locks like any other ([§6.1](#6.1%20NLM)).
+2. The shard's new primary raises the installation's NSM state number, durably,
+   before the shard's grace begins, and has the `protocol` node holding the
+   floating address send `SM_NOTIFY` to build01 ([§6.2](#6.2%20NSM)).
+3. build01's statd reclaims the lock in grace. NLM never says it has finished
+   reclaiming, so the shard runs its whole grace period.
+4. Had only P1 died, no lock would have been lost, and no `SM_NOTIFY` would be
+   sent.
+
+Outcome: an NFSv3 client is asked to reclaim only when state was actually lost.
 
 **How the rest is organised.** Each numbered section opens with a plain
 paragraph — what the mechanism is for and what was decided — before its rules.
@@ -160,6 +205,8 @@ Appendix C every NFSv4.2 operation.
   [RFC 14](rfc-14-open-state.md)'s; every name, handle and attribute is
   [RFC 7](rfc-7-namespace-metadata.md)'s; shares, the pseudo-filesystem and
   `SECINFO` answers are [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)'s.
+  It is built as [RFC 20](rfc-20-adapters.md) describes every adapter: its
+  lifecycle, request pipeline, codecs and connection handling.
 - NFSv4.1 sessions, their slot tables and reply caches live in the memory of
   the `protocol` node holding the connection. They are not durable: when that
   node dies, exactly-once execution is lost for the requests in flight, and a
@@ -203,8 +250,10 @@ This document **MUST NOT**:
 - decide authentication, principals or the `owner@domain` mapping — RFC 18
   (planned); or ACL (access control list) semantics — RFC 19 (planned);
 - restate the XDR (External Data Representation, the wire encoding) of RFC 1813,
-  RFC 7530, RFC 8881 or RFC 7862, or the error mapping table, which RFC 20
-  (planned) owns with [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values),
+  RFC 7530, RFC 8881 or RFC 7862, or the rows of the error table that follow
+  from those specifications, which the adapter holds and
+  [RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) keeps total over
+  [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)'s errors,
   beyond the open-state and capacity errors of §5.6, whose retry meaning is a
   protocol choice.
 
@@ -222,6 +271,8 @@ own: NFS; MOUNT, which hands an NFSv3 client a share's root handle; NLM and NSM,
 NFSv3's lock and crash-notification side protocols (§6). NFSv4 needs no side
 program; it sends operations in batches (`COMPOUND`s), each naming its minor
 version.
+
+![The NFS program family as served: on the NFSv3 side NFS v3, MOUNT v3 for a share's root handle, NLM v4 for byte-range locks and NSM v1 for crash notification are served; on the NFSv4 side v4.0 and v4.1 are served, v4.2 as the subset of section 9.3, and a minor version of 3 or above is answered NFS4ERR_MINOR_VERS_MISMATCH with nothing run. NFS v2 gets PROG_MISMATCH naming 3 to 4, and no program is served over UDP. All over TCP with one fixed 1 MiB transfer size; the port mapper answers on UDP and TCP and SM_NOTIFY is the only UDP the server sends](img/rfc21-programs.svg)
 
 | Program, version | Served | Notes |
 | --- | --- | --- |
@@ -1012,6 +1063,8 @@ wire:
 | reclaim a delegation (`CLAIM_PREVIOUS` with a delegation type), in a shard in grace | the open, without a delegation: the shard lost its grants, which are not durable ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)) |
 | reclaim a delegation in a shard not in grace that still holds it for the client | the open with the delegation as it stands, granting nothing new ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) |
 
+![When the shard of builds fails over or its primary restarts, a new grace instance starts in which only reclaims are accepted. An NFSv4.1 client is told by SEQ4_STATUS_RESTART_RECLAIM_NEEDED on every SEQUENCE reply and reclaims in every shard, its RECLAIM_COMPLETE closing reclaim for that instance only; an NFSv4.0 client gets NFS4ERR_STALE_CLIENTID on RENEW and NFS4ERR_STALE_STATEID for the lost shard's stateids, repeats SETCLIENTID and the confirm and reclaims; an NLM host is sent SM_NOTIFY by UDP from the floating address after the NSM state number is raised, and the shard runs its whole grace. A protocol node's loss alone loses nothing, runs no grace and sends no SM_NOTIFY](img/rfc21-recovery-signals.svg)
+
 **Reclaim is tracked per shard and per grace.** Clients send
 `RECLAIM_COMPLETE` once at mount, when there is nothing to reclaim, so a rule
 that counted one `RECLAIM_COMPLETE` for the client's lifetime would refuse
@@ -1104,7 +1157,7 @@ the poll decides ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)).
 
 ### 5.6 Open-state and capacity errors on the wire
 
-RFC 20 (planned) owns the full error table; these are mapped here because
+[RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) keeps the full error table total; these rows are stated here because
 which answer makes a client retry, reclaim or give up is a protocol choice.
 NLM codes are for NFSv3 locking (§6).
 
@@ -1118,7 +1171,7 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_NOSPC` for a share-wide or project quota, `NFS4ERR_DQUOT` for a user or group one | `NFS3ERR_NOSPC` and `NFS3ERR_DQUOT` likewise |
 | `ErrInvalid` — a `COPY` or `CLONE` of overlapping ranges of one file, or a `CLONE` longer than `clone_max_len` (§9.3) | `NFS4ERR_INVAL` | — |
 | `ErrCrossNamespace` — a `COPY` or `CLONE` between shares in different namespaces (§9.3) | `NFS4ERR_XDEV` | — |
-| `ErrCrossShard` — **(cluster)** a by-reference `COPY` or `CLONE` whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `COPY`: not answered with an error; the adapter copies the bytes server-side, reading at the source and writing at the destination, and answers success with the count. `CLONE`: `NFS4ERR_XDEV`, and the client copies. Never `NFS4ERR_NOTSUPP`, which Linux records as the operation missing for the whole mount | — |
+| `ErrCrossShard` — **(cluster)** a by-reference `COPY` or `CLONE` whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `COPY`: never reaches the adapter; the service copies the bytes server-side, reading at the source and writing at the destination, and the adapter answers success with the count ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). `CLONE`: `NFS4ERR_XDEV`, and the client copies. Never `NFS4ERR_NOTSUPP`, which Linux records as the operation missing for the whole mount | — |
 | `ErrInconsistent` — a store invariant the server's own state breaks, such as a constraint or a file's link count below zero, never a directory's subdirectory count, which RFC 7 recounts and reads as 0 meanwhile (App. B) ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the service raises a health condition | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrCrossProject` — a `RENAME` or `LINK` across tree quotas ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_XDEV`; `mv` copies and deletes instead | `NFS3ERR_XDEV` |
 | `ErrClientInUse` | `NFS4ERR_CLID_INUSE` | — |
@@ -1873,6 +1926,11 @@ single-node wire check: the rows marked *(1 node)* below run in the first
 release, and a row's steps that name a second node run with the cluster. The protocol suites test
 translation, and the service suite
 ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)) tests behaviour.
+
+The wire tests of [RFC 20 §8](rfc-20-adapters.md#8.%20Wire%20tests) compare this
+adapter with a reference NFS server, field by field. This RFC owns the NFS
+divergence list: each entry cites the rule here that makes DittoFS differ — no
+UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |

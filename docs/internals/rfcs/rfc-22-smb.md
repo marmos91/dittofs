@@ -17,6 +17,7 @@ depends_on:
   - "[[rfc-15-topology]]"
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-17-vfs]]"
+  - "[[rfc-20-adapters]]"
   - "[[rfc-21-nfs]]"
   - "[[rfc-28-journal-format]]"
 aliases:
@@ -41,53 +42,63 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
-**What this is.** SMB (Server Message Block) is the protocol Windows uses for
-file shares: the `\\server\share` paths in Explorer. A client signs in, connects
-to a share, opens files, and reads, writes and locks through those opens; the
-server can call the client back, for instance to take back a caching promise.
-This RFC is the SMB adapter: the part of DittoFS that speaks SMB and translates
-each request into a call on the filesystem service ([RFC 17](rfc-17-vfs.md)). It
+### In plain words
+
+SMB (Server Message Block) is the protocol Windows uses for file shares: the
+`\\server\share` paths in Explorer. A client signs in, connects to a share,
+opens files, and reads, writes and locks through those opens. The server can
+call the client back, for instance to take back a caching promise.
+
+This RFC is the SMB adapter: the part of DittoFS that speaks SMB and turns each
+request into a call on the filesystem service ([RFC 17](rfc-17-vfs.md)). It
 makes every choice the SMB specifications leave to the server — dialects,
 credits, how a durable handle is matched on reconnect, how a name made over NFS
 looks on Windows — and says which record elsewhere each SMB object stands for.
-It owns no durable state of its own: names, file IDs and attributes are
-[RFC 7](rfc-7-namespace-metadata.md)'s; opens, leases, locks and durable-handle
-identity are [RFC 14](rfc-14-open-state.md)'s; which shares exist and who may
+
+It owns no durable state of its own. Names, file IDs and attributes are
+[RFC 7](rfc-7-namespace-metadata.md)'s. Opens, leases, locks and durable-handle
+identity are [RFC 14](rfc-14-open-state.md)'s. Which shares exist and who may
 connect to them are [RFC 17](rfc-17-vfs.md)'s. Behind the service, writes land
 in a local journal and move to an object store in the background
 ([RFC 0](rfc-0-data-lifecycle.md)); SMB sees none of that.
 
-**How a client talks to the server, and what goes wrong.** Take the cluster:
-`protocol` nodes **P1** and **P2** hold client connections, and storage node
-**S1** is the primary for `profiles/alice/` — the one node that orders every
-change to those files. alice signs in to **alice-pc**, and Windows attaches her
-profile container, `profiles/alice/ODFC_alice.vhdx`: a 30 GB virtual disk with
-about 10.5 GB used, held open all day and written in 64 KiB pieces.
+Picture a cloakroom. The attendant at the counter, the adapter, knows who you
+are while you stand there. Your coat hangs on a rack out back, at the file's
+primary. If the attendant changes, you come back with your ticket within the
+time allowed and get the same coat.
+
+**The problem, with one example.** Take the cluster: `protocol` nodes **P1**
+and **P2** hold client connections, and storage node **S1** is the primary for
+`profiles/alice/` — the one node that orders every change to those files. alice
+signs in to **alice-pc**, and Windows attaches her profile container,
+`profiles/alice/ODFC_alice.vhdx`: a 30 GB virtual disk with about 10.5 GB used,
+held open all day and written in 64 KiB pieces. A connection is fragile; the
+disk must not be.
 
 1. **Negotiate and sign in.** alice-pc connects to the cluster's floating
    address, held by P1. The two agree a **dialect** (SMB 3.1.1) and the signing
    and encryption algorithms. alice-pc sets up a **session** with alice's
    Kerberos ticket; the session's keys live in P1's memory only.
 2. **Tree connect.** alice-pc connects to `\\dittofs\profiles`. Every request
-   is already signed, which the server required at negotiate. The reply
-   carries the share's flags: whether every request must also be encrypted,
-   and whether the share is continuously available.
-3. **Open.** alice-pc sends `CREATE` for the VHDX asking for three things:
-   read and write access, letting others read but not write; a **lease** with
-   read, write and handle caching (RWH), so it may cache reads, buffer writes
-   and keep the file open locally; and a **durable handle**, so the open
-   outlives a lost connection. S1 records the open and grants all three.
-   alice-pc gets a **FileId** in two halves: one derived from S1's record of
-   the open, valid on any node, and one naming an entry in P1's local table.
-4. **Network blip.** alice-pc's link drops for 10 s and its TCP connection
-   with it. The open does not go away: it lives at S1, which is still up, and
-   is durable, kept for its timeout — 60 s unless the client asked for more, at
+   is already signed, which the server required at negotiate. The reply carries
+   the share's flags: whether every request must also be encrypted, and whether
+   the share is continuously available.
+3. **Open.** alice-pc sends `CREATE` for the VHDX asking for three things: read
+   and write access, letting others read but not write; a **lease** with read,
+   write and handle caching (RWH), so it may cache reads, buffer writes and keep
+   the file open locally; and a **durable handle**, so the open outlives a lost
+   connection. S1 records the open and grants all three. alice-pc gets a
+   **FileId** in two halves: one derived from S1's record of the open, valid on
+   any node, and one naming an entry in P1's local table.
+4. **Network blip.** alice-pc's link drops for 10 s, and its TCP connection with
+   it. The open does not go away: it lives at S1, which is still up, and it is
+   durable, kept for its timeout — 60 s unless the client asked for more, at
    most 300 s. Every write S1 acknowledged is still in S1's journal.
 5. **Reconnect.** alice-pc sets up a new session, tree connects again and sends
-   a reconnect `CREATE` naming the old FileId. It succeeds only if the user,
-   the share, the client's identifiers and the lease key all match the open.
-   They do, and alice-pc has its open back. Without a durable handle the open
-   would have ended with the connection, and the disk with it.
+   a reconnect `CREATE` naming the old FileId. It succeeds only if the user, the
+   share, the client's identifiers and the lease key all match the open. They
+   do, and alice-pc has its open back. Without a durable handle the open would
+   have ended with the connection, and the disk with it.
 6. **A second sign-in.** alice signs in on a second desktop while alice-pc still
    holds the disk. Its `CREATE` conflicts with alice-pc's handle caching. The
    adapter answers `STATUS_PENDING` at once and frees its worker; S1 sends
@@ -98,50 +109,44 @@ about 10.5 GB used, held open all day and written in 64 KiB pieces.
    to no caching; its open, and the disk, stay open.
 
 If S1, not the network, had failed, the durable open would have gone with S1's
-memory, and with it any write S1 had acknowledged but not yet synced; SMB has
-no way to tell the client to resend those. So the reconnect is refused
-(`STATUS_OBJECT_NAME_NOT_FOUND`), as on a Windows server that restarted, and
-the client sees the disk fail rather than silently lose writes. Only a
+memory, and with it any write S1 had acknowledged but not yet synced. SMB has no
+way to tell the client to resend those. So the reconnect is refused
+(`STATUS_OBJECT_NAME_NOT_FOUND`), as on a Windows server that restarted, and the
+client sees the disk fail rather than silently lose writes. Only a
 **persistent** handle, offered on a continuously available share, survives the
 primary: it is stored, every write through it is synced before it is
 acknowledged, and it reconnects with its lease.
 
-```text
- alice-pc (Windows, SMB 3.1.1)      second desktop
-     │ \\dittofs\profiles                 │ CREATE ODFC_alice.vhdx
-     ▼                                    ▼
- ┌──────────── P1 ────────────┐     ┌──────────── P2 ────────────┐
- │ session keys, credits,     │     │ answers STATUS_PENDING,    │
- │ tree connect, FileId table │     │ re-runs the CREATE once    │
- │ (memory only; rebuilt on   │     │ the break has ended        │
- │  reconnect)                │     │                            │
- └─────────────┬──────────────┘     └─────────────┬──────────────┘
-               │  ▲ lease break                   │
-               ▼  │                               ▼
- ┌────────────────── S1, primary of profiles/alice/ ─────────────────┐
- │ RFC 14: the open, its deny mode, RWH lease, durable identity      │
- │ RFC 7:  names, file IDs, attributes, streams                      │
- └───────────────────────────────────────────────────────────────────┘
-```
+![Where SMB state lives: alice-pc's connection, session keys and credits, its tree connect to profiles and the volatile half of its FileId are in P1's memory only and rebuilt on reconnect; the second desktop's conflicting CREATE reaches P2, which answers STATUS_PENDING, frees its worker and re-runs the CREATE once the break ends; the open, its deny mode, RWH lease and durable identity, and the names, file IDs, attributes and streams are at S1, the primary of profiles/alice/, which sends alice-pc the lease break](img/rfc22-state-placement.svg)
 
 **The words you need.**
 
 - **`protocol` node / primary** — a node that holds client connections / the one
-  storage node that orders a shard's writes ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
+  storage node that orders a shard's writes
+  ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **Dialect** — the protocol version a connection agrees at negotiate
+  ([§3.1](#3.1%20Dialects)).
 - **Session, tree connect** — a signed-in user on one connection / that
   session's attachment to one share; both live in one node's memory and are
-  never stored.
+  never stored ([§4](#4.%20Sessions), [§5.1](#5.1%20Share%20flags)).
 - **Open and FileId** — one open of one file, and the number naming it on the
-  wire ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)).
+  wire ([§6.1](#6.1%20Opening%20a%20file),
+  [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)).
 - **Lease (or oplock)** — a promise that lets a client cache reads (R), buffer
   writes (W) and keep a closed file open (H); taken back by a **break**
-  ([RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)).
+  ([§6.2](#6.2%20Oplocks%20are%20leases), [§6.3](#6.3%20Breaks),
+  [RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)).
 - **Deny mode** — which other opens a granted open forbids, checked once, at
   open ([RFC 14 §6](rfc-14-open-state.md#6.%20A%20deny%20mode%20is%20checked%20at%20open)).
 - **Durable / persistent handle** — an open that outlives a lost connection for
-  a timeout / one that also outlives the loss of the primary.
+  a timeout / one that also outlives the loss of the primary
+  ([§6.4](#6.4%20Durable%20and%20persistent%20handles)).
+- **Held pending** — a request answered with an interim `STATUS_PENDING` and
+  finished later by the adapter, because SMB clients do not retry
+  ([§6.6](#6.6%20Service%20errors%20on%20the%20wire)).
 - **Grace period** — a window after a primary loses state in which only
-  reclaims of held state are accepted ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
+  reclaims of held state are accepted
+  ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
 
 **What this RFC promises.**
 
@@ -160,6 +165,66 @@ acknowledged, and it reconnects with its lease.
   and NFS clients of one file conflict with each other correctly.
 - A name that is not valid UTF-8 is never shown over SMB under a substitute
   spelling; it is hidden.
+
+### Scenarios
+
+**P1 fails in the middle of the day.**
+
+1. alice-pc holds the VHDX through a durable or persistent handle on P1. The
+   floating address moves to P2, and Witness tells alice-pc so
+   ([§14](#14.%20Witness)).
+2. alice-pc's session, tree connect and the volatile half of its FileId went
+   with P1 ([§4.3](#4.3%20Reconnect%20after%20a%20node%20is%20lost)).
+3. No open state was on P1, so no grace period runs
+   ([§4.3](#4.3%20Reconnect%20after%20a%20node%20is%20lost)).
+4. alice-pc signs in on P2, tree connects and reconnects its handle; the
+   reconnect is routed by the FileId's persistent half to S1
+   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)).
+
+Outcome: the disk stays attached through a new session; nothing at S1 changed.
+
+**build01 opens a file over NFS that alice-pc keeps handle-cached.**
+
+1. alice-pc holds an SMB open of a file in `profiles` under a lease with handle
+   caching, and a deny mode that refuses writers.
+2. build01 sends an NFS `OPEN` for writing. Only that deny mode would refuse it,
+   so it is not refused yet: build01 is told to retry while alice-pc's handle
+   caching is broken ([§6.3](#6.3%20Breaks)).
+3. If alice-pc's application had already closed the file and the client was only
+   keeping it, the break makes alice-pc close it, and build01's open succeeds.
+4. If the open is still in use after the break, its deny mode refuses build01's
+   open ([RFC 14 §6](rfc-14-open-state.md#6.%20A%20deny%20mode%20is%20checked%20at%20open)).
+
+Outcome: a sharing violation is decided only after the handle caching behind it
+is broken, for either protocol.
+
+**alice and bob sign in on one multi-session host.**
+
+1. Both sessions come from one machine with one `ClientGuid`, so they share one
+   client record, which holds no principal
+   ([§4.4](#4.4%20The%20client%20record%20is%20the%20machine)).
+2. After a 10 s blip, bob's session sends a reconnect naming alice's FileId. It
+   is refused `STATUS_OBJECT_NAME_NOT_FOUND`: the principal differs
+   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)).
+3. bob signs out before alice has reconnected. His logoff closes only his own
+   session's opens; alice's disconnected open keeps running its timeout
+   ([§4.4](#4.4%20The%20client%20record%20is%20the%20machine)).
+
+Outcome: one machine, one record, and each user's opens answer only to that
+user.
+
+**A name made over NFS reaches Windows.**
+
+1. On a `posix` share, build01 creates `a:b` over NFS.
+2. alice-pc lists the directory and sees the name with the colon shown as
+   U+F022, a private-use code point, and can open it
+   ([§12.3](#12.3%20Names%20SMB%20cannot%20carry)).
+3. build01 creates another name in a legacy 8-bit encoding, not valid UTF-8.
+   alice-pc does not see it at all, and cannot open it by name
+   ([§12.3](#12.3%20Names%20SMB%20cannot%20carry)).
+
+Outcome: every name is shown under its own spelling, through a reversible
+mapping, or not at all.
 
 **How the rest is organised.** §2 walks a profile container through one day —
 sign-in, steady state, a network blip, node failures, sign-out — and names the
@@ -184,6 +249,8 @@ create options, information classes, control codes and the character mapping.
   [RFC 14](rfc-14-open-state.md)'s; names, streams, file ids and attributes
   [RFC 7](rfc-7-namespace-metadata.md)'s; share flags [RFC 16](rfc-16-metadata-store.md)'s
   `ExportPolicy.SMB`; tree connect and enumeration [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees).
+  The adapter is built as [RFC 20](rfc-20-adapters.md) describes — its
+  lifecycle, request pipeline, codecs and connection handling.
 - Sessions, channels, credits and keys live in one `protocol` node's memory.
   Multichannel binds channels on that node only. After the node is lost the
   client builds a new session and reconnects its durable or persistent opens.
@@ -231,8 +298,10 @@ This document **MUST NOT**:
   security identifiers (SIDs) — RFC 18 (planned); or the mapping between a
   Windows security descriptor and the stored access control list (ACL) — RFC
   19 (planned);
-- restate MS-SMB2 framing, or the status-code mapping, which RFC 20 (planned)
-  owns with [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values);
+- restate MS-SMB2 framing, or the rows of the status table that follow from
+  MS-SMB2, which the adapter holds and
+  [RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) keeps total over
+  [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)'s errors;
 - answer DFS (Distributed File System) referrals ([RFC 17 §1.1](rfc-17-vfs.md#1.1%20Non-goals)).
 
 ## 2. A profile container, end to end
@@ -792,6 +861,11 @@ clients do not, so the adapter finishes the request itself:
    or the client sends `CANCEL`, and completes the async response with the
    result.
 
+The hold and the re-run are the pipeline mechanism of
+[RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), not handler code.
+
+![A lease break on a timeline: at 0 s the second desktop's CREATE reaches P2, which answers an interim STATUS_PENDING with an async ID and frees its worker; S1 sends alice-pc a break with ACK_REQUIRED; P2 re-runs the CREATE on a backoff of 10 ms doubling to 1 s; when alice-pc acknowledges, the re-run meets alice-pc's deny mode and the async response is STATUS_SHARING_VIOLATION; without an acknowledgement, at the 35 s break deadline the lease is set to none, the opens stay, the machine is fenced from caching for 90 s, and the request is re-run; the held CREATE's own deadline is smb_pending_deadline, 60 s by default](img/rfc22-lease-break.svg)
+
 - A break from read to none needs no acknowledgement.
 - **Handle caching is broken before a sharing violation.** A `CREATE` that
   would fail on the deny mode of another client's open, where that open is
@@ -1014,6 +1088,8 @@ if those writes were on disk — a silent hole in a virtual disk that shows up a
 corruption days later. Making writes on surviving opens stable, and refusing
 durable opens that do not survive, removes both halves of that.
 
+![What a reconnect finds after each kind of loss: a volatile open is lost after a network blip, a lost protocol node or a lost primary; a durable handle reconnects after a blip or a lost protocol node, but after the primary is lost it was only in that primary's memory and the reconnect is STATUS_OBJECT_NAME_NOT_FOUND; a persistent handle, offered only on a continuously available share, is stored and reconnects with its lease in all three cases, with every acknowledged write synced](img/rfc22-node-loss.svg)
+
 > decision: a durable v1 or v2 open is not reclaimable across the loss of its
 > primary; only a persistent open survives it. Reclaiming a durable open whose
 > unstable writes the primary lost would hand the client an open over a gap it
@@ -1131,7 +1207,7 @@ The server must answer it without doing it twice.
 
 ### 6.6 Service errors on the wire
 
-RFC 20 (planned) owns the full status table; these are mapped here because
+[RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) keeps the full status table total; these rows are stated here because
 whether a request is held pending or answered at once is the adapter's choice.
 "Held pending" means: an interim `STATUS_PENDING`, the request re-run on the
 backoff of §6.3, and the final answer by the request's deadline:
@@ -1171,7 +1247,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_DISK_FULL` at once for a share-wide or project quota, the volume the client sees; `STATUS_DISK_QUOTA_EXCEEDED` at once for a user or group one |
 | `ErrGrace` — a new open or lock in a shard in grace | held pending until grace ends, then re-run; at grace's end plus 35 s, `STATUS_FILE_NOT_AVAILABLE` |
 | `ErrInvalid` — a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_INVALID_PARAMETER` at once |
-| `ErrCrossShard` — **(cluster)** a by-reference copy or clone whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | copychunk: not answered with an error; the adapter copies the bytes server-side and reports them written. Duplicate-extents: `STATUS_NOT_SAME_DEVICE` at once, and the client copies |
+| `ErrCrossShard` — **(cluster)** a by-reference copy or clone whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | copychunk: never reaches the adapter; the service copies the bytes server-side and the adapter reports them written ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). Duplicate-extents: `STATUS_NOT_SAME_DEVICE` at once, and the client copies |
 | `ErrInconsistent` — a store invariant the server's own state breaks ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the service raises a health condition | `STATUS_UNEXPECTED_IO_ERROR` at once |
 | `ErrCrossProject` — a rename or link across tree quotas ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_NOT_SAME_DEVICE` at once; Explorer copies and deletes instead |
 | `ErrCrossNamespace` — a copy or clone between shares in different namespaces (§10) | `STATUS_NOT_SUPPORTED` at once; the client copies the bytes itself |
@@ -1871,6 +1947,13 @@ restore; here they are the share's read-only snapshots
 | §11 backup intent | A session whose principal a grant names `admin`: open a file its DACL denies without `FILE_OPEN_FOR_BACKUP_INTENT`, assert `STATUS_ACCESS_DENIED` and `MaximalAccess` without the denied right; with it, assert granted. A guest session with the intent: assert denied. As that `admin`, run `robocopy /B /SECFIX` of a tree whose files' DACLs exclude the `admin`, with other owners and groups: assert every file's owner, group and DACL restored. Set another owner through a handle opened without the intent: assert `STATUS_ACCESS_DENIED`. | privilege applied to every open of an `admin` session, or stopping at the intent `CREATE` so a restore cannot set a DACL |
 | §5.2 IPC$ | smbtorture `rpc.srvsvc`, `rpc.wkssvc`; a hidden share is absent from `NetShareEnumAll`. | |
 | §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a `protocol` node and then a primary failed mid-run: every container mounts again without a repair prompt, and every write acknowledged before the failure reads back. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
+
+**Wire tests.** The wire tests of [RFC 20 §8](rfc-20-adapters.md#8.%20Wire%20tests)
+run this adapter and a reference SMB server through the same scripts and
+compare their replies field by field. This RFC owns the SMB divergence list:
+each entry cites the rule here that makes DittoFS differ — SMB1 refused
+([§3.1](#3.1%20Dialects)), no 8.3 names ([§9.2](#9.2%20Not%20supported)), no
+compression ([§3.2](#3.2%20Algorithms%2C%20and%20what%20is%20not%20offered)).
 
 **Where each check runs.** The protocol suites run against one single node
 ([index](rfc-index.md#Test%20harness)), the first release's profile

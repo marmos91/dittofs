@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .ok{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.4}
+      .yes{font-size:14px;font-weight:700;fill:#4c8a58}
+      .no{font-size:14px;font-weight:700;fill:#b04a4a}
+    </style>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+  <text x="16" y="26" class="t">What a reconnect finds: only a persistent handle survives the loss of the primary.</text>
+
+  <rect x="210" y="44" width="216" height="54" rx="6" class="pr"/>
+  <text x="224" y="66" class="h">network blip, 10 s</text><text x="224" y="84" class="s">connection lost; P1 and S1 up</text>
+  <rect x="440" y="44" width="216" height="54" rx="6" class="pr"/>
+  <text x="454" y="66" class="h">P1 lost</text><text x="454" y="84" class="s">session gone; no grace period</text>
+  <rect x="670" y="44" width="216" height="54" rx="6" class="pr"/>
+  <text x="684" y="66" class="h">S1, the primary, lost</text><text x="684" y="84" class="s">failover; new opens wait out grace</text>
+
+  <text x="24" y="132" class="h">volatile open</text><text x="24" y="150" class="s">no durable handle</text>
+  <rect x="210" y="110" width="216" height="58" rx="6" class="bad"/>
+  <text x="224" y="134" class="no">✗</text><text x="242" y="134" class="l">lost</text>
+  <text x="224" y="154" class="s">ends with the connection</text>
+  <rect x="440" y="110" width="216" height="58" rx="6" class="bad"/>
+  <text x="454" y="134" class="no">✗</text><text x="472" y="134" class="l">lost</text>
+  <text x="454" y="154" class="s">as after any server failure</text>
+  <rect x="670" y="110" width="216" height="58" rx="6" class="bad"/>
+  <text x="684" y="134" class="no">✗</text><text x="702" y="134" class="l">lost</text>
+  <text x="684" y="154" class="s">as after any server failure</text>
+
+  <text x="24" y="202" class="h">durable handle</text><text x="24" y="220" class="s">60 s, at most 300 s</text>
+  <rect x="210" y="180" width="216" height="72" rx="6" class="ok"/>
+  <text x="224" y="204" class="yes">✓</text><text x="242" y="204" class="l">reconnects</text>
+  <text x="224" y="224" class="s">S1 lost nothing; same user, share,</text>
+  <text x="224" y="240" class="s">client and lease key, in its timeout</text>
+  <rect x="440" y="180" width="216" height="72" rx="6" class="ok"/>
+  <text x="454" y="204" class="yes">✓</text><text x="472" y="204" class="l">reconnects through P2</text>
+  <text x="454" y="224" class="s">new session; the open was at S1,</text>
+  <text x="454" y="240" class="s">never on P1</text>
+  <rect x="670" y="180" width="216" height="72" rx="6" class="bad"/>
+  <text x="684" y="204" class="no">✗</text><text x="702" y="204" class="l">refused, never a reclaim</text>
+  <text x="684" y="224" class="m">STATUS_OBJECT_NAME_NOT_FOUND</text>
+  <text x="684" y="240" class="s">it was held in S1's memory only</text>
+
+  <text x="24" y="286" class="h">persistent handle</text><text x="24" y="304" class="s">continuously available</text><text x="24" y="318" class="s">shares only</text>
+  <rect x="210" y="264" width="216" height="72" rx="6" class="ok"/>
+  <text x="224" y="288" class="yes">✓</text><text x="242" y="288" class="l">reconnects</text>
+  <text x="224" y="308" class="s">as a durable handle does</text>
+  <rect x="440" y="264" width="216" height="72" rx="6" class="ok"/>
+  <text x="454" y="288" class="yes">✓</text><text x="472" y="288" class="l">reconnects through P2</text>
+  <text x="454" y="308" class="s">as a durable handle does</text>
+  <rect x="670" y="264" width="216" height="72" rx="6" class="ok"/>
+  <text x="684" y="288" class="yes">✓</text><text x="702" y="288" class="l">reconnects with its lease</text>
+  <text x="684" y="308" class="s">stored; every acknowledged write</text>
+  <text x="684" y="324" class="s">was synced before its answer</text>
+
+  <text x="16" y="364" class="l">A reconnect is routed by the FileId's persistent half to the open's primary, never by the path.</text>
+  <text x="16" y="384" class="l">Writes through a persistent open, and on any continuously available share, are synced before they are acknowledged.</text>
+</svg>

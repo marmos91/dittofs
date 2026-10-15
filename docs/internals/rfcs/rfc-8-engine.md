@@ -2079,8 +2079,8 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   whose source and destination are in different shards is refused at
   admission with `ErrCrossShard`, whatever their primaries, changing nothing:
   two shards that share a primary at admission can be split by the next
-  failover or handover. The adapter then copies a `COPY` or copychunk's bytes
-  itself, and answers a `CLONE` or duplicate-extents request with the error
+  failover or handover. The filesystem service then copies a `COPY` or
+  copychunk's bytes itself, and the adapter answers a `CLONE` or duplicate-extents request with the error
   ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A batch moving files between shards skips a file
   with an unfinished clone, as source or destination, until the clone is done,
   as it skips a hard-linked file ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)), so no running clone is
@@ -2616,7 +2616,7 @@ var (
     ErrNoSpace     = errors.New("engine: no space, none coming")          // §10.2
     ErrInvalid     = errors.New("engine: invalid request")                // §9.1, an overlapping clone within one file, a CLONE over clone_max_len
     ErrCrossNamespace = errors.New("engine: clone across namespaces")    // §9.1, the client copies the bytes itself
-    ErrCrossShard  = errors.New("engine: clone across shards")             // §9.1, (cluster) the adapter byte-copies a COPY, and answers a CLONE with it
+    ErrCrossShard  = errors.New("engine: clone across shards")             // §9.1, (cluster) the service byte-copies a COPY; a CLONE is answered with it
 )
 ```
 
