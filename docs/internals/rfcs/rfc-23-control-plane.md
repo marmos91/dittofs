@@ -919,7 +919,8 @@ second store.
 ### 5.3 Sign-in, tokens and sessions
 
 - **Sign-in** is `POST /api/v1/auth/sign-in` with a name and password, verified
-  against the account's password secret ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). It returns an
+  against the account's password hash, a `Secret` sealed under the `storage`
+  wrapping key, which every API node opens ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). It returns an
   **access token** and a **refresh token**. A disabled or deleted account
   ([RFC 18 §3.7](rfc-18-identity.md#3.7%20Disabled%20and%20deleted%20principals)) cannot sign in, and the refusal does not say which.
 - **The access token** is a signed JWT (RFC 7519) naming the account's principal,
@@ -1181,20 +1182,14 @@ marked **(cluster)**.
 
 ## 13. Open questions
 
-1. **Sealing a protocol secret on a storage-only node.** The API runs on
-   `storage` nodes, but a password hash, an NT hash and a keytab are sealed
-   under the `protocol` wrapping key, which a storage-only node does not hold
-   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Proposed: the `protocol` wrapping key is an asymmetric pair,
-   whose public half every API node holds to seal and whose private half only
-   protocol nodes hold to unseal. That covers sealing, not verifying: sign-in
-   (§5.3) and the current-password check (§5.4) read the existing hash, which a
-   storage-only node still cannot unseal. Proposed for those: an API verifier,
-   a slow password hash of its own sealed under the `storage` wrapping key and
-   written beside the protocol secrets by the same password call; the
-   alternative is to delegate the check to a protocol node, which makes sign-in
-   depend on one. Until this is decided, password sign-in and password changes
-   are unsupported on a storage-only API node in a split deployment, and an API
-   token is the only way in there. Single-node, the question does not arise.
+1. **Sealing a protocol secret on a storage-only node** — resolved by
+   [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets). Each role's wrapping key
+   is a key pair, and every node holds the public half of every role's key, so
+   any node seals. A password hash and the signing key are sealed under the
+   `storage` key, whose private half every `storage` node, and so every API
+   node, holds: sign-in (§5.3) and the current-password check (§5.4) verify on
+   a storage-only node. The NT hash, keytabs and bind credentials stay under
+   the `protocol` key; a storage-only node seals them and never opens them.
 2. **Records this RFC adds.** Operation, idempotency, session, API token, audit
    and node-status records, and a `User`'s role and not-before time, need keys
    and codecs in [RFC 16](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed); every control-plane record needs its position
