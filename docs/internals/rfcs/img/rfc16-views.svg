@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#1b1f24}.s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .g{font-size:11px;fill:#4c8a58;font-weight:600}.w{font-size:11px;fill:#b07a2a;font-weight:600}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .wn{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="500" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Each consumer holds a narrow view; one store maps every view onto one small KV interface.</text>
+
+  <rect x="24" y="44" width="168" height="34" rx="5" class="pr"/><text x="38" y="65" class="h">NFS · SMB adapters</text>
+  <path d="M108,78 L108,104" class="ln"/><text x="116" y="96" class="s">vfs.Service only (RFC 17)</text>
+  <text x="220" y="58" class="s">Adapters never receive a store view. Inspect reads by ID without authorisation,</text>
+  <text x="220" y="72" class="s">so it goes only to trusted internal consumers.</text>
+
+  <rect x="24" y="106" width="168" height="96" rx="6" class="sv"/>
+  <text x="34" y="126" class="h">Filesystem service</text>
+  <text x="34" y="146" class="m">Namespace, Files,</text><text x="34" y="162" class="m">Capacity, OpenState</text>
+  <text x="34" y="190" class="s">RFC 7 · RFC 14</text>
+
+  <rect x="204" y="106" width="128" height="96" rx="6" class="sv"/>
+  <text x="214" y="126" class="h">Engine</text>
+  <text x="214" y="146" class="m">Existence,</text><text x="214" y="162" class="m">Content</text>
+  <text x="214" y="190" class="s">RFC 6</text>
+
+  <rect x="344" y="106" width="104" height="96" rx="6" class="sv"/>
+  <text x="354" y="126" class="h">GC</text>
+  <text x="354" y="146" class="m">Blocks</text>
+  <text x="354" y="190" class="s">RFC 6</text>
+
+  <rect x="460" y="106" width="128" height="96" rx="6" class="sv"/>
+  <text x="470" y="126" class="h">Authentication</text>
+  <text x="470" y="146" class="m">Principals</text>
+  <text x="470" y="190" class="s">this RFC</text>
+
+  <rect x="600" y="106" width="128" height="96" rx="6" class="sv"/>
+  <text x="610" y="126" class="h">Management API</text>
+  <text x="610" y="146" class="m">ControlPlane</text>
+  <text x="610" y="190" class="s">this RFC</text>
+
+  <rect x="740" y="106" width="136" height="96" rx="6" class="sv"/>
+  <text x="750" y="126" class="h">Internal tools</text>
+  <text x="750" y="146" class="m">Inspect</text>
+  <text x="750" y="164" class="s">snapshots, export,</text><text x="750" y="178" class="s">audit, repair, dump</text>
+  <text x="750" y="194" class="s">this RFC</text>
+
+  <path d="M108,202 L108,238" class="ln"/><path d="M268,202 L268,238" class="ln"/>
+  <path d="M396,202 L396,238" class="ln"/><path d="M524,202 L524,238" class="ln"/>
+  <path d="M664,202 L664,238" class="ln"/><path d="M808,202 L808,238" class="ln"/>
+
+  <rect x="24" y="240" width="852" height="84" rx="6" class="st"/>
+  <text x="38" y="262" class="h">One metadata store: metadata.Open(ctx, kv) builds it once, and the composition root hands each consumer its view</text>
+  <text x="38" y="282" class="s">entities · codecs (a version byte, then a fixed field order) · key layout · transaction-level helpers: unlinkTx, chargeUsageTx, releaseTx</text>
+  <text x="38" y="300" class="s">a leaf: it never calls the engine. An operation spanning areas calls helpers on one Txn, so it stays one Update.</text>
+  <text x="38" y="316" class="s">Records it holds mean what RFC 7 (files, names), RFC 6 (content), RFC 14 (opens, locks) and §2.3 (control plane) say.</text>
+
+  <path d="M450,324 L450,368" class="ln"/><text x="462" y="350" class="m">Update · View · Limits</text>
+
+  <rect x="150" y="370" width="600" height="50" rx="6" class="st"/>
+  <text x="164" y="390" class="h">KV: the one interface a backend implements (§4.1)</text>
+  <text x="164" y="410" class="m">Txn: Get · Scan · Before · Versions · Set · Delete · Guard · GuardRange · Now</text>
+
+  <path d="M295,420 L295,438" class="ln"/><path d="M605,420 L605,438" class="ln"/>
+  <rect x="150" y="440" width="290" height="48" rx="6" class="st"/>
+  <text x="164" y="460" class="h">embedded, on one node</text>
+  <text x="164" y="478" class="s">group commit: one sync shared by ready commits</text>
+  <rect x="460" y="440" width="290" height="48" rx="6" class="st"/>
+  <text x="474" y="460" class="h">replicated, in a cluster</text>
+  <text x="474" y="478" class="s">success only once durable on a quorum</text>
+</svg>

@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 486" width="900" height="486" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}.sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.3}
+.st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}.pe{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+.rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}.box{fill:#ffffff;stroke:#5b6472;stroke-width:1}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}
+.rarr{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#hr)}
+.garr{stroke:#4c8a58;stroke-width:1.5;fill:none;marker-end:url(#hg)}
+.aarr{stroke:#b07a2a;stroke-width:1.3;fill:none;marker-end:url(#ha)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+.rt{font-size:11px;fill:#b04a4a}.gt{font-size:11px;fill:#4c8a58}.at{font-size:11px;fill:#b07a2a}
+</style>
+<marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker>
+<marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b04a4a"/></marker>
+<marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4c8a58"/></marker>
+<marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b07a2a"/></marker>
+</defs>
+<rect width="900" height="486" fill="#ffffff"/>
+<text x="16" y="26" class="t">The entities: everything is held against a file, in its table, and names a client.</text>
+<rect x="20" y="50" width="220" height="140" rx="4" class="st"/>
+<text x="32" y="70" class="h">Client (durable)</text>
+<text x="32" y="90" class="s">ID · Owner · Verifier · Principal</text>
+<text x="32" y="106" class="s">LeaseOwner · Callback · Shards</text>
+<text x="32" y="122" class="s">indexed by (protocol, owner)</text>
+<text x="32" y="146" class="s">Expires: volatile, held by</text>
+<text x="32" y="162" class="s">the lease owner; 90 s for NFSv4</text>
+<text x="32" y="178" class="s">NLM host: no lease</text>
+<rect x="20" y="244" width="220" height="72" rx="4" class="pe"/>
+<text x="32" y="264" class="h">Unconfirmed (volatile)</text>
+<text x="32" y="284" class="s">at the protocol node that answered</text>
+<text x="32" y="300" class="s">SETCLIENTID or EXCHANGE_ID</text>
+<path d="M130 244V194" class="aarr"/>
+<text x="138" y="224" class="at">confirm writes it</text>
+<rect x="20" y="346" width="220" height="72" rx="4" class="box"/>
+<text x="32" y="366" class="h">OwnerSeq (NFSv4.0)</text>
+<text x="32" y="386" class="s">next seqid of an open- or lock-owner</text>
+<text x="32" y="402" class="s">at its home shard's primary</text>
+<rect x="276" y="44" width="604" height="394" rx="6" class="sv"/>
+<text x="290" y="64" class="h">The file's table, at the primary of the file's shard (§3)</text>
+<rect x="296" y="80" width="264" height="104" rx="4" class="pr"/>
+<text x="308" y="100" class="h">Open</text>
+<text x="308" y="120" class="s">Client · Principal · File</text>
+<text x="308" y="136" class="s">Access · Deny · Durability</text>
+<text x="308" y="152" class="s">OpenID unique, never reused</text>
+<text x="308" y="168" class="s">used only by its opener's principal</text>
+<rect x="640" y="80" width="224" height="104" rx="4" class="pr"/>
+<text x="652" y="100" class="h">CachingGrant</text>
+<text x="652" y="120" class="s">Client · File · Kind · Key</text>
+<text x="652" y="136" class="s">delegation, oplock or lease</text>
+<text x="652" y="152" class="s">one per (client, lease key, file)</text>
+<text x="652" y="168" class="s">a delegation covers no open</text>
+<path d="M560 124H636" class="arr"/>
+<text x="572" y="117" class="s">Grant</text>
+<text x="572" y="142" class="s">SMB only</text>
+<rect x="296" y="236" width="132" height="72" rx="4" class="box"/>
+<text x="306" y="256" class="h">Lock</text>
+<text x="306" y="274" class="s">Owner · Range</text>
+<text x="306" y="290" class="s">Open: zero for NLM</text>
+<rect x="440" y="236" width="132" height="72" rx="4" class="box"/>
+<text x="450" y="256" class="h">LockState</text>
+<text x="450" y="274" class="s">NFSv4 lock stateid</text>
+<text x="450" y="290" class="s">Owner · Open · Seq</text>
+<rect x="584" y="236" width="132" height="72" rx="4" class="box"/>
+<text x="594" y="256" class="h">LockWaiter</text>
+<text x="594" y="274" class="s">Open: zero for NLM</text>
+<text x="594" y="290" class="s">Arrived orders, FIFO</text>
+<rect x="728" y="236" width="136" height="72" rx="4" class="box"/>
+<text x="738" y="256" class="h">Layout (cluster)</text>
+<text x="738" y="274" class="s">Open · Ranges</text>
+<text x="738" y="290" class="s">Shard · Epoch</text>
+<path d="M362 236L362 188" class="arr"/>
+<path d="M506 236L460 188" class="arr"/>
+<path d="M650 236L520 188" class="arr"/>
+<path d="M796 236L552 188" class="arr"/>
+<text x="296" y="216" class="s">Open</text>
+<rect x="296" y="330" width="264" height="56" rx="4" class="box"/>
+<text x="308" y="350" class="h">Copy (NFSv4.2 async)</text>
+<text x="308" y="370" class="s">in the destination file's table</text>
+<rect x="600" y="330" width="264" height="56" rx="4" class="box"/>
+<text x="612" y="350" class="h">Watch</text>
+<text x="612" y="370" class="s">at its directory's shard primary</text>
+<text x="292" y="412" class="s">Each entity names its Client; lease expiry or a revoke releases</text>
+<text x="292" y="428" class="s">every open, lock, waiter, grant, layout and watch in one step (§4.3).</text>
+<path d="M276 120H244" class="arr"/>
+<text x="16" y="460" class="l">Arrows run from the entity that names to the entity it names, by the field on the arrow.</text>
+<text x="16" y="477" class="s">Closing an open releases the locks taken under it; an NLM lock names no open and is held by its owner alone.</text>
+</svg>

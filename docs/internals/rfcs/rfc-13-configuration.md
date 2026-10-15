@@ -97,29 +97,7 @@ Other settings of the same share change differently:
 - the S3 credential is never in configuration at all. The record holds a
   reference to a sealed secret, and rotating the credential changes no record.
 
-```text
- on each host (a file or the environment)
- ┌─────────────────────────────────────┐
- │ bootstrap only: node identity and   │
- │ roles, how to reach the metadata    │
- │ store, journal devices, listen      │
- │ addresses, logging, where the       │
- │ wrapping keys are                   │
- └──────────────────┬──────────────────┘
-                    │ reach
-                    ▼
- ┌──────────────── control plane, in the metadata store ────────────────┐
- │ every setting is a record at one scope:                              │
- │   installation · node · namespace · remote store · share             │
- │ each with a binding class: live · restart · next write · bound       │
- │ secrets: sealed records, referenced by name                          │
- └───▲──────────────────────────────────────────────────┬───────────────┘
-     │ written through the API, validated               │ polled; a live
-     │ (operator, or an optional provisioning file)     │ change in ≤ 5 s
-                                                        ▼
-                         each component validates again when it is built:
-                         an invalid value is refused, never defaulted
-```
+![Each host holds only its bootstrap — node identity and roles, how to reach the metadata store, local devices and scratch paths, listen addresses, logging, the memory limit and where its own roles' wrapping keys are — and uses it to reach the control plane in the metadata store, which holds every setting as a record at one of five scopes (installation, node, namespace, remote store, share) with one of four binding classes (live, restart, next write, bound), and secrets only as sealed records referenced by name; an operator writes records through the API or a provisioning file, validated before commit, and each component reads the settings generation every second, runs a live change within 5 s and validates again when built, refusing rather than defaulting an invalid value](img/rfc13-overview.svg)
 
 **The words you need.**
 
@@ -478,6 +456,8 @@ A setting has exactly one scope, the smallest thing it must be the same across:
 | **remote store** | the store configuration every namespace created on it shares: how blocks reach and sit on a service ([RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20locations%20kept%20inside)) | endpoint, bucket, credential reference, storage class, transform chain, block target, material provider, master keys |
 | **share** | what a client sees | case sensitivity, name length, `atime`, per-share journal limit, snapshot policy |
 
+![The five scopes nested inside one installation: node N1 holds its journals and their footprints; a remote store configuration holds endpoint, bucket dfs-data, credential reference, storage class, transform chain, block target, material provider and master keys, and is shared by several namespaces, each opening its own store under its own prefix with its own prefix, chunk-ID key, chunking key, data keys, Target, encryption choice and counting domain; shares such as profiles hang off a namespace and hold what a client sees; bootstrap facts, fixed and derived values have no scope; what decides a chunk's boundaries or identity is a namespace setting because deduplication compares chunks across a namespace](img/rfc13-scopes.svg)
+
 **A setting that decides stored bytes belongs to the scope content is compared
 across.** Deduplication compares chunks across a namespace ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)), so
 whatever decides a chunk's boundaries or its identity is a namespace setting. A
@@ -558,6 +538,8 @@ What changing a setting does is a property of the setting, declared with it:
 | **restart** | when the process next starts | pool sizes ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)), listen addresses |
 | **next write** | for content written from then on; stored content keeps what it was written with and stays readable | the compression stage and its settings ([RFC 5 §5.1](rfc-5-transforms.md#5.1%20Configuration%20governs%20the%20next%20write)), storage class, block target |
 | **bound** | never, once content exists | chunk-ID key, chunking key, `Target`, whether the chain encrypts, bucket, prefix, case sensitivity and entry-digest key, a backup location's mode |
+
+![The four binding classes side by side: live changes reach every node within 5 s through the settings generation read every second; restart changes apply when the process starts, and values nodes must agree on at every instant are restart, held old and new during a cluster rolling restart; next write changes govern only new content, recorded with it through the chain ID in each block name and the census, so old blocks stay readable; bound settings such as bucket, prefix, chunk-ID key, Target and whether the chain encrypts are recorded at creation, compared at every open, and refused while content exists, a change being a migration; a new endpoint or rotated credential for the same bucket is not a change but must be proven by finding the namespace claim](img/rfc13-binding-classes.svg)
 
 **A live change reaches every node within 5 s.** Every change to a setting or
 `Secret` record raises one installation-wide **settings generation**, in the
@@ -715,6 +697,8 @@ own roles:
 | --- | --- | --- |
 | `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials | the `protocol` role: authentication |
 | `storage` | remote-tier credentials, references to master keys | the `storage` role: the remote tier and the material provider |
+
+![Secret records in the metadata store are sealed per role: a protocol-only node holds only the protocol wrapping key, so it unseals password hashes, NT hashes, keytabs and identity-provider bind credentials but cannot open the storage-sealed remote-tier credentials it reads; a storage node unseals those with the storage key; rotating the bucket credential seals a new version under the same reference while the old stays resolvable, raises the generation so each node re-resolves within 5 s, proves the value and reports it, waits until every node reports the new version, then deletes the old one and reports it may be revoked](img/rfc13-secrets.svg)
 
 So a compromised protocol-only node, which must read the KV, holds sealed
 remote-tier credentials it cannot open. A deployment **MAY** split a role's key
