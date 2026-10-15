@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -163,4 +164,14 @@ func openStoreOver(t *testing.T, wrap func(kv.KV) kv.KV) *Store {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// A server-wide counter that has issued every ID says so as itself, not as
+// a share out of file numbers.
+func TestIDsBounded(t *testing.T) {
+	s := openStore(t)
+	rows(t, s, idKey(idOpen), encodeCounter(math.MaxUint64-numberRange+1))
+	if _, err := s.nextID(context.Background(), idOpen); !errors.Is(err, ErrIDsExhausted) {
+		t.Fatalf("an exhausted counter: %v", err)
+	}
 }

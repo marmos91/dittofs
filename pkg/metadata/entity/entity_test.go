@@ -185,3 +185,11 @@ func TestHandleOneSpelling(t *testing.T) {
 		}
 	}
 }
+
+// An NLM host's new NSM state number is a new verifier for the same owner.
+func TestNSMVerifier(t *testing.T) {
+	a, b := NSMVerifier(3), NSMVerifier(5)
+	if a == b || a != NSMVerifier(3) || a[7] != 3 || a[0] != 0 {
+		t.Errorf("verifiers %x and %x", a, b)
+	}
+}

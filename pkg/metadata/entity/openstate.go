@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"encoding/binary"
 	"errors"
 	"time"
 )
@@ -47,8 +48,11 @@ type Client struct {
 	// Owner is the client's own name for itself: NFSv4's co_ownerid or
 	// SETCLIENTID id, SMB's ClientGuid, NLM's host name. Owner and Protocol
 	// are unique, and indexed.
-	Owner    []byte
-	Verifier [8]byte // NFSv4 boot verifier; a new one under the same owner is a reboot
+	Owner []byte
+	// Verifier is what tells two boots of one owner apart: NFSv4's boot
+	// verifier, or an NLM host's NSM state number (NSMVerifier). A new one
+	// under the same owner is a reboot.
+	Verifier [8]byte
 	// Principal established the client ID over NFSv4. Zero for SMB, whose
 	// record names a machine and holds many users' sessions, and for NLM.
 	Principal Principal
@@ -56,6 +60,14 @@ type Client struct {
 	CSSeq     uint32    // NFSv4.1: the last CREATE_SESSION applied
 	CSReply   []byte    // that CREATE_SESSION's reply, opaque here
 	Revoked   bool      // an administrator revoked its state
+}
+
+// NSMVerifier is an NLM host's NSM state number as its client's Verifier:
+// big-endian in the last four bytes, so a host that restarts with a new
+// number is a reboot of the same owner.
+func NSMVerifier(state uint32) (v [8]byte) {
+	binary.BigEndian.PutUint32(v[4:], state)
+	return v
 }
 
 // MachCred is NFSv4.1's SP4_MACH_CRED: the machine principal and the

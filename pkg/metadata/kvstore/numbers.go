@@ -14,6 +14,10 @@ import (
 // the bound.
 var ErrNumbersExhausted = errors.New("kvstore: share has no numeric file ids left")
 
+// ErrIDsExhausted is a server-wide counter of client, open or lock IDs that
+// has issued every ID it can.
+var ErrIDsExhausted = errors.New("kvstore: no client, open or lock IDs left")
+
 const (
 	// maxNumber bounds numeric file ids below 2^48, so a snapshot's id can
 	// carry an ordinal above them.
@@ -55,16 +59,19 @@ const (
 )
 
 // nextID issues a client, open or lock ID never issued before in this
-// installation, never zero, which names none.
+// installation, never zero, which names none. The IDs come from server-wide
+// counters under IDS‖kind, reserved in ranges as file numbers are, so an open
+// does not write the counter. A lock ID needs to differ only from the other
+// locks under its open and offset; the server-wide counter gives more than
+// that, at no extra cost. An NFSv4 lock state's ID is random, never one of
+// these.
 //
-// decision: the IDs come from server-wide counters under a key of their own,
-// IDS‖kind, which the format did not name: an ID that must be unique and
-// never reused, but not random, needs a counter, and reserving it in ranges
-// keeps an open from writing it. Move the counters if the format gives them
-// a home.
+// ponytail: in a cluster these three keys are the only server-wide keys
+// opens contend on, once per range. Widen the ranges, or give each node its
+// own, if their reservations show in a profile.
 func (s *Store) nextID(ctx context.Context, kind byte) (uint64, error) {
 	for {
-		n, err := s.numbers.next(ctx, s.kv, idKey(kind), true, math.MaxUint64-numberRange, ErrNumbersExhausted)
+		n, err := s.numbers.next(ctx, s.kv, idKey(kind), true, math.MaxUint64-numberRange, ErrIDsExhausted)
 		if err != nil || n != 0 {
 			return n, err
 		}
