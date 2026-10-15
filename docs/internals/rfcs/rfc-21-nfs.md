@@ -7,6 +7,7 @@ depends_on:
   - "[[rfc-0-data-lifecycle]]"
   - "[[rfc-7-namespace-metadata]]"
   - "[[rfc-8-engine]]"
+  - "[[rfc-11-ownership]]"
   - "[[rfc-12-snapshots]]"
   - "[[rfc-13-configuration]]"
   - "[[rfc-14-open-state]]"
