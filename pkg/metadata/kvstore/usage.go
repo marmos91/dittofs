@@ -18,6 +18,11 @@ import (
 // refs still at an old namespace generation, which are reported, never
 // charged. It is written under a key of its own, so it reads nothing and
 // conflicts with nothing; the shard's fold adds it to the totals.
+//
+// ponytail: refs at an old namespace generation are counted here and in the
+// shard's totals, where the format gives a re-home's old refs a delta range
+// and a total of their own, so its finish can guard each range empty. Move
+// them there when a re-home exists to need it.
 type usageDelta struct {
 	Share      entity.Usage
 	History    int64

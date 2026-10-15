@@ -63,6 +63,10 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 // point read of each of the path's prefixes, a descendant by a guarded scan
 // of the rows below it, so two shares created at once on nested paths cannot
 // both commit, in either order.
+//
+// ponytail: a new share writes no shard list: every share has one shard,
+// zero, which callers name directly. Write the list in the transaction that
+// creates each shard once a share can have more than one.
 func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
 	if s.ID.IsZero() || s.Root.IsZero() {
 		return merrs.NewInvalidArgumentError("a share needs an ID and a root")

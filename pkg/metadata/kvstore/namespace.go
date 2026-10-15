@@ -13,6 +13,11 @@ import (
 
 // Namespace is the filesystem service's view of names: lookup, listings,
 // and the operations that add and remove entries.
+//
+// ponytail: its transactions do not read the files' existence fences, which
+// order them against a commit by another primary of the file's shard. On
+// one node there is no other primary; read the fence once a shard can change
+// hands.
 type Namespace struct{ s *Store }
 
 func (s *Store) Namespace() Namespace { return Namespace{s} }

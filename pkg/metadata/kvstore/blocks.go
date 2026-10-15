@@ -72,6 +72,10 @@ func (b Blocks) Due(ctx context.Context, now time.Time) iter.Seq2[entity.BlockNa
 // that record, so a ref committed concurrently conflicts with the move. A
 // block found referenced is not deleted: its counts are raised from the
 // reverse index, which resurrects it, and its error is ErrReferenced.
+//
+// ponytail: it does not read the namespace's GC pause, which a namespace
+// move sets so no block it ships is deleted under it. No move exists yet;
+// read the pause here when one does.
 func (b Blocks) MarkDeleted(ctx context.Context, names []entity.BlockName) []error {
 	errs := make([]error, len(names))
 	for i, name := range names {
