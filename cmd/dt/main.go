@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
@@ -79,12 +80,19 @@ func newList() *cobra.Command {
 				Unmet       []string            `json:"unmet,omitempty"`
 				UnmetByTest map[string][]string `json:"unmet_by_test,omitempty"`
 			}
+			// Needs are checked the first time a listed suite names them,
+			// once each, since some probes take seconds.
 			root, _ := repoRoot()
-			checked := checkNeeds(root, r)
+			checked := map[string]error{}
 			unmet := func(list []string) []string {
 				var out []string
 				for _, n := range list {
-					if checked[n] != nil {
+					err, ok := checked[n]
+					if !ok {
+						err = needs.Check(root, n)
+						checked[n] = err
+					}
+					if err != nil {
 						out = append(out, n)
 					}
 				}

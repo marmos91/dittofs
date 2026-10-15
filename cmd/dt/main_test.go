@@ -145,7 +145,7 @@ func checkout(t *testing.T) (here, other string) {
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
-		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\"] } }\n"
+		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "test"), 0o755); err != nil {
 		t.Fatal(err)

@@ -140,6 +140,9 @@ func TestServiceFallback(t *testing.T) {
 // running where it has one, never by installing it here; the linux need in
 // dtc too; a service by starting it with dt services.
 func TestHint(t *testing.T) {
+	// A tool with no program on any platform, so the rule is checked here too.
+	tools["nowhere"] = map[string]string{}
+	t.Cleanup(func() { delete(tools, "nowhere") })
 	for need, bins := range tools {
 		if got := Hint(need); (bins[runtime.GOOS] == "") != (got == "run it on Linux") {
 			t.Errorf("%s on %s: %q", need, runtime.GOOS, got)
