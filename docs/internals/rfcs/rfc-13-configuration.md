@@ -286,10 +286,10 @@ checked against every journal, and every journal, one added since included,
 against the path — since a scratch write that fills a journal's space answers
 its writers no space ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Free space is shared when
 the two lie in one filesystem, one pool or one thinly provisioned volume group,
-not only on one device. A refused path does not stop the node: a refused spill
+not only on one device. A refused spill or salvage path does not stop the node: a refused spill
 path spills nothing, and a refused salvage path fails each export as
-[RFC 1 §3](rfc-1-journal.md#3.%20Interface) has it; the one exception is a refused events path, which
-refuses the start, as RFC 25 §4.6 requires. A value set for the whole
+[RFC 1 §3](rfc-1-journal.md#3.%20Interface) has it; a refused events path refuses the start, as
+RFC 25 §4.6 requires. A value set for the whole
 installation could not be checked this way, since one node's scratch disk can
 be another's journal filesystem.
 
@@ -315,7 +315,7 @@ only, and **MUST NOT** be on by default.
 ### 2.3 A record is versioned
 
 Each record carries a **generation**, raised by every change, and a **schema
-version**. A component reports, per record, the generation it runs
+version**. A node reports, per kind (`settings`, `shares`, `principals`), the generation it has applied, and the records it refused (RFC 23 §2.4)
 ([§8](#8.%20Observability)). A reader that meets a schema version it does not know refuses
 the record rather than reading the fields it recognises: a field it skipped may
 be the one that mattered.
@@ -757,7 +757,7 @@ type SecretProvider interface {
   credential writes a new value under the same reference, as a new version of
   the `Secret` record; the previous version stays resolvable. The change raises
   the settings generation ([§5](#5.%20Binding%20classes)), so every node using the reference
-  resolves it again within the live bound and reports the version it now holds
+  resolves it again within the live bound and records the version it now holds in its node-status record (RFC 23 §2.4)
   ([§8](#8.%20Observability)). Only once every such node reports the new version does the
   provider delete the old one, and the control plane report that the old
   credential may be revoked at its service; revoking it earlier fails the nodes
@@ -867,7 +867,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) break-glass principal | Create an `immutable` record naming a break-glass principal whose policy exempts exactly it: accepted. Exempt a second principal as well, or name the location's credential or the inspection credential as the break-glass one: refused. Omit the field with a policy that exempts anyone: refused. Let the break-glass role's trust admit the installation's account, or scope the legal-hold deny to the bucket rather than its objects, or add a condition to it: each refused. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) health object re-put | Rotate an `immutable` location's credential and prove it; make the health object's recorded version missing — on a fault-injecting test service, since no principal can delete a compliance-locked version before its retain-until; open: assert a new version is put under the rotated credential and recorded. Open under a credential never proven: refused, nothing put. |
 | [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) backup location credential | Rotate an immutable and a mutable backup location's credential: assert both accepted, proven by the health object's recorded version and nonce. Point the record at another bucket: refused. A design that looks for a namespace claim at a backup location refuses every rotation. |
-| [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) scratch paths | Start a node with `backups.spill_path` on a journal's filesystem, then on a second subvolume of the journal's pool, then on a separate filesystem and add a journal on it before the next start; assert each is refused at start, the node serves, nothing spills, and a stranded tag's export with `salvage.path` refused the same way is a failed export reported as a health condition. Set either path as a record field: refused. |
+| [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) scratch paths | Start a node with `backups.spill_path` on a journal's filesystem, then on a second subvolume of the journal's pool, then on a separate filesystem and add a journal on it before the next start; assert each is refused at start, the node serves, nothing spills, and a stranded tag's export with `salvage.path` refused the same way is a failed export reported as a health condition. Set either path as a record field: refused.  Start one with `events.path` on a journal's filesystem: assert the start is refused. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) no host override | Set a record field in the host's environment. Assert it is refused at start, not applied. |
 | [§2.3](#2.3%20A%20record%20is%20versioned) schema | Present a record with a newer schema version. Assert refused. |
 | [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) provisioning | Start a node with a file declaring a namespace, a share and a setting. Assert all three exist and are marked managed. Edit the share through the API; assert refused, naming the file. Change the file and reload; assert applied. Remove the share from the file; assert it stays, unmanaged; add `prune: true`; assert deleted. |
@@ -887,7 +887,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) version gate | Run two nodes; register a third whose range excludes an active version; assert it refuses to start, naming the format. Upgrade one node's binary; raise an active version; assert refused, naming the other node. Upgrade it; assert the raise is accepted. Start the old binary; assert it refuses. A design without a recorded active version accepts the first raise. |
 | [§7](#7.%20Secrets) user secrets | Create a user with a password, rotate it once, delete the user. Read the store's raw keys: assert no version of either secret remains, and a restart mid-`DeleteUser` still leaves none once it resumes. |
 | [§7](#7.%20Secrets) rotation | Rotate a credential while two nodes use it. Assert both report the new version within 5 s, the old version stays resolvable until both do, and only then is it deleted. Rotate a wrapping key with both keys in every bootstrap; assert every `Secret` names the new key ID before the old key can be removed. |
-| [§3](#3.%20Scopes) scope forms | Parse Appendix B's scope column. Assert every entry is one of the five scopes in one of §3's three forms, or "—" with a class of fixed, derived or bootstrap. |
+| [§3](#3.%20Scopes) scope forms | Parse Appendix B's scope column. Assert every entry is one of the five scopes in one of §3's three forms, a shard override counting as a refinement of share (§3), or "—" with a class of fixed, derived or bootstrap. |
 | [§6](#6.%20Validation) block target range | Set the block target to 512 KiB and to 128 MiB. Assert both refused, naming the field and the range; assert 1 MiB and 64 MiB accepted. |
 
 ## 10. Edits this document asks of other RFCs
@@ -963,7 +963,7 @@ Descriptive, for the refactor.
 
 ## Appendix B — the settings
 
-Every setting the storage RFCs name, with its scope and class. A default marked
+Every setting the RFCs name, with its scope and class. A default marked
 "proposed" is a starting value awaiting a measurement, which every such row names
 after "settled by"; the first reference-box run replaces it under the index's rule
 ([Test tiers](rfc-index.md#Test%20tiers)), read for a setting default as the
@@ -1098,6 +1098,7 @@ supplies one before the setting is built.
 | staging budget: raw transfers held between fetch and upload by every copy and by GC's relocation, one pool per process, in memory and then spilled to disk | [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound), [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | — | derived | as [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) derives it, from the copy flow's cap in the fetcher's pool; staging above it spills under `backups.spill_path`, and a reservation waits once memory plus spill reach `backups.spill_max`, or at the budget when no spill path is set; the spill is cleared at start |
 | `backups.spill_path`: directory staging spills to above its memory budget | [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | none: unset, nothing spills and staging waits at the memory budget. Checked against the journals at every start in both directions and refused if it shares space with one ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)); a deployment choice, not a measurement |
 | `salvage.path`: directory stranded journal tags are exported to | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | none: unset, every export fails and is reported, and the tags stay stranded. Checked as `backups.spill_path` is; a deployment choice, not a measurement |
+| `events.path`: directory the node spools its event streams to | RFC 25 §4.6 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required; refused on a journal's filesystem, which refuses the start |
 | `backups.spill_max`: memory plus spill at which a staging reservation waits for staging to drain, one total per process across every copy and GC's relocation ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | installation | live | proposed: 64 GiB; settled by: the spill [RFC 26 §6.5](rfc-26-catalog-backups.md#6.5%20Benchmarks%20and%20targets)'s daily copying backup reaches from a source faster than its folder |
 | `backups.max_copy_time`: bound on one copy attempt; a successor builds on a failed one | [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step) | installation | live | proposed: 48 h; settled by: the longest incremental copy attempt in [RFC 26 §6.5](rfc-26-catalog-backups.md#6.5%20Benchmarks%20and%20targets)'s daily copying backup at `backups.copy_rate`, which selects the value, since an attempt cut short fails into a successor that builds on it rather than losing its work; a first copy spans as many attempts as it needs, so it does not size this |
 | `existence_age`: longest a synced write's existence waits for the group commit | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) | installation | live | proposed: 1 s; settled by: the sync bound it matches under the `bounded` policy ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), and E5/E7's existence transactions per second at 1 s and shorter. A `standard` share has no sync bound; its cut syncs the share's streams with the gate open, so the gate covers only the residue ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), and this row assumes that pre-sync |

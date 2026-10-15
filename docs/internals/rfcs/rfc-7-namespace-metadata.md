@@ -896,7 +896,7 @@ type Quota struct {
 	Hard      Limit         // refused beyond it
 	Soft      Limit         // allowed beyond it for Grace, then refused as Hard
 	Grace     time.Duration // how long usage may stay above Soft
-	Advisory  Limit         // never refused: crossing it only emits an event
+	Advisory  Limit         // never refused: crossing it only produces a quota event, which the filesystem service emits (§7.6)
 }
 
 // Limit is a byte and a file count; zero in either means no limit on it.
@@ -1008,7 +1008,7 @@ principal gaining or losing a quota of its own: the time becomes the change's
 own if usage is above the new `Soft`, and is cleared if it is not, since when
 usage rose above the old limit says nothing about the new one. A change to
 any other field of the quota leaves a running grace as it was. `Advisory` is never refused. Crossing any limit, a grace that
-expires, and every refusal emit a quota event, which the filesystem service
+expires, and every refusal produce a quota event, which the filesystem service
 emits where it enforces the quota ([§7.6](#7.6%20Decisions%20are%20observable), [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)), so an operator learns
 of a full tree before its users do.
 
@@ -1805,8 +1805,8 @@ what the caller already is on this share.
 `ShareGrant` ([RFC 16](rfc-16-metadata-store.md)) is a record of this store naming a principal's access to a
 share. The filesystem service reads the caller's grants on every call, in RFC 18
 §6.4's order, and the identity carries the access they give — narrowed to
-read-only where admission narrowed it, by a client rule or a share marked
-read-only ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), as a field of the identity, since this component
+read-only where admission narrowed it, by a client rule or the export
+policy's `ReadOnly` flag ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities), [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), as a field of the identity, since this component
 evaluates no client rule. `Authorize` **MUST** apply that access on every call,
 not only at mount or tree connect, as the share ceiling RFC 19 §3.2 defines,
 intersected with what the file's mode or ACL grants. A client removed from a
@@ -1927,16 +1927,20 @@ removed grant is a different key. A result computed with `via`, the directory a
 handle was resolved through ([§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)), is derived from that directory's rights too,
 so its key **MUST** include `via` and the directory's whole record version, its
 `Version`, which moves with its owner, group, `Mode` and ACL alike: the group
-bits and the sticky rule read the owner and group too. Keyed on the file alone,
+bits and the sticky rule read the owner and group too. A cached result **MUST**
+hold whether an audit entry selected the decision ([§7.6](#7.6%20Decisions%20are%20observable)) beside the decision,
+and a hit returns both. Keyed on the file alone,
 a delete granted through one parent is served for the same file reached through
 another link; keyed on the mode and ACL alone, it is served after the parent's
 `chgrp` — failing open either way.
 
 ### 7.6 Decisions are observable
 
-The chokepoint emits nothing: it **MUST** return, with every decision of
-`Authorize`, whether an audit or alarm entry of the file's ACL selected it
-([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode), RFC 19 §3.7). The filesystem service is the one emitter
+The chokepoint emits nothing: with every decision it makes — `Authorize`'s,
+and those `Link`, `Unlink` and `Rename` make inside their own transactions
+([§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)) — it **MUST** return whether an audit or alarm entry of the file's ACL
+selected it, granted or refused ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode), RFC 19 §3.7); a refusal's error carries
+it. The filesystem service is the one emitter
 ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)): it builds an access-audit event — principal, file, access
 asked, outcome — for every decision the share's audit policy selects
 ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), and, when that policy honours file entries, for every
@@ -2447,6 +2451,10 @@ inside this component ([§7.1](#7.1%20One%20chokepoint)). Four take none: `Pendi
 caller its share grant admits, checked on the call that asked for them.
 These are the filesystem service's views ([RFC 17](rfc-17-vfs.md)); adapters never hold them.
 How they are assembled into one store is [RFC 16](rfc-16-metadata-store.md)'s.
+
+`Link`, `Unlink` and `Rename` report, with their result or their refusal,
+whether an audit entry selected the decision they made (§7.6), as `Authorize`
+does.
 
 ```go
 type Namespace interface {

@@ -656,7 +656,7 @@ type AccessEvent struct {
 	Name       []byte // the name acted on, for namespace operations
 	Want       Access
 	Allowed    bool
-	SelectedBy Selector // Policy: the share's audit policy; Entry: an audit or alarm entry of the file's ACL (RFC 19 §3.7)
+	SelectedBy Selector // Policy: the share's audit policy; Entry: an audit or alarm entry of the file's ACL, which the chokepoint reports with its decision (RFC 7 §7.6, RFC 19 §3.7)
 }
 
 // QuotaEvent is one quota transition or refusal. Transitions are emitted once
@@ -1030,7 +1030,7 @@ call to the share of the handle or open it names, in this order:
 4. resolution, which turns the `Identity` into the caller it acts as on this
    share: map it to a principal, squash it, collect its groups, read its share
    access from the grants, and set its flags (RFC 18 §6). Step 3's narrowing to
-   read-only reaches the chokepoint as a field of that identity, since the
+   read-only, by a client rule or `ReadOnly`, reaches the chokepoint as a field of that identity, since the
    chokepoint evaluates no client rule (RFC 19 §3.2);
 5. the share's cap on the node's request buffers (RFC 24 §4.2) — `ErrDelay`
    with `DelayResources`, at once.
@@ -1344,7 +1344,8 @@ engine refuses a write for quota.
 - **Soft limits.** A quota's soft limit and grace time
   ([RFC 16](rfc-16-metadata-store.md)) are enforced here too. Crossing the
   advisory threshold or the soft limit emits a quota event (§3.3) and refuses
-  nothing; the metadata store records when the soft limit was first exceeded,
+  nothing, and so do a grace that expires, a hard refusal and a fall back under
+  a limit; the metadata store records when the soft limit was first exceeded,
   and once the grace time has run from then the soft limit is enforced as the
   hard one. Falling back under it clears the record. The time is taken from
   the store's `Now` and compared with a later `Now`, which on a store whose

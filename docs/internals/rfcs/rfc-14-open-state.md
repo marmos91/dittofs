@@ -350,7 +350,7 @@ its record whoever authenticates, and is never refused for its principal.
 Principals bind where SMB binds them, per session and per open: every open keeps
 its opener's principal (§2.2) and a reconnect must match it
 ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens)). An NLM record has no
-principal either; its host is named by its NSM identity (§4.5).
+principal either; its host is named by its `Owner`, its `caller_name` with the source address it sends from (above).
 
 **`CREATE_SESSION` is sequenced in the record.** An NFSv4.1 client numbers its
 `CREATE_SESSION` calls from the sequence ID `EXCHANGE_ID` answered. A
