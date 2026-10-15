@@ -27,7 +27,7 @@ func newRun() *cobra.Command {
 	options := map[string]bool{}
 	cmd := &cobra.Command{
 		Use:   "run SUITE|GROUP[/CELL] [--OPTION] [TEST...]",
-		Short: "Run suites and write their logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run",
+		Short: "Run suites and write their results and logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := load()
@@ -56,7 +56,7 @@ func newRun() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: results, CI: ci, Out: cmd.OutOrStdout()})
+			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: results, CI: ci, Out: cmd.OutOrStdout(), Tier: tier})
 			if err != nil {
 				return err
 			}

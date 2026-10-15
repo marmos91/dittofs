@@ -1,0 +1,169 @@
+{
+  "reportFormat": "CTRF",
+  "specVersion": "0.1.0",
+  "generatedBy": "dt",
+  "results": {
+    "tool": {
+      "name": "dt"
+    },
+    "summary": {
+      "tests": 13,
+      "passed": 3,
+      "failed": 8,
+      "skipped": 1,
+      "pending": 0,
+      "other": 1,
+      "flaky": 0,
+      "start": 1791460800000,
+      "stop": 1791460803000
+    },
+    "tests": [
+      {
+        "name": "TestPass",
+        "suite": [
+          "unit",
+          "example.com/m/a"
+        ],
+        "status": "passed",
+        "duration": 20
+      },
+      {
+        "name": "TestFail",
+        "suite": [
+          "unit",
+          "example.com/m/a"
+        ],
+        "status": "failed",
+        "duration": 0,
+        "message": "a_test.go:9: broke"
+      },
+      {
+        "name": "TestSkip",
+        "suite": [
+          "unit",
+          "example.com/m/a"
+        ],
+        "status": "skipped",
+        "duration": 0,
+        "message": "a_test.go:10: nothing to check here",
+        "extra": {
+          "grade": "ungraded"
+        }
+      },
+      {
+        "name": "TestParent/good",
+        "suite": [
+          "unit",
+          "example.com/m/a"
+        ],
+        "status": "passed",
+        "duration": 0
+      },
+      {
+        "name": "TestParent/bad",
+        "suite": [
+          "unit",
+          "example.com/m/a"
+        ],
+        "status": "failed",
+        "duration": 0,
+        "message": "a_test.go:13: sub broke\nsecond line"
+      },
+      {
+        "name": "TestParent",
+        "suite": [
+          "unit",
+          "example.com/m/a"
+        ],
+        "status": "failed",
+        "duration": 0
+      },
+      {
+        "name": "example.com/m/b",
+        "suite": [
+          "unit"
+        ],
+        "status": "failed",
+        "duration": 0,
+        "message": "build failed"
+      },
+      {
+        "name": "example.com/m/p",
+        "suite": [
+          "unit"
+        ],
+        "status": "failed",
+        "duration": 215,
+        "message": "failed outside any test"
+      },
+      {
+        "name": "TestFine",
+        "suite": [
+          "unit",
+          "example.com/m/tm"
+        ],
+        "status": "passed",
+        "duration": 0
+      },
+      {
+        "name": "example.com/m/tm",
+        "suite": [
+          "unit"
+        ],
+        "status": "failed",
+        "duration": 223,
+        "message": "failed outside any test"
+      },
+      {
+        "name": "example.com/m/to",
+        "suite": [
+          "unit"
+        ],
+        "status": "failed",
+        "duration": 3298,
+        "message": "failed outside any test"
+      },
+      {
+        "name": "TestPanicky",
+        "suite": [
+          "unit",
+          "example.com/m/p"
+        ],
+        "status": "other",
+        "duration": 0,
+        "message": "panic: boom\ngoroutine 7 [running]:\nexample.com/m/p.TestPanicky.func1()\n/tmp/t2jfix/p/p_test.go:9 +0x2c\ncreated by example.com/m/p.TestPanicky in goroutine 6\n/tmp/t2jfix/p/p_test.go:9 +0x24"
+      },
+      {
+        "name": "TestWait",
+        "suite": [
+          "unit",
+          "example.com/m/to"
+        ],
+        "status": "failed",
+        "duration": 0,
+        "message": "panic: test timed out after 3s\nrunning tests:\nTestWait (3s)\ngoroutine 19 [running]:\ntesting.(*M).startAlarm.func1()\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2802 +0x2cc\ncreated by time.goFunc\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/time/sleep.go:215 +0x38\ngoroutine 1 [chan receive]:\ntesting.(*T).Run(0x27000e746008, {0x104d22d4a?, 0x12cb37e004cdea00?}, 0x104e77ef8)\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2109 +0x3bc\ntesting.runTests.func1(0x27000e746008)\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2585 +0x40\ntesting.tRunner(0x27000e746008, 0x27000e632c48)\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2036 +0xc4\ntesting.runTests({0x104d24255, 0xd}, {0x104d24f00, 0x10}, 0x27000e702018, {0x104e99330, 0x1, 0x1}, {0x808080808080806e?, 0x104d24b22?, ...})\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2583 +0x3f0\ntesting.(*M).Run(0x27000e736140)\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2443 +0x578\nmain.main()\n_testmain.go:46 +0x80\ngoroutine 18 [sleep]:\ntime.Sleep(0xdf8475800)\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/runtime/time.go:363 +0x150\nexample.com/m/to.TestWait(0x27000e746248?)\n/tmp/t2jfix/to/to_test.go:8 +0x28\ntesting.tRunner(0x27000e746248, 0x104e77ef8)\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2036 +0xc4\ncreated by testing.(*T).Run in goroutine 1\n/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2101 +0x3a8"
+      }
+    ],
+    "environment": {
+      "commit": "abcdef12",
+      "branchName": "develop",
+      "osPlatform": "linux"
+    },
+    "extra": {
+      "run": "20261015T120000Z-abcdef12",
+      "dirty": false,
+      "tier": "pr",
+      "in": "host",
+      "exit": 1,
+      "cells": [
+        {
+          "suite": "unit",
+          "result": "failed",
+          "note": "3 passed, 3 failed, 1 skipped: TestFail, TestParent/bad; example.com/m/b: build failed; example.com/m/p: failed outside any test; example.com/m/tm: failed outside any test; example.com/m/to: failed outside any test",
+          "seconds": 3,
+          "log": "logs/unit.log"
+        }
+      ]
+    }
+  }
+}

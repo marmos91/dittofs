@@ -4,6 +4,7 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,9 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +23,7 @@ import (
 	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // How a cell went.
@@ -81,13 +85,17 @@ type Options struct {
 	Results string    // where runs are written, each in a directory of its own
 	CI      bool      // --ci: an unmet need is an error, not a skip, and problems are annotated
 	Out     io.Writer // where the commands' output passes through
+	Tier    string    // the tier the run was asked for, recorded in its results
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
 var minute = time.Minute
 
 // Run runs the cells one after another, each logged under a new directory in
-// o.Results. Cancelling ctx stops the cell running and the ones after it.
+// o.Results, where summary.json holds every finished cell's results: it's
+// written when the run starts and rewritten after each cell, so a run stopped
+// at any point still has them. Cancelling ctx stops the cell running and the
+// ones after it.
 func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	commit := gitShort(o.Root)
 	// Absolute, so {out} means the same from any directory a command runs in.
@@ -95,24 +103,80 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	dir, err := newRunDir(results, time.Now().UTC().Format("20060102T150405Z")+"-"+commit)
+	start := time.Now()
+	dir, err := newRunDir(results, runName(start, commit))
 	if err != nil {
 		return Report{}, err
 	}
 	rep := Report{Dir: dir}
+	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, OS: runtime.GOOS, In: "host", Tier: o.Tier, Exit: rep.Status()}
+	if os.Getenv("DT_IN_CONTAINER") == "1" {
+		sum.In = "container"
+	}
+	sum.Branch, sum.Dirty = gitState(o.Root)
+	if err := sum.Write(dir); err != nil {
+		return rep, err
+	}
 	if len(cells) == 0 {
 		_, _ = fmt.Fprintln(o.Out, "[dt] nothing to run")
 	}
 	for _, c := range cells {
 		start := time.Now()
-		result, note := runCell(ctx, c, o, rep.Dir, commit)
-		rep.Outcomes = append(rep.Outcomes, Outcome{c.Name, result, note, time.Since(start).Round(time.Second)})
+		result, note, tests := runCell(ctx, c, o, rep.Dir, commit)
+		took := time.Since(start).Round(time.Second)
+		rep.Outcomes = append(rep.Outcomes, Outcome{c.Name, result, note, took})
 		_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, result, note)
 		if o.CI && (result == Failed || result == NotRun) {
 			_, _ = fmt.Fprintln(o.Out, annotation("dt "+c.Name, result+": "+note))
 		}
+		if ctx.Err() != nil {
+			// The cell didn't finish, and what its tests reported once
+			// interrupted can come from the interrupt itself.
+			tests = nil
+		}
+		ungraded(c.Unit, tests)
+		log := path.Join("logs", slug(c.Name)+".log")
+		if _, err := os.Stat(filepath.Join(dir, log)); err != nil {
+			log = "" // the cell stopped before it ran anything
+		}
+		sum.Cells = append(sum.Cells, report.Cell{Name: c.Name, Result: result, Note: note, Took: took, Log: log, Tests: tests})
+		sum.Stop, sum.Exit = time.Now(), rep.Status()
+		// ponytail: the whole summary is rewritten after each cell, which
+		// costs the run's tests so far each time. Write each cell's results
+		// to a file of its own if a run's cells and tests make that show.
+		if err := sum.Write(dir); err != nil {
+			return rep, err
+		}
 	}
 	return rep, nil
+}
+
+// ungraded grades the skips of a suite without a known file: they're
+// reported and counted, and pass.
+func ungraded(u *registry.Suite, tests []report.Test) {
+	if u.Known != "" {
+		return
+	}
+	for i := range tests {
+		if tests[i].Status == report.Skipped {
+			tests[i].Grade = report.Ungraded
+		}
+	}
+}
+
+// runName names a run by its start time and commit, and a job's re-run by its
+// attempt too, as RUN-a2, so it never overwrites the first attempt's results.
+func runName(start time.Time, commit string) string {
+	name := start.UTC().Format("20060102T150405Z") + "-" + commit
+	if n, _ := strconv.Atoi(os.Getenv("GITHUB_RUN_ATTEMPT")); n > 1 {
+		name += "-a" + strconv.Itoa(n)
+	}
+	return name
+}
+
+// slug is a cell's name as one path element.
+func slug(cell string) string {
+	return strings.ReplaceAll(cell, "/", "-")
 }
 
 // annotation is an error annotation with title and message, escaped as the
@@ -123,23 +187,24 @@ func annotation(title, message string) string {
 	return "::error title=" + property.Replace(title) + "::" + data.Replace(message)
 }
 
-// runCell runs one cell and returns its result and a note on it.
-func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string, string) {
+// runCell runs one cell and returns its result, a note on it, and its tests'
+// results.
+func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string, string, []report.Test) {
 	if ctx.Err() != nil {
-		return NotRun, "interrupted"
+		return NotRun, "interrupted", nil
 	}
 	if why := unsupported(c.Unit); why != "" {
-		return NotRun, why
+		return NotRun, why, nil
 	}
 	if unmet := needs.Unmet(o.Root, c.Needs); len(unmet) > 0 {
 		if o.CI {
-			return NotRun, strings.Join(unmet, "; ")
+			return NotRun, strings.Join(unmet, "; "), nil
 		}
-		return Skipped, strings.Join(unmet, "; ")
+		return Skipped, strings.Join(unmet, "; "), nil
 	}
 	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
-		return NotRun, err.Error()
+		return NotRun, err.Error(), nil
 	}
 	if len(c.Tests) > 0 {
 		tests = c.Tests
@@ -148,17 +213,16 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 		tests = []string{""} // the commands are the one test
 	}
 	if len(tests) == 0 {
-		return NotRun, "no tests found"
+		return NotRun, "no tests found", nil
 	}
 	each := make([]time.Duration, len(tests))
 	for i, test := range tests {
 		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
-			return NotRun, err.Error()
+			return NotRun, err.Error(), nil
 		}
 	}
 
-	slug := strings.ReplaceAll(c.Name, "/", "-")
-	out := filepath.Join(dir, slug)
+	out := filepath.Join(dir, slug(c.Name))
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
 	for k, v := range c.Matrix {
 		vals[k] = v
@@ -167,7 +231,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	if c.Unit.Packages != nil {
 		pkgs, err := goPackages(o.Root, c.Unit.Packages.Tag)
 		if err != nil {
-			return NotRun, err.Error()
+			return NotRun, err.Error(), nil
 		}
 		lists["packages"] = pkgs
 	}
@@ -177,18 +241,18 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	// A command dt can't fill can't run, whichever test it's for.
 	for _, cmd := range c.Unit.Cmd {
 		if _, err := fill(cmd, vals, lists); err != nil {
-			return NotRun, err.Error()
+			return NotRun, err.Error(), nil
 		}
 	}
 	own, err := suiteEnv(c.Unit, c.Tier, vals, lists)
 	if err != nil {
-		return NotRun, err.Error()
+		return NotRun, err.Error(), nil
 	}
 	workdir := o.Root
 	if c.Unit.Dir != "" {
 		d, err := replace(c.Unit.Dir, vals, lists, nil)
 		if err != nil {
-			return NotRun, err.Error()
+			return NotRun, err.Error(), nil
 		}
 		workdir = d
 		if !filepath.IsAbs(d) {
@@ -196,11 +260,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 		}
 	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
-		return NotRun, err.Error()
+		return NotRun, err.Error(), nil
 	}
-	log, err := os.Create(filepath.Join(dir, "logs", slug+".log"))
+	log, err := os.Create(filepath.Join(dir, "logs", slug(c.Name)+".log"))
 	if err != nil {
-		return NotRun, err.Error()
+		return NotRun, err.Error(), nil
 	}
 	defer func() { _ = log.Close() }()
 	_, _ = fmt.Fprintf(log, "[dt] cell %s, tier %s, commit %s\n", c.Name, c.Tier, commit)
@@ -211,31 +275,84 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	if c.Unit.Format == "go-json" {
 		return t.goJSON(c.Tests)
 	}
+	read := readers[c.Unit.Format]
 	var failed, notRun []string
+	var cases []report.Test
 	unstarted := 0
 	for i, test := range tests {
 		if cellCtx.Err() != nil {
 			unstarted++
 			continue
 		}
-		switch result, note := t.run(test, each[i]); result {
-		case Failed:
-			failed = append(failed, note)
-		case NotRun:
-			notRun = append(notRun, note)
+		prefix := ""
+		if test != "" {
+			prefix = test + ": "
+		}
+		var output bytes.Buffer
+		if read != nil {
+			t.capture = &output
+		}
+		start := time.Now()
+		r := t.run(test, each[i])
+		switch {
+		case read == nil:
+			// exit: each test is a test case, or without tests each command.
+			switch r.result {
+			case Failed:
+				failed = append(failed, prefix+r.note)
+			case NotRun:
+				notRun = append(notRun, prefix+r.note)
+			}
+			if test == "" {
+				cases = append(cases, r.steps...)
+			} else if r.result != NotRun {
+				status := report.Passed
+				if r.result == Failed {
+					status = report.Failed
+				}
+				cases = append(cases, report.Test{Name: test, Status: status, Duration: time.Since(start), Message: r.note})
+			}
+		case errors.Is(cellCtx.Err(), context.Canceled):
+			notRun = append(notRun, prefix+"interrupted")
+		default:
+			got, err := read(report.Ran{Test: test, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Out: out})
+			if err != nil {
+				notRun = append(notRun, prefix+err.Error())
+			}
+			cases = append(cases, got...)
 		}
 	}
 	if unstarted > 0 {
 		notRun = append(notRun, fmt.Sprintf("%d tests not started: %s", unstarted, stopped(cellCtx)))
 	}
+	if read != nil {
+		// The results decide, not the exit status: a failed result fails
+		// the cell, and a cell with none didn't run.
+		var names []string
+		for _, tc := range cases {
+			if tc.Status == report.Failed {
+				names = append(names, tc.Name)
+			}
+		}
+		if len(names) > 0 {
+			failed = append(failed, fmt.Sprintf("%d failed: %s", len(names), some(names)))
+		}
+		if len(cases) == 0 {
+			notRun = append(notRun, "no results")
+		}
+	}
 	switch {
 	case len(failed) > 0:
-		return Failed, strings.Join(append(failed, notRun...), "; ")
+		return Failed, strings.Join(append(failed, notRun...), "; "), cases
 	case len(notRun) > 0:
-		return NotRun, strings.Join(notRun, "; ")
+		return NotRun, strings.Join(notRun, "; "), cases
 	}
-	return Passed, ""
+	return Passed, "", cases
 }
+
+// readers read the formats whose results a tool writes: every format but
+// exit and go-json, which dt reads itself.
+var readers = map[string]report.Reader{}
 
 // exitNotRun is the exit status of a command that ran nothing, as the
 // scenarios' setup does when another run holds their lock (section 4.6).
@@ -252,13 +369,23 @@ type tester struct {
 	vals     map[string]string
 	lists    map[string][]string
 	out, log io.Writer
+	capture  io.Writer // also gets the commands' output, for a reader
+}
+
+// ran is how one test's commands went.
+type ran struct {
+	result, note string        // how the test went, and why
+	steps        []report.Test // each command that ran to a result, named by its first line
+	exit         int           // the first non-zero exit status
+	timedOut     bool          // stopped at the test's limit or the cell's
 }
 
 // run runs every command for one test, all of them even after one fails, and
 // says how the test went: failed when a command failed or the test ran out of
 // time, not run when a command ran nothing or the run was interrupted, else
-// passed. A limit of zero is no limit but the cell's.
-func (t tester) run(test string, limit time.Duration) (string, string) {
+// passed. A command skipped for want of {base} is a skipped step. A limit of
+// zero is no limit but the cell's.
+func (t tester) run(test string, limit time.Duration) ran {
 	ctx := t.ctx
 	if limit > 0 {
 		var cancel context.CancelFunc
@@ -266,50 +393,86 @@ func (t tester) run(test string, limit time.Duration) (string, string) {
 		defer cancel()
 	}
 	t.vals["test"] = test
-	prefix := ""
-	if test != "" {
-		prefix = test + ": "
-	}
+	var r ran
 	var failed, notRun []string
 	for _, cmd := range t.cell.Unit.Cmd {
+		step := report.Test{Name: cmdName(cmd), Status: report.Failed}
 		if t.vals["base"] == "" && uses(cmd, "base") {
 			_, _ = fmt.Fprintf(t.out, "[dt] skipped, no change to check: %s%s\n", cmd.Line, cmd.Sh)
+			step.Status, step.Message = report.Skipped, "no change to check"
+			r.steps = append(r.steps, step)
 			continue
 		}
 		argv, err := fill(cmd, t.vals, t.lists)
 		if err != nil {
-			return NotRun, prefix + err.Error()
+			return ran{result: NotRun, note: err.Error()}
 		}
 		shown := strings.Join(argv, " ")
 		if cmd.Sh != "" {
 			shown = argv[2]
 		}
 		_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", shown)
+		w := t.out
+		if t.capture != nil {
+			w = io.MultiWriter(t.out, t.capture)
+		}
 		start := time.Now()
-		code, err := execute(ctx, argv, t.dir, t.env, t.out)
-		_, _ = fmt.Fprintf(t.log, "[dt] exit %d after %s\n", code, time.Since(start).Round(time.Millisecond))
+		code, err := execute(ctx, argv, t.dir, t.env, w)
+		step.Duration = time.Since(start)
+		_, _ = fmt.Fprintf(t.log, "[dt] exit %d after %s\n", code, step.Duration.Round(time.Millisecond))
+		if r.exit == 0 {
+			r.exit = code
+		}
 		switch {
 		case ctx.Err() != nil && t.ctx.Err() == nil:
-			return Failed, fmt.Sprintf("%stimed out after %s", prefix, limit)
+			step.Message = fmt.Sprintf("timed out after %s", limit)
 		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
-			return Failed, prefix + "stopped at the cell's limit"
+			step.Message = "stopped at the cell's limit"
 		case t.ctx.Err() != nil:
-			return NotRun, prefix + "interrupted"
+			r.result, r.note = NotRun, "interrupted"
+			return r
 		case err != nil:
-			failed = append(failed, fmt.Sprintf("`%s`: %v", firstLine(shown), err))
+			step.Message = fmt.Sprintf("`%s`: %v", firstLine(shown), err)
+			failed = append(failed, step.Message)
 		case code == exitNotRun:
 			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: it ran nothing", firstLine(shown), code))
+			continue
 		case code != 0:
-			failed = append(failed, fmt.Sprintf("`%s` exited %d", firstLine(shown), code))
+			step.Message = fmt.Sprintf("`%s` exited %d", firstLine(shown), code)
+			failed = append(failed, step.Message)
+		default:
+			step.Status = report.Passed
+		}
+		r.steps = append(r.steps, step)
+		if ctx.Err() != nil { // the test, or the cell, ran out of time
+			r.result, r.note, r.timedOut = Failed, step.Message, true
+			return r
 		}
 	}
 	switch {
 	case len(failed) > 0:
-		return Failed, prefix + strings.Join(append(failed, notRun...), ", ")
+		r.result, r.note = Failed, strings.Join(append(failed, notRun...), ", ")
 	case len(notRun) > 0:
-		return NotRun, prefix + strings.Join(notRun, ", ")
+		r.result, r.note = NotRun, strings.Join(notRun, ", ")
+	default:
+		r.result = Passed
 	}
-	return Passed, ""
+	return r
+}
+
+// cmdName names a command as a test case: its first line, as the registry
+// writes it, so the name is the same whatever its placeholders hold.
+func cmdName(c registry.Command) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(c.Line+c.Sh), "\n")
+	return strings.TrimSpace(first)
+}
+
+// some joins names, the first five and how many more.
+func some(names []string) string {
+	if len(names) > 5 {
+		names = append(names[:5:5], fmt.Sprintf("and %d more", len(names)-5))
+	}
+	return strings.Join(names, ", ")
 }
 
 // firstLine names a command in a note by its first line, so a multi-line
@@ -390,7 +553,7 @@ func unsupported(u *registry.Suite) string {
 		return "dt doesn't set up fixtures yet"
 	case u.Image != "":
 		return "dt doesn't run commands in images yet"
-	case u.Format != "exit" && u.Format != "go-json":
+	case u.Format != "exit" && u.Format != "go-json" && readers[u.Format] == nil:
 		return fmt.Sprintf("dt doesn't read %s results yet", u.Format)
 	}
 	return ""
@@ -458,4 +621,23 @@ func gitShort(root string) string {
 		return "nocommit"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// gitState is the checkout's branch, "" when it's on none, and whether it has
+// changes, untracked files included, that its commit doesn't. It takes no
+// lock, so a git command running beside it isn't held up.
+func gitState(root string) (branch string, dirty bool) {
+	out, err := exec.Command("git", "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "--branch").Output()
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if head, ok := strings.CutPrefix(line, "# branch.head "); ok && head != "(detached)" {
+			branch = head
+		}
+		if line != "" && !strings.HasPrefix(line, "#") {
+			dirty = true
+		}
+	}
+	return branch, dirty
 }

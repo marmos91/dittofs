@@ -269,3 +269,25 @@ func TestRunResultsRelativeToRoot(t *testing.T) {
 		t.Errorf("results not under the root's rel:\n%s", out)
 	}
 }
+
+// dt run writes the run's summary.json, which records the tier the run was
+// asked for.
+func TestRunWritesSummaryJSON(t *testing.T) {
+	checkout(t)
+	results := t.TempDir()
+	_, _ = dt(t, "run", "away", "--tier", "merge", "--results", results)
+	files, err := filepath.Glob(filepath.Join(results, "*", "summary.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("summaries %v, %v", files, err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Results struct{ Extra struct{ Tier string } }
+	}
+	if err := json.Unmarshal(data, &doc); err != nil || doc.Results.Extra.Tier != "merge" {
+		t.Errorf("tier %q, %v", doc.Results.Extra.Tier, err)
+	}
+}

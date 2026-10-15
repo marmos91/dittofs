@@ -1,0 +1,140 @@
+{
+  "reportFormat": "CTRF",
+  "specVersion": "0.1.0",
+  "generatedBy": "dt",
+  "results": {
+    "tool": {
+      "name": "dt"
+    },
+    "summary": {
+      "tests": 7,
+      "passed": 2,
+      "failed": 2,
+      "skipped": 2,
+      "pending": 0,
+      "other": 1,
+      "flaky": 0,
+      "start": 1791460800000,
+      "stop": 1791460912000
+    },
+    "tests": [
+      {
+        "name": "test/conformance/check-docs.sh",
+        "suite": [
+          "lint-repo"
+        ],
+        "status": "passed",
+        "duration": 1500
+      },
+      {
+        "name": "false",
+        "suite": [
+          "lint-repo"
+        ],
+        "status": "failed",
+        "duration": 2,
+        "message": "`false` exited 1"
+      },
+      {
+        "name": "test/new-package-tests.sh {base}",
+        "suite": [
+          "lint-repo"
+        ],
+        "status": "skipped",
+        "duration": 0,
+        "message": "no change to check",
+        "extra": {
+          "grade": "ungraded"
+        }
+      },
+      {
+        "name": "TestA/sub",
+        "suite": [
+          "unit",
+          "windows",
+          "example.com/m/a"
+        ],
+        "status": "passed",
+        "duration": 40
+      },
+      {
+        "name": "TestB",
+        "suite": [
+          "unit",
+          "windows",
+          "example.com/m/a"
+        ],
+        "status": "skipped",
+        "duration": 0,
+        "message": "a_test.go:9: needs root",
+        "extra": {
+          "grade": "ungraded"
+        }
+      },
+      {
+        "name": "TestCrash",
+        "suite": [
+          "unit",
+          "windows",
+          "example.com/m/c"
+        ],
+        "status": "other",
+        "duration": 0,
+        "message": "panic: boom"
+      },
+      {
+        "name": "example.com/m/c",
+        "suite": [
+          "unit",
+          "windows"
+        ],
+        "status": "failed",
+        "duration": 300,
+        "message": "failed outside any test"
+      }
+    ],
+    "environment": {
+      "commit": "abcdef12",
+      "branchName": "develop",
+      "osPlatform": "linux"
+    },
+    "extra": {
+      "run": "20261015T120000Z-abcdef12-a2",
+      "dirty": true,
+      "tier": "merge",
+      "in": "container",
+      "exit": 1,
+      "cells": [
+        {
+          "suite": "lint-repo",
+          "result": "failed",
+          "note": "`false` exited 1",
+          "seconds": 3,
+          "log": "logs/lint-repo.log"
+        },
+        {
+          "suite": "unit",
+          "cell": "windows",
+          "result": "failed",
+          "note": "1 passed, 0 failed, 1 skipped; example.com/m/c: failed outside any test",
+          "seconds": 61,
+          "log": "logs/unit-windows.log"
+        },
+        {
+          "suite": "pynfs",
+          "cell": "badger-s3/1",
+          "result": "not run",
+          "note": "dt doesn't set up fixtures yet",
+          "seconds": 0
+        },
+        {
+          "suite": "smbtorture",
+          "cell": "memory",
+          "result": "skipped",
+          "note": "docker: not found",
+          "seconds": 0
+        }
+      ]
+    }
+  }
+}
