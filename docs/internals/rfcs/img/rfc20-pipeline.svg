@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 430" width="900" height="430" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="430" fill="#ffffff"/>
+  <text x="16" y="26" class="t">One pipeline for every request, in both protocols. Only one stage reaches the service.</text>
+
+  <rect x="24" y="44" width="852" height="150" rx="8" class="zone"/>
+  <text x="36" y="62" class="s">protocol only — touches no file, leaves no trace at the primary</text>
+
+  <rect x="40" y="76" width="92" height="40" rx="5" class="pr"/><text x="64" y="100" class="m">frame</text>
+  <rect x="148" y="76" width="112" height="40" rx="5" class="pr"/><text x="158" y="100" class="m">decode header</text>
+  <rect x="276" y="76" width="84" height="40" rx="5" class="pr"/><text x="298" y="100" class="m">admit</text>
+  <rect x="376" y="76" width="112" height="40" rx="5" class="pr"/><text x="388" y="100" class="m">replay check</text>
+  <rect x="504" y="76" width="104" height="40" rx="5" class="pr"/><text x="516" y="100" class="m">decode args</text>
+  <rect x="624" y="76" width="104" height="40" rx="5" class="pr"/><text x="636" y="100" class="m">resolve IDs</text>
+  <path d="M134,96 L144,96" class="ln"/><path d="M262,96 L272,96" class="ln"/><path d="M362,96 L372,96" class="ln"/>
+  <path d="M490,96 L500,96" class="ln"/><path d="M610,96 L620,96" class="ln"/>
+  <path d="M730,96 L790,96 L790,226" class="ln"/>
+
+  <path d="M86,118 L86,150" class="ex"/><text x="40" y="164" class="e">close conn</text>
+  <path d="M204,118 L204,150" class="ex"/><text x="150" y="164" class="e">GARBAGE_ARGS</text><text x="150" y="178" class="e">bad sig: drop</text>
+  <path d="M318,118 L318,150" class="ex"/><text x="280" y="164" class="e">busy / not read</text>
+  <path d="M432,118 L432,150" class="ex"/><text x="384" y="164" class="e">cached reply</text><text x="384" y="178" class="e">or seq error</text>
+  <path d="M556,118 L556,150" class="ex"/><text x="508" y="164" class="e">INVALID_PARAM</text>
+  <path d="M676,118 L676,150" class="ex"/><text x="630" y="164" class="e">BAD / STALE id</text>
+
+  <rect x="700" y="230" width="176" height="56" rx="6" class="sv"/>
+  <text x="716" y="254" class="m">call service</text>
+  <text x="716" y="272" class="s">the handler: ≤ 1 mutating call</text>
+
+  <rect x="24" y="218" width="660" height="100" rx="8" class="zone"/>
+  <text x="36" y="236" class="s">protocol only, on the way back</text>
+  <rect x="520" y="248" width="120" height="40" rx="5" class="pr"/><text x="542" y="272" class="m">map error</text>
+  <rect x="290" y="248" width="110" height="40" rx="5" class="pr"/><text x="320" y="272" class="m">encode</text>
+  <rect x="60" y="248" width="110" height="40" rx="5" class="pr"/><text x="96" y="272" class="m">send</text>
+  <path d="M698,268 L644,268" class="ln"/>
+  <path d="M518,268 L404,268" class="ln"/>
+  <path d="M288,268 L174,268" class="ln"/>
+  <text x="414" y="302" class="s">one table, total</text>
+  <text x="186" y="302" class="s">no payload copy</text>
+  <text x="64" y="302" class="s">to the writer</text>
+
+  <text x="36" y="350" class="h">↺ re-entry at "resolve IDs"</text>
+  <text x="36" y="370" class="s">compound: the next operation re-enters with the compound's current handle or open</text>
+  <text x="36" y="388" class="s">ErrDelay on SMB: the request is held — a timer, no worker — then re-driven</text>
+  <text x="16" y="420" class="s">Wrapped around every handler, outside in: panic recovery → trace span → metrics → deadline.</text>
+</svg>

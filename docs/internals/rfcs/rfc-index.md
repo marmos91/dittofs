@@ -97,8 +97,8 @@ graph LR
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
   R20["20 adapters"] --> R7 & R13 & R14 & R15 & R17 & R21 & R22 & R27 & R29
-  R21["21 nfs"] --> R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R22 & R27 & R28
-  R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R21 & R27 & R28
+  R21["21 nfs"] --> R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R20 & R22 & R27 & R28
+  R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R20 & R21 & R27 & R28
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
   R27["27 migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26 & R28
   R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R14
@@ -108,7 +108,7 @@ graph LR
   style R15 stroke-dasharray: 5 5
 ```
 
-Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 12 ↔ RFC 26, RFC 12 ↔ RFC 27, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 21 ↔ RFC 22, RFC 26 ↔ RFC 27.
+Cycles: RFC 1 ↔ RFC 28, RFC 3 ↔ RFC 4, RFC 4 ↔ RFC 5, RFC 4 ↔ RFC 6, RFC 4 ↔ RFC 8, RFC 4 ↔ RFC 9, RFC 4 ↔ RFC 12, RFC 4 ↔ RFC 13, RFC 4 ↔ RFC 26, RFC 4 ↔ RFC 27, RFC 6 ↔ RFC 28, RFC 7 ↔ RFC 16, RFC 8 ↔ RFC 9, RFC 8 ↔ RFC 15, RFC 8 ↔ RFC 28, RFC 10 ↔ RFC 11, RFC 11 ↔ RFC 14, RFC 11 ↔ RFC 15, RFC 12 ↔ RFC 13, RFC 12 ↔ RFC 26, RFC 12 ↔ RFC 27, RFC 13 ↔ RFC 16, RFC 13 ↔ RFC 26, RFC 13 ↔ RFC 27, RFC 14 ↔ RFC 15, RFC 14 ↔ RFC 16, RFC 15 ↔ RFC 16, RFC 15 ↔ RFC 17, RFC 20 ↔ RFC 21, RFC 20 ↔ RFC 22, RFC 21 ↔ RFC 22, RFC 26 ↔ RFC 27.
 
 ## Conventions
 
@@ -132,11 +132,13 @@ every RFC of this set are to be interpreted as in RFC 2119.
   inside it, so that component is reviewed as one: none of its members is marked
   `reviewed` before all of its non-deferred members are. A deferred member holds
   the review back only through the rules a first-release RFC cites from it; one
-  cited only by **(cluster)** rules is reviewed with the cluster. RFC 21 and
-  RFC 22, which live on the protocol branch stacked on this set, cite each other
-  and so form a second component of their own; that is intended — each adapter
-  states where it meets the other — and the two are reviewed together, after the
-  storage component they build on and never before it.
+  cited only by **(cluster)** rules is reviewed with the cluster. RFC 20,
+  RFC 21 and RFC 22 cite each other and so form a second component of their
+  own; that is intended — RFC 20 states the shape both adapters share, and each
+  adapter states where it meets the other — and the three are reviewed together,
+  after the storage component they build on and never before it. The storage
+  RFCs name the protocol RFCs only in text, never as a link, so that no edge
+  runs from the storage component into this one.
 - A rule that binds only in a cluster is marked **(cluster)** where it is
   stated, and links the single-node profile.
 - Normative text names no product, package or file. Products appear only in

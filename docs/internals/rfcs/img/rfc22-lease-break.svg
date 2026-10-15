@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b07a2a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .lane{stroke:#c3cad3;stroke-width:1}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ok{stroke:#4c8a58;stroke-width:1.6;fill:none;marker-end:url(#g)}
+      .am{stroke:#b07a2a;stroke-width:1.4;fill:none;stroke-dasharray:5 3}
+      .amt{font-size:11px;fill:#b07a2a}.okt{font-size:11px;fill:#4c8a58}
+      .dot{fill:#4a6f96}
+    </style>
+  </defs>
+  <rect width="900" height="400" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A conflicting CREATE waits as STATUS_PENDING, holding no worker, until the break ends.</text>
+
+  <text x="16" y="74" class="h">second desktop</text>
+  <text x="16" y="139" class="h">P2, adapter</text>
+  <text x="16" y="204" class="h">S1, primary</text>
+  <text x="16" y="269" class="h">alice-pc, holder</text>
+  <line x1="150" y1="70" x2="880" y2="70" class="lane"/>
+  <line x1="150" y1="135" x2="880" y2="135" class="lane"/>
+  <line x1="150" y1="200" x2="880" y2="200" class="lane"/>
+  <line x1="150" y1="265" x2="880" y2="265" class="lane"/>
+
+  <path d="M156,72 L156,131" class="ln"/>
+  <path d="M176,133 L176,74" class="ln"/>
+  <text x="186" y="98" class="m">interim STATUS_PENDING,</text>
+  <text x="186" y="112" class="s">async ID; worker freed</text>
+  <path d="M196,137 L196,196" class="ln"/>
+  <text x="206" y="172" class="s">conflict: ErrDelay</text>
+  <path d="M216,202 L216,261" class="ln"/>
+  <text x="226" y="236" class="m">break, ACK_REQUIRED</text>
+
+  <circle cx="240" cy="135" r="2.5" class="dot"/><circle cx="252" cy="135" r="2.5" class="dot"/>
+  <circle cx="264" cy="135" r="2.5" class="dot"/><circle cx="276" cy="135" r="2.5" class="dot"/>
+  <circle cx="288" cy="135" r="2.5" class="dot"/><circle cx="300" cy="135" r="2.5" class="dot"/>
+  <circle cx="312" cy="135" r="2.5" class="dot"/><circle cx="324" cy="135" r="2.5" class="dot"/>
+  <circle cx="336" cy="135" r="2.5" class="dot"/><circle cx="348" cy="135" r="2.5" class="dot"/>
+  <circle cx="360" cy="135" r="2.5" class="dot"/><circle cx="372" cy="135" r="2.5" class="dot"/>
+  <circle cx="384" cy="135" r="2.5" class="dot"/>
+  <text x="230" y="154" class="s">re-run on a backoff, 10 ms → 1 s</text>
+
+  <path d="M390,263 L390,204" class="ok"/>
+  <text x="398" y="236" class="okt">ack: flushes, open stays</text>
+  <path d="M404,137 L404,196" class="ok"/>
+  <text x="414" y="172" class="okt">re-run: break over</text>
+  <path d="M420,133 L420,74" class="ok"/>
+  <text x="430" y="98" class="m">STATUS_SHARING_VIOLATION</text>
+  <text x="430" y="112" class="okt">alice-pc's deny mode refuses the re-run</text>
+
+  <line x1="570" y1="182" x2="570" y2="306" class="am"/>
+  <text x="580" y="226" class="amt">no ack by 35 s: lease set to none;</text>
+  <text x="580" y="240" class="amt">opens, deny modes, locks stay; re-run</text>
+  <text x="580" y="286" class="amt">the machine gets no new lease for 90 s</text>
+  <line x1="870" y1="182" x2="870" y2="306" class="am"/>
+
+  <line x1="150" y1="310" x2="880" y2="310" stroke="#3d444d" stroke-width="1"/>
+  <line x1="150" y1="306" x2="150" y2="314" stroke="#3d444d"/>
+  <line x1="390" y1="306" x2="390" y2="314" stroke="#3d444d"/>
+  <line x1="570" y1="306" x2="570" y2="314" stroke="#3d444d"/>
+  <line x1="870" y1="306" x2="870" y2="314" stroke="#3d444d"/>
+  <text x="150" y="328" class="s" text-anchor="middle">0 s</text>
+  <text x="390" y="328" class="s" text-anchor="middle">ack, say 20 s</text>
+  <text x="570" y="328" class="amt" text-anchor="middle">35 s: break deadline</text>
+  <text x="880" y="328" class="amt" text-anchor="end">60 s: smb_pending_deadline</text>
+
+  <text x="16" y="362" class="l">The held CREATE's own deadline, 60 s by default, exceeds the 35 s break deadline, so it always sees the break end</text>
+  <text x="16" y="382" class="l">and is re-run — rather than failing at RFC 17's 30 s default while the holder still has 5 s to answer.</text>
+</svg>

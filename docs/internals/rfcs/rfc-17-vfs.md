@@ -394,7 +394,7 @@ type Data interface {
 	Commit(ctx context.Context, o OpenRef, off, length int64) (WriteVerifier, error) // NFS COMMIT, SMB FLUSH (§5.8); through an SMB open, ErrLost once after a loss (RFC 14 §8.1)
 	Deallocate(ctx context.Context, o OpenRef, off, length int64) error // punch a hole; ordered as a write (§5.5)
 	Seek(ctx context.Context, o OpenRef, off int64, what SeekWhat) (int64, error) // SEEK_DATA, SEEK_HOLE
-	Copy(ctx context.Context, src OpenRef, srcOff int64, dst OpenRef, dstOff, length int64) (int64, error) // server-side copy and clone (§5.9); ErrInvalid for overlapping extents of one file or a clone over clone_max_len; ErrCrossNamespace across namespaces
+	Copy(ctx context.Context, src OpenRef, srcOff int64, dst OpenRef, dstOff, length int64, atomic bool) (int64, error) // server-side copy and clone (§5.9); atomic for CLONE and duplicate-extents, false for COPY and copychunk, which the service completes itself across shards; ErrInvalid for overlapping extents of one file or a clone over clone_max_len; ErrCrossNamespace across namespaces
 	PreWarm(ctx context.Context, id Identity, dir Handle, recursive bool) (Progress, error) // the service enumerates the files it may read, the engine fetches them
 }
 
@@ -539,7 +539,8 @@ and the client retries. Where the protocol has none, as for SMB, whose client
 does not retry a request answered with an interim (pending) response, the
 adapter sends the interim response and re-drives the call itself, within the
 call's deadline, answering the client once the call completes or the deadline
-passes. The adapter chooses each hold below by the cause the `ErrDelay` carries (§4.3),
+passes. The re-drive is a mechanism of the adapter's request pipeline, never a
+handler's, as RFC 20 states. The adapter chooses each hold below by the cause the `ErrDelay` carries (§4.3),
 never by guessing from the operation. A request the adapter holds pending this way **MAY** carry a deadline
 longer than the default of [§4.3](#4.3%20Errors%20are%20neutral%20values), up to
 `smb_pending_deadline` ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), which **MUST** exceed the SMB break
@@ -685,10 +686,15 @@ Adapters own, and the service never sees:
 - turning `MNT`, `PUTROOTFH`, `TREE_CONNECT`, `SECINFO` and share enumeration
   into the `Shares` calls of §4.9, and nothing more: no share resolution,
   admission or pseudo-filesystem logic lives in an adapter;
-- security descriptors ↔ `metadata.ACL`, applying RFC 19's mapping;
+- security descriptors and NFSv4 ACLs ↔ `metadata.ACL`, applying RFC 19's
+  mapping through one translation both adapters share;
 - mapping the service's errors to protocol status codes;
 - a protocol's own numeric file IDs, read from the file's stored number
   ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)).
+
+How an adapter is built around these — its lifecycle, its request pipeline,
+its codecs, its connections, and the tests that show it only translates — is
+RFC 20's. This RFC fixes only the line between the two.
 
 ### 4.3 Errors are neutral values
 
@@ -783,10 +789,11 @@ share no chunks to adopt (§5.9); it maps to `NFS4ERR_XDEV` and
 `ErrCrossShard` means **(cluster)** a by-reference copy or clone — `COPY`,
 `CLONE`, copychunk or duplicate-extents — whose source and destination are in
 different shards, whatever their primaries
-([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), refused at admission, changing nothing (§5.9). For a `COPY`
-or copychunk the adapter answers no error: it copies the bytes itself through
-the service, reading at the source and writing at the destination in bounded
-chunks, and answers the count, as RFC 21 and RFC 22 state. For a `CLONE` or
+([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), refused at admission, changing nothing (§5.9). Only a `CLONE` or
+duplicate-extents request is ever answered it: for a `COPY` or copychunk the
+service does not return it, but copies the bytes itself, reading at the source
+and writing at the destination in bounded chunks, and returns the count (§5.9),
+so no adapter composes a copy out of reads and writes (§4.1). For a `CLONE` or
 duplicate-extents request it maps to `NFS4ERR_XDEV`, never `NFS4ERR_NOTSUPP`,
 which a client records as the operation missing for the whole mount, and to
 `STATUS_NOT_SAME_DEVICE`, so the client copies the bytes itself. `ErrCrossProject` means a rename or link across tree quotas
@@ -1369,7 +1376,8 @@ the SMB adapter maps it to `STATUS_UNEXPECTED_IO_ERROR`.
 duplicate-extents requests, and runs as the engine's clone
 ([RFC 8 §9](rfc-8-engine.md#9.%20Clone)): a durable clone spec, the source's
 journal-held runs copied and synced, then its carved refs adopted, all resolved
-at one point in the source's history. The two kinds differ in atomicity:
+at one point in the source's history. The two kinds differ in atomicity, and
+the caller names which it asks for with `atomic`:
 
 - **`CLONE` and duplicate-extents are atomic.** The whole extent is one clone,
   answered only when it is done; a request longer than `clone_max_len`
@@ -1385,9 +1393,9 @@ at one point in the source's history. The two kinds differ in atomicity:
 1. admit and route both handles, and authorise read on the source and write on
    the destination, as §5.1 steps 1–3 do for each. **(cluster)** Between files
    of two shards, whatever their primaries, nothing is adopted by reference
-   ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)): every copy or clone between them is refused with
-   `ErrCrossShard`, changing nothing, and for a `COPY` or copychunk the
-   adapter then copies the bytes itself through `Read` and `Write` — reads at
+   ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)): every clone between them is refused with
+   `ErrCrossShard`, changing nothing, and a `COPY` or copychunk between them
+   is run by the service as its own reads and writes — reads at
    the source's primary, writes at the destination's, in bounded chunks with
    the same short-count rule (§4.3, §4.8);
 2. refuse with `ErrInvalid` a copy whose source and destination are one file and
@@ -1495,7 +1503,7 @@ at one point in the source's history. The two kinds differ in atomicity:
 | V23 | A blocked lock holds no worker and has no deadline: NFSv4 waiters are polled, NLM and SMB waiters are answered through `LockWaitOver`, and no adapter answers one other than as granted before `CancelLock` returns. |
 | V24 | I/O under a delegation is served only to the client holding it and is authorised for the caller's own principal, as anonymous I/O is. |
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush through an open that was open across a loss of the file's acknowledged unoffloaded writes fails once with `ErrLost`. |
-| V26 | A copy or clone of overlapping extents within one file, or a clone over `clone_max_len`, is refused with `ErrInvalid`, one across namespaces with `ErrCrossNamespace`, one from an `Incomplete` source with `ErrIncomplete`, and **(cluster)** any one across shards with `ErrCrossShard`, each changing nothing, after which the adapter copies a `COPY` or copychunk's bytes itself; writes to a running clone's extents, and removals of its destination, are held until it ends, and return `ErrDelay` only past their own deadline; a Lost source run is copied as Lost; a clone is atomic and answered only when done, and a copy runs as bounded chunks and may answer a short count. |
+| V26 | A copy or clone of overlapping extents within one file, or a clone over `clone_max_len`, is refused with `ErrInvalid`, one across namespaces with `ErrCrossNamespace`, one from an `Incomplete` source with `ErrIncomplete`, and **(cluster)** a clone across shards with `ErrCrossShard`, each changing nothing, while a `COPY` or copychunk across shards is copied by the service itself, never by an adapter; writes to a running clone's extents, and removals of its destination, are held until it ends, and return `ErrDelay` only past their own deadline; a Lost source run is copied as Lost; a clone is atomic and answered only when done, and a copy runs as bounded chunks and may answer a short count. |
 | V27 | A request an adapter holds pending after `ErrGrace` outlives the grace period, and one held while its share is quiesced or frozen outlives the freeze, bounded by `migration.freeze_timeout` plus the break deadline (§3.2). |
 | V28 | A create, link or rename into a directory marked delete on close is refused, over every protocol. |
 | V29 | Every call takes the open-state steps of the files it touches, then fold admission, then accept locks, each set in file-ID order; a call queued for fold admission holds no accept lock, and a held call holds none of them and re-runs §5.1's steps 3–6 when its hold ends. |

@@ -20,7 +20,7 @@ aliases:
 tags:
   - rfc
 ---
-# RFC 20 — the adapter model
+∞# RFC 20 — the adapter model
 
 **Status:** draft. [§11](#11.%20Open%20questions) lists what is known to be undecided.
 **Audience:** anyone writing or changing a protocol adapter, and anyone deciding
@@ -94,6 +94,8 @@ With this RFC:
 - **reference server** — a widely deployed implementation of the protocol whose
   wire behaviour this one is compared against (§8).
 
+![The two adapters, each holding only wire, session, security and ID state in memory, calling the filesystem service; the service alone reaches the metadata store, open state, the content engine and routing; an adapter's direct import of any of those fails the import test](img/rfc20-boundary.svg)
+
 **What this RFC promises.**
 
 - Every adapter has the same lifecycle, the same request pipeline and the same
@@ -109,8 +111,8 @@ With this RFC:
 **How the rest is organised.** §1 gives the purpose and non-goals. §2 is the
 boundary: what an adapter may hold, and the two questions that decide it. §3 is
 the lifecycle, §4 the dispatch pipeline, §5 encoding and decoding, §6
-concurrency and the network. §7 and §8 are the two kinds of test this RFC
-owns — the boundary tests and the wire tests. §9 and §10 are invariants and
+concurrency, the network, what makes an adapter fast, and TCP. §7 and §8 are
+the two kinds of test this RFC owns — the boundary tests and the wire tests. §9 and §10 are invariants and
 metrics; §11 lists open questions. Appendix A is prior art, Appendix B where the
 current code differs, Appendix C the reference profile for wire tests.
 
@@ -176,6 +178,10 @@ Windows user hits it.
 - One reader and one writer per connection; bounded work in flight per
   connection, set by the protocol's own flow control; no worker waits on a
   client.
+- Speed comes from what the adapter does not do: no serialising of a
+  connection's requests, no payload copies, no shared lock on the request path.
+  Buffers are pooled by size class, replies are sent in gathered writes, and
+  Nagle's algorithm is off.
 - Boundary tests prove the adapter only translates; wire tests compare it with a
   reference server, field by field, with every accepted difference recorded.
 
@@ -246,6 +252,17 @@ must find the thing still there.
 > mode, delete on close, an alternate data stream — is still the service's,
 > because NFS must see its effect. Move a feature into an adapter only when both
 > questions answer no, and say so in that protocol's RFC.
+
+**Worked example.** Six details, placed by the two questions:
+
+| Detail | Could the other protocol observe it? | Does the client present it back? | Lives in |
+| --- | --- | --- | --- |
+| alice-pc's deny-write on her container | yes — build01's NFSv3 write must be refused | — | the service ([RFC 14](rfc-14-open-state.md)) |
+| a named stream `report.docx:summary` | yes — removing the file over NFS removes its streams | — | the service ([RFC 7](rfc-7-namespace-metadata.md)) |
+| build01's exclusive create verifier | no | yes — the `OPEN` is resent after a reconnect | the service ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)) |
+| the cached reply in build01's slot 7 | no | no — after node loss the client is told `NFS4ERR_BADSESSION` and opens a new session | the adapter, in memory |
+| the 512 credits granted to alice-pc's connection | no | no — credits end with the connection | the adapter, in memory |
+| the name `a:b` shown to SMB as `a` U+F022 `b` | no — NFS sees the stored name | no — the mapping is computed, nothing is held | the adapter's codec |
 
 ### 2.2 What an adapter may hold
 
@@ -333,11 +350,7 @@ And what looks protocol-only but is not:
 Every adapter runs through the same four states, driven by the control plane
 (planned RFC 23):
 
-```text
-  configured ──start──▶ serving ──stop──▶ draining ──drained or deadline──▶ stopped
-                           │  ▲
-                     reconfigure (listeners added or removed; no restart)
-```
+![The adapter's states — configured, serving, draining, stopped, with reconfigure looping on serving — and below them one connection's life: accept, negotiate, authenticate, serve with the pipeline per request, close](img/rfc20-lifecycle.svg)
 
 - **configured** — settings validated ([RFC 13](rfc-13-configuration.md)), no
   socket open. A setting the adapter cannot apply **MUST** fail here, not at the
@@ -366,13 +379,28 @@ a namespace move's release asks of an adapter
 ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) — and
 leaves the others serving.
 
+**Side programs are part of the adapter.** A protocol's auxiliary listeners —
+the port mapper, MOUNT, NLM and NSM for NFS, a service-discovery announcement,
+the RPC endpoints behind SMB's `IPC$` — start with the adapter, all or none, and
+stop after its own listeners close, in reverse order. A side program that fails
+to start fails the adapter's start. A datagram side program, such as a port
+mapper answering on UDP, reads into a bounded queue and drops a datagram that
+arrives at a full one: the client retries.
+
+**Health.** An adapter is healthy when it is serving with every listener and
+side program bound. Draining reports not ready, so that whatever steers new
+clients — an address takeover ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)), a load balancer — stops sending
+them before the drain ends.
+
+**A setting is live or restart-only.** Each adapter setting is marked as one or
+the other in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table. A live setting applies to connections and sessions set
+up after the change; one already set up keeps what it negotiated — its dialect,
+signing, encryption and sizes — until it ends. A restart-only setting is applied
+by a drain and a start, never by changing a serving connection under its client.
+
 ### 3.2 A connection's lifecycle
 
-```text
- accept ─▶ negotiate ─▶ authenticate ─▶ serve ◀──┐ ─▶ close
-                              │            │     │
-                              └── per session, per request ──┘
-```
+The lower half of the drawing above:
 
 1. **accept** — the connection is counted against the node's connection limit
    (§6.4); past it, the connection is closed at once, before any byte is read.
@@ -392,6 +420,13 @@ The service learns of a client at the protocol's own moment
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations) `Connect`) — not at accept, since
 an NFS client's identity spans connections and an SMB client's spans sessions.
 A connection is the adapter's; a client is the service's.
+
+**Cleanup comes before reconnect, and blocks only the session it is for.** A
+closing connection's cleanup — `Disconnect` for each session whose last channel
+it was, its ID tables dropped — completes before a reconnect of the same session
+is served on another connection, so the reconnect never meets half-ended state.
+The wait is keyed by the session: one client's slow cleanup never delays another
+client's setup.
 
 ### 3.3 Callbacks are the adapter's to deliver
 
@@ -415,11 +450,7 @@ listener and its connections (§3.1).
 
 Every request, in either protocol, passes the same stages in this order:
 
-```text
- frame ─▶ decode header ─▶ admit ─▶ replay check ─▶ decode args ─▶ resolve IDs
-                                                                      │
- send ◀─ encode ◀─ map error ◀─ (next op of compound) ◀─ call service ◀┘
-```
+![The pipeline: frame, decode header, admit, replay check, decode args and resolve IDs, each with its protocol-only refusal; then the one stage that calls the service; then map error, encode and send; a compound's next operation and a held SMB request both re-enter at resolve IDs](img/rfc20-pipeline.svg)
 
 | Stage | Does | Fails as |
 | --- | --- | --- |
@@ -449,6 +480,20 @@ the table lacks is answered the protocol's not-supported status, by the
 pipeline, before argument decoding. Version and dialect gating — an NFSv4.2
 operation in a 4.1 compound, an SMB 3.x command on a 2.1 connection — is a
 column of the table, not a check in the handler.
+
+Each row also carries the preconditions the pipeline checks before the handler
+runs, so that no handler repeats them:
+
+| Column | Meaning | Example |
+| --- | --- | --- |
+| allowed before | whether it may arrive before negotiation or authentication completes | `NEGOTIATE`, `SESSION_SETUP`, `EXCHANGE_ID` |
+| needs | session, tree connect, current filehandle — refused with the protocol's status when absent | SMB `READ` needs a session and a tree; NFSv4 `PUTROOTFH` needs no filehandle |
+| versions | the first and last version or dialect that serve it | NFSv4.2 `SEEK` from minor version 2 |
+| mutates | whether the handler may make its one mutating call (§4.3) | `WRITE` yes, `GETATTR` no |
+| cacheable | whether its reply goes in the replay cache | NFSv4.1 `CREATE`, `REMOVE`, `RENAME` |
+| reply bound | the largest reply it can produce for its arguments, before running it | `READ`: the count asked plus its header |
+
+A test asserts every row fills every column.
 
 Cross-cutting work — tracing, metrics, deadlines, panic recovery — wraps every
 handler the same way, in the pipeline, in this fixed order outside in:
@@ -481,6 +526,24 @@ type Handler[Req, Rep any] func(ctx context.Context, c *Conn, req *Req) (*Rep, e
 - It **MUST NOT** branch on a file's attributes, mode, ACL or type to decide
   whether the operation is allowed. It may branch on them to format the reply.
 
+**Example.** The NFSv3 `WRITE` handler, whole:
+
+```go
+func write3(ctx context.Context, c *Conn, a *WRITE3args) (*WRITE3res, error) {
+	o := vfs.Anonymous(c.Identity(ctx), a.File) // NFSv3 has no opens (RFC 17 §4.1)
+	n, v, err := c.Svc.Write(ctx, o, int64(a.Offset), a.Data, stability(a.Stable))
+	if err != nil {
+		return nil, err // mapped once, by the table (§4.5)
+	}
+	after, _ := c.Svc.GetAttr(ctx, c.Identity(ctx), a.File) // read-only, for the reply's attributes
+	return &WRITE3res{Count: uint32(n), Committed: a.Stable, Verf: v, After: after}, nil
+}
+```
+
+It looks up no share, checks no permission, tests no lock and calls no engine.
+A version that did any of them fails the import test (§7.1) or the recording
+service's expectations (§7.2).
+
 **A compound is a sequence of handlers.** NFSv4 `COMPOUND` and SMB compounded
 requests are run by the adapter's compound runner, one handler per operation,
 carrying the compound state of §2.2 between them. The runner stops at the first
@@ -489,6 +552,22 @@ state between operations beyond that compound state: no lock is held across
 two operations of one compound, and two operations of one compound are two
 service calls, admitted separately
 ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
+
+- A compound longer than the protocol's operation cap is refused before any of
+  its operations runs; the cap is the protocol RFC's.
+- **The reply budget is checked before each operation, not after.** The runner
+  compares the operation's reply bound (§4.2) with what is left of the reply the
+  client allows — NFSv4.1's `ca_maxresponsesize`, SMB's output buffer — and
+  refuses an operation that would not fit before it runs (`NFS4ERR_REP_TOO_BIG`).
+  A mutation applied whose reply then cannot be sent is a mutation the client
+  will send again.
+
+**Example: an SMB compound.** Explorer reading a file's properties sends
+`CREATE`, `QUERY_INFO` and `CLOSE`, related. The runner calls `Open`, keeps the
+returned open as the compound's current file, answers `QUERY_INFO` from
+`GetAttr` through it, then calls `Close`: three handlers, three service calls,
+each admitted. If `Open` fails, the related `QUERY_INFO` and `CLOSE` are answered
+with the same status, as SMB requires, and reach no service call.
 
 > ponytail: compounds run as sequences of single calls. A `LOOKUP`-`GETATTR`-`OPEN`
 > chain is three round trips to the primary in a split deployment. Batch them
@@ -531,10 +610,23 @@ version:
 - expected refusals — `ErrNotFound`, `ErrExist`, `ErrAccess` and the like — are
   logged at debug, unexpected ones at error.
 
-The tables are the protocol RFCs' content
+Who writes which rows: a protocol RFC states the rows whose answer is a
+protocol choice — which status makes a client retry, reclaim or give up
 ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)); this RFC fixes
-that there is exactly one per protocol and that it is total.
+[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)). The rest follow
+from the protocol's own specification, are not restated in any RFC, and live
+only in the adapter's table. This RFC fixes that there is exactly one table per
+protocol and that it is total (§7.3).
+
+*Illustrative rows; the authoritative ones are in the protocol RFCs:*
+
+| Service error | NFSv3 | NFSv4 | SMB |
+| --- | --- | --- | --- |
+| `ErrNotFound` | `NFS3ERR_NOENT` | `NFS4ERR_NOENT` | `STATUS_OBJECT_NAME_NOT_FOUND` |
+| `ErrExist` | `NFS3ERR_EXIST` | `NFS4ERR_EXIST` | `STATUS_OBJECT_NAME_COLLISION` |
+| `ErrAccess` | `NFS3ERR_ACCES` | `NFS4ERR_ACCESS` | `STATUS_ACCESS_DENIED` |
+| `ErrDelay` with a conflict cause | `NFS3ERR_JUKEBOX` | `NFS4ERR_DELAY` | held, then by cause (§4.6) |
+| no row | `NFS3ERR_SERVERFAULT` | `NFS4ERR_SERVERFAULT` | `STATUS_INTERNAL_ERROR` |
 
 ### 4.6 Held requests
 
@@ -583,6 +675,12 @@ A malformed request is refused with the protocol's garbage-arguments or
 invalid-parameter status. A framing error the protocol cannot recover from —
 a record length past the cap, a broken NetBIOS header — closes the connection.
 
+**Example.** An NFSv4 `GETATTR` arrives in a 200-byte request claiming a
+bitmap of 300 words. The decoder needs 1,200 bytes for it, finds 160 left, and
+refuses the request `NFS4ERR_BADXDR` before allocating anything. A `READDIR`
+asking for a 4 GiB reply is not refused: the size asked is clamped to the
+session's reply size, since a client may ask for more than it gets.
+
 ### 5.3 No copies on the data path
 
 `READ` and `WRITE` payloads are not copied by the adapter
@@ -621,6 +719,8 @@ the reply buffer rather than a further one.
 
 ### 6.1 One reader, workers, one writer
 
+![One connection: a reader framing requests, up to the flow-control bound of requests running at once, a bounded writer queue sending replies in any order; when the client stops reading, the queue fills, the reader stops reading that connection, and past the write deadline the connection closes](img/rfc20-connection.svg)
+
 Each connection has one reader, which frames and decodes headers, and one
 writer, which serialises replies onto the socket. Requests decoded by the
 reader run concurrently, up to the connection's flow-control bound (§6.3).
@@ -646,6 +746,13 @@ The writer owns the socket's write side. It sends whole messages, never
 interleaves two, and applies per-message signing or encryption in send order
 where the protocol requires an order. It has a bounded queue and a write
 deadline (§6.4). A failed write closes the connection.
+
+**Order where the protocol needs it.** When answering a request makes the
+service send a callback on the same connection — an SMB lease break to the very
+client whose request caused it — the callback is queued ahead of that request's
+reply, so the client never sees an answer before the break it depends on. That
+is the only order the writer keeps between messages; every other reply goes out
+as it completes.
 
 ### 6.3 Flow control is the protocol's own
 
@@ -693,6 +800,84 @@ call already in progress; the adapter only stops waiting for it and drops its
 reply. A mutation that the service applied after the cancel is applied: the
 adapter **MUST NOT** report to the client that it was not.
 
+### 6.6 Throughput and latency
+
+What makes an adapter fast is mostly what it does not do. In the order of what
+each buys:
+
+1. **Many requests per connection.** Both protocols multiplex: requests in
+   flight on one connection are matched to their replies by XID, slot or
+   message ID. The adapter runs them concurrently up to the flow-control bound
+   (§6.3) and replies as each completes. It **MUST NOT** serialise a connection's
+   requests beyond what the protocol requires — SMB related operations of one
+   compound, and one NFSv4.1 slot's sequence. Order between requests on one file
+   is the service's ([RFC 17 §4.8](rfc-17-vfs.md#4.8%20One%20primary%20per%20file)).
+2. **Many connections per client.** Clients open several connections for
+   bandwidth — NFS clients with several connections per mount, NFSv4.1 trunking
+   ([RFC 21 §3.3](rfc-21-nfs.md#3.3%20Trunking%2C%20server%20owner%20and%20scope)), SMB multichannel
+   ([RFC 22 §4.2](rfc-22-smb.md#4.2%20Multichannel%20only%20within%20one%20node)). Each connection has its own reader and
+   writer, and a session's state shared across its channels is never locked
+   across a service call, so a client's connections run on different cores.
+3. **No copies of payload** (§5.3). A `READ` reply is the header and the buffer
+   the service filled, sent in one gathered write; a `WRITE`'s data is decoded in
+   place in the receive buffer.
+4. **Buffers pooled by size class.** Receive and reply buffers come from pools
+   in a few classes — a header with attributes, a directory page, the protocol's
+   largest transfer with its headers — so the large class is drawn only for
+   `READ` and `WRITE`. A buffer goes back to its pool when its last borrower, the
+   writer or the service, releases it, never before; a buffer larger than the
+   largest class is not pooled. How much memory each pool may hold is RFC 24's.
+5. **Coalesced sends.** When several replies are queued, the writer sends them
+   in one gathered write, so a burst of small replies costs one system call. This
+   is why Nagle's algorithm is off (§6.7): batching is the writer's, where it
+   adds no delay.
+6. **No shared lock on the request path.** ID tables are per connection or per
+   session, so two connections never contend on one. Node-wide tables — the
+   session table, the connection registry — are read without a lock held across
+   the service call.
+7. **Identity from the security context.** `Identity` is built per request from
+   what the handshake established (§4.4), with no directory call per request.
+
+> ponytail: one goroutine per request, bounded by the connection's flow control
+> and RFC 24's node-wide budget; no worker pool. A pool adds a queue and a
+> handoff to every request and bounds nothing the budgets do not already bound.
+> Add one only when a profile on the reference box shows per-request scheduling
+> or allocation limiting the small-operation rate.
+
+> ponytail: one accept loop per listener. Accepting is not a limit at a file
+> server's connection counts. Spread accepts over several loops sharing the port
+> only if a reconnect storm after a failover is shown queueing in the listen
+> backlog.
+
+> decision: an adapter keeps no connection pool. A file server is the passive
+> end, and clients choose how many connections to open. The only connection an
+> adapter opens is an NFSv4.0 callback path to a client, which it keeps, one per
+> client, and reuses. Connections between `protocol` and `storage` nodes belong
+> to the shard service ([RFC 15](rfc-15-topology.md)), not to an adapter.
+
+The ceilings above are measured on the reference box
+([index](rfc-index.md#Test%20tiers)) by four benchmarks, each per protocol:
+small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one
+connection and on the node; 1 MiB sequential read and write throughput on one
+connection and on four; and the p99 latency of a 4 KiB write with the node at
+half its request budget.
+
+### 6.7 TCP
+
+| Option | Setting | Why |
+| --- | --- | --- |
+| Nagle's algorithm | **off** (`TCP_NODELAY`) on every connection, **MUST** | a request-reply protocol: Nagle holding a small reply until the client's delayed acknowledgement arrives adds up to that timer, tens to hundreds of milliseconds, to a `GETATTR`; batching is the writer's instead (§6.6) |
+| keepalive | on, with a probe period shorter than the shortest lease or session timeout it must detect | finds a peer that vanished without closing, so its connection and any back channel it held are closed; the protocol's own lease still decides what happens to state |
+| send and receive buffers | left to the kernel's autotuning; **MUST NOT** be fixed by default | fixing them caps the window and switches autotuning off on common kernels; a 1 MiB transfer over a long round trip needs more window than any fixed default |
+| user timeout | where the platform offers it, equal to the write deadline (§6.4) | unacknowledged data then fails the connection when the writer would have |
+| listen backlog | the system's maximum | a reconnect storm after a failover arrives at once ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)) |
+| address reuse | on for listeners | a restarted node binds its port while old connections sit in their closing wait |
+
+Each is a setting in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) with the default above, except Nagle's algorithm,
+which is fixed. NFS is served over TCP only
+([RFC 21 §2.2](rfc-21-nfs.md#2.2%20TCP%20only)); RDMA, QUIC and SMB Direct are not offered
+([RFC 22 §3.1](rfc-22-smb.md#3.1%20Dialects)).
+
 ## 7. Boundary tests
 
 These checks prove the adapter only translates. They run per change.
@@ -720,6 +905,23 @@ method is recorded without hand edits. A handler test **MUST NOT** use a real
 store or engine: a handler that works only because a real store did the
 checking is exactly the leak this RFC forbids. Semantics are tested once, in
 the service's suite ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
+
+**Example.**
+
+```go
+func TestWrite3(t *testing.T) {
+	svc := vfstest.Record(t)                          // generated from the interface
+	svc.Expect("Write").Return(4096, verf, nil)
+	svc.Expect("GetAttr").Return(attrs, nil)          // read-only, for the reply
+	rep := runGolden(t, svc, "write3-4k.call")        // golden request bytes
+	svc.AssertDone()                                  // exactly these calls, nothing else
+	assertGolden(t, rep, "write3-4k.reply")
+
+	svc.Expect("Write").Return(0, nil, vfs.ErrShareViolation)
+	rep = runGolden(t, svc, "write3-4k.call")
+	assertStatus(t, rep, NFS3ERR_ACCES)               // the table's row, not a guess
+}
+```
 
 ### 7.3 The error tables are total
 
@@ -763,6 +965,8 @@ the same starting tree. Both runs are captured on the wire, decoded by a
 protocol dissector into fields, normalised (§8.3), and compared field by field,
 request by request.
 
+![A wire test: one script sent to a reference server and to DittoFS, both captured, dissected into fields, normalised, and compared; equal is green, a difference with a recorded entry citing an RFC rule is green, any other difference is red with both captures kept](img/rfc20-wire-diff.svg)
+
 - Scripts drive the protocol, not a kernel client. A kernel client's caching,
   retries and timing differ between runs and hide the reply under test. The
   kernel clients are exercised by the protocol suites
@@ -793,6 +997,21 @@ Everything else is compared: statuses, flags, which optional fields are
 present, attribute sets and values, sizes, counts and offsets, credit grants,
 the order of entries a reply lists. A normalisation rule **MUST** name a field,
 never a message: masking a whole reply to make it match is masking the test.
+
+**Example.** The same SMB `CREATE` reply, from each server:
+
+```text
+                        reference                    DittoFS                       normalised
+Status                  SUCCESS                      SUCCESS                       compared: equal
+FileId                  0x00000a3c:0x00007f11        0x00000001:0x0000001d         FILE#1 = FILE#1
+CreationTime            2026-10-15T10:03:11.402Z     2026-10-15T10:03:11.981Z      TIME#1 = TIME#1
+MaximalAccess           0x001f01ff                   0x001f01ff                    compared: equal
+Lease state             RWH                          RW                            compared: DIFFERS
+```
+
+The IDs and times become tokens and compare equal. The lease state is
+compared and differs: the run is red, unless the divergence list has an entry
+for this script and field citing the rule that grants `RW` here.
 
 ### 8.4 Divergences are recorded decisions
 
@@ -848,6 +1067,8 @@ tests, per change, without waiting for the nightly run.
 | A11 | A drained or cancelled request is never answered with a final error the service may contradict. |
 | A12 | The adapter maps no identity, applies no squash and grants no privilege; it hands the service what the handshake proved. |
 | A13 | Every wire divergence from the reference server that survives normalisation is a red run or a recorded entry citing a protocol RFC rule. |
+| A14 | Nagle's algorithm is off on every connection, and the socket buffers are left to the kernel unless a setting fixes them. |
+| A15 | Every operation-table row fills every column, and no handler checks a precondition the table carries. |
 
 ## 10. Observability
 
@@ -896,16 +1117,45 @@ a healthy node; any increase is a bug, and alerts as one.
   FSAL and nothing else.
 - **The Linux NFS server** — the `svc` layer handles transport, record marking
   and the duplicate request cache, and dispatches to per-version procedure
-  tables; XDR codecs are generated from specifications for newer versions.
+  tables. Its NFSv4 compound processing reads a per-operation table of flags —
+  allowed without a filehandle, modifies state, cacheable, handles wrong
+  security — and a per-operation reply-size estimate, checked before each
+  operation runs against the session's reply limit: the model for §4.2's columns
+  and §4.3's reply budget. A transport is served by one thread at a time, so
+  requests on one connection are read in order and run in parallel. Its newer
+  XDR codecs are generated from the specifications' XDR.
+- **Samba's SMB2 server** — one dispatch table whose rows say whether a command
+  needs a session, a tree connect or a file ID, and whether it changes state;
+  checked before the command's handler runs. Interim responses and re-driven
+  requests are a mechanism of the request layer, not of each command.
 - **Wireshark and its dissectors** — the de facto field-level description of
   both protocols, and what makes the differential runs of §8 cheap to build.
 
 ## Appendix B — where the current code differs
 
-*Non-normative.* Filled in from the code on the branch this RFC was written
-against.
+*Non-normative.* The code on the branch this RFC was written against, by section.
 
-<!-- filled below -->
+| § | This RFC | The code today |
+| --- | --- | --- |
+| §2.3, §7.1 | adapters import only the service | handlers reach the metadata service directly at about 70 call sites, the lock manager in 15 files, the block store in about 30, through runtime interfaces that return the concrete metadata service; no import check exists for adapters (the block packages have one, the pattern to copy) |
+| §2.4, RFC 17 §5.1 | the service orders a write | the prepare-write, block-store write, commit-write, flush sequence is repeated in the NFSv3, NFSv4 and SMB write handlers and in SMB copychunk and sparse handlers, through shared write helpers |
+| §2.4 | conflicts are the service's | SMB handlers check locks for I/O in six places and lock directly; NFSv3 handlers break caching grants themselves before write, read, remove and rename; NFSv4 locks through its own state manager |
+| §2.4, RFC 17 §4.9 | admission is the service's | share admission runs in four places — NFSv3 dispatch, the NFSv4 auth-context builder, MOUNT, SMB tree connect — and share-permission policy is written twice |
+| §2.3 | one shared translation | ACL translation, access-mask conversion and attribute conversion are each written per protocol, access masks twice within NFS |
+| §3.1 | one lifecycle | one accept-and-drain shell is shared; each protocol's stop sequence and side programs are hand-ordered per adapter |
+| §4.1 | one pipeline | two dispatch stacks with nothing shared above the socket; the connection loops are near-identical copies |
+| §4.2 | precondition columns | SMB's table carries needs-session and needs-tree; NFSv4 looks operations up in three per-version maps with a per-share block list; NFSv3 gates in its dispatcher |
+| §4.3 | reply budget before each operation | the NFSv4.1 compound enforces the reply size; the per-compound cap is 128 operations |
+| §4.4 | no identity mapping in adapters | squashing and identity mapping run in the NFS adapter; SMB resolves SIDs through its own paths |
+| §4.5 | one total table per protocol | three status tables (NFSv3, NFSv4, SMB), no totality test |
+| §5.1 | codecs from one place | NFS codecs are hand-written, with a reflection-based XDR library still used for the RPC envelope and MOUNT; SMB uses one encoder in most handlers and raw byte order in a few |
+| §5.3, §6.6 | no payload copy, gathered writes | replies are copied into a fresh buffer (NFS) or a pooled frame (SMB); no gathered writes; a three-class buffer pool exists |
+| §5.4 | golden vectors and fuzzing | one fuzz target (RPC auth); no golden vectors for handler messages |
+| §6.1, §6.3 | flow control is the protocol's | one goroutine per connection and one per request, bounded by a per-connection cap of 100 for both protocols; slots (64) and credits exist; no node-wide in-flight bound |
+| §6.7 | TCP options | Nagle off and keepalive at 15 s already; socket buffers untouched |
+| §7.2 | handlers against a recording service | handler tests run on real in-memory stores and engines; four fakes in total |
+| §8 | differential wire tests | a capture corpus with a normaliser exists for Kerberos, LDAP, NFSv4 ACLs and SMB security descriptors only; standard suites run nightly; the interop playbook is manual |
+| RFC 21 §2.2 | every NFS-family program over TCP only | NFS itself is TCP only, but MOUNT, NLM and NSM are also served over UDP |
 
 ## Appendix C — the reference profile for wire tests
 
