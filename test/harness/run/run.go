@@ -128,11 +128,6 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		if o.CI && (cell.Result == Failed || cell.Result == NotRun) {
 			_, _ = fmt.Fprintln(o.Out, annotation("dt "+c.Name, cell.Result+": "+cell.Note))
 		}
-		if ctx.Err() != nil {
-			// The cell didn't finish, and what its tests reported once
-			// interrupted can come from the interrupt itself.
-			cell.Tests = nil
-		}
 		ungraded(c.Unit, cell.Tests)
 		sum.Cells = append(sum.Cells, cell)
 		sum.Stop, sum.Exit = time.Now(), rep.Status()
@@ -278,7 +273,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 	read := readers[c.Unit.Format]
 	var failed, notRun []string
 	var cases []report.Test
-	unstarted := 0
+	unstarted, interrupted := 0, false
 	for i, test := range tests {
 		if cellCtx.Err() != nil {
 			unstarted++
@@ -294,6 +289,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 		}
 		start := time.Now()
 		r := t.run(test, each[i])
+		interrupted = interrupted || r.interrupted
 		switch {
 		case read == nil:
 			// exit: each test is a test case, or without tests each command.
@@ -312,7 +308,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 				}
 				cases = append(cases, report.Test{Name: test, Status: status, Duration: time.Since(start), Message: r.note})
 			}
-		case errors.Is(cellCtx.Err(), context.Canceled):
+		case r.interrupted:
 			notRun = append(notRun, prefix+"interrupted")
 		default:
 			got, err := read(report.Ran{Test: test, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Out: out})
@@ -329,6 +325,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 	}
 	if unstarted > 0 {
 		notRun = append(notRun, fmt.Sprintf("%d tests not started: %s", unstarted, stopped(cellCtx)))
+		interrupted = interrupted || errors.Is(cellCtx.Err(), context.Canceled)
 	}
 	if read != nil {
 		// The results decide, not the exit status: a failed result fails
@@ -345,6 +342,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 		if len(cases) == 0 {
 			notRun = append(notRun, "no results")
 		}
+	}
+	if interrupted {
+		// The cell didn't finish, and what its tests reported once
+		// interrupted can come from the interrupt itself.
+		cases = nil
 	}
 	cell := report.Cell{Name: c.Name, Result: Passed, Log: logName, Tests: cases}
 	switch {
@@ -384,6 +386,7 @@ type testRun struct {
 	steps        []report.Test // each command that ran to a result, named by its first line
 	exit         int           // the first non-zero exit status
 	timedOut     bool          // stopped at the test's limit or the cell's
+	interrupted  bool          // stopped by an interrupt
 }
 
 // run runs every command for one test, all of them even after one fails, and
@@ -435,7 +438,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
 			step.Message = "stopped at the cell's limit"
 		case t.ctx.Err() != nil:
-			r.result, r.note = NotRun, "interrupted"
+			r.result, r.note, r.interrupted = NotRun, "interrupted", true
 			return r
 		case err != nil:
 			step.Message = fmt.Sprintf("`%s`: %v", firstLine(shown), err)

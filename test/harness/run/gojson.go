@@ -68,7 +68,9 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 			res.end("", time.Now(), "stopped at the cell's limit")
 			return Failed, res.note(append(problems, "stopped at the cell's limit")), res.cases
 		case t.ctx.Err() != nil:
-			return NotRun, res.note(append(problems, "interrupted")), res.cases
+			// The cell didn't finish, and what its tests reported once
+			// interrupted can come from the interrupt itself.
+			return NotRun, res.note(append(problems, "interrupted")), nil
 		case err != nil:
 			problems = append(problems, fmt.Sprintf("`%s`: %v", shown, err))
 		case code != 0 && res.failures() == failed:

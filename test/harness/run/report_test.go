@@ -485,3 +485,66 @@ func TestGoJSONOnlyPausedTestsOpen(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// cancelOn is an output that cancels the run once it's given text.
+type cancelOn struct {
+	text   string
+	cancel context.CancelFunc
+}
+
+func (c cancelOn) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(c.text)) {
+		c.cancel()
+	}
+	return len(p), nil
+}
+
+// A cell that finished keeps its results when the run is interrupted right
+// after it, here as dt prints how it went; the next cell didn't run.
+func TestFinishedCellKeepsItsResults(t *testing.T) {
+	root, r := repo(t, `groups: { g: [done, next] }
+suites:
+  done: { cmd: "true" }
+  next: { cmd: "true" }
+`, nil)
+	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: cancelOn{"[dt] done: passed", cancel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
+	if got, want := s.cases(), []string{"done > true: passed"}; !slices.Equal(got, want) || s.Results.Extra.Cells[1].Result != NotRun {
+		t.Errorf("got %q, cells %+v; want %q", got, s.Results.Extra.Cells, want)
+	}
+}
+
+// An interrupted go-json cell keeps no results, not even those of the tests
+// that passed before the interrupt.
+func TestGoJSONInterruptedCellHasNoResults(t *testing.T) {
+	root, r := repo(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", nil)
+	now := `"Time":"` + time.Now().Format(time.RFC3339Nano) + `",`
+	fakeGo(t, `{`+now+`"Action":"run","Package":"p","Test":"TestDone"}
+{`+now+`"Action":"pass","Package":"p","Test":"TestDone","Elapsed":0.5}
+{`+now+`"Action":"run","Package":"p","Test":"TestWait"}
+{`+now+`"Action":"output","Package":"p","Test":"TestWait","Output":"=== RUN   TestWait\n"}
+`)
+	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: cancelOn{"=== RUN   TestWait", cancel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
+	if got := s.cases(); len(got) != 0 || rep.Outcomes[0].Result != NotRun {
+		t.Errorf("tests %q, outcome %+v", got, rep.Outcomes[0])
+	}
+}
