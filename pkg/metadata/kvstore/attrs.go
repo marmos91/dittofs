@@ -106,8 +106,10 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 
 // mayChange decides whether the caller may make the attribute change a.
 func mayChange(r kv.Reader, id entity.Identity, f entity.File, a entity.Attrs) error {
-	if err := authorize(r, id, f, entity.ReadAttributes); err != nil {
-		return err // the share grant, at least
+	// Every change is a write to the share, which a read-only grant refuses
+	// before any privilege below is considered.
+	if err := grantAllows(r, id, f.Share, entity.WriteAttributes); err != nil {
+		return err
 	}
 	const locked = entity.FlagImmutable | entity.FlagAppendOnly
 	if f.Flags&locked != 0 {

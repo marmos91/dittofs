@@ -311,3 +311,41 @@ func testDirectoryTimeSet(t *testing.T, kvo Opener) {
 		t.Errorf("directory Modify %v %v, want %v", got.Modify, err, past)
 	}
 }
+
+// A read-only share grant refuses every attribute change, a privileged
+// caller's too: privilege skips the file's mode and ACL, never the grant.
+// The flags of an immutable file, which only privilege may change, are
+// refused the same way.
+func testPrivilegedReadOnlyGrant(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	h, _ := f.create(f.admin, pub, "x", regular(0o644))
+	frozen, _ := f.create(f.admin, pub, "frozen", regular(0o644))
+	must(t, errOf(f.s.Files().SetAttrs(ctx, f.admin, frozen, entity.Attrs{}.WithFlags(entity.FlagImmutable))))
+
+	u := user("rootro")
+	must(t, f.s.ControlPlane().PutUser(ctx, u))
+	must(t, f.s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: u.Principal, Access: entity.AccessRead}))
+	ro := entity.Identity{Principal: u.Principal, Privileged: true}
+
+	if _, _, err := f.s.Namespace().Create(ctx, ro, pub, []byte("y"), regular(0o644)); !isDenied(err) {
+		t.Errorf("create under a read-only grant: %v", err)
+	}
+	for _, c := range []struct {
+		name string
+		h    entity.Handle
+		a    entity.Attrs
+	}{
+		{"chmod", h, entity.Attrs{}.WithMode(0o600)},
+		{"chown", h, entity.Attrs{}.WithOwner(u.Principal)},
+		{"immutable", h, entity.Attrs{}.WithFlags(entity.FlagImmutable)},
+		{"clear immutable", frozen, entity.Attrs{}.WithFlags(0)},
+	} {
+		if _, err := f.s.Files().SetAttrs(ctx, ro, c.h, c.a); !isDenied(err) {
+			t.Errorf("%s by a privileged caller with a read-only grant: %v", c.name, err)
+		}
+	}
+	if _, err := f.s.Files().Get(ctx, ro, h); err != nil {
+		t.Errorf("a read under the read-only grant: %v", err)
+	}
+}

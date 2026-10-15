@@ -22,6 +22,7 @@ func Run(t *testing.T, open Opener) {
 		fn   func(*testing.T, Opener)
 	}{
 		{"SetAttrsRights", testSetAttrsRights},
+		{"PrivilegedReadOnlyGrant", testPrivilegedReadOnlyGrant},
 		{"Times", testTimes},
 		{"SetAttrsClearsVerifier", testSetAttrsClearsVerifier},
 		{"ACLs", testACLs},

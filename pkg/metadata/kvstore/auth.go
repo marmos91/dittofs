@@ -46,15 +46,8 @@ func (f Files) Authorize(ctx context.Context, id entity.Identity, h entity.Handl
 // authorize is the one check every operation makes against the file it acts
 // on.
 func authorize(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMask) error {
-	access, err := grantFor(r, f.Share, id)
-	if err != nil {
+	if err := grantAllows(r, id, f.Share, want); err != nil {
 		return err
-	}
-	switch {
-	case access == entity.AccessNone:
-		return merrs.NewAccessDeniedError("no grant on the share")
-	case access == entity.AccessRead && want&writeRights != 0:
-		return merrs.NewAccessDeniedError("the share grant is read-only")
 	}
 	if err := flagsAllow(f, want); err != nil {
 		return err
@@ -65,6 +58,22 @@ func authorize(r kv.Reader, id entity.Identity, f entity.File, want entity.Acces
 	}
 	if !ok {
 		return merrs.NewAccessDeniedError("the file's mode or ACL denies the access asked")
+	}
+	return nil
+}
+
+// grantAllows is the share grant's part of a check, which privilege never
+// skips: no grant refuses everything, and a read-only one every write right.
+func grantAllows(r kv.Reader, id entity.Identity, share entity.ShareID, want entity.AccessMask) error {
+	access, err := grantFor(r, share, id)
+	if err != nil {
+		return err
+	}
+	switch {
+	case access == entity.AccessNone:
+		return merrs.NewAccessDeniedError("no grant on the share")
+	case access == entity.AccessRead && want&writeRights != 0:
+		return merrs.NewAccessDeniedError("the share grant is read-only")
 	}
 	return nil
 }
