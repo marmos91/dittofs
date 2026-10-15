@@ -327,7 +327,6 @@ joined by underscores.
 | `adapter_` | [RFC 20](rfc-20-adapters.md) |
 | `nfs_` | [RFC 21](rfc-21-nfs.md) |
 | `smb_` | [RFC 22](rfc-22-smb.md) |
-| `api_` | [RFC 23](rfc-23-control-plane.md) |
 | `api_`, `runtime_`, `audit_` | [RFC 23](rfc-23-control-plane.md#11.%20Observability) |
 | `memory_`, `cpu_`, `fd_` | [RFC 24](rfc-24-resources.md) |
 | `health_`, `events_`, `build_` | this RFC (§9) |
@@ -641,15 +640,15 @@ For each role ([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role))
 [RFC 23 §2.5](rfc-23-control-plane.md#2.5%20Health%20and%20readiness%20endpoints)
 serves three answers. Their content is this:
 
-- **liveness**: the one word `live` while §3.5's watchdog holds; a failed answer
+- **liveness** (`GET /health/live`): the one word `live` while §3.5's watchdog holds; a failed answer
   once it has not, and nothing else.
-- **readiness**: one word, the node state from §3.6's table — `ready` while
+- **readiness** (`GET /health/ready`): one word, the node state from §3.6's table — `ready` while
   ready, otherwise `starting`, `draining`, or `not_ready` with the metadata store
   lost — and nothing else.
 - Neither answer names a share, a store or a condition, so either can be served
   to a probe that holds no credential
   ([RFC 23 §2.5](rfc-23-control-plane.md#2.5%20Health%20and%20readiness%20endpoints)).
-- **health**: the status of the installation, of this node and of each scope in
+- **health** (`GET /api/v1/health`): the status of the installation, of this node and of each scope in
   it; every current condition with its fields (§3.1), whether it is silenced, and
   its alert class; the counts of shares by status and the worst 20 shares; and
   the information section — grace periods and their remaining time, snapshots and
@@ -870,8 +869,9 @@ lists what a quota event is for, but not its fields; §10 asks it to add
 The spool files are the export: JSON lines, one record per line, rotated and named
 in order (§4.3). A shipper tails them; the format needs no DittoFS code to read.
 The management API also serves a stream's records, filtered by share, time and
-sequence range, read from the same files ([RFC 23](rfc-23-control-plane.md) owns
-the endpoint).
+sequence range, read from the same files
+([RFC 23 §6](rfc-23-control-plane.md#6.%20The%20audit) owns the endpoint,
+`GET /api/v1/events/{stream}`).
 
 Events **MUST NOT** be exported as metrics or written to the log: the counters of
 §9 count them, but no metric label or log line carries a record's identity, file
