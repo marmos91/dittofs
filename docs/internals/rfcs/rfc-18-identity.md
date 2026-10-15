@@ -1040,9 +1040,9 @@ in this order, stopping at the first that matches:
   everyone, or to authenticated users. There is no other default.
 - A squashed caller is the `Anonymous` principal; its own grant, if any, then
   everyone's, decide it.
-- The access is evaluated on every call with the grant versions in the
-  caller's key ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved),
-  §7.1), so a changed grant stops a client that still holds handles.
+- The access is evaluated on every call with the share's grant-list version
+  in the caller's key (RFC 16 `S‖id‖gv`; [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved),
+  §7.1), so a changed or deleted grant stops a client that still holds handles.
 - What `read`, `read-write` and `none` then allow on a file is RFC 7's and
   [RFC 19](rfc-19-authorization.md)'s.
 
@@ -1085,7 +1085,7 @@ the value was derived from:
 | --- | --- |
 | proof → principal | the flavour, the proof's whole `Name`, the proof's bound principal, every SID in the proof with whether it is deny-only, and for `AUTH_SYS` the uid, gid and every supplementary gid |
 | principal → groups | the principal, and for `AUTH_SYS` the credential's gids and the share's `ManageGIDs` |
-| caller, per share | all of the above, the share, `ExportPolicy.Version`, the grant versions read, the flavour and Kerberos level, and the principals generation (§7.2) |
+| caller, per share | all of the above, the share, `ExportPolicy.Version`, the share's grant-list version, the flavour and Kerberos level, and the principals generation (§7.2) |
 | directory answers | the question (§5.2) |
 
 - **Two proofs that share every numeric ID never share an entry.** Two
@@ -1151,7 +1151,11 @@ and grants. Their sign-in — passwords, tokens, roles, sessions — is
   its next password set (§3.5).
 - An API user and a file principal **MAY** be one `User` record, sharing a
   name and password; the API reads its role, and file access reads its grants.
-  A password change updates the NT hash with it while NTLM is on (§3.5).
+  A password change updates the NT hash with it while NTLM is on (§3.5): the
+  API's node, a `storage` node, seals the NT hash under the public half of the
+  `protocol` wrapping key, which a storage-only node cannot open, and the password hash under
+  the `storage` key, which only the API's sign-in verifies
+  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
 
 > decision: the two are kept apart by rule, not by separate records. One
 > record per person is what operators expect, and a separate store would
