@@ -49,6 +49,7 @@ func Run(t *testing.T, open Opener) {
 		{"ListingPages", testListingPages},
 		{"ShareBoundSettings", testShareBoundSettings},
 		{"Costs", testCosts},
+		{"NamespaceCosts", testNamespaceCosts},
 		{"RootAndResolve", testRootAndResolve},
 		{"Entries", testEntries},
 		{"CreateAndLookup", testCreateAndLookup},
