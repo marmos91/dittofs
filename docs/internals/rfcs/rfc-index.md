@@ -47,7 +47,7 @@ order: each part builds on the ones before it.
 | RFC 18 | identity and authentication | planned | principals, authentication flavours, identity mapping, squashing |
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
-| RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
+| [RFC 20](rfc-20-adapters.md) | adapter model | draft | what an adapter may hold and import, the common lifecycle, the dispatch pipeline, codecs, connection concurrency, boundary tests and wire tests against reference servers |
 | [RFC 21](rfc-21-nfs.md) | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
 | [RFC 22](rfc-22-smb.md) | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |
@@ -96,6 +96,7 @@ graph LR
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
+  R20["20 adapters"] --> R7 & R13 & R14 & R15 & R17 & R21 & R22 & R27 & R29
   R21["21 nfs"] --> R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R22 & R27 & R28
   R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R21 & R27 & R28
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
