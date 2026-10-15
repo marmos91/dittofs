@@ -15,6 +15,8 @@ depends_on:
   - "[[rfc-20-adapters]]"
   - "[[rfc-21-nfs]]"
   - "[[rfc-22-smb]]"
+  - "[[rfc-23-control-plane]]"
+  - "[[rfc-25-observability]]"
   - "[[rfc-29-test-harness]]"
 aliases:
   - RFC 24
