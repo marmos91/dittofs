@@ -140,13 +140,20 @@ func TestServiceFallback(t *testing.T) {
 // running where it has one, never by installing it here; the linux need in
 // dtc too; a service by starting it with dt services.
 func TestHint(t *testing.T) {
-	// A tool with no program on any platform, so the rule is checked here too.
-	tools["nowhere"] = map[string]string{}
-	t.Cleanup(func() { delete(tools, "nowhere") })
+	// A tool with programs only on platforms other than this one, so the rule
+	// is checked on every platform.
+	elsewhere := map[string]string{"darwin": "x", "linux": "x", "windows": "x"}
+	delete(elsewhere, runtime.GOOS)
+	tools["elsewhere"] = elsewhere
+	t.Cleanup(func() { delete(tools, "elsewhere") })
 	for need, bins := range tools {
-		if got := Hint(need); (bins[runtime.GOOS] == "") != (got == "run it on Linux") {
+		if got := Hint(need); (bins[runtime.GOOS] == "") != strings.HasPrefix(got, "run it on ") {
 			t.Errorf("%s on %s: %q", need, runtime.GOOS, got)
 		}
+	}
+	want := map[string]string{"darwin": "run it on Linux or Windows", "linux": "run it on macOS or Windows", "windows": "run it on macOS or Linux"}[runtime.GOOS]
+	if got := Hint("elsewhere"); got != want {
+		t.Errorf("elsewhere: %q, want %q", got, want)
 	}
 	if got := Hint("linux"); !strings.Contains(got, "dtc") {
 		t.Errorf("linux: %q", got)

@@ -18,7 +18,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
@@ -80,39 +79,36 @@ func newList() *cobra.Command {
 				Unmet       []string            `json:"unmet,omitempty"`
 				UnmetByTest map[string][]string `json:"unmet_by_test,omitempty"`
 			}
-			// Needs are checked the first time a listed suite names them,
-			// once each, since some probes take seconds.
+			var listed []*registry.Suite
+			for _, s := range r.Suites {
+				for _, u := range r.Units(s) {
+					if tier == "" || plan.RunsIn(u.Tier, tier) {
+						listed = append(listed, u)
+					}
+				}
+			}
 			root, _ := repoRoot()
-			checked := map[string]error{}
+			checked := checkNeeds(root, listed)
 			unmet := func(list []string) []string {
 				var out []string
 				for _, n := range list {
-					err, ok := checked[n]
-					if !ok {
-						err = needs.Check(root, n)
-						checked[n] = err
-					}
-					if err != nil {
+					if checked[n] != nil {
 						out = append(out, n)
 					}
 				}
 				return out
 			}
 			var suites []entry
-			for _, s := range r.Suites {
-				for _, u := range r.Units(s) {
-					if tier == "" || plan.RunsIn(u.Tier, tier) {
-						e := entry{Name: u.Name, Tier: u.Tier, Format: u.Format, Needs: u.Needs, Job: u.Job,
-							Unmet: unmet(u.Needs), UnmetByTest: map[string][]string{}}
-						e.RunsHere = len(e.Unmet) == 0
-						for glob, list := range u.NeedsByTest {
-							if missing := unmet(list); len(missing) > 0 {
-								e.UnmetByTest[glob] = missing
-							}
-						}
-						suites = append(suites, e)
+			for _, u := range listed {
+				e := entry{Name: u.Name, Tier: u.Tier, Format: u.Format, Needs: u.Needs, Job: u.Job,
+					Unmet: unmet(u.Needs), UnmetByTest: map[string][]string{}}
+				e.RunsHere = len(e.Unmet) == 0
+				for glob, list := range u.NeedsByTest {
+					if missing := unmet(list); len(missing) > 0 {
+						e.UnmetByTest[glob] = missing
 					}
 				}
+				suites = append(suites, e)
 			}
 			if asJSON {
 				return writeJSON(cmd.OutOrStdout(), map[string]any{"suites": suites, "groups": r.Groups})

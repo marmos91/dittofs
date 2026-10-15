@@ -3,6 +3,7 @@ package main
 import (
 	"maps"
 	"slices"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -25,7 +26,11 @@ func newDoctor() *cobra.Command {
 				return err
 			}
 			root, _ := repoRoot()
-			checked := checkNeeds(root, r)
+			var all []*registry.Suite
+			for _, s := range r.Suites {
+				all = append(all, r.Units(s)...)
+			}
+			checked := checkNeeds(root, all)
 			rows := [][]string{{"NEED", "MET", "WHY", "HOW"}}
 			for _, n := range slices.Sorted(maps.Keys(checked)) {
 				if err := checked[n]; err != nil {
@@ -39,25 +44,33 @@ func newDoctor() *cobra.Command {
 	}
 }
 
-// checkNeeds checks every need the registry names, per-test needs included,
-// once each, since some probes take seconds. It maps each need to why this
+// checkNeeds checks the needs the given suites name, per-test needs
+// included, each once and all at the same time, since a probe can take
+// seconds: up to 30 for a stalled Docker daemon. It maps each need to why this
 // machine doesn't meet it, or to nil.
-func checkNeeds(root string, r *registry.Registry) map[string]error {
-	checked := map[string]error{}
-	check := func(list []string) {
-		for _, n := range list {
-			if _, ok := checked[n]; !ok {
-				checked[n] = needs.Check(root, n)
+func checkNeeds(root string, suites []*registry.Suite) map[string]error {
+	names := map[string]bool{}
+	for _, u := range suites {
+		for _, n := range u.Needs {
+			names[n] = true
+		}
+		for _, list := range u.NeedsByTest {
+			for _, n := range list {
+				names[n] = true
 			}
 		}
 	}
-	for _, s := range r.Suites {
-		for _, u := range r.Units(s) {
-			check(u.Needs)
-			for _, list := range u.NeedsByTest {
-				check(list)
-			}
-		}
+	checked := make(map[string]error, len(names))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for n := range names {
+		wg.Go(func() {
+			err := needs.Check(root, n)
+			mu.Lock()
+			checked[n] = err
+			mu.Unlock()
+		})
 	}
+	wg.Wait()
 	return checked
 }

@@ -6,12 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +53,9 @@ var hints = map[string]string{
 	"cloud":          "provide the provider's credentials and infrastructure",
 }
 
+// osNames names the platforms a tool's program can be on.
+var osNames = map[string]string{"darwin": "macOS", "linux": "Linux", "windows": "Windows"}
+
 // Hint says how to meet need n. A service is started by dt services, and a
 // tool this platform has no program for is met by running where it has one,
 // not by installing it here.
@@ -60,7 +65,11 @@ func Hint(n string) string {
 	case kind == "service":
 		return "dt services up " + arg
 	case tools[n] != nil && tools[n][runtime.GOOS] == "":
-		return "run it on Linux"
+		var on []string
+		for _, goos := range slices.Sorted(maps.Keys(tools[n])) {
+			on = append(on, osNames[goos])
+		}
+		return "run it on " + strings.Join(on, " or ")
 	}
 	return hints[kind]
 }
