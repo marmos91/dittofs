@@ -1373,7 +1373,10 @@ the handle or open it names, in this order:
    client rule (RFC 19 §3.2);
 5. the share's cap on the node's request buffers
    ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission))
-   — `ErrDelay` with `DelayResources`, at once.
+   — `ErrDelay` with `DelayResources`, at once — except a call that only
+   releases state (close, unlock, lock cancel, grant or layout return, freeing
+   a state ID) or reclaims it, with the operations that carry it, which steps
+   1–4 and `Authorize` still gate.
 
 In a cluster the gateway's router reads the handle's shard to route it, but
 nothing it learns reaches the client: a handle it cannot place goes to the

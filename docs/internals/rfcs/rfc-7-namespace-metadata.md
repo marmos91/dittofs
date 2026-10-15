@@ -653,16 +653,20 @@ type ACE struct {
   component returns the one `Mode` implies (`ACLFromMode`), so there is always an
   ACL to evaluate and never a flag to check first.
 - Setting an ACL writes the ACL and the `Mode` it implies in one transaction.
-- `chmod` on a file with an ACL **merges**, exactly as [RFC 8881 §6.4.1.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.4.1.1)
-  specifies, and stores the ACL and `Mode` in one transaction:
-  - the owner, group and everyone entries are rewritten to match the new mode;
-  - every allow entry for a named principal is limited to the new mode's group
-    bits, so `chmod 600` leaves no named user or group with access;
+- `chmod` on a file with an ACL **merges**, following [RFC 8881 §6.4.1.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.4.1.1),
+  and stores the ACL and `Mode` in one transaction:
+  - the owner and everyone entries are rewritten to match the new mode;
+  - when the ACL has an effective allow for a named principal other than the
+    owner, the group bits are a mask: every named allow and every `GROUP@`
+    allow is limited to them, and no `GROUP@` allow is raised or added, so
+    `chmod 600` leaves no named user or group with access. Otherwise the
+    `GROUP@` allow is rewritten to the group bits (RFC 19 §4.3);
   - a limit removes only the rights a missing bit withholds, never the minor
     rights every bit grants (below), and keeps every other right of the entry;
-  - where the ACL has no effective owner, group or everyone allow to rewrite,
-    the merge adds one, after the explicit entries, so it cannot override an
-    explicit deny (RFC 19 §4.3);
+  - where the ACL has no effective owner or everyone allow (or `GROUP@`, when
+    no named allow holds the group bits) to rewrite, the merge adds one, after
+    the explicit entries, so it cannot override an explicit deny, leaving out an
+    entry whose mask is empty (RFC 19 §4.3);
   - an inherit-only entry is left untouched: it governs children, not this file;
   - an entry that is both effective and inheritable is split into an
     inherit-only copy, unchanged, and an effective copy, limited as above;
@@ -680,7 +684,8 @@ longer equal `Mode`.
 **How an ACL is evaluated**, adopted by RFC 19, which fixes the order it runs in. The chokepoint walks the
 entries in order, as [RFC 8881 §6.2.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.2.1) specifies: an entry is skipped
 unless it names the caller (directly, through one of the caller's groups, or as
-owner, group or everyone) and is effective on this file; an allow entry grants
+owner, group or everyone — or, for a deny entry only, through one of its
+deny-only principals, [§7.4](#7.4%20The%20identity%20arrives%20resolved)) and is effective on this file; an allow entry grants
 the requested bits it covers that no earlier entry denied; a deny entry refuses
 the request if it covers a requested bit not yet granted; the walk ends when
 every requested bit is granted, and a bit no entry granted is refused. Entries
@@ -766,8 +771,8 @@ Four inputs the walk meets are fixed here, and adopted by RFC 19, which fixes th
   inheritable entries gets the ACL [RFC 8881 §6.4.3](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.4.3) and
   [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) 2.5.3.4 derive from them, and the `Mode` that ACL implies,
   in the create's transaction. An inherited entry naming CREATOR OWNER or
-  CREATOR GROUP gives the new file an effective entry for its own owner or
-  group; where that entry also propagates further — a container-inherit entry
+  CREATOR GROUP gives the new file an effective `OWNER@` or `GROUP@` entry
+  (RFC 19 §4.4); where that entry also propagates further — a container-inherit entry
   reaching a new directory — the copy that propagates keeps CREATOR OWNER or
   CREATOR GROUP and is inherit-only. Replacing the propagating copy too would
   hand every file bob later creates in alice's subfolder "alice: full" and
@@ -1033,9 +1038,9 @@ func (e Entry) Name() string
 func (e Entry) IsDir() bool
 func (e Entry) Type() fs.FileMode
 
-func ACLFromMode(mode uint32, owner, group Principal) ACL // the ACL a file with no ACL has
-func (a ACL) Mode() uint32                                // the Mode this ACL implies
-func (a ACL) WithMode(mode uint32) ACL                    // chmod's merge (§2.6)
+func ACLFromMode(mode uint32) ACL                        // the ACL a file with no ACL has: OWNER@, GROUP@ and EVERYONE@ entries only
+func (a ACL) Mode(owner Principal) uint32                // the Mode this ACL implies on a file owner owns
+func (a ACL) WithMode(mode uint32, owner Principal) ACL  // chmod's merge (§2.6) on a file owner owns
 
 func (a Attrs) WithMode(m uint32) Attrs         // builders set the mask; and WithOwner, WithTimes, WithSize, …
 func (u Usage) Exceeds(l Limit) bool            // and Add
@@ -1822,9 +1827,18 @@ cannot know which check runs.
 `authenticated` when the caller's flavour proved who it is — Kerberos, an SMB
 session established by authentication rather than as guest or anonymous — and
 `admin` when, on such a flavour, the share grant names the principal `admin`.
-Authenticated Users and Administrators entries match on them ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). Neither is
+Authenticated Users and Administrators entries match on them ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). An
+unlinked machine principal is not authenticated: on files it acts as the
+share's anonymous principal (RFC 18 §2.4). Neither flag is
 privilege: an `admin` caller over SMB without backup intent walks the ACL like
 anyone else, and is granted what an Administrators entry gives it.
+
+**Deny-only principals match deny entries only.** The identity carries, apart
+from its groups, the principals a Windows proof marked deny-only
+(`SE_GROUP_USE_FOR_DENY_ONLY`, RFC 18 §3.4). The walk ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)) matches a deny
+entry naming one of them; it **MUST NOT** match an allow entry naming one, and
+no share grant is read for one. A deny-only principal counted as a group
+would grant what the proof withheld.
 
 **Privilege is a field of the identity.** A *privileged* caller is one the
 filesystem service marks so — POSIX's `CAP_CHOWN`, `CAP_FOWNER`,
@@ -2626,7 +2640,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§2.5](#2.5%20Where%20%60size%60%20lives) overlay | Write past EOF without committing, `GETATTR` through the filesystem service, crash, recover. Assert `GETATTR` showed the new size before the crash and the committed size and holes agree after it. |
 | [§2.5](#2.5%20Where%20%60size%60%20lives) `Version` on write | Write and commit a file with no attribute change. Assert `Version` advanced, both through the overlay before the commit and in the File after it. |
 | [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) owner and group at create | Give a user a primary group and one other membership. Create a file over NFS with a credential whose gid is the other membership, and one over SMB. Assert both `Owner`s are the user, the NFS file's `Group` is the credential's gid and the SMB file's the primary group, never a fixed default. Give a directory a third group and the setgid bit; create a file and a directory in it over each protocol; assert all four take the directory's group and both new directories are setgid. A build that ignores the credential's gid fails the first assertion; one that ignores setgid fails the second. |
-| [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) `chmod` merge | Set an ACL holding a named-user allow entry granting write, an inherit-only entry, and an entry both effective and inheritable; `chmod 600`. Assert the named user is granted nothing, the inherit-only entry is unchanged, the other is split into an unchanged inherit-only copy and a limited effective one, and `Mode` equals the ACL's implied mode. |
+| [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) `chmod` merge | Set an ACL holding a named-user allow entry granting write, an inherit-only entry, and an entry both effective and inheritable; `chmod 600`. Assert the named user is granted nothing, the inherit-only entry is unchanged, the other is split into an unchanged inherit-only copy and a limited effective one, and `Mode` equals the ACL's implied mode. On a file whose ACL is only a named allow of read for bob, `chmod 640`: assert no `GROUP@` allow is added and a member of the file's group other than bob is refused read. |
 | [§2.7](#2.7%20Extended%20attributes%20and%20named%20streams) stream identity | Create a stream, `chown` its base file, release the base. Assert the stream is checked against the new owner, reports the base's file id, and is released with it. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) root | Resolve `..` at a share's root. Assert it is the root. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) logical charging | Write the same content into two files owned by two users, clone one of them to a third user, let dedup and GC run. Assert each user is charged the full logical size. Punch a hole and truncate: assert `Charged` and usage fall by the bytes removed. `chown`: assert exactly `Charged` moves. |
