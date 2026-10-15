@@ -3,7 +3,6 @@ package kvstore
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"sync"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
@@ -366,13 +365,8 @@ func dirCount(f entity.File) int64 {
 // a directory, written without reading or rewriting d's record beyond the
 // read the caller already made. The delta has its own version-index entry,
 // which the fold that absorbs it will replace.
-//
-// ponytail: the delta's unique part is 32 random bytes rather than the
-// writer's node ID, epoch and sequence, since the store has no node identity
-// yet. Switch to those once a node is registered at start.
 func touchDir(tx kv.Txn, share entity.ShareID, d entity.File, subdirs int64) error {
-	var unique [32]byte
-	rand.Read(unique[:])
+	unique := nextUnique()
 	now := tx.Now()
 	v := nextFileVersion(tx, d.Version)
 	if err := tx.Set(deltaFloorKey(share, d.ID, v, unique), encodeEmpty()); err != nil {

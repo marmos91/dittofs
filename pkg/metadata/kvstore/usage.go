@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/rand"
 	"maps"
 	"slices"
 
@@ -74,17 +73,11 @@ func usageDeltasPrefix(share entity.ShareID, shard uint64) []byte {
 }
 
 // writeUsage writes d as a delta of the shard, unless it changes nothing.
-//
-// ponytail: the delta's unique part is 32 random bytes rather than the
-// writer's node ID, epoch and sequence, as for directory deltas, since the
-// store has no node identity yet.
 func writeUsage(tx kv.Txn, share entity.ShareID, shard uint64, d usageDelta) error {
 	if d.empty() {
 		return nil
 	}
-	var unique [32]byte
-	rand.Read(unique[:])
-	return tx.Set(usageDeltaKey(share, shard, unique), encodeUsageDelta(d))
+	return tx.Set(usageDeltaKey(share, shard, nextUnique()), encodeUsageDelta(d))
 }
 
 // chargeFile writes the usage delta from old to new for the file's shard.
