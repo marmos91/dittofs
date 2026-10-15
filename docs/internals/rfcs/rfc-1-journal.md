@@ -1458,7 +1458,7 @@ retained extents included.
 
 **The index is bounded, and the bound refuses.** An implementation **MUST NOT**
 silently degrade when the index grows. A configured entry bound (`ExtentLimit`,
-sized against a memory budget at about 51 bytes per entry; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
+sized from RFC 24's index pool at about 51 bytes per entry; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
 all files of the journal together. A `WriteAt` or `Fill` that would raise the
 count above the bound is refused at once, with the same named refusal as a
 capacity refusal, naming the index as the limit ([§6](#6.%20Capacity)), and counted in

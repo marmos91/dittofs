@@ -921,7 +921,9 @@ table.
 ## 11. Open questions
 
 1. **Forwarding bounds.** A forwarding `protocol` node streams (item 3); how its
-   in-flight bytes are bounded is [RFC 24](rfc-index.md)'s.
+   in-flight bytes are bounded is answered by RFC 24 §5.4: the payload is the
+   request's receive buffer at the forwarding node, and the primary charges a
+   forwarded call to its own pools under the original client's key.
 2. **Striping one file across data servers** waits on per-file and range shards
    ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
 3. **The node-to-node wire format** is decided in outline: a typed RPC framework

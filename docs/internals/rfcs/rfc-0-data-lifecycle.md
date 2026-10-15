@@ -218,9 +218,9 @@ seven carry this document:
 | what is a setting and what is fixed | [RFC 13](rfc-13-configuration.md), configuration |
 | more than one node: replicated journals, shards, roles — deferred past the first release ([§1.4](#1.4%20The%20single-node%20profile)) | [RFC 10](rfc-10-journal-replication.md), [RFC 11](rfc-11-ownership.md), [RFC 15](rfc-15-topology.md) |
 
-Identity, authorization, the adapter model and operations are RFC 18–20 and
-23–25, planned; the NFS and SMB adapters are RFC 21 and 22, in draft and
-rebased on this set. A first pass can follow the write path: this RFC, then 1, 2, 3, 6 and
+Identity, authorization and operations are RFC 18, 19 and 23–25; the adapter
+model and the NFS and SMB adapters are RFC 20–22, in draft and rebased on this
+set. A first pass can follow the write path: this RFC, then 1, 2, 3, 6 and
 8; then 7 and 14 for what clients see; then 15 for how it spreads over nodes,
 once the cluster is built.
 
@@ -530,7 +530,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **grace period** | after a primary loses open state, at least one lease period in which only former holders may take state, by reclaiming it. Reclaim completion is tracked per (client, shard, grace instance), and a restart or failover opens a new reclaim phase. GC's trash is not a grace period | [RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe) |
 | **write verifier** | the NFS value returned by a write and a commit, derived from the node, its node epoch, the process instance, the shard's incarnation and the journal's loss generation; a change makes the client resend unflushed writes. Not derived from the shard epoch | [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier) |
 | **loss generation** | a per-journal counter, monotonic for the life of the process across reopens of the journal, raised only on a loss of extents not yet offloaded and on every failed sync window; folded into the write verifier | [RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events) |
-| **retry-later** (`ErrDelay`) | the neutral error for a call that will succeed shortly, carrying its cause: one of [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)'s list, which owns them — a recall, a running clone, a freeze, a move, the journal's capacity (`DelayCapacity`), the version limit, a stalled store, the quota slack, a conflict unresolved at the deadline (`DelayConflict`), a spent hold budget (`DelayHoldBudget`). NFS adapters map it to `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`; SMB holds the request pending with an interim response, except for the causes [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) says are answered at once | [§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline), [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) |
+| **retry-later** (`ErrDelay`) | the neutral error for a call that will succeed shortly, carrying its cause: one of [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)'s list, which owns them — a recall, a running clone, a freeze, a move, the journal's capacity (`DelayCapacity`), the version limit, a stalled store, the quota slack, a conflict unresolved at the deadline (`DelayConflict`), a spent hold budget (`DelayHoldBudget`), a spent node memory pool (`DelayResources`). NFS adapters map it to `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`; SMB holds the request pending with an interim response, except for the causes [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) says are answered at once | [§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline), [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) |
 
 ### Snapshots and backups
 
@@ -642,7 +642,7 @@ Four layers, each calling only the one below:
 
 | Layer | What it does | Specified in |
 | --- | --- | --- |
-| **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20 (planned); RFC 21, NFS, and RFC 22, SMB (draft) |
+| **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20, the adapter model; RFC 21, NFS, and RFC 22, SMB (draft) |
 | **Filesystem service** | the one protocol-neutral API adapters call; orders every client operation across the parts below and routes it to the primary that serves it | [RFC 17](rfc-17-vfs.md) |
 | **Metadata store**, **open state**, **content subsystem** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the content subsystem is the content data path, made of the engine ([RFC 8](rfc-8-engine.md)), the journal, carver, syncer and GC ([RFC 1](rfc-1-journal.md)–[3](rfc-3-syncer.md), [RFC 9](rfc-9-gc.md)) | as named |
 | **Persistence** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |

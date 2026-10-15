@@ -310,13 +310,15 @@ Signatures are indicative; the obligations are normative. `Service` embeds the
 groups, so an adapter holds one value and a test can fake one group.
 
 `Identity` below is what the adapter authenticated — the protocol, the
-authentication flavour and Kerberos level, the principal or numeric IDs the
-credential carried, and the client's address — not yet mapped through any
-share's policy. The service resolves it per share (§4.9), and sets two fields
-on the identity it passes the metadata store: `authenticated` when the flavour
-proved who the caller is (Kerberos, an SMB session established by
-authentication), and `admin` when, on such a flavour, the share grant names the
-principal `admin` ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)). A Kerberos principal the ID mapping maps to
+authentication flavour and Kerberos level, the handshake's proof (RFC 18 §3.1)
+or the numeric IDs an `AUTH_SYS` credential carried, and the client's address —
+not yet mapped through any share's policy. The service resolves it per share
+(§4.9) into the caller RFC 18 §6.1 defines — principal, groups, share access
+narrowed by admission, and flags — and passes that to the metadata store as
+its identity. Among the flags, `authenticated` is set when the flavour proved
+who the caller is (Kerberos, an NTLMv2 SMB session), and `admin` when, on such
+a flavour, the share grant names the principal `admin`
+([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)); RFC 18 §6.5 decides which callers get each. A Kerberos principal the ID mapping maps to
 uid 0 is privileged exactly when the export leaves root unsquashed, as an
 AUTH_SYS root is. An `OpenRef` carries
 the `Identity` of the call that presents it, so calls that name only an open
@@ -335,6 +337,7 @@ type Service interface {
 	Locking
 	Volumes
 	Shares
+	Identities
 }
 
 // Clients: who is talking to us, and how to call them back (RFC 14).
@@ -427,6 +430,17 @@ type Shares interface {
 type Volumes interface {
 	StatFS(ctx context.Context, id Identity, h Handle) (metadata.FilesystemInfo, error) // the share's, or the tighter of it and h's project (RFC 7 §2.8)
 	Quota(ctx context.Context, id Identity, h Handle, p metadata.Principal) (metadata.Usage, metadata.Quota, error) // p's own quota, else the share's default for its kind
+}
+
+// Identities: how an adapter encodes and decodes a principal — a file's owner,
+// an ACL entry's who, a quota's target, a name in an lsarpc lookup. It holds
+// no policy: squashing and grants are applied at admission (§4.9), not here.
+// The mapping is RFC 18 §4's; an adapter never derives one spelling from
+// another, and an error other than not-found reaches the client as a server
+// failure, never as an unknown principal.
+type Identities interface {
+	Spell(ctx context.Context, p metadata.Principal, scheme Scheme) (Spelling, error) // p's spelling in scheme: uid, gid, SID, Kerberos name, owner string; ErrNoSpelling when it has none
+	Find(ctx context.Context, s Spelling) (metadata.Principal, error)                 // the principal holding s; ErrUnknownPrincipal when none does
 }
 ```
 
@@ -584,7 +598,7 @@ each waits on metadata commits, and none is a lack of space. One still
 `ErrDelay` with `DelayConflict` is held the same way up to `smb_pending_cap` and
 only there answered `STATUS_FILE_NOT_AVAILABLE`, the retry-later status a
 freeze or grace ends with: a conflict is contention, not a failure. One
-answered `ErrDelay` with `DelayHoldBudget` is never held: it is answered
+answered `ErrDelay` with `DelayHoldBudget` or `DelayResources` is never held: it is answered
 `STATUS_INSUFFICIENT_RESOURCES` at once (§4.3, §5.9). One answered `ErrUnavailable` — a read, query or
 IOCTL that needs content the remote tier cannot serve now — **MUST** be held and
 re-driven the same way up to `smb_pending_cap`, and only there answered
@@ -652,8 +666,10 @@ so no protocol can reach a file without appearing in the audit stream.
 - An event hook **MUST NOT** block or fail the operation. The sink queues, and
   an event it cannot queue is dropped and counted (§7).
 - Which operations produce an access event — every decision, denials only,
-  writes and namespace changes, per share — is the audit policy, a setting
-  ([RFC 13](rfc-13-configuration.md)). With no policy, no access event is built.
+  writes and namespace changes, per share — and whether the file's audit
+  entries select events too (RFC 19 §3.7) is the audit policy, a setting
+  ([RFC 13](rfc-13-configuration.md)). With no policy, no access event is built, whatever audit entries
+  a file holds.
 - Delivery, retention and the export format of both streams belong to the
   planned observability RFC (RFC 25). This RFC fixes only where they are
   emitted and what an event carries.
@@ -742,6 +758,7 @@ const (
 	DelayQuotaSlack                   // the reservation slack is spent (§5.6)
 	DelayConflict                     // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2)
 	DelayHoldBudget                   // the call's hold budget is spent, and the node's hold pool too where it may draw on it (§5.9)
+	DelayResources                    // a node memory pool is spent: the share cap, open state, or a reply reservation's deadline (RFC 24)
 )
 ```
 
@@ -754,7 +771,11 @@ or `NFS3ERR_JUKEBOX`, and NLM to `NLM4_DENIED_GRACE_PERIOD`; SMB holds the
 request pending and re-drives it (§3.2). `DelayHoldBudget` is answered at
 once and never held: NFSv4.1, the one NFS transport that passes a policy,
 maps it to `NFS4ERR_DELAY`, and SMB to `STATUS_INSUFFICIENT_RESOURCES`
-(RFC 22). **A transient refusal never becomes
+(RFC 22). `DelayResources` is answered at once and never held, like
+`DelayHoldBudget`, since holding it would spend the hold pool on the share that
+is short of memory: `NFS4ERR_DELAY` over NFSv4, `NFS3ERR_JUKEBOX` over NFSv3,
+`NLM4_DENIED_NOLOCKS` over NLM and `STATUS_INSUFFICIENT_RESOURCES` over SMB
+(RFC 24 §4.2). **A transient refusal never becomes
 `ErrNoSpace` because a deadline ran out**: a space refusal still `ErrDelay` when
 the caller's deadline passes is answered `ErrDelay` — the NFS client retries, for
 as long as the outage lasts — and an SMB request held pending for it is answered
@@ -880,7 +901,7 @@ parse or compare their contents.
 `Read` fills the caller's buffer and `Write` takes the caller's. The service
 passes them to the engine, which lends or streams below
 ([RFC 8](rfc-8-engine.md)); the service **MUST NOT** add a copy of its own. Buffer budgets
-are RFC 24's.
+are RFC 24 §3's.
 
 ### 4.6 One chokepoint
 
@@ -890,8 +911,9 @@ its only caller. An open-time grant ([RFC 7 §7.2](rfc-7-namespace-metadata.md#7
 with the open; the service evaluates it on the operations it gates.
 
 - **The share grant is checked on every call**, not only at mount or tree
-  connect. `Authorize` evaluates the caller's `ShareGrant` each time, and any
-  cache of authorisation results **MUST** include the grant, and the `via`
+  connect. The service reads the caller's grants at admission each time
+  (§4.9 step 4), `Authorize` applies the access they give as the share ceiling,
+  and any cache of authorisation results **MUST** include the grant versions read, and the `via`
   directory below with its whole record's version — owner and group as well as
   mode and ACL, since the group bits and the sticky rule read them — in its
   key ([RFC 7 §7.5](rfc-7-namespace-metadata.md#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read)). A
@@ -981,18 +1003,26 @@ call to the share of the handle or open it names, in this order:
 2. the share's `ExportPolicy` flavour rule — `ErrWrongSecurity`;
 3. its client rules, against the call's address and the netgroups it is in —
    `ErrAccess`, or a narrowing to read-only;
-4. squashing, which turns the `Identity` into the principal the call acts as on
-   this share.
+4. resolution, which turns the `Identity` into the caller it acts as on this
+   share: map it to a principal, squash it, collect its groups, read its share
+   access from the grants, and set its flags (RFC 18 §6). Step 3's narrowing to
+   read-only reaches the chokepoint as a field of that identity, since the
+   chokepoint evaluates no client rule (RFC 19 §3.2);
+5. the share's cap on the node's request buffers (RFC 24 §4.2) — `ErrDelay`
+   with `DelayResources`, at once.
 
-Then `Authorize` evaluates the grant and the file (§4.6). **There is no call
+Then `Authorize` applies the share access as a ceiling and evaluates the file
+(§4.6). **There is no call
 that skips admission**: lock, unlock, test-lock, layout, watch, grant return and
 the calls that name only an open are admitted like a read. Admission is a
 property of the share a call reaches, not of how it reached it, so an NFSv4
 compound that `PUTFH`s a handle and one that walks the pseudo-filesystem into the
-share meet the same four checks. A compound crossing from one share into another
-is re-admitted, and re-squashed, at the crossing. The admission result may be
+share meet the same five checks. A compound crossing from one share into another
+is re-admitted, and re-squashed, at the crossing. The result of steps 1–4 may be
 cached per (share, identity) only with `ExportPolicy.Version`, the netgroups'
-versions and `ShareList.Version` in the key.
+versions, `ShareList.Version`, the grant versions read and the principals
+generation in the key, beside everything RFC 18 §7.1 lists; step 5 reads the
+pools as they are and is never cached.
 
 **A share's removal joins the calls admitted before it.** The service counts,
 per share at each primary, the calls it has admitted and not yet answered.
@@ -1428,8 +1458,8 @@ at one point in the source's history. The two kinds differ in atomicity:
    holds; SMB passes its connection as the key, with the per-connection
    figures RFC 22 states as a floor (`Pooled`). **Each node that counts holds
    keeps one hold pool**, which takes what pooled keys hold past their floors:
-   a sixteenth of the process's memory limit — the limit its runtime enforces,
-   or the host's memory where none is set — derived, not a setting; a test
+   a sixteenth of the process memory limit (RFC 24 §2.1) — derived, not a
+   setting; a test
    sizes it by setting that limit, 128 MiB giving an 8 MiB pool. A call
    drawn on it is charged its write's bytes, and at least 64 KiB, one SMB
    credit's size, so the pool bounds held calls as well as bytes. A call that
