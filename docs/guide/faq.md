@@ -260,6 +260,8 @@ Triggers:
 - Periodic, on by default. The server runs GC every `gc.auto_interval`
   (default 15m; values in (0, 1m) are refused) unless `gc.auto_enabled` is
   false. See [Garbage Collection](garbage-collection.md#automatic-gc-default).
+  A scheduled run reports in the server log only; `gc-status` shows the last
+  on-demand run.
 - On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
   most recent run with `dfsctl store block gc-status <share>`. The
   mark-sweep is global across every share that targets the same remote, and

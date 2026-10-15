@@ -543,9 +543,9 @@ Mark is idempotent, so resume-on-restart is intentionally not built.
   the live set to one share.
 - **Observability** via structured slog INFO at start/end with `run_id`,
   `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`, and
-  `error_count`, plus a persisted summary at
-  `<localStore>/gc-state/last-run.json`. Inspect with
-  `dfsctl store block gc-status <share>`.
+  `error_count`. An on-demand run also persists its summary at
+  `<localStore>/gc-state/last-run.json`; inspect it with
+  `dfsctl store block gc-status <share>`. A scheduled run persists none.
 
 GC coordinates with the share-snapshots subsystem through a single
 rule: **manifest-on-disk = block held**. Snapshots register a hold

@@ -135,12 +135,14 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    quiesced share and a netgroup-restricted one stayed reachable by walking the pseudo-fs.
 
    **That gate covers the share's enabled flag and its netgroup allowlist, not the flavor
-   policy.** The flavor policy needs the request's auth flavor, so `CheckExportAccess` runs only
-   where an auth context is built. LOCK, LOCKT and LOCKU therefore call `refuseCurrentFHAccess`,
+   policy.** Refusing a flavor at PUTFH would answer NFS4ERR_WRONGSEC, which sends the client to
+   SECINFO rather than to a stronger flavor, so `CheckExportAccess` runs only where an auth
+   context is built. LOCK, LOCKT and LOCKU therefore call `refuseCurrentFHAccess`,
    and GET_DIR_DELEGATION calls `CheckCurrentFHAccess`, just before they touch state. Both reach
    `currentFHAccessStatus` (also in `helpers.go`), which runs `buildV4AuthContext` and so
    `CheckExportAccess`. Those four operations are gated twice: at handle entry for the enabled
-   flag and the netgroup allowlist, and per operation for the flavor policy. Do not write a
+   flag and the netgroup allowlist, and per operation for the flavor policy and share permission.
+   Do not write a
    comment or a rule asserting the handle-entry path is fully gated: two comments claimed exactly
    that, in opposite directions, and both were wrong.
 
