@@ -82,7 +82,8 @@ disk must not be.
 2. **Tree connect.** alice-pc connects to `\\dittofs\profiles`. Every request
    is already signed, which the server required at negotiate. The reply carries
    the share's flags: whether every request must also be encrypted, and whether
-   the share is continuously available.
+   the share is continuously available. Assume here that it is not; the end
+   of this example says what changes when it is.
 3. **Open.** alice-pc sends `CREATE` for the VHDX asking for three things: read
    and write access, letting others read but not write; a **lease** with read,
    write and handle caching (RWH), so it may cache reads, buffer writes and keep
@@ -115,7 +116,9 @@ way to tell the client to resend those. So the reconnect is refused
 client sees the disk fail rather than silently lose writes. Only a
 **persistent** handle, offered on a continuously available share, survives the
 primary: it is stored, every write through it is synced before it is
-acknowledged, and it reconnects with its lease.
+acknowledged, and it reconnects with its lease. That is why `profiles` is made
+continuously available in practice, and why [§2](#2.%20A%20profile%20container%2C%20end%20to%20end)
+walks the same day with alice-pc asking for a persistent handle instead.
 
 ![Where SMB state lives: alice-pc's connection, session keys and credits, its tree connect to profiles and the volatile half of its FileId are in P1's memory only and rebuilt on reconnect; the second desktop's conflicting CREATE reaches P2, which answers STATUS_PENDING, frees its worker and re-runs the CREATE once the break ends; the open, its deny mode, RWH lease and durable identity, and the names, file IDs, attributes and streams are at S1, the primary of profiles/alice/, which sends alice-pc the lease break](img/rfc22-state-placement.svg)
 
