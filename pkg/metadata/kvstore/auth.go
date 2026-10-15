@@ -242,7 +242,14 @@ func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
 // on the directory, as RFC 8881 has it. In a sticky directory governed by its
 // mode, only the file's owner, the directory's owner or a privileged caller
 // may. Neither an immutable or append-only file nor one in such a directory
-// loses a name, whoever asks.
+// loses a name, whoever asks. Like every change to a directory's entries,
+// it needs search on the directory too, as POSIX asks both w and x.
+//
+// decision: search is required of an SMB caller as well, though Windows
+// grants every user the privilege to bypass traverse checking. A share's
+// default ACLs grant traverse wherever they grant a change, so the rule
+// costs nothing there; revisit if an SMB client is refused a change it
+// could make on Windows.
 func mayRemove(r kv.Reader, id entity.Identity, d, child entity.File) error {
 	access, err := grantFor(r, d.Share, id)
 	if err != nil {
@@ -255,6 +262,11 @@ func mayRemove(r kv.Reader, id entity.Identity, d, child entity.File) error {
 		if f.IsImmutable() || f.IsAppendOnly() {
 			return merrs.NewPermissionDeniedError("immutable or append-only " + f.ID.String())
 		}
+	}
+	if ok, err := allows(r, id, d, entity.Execute); err != nil {
+		return err
+	} else if !ok {
+		return merrs.NewAccessDeniedError("no search permission on the directory")
 	}
 	onDir, err := allows(r, id, d, entity.DeleteChild)
 	if err != nil {

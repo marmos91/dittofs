@@ -107,7 +107,7 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 	if child.IsDir() {
 		want = entity.AddSubdirectory
 	}
-	if err := authorize(tx, id, dd, want); err != nil {
+	if err := authorize(tx, id, dd, want|entity.Execute); err != nil {
 		return Orphaned{}, err
 	}
 	if child.Project != dd.Project {

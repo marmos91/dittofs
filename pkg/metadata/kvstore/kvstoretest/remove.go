@@ -192,3 +192,48 @@ func testNlinkIsExactlyItsEntries(t *testing.T, kvo Opener) {
 		}
 	}
 }
+
+// POSIX asks write and search on a directory to change its entries: with w
+// and no x a caller adds, removes, renames and links nothing, as it already
+// looks up nothing. A rename needs search on its source directory too.
+func testWriteWithoutSearch(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	ns := f.s.Namespace()
+	alice := f.member("alice", entity.Principal{})
+	d, _ := f.create(f.admin, f.root, "d", directory(0o777))
+	f.create(alice, d, "victim", regular(0o644))
+	f.create(alice, d, "mv", regular(0o644))
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	other, _ := f.create(alice, pub, "other", regular(0o644))
+	must(t, errOf(f.s.Files().SetAttrs(ctx, f.admin, d, entity.Attrs{}.WithMode(0o772)))) // others: w, no x
+
+	if _, _, err := ns.Lookup(ctx, alice, d, []byte("victim")); !isDenied(err) {
+		t.Fatalf("lookup without x: %v; scenario invalid", err)
+	}
+	if _, _, err := ns.Create(ctx, alice, d, []byte("new"), regular(0o644)); !isDenied(err) {
+		t.Errorf("create in a directory with w but no x: %v", err)
+	}
+	if _, err := ns.Unlink(ctx, alice, d, []byte("victim")); !isDenied(err) {
+		t.Errorf("unlink in a directory with w but no x: %v", err)
+	}
+	if _, err := ns.Rename(ctx, alice, d, []byte("mv"), d, []byte("mv2")); !isDenied(err) {
+		t.Errorf("rename in a directory with w but no x: %v", err)
+	}
+	if _, err := ns.Rename(ctx, alice, d, []byte("mv"), pub, []byte("mv2")); !isDenied(err) {
+		t.Errorf("rename out of a directory with w but no x: %v", err)
+	}
+	if err := ns.Link(ctx, alice, d, []byte("lnk"), other); !isDenied(err) {
+		t.Errorf("link into a directory with w but no x: %v", err)
+	}
+	if _, err := ns.Rename(ctx, alice, pub, []byte("other"), d, []byte("o2")); !isDenied(err) {
+		t.Errorf("rename into a directory with w but no x: %v", err)
+	}
+	// With x back, each goes through.
+	must(t, errOf(f.s.Files().SetAttrs(ctx, f.admin, d, entity.Attrs{}.WithMode(0o773))))
+	if _, _, err := ns.Create(ctx, alice, d, []byte("new"), regular(0o644)); err != nil {
+		t.Errorf("create with w and x: %v", err)
+	}
+	if _, err := ns.Unlink(ctx, alice, d, []byte("victim")); err != nil {
+		t.Errorf("unlink with w and x: %v", err)
+	}
+}

@@ -146,7 +146,7 @@ func (n Namespace) Link(ctx context.Context, id entity.Identity, dir entity.Hand
 		case f.Project != d.Project:
 			return entity.ErrCrossProject
 		}
-		if err := authorize(tx, id, d, entity.AddFile); err != nil {
+		if err := authorize(tx, id, d, entity.AddFile|entity.Execute); err != nil {
 			return err
 		}
 		b, err := n.s.bound(tx, share)

@@ -185,7 +185,7 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 		if nf.Type == entity.Directory {
 			want = entity.AddSubdirectory
 		}
-		if err := authorize(tx, id, d, want); err != nil {
+		if err := authorize(tx, id, d, want|entity.Execute); err != nil {
 			return err
 		}
 		b, err := n.s.bound(tx, share)

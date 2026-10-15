@@ -65,6 +65,7 @@ func Run(t *testing.T, open Opener) {
 		{"Subdirs", testSubdirs},
 		{"RemoveDirectoryRacesCreate", testRemoveDirectoryRacesCreate},
 		{"RemovalRights", testRemovalRights},
+		{"WriteWithoutSearch", testWriteWithoutSearch},
 		{"NlinkIsExactlyItsEntries", testNlinkIsExactlyItsEntries},
 		{"Rename", testRename},
 		{"RenameOver", testRenameOver},
