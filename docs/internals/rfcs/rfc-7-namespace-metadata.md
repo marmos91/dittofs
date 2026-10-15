@@ -305,7 +305,8 @@ type File struct {
 	Shard ShardID
 
 	// Project is the tree quota this file is charged to (§2.8): inherited
-	// from the parent at create. Zero: none.
+	// from the parent at create, or set on an empty directory by SetProject,
+	// which makes it the project's root. Zero: none.
 	Project ProjectID
 
 	// Number is the file's 64-bit numeric id within its share (§6.5): set at
@@ -813,14 +814,16 @@ type Usage struct {
 	Bytes, Files int64
 }
 
-// Quota is one limit: on the share, on a user or group in it, or on a tree.
-// A share-wide quota has neither Principal nor Project set; its key carries
-// the share tag, beside the principal and project ones (RFC 16 §4.2.1).
+// Quota is one limit: on the share, on a user or group in it, on every user
+// or every group in it without one of its own, or on a tree. A share-wide
+// quota has none of Principal, Default and Project set; its key carries the
+// share tag, beside the principal, default and project ones (RFC 16 §4.2.1).
 // Limits are written by the management API; usage is counted. They are
 // separate because they have different writers.
 type Quota struct {
 	Share     ShareID
 	Principal Principal     // a user or group quota; zero otherwise
+	Default   PrincipalKind // User or Group: the limit of each such principal with no quota of its own; zero otherwise
 	Project   ProjectID     // a tree quota; zero otherwise
 	Hard      Limit         // refused beyond it
 	Soft      Limit         // allowed beyond it for Grace, then refused as Hard
@@ -832,6 +835,10 @@ type Quota struct {
 type Limit struct {
 	Bytes, Files int64
 }
+
+// ProjectID numbers a tree quota within its share: allocated by SetProject,
+// never reused in the share, never zero.
+type ProjectID uint64
 
 // PrincipalUsage is one principal's usage in one share: what NFS rquota
 // and SMB per-user quotas report and enforce.
@@ -862,29 +869,65 @@ folded into `Charged` and the usage once, by the transaction that sets it done. 
 outside the extent changed.
 
 `chown` and `chgrp` move exactly `Charged` from the old principal to the new one
-in the transaction that changes the owner. A tree quota is carried by
-`Project`: inherited from the parent at create, and a rename or link into a
-different project **MUST** be refused (cross-device), so a tree's usage is one
-counter and never a walk of ancestors. How usage is counted without a hot key
+in the transaction that changes the owner. How usage is counted without a hot key
 is [RFC 16](rfc-16-metadata-store.md)'s. Enforcement is the filesystem service's, at the file's primary
 and at write time, against an in-memory reservation per principal and project
 released when the write's existence commits ([RFC 17](rfc-17-vfs.md)): a write is checked
 before the charge exists, so the overshoot is bounded by each primary's
 reservation slack, and that bound is stated, not hidden.
 
+**Limits stack; none is nested in another.** A write is checked against every
+quota that covers it — the share-wide one, its owner's, its group's and its
+project's — and refused if any would be exceeded. So a share capped at 10 TiB
+with each user capped at 100 GiB is two quotas, and neither is derived from
+the other: the per-user limits may sum to more than the share's.
+
+**Default quotas.** A principal's limit is its own quota if it has one, and
+otherwise the share's default for its kind, `Default` User or Group; with
+neither it has no limit. Its own quota **replaces** the default rather than
+adding to it, so one user can be given more than the default as well as less.
+A default is one record, whatever the number of principals it covers, and
+usage stays counted per principal: nothing is written per principal until it
+is charged.
+
+**Projects.** `SetProject` makes an empty directory the root of a new
+project: it allocates a `ProjectID` and writes it to the directory's
+`Project`, in one transaction that range-guards the directory's entries as a
+removal does ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on)), so a create racing it either lands first and refuses
+the `SetProject` with `ErrNotEmpty`, or lands after and inherits the project.
+A directory already inside a project is refused with `ErrInvalid`: projects
+do not nest, since a file is charged to one project and a nested tree would
+escape its outer project's limit. A rename or link whose file's `Project`
+differs from the destination directory's is refused with `ErrCrossProject`,
+with one exception: a project's root — a directory whose `Project` differs
+from its source parent's — may move to a destination outside every project.
+A project outlives its root: its quota stays until `SetQuota` deletes it, and
+its usage reads zero once its files are gone.
+
+> decision: `SetProject` takes only an empty directory, so a quota cannot be
+> put on a tree that already holds files; the operator creates the project and
+> copies the tree into it, which a client's `mv` already does on the
+> cross-device refusal. Relabelling a populated tree means rewriting every
+> file's `Project` and moving its charge in bounded batches while renames run
+> across the boundary — the shape of a move between shards
+> ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). Build it that way when operators need quotas on trees too large
+> to copy.
+
 **Writing limits.** The management API sets a quota with `SetQuota`, and a
 quota that limits nothing — every `Limit` zero — deletes it rather than being
-stored; `Quotas` lists a share's quotas, the share-wide one included
-([RFC 16](rfc-16-metadata-store.md)).
+stored; `Quotas` lists a share's quotas, the share-wide one and the defaults
+included ([RFC 16](rfc-16-metadata-store.md)).
 
 **Soft and advisory limits.** Usage above `Soft` is allowed for `Grace`,
 measured from when it first rose above `Soft`, a time recorded with the usage
 ([RFC 16](rfc-16-metadata-store.md)) and cleared when it falls back; after that, `Soft` is refused as
-`Hard` is. A `SetQuota` that changes `Soft` restarts the grace: the time
-becomes the change's own if usage is above the new `Soft`, and is cleared if it
-is not, since when usage rose above the old limit says nothing about the new
-one. A change to any other field of the quota
-leaves a running grace as it was. `Advisory` is never refused. Crossing any limit, a grace that
+`Hard` is. The grace is the usage's, so under a default each principal has
+its own, never one shared by every principal the default covers. A change of
+the `Soft` in force restarts the grace — a `SetQuota` that changes it, and a
+principal gaining or losing a quota of its own: the time becomes the change's
+own if usage is above the new `Soft`, and is cleared if it is not, since when
+usage rose above the old limit says nothing about the new one. A change to
+any other field of the quota leaves a running grace as it was. `Advisory` is never refused. Crossing any limit, a grace that
 expires, and every refusal emit a quota event through the event hook
 ([§7.6](#7.6%20Decisions%20are%20observable)), so an operator learns of a full tree before its users do.
 
@@ -1385,7 +1428,8 @@ every count those two changes imply — in **one transaction**:
 - both directories' `Modify`, `Change` and `Version` advance (as deltas, [§9.2](#9.2%20Timestamps)),
   and the renamed file's `Change` and `Version` advance;
 - the destination directory is guarded ([§3.6](#3.6%20A%20structural%20change%20guards%20the%20directory%20it%20depends%20on));
-- a rename into a different `Project` is refused ([§2.8](#2.8%20A%20share%20is%20one%20filesystem));
+- a rename into a different `Project` is refused, a project's root moving out
+  of every project excepted ([§2.8](#2.8%20A%20share%20is%20one%20filesystem));
 - an existing destination is replaced only as [§5.4](#5.4%20Rename%20over%20an%20existing%20entry) allows.
 
 Partial application **MUST NOT** be observable. A rename visible at neither name
@@ -2299,6 +2343,7 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 | N33 | Immutable and append-only flags are enforced at the chokepoint for every caller and protocol, and only a privileged caller sets or clears them. |
 | N34 | A file's NFSv3 pre-operation attributes are reported only when captured under the file's accept lock in one hold with the operation. |
 | N35 | A delete-pending directory takes no create, link or rename into it. |
+| N36 | A write is refused if it would exceed any quota covering it: the share-wide one, its owner's and its group's — each a principal's own quota, else the share's default for its kind — and its project's. A file is in at most one project; a project's root was empty when `SetProject` made it and was in no project; no rename or link moves a file between projects, a root leaving every project excepted. |
 
 ## 11. API surface and observability
 
@@ -2365,6 +2410,10 @@ type Files interface {
 	// open, on SetAttrs, SetACL, SetXattr and RemoveXattr: the open the
 	// request came through, as for Rename; nil for a request on no open.
 	SetAttrs(ctx context.Context, id Identity, v JournalVersion, h Handle, a Attrs, open *OpenGrant) (File, error) // v: as for Namespace's mutating calls
+	// SetProject makes the empty directory h a new project's root (§2.8):
+	// ErrNotEmpty for a directory with an entry, ErrInvalid for one already in
+	// a project or not a directory, ErrPerm for a caller not privileged (§7.4).
+	SetProject(ctx context.Context, id Identity, v JournalVersion, h Handle) (ProjectID, error)
 	ACL(ctx context.Context, id Identity, h Handle) (ACL, error) // synthesised from Mode if none stored (§2.6)
 	SetACL(ctx context.Context, id Identity, v JournalVersion, h Handle, acl ACL, open *OpenGrant) (File, error) // ErrInvalid for a deny naming a well-known principal with no row in §2.6's table
 	Xattrs(ctx context.Context, id Identity, h Handle) iter.Seq2[Xattr, error]
@@ -2536,6 +2585,9 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) a drawn version is checked | Draw a `chmod`'s version, release the accept lock, accept and commit a write at a higher version, then let the `chmod` commit. Assert it re-draws and stores a `Version` above the write's, and the client never reads `Version` move backward or stay put across the `chmod`. Repeat with a write accepted and staged after the `chmod`'s draw and not committed when the `chmod` commits: assert the `chmod`'s transaction refuses `ErrVersionBehind`, the service re-draws above the staged write's version, and the stored `Version` ends above it; a check that reads only the stored `Version` stores 101 under the overlay's 102. Repeat on a directory under a burst of creates in it (tens per millisecond): assert the `chmod` and a rename moving the directory each commit within one fold's pause, never `DelayConflict`, and the directory's reported `Version` moves across each; run two crossing moves, one moving X into Q and the other Q into X, under that burst: assert one commits and the other is refused by the loop check, neither waits past its deadline, and no admission stays closed; a check against an untracked delta scan stores a `Version` a create's delta hides. Keep a write stream refusing every re-draw until the deadline: assert `ErrDelay` with `DelayConflict`. |
 | [§9.4](#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) a create draws from the new file's journal | (cluster) Create a file whose parent's journal is far ahead of the journal that will serve the file; write it and read `Version` after each write. Assert `Version` rises with every write. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) share-wide quota and grace | Set a share-wide quota, list the share's quotas and find it; set every limit to zero and assert it is gone. Exceed a `Soft` limit, then change `Soft`: assert the grace restarts; change `Hard` only: assert the grace runs on. |
+| [§2.8](#2.8%20A%20share%20is%20one%20filesystem) limits stack | Cap a share at 10 MiB and every user at 6 MiB by a default user quota. As alice write 6 MiB: assert the next byte refused by her limit. As bob write 4 MiB: assert the next byte refused by the share's, though bob is under his. Delete alice's and bob's data, give carol her own 20 MiB quota and write as her: assert she passes the default's 6 MiB and is refused at the share's 10. |
+| [§2.8](#2.8%20A%20share%20is%20one%20filesystem) default grace is per principal | Set a default user quota with a `Soft` limit and a grace. Take alice above `Soft`, wait out the grace, then take bob above it: assert alice is refused and bob is not. Give alice her own quota with a higher `Soft` she is still above: assert her grace restarts. A build that keeps one grace on the default refuses bob at once. |
+| [§2.8](#2.8%20A%20share%20is%20one%20filesystem) projects | `SetProject` on an empty directory P with a 1 MiB quota; write 1 MiB under a subdirectory of P: assert the next byte refused while the share and the user are under theirs. Rename a file from P to outside and from outside into P, and link one across: assert each `ErrCrossProject`, which NFS answers `NFS4ERR_XDEV` and `mv` follows by copying. Rename P itself to another parent outside any project: assert allowed. `SetProject` on a directory holding a file: assert `ErrNotEmpty`; on a subdirectory of P: assert `ErrInvalid`. Race a create into an empty directory with `SetProject` on it, in both commit orders: assert either the `SetProject` is refused or the new file carries the project. |
 
 ### 12.2 Group B — cost
 
@@ -2602,6 +2654,12 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 5. **A reverse-name index** — a file's names, for repair and auditing — is not
    written and no key is reserved for it; add one, at one write per create, link
    and rename, when a consumer needs it.
+6. ~~**A quota across shares.**~~ Declined for now: every quota is one share's,
+   and its usage is counted under that share's keys ([§2.8](#2.8%20A%20share%20is%20one%20filesystem)). A limit on
+   one principal over several shares is a new target with a counter summed
+   across shares, and each write would read it from another share's
+   primaries. Add it when a tenant needs one limit over several shares rather
+   than one per share.
 
 ## Appendix A — where the current code differs
 

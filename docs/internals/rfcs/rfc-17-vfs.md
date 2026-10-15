@@ -349,7 +349,7 @@ type Shares interface {
 // Volumes: what statfs, FSSTAT and SMB volume queries ask.
 type Volumes interface {
 	StatFS(ctx context.Context, id Identity, h Handle) (metadata.FilesystemInfo, error)
-	Quota(ctx context.Context, id Identity, h Handle, p metadata.Principal) (metadata.Usage, metadata.Quota, error)
+	Quota(ctx context.Context, id Identity, h Handle, p metadata.Principal) (metadata.Usage, metadata.Quota, error) // p's own quota, else the share's default for its kind
 }
 ```
 
@@ -1184,7 +1184,8 @@ engine refuses a write for quota.
 
 - At step 4 of a write, the primary adds the charge the write would add to an
   in-memory **reservation** per principal, per project and per share, and
-  refuses with `ErrQuota` when, for any of them with a quota — the share's being
+  refuses with `ErrQuota` when, for any of them with a quota — a principal's
+  being its own or else the share's default for its kind, the share's being
   the share-wide quota, whose usage is the sum of the share's per-shard usage
   counters — committed usage plus unfolded deltas
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) plus its reservations would exceed the hard limit.

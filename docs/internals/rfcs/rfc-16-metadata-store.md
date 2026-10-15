@@ -905,8 +905,8 @@ type ControlPlane interface {
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition) error // §2.3.2
 	SetGrant(ctx context.Context, g ShareGrant) error // Access none deletes the grant and its GR key; Version is the writing commit's, so a re-created grant never repeats a Version an authorisation cache keyed on
 	PutExportPolicy(ctx context.Context, p ExportPolicy) error // raises Version, as SetGrant does
-	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, per principal and per project
-	SetQuota(ctx context.Context, share ShareID, q Quota) error         // a quota that limits nothing deletes it and its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace (RFC 7 §2.8)
+	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, the user and group defaults, per principal and per project
+	SetQuota(ctx context.Context, share ShareID, q Quota) error         // a quota that limits nothing deletes it, and a share-wide or project one its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace; a principal's grace under a changed default, or one that gains or loses its own quota, restarts at its next check, which finds the soft limit qx recorded no longer in force (RFC 7 §2.8)
 	Netgroups(ctx context.Context, after string) iter.Seq2[Netgroup, error]
 	PutNetgroup(ctx context.Context, n Netgroup) error // sets Version to the writing commit's, as SetGrant does
 	DeleteNetgroup(ctx context.Context, name string) error // rules naming it are not rewritten and fail closed (Netgroup)
@@ -1283,8 +1283,9 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `S‖id‖od‖shard‖unique` | `old_refs` delta, not yet folded, per shard: its own range, apart from the usage deltas, so a re-home's finish can guard each shard's range as empty without conflicting with every writer of the share ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace), §4.4) |
 | | `S‖id‖ut‖shard`, `S‖id‖pu‖principal‖shard`, `S‖id‖pj‖project‖shard` | folded usage, **per shard**: share, with its `history_bytes`, principal, project; each written only by its shard's fold, and a reader sums a prefix scan over the shards (§4.4) |
 | | `S‖id‖ud‖shard‖unique` | usage delta, not yet folded, per shard (§4.4) |
-| | `S‖id‖qt‖target` | Quota: `Hard`, `Soft`, `Grace`, `Advisory` ([RFC 7](rfc-7-namespace-metadata.md)); `target` is a principal, a project, or the share as a whole, which `FilesystemInfo.Quota` reports. Written by `SetQuota` (§3) |
-| | `S‖id‖qx‖target` | when usage first exceeded the soft limit; deleted when it falls back under; a `SetQuota` that changes the soft limit rewrites it at the change's time if usage is above the new limit and deletes it otherwise ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
+| | `S‖id‖qt‖target` | Quota: `Hard`, `Soft`, `Grace`, `Advisory` ([RFC 7](rfc-7-namespace-metadata.md)); `target` is a principal, a project, the share as a whole, which `FilesystemInfo.Quota` reports, or a default for every user or every group without a quota of its own. Written by `SetQuota` (§3) |
+| | `S‖id‖qx‖target` | when usage first exceeded the soft limit, and that soft limit; deleted when it falls back under. `target` is the share, a project or a principal — the principal even when its limit is the default, so each principal's grace is its own and none is keyed by a default. A `SetQuota` that changes a share-wide, project or principal soft limit rewrites it at the change's time if usage is above the new limit and deletes it otherwise; a check that finds the soft limit in force differs from the one recorded — a default changed, or the principal gained or lost its own quota — does the same at the check's time ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
+| | `S‖id‖pjn` | project allocator: the next `ProjectID`, read and raised in the transaction of the `SetProject` it numbers, so no project number is issued twice in the share ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)) |
 | | `S‖id‖vf‖bucket‖version‖FileID`, `S‖id‖vf‖bucket‖version‖FileID‖unique` | version-floor index: **one entry per File, at its stored `Version`**, written by every transaction that raises that `Version`, at the version the filesystem service drew from the engine under the file's accept lock ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)) for a namespace call — an existence commit, an attribute, flag, ACL or xattr change, a link change — which deletes the entry it supersedes; and one entry per unfolded directory-time delta at the delta's version, under its own unique suffix, written blind with the delta and replaced by the directory's own entry when the fold absorbs it. No ref has an entry: a File's `Version` is at least every version its refs and `Applied` carry. `bucket` is the file's identity hashed into one of *B* fixed buckets, so a share's commits spread over *B* key ranges ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor), [RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)) |
 | | `S‖id‖fnc` | numeric file-id allocator: the next unreserved number, reserved in ranges by shard primaries, so the protocol's numeric id is injective ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)); the number itself is a File field |
 | | `S‖id‖shs‖shard` | the share's shard list: one empty key per shard of the share, written in the transaction that creates the shard and deleted with the shard record ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)); the removal records it at step 1 and advances its gate over it in batches ([§2.3.2](#2.3.2%20Removing%20a%20share)) |
@@ -1450,7 +1451,7 @@ are the prefix's. No separator byte is written.
 - **Tagged** component — a quota's `target`, a setting's `scope`, a forwarding
   entry's `ref`: one tag byte from the last row of the second table, then the
   tagged value in its own encoding above — a PrincipalID, a project number as an
-  integer, nothing for a share-wide quota or the installation scope, the scope's
+  integer, a default's principal kind as its enumerated byte, nothing for a share-wide quota or the installation scope, the scope's
   ID as an identifier, a stateid's random bits or an `OpenID` as an integer. The
   empty value keeps the share-wide quota's key off the prefix of every other
   quota key: its tag byte differs. `unique` in a delta key is the
@@ -1472,12 +1473,12 @@ are the prefix's. No separator byte is written.
 | Under | Sub-kind codes |
 | --- | --- |
 | `F‖id` | none for the File itself; `acl` 0x01, `x` 0x02, `s` 0x03, `e` 0x04, `t` 0x05, `h` 0x06, `rm` 0x07, `ov` 0x08, `ref` 0x09, `H` 0x0A, `fx` 0x0B, `fo` 0x0C, `rel` 0x0D, `op` 0x0E, `dp` 0x0F; under `op‖openID`, `l` 0x01 |
-| `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16, `vl` 0x17, `shs` 0x18, `pr` 0x19, `rr` 0x1A, `do` 0x1B, `od` 0x1C |
+| `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16, `vl` 0x17, `shs` 0x18, `pr` 0x19, `rr` 0x1A, `do` 0x1B, `od` 0x1C, `pjn` 0x1D |
 | `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06, `keyseq` 0x07, `park` 0x08, `backup` 0x09 |
 | `N‖node`, `SH‖shard`, `CL‖clientID` | `exp` 0x01, `clk` 0x02; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05, `rqx` 0x06; `sh` 0x01 |
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | protocol: NFSv4.0 0x01, NFSv4.1 0x02, SMB 0x03, NLM 0x04 |
-| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
+| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
 (§4.6): changing any of them is a format bump, and a code once assigned is never
@@ -1566,7 +1567,7 @@ totals alone lets every staged, uncommitted byte in the journal through. Each
 primary therefore holds an in-memory **reservation** per principal, per
 project and per share: a write reserves the bytes it may add before it is acknowledged, the
 check is totals + unfolded deltas + this primary's reservations against the
-limit — the principal's, the project's and the share-wide quota's
+limit — the principal's own quota or else the share's default for its kind, the project's, and the share-wide quota's
 (`S‖id‖qt` with the share tag), whose usage is the sum of the per-shard
 `S‖id‖ut‖shard` totals — and the reservation is released when the existence
 commit charging those bytes lands. A crash drops the reservations with the uncommitted writes they
