@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
+	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,8 +19,6 @@ import (
 	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
-
-var update = flag.Bool("update", false, "rewrite the golden files from what the tests get")
 
 // summary is what the tests read back from a run's summary.json.
 type summary struct {
@@ -166,8 +165,8 @@ suites:
 
 // A go-json cell has a result for each test and subtest, under its package: a
 // failure with what the test printed, a skip ungraded and with its reason. A
-// package that failed outside any test failed, and a test whose binary
-// crashed before its result has none: it's other, with its output.
+// test whose binary crashed before its result is other, with its output, and
+// is its package's one result.
 func TestGoJSONResults(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": goModule["a/a_test.go"], "p/p_test.go": `package p
 
@@ -185,7 +184,6 @@ func TestPanicky(t *testing.T) {
 	got := readSummary(t, filepath.Join(dir, "summary.json")).cases()
 	slices.Sort(got)
 	want := []string{
-		"g > example.com/m/p: failed | failed outside any test",
 		"g example.com/m/a > TestFail: failed | a_test.go:6: broke",
 		"g example.com/m/a > TestParent/bad: failed | a_test.go:10: sub broke",
 		"g example.com/m/a > TestParent/good: passed",
@@ -223,10 +221,11 @@ func TestGoJSONCellLimitResults(t *testing.T) {
 	minute = 20 * time.Millisecond
 	t.Cleanup(func() { minute = time.Minute })
 	root, r := repo(t, "suites:\n  g: { cmd: go test ./..., format: go-json }\n", nil)
-	fakeGo(t, `{"Action":"run","Package":"p","Test":"TestDone"}
-{"Action":"pass","Package":"p","Test":"TestDone","Elapsed":0.5}
-{"Action":"run","Package":"p","Test":"TestWait"}
-{"Action":"output","Package":"p","Test":"TestWait","Output":"=== RUN   TestWait\n"}
+	now := `"Time":"` + time.Now().Format(time.RFC3339Nano) + `",`
+	fakeGo(t, `{`+now+`"Action":"run","Package":"p","Test":"TestDone"}
+{`+now+`"Action":"pass","Package":"p","Test":"TestDone","Elapsed":0.5}
+{`+now+`"Action":"run","Package":"p","Test":"TestWait"}
+{`+now+`"Action":"output","Package":"p","Test":"TestWait","Output":"=== RUN   TestWait\n"}
 `)
 	rep := runIn(t, root, r, "g")
 	want := []string{"g p > TestDone: passed", "g p > TestWait: failed | stopped at the cell's limit"}
@@ -372,31 +371,31 @@ func TestGitState(t *testing.T) {
 	}
 }
 
-// golden compares got with testdata/name, or writes it there with -update.
-// A checkout may have turned the file's line ends into CRLF.
-func golden(t *testing.T, name string, got []byte) {
-	t.Helper()
-	path := filepath.Join("testdata", name)
-	if *update {
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
+// lines lists results as "package > name: status, duration", with the grade
+// in brackets and the message's first line after a |.
+func lines(tests []report.Test) []string {
+	var out []string
+	for _, tc := range tests {
+		line := fmt.Sprintf("%s: %s, %s", strings.Join(append(slices.Clone(tc.Suite), tc.Name), " > "), tc.Status, tc.Duration.Round(time.Millisecond))
+		if tc.Grade != "" {
+			line += " [" + tc.Grade + "]"
 		}
+		if first, _, _ := strings.Cut(tc.Message, "\n"); first != "" {
+			line += " | " + first
+		}
+		out = append(out, line)
 	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))) {
-		t.Errorf("%s differs; got\n%s", path, got)
-	}
+	return out
 }
 
-// go test -json's events, recorded in testdata/go-test.json, become CTRF as a
-// go-json cell turns them: each result under its package, the skip ungraded,
-// the packages that didn't build or failed outside any test, the test go
-// test's own timeout stopped, which failed, and the test whose binary crashed
-// with no result of its own, which is other.
-func TestGoJSONToCTRF(t *testing.T) {
+// A recorded go test -json run, testdata/go-test.json, gives a result for
+// each test and subtest under its package, timed by go test, with the skip
+// ungraded, and a failed result for each package that didn't build or failed
+// outside any test. A test whose binary crashed, or that go test's own
+// timeout stopped, is its package's one result, timed to the package's end:
+// other for the crash, failed for the timeout. Every test the recording
+// starts, its package's end closes.
+func TestGoJSONRecordedRun(t *testing.T) {
 	events, err := os.ReadFile("testdata/go-test.json")
 	if err != nil {
 		t.Fatal(err)
@@ -407,22 +406,23 @@ func TestGoJSONToCTRF(t *testing.T) {
 			res.add(line, io.Discard)
 		}
 	}
-	finished := len(res.cases)
-	res.finish(false)
-	for i := finished; i < len(res.cases); i++ {
-		res.cases[i].Duration = 0 // how long dt saw it run, which the recording doesn't keep
-	}
 	ungraded(&registry.Suite{}, res.cases)
-	r := report.Run{
-		Name: "20261015T120000Z-abcdef12", Start: time.UnixMilli(1791460800000), Stop: time.UnixMilli(1791460803000),
-		Commit: "abcdef12", Branch: "develop", OS: "linux", In: "host", Tier: "pr", Exit: 1,
-		Cells: []report.Cell{{Name: "unit", Result: Failed, Note: res.note(nil), Took: 3 * time.Second, Log: "logs/unit.log", Tests: res.cases}},
+	want := []string{
+		"example.com/m/a > TestPass: passed, 20ms",
+		"example.com/m/a > TestFail: failed, 0s | a_test.go:9: broke",
+		"example.com/m/a > TestSkip: skipped, 0s [ungraded] | a_test.go:10: nothing to check here",
+		"example.com/m/a > TestParent/good: passed, 0s",
+		"example.com/m/a > TestParent/bad: failed, 0s | a_test.go:13: sub broke",
+		"example.com/m/a > TestParent: failed, 0s",
+		"example.com/m/b: failed, 0s | build failed",
+		"example.com/m/p > TestPanicky: other, 3ms | panic: boom",
+		"example.com/m/tm > TestFine: passed, 0s",
+		"example.com/m/tm: failed, 223ms | failed outside any test",
+		"example.com/m/to > TestWait: failed, 3.004s | panic: test timed out after 3s",
 	}
-	data, err := r.JSON()
-	if err != nil {
-		t.Fatal(err)
+	if got := lines(res.cases); !slices.Equal(got, want) || len(res.running) != 0 {
+		t.Errorf("got %q\nwant %q\nstill open: %v", got, want, slices.Collect(maps.Keys(res.running)))
 	}
-	golden(t, "go-test.summary.json", data)
 }
 
 // A test with several results in a cell, as one that two commands ran, keeps

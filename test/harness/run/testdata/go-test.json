@@ -44,9 +44,9 @@
 {"Time":"2026-10-15T02:37:10.605807+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"\n"}
 {"Time":"2026-10-15T02:37:10.605817+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"goroutine 7 [running]:\n"}
 {"Time":"2026-10-15T02:37:10.605823+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"example.com/m/p.TestPanicky.func1()\n"}
-{"Time":"2026-10-15T02:37:10.605828+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"\t/tmp/t2jfix/p/p_test.go:9 +0x2c\n"}
+{"Time":"2026-10-15T02:37:10.605828+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"\t/src/m/p/p_test.go:9 +0x2c\n"}
 {"Time":"2026-10-15T02:37:10.605832+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"created by example.com/m/p.TestPanicky in goroutine 6\n"}
-{"Time":"2026-10-15T02:37:10.605846+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"\t/tmp/t2jfix/p/p_test.go:9 +0x24\n"}
+{"Time":"2026-10-15T02:37:10.605846+02:00","Action":"output","Package":"example.com/m/p","Test":"TestPanicky","Output":"\t/src/m/p/p_test.go:9 +0x24\n"}
 {"Time":"2026-10-15T02:37:10.606376+02:00","Action":"output","Package":"example.com/m/p","Output":"FAIL\texample.com/m/p\t0.215s\n"}
 {"Time":"2026-10-15T02:37:10.606395+02:00","Action":"fail","Package":"example.com/m/p","Elapsed":0.215}
 {"Time":"2026-10-15T02:37:10.67916+02:00","Action":"start","Package":"example.com/m/tm"}
@@ -66,32 +66,32 @@
 {"Time":"2026-10-15T02:37:14.318196+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\n"}
 {"Time":"2026-10-15T02:37:14.318204+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"goroutine 19 [running]:\n"}
 {"Time":"2026-10-15T02:37:14.318211+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"testing.(*M).startAlarm.func1()\n"}
-{"Time":"2026-10-15T02:37:14.318215+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2802 +0x2cc\n"}
+{"Time":"2026-10-15T02:37:14.318215+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2802 +0x2cc\n"}
 {"Time":"2026-10-15T02:37:14.318226+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"created by time.goFunc\n"}
-{"Time":"2026-10-15T02:37:14.318232+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/time/sleep.go:215 +0x38\n"}
+{"Time":"2026-10-15T02:37:14.318232+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/time/sleep.go:215 +0x38\n"}
 {"Time":"2026-10-15T02:37:14.318236+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\n"}
 {"Time":"2026-10-15T02:37:14.318239+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"goroutine 1 [chan receive]:\n"}
 {"Time":"2026-10-15T02:37:14.318243+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"testing.(*T).Run(0x27000e746008, {0x104d22d4a?, 0x12cb37e004cdea00?}, 0x104e77ef8)\n"}
-{"Time":"2026-10-15T02:37:14.318247+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2109 +0x3bc\n"}
+{"Time":"2026-10-15T02:37:14.318247+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2109 +0x3bc\n"}
 {"Time":"2026-10-15T02:37:14.31825+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"testing.runTests.func1(0x27000e746008)\n"}
-{"Time":"2026-10-15T02:37:14.318254+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2585 +0x40\n"}
+{"Time":"2026-10-15T02:37:14.318254+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2585 +0x40\n"}
 {"Time":"2026-10-15T02:37:14.318257+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"testing.tRunner(0x27000e746008, 0x27000e632c48)\n"}
-{"Time":"2026-10-15T02:37:14.318266+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2036 +0xc4\n"}
+{"Time":"2026-10-15T02:37:14.318266+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2036 +0xc4\n"}
 {"Time":"2026-10-15T02:37:14.318269+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"testing.runTests({0x104d24255, 0xd}, {0x104d24f00, 0x10}, 0x27000e702018, {0x104e99330, 0x1, 0x1}, {0x808080808080806e?, 0x104d24b22?, ...})\n"}
-{"Time":"2026-10-15T02:37:14.318273+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2583 +0x3f0\n"}
+{"Time":"2026-10-15T02:37:14.318273+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2583 +0x3f0\n"}
 {"Time":"2026-10-15T02:37:14.318276+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"testing.(*M).Run(0x27000e736140)\n"}
-{"Time":"2026-10-15T02:37:14.318279+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2443 +0x578\n"}
+{"Time":"2026-10-15T02:37:14.318279+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2443 +0x578\n"}
 {"Time":"2026-10-15T02:37:14.318289+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"main.main()\n"}
 {"Time":"2026-10-15T02:37:14.318293+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t_testmain.go:46 +0x80\n"}
 {"Time":"2026-10-15T02:37:14.318296+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\n"}
 {"Time":"2026-10-15T02:37:14.3183+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"goroutine 18 [sleep]:\n"}
 {"Time":"2026-10-15T02:37:14.318303+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"time.Sleep(0xdf8475800)\n"}
-{"Time":"2026-10-15T02:37:14.318311+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/runtime/time.go:363 +0x150\n"}
+{"Time":"2026-10-15T02:37:14.318311+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/runtime/time.go:363 +0x150\n"}
 {"Time":"2026-10-15T02:37:14.318315+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"example.com/m/to.TestWait(0x27000e746248?)\n"}
-{"Time":"2026-10-15T02:37:14.318318+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/tmp/t2jfix/to/to_test.go:8 +0x28\n"}
+{"Time":"2026-10-15T02:37:14.318318+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/src/m/to/to_test.go:8 +0x28\n"}
 {"Time":"2026-10-15T02:37:14.318322+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"testing.tRunner(0x27000e746248, 0x104e77ef8)\n"}
-{"Time":"2026-10-15T02:37:14.318325+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2036 +0xc4\n"}
+{"Time":"2026-10-15T02:37:14.318325+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2036 +0xc4\n"}
 {"Time":"2026-10-15T02:37:14.318328+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"created by testing.(*T).Run in goroutine 1\n"}
-{"Time":"2026-10-15T02:37:14.318332+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/opt/homebrew/Cellar/go@1.26/1.26.9/libexec/src/testing/testing.go:2101 +0x3a8\n"}
+{"Time":"2026-10-15T02:37:14.318332+02:00","Action":"output","Package":"example.com/m/to","Test":"TestWait","Output":"\t/usr/local/go/src/testing/testing.go:2101 +0x3a8\n"}
 {"Time":"2026-10-15T02:37:14.318989+02:00","Action":"output","Package":"example.com/m/to","Output":"FAIL\texample.com/m/to\t3.298s\n"}
 {"Time":"2026-10-15T02:37:14.319013+02:00","Action":"fail","Package":"example.com/m/to","Elapsed":3.298}

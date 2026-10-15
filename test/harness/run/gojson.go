@@ -32,7 +32,8 @@ const sudoGrace = 2 * time.Minute
 // It also returns each result of each test and subtest, and each package that
 // failed outside any test. A test the cell's limit or go test's own timeout
 // stopped failed; one whose output stopped before its result otherwise, as
-// when its test binary crashed, is other, with that output.
+// when its test binary crashed, is other, with that output. A test left open
+// when its package ended is the package's one result, timed to that end.
 func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
@@ -62,7 +63,7 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 		code, err := t.goTest(argv, root, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d.json", i+1)), &res)
 		switch {
 		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
-			res.finish(true)
+			res.end("", time.Now(), "stopped at the cell's limit")
 			return Failed, res.note(append(problems, "stopped at the cell's limit")), res.cases
 		case t.ctx.Err() != nil:
 			return NotRun, res.note(append(problems, "interrupted")), res.cases
@@ -71,7 +72,7 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 		case code != 0 && res.failures() == failed:
 			problems = append(problems, fmt.Sprintf("`%s` exited %d", shown, code))
 		}
-		res.finish(false)
+		res.end("", time.Now(), "")
 	}
 	var notRun []string
 	if missing := slices.DeleteFunc(slices.Clone(names), res.ran); len(missing) > 0 {
@@ -244,6 +245,7 @@ func follow(name string, done <-chan struct{}, line func([]byte)) error {
 // event is one test2json event.
 type event struct {
 	Action, Package, Test, Output, FailedBuild string
+	Time                                       time.Time
 	Elapsed                                    float64 // seconds
 }
 
@@ -270,7 +272,9 @@ var statuses = map[string]string{"pass": report.Passed, "fail": report.Failed, "
 // output through as go test -v prints it. A line that isn't an event, such as
 // an error from the go command, passes through as it is. A package that
 // fails with no failed test of its own, such as one that didn't build or
-// exited in TestMain, is recorded as broken.
+// exited in TestMain, is recorded as broken. When a package ends, the tests
+// it left open never got a result: they're recorded then, and one of them is
+// the package's result rather than a failure outside any test.
 func (r *results) add(line []byte, w io.Writer) {
 	var e event
 	if json.Unmarshal(line, &e) != nil || e.Action == "" {
@@ -291,7 +295,7 @@ func (r *results) add(line []byte, w io.Writer) {
 			r.timedOut[e.Package] = true
 		}
 	case e.Test != "" && e.Action == "run":
-		r.running[k] = &started{at: time.Now()}
+		r.running[k] = &started{at: e.Time}
 	case e.Test != "" && statuses[e.Action] != "":
 		if r.tests[k] != "fail" {
 			r.tests[k] = e.Action
@@ -305,34 +309,47 @@ func (r *results) add(line []byte, w io.Writer) {
 		}
 		delete(r.running, k)
 		r.cases = append(r.cases, tc)
-	case e.Test == "" && e.Action == "fail" && !r.failedIn[e.Package]:
-		why := "failed outside any test"
-		if e.FailedBuild != "" {
-			why = "build failed"
+	case e.Test == "" && (e.Action == "pass" || e.Action == "fail"):
+		open := r.end(e.Package, e.Time, "")
+		if e.Action == "fail" && !r.failedIn[e.Package] {
+			why := "failed outside any test"
+			if e.FailedBuild != "" {
+				why = "build failed"
+			}
+			r.broken = append(r.broken, e.Package+": "+why)
+			if !open {
+				r.cases = append(r.cases, report.Test{Name: e.Package, Status: report.Failed, Duration: seconds(e.Elapsed), Message: why})
+			}
 		}
-		r.broken = append(r.broken, e.Package+": "+why)
-		r.cases = append(r.cases, report.Test{Name: e.Package, Status: report.Failed, Duration: seconds(e.Elapsed), Message: why})
 	}
 }
 
-// finish records each test still running, and forgets them. One the cell's
-// limit stopped failed, and says so; one go test's own timeout stopped failed;
-// any other's output stopped before its result, so it's other. The last two
-// keep their output as their message.
-func (r *results) finish(atLimit bool) {
+// end records the tests still open in pkg, or in every package when pkg is
+// "", as ended when given, and forgets them. One stopped says why it was
+// stopped, the cell's limit, failed; one go test's own timeout stopped
+// failed; any other's output stopped before its result, so it's other. The
+// last two keep their output as their message. end reports whether any test
+// was open.
+func (r *results) end(pkg string, when time.Time, stopped string) bool {
+	open := false
 	for _, k := range slices.Sorted(maps.Keys(r.running)) {
-		pkg, test, _ := strings.Cut(k, " ")
+		p, test, _ := strings.Cut(k, " ")
+		if pkg != "" && p != pkg {
+			continue
+		}
 		s := r.running[k]
-		tc := report.Test{Name: test, Suite: []string{pkg}, Status: report.Other, Duration: time.Since(s.at), Message: message(s.output)}
+		tc := report.Test{Name: test, Suite: []string{p}, Status: report.Other, Duration: when.Sub(s.at), Message: message(s.output)}
 		switch {
-		case atLimit:
-			tc.Status, tc.Message = report.Failed, "stopped at the cell's limit"
-		case r.timedOut[pkg]:
+		case stopped != "":
+			tc.Status, tc.Message = report.Failed, stopped
+		case r.timedOut[p]:
 			tc.Status = report.Failed
 		}
 		r.cases = append(r.cases, tc)
+		delete(r.running, k)
+		open = true
 	}
-	clear(r.running)
+	return open
 }
 
 // framing matches the lines go test frames a test's own output with.
