@@ -88,3 +88,25 @@ func TestEntriesAfter(t *testing.T) {
 		}
 	}
 }
+
+// Describe names a key's parts, from the builders the store writes with.
+func TestKeyDescribe(t *testing.T) {
+	sh, f := entity.ShareID{0: 0x3f, 1: 0xa2, 2: 0xc1, 3: 0xd0}, entity.FileID{0: 0x9b, 1: 0x1e, 2: 0x44, 3: 0xa7}
+	for _, c := range []struct {
+		key  []byte
+		want string
+	}{
+		{fileKey(sh, f), "F‖share=3fa2c1d0‖file=9b1e44a7"},
+		{entryKey(sh, f, 0xabcdef01, []byte("README.md")), `F‖share=3fa2c1d0‖file=9b1e44a7‖e‖2882400001‖"README.md"`},
+		{removalKey(sh, f, entity.VersionOf(7)), "F‖share=3fa2c1d0‖file=9b1e44a7‖rm‖v7"},
+		{lockKey(sh, f, 9, 100, 4), "F‖share=3fa2c1d0‖file=9b1e44a7‖op‖9‖l‖100‖4"},
+		{removalIndexKey(sh, 2, f, entity.VersionOf(7)), "S‖share=3fa2c1d0‖rr‖2‖file=9b1e44a7‖v7"},
+		{clientShardKey(7, 2), "CL‖7‖sh‖2"},
+		{clientOwnerKey(entity.ProtocolSMB, []byte("host")), `CLO‖2‖"host"`},
+		{[]byte{0xFE, 1}, "?fe01"},
+	} {
+		if got := keys.Describe(c.key); got != c.want {
+			t.Errorf("got  %s\nwant %s", got, c.want)
+		}
+	}
+}

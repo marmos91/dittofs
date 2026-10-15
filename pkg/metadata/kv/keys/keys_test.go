@@ -131,3 +131,26 @@ func TestVersion(t *testing.T) {
 		t.Errorf("short: %v, want ErrMalformed", err)
 	}
 }
+
+// Every kind and sub-kind has a name in Describe, so a new one cannot be
+// added without one.
+func TestDescribeNamesEveryCode(t *testing.T) {
+	for _, k := range []byte{KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
+		KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
+		KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS} {
+		if _, ok := kindNames[k]; !ok {
+			t.Errorf("kind 0x%02x has no name", k)
+		}
+	}
+	for _, s := range []byte{FAcl, FX, FS, FE, FT, FH, FRm, FOv, FRef, FHis, FFx, FFo, FRel, FOp, FDp} {
+		if _, ok := fSubNames[s]; !ok {
+			t.Errorf("file sub-kind 0x%02x has no name", s)
+		}
+	}
+	for _, s := range []byte{SInfo, SSt, SNsg, SG, SXp, SSnap, SCut, SLive, SSc, SHd, SHr, SUse, SRh, SOr, SUt, SPu,
+		SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SPr, SRr, SDo} {
+		if _, ok := sSubNames[s]; !ok {
+			t.Errorf("share sub-kind 0x%02x has no name", s)
+		}
+	}
+}
