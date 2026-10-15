@@ -75,10 +75,8 @@ func (f *fs) create(id entity.Identity, dir entity.Handle, name string, nf kvsto
 	return h, file
 }
 
-func regular(mode uint32) kvstore.NewFile { return kvstore.NewFile{Type: entity.Regular, Mode: mode} }
-func directory(mode uint32) kvstore.NewFile {
-	return kvstore.NewFile{Type: entity.Directory, Mode: mode}
-}
+func regular(mode uint32) kvstore.NewFile   { return kvstore.Regular(mode) }
+func directory(mode uint32) kvstore.NewFile { return kvstore.Dir(mode) }
 
 func testCreateAndLookup(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)

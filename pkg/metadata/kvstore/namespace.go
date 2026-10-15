@@ -155,6 +155,17 @@ type NewFile struct {
 	Verifier []byte
 }
 
+// Regular, Dir, Symlink and Device are the NewFile of each kind, for the
+// common case of a create that names nothing else.
+func Regular(mode uint32) NewFile { return NewFile{Type: entity.Regular, Mode: mode} }
+func Dir(mode uint32) NewFile     { return NewFile{Type: entity.Directory, Mode: mode} }
+func Symlink(target string) NewFile {
+	return NewFile{Type: entity.Symlink, Mode: 0o777, Target: []byte(target)}
+}
+func Device(t entity.FileType, mode uint32, dev entity.DeviceID) NewFile {
+	return NewFile{Type: t, Mode: mode, Device: dev}
+}
+
 // Create adds a name in dir for a new file and returns it.
 //
 // The create reads the directory's record, which conflicts with a write of
