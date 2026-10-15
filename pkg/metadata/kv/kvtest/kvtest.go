@@ -26,6 +26,8 @@ func Run(t *testing.T, open func(t *testing.T) kv.KV) {
 		fn   func(*testing.T, kv.KV)
 	}{
 		{"Atomic", testAtomic},
+		{"CloseTwice", testCloseTwice},
+		{"UpdateRacingClose", testUpdateRacingClose},
 		{"OwnWrites", testOwnWrites},
 		{"ConcurrentIncrements", testConcurrentIncrements},
 		{"LostUpdate", testLostUpdate},
@@ -915,5 +917,77 @@ func testBeforeUntracked(t *testing.T, s kv.KV) {
 	}
 	if got := race(t, s, seekThenSet, setter("p/2", "y")); got != 2 {
 		t.Errorf("%d attempts, want 2: a Before must register nothing", got)
+	}
+}
+
+// Close is safe to call twice, and every call after it fails with
+// ErrClosed rather than reading or writing a released store.
+func testCloseTwice(t *testing.T, s kv.KV) {
+	ctx := ctx(t)
+	if err := s.Update(ctx, func(tx kv.Txn) error { return tx.Set([]byte("k"), []byte("v")) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("second Close panicked: %v", p)
+			}
+		}()
+		if err := s.Close(); err != nil {
+			t.Errorf("second Close: %v", err)
+		}
+	}()
+	if err := s.Update(ctx, func(tx kv.Txn) error { return tx.Set([]byte("k"), []byte("w")) }); !errors.Is(err, kv.ErrClosed) {
+		t.Errorf("Update after Close: %v", err)
+	}
+	if err := s.View(ctx, func(kv.Reader) error { return nil }); !errors.Is(err, kv.ErrClosed) {
+		t.Errorf("View after Close: %v", err)
+	}
+}
+
+// Writers racing Close all return: each commit in flight completes as it
+// would have, and each later one fails with ErrClosed. None is left
+// waiting on a store that has stopped.
+func testUpdateRacingClose(t *testing.T, s kv.KV) {
+	ctx := ctx(t)
+	var started atomic.Int32
+	errs := make(chan error, 16)
+	var wg sync.WaitGroup
+	for w := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				started.Add(1)
+				if err := s.Update(ctx, func(tx kv.Txn) error {
+					return tx.Set(fmt.Appendf(nil, "k%d-%d", w, i), []byte("v"))
+				}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	for started.Load() < 64 {
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writers still blocked 5s after Close")
+	}
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, kv.ErrClosed) {
+			t.Errorf("a writer racing Close: %v", err)
+		}
 	}
 }

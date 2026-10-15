@@ -26,6 +26,9 @@ type KV interface {
 	// Limits is what one transaction may hold. The limits are the backend's,
 	// never settings, and the entity layer derives its batch sizes from them.
 	Limits() TxnLimits
+	// Close waits for the calls in flight, each of which completes as it
+	// would have, then releases the store. Every call after it fails with
+	// ErrClosed, and a second Close does nothing.
 	Close() error
 }
 
@@ -117,6 +120,8 @@ var (
 	ErrTooLarge = errors.New("kv: transaction exceeds limits")
 	// ErrUncommittedVersion is Versions of a key the transaction wrote.
 	ErrUncommittedVersion = errors.New("kv: version of a key written in this transaction")
+	// ErrClosed is a call on a store after its Close.
+	ErrClosed = errors.New("kv: store closed")
 )
 
 // Retry runs attempt until it returns anything but ErrConflict or ctx is done,

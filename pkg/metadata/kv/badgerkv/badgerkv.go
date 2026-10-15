@@ -53,6 +53,12 @@ type Store struct {
 
 	stop chan struct{}
 	done chan struct{}
+
+	// gate is held shared by every Update and View attempt and exclusively
+	// by Close, which so waits for the calls in flight before it stops the
+	// syncer they wait on. closed is set under it.
+	gate   sync.RWMutex
+	closed bool
 }
 
 // ceilingAhead is how far ahead of the clock the ceiling is raised, once per
@@ -145,11 +151,31 @@ const maxAge = 5 * time.Second
 func (s *Store) Limits() kv.TxnLimits { return s.limits }
 
 func (s *Store) Close() error {
+	s.gate.Lock()
+	if s.closed {
+		s.gate.Unlock()
+		return nil
+	}
+	s.closed = true
+	s.gate.Unlock()
 	close(s.stop)
 	<-s.done
 	s.closeSync()
 	return s.db.Close()
 }
+
+// enter admits one call, refusing it once the store is closed; the caller
+// runs leave when it is done.
+func (s *Store) enter() error {
+	s.gate.RLock()
+	if s.closed {
+		s.gate.RUnlock()
+		return kv.ErrClosed
+	}
+	return nil
+}
+
+func (s *Store) leave() { s.gate.RUnlock() }
 
 func (s *Store) closeSync() {
 	if s.sync != nil {
@@ -170,6 +196,10 @@ func (s *Store) Update(ctx context.Context, fn func(kv.Txn) error) error {
 }
 
 func (s *Store) View(_ context.Context, fn func(kv.Reader) error) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.leave()
 	r := s.db.NewTransaction(false)
 	defer r.Discard()
 	if err := s.durable(r.ReadTs()); err != nil {
@@ -179,6 +209,10 @@ func (s *Store) View(_ context.Context, fn func(kv.Reader) error) error {
 }
 
 func (s *Store) attempt(fn func(kv.Txn) error) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.leave()
 	t := &txn{s: s, reader: reader{own: map[string]write{}}, now: s.now()}
 	t.w, t.snap = s.snapshotPair()
 	start := time.Now()

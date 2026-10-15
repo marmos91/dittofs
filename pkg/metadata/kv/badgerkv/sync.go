@@ -2,6 +2,7 @@ package badgerkv
 
 import (
 	"errors"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -78,7 +79,20 @@ func (y *syncer) wait() error {
 	case y.kick <- struct{}{}:
 	default:
 	}
-	return <-ch
+	select {
+	case err := <-ch:
+		return err
+	case <-y.done:
+		// The loop's last sync answers every waiter it found; one that
+		// joined after it gets no sync, and is told so rather than left
+		// waiting.
+		select {
+		case err := <-ch:
+			return err
+		default:
+			return kv.ErrClosed
+		}
+	}
 }
 
 func (y *syncer) close() {
