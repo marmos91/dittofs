@@ -167,7 +167,7 @@ suites:
 // A go-json cell has a result for each test and subtest, under its package: a
 // failure with what the test printed, a skip ungraded and with its reason. A
 // test whose binary crashed before its result is other, with its output, and
-// is its package's one result.
+// its package has no failure of its own besides.
 func TestGoJSONResults(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": goModule["a/a_test.go"], "p/p_test.go": `package p
 
@@ -395,14 +395,16 @@ func lines(tests []report.Test) []string {
 	return out
 }
 
-// A recorded go test -json run, testdata/go-test.json, gives a result for
-// each test and subtest under its package, timed by go test, with the skip
+// Recorded go test -json runs, testdata/go-test.json, give a result for each
+// test and subtest under its package, timed by go test, with the skip
 // ungraded, and a failed result for each package that didn't build or failed
-// outside any test. A test whose binary crashed, or that go test's own
-// timeout stopped, is its package's one result, timed to the package's end:
-// other for the crash, failed for the timeout. Every test the recording
-// starts, its package's end closes. A message keeps its lines' indentation,
-// a stack's frames included.
+// outside any test. A test left open when its package ended is timed to that
+// end: failed when go test's own timeout lists it as running, which takes in
+// a parent blocked on its subtest; other otherwise, as after a crash or for a
+// parent waiting on its parallel subtests; and, when it waited in t.Parallel
+// and never continued, it didn't run and has no result. Such a package has
+// no result of its own. Every test the recording starts, its package's end
+// closes. A message keeps its lines' indentation, a stack's frames included.
 func TestGoJSONRecordedRun(t *testing.T) {
 	events, err := os.ReadFile("testdata/go-test.json")
 	if err != nil {
@@ -427,6 +429,14 @@ func TestGoJSONRecordedRun(t *testing.T) {
 		"example.com/m/tm > TestFine: passed, 0s",
 		"example.com/m/tm: failed, 223ms | failed outside any test",
 		"example.com/m/to > TestWait: failed, 3.004s | panic: test timed out after 3s",
+		"example.com/m/pt > TestP: other, 3.004s",
+		"example.com/m/pt > TestP/a: failed, 3.004s | panic: test timed out after 3s",
+		"example.com/m/st > TestS: failed, 3.009s",
+		"example.com/m/st > TestS/x: failed, 3.009s | panic: test timed out after 3s",
+		"example.com/m/pc > TestQ: other, 6ms",
+		"example.com/m/pc > TestQ/a: other, 6ms | panic: boom",
+		"example.com/m/sc > TestR: other, 4ms",
+		"example.com/m/sc > TestR/x: other, 4ms | panic: boom",
 	}
 	if got := lines(res.cases); !slices.Equal(got, want) || len(res.running) != 0 {
 		t.Errorf("got %q\nwant %q\nstill open: %v", got, want, slices.Collect(maps.Keys(res.running)))
@@ -454,6 +464,24 @@ func TestGoJSONEveryResult(t *testing.T) {
 		got = append(got, tc.Name+": "+tc.Status)
 	}
 	if want := []string{"TestFlip: failed", "TestFlip: passed"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A package that fails while its only open tests wait in t.Parallel fails
+// outside any test: those tests never ran, so they have no result to stand
+// for the failure.
+func TestGoJSONOnlyPausedTestsOpen(t *testing.T) {
+	var res results
+	for _, line := range []string{
+		`{"Time":"2026-10-15T12:00:00Z","Action":"run","Package":"x","Test":"TestA"}`,
+		`{"Time":"2026-10-15T12:00:00Z","Action":"pause","Package":"x","Test":"TestA"}`,
+		`{"Time":"2026-10-15T12:00:01Z","Action":"output","Package":"x","Output":"panic: boom\n"}`,
+		`{"Time":"2026-10-15T12:00:01Z","Action":"fail","Package":"x","Elapsed":1}`,
+	} {
+		res.add([]byte(line+"\n"), io.Discard)
+	}
+	if got, want := lines(res.cases), []string{"x: failed, 1s | failed outside any test"}; !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }

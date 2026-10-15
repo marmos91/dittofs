@@ -33,8 +33,9 @@ const sudoGrace = 2 * time.Minute
 // It also returns each result of each test and subtest, and each package that
 // failed outside any test. A test the cell's limit or go test's own timeout
 // stopped failed; one whose output stopped before its result otherwise, as
-// when its test binary crashed, is other, with that output. A test left open
-// when its package ended is the package's one result, timed to that end.
+// when its test binary crashed, is other, with that output; one that waited
+// in t.Parallel and never continued didn't run, and has none. A test left
+// open when its package ended is timed to that end.
 func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
@@ -258,13 +259,18 @@ type results struct {
 	cases    []report.Test       // each result of each test, and each package that failed outside any test
 	running  map[string]*started // "package test" for the tests started and not finished
 	timedOut map[string]bool     // packages go test's own timeout stopped
+	listed   map[string]bool     // "package test" for the tests that timeout lists as running
 }
 
 // started is a test that started, and its output so far.
 type started struct {
 	at     time.Time
 	output []string
+	paused bool // waiting in t.Parallel, not yet continued
 }
+
+// listedRunning matches a test go test's own timeout lists as running.
+var listedRunning = regexp.MustCompile(`^\t\t(\S+) \(\S+\)\n?$`)
 
 // statuses are the test2json actions that end a test, as results.
 var statuses = map[string]string{"pass": report.Passed, "fail": report.Failed, "skip": report.Skipped}
@@ -274,8 +280,8 @@ var statuses = map[string]string{"pass": report.Passed, "fail": report.Failed, "
 // an error from the go command, passes through as it is. A package that
 // fails with no failed test of its own, such as one that didn't build or
 // exited in TestMain, is recorded as broken. When a package ends, the tests
-// it left open never got a result: they're recorded then, and one of them is
-// the package's result rather than a failure outside any test.
+// it left open never got a result: they're recorded then, and stand for the
+// package's failure rather than a failure outside any test.
 func (r *results) add(line []byte, w io.Writer) {
 	var e event
 	if json.Unmarshal(line, &e) != nil || e.Action == "" {
@@ -283,7 +289,8 @@ func (r *results) add(line []byte, w io.Writer) {
 		return
 	}
 	if r.tests == nil {
-		r.tests, r.failedIn, r.running, r.timedOut = map[string]string{}, map[string]bool{}, map[string]*started{}, map[string]bool{}
+		r.tests, r.failedIn, r.running = map[string]string{}, map[string]bool{}, map[string]*started{}
+		r.timedOut, r.listed = map[string]bool{}, map[string]bool{}
 	}
 	k := e.Package + " " + e.Test
 	switch {
@@ -295,8 +302,17 @@ func (r *results) add(line []byte, w io.Writer) {
 		if strings.HasPrefix(e.Output, "panic: test timed out after ") {
 			r.timedOut[e.Package] = true
 		}
+		if r.timedOut[e.Package] {
+			if m := listedRunning.FindStringSubmatch(e.Output); m != nil {
+				r.listed[e.Package+" "+m[1]] = true
+			}
+		}
 	case e.Test != "" && e.Action == "run":
 		r.running[k] = &started{at: e.Time}
+	case e.Test != "" && (e.Action == "pause" || e.Action == "cont"):
+		if s := r.running[k]; s != nil {
+			s.paused = e.Action == "pause"
+		}
 	case e.Test != "" && statuses[e.Action] != "":
 		if r.tests[k] != "fail" {
 			r.tests[k] = e.Action
@@ -311,14 +327,14 @@ func (r *results) add(line []byte, w io.Writer) {
 		delete(r.running, k)
 		r.cases = append(r.cases, tc)
 	case e.Test == "" && (e.Action == "pass" || e.Action == "fail"):
-		open := r.end(e.Package, e.Time, "")
+		recorded := r.end(e.Package, e.Time, "")
 		if e.Action == "fail" && !r.failedIn[e.Package] {
 			why := "failed outside any test"
 			if e.FailedBuild != "" {
 				why = "build failed"
 			}
 			r.broken = append(r.broken, e.Package+": "+why)
-			if !open {
+			if !recorded {
 				r.cases = append(r.cases, report.Test{Name: e.Package, Status: report.Failed, Duration: seconds(e.Elapsed), Message: why})
 			}
 		}
@@ -326,31 +342,36 @@ func (r *results) add(line []byte, w io.Writer) {
 }
 
 // end records the tests still open in pkg, or in every package when pkg is
-// "", as ended when given, and forgets them. One stopped says why it was
-// stopped, the cell's limit, failed; one go test's own timeout stopped
-// failed; any other's output stopped before its result, so it's other. The
-// last two keep their output as their message. end reports whether any test
-// was open.
+// "", as ended when given, and forgets them. One still waiting in t.Parallel
+// never ran, so it has no result. Of the rest, those stopped says why they
+// were stopped, the cell's limit, failed; those go test's own timeout lists
+// as running failed, a parent blocked on its subtest among them; any other's
+// output stopped before its result, so it's other, as after a crash or for a
+// parent waiting on its parallel subtests. The last two keep their output as
+// their message. end reports whether it recorded any.
 func (r *results) end(pkg string, when time.Time, stopped string) bool {
-	open := false
+	recorded := false
 	for _, k := range slices.Sorted(maps.Keys(r.running)) {
 		p, test, _ := strings.Cut(k, " ")
 		if pkg != "" && p != pkg {
 			continue
 		}
 		s := r.running[k]
+		delete(r.running, k)
+		if s.paused {
+			continue
+		}
 		tc := report.Test{Name: test, Suite: []string{p}, Status: report.Other, Duration: when.Sub(s.at), Message: message(s.output)}
 		switch {
 		case stopped != "":
 			tc.Status, tc.Message = report.Failed, stopped
-		case r.timedOut[p]:
+		case r.listed[k]:
 			tc.Status = report.Failed
 		}
 		r.cases = append(r.cases, tc)
-		delete(r.running, k)
-		open = true
+		recorded = true
 	}
-	return open
+	return recorded
 }
 
 // framing matches the lines go test frames a test's own output with.
