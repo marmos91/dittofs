@@ -14,10 +14,10 @@ import (
 )
 
 // A suite whose tests are pjdfstest's, found below {tools}, and which runs
-// pynfs by name.
+// pynfs by its path there.
 const toolsSuite = `suites:
   pjd:
-    cmd: [ "sh {test}", "pynfs-4.1 {test}" ]
+    cmd: [ "sh {test}", "{tools}/pynfs/bin/pynfs-4.1 {test}" ]
     tests: "{tools}/pjdfstest/tests/*/*.t"
   plain: { cmd: "true" }
 `
@@ -49,6 +49,7 @@ func fakeTools(t *testing.T, dir string) string {
 		"pjdfstest/share/pjdfstest/tests/chmod/01.t":     test,
 		"pjdfstest/share/pjdfstest/tests/chmod/notes.md": "",
 		"pjdfstest/share/pjdfstest/tests/open/00.t":      test + "exit 1\n",
+		"pynfs/bin/pynfs-4.0":                            "#!/bin/sh\necho \"pynfs-4.0 $1\" >> " + calls + "\n",
 		"pynfs/bin/pynfs-4.1":                            "#!/bin/sh\necho \"pynfs-4.1 $1\" >> " + calls + "\n",
 	}
 	for name, body := range files {
@@ -92,8 +93,8 @@ func lines(t *testing.T, file string) []string {
 // {tools} is laid out from what nix builds of the flake's pjdfstest and
 // pynfs, in the repository: pjdfstest's tests find its binary through it,
 // each test is named by its path below the tests directory and runs by its
-// file, and pynfs is found by name on the PATH the commands get. A suite that
-// doesn't name {tools} never builds them.
+// file, and pynfs runs by its path there. A suite that doesn't name {tools}
+// never builds them.
 func TestToolsFromNix(t *testing.T) {
 	root, r := repo(t, toolsSuite, nil)
 	outs := t.TempDir()
@@ -158,7 +159,8 @@ func TestToolsInDtc(t *testing.T) {
 
 // {tools}/pjdfstest holds a link to pjdfstest's binary beside a copy of its
 // tests directory whose directories are real and whose files are links, as
-// run-posix.sh's work directory has them; laying it out again replaces it.
+// run-posix.sh's work directory has them, and {tools}/pynfs links to pynfs;
+// laying it out again replaces it.
 func TestToolsLayout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the tools are laid out where they run")
@@ -170,30 +172,67 @@ func TestToolsLayout(t *testing.T) {
 	tools := t.TempDir()
 	out := filepath.Join(dtcTools, "pjdfstest")
 	for range 2 {
-		bins, err := layOutTools(context.Background(), t.TempDir(), tools, &bytes.Buffer{})
-		if err != nil {
+		if err := layOutTools(context.Background(), t.TempDir(), tools, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
-		}
-		if want := []string{filepath.Join(out, "bin"), filepath.Join(dtcTools, "pynfs", "bin")}; !slices.Equal(bins, want) {
-			t.Errorf("bins %q, want %q", bins, want)
 		}
 	}
 	links := map[string]string{
-		"pjdfstest":            filepath.Join(out, "bin", "pjdfstest"),
-		"tests/misc.sh":        filepath.Join(out, "share", "pjdfstest", "tests", "misc.sh"),
-		"tests/conf":           filepath.Join(out, "share", "pjdfstest", "tests", "conf"),
-		"tests/chmod/00.t":     filepath.Join(out, "share", "pjdfstest", "tests", "chmod", "00.t"),
-		"tests/open/00.t":      filepath.Join(out, "share", "pjdfstest", "tests", "open", "00.t"),
-		"tests/chmod/notes.md": filepath.Join(out, "share", "pjdfstest", "tests", "chmod", "notes.md"),
+		"pynfs":                          filepath.Join(dtcTools, "pynfs"),
+		"pjdfstest/pjdfstest":            filepath.Join(out, "bin", "pjdfstest"),
+		"pjdfstest/tests/misc.sh":        filepath.Join(out, "share", "pjdfstest", "tests", "misc.sh"),
+		"pjdfstest/tests/conf":           filepath.Join(out, "share", "pjdfstest", "tests", "conf"),
+		"pjdfstest/tests/chmod/00.t":     filepath.Join(out, "share", "pjdfstest", "tests", "chmod", "00.t"),
+		"pjdfstest/tests/open/00.t":      filepath.Join(out, "share", "pjdfstest", "tests", "open", "00.t"),
+		"pjdfstest/tests/chmod/notes.md": filepath.Join(out, "share", "pjdfstest", "tests", "chmod", "notes.md"),
 	}
 	for name, target := range links {
-		if got, err := os.Readlink(filepath.Join(tools, "pjdfstest", filepath.FromSlash(name))); err != nil || got != target {
+		if got, err := os.Readlink(filepath.Join(tools, filepath.FromSlash(name))); err != nil || got != target {
 			t.Errorf("%s: link to %q, %v; want %q", name, got, err, target)
 		}
 	}
-	for _, d := range []string{"tests", "tests/chmod", "tests/open"} {
-		if fi, err := os.Lstat(filepath.Join(tools, "pjdfstest", filepath.FromSlash(d))); err != nil || !fi.IsDir() {
+	for _, d := range []string{"pjdfstest/tests", "pjdfstest/tests/chmod", "pjdfstest/tests/open"} {
+		if fi, err := os.Lstat(filepath.Join(tools, filepath.FromSlash(d))); err != nil || !fi.IsDir() {
 			t.Errorf("%s isn't a directory: %v", d, err)
+		}
+	}
+}
+
+// The registry's pynfs cells name {tools}, so they get the tools, and their
+// command's program is pynfs-4.{minor} there.
+func TestPynfsNamesItsTool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the tools are laid out where they run")
+	}
+	dtcTools = t.TempDir()
+	t.Cleanup(func() { dtcTools = "/opt" })
+	fakeTools(t, dtcTools)
+	t.Setenv("DT_IN_CONTAINER", "1")
+	tools := t.TempDir()
+	if err := layOutTools(context.Background(), t.TempDir(), tools, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Select("../../..", r, "pynfs", "", "pr", nil, nil, nil)
+	if err != nil || len(cells) != 2 {
+		t.Fatalf("pynfs: %+v, %v", cells, err)
+	}
+	for _, c := range cells {
+		if !c.Unit.Uses("tools") {
+			t.Errorf("%s doesn't name {tools}", c.Name)
+		}
+		vals := map[string]string{"tools": tools, "server": "10.0.0.1", "out": "/out", "minor": c.Matrix["minor"]}
+		argv, err := fill(c.Unit.Cmd[0], vals, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(tools, "pynfs", "bin", "pynfs-4."+c.Matrix["minor"]); argv[0] != want {
+			t.Errorf("%s runs %q, want %q", c.Name, argv[0], want)
+		}
+		if fi, err := os.Stat(argv[0]); err != nil || fi.Mode()&0o111 == 0 {
+			t.Errorf("%s: %s isn't a program: %v", c.Name, argv[0], err)
 		}
 	}
 }
@@ -258,14 +297,19 @@ func TestToolsSelect(t *testing.T) {
 	}
 }
 
-// When the tools can't be had, the cell doesn't run, and says why: nix
-// failed, or isn't installed.
+// When the tools can't be had, the cell doesn't run, and says why: what nix
+// built lacks a tool's programs, or nix failed, or isn't installed.
 func TestToolsMissing(t *testing.T) {
 	root, r := repo(t, toolsSuite, nil)
-	fakeNix(t, t.TempDir()) // prints directories with no tools in them
+	outs := t.TempDir()
+	fakeTools(t, outs)
+	if err := os.RemoveAll(filepath.Join(outs, "pynfs", "bin")); err != nil {
+		t.Fatal(err)
+	}
+	fakeNix(t, outs)
 	rep, _ := runTarget(t, root, r, "pjd", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.HasPrefix(o.Note, "the test tools: ") || rep.Status() != 2 {
-		t.Errorf("no tools where nix says: %+v", o)
+	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.HasPrefix(o.Note, "the test tools: ") || !strings.Contains(o.Note, filepath.Join("pynfs", "bin")) || rep.Status() != 2 {
+		t.Errorf("no pynfs programs: %+v", o)
 	}
 
 	nix := t.TempDir()
@@ -282,40 +326,5 @@ func TestToolsMissing(t *testing.T) {
 	rep, _ = runTarget(t, root, r, "pjd", false)
 	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "nix isn't installed") {
 		t.Errorf("no nix: %+v", o)
-	}
-}
-
-// A command's program is found on the PATH the command gets, which can
-// differ from dt's own; with the same PATH, exec finds it as before.
-func TestProgram(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("programs are found by their execute bits")
-	}
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "tool"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bin, "data"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	other := []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}
-	cases := []struct {
-		name string
-		env  []string
-		want string
-	}{
-		{"tool", other, filepath.Join(bin, "tool")},
-		{"data", other, "data"},
-		{"./tool", other, "./tool"},
-		{"tool", []string{"PATH=" + os.Getenv("PATH")}, "tool"},
-		{"tool", []string{"PATH=relative"}, "tool"},
-	}
-	for _, c := range cases {
-		if got := program(c.name, c.env); got != c.want {
-			t.Errorf("%s with %q: %q, want %q", c.name, c.env, got, c.want)
-		}
-	}
-	if got := envPath(prependPath([]string{"PATH=/a", "PATH=/b"}, []string{"/x", "/y"})); got != "/x"+string(os.PathListSeparator)+"/y"+string(os.PathListSeparator)+"/b" {
-		t.Errorf("prepended PATH %q", got)
 	}
 }

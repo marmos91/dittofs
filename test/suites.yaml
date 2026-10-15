@@ -140,7 +140,7 @@ suites:
     needs: [linux, root, nfs-client]
   pynfs:
     format: junit
-    cmd: "pynfs-4.{minor} {server}/export --minorversion {minor} --security sys --maketree --xml {out}/junit.xml all"
+    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}/export --minorversion {minor} --security sys --maketree --xml {out}/junit.xml all"
     matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
     select: { pr: { profile: [badger-s3] } }
     fixture: { profile: "{profile}", nfs: export, lease: 30s, users: [1] }

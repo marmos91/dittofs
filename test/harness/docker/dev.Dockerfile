@@ -52,7 +52,7 @@ RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 \
 COPY --from=pjdfstest /opt/pjdfstest /opt/pjdfstest
 
 # pynfs at the flake.lock revision, with pynfs-4.0/4.1 wrappers like the flake's, in its
-# bin as in the flake's output.
+# bin as in the flake's output. That bin is on PATH for the scripts that run pynfs by name.
 ARG PYNFS_REV=cd4701827a8261fedbfb4c6e39029fb9671321a6
 RUN git clone https://github.com/kofemann/pynfs.git /opt/pynfs && cd /opt/pynfs && git checkout "$PYNFS_REV" \
     && python3 setup.py build >/tmp/pynfs-build.log 2>&1 \

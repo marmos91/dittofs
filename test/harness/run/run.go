@@ -192,13 +192,10 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
 	defer cancel()
-	env := append(os.Environ(), own...)
 	if vals["tools"] != "" {
-		bins, err := layOutTools(cellCtx, o.Root, vals["tools"], w)
-		if err != nil {
+		if err := layOutTools(cellCtx, o.Root, vals["tools"], w); err != nil {
 			return NotRun, "the test tools: " + err.Error()
 		}
-		env = prependPath(env, bins)
 	}
 	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
@@ -225,7 +222,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 			return NotRun, err.Error()
 		}
 	}
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: env, own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		return t.goJSON(c.Tests)
 	}
@@ -350,11 +347,11 @@ func stopped(ctx context.Context) string {
 }
 
 // execute runs one command with its output going to w, and returns its exit
-// status. Its program is found on the PATH env gives it. A command that
-// outlives ctx is killed with everything it started, and whatever a command
-// leaves running in its process group is killed when it exits.
+// status. A command that outlives ctx is killed with everything it started,
+// and whatever a command leaves running in its process group is killed when
+// it exits.
 func execute(ctx context.Context, argv []string, dir string, env []string, w io.Writer) (int, error) {
-	cmd := exec.CommandContext(ctx, program(argv[0], env), argv[1:]...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = dir, env
 	// The command writes to a pipe of dt's own, not one exec makes, so Wait
 	// returns when the command exits, whatever it left holding the output.

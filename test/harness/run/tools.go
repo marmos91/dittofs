@@ -18,35 +18,35 @@ import (
 var dtcTools = "/opt"
 
 // layOutTools lays out {tools} at dir from the test tools at the revisions
-// flake.lock pins, pjdfstest and pynfs, and returns their bin directories,
-// which go first on the commands' PATH. pjdfstest's tests are copied as
-// directories of links to its files, with a link to its binary beside them:
-// misc.sh looks for the binary in the directories above a test, so it finds
-// that link. Each cell lays it out afresh, over an earlier cell's.
-func layOutTools(ctx context.Context, root, dir string, w io.Writer) ([]string, error) {
+// flake.lock pins, pjdfstest and pynfs, each of which a suite names by its
+// path there. {tools}/pynfs links to pynfs as nix builds it. pjdfstest's
+// tests are copied as directories of links to its files, with a link to its
+// binary beside them: misc.sh looks for the binary in the directories above a
+// test, so it finds that link. Each cell lays it out afresh, over an earlier
+// cell's.
+func layOutTools(ctx context.Context, root, dir string, w io.Writer) error {
 	pjdfstest, err := toolOut(ctx, root, "pjdfstest", w)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	pynfs, err := toolOut(ctx, root, "pynfs", w)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	binary := filepath.Join(pjdfstest, "bin", "pjdfstest")
 	if _, err := os.Stat(binary); err != nil {
-		return nil, err
+		return err
 	}
-	at := filepath.Join(dir, "pjdfstest")
-	if err := os.RemoveAll(at); err != nil {
-		return nil, err
+	if err := os.RemoveAll(dir); err != nil {
+		return err
 	}
-	if err := linkTree(filepath.Join(pjdfstest, "share", "pjdfstest", "tests"), filepath.Join(at, "tests")); err != nil {
-		return nil, err
+	if err := linkTree(filepath.Join(pjdfstest, "share", "pjdfstest", "tests"), filepath.Join(dir, "pjdfstest", "tests")); err != nil {
+		return err
 	}
-	if err := os.Symlink(binary, filepath.Join(at, "pjdfstest")); err != nil {
-		return nil, err
+	if err := os.Symlink(binary, filepath.Join(dir, "pjdfstest", "pjdfstest")); err != nil {
+		return err
 	}
-	return []string{filepath.Join(pjdfstest, "bin"), filepath.Join(pynfs, "bin")}, nil
+	return os.Symlink(pynfs, filepath.Join(dir, "pynfs"))
 }
 
 // toolOut returns the directory a tool is laid out in: the dtc image's copy,
@@ -93,39 +93,4 @@ func linkTree(src, dst string) error {
 		}
 		return os.Symlink(path, filepath.Join(dst, rel))
 	})
-}
-
-// prependPath puts dirs first on the PATH env gives a command.
-func prependPath(env, dirs []string) []string {
-	return append(env, "PATH="+strings.Join(append(dirs, filepath.SplitList(envPath(env))...), string(os.PathListSeparator)))
-}
-
-// envPath is the PATH env gives a command: the last one it sets.
-func envPath(env []string) string {
-	path := ""
-	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
-			path = v
-		}
-	}
-	return path
-}
-
-// program finds a command's program on the PATH the command gets, as its
-// shell would, where exec looks on dt's own: the tools' bin directories head
-// the first. A name with a directory, or one no absolute directory there
-// holds, is left for exec to find, as is every name when the two PATHs are
-// the same.
-func program(name string, env []string) string {
-	path := envPath(env)
-	if path == os.Getenv("PATH") || strings.ContainsRune(name, '/') {
-		return name
-	}
-	for _, dir := range filepath.SplitList(path) {
-		p := filepath.Join(dir, name)
-		if fi, err := os.Stat(p); err == nil && filepath.IsAbs(dir) && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
-			return p
-		}
-	}
-	return name
 }
