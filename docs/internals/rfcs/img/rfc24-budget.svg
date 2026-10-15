@@ -59,7 +59,7 @@
   <rect x="24" y="262" width="150" height="26" rx="4" class="am"/>
   <text x="34" y="279" class="m">open state</text>
   <text x="190" y="279" class="k">1/16</text><text x="250" y="279" class="k">4 MiB</text>
-  <text x="330" y="279" class="e">refuses new state: DelayResources; never a reclaim, close or unlock</text>
+  <text x="330" y="279" class="e">refuses new state: DelayResources; never a close or unlock; a reclaim past its allowance</text>
   <rect x="24" y="294" width="150" height="26" rx="4" class="st"/>
   <text x="34" y="311" class="m">metadata store</text>
   <text x="190" y="311" class="k">3/16</text><text x="250" y="311" class="k">64 MiB</text>
