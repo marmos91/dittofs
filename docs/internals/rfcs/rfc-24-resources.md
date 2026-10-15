@@ -1015,7 +1015,7 @@ labels and histogram buckets follow
 | How often is a call refused for memory, and by which rule? | `memory_pool_refusals_total{pool, rule}` — `rule` one of `share_cap`, `ceiling`, `deadline` | counter |
 | How close is the heap to the limit? | `memory_heap_live_bytes`, `memory_resident_bytes` | gauge, gauge |
 | Is background work waiting for CPU? | `cpu_background_tokens_in_use`, `cpu_background_waits_total` | gauge, counter |
-| How many descriptors are open, against the limit? | `fd_open`, `fd_limit` | gauge, gauge |
+| How many descriptors are open, against the limit? | `fd_open`, `fd_open_limit` | gauge, gauge |
 
 Connections closed at accept for a pool, the limit or the per-address quarter
 are `adapter_connection_closes_total{reason}`
