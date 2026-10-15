@@ -1062,7 +1062,7 @@ converts the old lists once.
   fix: planned
   category: bug
   reason: "a buffered backlog arrives per operation: 5 changes in one reply, where it expects 9"
-  issue: "#2164"               # required for a planned entry
+  issue: "#3136"               # required for a planned entry
 ```
 
 ```yaml
@@ -1410,7 +1410,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      doesn't reset the count: what `dt` grades that the scripts don't, such as skips and tests with
      no result (§4.6, §4.7), and where the server runs (§4.2).
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
-     `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch`. A last job compares the two
+     `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop. A
+     last job compares the two
      sides' results per cell.
    - smbtorture's `badger-s3` cell is new (§4.3), so no script runs it: it needs 5 green runs.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
