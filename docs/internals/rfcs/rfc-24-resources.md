@@ -861,8 +861,10 @@ hint about durable state its source already holds: the source **MUST** re-derive
 dropped work from those records within a bound of its own — offload by its age
 tick, removals and GC by re-reading their indexes and cursors once the instance
 has room — so a dropped item costs latency, never work. The instances are
-bounded by count too: one per journal for the engine, one per GC partition a
-node leases.
+bounded by count too: one per journal for the engine, and one per process for
+GC, whose sources serve every GC partition the node leases
+([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), so a node
+holds at most its journals plus one times the total.
 
 > ponytail: a dropped item waits for its source's next re-derivation, so a
 > backlog past the total drains at the rate the source re-reads its records,
