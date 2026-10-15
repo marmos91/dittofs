@@ -210,7 +210,7 @@ not guessed.
   applies records by their binding class and reports the generation it runs.
 - A resource is addressed by ID. Reads are consistent; lists page by an opaque
   cursor. Every update and delete carries `If-Match` with the generation read;
-  every create and action carries an idempotency key.
+  every create and action but a credential call carries an idempotency key.
 - Work longer than one request is an operation: `202`, an operation ID, progress
   read from the owning component's durable cursor, readable from any node, and
   resumed after a crash by the component that owns the work.
@@ -370,7 +370,9 @@ Each node writes, in its own node-status record, at most once a second and only
 when a value changed:
 
 - the **settings generation**, **share list version** and **principals
-  generation** it has fully applied;
+  generation** it has reconciled through: the highest value of each counter
+  such that it has acted on every change up to it — applied it, refused it, or
+  marked it restart-pending;
 - the records it refused, each with the generation and the error;
 - the records whose restart-class field has changed since it started — its
   restart-pending set;
@@ -378,16 +380,21 @@ when a value changed:
 - the version of each secret it holds, so that an old version is deleted only
   once every node that resolves the secret holds the new one (RFC 13 §7).
 
-A record changed at generation *G* is **applied** on a node once that node's
-applied generation of the matching kind is at least *G* and the record is not in
-its refused set. The API joins these reports into each resource's status (§4.1),
-so "applied on 2 of 3 nodes; P2 behind by 7 s" is a read, not an inference.
+A record's own generation (§4.4) counts its changes; it is not comparable with
+these counters. So every control-plane record **MUST** also carry its
+**position**: the value of its kind's counter that its last change raised,
+written in that change's transaction. A record at position *S* is **applied**
+on a node once that node has reconciled its kind through at least *S* and the
+record is in neither its refused set nor its restart-pending set. The API joins
+these reports into each resource's status (§4.1), so "applied on 2 of 3 nodes;
+P2 behind by 7 s" is a read, not an inference.
 
-> ponytail: a node reports three high-water generations and the exceptions,
-> not one generation per record, so the report stays one small record at 10⁴
+> ponytail: a node reports three reconciled positions and the exceptions, not
+> one generation per record, so the report stays one small record at 10⁴
 > shares. The cost is that "applied" is inferred from a high-water mark, which
-> holds only because the runtime applies changes in generation order. Report
-> per-record generations if a component ever applies records out of order.
+> holds only because the runtime acts on changes in counter order and lists
+> every change it did not apply. Report per-record positions if a component
+> ever applies records out of order.
 
 A protocol-only node writes only node records ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)); its
 node-status record is one of them.
@@ -430,7 +437,7 @@ that component's surface:
 | user, group, membership | `User`, `Group`, `Membership` | §3.5 | `ControlPlane` |
 | netgroup | `Netgroup` | put, delete | `ControlPlane` |
 | setting | `Setting` at a scope | put; a default is the absence of a record | RFC 13 |
-| secret | `Secret` | write-only: set, rotate, delete; never read | [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets) |
+| secret | `Secret` | write-only: set, rotate, delete, each authorized as its owning resource's write (§5.2); never read | [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets) |
 | adapter | adapter settings, installation scope with node override | §3.4 | RFC 13, [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) |
 | snapshot, snapshot policy | `Snapshot`, policy settings | [RFC 12](rfc-12-snapshots.md#3.1%20Interfaces) | `Snapshots` |
 | backup location, backup | its record, backup records | [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record), [RFC 26](rfc-26-catalog-backups.md#4.1%20Interfaces) | `Backups` |
@@ -554,7 +561,8 @@ reconfigure, which the runtime applies as RFC 20 §3.1 describes.
 These are RFC 16's records with RFC 18's meaning; the API validates and writes
 them and decides nothing about identity:
 
-- **create and edit** a user or group with `PUT`/`PATCH` and `If-Match`. A
+- **create** a user or group with `POST /users` or `POST /groups` and an
+  idempotency key (§4.5); **edit** one with `PUT`/`PATCH` and `If-Match`. A
   protocol spelling — uid, gid, SID, Kerberos name — is checked unique in its
   scheme and never defaulted ([RFC 18 §2.3](rfc-18-identity.md#2.3%20IDs%20are%20never%20defaulted%20and%20never%20reused)). A file user created without a
   uid, gid or SID gets one allocated in the create's transaction; an account
@@ -568,8 +576,9 @@ them and decides nothing about identity:
   the mark, from which the principal is admitted nowhere;
 - **disable** is a field of the user; it takes effect on every protocol within a
   second ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) and on the API at the next call (§5.3);
-- **grants** are `PUT /shares/{id}/grants/{principal}` with an access level,
-  `none` included: a `none` grant is stored and blocks the principal, distinct
+- **grants** are `PUT /shares/{id}/grants/{principal}` with an access level —
+  `If-None-Match: *` for a principal with no grant, `If-Match` to change one
+  (§4.4) — `none` included: a `none` grant is stored and blocks the principal, distinct
   from no grant ([RFC 18 §6.4](rfc-18-identity.md#6.4%20Share%20access%20from%20the%20grants)).
   `DELETE /shares/{id}/grants/{principal}` removes the grant, through RFC 16's
   `DeleteGrant`, so the principal falls through to its groups' grants. A grant
@@ -643,10 +652,12 @@ raise-format, set-password, drain — are `POST` on `{resource}:{verb}`.
 | Method | Meaning | Precondition |
 | --- | --- | --- |
 | `POST /collection` | create | `Idempotency-Key` |
-| `PUT /resource` | replace the whole `spec` | `If-Match` |
+| `PUT /resource` | replace the whole `spec` | `If-Match`; `If-None-Match: *` to create a resource whose path the client names |
 | `PATCH /resource` | merge patch of `spec` (RFC 7396): a field present is set, `null` resets it to its default | `If-Match` |
 | `DELETE /resource` | delete, or start the deletion | `If-Match` and `Idempotency-Key` |
 | `POST /resource:verb` | an action | `Idempotency-Key`; and `If-Match` when the action changes the resource's `spec` |
+
+A credential call (§4.5) takes no `Idempotency-Key`.
 
 **One request is one transaction.** A write validates with the components'
 validators ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)), then commits its records, the generation they
@@ -676,6 +687,13 @@ state it expects.
 - **Every `PUT`, `PATCH` and `DELETE` MUST carry `If-Match`.** One without is
   refused `428`. One whose tag is not the current generation is refused `412`,
   code `generation_mismatch`, with the current generation in the body.
+- **A resource with no record is created by `POST` on its collection**, or —
+  where the client names its path, as a grant, a setting at a scope, a
+  netgroup or a quota — by `PUT` with `If-None-Match: *` in place of
+  `If-Match`. That `PUT` is refused `412` `generation_mismatch` if a record
+  exists, with its generation in the body; so a retried create that had
+  committed gets `412`, and the client reads what is there. An absent resource
+  has no tag, so `If-Match` on it is `412`.
 - **The check is in the transaction.** The write reads the record with conflict
   tracking and compares its generation there ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)), so two writes
   with the same tag on two nodes cannot both commit: one commits and the other
@@ -692,7 +710,7 @@ state it expects.
 
 ### 4.5 Idempotency
 
-Every `POST` and every `DELETE` **MUST** carry an `Idempotency-Key`, a client
+Every `POST` and every `DELETE` but the credential calls below **MUST** carry an `Idempotency-Key`, a client
 value unique per intended action; one without is refused `428`. The server
 keeps, per (account, key), the digest of the request — method, path, body — and
 the answer it gave, written in the request's own transaction:
@@ -705,6 +723,28 @@ the answer it gave, written in the request's own transaction:
 - a request refused before its transaction — validation, a precondition —
   records nothing, so a corrected retry with the same key is a new request;
 - records are kept 24 h, then deleted.
+
+**A call that carries or issues a credential keeps no idempotency record.**
+Sign-in, refresh, `POST /auth/password`, `:set-password` and API-token creation
+**MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
+records neither their digest nor their answer, so no token, password or digest
+of one is kept anywhere but §5.3's hashes. A retry is a new call:
+
+- a retried **sign-in** opens a second session; the first expires unused;
+- a retried **refresh** presents the token the lost answer rotated, so §5.3's
+  reuse rule revokes the session, and the client signs in again;
+- a retried **password change** is refused, since the current password it
+  presents is no longer current; the client signs in with the new one;
+- a retried **`:set-password`** sets the same password again;
+- a retried **API-token creation** creates a second token. The first, never
+  shown, is listed under the account and revocable, and expires as §5.3 bounds.
+
+> decision: credential calls are not idempotent, because replaying their answer
+> means storing a usable credential for the record's 24 h, which §5.3's
+> hash-only rule forbids. A lost answer costs a sign-in or an unused token, not
+> a credential at rest. Revisit only if a client class appears that cannot sign
+> in again after a lost refresh, and then give refresh a short reuse grace, not a
+> stored answer.
 
 A key is scoped to its account, so two operators cannot collide, and the
 record holds the answer, not a reference to a resource that may since have
@@ -720,7 +760,7 @@ changed. A client **MUST** reuse a key across its own retries of one action and
 
 Work that does not finish in one transaction — a share's removal, a user's
 deletion, a clone, a restore, a backup, a re-home, a move, a credential
-rotation, an index rebuild — is an **operation**. Its call commits the work's
+rotation, a signing-key rotation, an index rebuild — is an **operation**. Its call commits the work's
 first durable step and answers `202 Accepted` with `Location:
 /api/v1/operations/{id}` and the operation's body.
 
@@ -756,7 +796,7 @@ type Progress struct {
   re-home by RFC 27's — and resumes as that RFC says after a crash or failover.
   The operation record **MUST NOT** choose a driver for such work. Its progress
   is read from the owner's durable cursor, so a restart loses none of it.
-- **Work no component drives on its own** — a credential rotation, GC's index
+- **Work no component drives on its own** — a credential or signing-key rotation, GC's index
   rebuilds, a provisioning reload — is driven by the operation runner (§2.2) of a
   storage node, under a claim in the operation record: (node, node epoch,
   expiry), the expiry 30 s ahead and renewed every 10 s, both fixed.
@@ -845,11 +885,11 @@ second store.
 | read every resource but accounts, tokens and the audit | ✓ | ✓ | ✓ |
 | health detail, operations, node status | ✓ | ✓ | ✓ |
 | shares, grants, export policies, quotas, snapshots, policies, backups, restores | | ✓ | ✓ |
-| remote stores, namespaces, adapters, settings, netgroups; writing secrets | | ✓ | ✓ |
+| remote stores, namespaces, adapters, settings, netgroups, and the secrets they name | | ✓ | ✓ |
 | users and groups that hold no role | | ✓ | ✓ |
 | accounts with a role, roles, service tokens of others | | | ✓ |
 | drain a node | | ✓ | ✓ |
-| raise a format version, decommission a node, state a location lost, re-home, move | | | ✓ |
+| raise a format version, decommission a node, state a location lost, re-home, move, rotate the signing key | | | ✓ |
 | read the audit, and the `access` and `admin` event streams | | | ✓ |
 | read the `quota` event stream | | ✓ | ✓ |
 | own password, own tokens, sign out | ✓ | ✓ | ✓ |
@@ -859,6 +899,13 @@ second store.
 - **An operator cannot raise privilege.** Giving an account a role, or editing
   a user that holds one, is `admin`'s; so an operator cannot make itself admin by
   editing its own record.
+- **A secret is written as its owner is.** A write of a `Secret` is authorized
+  as a write of the resource that names it — a remote store's credential as the
+  store, a backup location's as the location — and no route writes a secret by
+  reference alone. An account's password and NT hash are written only through
+  `:set-password` and `POST /auth/password`, under the account rules here. The
+  signing key of §5.3 and the wrapping keys are written by no route; the
+  signing key changes only by `POST /installation:rotate-signing-key`.
 - **The last admin stays.** Disabling, deleting or demoting the last enabled
   account with role `admin` is refused `409` `last_admin`.
 - A caller without the right to read a resource gets `404`, not `403`, for it,
@@ -895,9 +942,10 @@ second store.
   access token is, with the token record in place of the session.
 - **The signing key is installation-wide**: a `Secret` record sealed under the
   `storage` wrapping key, so every node that serves the API verifies a token
-  any other issued. It rotates as RFC 13 §7 rotates a secret: the next key signs
-  once every node holds it, and the old one verifies until the last token it
-  signed has expired.
+  any other issued. It rotates by `POST /installation:rotate-signing-key`,
+  `admin`'s, an operation (§4.6), as RFC 13 §7 rotates a secret: the next key
+  signs once every node holds it, and the old one verifies until the last token
+  it signed has expired. No secret route writes it (§5.2).
 - **Throttling.** After 5 consecutive failed sign-ins for an account, or from
   one source address, each further attempt waits twice as long as the last,
   from 1 s up to 5 min, answered `429` with `Retry-After`. A success resets the
@@ -965,7 +1013,10 @@ Every management action leaves an **audit record**:
 - **Reading** is `GET /api/v1/audit`, for `admin`, filtered by time range,
   actor and target, and paged as §4.2 says. Delivery to an outside collector is
   [RFC 25 §4](rfc-25-observability.md#4.%20Event%20streams)'s `admin` event
-  stream, fed from these records.
+  stream, fed from these records. The export's position is a cursor record per
+  node that takes requests, kept in the metadata store; a lost node's cursor is
+  taken over by a live storage node
+  ([RFC 25 §4.3](rfc-25-observability.md#4.3%20From%20the%20emit%20point%20to%20the%20spool)).
 - **The event streams** are read at `GET /api/v1/events/{stream}`, filtered by
   share, time and sequence range, from the spool
   ([RFC 25 §4.7](rfc-25-observability.md#4.7%20Export)), with the roles of §5.2.
@@ -1061,15 +1112,15 @@ These rules bind from the single node on, where most of them cost nothing
 | --- | --- |
 | CP1 | One composition root builds the node; after start, only the runtime changes which components run, and only from records. |
 | CP2 | The API changes nothing but records; it never calls a component to change it, and a write answers success only after its transaction commits. |
-| CP3 | Every node applies records by their binding class, in generation order, and reports the generations it has applied and the records it refused. |
+| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record is applied on a node only when that position reaches the record's own and it is in neither set. |
 | CP4 | Stop is the reverse of start; the API outlives the adapters and the store outlives everything. |
-| CP5 | Every `PUT`, `PATCH` and `DELETE` carries `If-Match`, checked inside the write's transaction; a write never commits over a generation its author did not read. |
+| CP5 | Every `PUT`, `PATCH` and `DELETE` carries `If-Match` — or, for a `PUT` that creates, `If-None-Match: *` — checked inside the write's transaction; a write never commits over a generation, or over a record, its author did not read. |
 | CP6 | A request with a recorded idempotency key is answered from the record and applied at most once. |
 | CP7 | Long work is an operation whose progress is the owning component's durable cursor; it survives a crash, and is readable from every API node. |
 | CP8 | Every error reaches the client as the component's own error by name, and every error has a status in the API's table. |
 | CP9 | No API role grants any file access, and the bootstrap administrator has no uid, gid, SID, Kerberos name or grant unless an operator gives it one. |
 | CP10 | Authorization reads the account's current record on every call; a disabled account, a changed role or a revoked session takes effect within a second on every node. |
-| CP11 | No secret value appears in an API answer, an audit record, a log or a metric. |
+| CP11 | No secret value appears in an API answer, an audit record, an idempotency record, a log or a metric. |
 | CP12 | Every applied management change commits with its audit record; no audit record is edited or deleted by the API. |
 | CP13 | The unauthenticated health endpoints answer one word and nothing else. |
 | CP14 | The CLI reaches the installation only through the API. |
@@ -1110,17 +1161,17 @@ marked **(cluster)**.
 | §2.1 API writes only records | Fault the metadata store's commit of a share create; assert `503`, no share context exists, and none appears after the store recovers and a full reconcile runs. Then let the commit succeed and kill the node before the runtime reads the share list; restart: assert the share serves. | a handler calling the engine directly |
 | §2.2 order | Record each component's start and stop. Assert the order of §2.2, that the health endpoints answered `starting` before step 4 ended, and that an operation readable before stop is readable through the API until step 3. | an API that stops before the drain it reports |
 | §2.3 reconcile | Change a live share setting while the store is unreachable to the node's reads but not its writes; restore reads: assert the change applies at the next read, not at the next generation move. | a missed generation lost for good |
-| §2.4 applied | Freeze one node's runtime after a share setting changes. Assert the resource's status names that node as behind and, after 5 s, a health condition names it. | "applied" inferred from the writing node |
+| §2.4 applied | Freeze one node's runtime after a share setting changes. Assert the resource's status names that node as behind and, after 5 s, a health condition names it. Change a setting whose own generation is 2 while the settings generation stands at 100, and freeze a node at 100: assert the setting reads not applied there. Change a node-scoped restart-class setting, then a live one: assert the first reads not applied and the second applied on that node until it restarts. | "applied" inferred from the writing node, from a record's own generation, or past a pending restart |
 | §3.2 create admits nobody | Create a share; mount it as alice over SMB and NFS: refused. Grant alice; mount: admitted. | an open default |
 | §3.2 delete | Delete a share with 10⁵ files; kill the node during phase "files"; restart: assert the same operation ID reports `running` with its count not lower than before, and ends `succeeded`. Delete again with a new key: `409` `stale`. | progress the API made up |
-| §4.4 lost update | Two clients read a policy, both `PUT` with the same `If-Match`, sent to two API nodes at once **(cluster)** and on one node in a tight loop: assert exactly one commits and the other is `412`. Send a `PUT` without `If-Match`: `428`. | the Start-here lost update |
+| §4.4 lost update | Two clients read a policy, both `PUT` with the same `If-Match`, sent to two API nodes at once **(cluster)** and on one node in a tight loop: assert exactly one commits and the other is `412`. Send a `PUT` without `If-Match`: `428`. Two clients `PUT` the first grant of one principal with `If-None-Match: *`: assert one commits and the other is `412`. | the Start-here lost update; a create overwriting a concurrent one |
 | §4.4 background field | Start a re-home of a share; `PUT` its spec with a stale copy that includes its old namespace: assert the namespace is unchanged and the `PUT` refused. | a `PUT` reverting a component's write |
-| §4.5 idempotency | Send a `DELETE` with a key, drop the answer, resend: assert one operation, the same ID and body. Resend with the same key and another body: `422`. Send a create that fails validation, fix it and resend with the same key: accepted. | double application on retry |
+| §4.5 idempotency | Send a `DELETE` with a key, drop the answer, resend: assert one operation, the same ID and body. Resend with the same key and another body: `422`. Send a create that fails validation, fix it and resend with the same key: accepted. Sign in, refresh and create an API token, each twice; read the store's raw keys: assert no idempotency record exists for them and no token value or password appears; assert the second refresh revoked the session. | double application on retry; a credential kept in a replay record |
 | §4.6 runner claim | **(cluster)** Start a credential rotation; kill the node that claims it; assert another storage node claims it after the claim expires and it completes, deleting the old version once. | an operation lost with its node |
 | §4.7 error table | For every error value in every closed set, provoke it through the API, or inject it at the seam where none can be provoked; assert each has a status and code, and `api_unmapped_errors_total` stays 0. | an error with no row |
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §11](rfc-18-identity.md#11.%20Conformance)) |
 | §3.5 grants | Grant `Finance` read on a share and alice, a member, `none`: assert alice refused. `DELETE` alice's grant: assert her grant gone and alice granted read through `Finance`. `PUT` a grant naming a machine principal: assert `400` `ErrInvalid` and no grant written. | `none` stored as no grant, or a machine granted file access |
-| §5.2 roles | For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. Demote the last admin: `409` `last_admin`. | a route missing its check |
+| §5.2 roles | For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. | a route missing its check; privileged credentials replaced through a secret write |
 | §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |
 | §6 audit | Run every mutating route once, applied and refused. Assert one audit record each, with generations before and after, and no secret value; fault the commit of one change and assert neither the change nor its record exists. | a change with no record |
@@ -1135,12 +1186,20 @@ marked **(cluster)**.
    under the `protocol` wrapping key, which a storage-only node does not hold
    ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Proposed: the `protocol` wrapping key is an asymmetric pair,
    whose public half every API node holds to seal and whose private half only
-   protocol nodes hold to unseal. Single-node, the question does not arise.
+   protocol nodes hold to unseal. That covers sealing, not verifying: sign-in
+   (§5.3) and the current-password check (§5.4) read the existing hash, which a
+   storage-only node still cannot unseal. Proposed for those: an API verifier,
+   a slow password hash of its own sealed under the `storage` wrapping key and
+   written beside the protocol secrets by the same password call; the
+   alternative is to delegate the check to a protocol node, which makes sign-in
+   depend on one. Until this is decided, password sign-in and password changes
+   are unsupported on a storage-only API node in a split deployment, and an API
+   token is the only way in there. Single-node, the question does not arise.
 2. **Records this RFC adds.** Operation, idempotency, session, API token, audit
    and node-status records, and a `User`'s role and not-before time, need keys
-   and codecs in [RFC 16](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed), and `PutUser`, `PutShare` and the other whole-record puts
-   need an expected generation for §4.4's check to sit inside their
-   transaction.
+   and codecs in [RFC 16](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed); every control-plane record needs its position
+   (§2.4); and `SetGrant` and `SetQuota` need an expected generation, and every put an
+   expected absence, for §4.4's check to sit inside their transaction.
 3. **Audit volume at scale.** An audit record per change is nothing for
    operators; a provisioning reload that rewrites 10⁴ shares writes 10⁴ records
    in its transactions. Whether a reload's records are summarised per record
