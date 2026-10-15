@@ -143,8 +143,9 @@ survives a `chmod`.
    failed access — to the share's root, inheritable (§3.7).
 2. The share's audit policy is set to honour file audit entries (§3.7).
 3. bob's refused write to a profile container matches the entry; the chokepoint
-   emits an access event, which [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)
-   carries on.
+   returns the refusal and that the entry selected it, and the filesystem
+   service emits the access event
+   ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)).
 
 Outcome: auditing is the same over SMB and NFS, because it is selected where the
 decision is made, not in an adapter.
@@ -220,8 +221,8 @@ This RFC **MUST NOT**:
   and [RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)'s;
 - decide admission — a share's state, flavour rule and client rules —
   which is [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)'s;
-- define how access events are delivered, kept or exported, which is the
-  planned RFC 25's;
+- define how access events are delivered, kept or exported, which is
+  [RFC 25 §4](rfc-25-observability.md#4.%20Event%20streams)'s;
 - define the wire encoding of either protocol beyond the fields that carry an
   ACL, or the status code of each refusal, which are RFC 21's and RFC 22's.
 
@@ -236,7 +237,7 @@ RFC 7 states a rule in full, this RFC cites it and does not restate it.
 | the ACL entity, its storage, and that `Mode` and ACL change in one transaction | RFC 7 | [§2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) |
 | the chokepoint, open-time grants, the decision against the file, the resolved identity, the privileged flag and who may set owner and group | RFC 7 | [§7.1–§7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved) |
 | cache keys of decisions | RFC 7 | [§7.5](rfc-7-namespace-metadata.md#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read) |
-| emitting access events, and the immutable and append-only flags | RFC 7 | [§7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable), [§7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint) |
+| returning which of the audit policy and the file's audit entries selected a decision, and the immutable and append-only flags; the event itself is emitted by the filesystem service ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)) | RFC 7 | [§7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable), [§7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint) |
 | what removing a name needs, and delete decided with the parent | RFC 7 | [§7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs) |
 | the ordered walk, the owner's implicit rights, generic rights, what a mode bit grants, the well-known principals, inheritance at create, maximal access, the `chmod` merge | RFC 7, adopted here | [§2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) |
 | the model: entry kinds, principals, rights and their bits, flags, order, what a stored ACL may hold | this RFC | §2 |
@@ -282,8 +283,9 @@ carry, are refused at the translation (§6.4).
 
 > ponytail: an alarm entry is an audit entry. Neither protocol defines what an
 > alarm does beyond "raise an alarm", and the access-event stream is the one
-> channel the service has. Give alarms their own event type when the
-> observability RFC defines a second consumer that must tell them apart.
+> channel the service has. Give alarms their own event type when
+> [RFC 25 §4.1](rfc-25-observability.md#4.1%20Three%20streams), which defines no
+> second consumer today, gains one that must tell them apart.
 
 ### 2.3 Principals
 
@@ -297,7 +299,8 @@ of one of three kinds:
 - **a special principal** — `OWNER@`, `GROUP@`, `EVERYONE@`, which match the
   file's current owner, members of the file's current group, and every caller.
 - **a well-known principal** — owner rights, Authenticated Users, BUILTIN\Users,
-  Administrators, NETWORK, SYSTEM, CREATOR OWNER and CREATOR GROUP, each with
+  Administrators, NETWORK, SYSTEM, CREATOR OWNER, CREATOR GROUP and ANONYMOUS
+  LOGON, each with
   the fixed ID of [RFC 16 §2.2](rfc-16-metadata-store.md#2.2%20Identity%20types)
   and the matching rule of
   [RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)'s
@@ -311,7 +314,9 @@ else. It never reads a UID, GID, SID or name: those are spellings, held on the
 User and Group records and in the protocol-ID index, and resolved to principals
 by RFC 18 before an entry is stored or a caller arrives. A caller resolved as
 the share's anonymous principal is that principal: it matches `EVERYONE@`,
-entries that name it, and `OWNER@` only on a file it owns.
+entries that name it — ANONYMOUS LOGON, when it is the well-known anonymous
+principal ([RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds)) — and `OWNER@` only on
+a file it owns.
 
 `OWNER@` and `GROUP@` follow the file: after a `chown` they match the new owner.
 An entry naming the owner's own principal does not; it keeps matching that
@@ -443,7 +448,8 @@ forbade — the failure is open, and the client is told it succeeded.
 > ([RFC 16 §2.2](rfc-16-metadata-store.md#2.2%20Identity%20types)); a bare SID
 > would be a second, unmanaged identity space. The cost: copying a descriptor
 > from another domain's server, as `robocopy /SEC` does, fails on its first
-> foreign entry. Overturned by RFC 18 minting a principal for a well-formed
+> foreign entry. Overturned by [RFC 18 §4.4](rfc-18-identity.md#4.4%20SIDs)
+> minting a principal for a well-formed
 > foreign SID, after which such an entry stores like any other.
 
 ## 3. Evaluation
@@ -591,9 +597,12 @@ parent's grant is step 7.
 
 ### 3.7 Audit entries select events
 
-The chokepoint emits an access event ([RFC 7 §7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable),
-[RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)) for a decision an audit entry
-**selects**, when the share's audit policy honours file entries. An effective
+The filesystem service emits an access event
+([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)) for a decision an audit entry
+**selects**, when the share's audit policy honours file entries. The chokepoint
+([RFC 7 §7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable))
+emits nothing: it returns the decision and which of the policy and the file's
+audit entries selected it, and the service builds the event. An effective
 audit or alarm entry selects a decision when:
 
 - it names the caller, matched as the walk matches (§2.3);
@@ -763,7 +772,7 @@ functions over neutral types that both adapters import
 // Spelling resolves principals for the translation. It is RFC 18's mapping,
 // passed in; the translation does no lookup of its own.
 type Spelling interface {
-	SID(p metadata.Principal) (SID, error)              // every principal has one
+	SID(p metadata.Principal) (SID, error)              // every principal an entry can name has one
 	PrincipalBySID(s SID) (metadata.Principal, error)   // RFC 18's Find: ErrUnknownPrincipal for a SID no principal holds
 	Who(p metadata.Principal) (string, error)           // NFSv4 who: OWNER@…, name@domain, or SID@domain
 	PrincipalByWho(who string, group bool) (metadata.Principal, error)
@@ -791,22 +800,26 @@ write the ACL is the chokepoint's, asked with the rights §6.1 and §7.1 name.
 
 ### 5.2 Principals on the wire
 
-[RFC 18](rfc-18-identity.md) **MUST** give every principal a SID and an NFSv4
-`who`, so that no entry is ever unprintable in either protocol. The translation
-spells:
+[RFC 18](rfc-18-identity.md) **MUST** give every principal an entry can name a
+SID and an NFSv4 `who`, so that no entry is ever unprintable in either protocol.
+A machine principal and an API-only account hold no SID and no name an owner
+string resolves ([RFC 18 §2.4](rfc-18-identity.md#2.4%20Machine%20principals),
+[§8](rfc-18-identity.md#8.%20Management-API%20users)), so no entry can name
+either. The translation spells:
 
 | Principal | SMB SID | NFSv4 `who` |
 | --- | --- | --- |
 | `OWNER@`, `GROUP@` | the file's owner's or group's SID, or CREATOR OWNER and CREATOR GROUP (§6.3) | `OWNER@`, `GROUP@` |
 | `EVERYONE@` | `S-1-1-0` | `EVERYONE@` |
 | Authenticated Users, NETWORK | `S-1-5-11`, `S-1-5-2` | `AUTHENTICATED@`, `NETWORK@` |
+| ANONYMOUS LOGON | `S-1-5-7` | `ANONYMOUS@` |
 | owner rights, BUILTIN\Users, Administrators, SYSTEM, CREATOR OWNER, CREATOR GROUP | their fixed SIDs ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)) | the SID's string form at the ID-mapping domain, `S-1-3-4@example.com` |
 | a user or group | from RFC 18 | RFC 18's owner-string spelling for the call's flavour — `name@domain` on Kerberos, the decimal uid or gid on `AUTH_SYS` — with the group flag for a group |
 
 On a set, a `who` of the form `S-…@domain` with a well-formed SID resolves
 through `PrincipalBySID`; any other `who` through `PrincipalByWho`, by RFC 18's
 rules for owner strings, in the user or group namespace as the group flag says. NFSv4's other special names —
-`INTERACTIVE@`, `BATCH@`, `DIALUP@`, `ANONYMOUS@`, `SERVICE@` — are well-known
+`INTERACTIVE@`, `BATCH@`, `DIALUP@`, `SERVICE@` — are well-known
 principals with no row in RFC 7's table: an allow naming one is stored and
 grants nothing, and a deny naming one is refused (§2.8).
 
@@ -1069,14 +1082,16 @@ without inherit flags out of that case.
 | Z6 | The ACL a client is shown is the ACL the walk reads, `ACLFromMode` of the mode where none is stored. |
 | Z7 | `ACLFromMode(m).Mode() == m`, and `a.WithMode(a.Mode())` grants what `a` grants. |
 | Z8 | Reading an ACL through either protocol and writing back what was read stores the same ACL, less entries naming deleted principals. |
-| Z9 | Every principal has a SID and an NFSv4 `who`; no entry is left out of a read for want of a spelling. |
+| Z9 | Every principal an entry can name has a SID and an NFSv4 `who`; no entry is left out of a read for want of a spelling. |
 | Z10 | Audit and alarm entries never change a decision; the system-security right is granted only to an identity with `admin` set. |
 | Z11 | A change to one file's ACL changes no other file's. |
 
 ## 10. Observability
 
-Metric names are shown without the deployment's prefix. Decision counts and
-latency are the filesystem service's; events dropped are RFC 7's.
+Metric names are shown without the `dittofs_` prefix the exporter adds
+([RFC 25 §2.1](rfc-25-observability.md#2.1%20Names)). Decision counts and
+latency are the filesystem service's; events dropped are RFC 25's
+`events_dropped_total`.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
