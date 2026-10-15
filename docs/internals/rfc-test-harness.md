@@ -831,7 +831,7 @@ first version is narrow, so it can't flood the tracker as #1705's alarm did:
 | Exit status | Meaning |
 |---|---|
 | 0 | no new failures, no unexpected skips and no unexpected passes (known, quarantined and flaky ones are reported, not counted) |
-| 1 | at least one new failure, a test that timed out included: once the fixture's check passed, a hung operation is a regression until shown otherwise. Also a listed test that passed (§4.7) |
+| 1 | at least one new failure, a test that timed out included: once the fixture's check passed, a hung operation is a regression until shown otherwise. Also a test its `known` file lists that passed (§4.7) |
 | 2 | something didn't run: unmet needs (with `--ci`), a fixture that failed its check or timed out, nothing ran, tests the cell's timeout left unstarted, a test whose output stopped before its result (§4.6), or, in a suite with a `known` file, a test that skipped without being an expected skip |
 | 3 | usage or registry error |
 
@@ -950,7 +950,7 @@ There are six, each read by one reader in `dt`:
 
 | Format | Read from | Test case | Suites |
 |---|---|---|---|
-| `exit` | the exit status | each file or entry in `tests`; without `tests`, each command of a `cmd` list, named by its first line | lint, operator, system, fio-verify, bench-smoke, one-line suites |
+| `exit` | the exit status | each file or entry in `tests`; without `tests`, each command of a `cmd` list, named by its first line, as the registry writes it | lint, operator, system, fio-verify, bench-smoke, one-line suites |
 | `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache. A suite whose tests need root (e2e) runs as `go test -json -count=1 -exec 'sudo -n env ...'`, which builds as the user, runs each test binary under `sudo`, and gives the same events | each test and subtest, with skips and their reasons | unit, integration, e2e |
 | `junit` | every JUnit XML file the tool writes under `{out}` | each test case, named by its `code` attribute when it has one, as pynfs's lists are keyed on it, else by `classname.name` | pynfs (`--xml`) |
 | `tap` | the TAP each test file prints | each test file, as the known-failure lists name them | pjdfstest |
@@ -1056,14 +1056,13 @@ converts the old lists once.
 ```
 
 ```yaml
-# test/nfs-conformance/pynfs/known.yaml
-- test: CSESS26
+# test/smb-conformance/smbtorture/known.yaml
+- test: smb2.notify.rec
   status: fail
   fix: planned
   category: bug
-  reason: EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation
-  issue: "#2340"               # required for a planned entry
-  where: { minor: ["1"] }
+  reason: "a buffered backlog arrives per operation: 5 changes in one reply, where it expects 9"
+  issue: "#2164"               # required for a planned entry
 ```
 
 ```yaml
@@ -1088,35 +1087,37 @@ converts the old lists once.
   | pynfs's `suite`: a check a conformant server needn't pass | `proto` | `wontfix` |
   | in WPTS's or smbtorture's "Permanently Unimplementable" appendix | `permanent` | `wontfix` |
   | above smbtorture's appendix, where its policy requires an issue | `bug` | `planned`, with the row's issue |
+  | of those, the two upstream known-fails that fail against Samba too (`smb2.charset.Testing`, `smb2.session.reauth5`) | `proto` | `wontfix` |
 - **Every entry has a reason**, which says why it fails or skips, and a category. A reason helps
   whoever fixes a planned entry too, and no list today has an entry without one. The `where`
   field replaces today's separate lists per NFS version. Besides matrix values it takes `tier`,
   `option` and `os`, because some skips depend on those: Go tests skip under `-short`, which only
   PRs pass, and some skip on Windows.
 - **A planned entry names its issue, as `issue: "#1234"`; a won't-fix entry needn't.** Today most
-  rows have no issue: 19 of 20 and 13 of 14 in the POSIX lists, 4 of 10 in pynfs's, and the WPTS
-  list has no issue column.
-- **Importing the old lists.** `dt known import FILE.md --where AXIS=V` converts one Markdown list
-  into the suite's `known.yaml`, with `where` set from the flag. A suite's lists per version are
-  imported one by one (`KNOWN_FAILURES.md` with `--where nfs=3`, `KNOWN_FAILURES_V4.md` with
-  `--where nfs=4,4.1`), and entries that differ only in `where` merge into one. Rows that can't
-  name a test, such as a changelog table's rows or WPTS's status legend, are reported and left
-  out. So is a row whose tests all passed in the runs the first lists are written from; it leaves
-  the Markdown list in the same change. A row whose tests skipped in those runs is imported as an
-  expected skip.
+  rows have no issue: 19 of 19 and 13 of 13 in the POSIX lists, 4 of pynfs's 8, and the WPTS list
+  has no issue column.
+- **Importing the old lists.** `dt known import FILE.md --where AXIS=V,...` converts one Markdown
+  list into the suite's `known.yaml`, with `where` set from the flag. A suite's lists per version
+  are imported one by one (`KNOWN_FAILURES.md` with `--where nfs=3`, `KNOWN_FAILURES_V4.md` with
+  `--where nfs=4,4.1`), and entries that differ only in `where` merge into one. Rows that can't name
+  a test, such as a changelog table's rows or WPTS's status legend, are reported and left out. So is
+  a row that matched tests, all of which passed in the runs the first lists are written from; it
+  leaves the Markdown list in the same change. A row whose tests skipped in those runs is imported
+  as an expected skip.
 - **Markdown and YAML side by side.** A suite's scripts read its Markdown list until step 3
-  deletes them (§8), so both lists exist until then. A Go test of `dt` fails when a Markdown list
-  and the `known.yaml` entries imported from it don't name the same tests, so a change to one is
-  made to both. The Markdown lists go with the scripts.
+  deletes them (§8), so both lists exist until then. A Go test of `dt` fails when a row of a
+  Markdown list has no entry in its `known.yaml`, or a known failure in `known.yaml` has no row in
+  the Markdown list, so a change to one is made to both; expected skips exist only in YAML. The
+  hand-written Markdown lists go with the scripts.
 - **One matcher.** An entry's `test` matches as a row of today's lists does: an exact name; a
   trailing `.*`, which matches every name that starts with what comes before it (`smb2.lock.*`
   matches `smb2.lock.rw` and also `smb2.locking`); a shell glob (`flock/*`, `utimensat/0?.t`); and
   a pattern `N` with no `*` that doesn't end in `.t` also matches `N.t` and `N/...`
-  (`open/etxtbsy` matches `open/etxtbsy.t`, and `utimensat/0?` matches `utimensat/09.t`). The Go matcher shares golden fixtures with today's
-  `test/common/known-failures_test.sh` until that goes, so the two parsers can't drift. Today
-  `run.sh` resolves a suite's list but never passes it on, each runner picks its own file again,
-  and WPTS's grader doesn't use the shared matcher at all. With `known` in the registry, `dt` reads
-  the list itself and is the only matcher.
+  (`open/etxtbsy` matches `open/etxtbsy.t`, and `utimensat/0?` matches `utimensat/09.t`). The Go
+  matcher shares golden fixtures with today's `test/common/known-failures_test.sh` until that goes,
+  so the two parsers can't drift. Today `run.sh` resolves a suite's list but never passes it on,
+  each runner picks its own file again, and WPTS's grader doesn't use the shared matcher at all.
+  With `known` in the registry, `dt` reads the list itself and is the only matcher.
 
 **Expected skips.** In a suite with a `known` file, a test that skips, or doesn't execute, must be
 listed as an expected skip, with its reason. A skip that isn't listed makes the cell exit 2 (R10).
@@ -1124,11 +1125,11 @@ The conformance suites and `system` have `known` files from the start. The Go su
 of skips (331 `Skip` calls on develop, and 71 test files that branch on `testing.Short()`), so
 they opt in package by package, starting with e2e (§9); until a Go suite opts in, its skips are
 reported and counted but not graded (`ungraded`, §4.6). Step 2 grades the skips of the suites with
-a `known` file; how a Go package opts in is settled with e2e's list, after it. This is what turns
-§1's silent cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance cases and the 11
-Kerberos e2e subtests would each have shown as lost coverage the day they started skipping. The
-first lists are written from today's runs, each entry with a reason, so the suites start green and
-a new skip stands out.
+a `known` file; how a Go package opts in is settled with e2e's list, after step 2. This is what
+turns §1's silent cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance
+cases and the 11 Kerberos e2e subtests would each have shown as lost coverage the day they started
+skipping. The first lists are written from today's runs, each entry with a reason, so the suites
+start green and a new skip stands out.
 
 **Quarantine.** For a flaky test, failing some runs and not others:
 - `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date.
@@ -1145,6 +1146,7 @@ from #2914 on, and is fixed in #2980.
 so a PR can't merge a flaky test it introduced. On develop and the schedule, `--retry 1` runs only
 the failed tests again: `go test -run '^(A|B)$'`, the one scenario, the one test file or test code.
 A pass on retry there is flaky: it doesn't open the develop-red issue, and `dt history` counts it.
+An unexpected pass isn't retried.
 A test flaky twice in a week on develop is a quarantine candidate.
 
 That retry replaces `ci-health.yml`'s re-run of failed jobs for `tests.yml`: re-running a job as
@@ -1241,13 +1243,14 @@ Three things stay outside the registry:
 **Develop goes red.** This extends `ci-health.yml` and watches `tests.yml`, plus any workflow still
 outside it:
 
-- A merge-tier or nightly run that still has new failures after `dt`'s retry (exit 1) opens one
-  issue labelled `develop-red`, or updates it if one is open.
+- A merge-tier or nightly run that still exits 1 after `dt`'s retry, with new failures or listed
+  tests that pass, opens one issue labelled `develop-red`, or updates it if one is open.
 - The issue body is the current failing set, from `summary.json`, with links to each failure's own
   issue (§4.4). It's rewritten, not commented, so watchers get one notification per change, not per
   run. A comment is added only when the set of failing tests changes.
 - It closes once every test in its failing set has passed again on develop, in whichever tier
-  runs it, been listed as a known failure or quarantined, or no longer exists (renamed or deleted).
+  runs it, been listed as a known failure or quarantined, or no longer exists (renamed or deleted),
+  or, for a listed test that passed, once its entry is removed.
   A green run of another tier doesn't close it: a merge-tier run doesn't include the nightly
   suites, so it would close a nightly failure that reopens the next night.
 - Exit 2 (an environment problem or lost coverage) alerts only after two consecutive runs.
@@ -1542,7 +1545,7 @@ assumption was wrong, the design follows what was found. It records how the desi
 | Green e2e tests test what they're named for | Not all: some can't fail (authorization denial, permission enforcement, delegation, replay; #2991); the ACL, nightly dedup and stress groups skip on every run (#2992); 19 cross-protocol error cases skip (#2993) | e2e logs, run 37674324486 |
 | Go test results are fresh | Not for the portmap system test: its result is replayed from Go's test cache (#2998, fixed in #3024) | `integration-tests.yml:210` |
 | The performance gates run | No: they skip under `-race` and `-short`, and the Phase 19 gate has a 0.0 baseline and returns without asserting (#2999) | `hash_bench_test.go`, `phase19_test.go:51, 94-104` |
-| Known failures each name an issue | Most don't: 19 of 20 and 13 of 14 POSIX rows, 4 of 10 pynfs rows; the WPTS list has no issue column | `test/posix/KNOWN_FAILURES*.md`, `smb-conformance/KNOWN_FAILURES.md` |
+| Known failures each name an issue | Most don't: no issue on 19 of 19 and 13 of 13 POSIX rows, and on 4 of 8 pynfs rows; the WPTS list has no issue column | `test/posix/KNOWN_FAILURES*.md`, `smb-conformance/KNOWN_FAILURES.md` |
 | The suite scripts can be reused as they are | No: the server setup is written five times; the Kerberos bootstrap calls commands that don't exist; the POSIX teardown kills every `dfs start` on the machine; five workflow steps find results with `ls -td`; the WPTS password is written in six places | `nfs-conformance/bootstrap.sh:54, 63`, `teardown-posix.sh:64`, `conformance.yml:176, 244, 477, 530` |
 | The shell scripts are entry points | 92 under `test/` and `.github/scripts/`: 35 are glue between a workflow and a tool, or belong to the dropped `sec=krb5` job (about 8,860 lines); the other 57 are tests, tools, service-container entrypoints, the repository checks lint runs, and Radu's `setup.sh` and `report.sh` | `git ls-files '*.sh'` |
 | The smbtorture baseline records a reference implementation | No: it is DittoFS's own smbtorture results on `memory`, last changed 2026-06-22 | `conformance.yml:521-538` |
