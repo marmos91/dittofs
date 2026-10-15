@@ -967,7 +967,8 @@ grader:
   they pass, as they do today. The tests its flags didn't select are OMIT too, so pynfs's list
   names them as expected skips (#2996).
 - `subunit`: a `test:` line with no result is incomplete. When an entry of `tests.txt` reaches its
-  timeout, the test it had open failed. A client that crashes (exit 129 or more) fails nothing by
+  timeout, the test it had open failed, and no known-failure entry excuses it, since the entry's
+  later tests never ran. A client that crashes (exit 129 or more) fails nothing by
   its exit; the test it left open is incomplete. A failure in the client's own connection setup,
   which the connection-failure filter finds, is incomplete too: there is no server result. The
   self-contradictory `smb2.replay.channel-sequence` draw (`CSN 0x7fff`) is an expected skip the
@@ -995,12 +996,12 @@ and never grade a run on their own (§4.10).
 
 | Grade | The result | CTRF | JUnit | The cell |
 |---|---|---|---|---|
-| none | passed, and no entry of the `known` file matches it | `passed` | a pass | passes |
+| none | passed, and no entry of the `known` file matches it, or another result of its name in the cell failed | `passed` | a pass | passes |
 | `new` | failed, and no known-failure entry matches it | `failed` | `<failure>` | exits 1 |
 | `known` | failed, and a known-failure entry matches it | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
-| `unexpected_pass` | passed, and a known-failure or expected-skip entry matches it (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
+| `unexpected_pass` | passed, a known-failure or expected-skip entry matches it, and no other result of its name in the cell failed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
 | `expected_skip` | skipped, and an expected-skip entry matches it | `skipped`, with the reason | `<skipped>` with the reason | passes |
-| `unexpected_skip` | skipped, in a suite with a `known` file, and no entry matches it | `other` | `<error>` | exits 2 |
+| `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
 | `ungraded` | skipped, in a suite without a `known` file: a Go suite until it opts in (§4.7) | `skipped`, with the tool's reason | `<skipped>` | passes |
 | `incomplete` | its output stopped before its result | `other` | `<error>` | exits 2 |
 
@@ -1101,7 +1102,8 @@ converts the old lists once.
   `--where nfs=4,4.1`), and entries that differ only in `where` merge into one. Rows that can't
   name a test, such as a changelog table's rows or WPTS's status legend, are reported and left
   out. So is a row whose tests all passed in the runs the first lists are written from; it leaves
-  the Markdown list in the same change.
+  the Markdown list in the same change. A row whose tests skipped in those runs is imported as an
+  expected skip.
 - **Markdown and YAML side by side.** A suite's scripts read its Markdown list until step 3
   deletes them (§8), so both lists exist until then. A Go test of `dt` fails when a Markdown list
   and the `known.yaml` entries imported from it don't name the same tests, so a change to one is
