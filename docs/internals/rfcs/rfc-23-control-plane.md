@@ -395,14 +395,14 @@ Every node, of either role, serves on its API address:
 
 | Endpoint | Answers | Authentication |
 | --- | --- | --- |
-| `GET /health/live` | `200`, with the one word `live`, while the process can answer at all | none |
+| `GET /health/live` | `200`, with the one word `live`, while [RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)'s watchdog holds; `503` otherwise | none |
 | `GET /health/ready` | `200` when the node is ready, `503` when not, with one word of body: `ready`, `starting`, `draining`, `not_ready` | none |
-| `GET /api/v1/health` | the node's health conditions and those of the installation, each with its cause | `viewer` |
+| `GET /api/v1/health` | the node's health conditions and those of the installation, each with its cause, as [RFC 25 §3.7](rfc-25-observability.md#3.7%20What%20the%20health%20answers%20report) sets out | `viewer` |
 
 The unauthenticated endpoints **MUST NOT** carry anything but that one word: no
 share name, client count, grace state or version. A probe needs to know whether
-to send traffic, and an anonymous caller is owed nothing more. What "ready" and
-each condition mean is [RFC 25](rfc-25-observability.md)'s; that a draining
+to send traffic, and an anonymous caller is owed nothing more. What "live",
+"ready" and each condition mean is [RFC 25 §3](rfc-25-observability.md#3.%20Health)'s; that a draining
 adapter is not ready is [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)'s. The endpoints answer from step 2
 of start (§2.2), so a node stuck recovering its journal says so instead of
 refusing connections.
@@ -553,8 +553,10 @@ them and decides nothing about identity:
 
 - **create and edit** a user or group with `PUT`/`PATCH` and `If-Match`. A
   protocol spelling — uid, gid, SID, Kerberos name — is checked unique in its
-  scheme and never defaulted ([RFC 18 §2.3](rfc-18-identity.md#2.3%20IDs%20are%20never%20defaulted%20and%20never%20reused)). A user created without one has
-  none, and cannot sign in over the protocol that needs it;
+  scheme and never defaulted ([RFC 18 §2.3](rfc-18-identity.md#2.3%20IDs%20are%20never%20defaulted%20and%20never%20reused)). A file user created without a
+  uid, gid or SID gets one allocated in the create's transaction; an account
+  created with a role and no spelling at all is API-only and gets none, so it
+  signs in over no file protocol ([RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users));
 - **a password is write-only**. It is set by `POST /users/{id}:set-password`,
   hashed and sealed as RFC 13 §7 and RFC 18 require, and never returned;
 - **delete** a user or group is an operation: RFC 16's `DeleteUser` and
@@ -837,7 +839,8 @@ second store.
 | accounts with a role, roles, service tokens of others | | | ✓ |
 | drain a node | | ✓ | ✓ |
 | raise a format version, decommission a node, state a location lost, re-home, move | | | ✓ |
-| read the audit | | | ✓ |
+| read the audit, and the `access` and `admin` event streams | | | ✓ |
+| read the `quota` event stream | | ✓ | ✓ |
 | own password, own tokens, sign out | ✓ | ✓ | ✓ |
 
 - Authorization is checked by the API, per action, against the account's
@@ -950,7 +953,11 @@ Every management action leaves an **audit record**:
   bounded batches.
 - **Reading** is `GET /api/v1/audit`, for `admin`, filtered by time range,
   actor and target, and paged as §4.2 says. Delivery to an outside collector is
-  an event stream of [RFC 25](rfc-25-observability.md)'s, fed from these records.
+  [RFC 25 §4](rfc-25-observability.md#4.%20Event%20streams)'s `admin` event
+  stream, fed from these records.
+- **The event streams** are read at `GET /api/v1/events/{stream}`, filtered by
+  share, time and sequence range, from the spool
+  ([RFC 25 §4.7](rfc-25-observability.md#4.7%20Export)), with the roles of §5.2.
 
 This is the audit of the management plane. A file client's access events
 ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)) are a separate stream, and what an ACL's audit entries select is
@@ -1059,13 +1066,14 @@ These rules bind from the single node on, where most of them cost nothing
 
 ## 11. Observability
 
-Metric names are shown without the deployment's prefix; labels follow
-[RFC 25](rfc-25-observability.md)'s conventions.
+Metric names are shown without the `dittofs_` prefix the exporter adds; names,
+labels and histogram buckets follow
+[RFC 25 §2](rfc-25-observability.md#2.%20Metrics).
 
 | Answers | Metric | Type |
 | --- | --- | --- |
 | How many API calls, by route and outcome? | `api_requests_total{route, method, status}` | counter |
-| How long do they take? | `api_request_seconds{route, method}` | histogram |
+| How long do they take? | `api_request_seconds{route, method}` | histogram (`request`) |
 | How often is authentication refused, and why? | `api_auth_failures_total{reason}` | counter |
 | How often are writes refused on a precondition? | `api_precondition_failures_total{kind}` — `generation`, `idempotency`, `missing` | counter |
 | How often are retries answered from an idempotency record? | `api_idempotent_replays_total` | counter |
@@ -1104,7 +1112,7 @@ marked **(cluster)**.
 | §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |
 | §6 audit | Run every mutating route once, applied and refused. Assert one audit record each, with generations before and after, and no secret value; fault the commit of one change and assert neither the change nor its record exists. | a change with no record |
-| §2.5 health | Call the unauthenticated endpoints during start, serving, drain and stop: assert one of the four words and nothing else, and that `GET /api/v1/health` without a token is `401`. | grace state or names leaked to anonymous callers |
+| §2.5 health | Call the unauthenticated endpoints during start, serving, drain and stop: assert `live` from the live endpoint and one of the four readiness words from the ready one, and nothing else, and that `GET /api/v1/health` without a token is `401`. | grace state or names leaked to anonymous callers |
 | §7 CLI | Run the CLI's whole suite with the server's host file and store unreadable to the CLI's user: assert every command still works. Assert the generated reference matches the command tree. | a command that bypasses the API |
 | §9 schema gate | **(cluster)** With one node not upgraded, send a field the new schema adds: refused `400` naming the version. Raise the version after upgrading it: accepted. | a record an old node refuses |
 
