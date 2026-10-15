@@ -264,7 +264,7 @@ failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per 
 `go build -o`.
 
 `dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one:
-the fixture's mounts and unmounts, letting `{bin}/dfs` bind port 445 for WPTS (§4.2), restarting
+the fixture's mounts and unmounts, letting the server bind port 445 for WPTS (§4.2), restarting
 `rpc.gssd`, and the commands of a suite whose own `needs` name `root`. Unless its format is
 `go-json`, such a suite runs each command as `sudo -n env NAME=value ... CMD`, as pjdfstest's
 `prove` must run; the needs a fixture implies (§4.2) don't make its commands run as root. A Go
@@ -668,7 +668,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` lets `{bin}/dfs` bind it with `sudo -n setcap cap_net_bind_service=+ep` (§3); `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so for the run `dt` lowers the first unprivileged port of the server's network namespace to 445, `sudo -n sysctl net.ipv4.ip_unprivileged_port_start=445` (§3), and restores it after. A file capability on `{bin}/dfs` would do it too, but puts the binary in secure mode, where Go prints no trace when the server panics; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
