@@ -319,6 +319,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 			if err != nil {
 				notRun = append(notRun, prefix+err.Error())
 			}
+			if r.timedOut {
+				// A test that timed out failed, whatever its results say:
+				// the reader can only say which of its tests was open.
+				failed = append(failed, prefix+r.note)
+			}
 			cases = append(cases, got...)
 		}
 	}

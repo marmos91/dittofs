@@ -74,7 +74,8 @@ type Ran struct {
 
 // A Reader reads one format's results from what a test's commands left. The
 // results decide how the cell went, not the commands' exit status, which a
-// reader may still use.
+// reader may still use; a test that timed out fails the cell whatever they
+// say.
 type Reader func(Ran) ([]Test, error)
 
 // Write writes the run to dir/summary.json. The file is replaced whole, by a

@@ -270,7 +270,7 @@ func TestInterruptedCellHasNoResults(t *testing.T) {
 // test's output, first non-zero exit status, whether it timed out, and {out}.
 // The results decide, not the exit status: a test that exits 1 with passing
 // results passes, a failed result fails the cell, and a cell with no results
-// didn't run.
+// didn't run. A test that timed out failed, whatever its results say.
 func TestReaderResultsDecide(t *testing.T) {
 	var got []report.Ran
 	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
@@ -294,8 +294,8 @@ suites:
   slow: { cmd: "sh {test}", tests: "s/*.sh", format: tap, timeout: { test: 1s } }
 `, map[string]string{"p/a.sh": "echo ok one; exit 1\n", "f/a.sh": "echo not ok two\n", "n/a.sh": "true\n", "s/a.sh": "echo ok three; sleep 30\n"})
 	rep := runIn(t, root, r, "g")
-	results := []string{Passed, Failed, NotRun, Passed}
-	notes := []string{"", "1 failed: two", "no results", ""}
+	results := []string{Passed, Failed, NotRun, Failed}
+	notes := []string{"", "1 failed: two", "no results", "s/a.sh: timed out after 1s"}
 	for i, o := range rep.Outcomes {
 		if o.Result != results[i] || o.Note != notes[i] {
 			t.Errorf("%s: %+v, want %s with %q", o.Cell, o, results[i], notes[i])
