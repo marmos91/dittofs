@@ -25,13 +25,13 @@
   <rect x="40" y="76" width="204" height="50" rx="5" class="pr"/>
   <text x="54" y="96" class="m">handshake</text><text x="54" y="114" class="s">AUTH_SYS, GSS, SPNEGO</text>
   <rect x="40" y="166" width="204" height="50" rx="5" class="pr"/>
-  <text x="54" y="186" class="m">Proof</text><text x="54" y="204" class="s">name, flavour, PAC SIDs</text>
+  <text x="54" y="186" class="m">Proof</text><text x="54" y="204" class="s">flavour, bound principal, SIDs</text>
   <rect x="40" y="256" width="204" height="50" rx="5" class="pr"/>
   <text x="54" y="276" class="m">Identity, per request</text><text x="54" y="294" class="s">what was proved, no more</text>
   <path d="M142,128 L142,162" class="ln"/><path d="M142,218 L142,252" class="ln"/>
 
   <rect x="290" y="76" width="230" height="50" rx="5" class="sv"/>
-  <text x="304" y="96" class="m">authenticator (§3.1)</text><text x="304" y="114" class="s">NTLMv2, keytab, PAC, pass-through</text>
+  <text x="304" y="96" class="m">authenticator (§3.1)</text><text x="304" y="114" class="s">verifies, then binds a principal</text>
   <path d="M246,94 L286,94" class="ln"/><path d="M288,110 L248,110" class="ln"/>
   <rect x="560" y="76" width="150" height="50" rx="5" class="st"/>
   <text x="574" y="96" class="m">Secret records</text><text x="574" y="114" class="s">keytab, NT hash</text>
@@ -47,9 +47,9 @@
   <path d="M345,228 L345,246" class="ln"/><path d="M500,228 L384,248" class="ln"/>
 
   <rect x="290" y="250" width="110" height="70" rx="5" class="sv"/>
-  <text x="300" y="270" class="m">1 map</text><text x="300" y="288" class="s">name, uid, SID</text><text x="300" y="304" class="s">→ principal</text>
+  <text x="300" y="270" class="m">1 map</text><text x="300" y="288" class="s">bound principal,</text><text x="300" y="304" class="s">or AUTH_SYS uid</text>
   <rect x="408" y="250" width="110" height="70" rx="5" class="sv"/>
-  <text x="418" y="270" class="m">2 squash</text><text x="418" y="288" class="s">uid 0, or all</text><text x="418" y="304" class="s">→ anonymous</text>
+  <text x="418" y="270" class="m">2 squash</text><text x="418" y="288" class="s">uid 0, all, or</text><text x="418" y="304" class="s">machine → anon</text>
   <rect x="526" y="250" width="110" height="70" rx="5" class="sv"/>
   <text x="536" y="270" class="m">3 groups</text><text x="536" y="288" class="s">the closure,</text><text x="536" y="304" class="s">whole or none</text>
   <rect x="644" y="250" width="110" height="70" rx="5" class="sv"/>

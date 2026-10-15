@@ -89,7 +89,7 @@ With this RFC:
 3. The conformance suite signs two principals in with the same uid and asserts
    that each gets only its own groups (§11).
 
-![From a credential to the caller: the adapter runs the handshake, calling the authentication interface for secrets, and hands the service an Identity holding only what was proved; the service maps it to a principal through the store's protocol-ID index and the directory cache, admits it to the share, squashes it if the policy says so, resolves its share grant, and sets authenticated, admin and privileged; the chokepoint reads the caller](img/rfc18-resolution.svg)
+![From a credential to the caller: the adapter runs the handshake, calling the authentication interface, which verifies the credential and binds it to a principal, and hands the service an Identity holding only what was proved; the service re-reads that principal, or maps an AUTH_SYS uid through the store's protocol-ID index, admits it to the share, squashes it — or an unlinked machine — if the policy says so, resolves its share grant, and sets authenticated, admin and privileged; the chokepoint reads the caller](img/rfc18-resolution.svg)
 
 **The words you need.**
 
@@ -146,10 +146,12 @@ current code differs.
    checks its times and addresses, and verifies the ticket's PAC — the
    Windows group list the domain controller signed (§3.4).
 2. The proof is `alice@CORP.EXAMPLE`, Kerberos, her SID and twelve group SIDs.
+   Before returning it, `AcceptKerberos` maps the name through the store's
+   `krb` index to alice's principal (§4.2) and binds the proof to it (§3.1).
    The adapter keeps it with the session's keys.
 3. Her first `CREATE` on `profiles` carries an `Identity` built from that
-   proof. The service maps the name through the store's `krb` index to alice's
-   principal (§4.2) and her group SIDs to their group principals.
+   proof. The service re-reads alice's record — not disabled — and maps her
+   group SIDs to their group principals.
 4. Admission passes; the share squashes nothing; alice's grant is read-write.
    The caller is alice, `authenticated`, not `admin`. The chokepoint walks the
    file's ACL against her and her groups.
@@ -287,7 +289,7 @@ grant or quota can name, is one of these:
 | Kind | Where its record comes from | Spellings it carries | Can it sign in? |
 | --- | --- | --- | --- |
 | **local user** | the management API: a `User` record | name, uid, gid of its primary group, SID; optionally a Kerberos name | NTLMv2 against its NT hash; Kerberos if a KDC issues it tickets; `AUTH_SYS` by uid |
-| **directory user** | minted on first resolution from the directory (§5), then a `User` record like any other | the directory's name and SID; uid and gid from the directory or allocated (§4.3) | Kerberos; NTLM pass-through; `AUTH_SYS` by uid |
+| **directory user** | minted on first resolution from the directory (§5), then a `User` record like any other | the directory's name; its SID from the directory or allocated (§4.4); uid and gid from the directory or allocated (§4.3) | Kerberos; NTLM pass-through; `AUTH_SYS` by uid |
 | **group** | a `Group` record, local or minted from the directory | name, gid, SID | never |
 | **machine** | minted on first Kerberos authentication of a host or service name (§2.4) | its Kerberos name | Kerberos only |
 | **well-known** | fixed IDs, the same in every installation ([RFC 16 §2.2](rfc-16-metadata-store.md#2.2%20Identity%20types)) | the SIDs and NFSv4 names [RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) lists | never, except **anonymous** (below) |
@@ -385,16 +387,23 @@ uses for its lease and state operations, or a Windows machine account
 - It is held as a `User` record whose principal has kind `Machine`
   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)): no name, its `krb` spelling and no
   other, no primary group and no secret.
-- A machine principal acts on files as the share's anonymous principal, unless
-  the operator links the machine name to a user (§4.2). It is `authenticated`;
-  a grant can name it.
-- It is the principal NFSv4.1 state protection records
+- A machine principal has two roles, and resolution keeps them apart. It is
+  the principal NFSv4.1 state protection records
   ([RFC 21 §3.3](rfc-21-nfs.md#3.3%20Trunking%2C%20server%20owner%20and%20scope),
-  RFC 14's `MachCred`), so two machines are two principals.
+  RFC 14's `MachCred`), held in the caller's `Mapped` field (§6.1), so two
+  machines are two principals. On files it acts as the share's `Anonymous`
+  principal (§6.2), with anonymous's groups and every flag false: it is
+  **not** `authenticated`, so authenticated-users grants and ACL entries do
+  not reach it.
+- A share grant **MUST NOT** name a machine principal; the management API
+  refuses one. A machine that needs file access is linked to a user — the
+  operator moves its `krb` spelling to that user (§4.2) — and then signs in as
+  that user, by §3.1's binding at its next authentication.
 
 > decision: machine principals are minted on sight, user principals are not
 > (§3.3). A machine needs a principal of its own for state protection to mean
-> anything, and minting one grants no file access, since it acts as anonymous.
+> anything, and minting one grants no file access, since it acts as anonymous
+> and no grant can name it.
 > A user principal minted on sight would get the share's everyone and
 > authenticated-users grants with no operator ever having seen it. Revisit if
 > a KDC is shown to issue machine tickets to names the operator does not
@@ -454,8 +463,9 @@ type Authenticator interface {
 type Proof struct {
 	Flavor     Flavor        // krb5, ntlm (an anonymous session and AUTH_SYS need no call)
 	Name       string        // canonical: "alice@CORP.EXAMPLE", "CORP\\alice", a local user name
-	Principal  Principal     // set only when the authenticator read it from the store itself (local NTLM)
+	Principal  Principal     // what sign-in mapped Name to; every call acts as it (below)
 	SIDs       []SID         // from a verified PAC or a pass-through reply: user SID first; else empty
+	DenyOnly   []SID         // group SIDs marked SE_GROUP_USE_FOR_DENY_ONLY: deny entries only (§3.4)
 	Machine    bool          // §2.4
 	SessionKey []byte        // for the adapter's signing and encryption; never copied into an Identity
 	Expires    time.Time     // the ticket's end time; zero for NTLM
@@ -470,10 +480,22 @@ type Proof struct {
   failure where the protocol has one; none of them as success.
 - An adapter **MUST NOT** turn any of these errors into a guest or anonymous
   session (§3.6).
-- The authenticator reads only the `Principals` view and the secret provider
+- The authenticator reads only the `Principals` view, the directory cache
+  (§5.2) and the secret provider
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer),
-  [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), and runs on the
-  `protocol` node that holds the connection.
+  [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), writes only the records
+  a first sign-in mints (§2.4, §5.1), and runs on the `protocol` node that
+  holds the connection.
+- **A proof is bound to one principal for its life.** Before it returns a
+  proof, the authenticator **MUST** map it to a principal and set
+  `Principal`: a local NTLM user by the record it verified against, a
+  Kerberos name by §4.2, an NTLM pass-through proof by its verified user SID
+  (§4.4), never by its `DOMAIN\user` name. A proof that maps to no principal
+  fails as §3.3 and §3.5 say. Every call on that security context then acts
+  as that `PrincipalID`: resolution re-reads its record on every call and
+  refuses it if disabled or deleted (§3.7), and **MUST NOT** map the name
+  again. A name later linked to, or re-used by, another principal reaches the
+  new one only through a fresh authentication.
 - A proof is valid until the connection's security context ends, or until
   `Expires`. A request on a context past `Expires` **MUST** be refused with
   the protocol's expired-credential answer, so the client renews its ticket.
@@ -538,7 +560,8 @@ Both call `AcceptKerberos`.
   replay cache held in the node's memory, and, over SMB, the client-address
   rule [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in) states.
 - **The name.** The proof's `Name` is the ticket's client name and realm,
-  exactly as the ticket spells them. Mapping it to a principal is §4.2's.
+  exactly as the ticket spells them. Mapping it to a principal is §4.2's, done
+  once, at sign-in (§3.1).
 - **An authenticated user name that maps to no principal** — no `krb` row, no
   local user by §4.2's rule, and no directory entry — **MUST** be refused at
   authentication with `ErrLogonFailure`. A machine name is minted instead
@@ -562,7 +585,14 @@ group SIDs and their attributes, signed by the domain controller.
   from the store and the directory (§2.5).
 - The proof's `SIDs` are the user SID and every group SID the PAC lists:
   its group memberships, extra SIDs and resource groups, excluding any whose
-  attributes mark them disabled.
+  attributes mark them disabled and any marked `SE_GROUP_USE_FOR_DENY_ONLY`.
+- **A deny-only SID is kept, apart.** Every SID the PAC marks
+  `SE_GROUP_USE_FOR_DENY_ONLY` **MUST** be carried in the proof's `DenyOnly`,
+  and from there in the caller's (§6.1). It matches an ACL's deny entries and
+  **MUST NOT** match an allow entry or a share grant
+  ([RFC 19](rfc-19-authorization.md)), nor add the groups it is a member of to
+  the caller's groups (§6.3). Dropping it would lose its denies;
+  folding it into `SIDs` would let it grant.
 - PAC groups are the caller's groups as of the ticket's issue. Resolution
   (§6.3) unions them with the store's memberships; a PAC never removes a group
   the store records.
@@ -578,10 +608,12 @@ NTLMv1 and LM are refused ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 | The message's domain | Source | How |
 | --- | --- | --- |
 | empty, or the installation's own NetBIOS name | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2) |
-| the directory's NetBIOS domain, with pass-through configured | **pass-through** | the response is sent to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), whose password is a `Secret`; the reply carries the user's SID and group SIDs, used as a PAC's are (§3.4) |
+| the directory's NetBIOS domain, with pass-through configured | **pass-through** | the response is sent to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), whose password is a `Secret`; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4); the proof maps to a principal by that user SID (§3.1, §4.4) |
 | anything else | — | `ErrLogonFailure` |
 
-- An NT hash **MUST** be stored only while `identity.ntlm` is on. Turning NTLM
+- An NT hash **MUST** be stored only while `identity.ntlm` is on, and only for
+  a user that holds file spellings: an API-only account (§8) keeps none,
+  whatever its password. Turning NTLM
   off **MUST** delete every stored NT hash, since an NT hash is equivalent to
   the password for NTLM. Turning it on again stores a hash only at a user's
   next password set.
@@ -683,7 +715,7 @@ answers:
    operator's explicit link, or a minted machine principal;
 2. if the realm is one of `identity.local_realms` (default: the realms of the
    keytab's service names), the user whose name equals the name's user part,
-   compared as user names are (§4.6);
+   compared as user names are (§4.6), unless it is an API-only account (§8);
 3. the directory, by the name's user part, if the realm is the directory's
    realm (§5);
 4. otherwise none: a user name is refused (§3.3), a machine name minted
@@ -713,7 +745,7 @@ A name with a service part (`nfs/build01`) never matches step 2 or 3.
   | Mode | uid and gid |
   | --- | --- |
   | `rfc2307` | the entry's `uidNumber` and `gidNumber`; an entry with none gets one allocated (§2.3) |
-  | `rid` | the range's base plus the SID's RID, so every installation using the same base computes the same number |
+  | `rid` | the range's base plus the SID's RID, so every installation using the same base computes the same number; an entry with no SID gets one allocated (§2.3) |
   | `allocate` | allocated from `identity.id_range` (§2.3) |
 
   Whatever the mode, the number is written once, with the principal, and never
@@ -733,7 +765,11 @@ A name with a service part (`nfs/build01`) never matches step 2 or 3.
 - **Every user and group has a SID**, written with its record, but an
   API-only account (§8). A local
   principal's SID is the installation's domain SID followed by a RID drawn
-  from the RID counter (§2.3). A directory principal's SID is the directory's.
+  from the RID counter (§2.3). A directory principal's SID is the directory's
+  when its entry has one, as Active Directory's always do; an entry with none —
+  an RFC 2307 directory that holds no Windows attributes — is given a local
+  SID, allocated so, when its principal is minted, and keeps it whatever the
+  directory later says (ID4).
 - **The installation's domain SID** is `S-1-5-21-a-b-c`, where `a`, `b` and
   `c` are the first twelve bytes of the installation ID
   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities))
@@ -823,7 +859,9 @@ A directory answers four questions, each by one bounded query:
 - A directory principal's **record** is minted once, from the first answer,
   and holds its `PrincipalID`, name, SID, uid and gid from then on (§4.3).
   Later answers update its name and enabled state; they never change its
-  `PrincipalID`, SID, uid or gid.
+  `PrincipalID`, SID, uid or gid. An entry the directory gives no SID or no
+  uid gets one allocated as §4.3 and §4.4 say, so a directory without Windows
+  or without Unix attributes still yields principals that satisfy ID3.
 - A directory principal's **groups and enabled state** are not written to the
   store. They are cached (§5.2), so a change in the directory takes effect at
   the next lookup.
@@ -895,11 +933,14 @@ Resolution is admission's step 4
 runs in the filesystem service on every call, after the share's state,
 flavour and client rules have admitted the call, and before `Authorize`:
 
-1. **Map** the `Identity` to a principal: by the proof's principal if the
-   authenticator set it, else by the Kerberos or NTLM name (§4.2), else by the
-   `AUTH_SYS` uid (§4.3); `AUTH_NONE` and anonymous sessions map to anonymous.
-   Refuse a disabled or deleted principal (§3.7).
-2. **Squash** it, if the share's policy says so (§6.2).
+1. **Map** the `Identity` to a principal: an authenticated proof by the
+   principal sign-in bound it to (§3.1), never by its name again; `AUTH_SYS`
+   by the uid (§4.3); `AUTH_NONE` and anonymous sessions to anonymous. Refuse
+   a disabled or deleted principal (§3.7). The result is the caller's
+   `Mapped`.
+2. **Squash** it, if the share's policy says so (§6.2). An unlinked machine
+   principal is replaced by the share's `Anonymous` here too, whatever the
+   setting (§2.4).
 3. **Collect** its groups (§6.3).
 4. **Resolve** its share access from the grants (§6.4).
 5. **Set** `authenticated`, `admin` and the privileged flag (§6.5).
@@ -912,8 +953,10 @@ requires:
 // Caller is what one call acts as on one share. Every field any check reads
 // is here (RFC 7 §7.4), and Key covers all of them (§7.1).
 type Caller struct {
-	Principal     metadata.Principal   // after squashing
+	Principal     metadata.Principal   // after squashing: what Authorize and grants read
+	Mapped        metadata.Principal   // step 1's, before squashing: what state protection and a client record's creator compare (RFC 14); Authorize never reads it
 	Groups        []metadata.Principal // the closure, sorted; anonymous has its policy's group only
+	DenyOnly      []metadata.Principal // deny entries only (§3.4); never a grant or an allow entry; empty when squashed
 	Access        metadata.ShareAccess // §6.4
 	Authenticated bool                 // §6.5
 	Admin         bool                 // §6.5
@@ -971,8 +1014,8 @@ The caller's groups are, in order of source:
 | Flavour | Groups |
 | --- | --- |
 | `AUTH_SYS` | the credential's gid and supplementary gids, each mapped (§4.3); with `ManageGIDs`, the mapped principal's closure instead (§3.2) |
-| Kerberos, NTLM | the closure of the principal's store memberships (§2.5), unioned with the groups of the proof's verified SIDs and, for a directory principal, the directory's groups |
-| squashed, `AUTH_NONE`, anonymous | the `Anonymous` principal's closure |
+| Kerberos, NTLM | the closure of the principal's store memberships (§2.5), unioned with the groups of the proof's verified SIDs and, for a directory principal, the directory's groups; the proof's `DenyOnly` SIDs map to `DenyOnly`, not to groups (§3.4) |
+| squashed, `AUTH_NONE`, anonymous, an unlinked machine | the `Anonymous` principal's closure |
 
 - The closure is computed whole or the call fails (§2.5).
 - `AUTH_SYS` groups are the client's assertion, like its uid. A share that
@@ -985,7 +1028,9 @@ A caller's access to a share is read from the share's grants
 in this order, stopping at the first that matches:
 
 1. a grant naming the caller's own principal — whatever it says, `none`
-   included, it is authoritative;
+   included, it is authoritative. A grant of `none` **MUST** be stored as a
+   grant, distinct from no grant: setting `none` blocks, and only removing the
+   grant, a separate operation, lets the caller fall through to its groups;
 2. the widest grant naming any of the caller's groups;
 3. a grant naming **authenticated users**, for an `authenticated` caller;
 4. a grant naming **everyone**;
@@ -1019,7 +1064,7 @@ decides which callers get them:
 | `AUTH_SYS` | no | no | uid 0, unsquashed |
 | Kerberos over RPCSEC_GSS, any level | yes | yes | a principal whose uid is 0, unsquashed; or an `admin` |
 | Kerberos or NTLMv2 SMB session | yes | yes | an `admin`, only on a handle opened with backup or restore intent |
-| a machine principal | yes | yes | as its flavour's row |
+| an unlinked machine principal | no | no | never: it acts as `Anonymous` (§2.4) |
 | any squashed caller | no | no | never |
 
 - `admin` **MUST** be set only from the grant, and only on an authenticated
@@ -1038,7 +1083,7 @@ the value was derived from:
 
 | Cache | Its key **MUST** include |
 | --- | --- |
-| proof → principal | the flavour, the proof's whole `Name`, the proof's principal if set, every SID in the proof, and for `AUTH_SYS` the uid, gid and every supplementary gid |
+| proof → principal | the flavour, the proof's whole `Name`, the proof's bound principal, every SID in the proof with whether it is deny-only, and for `AUTH_SYS` the uid, gid and every supplementary gid |
 | principal → groups | the principal, and for `AUTH_SYS` the credential's gids and the share's `ManageGIDs` |
 | caller, per share | all of the above, the share, `ExportPolicy.Version`, the grant versions read, the flavour and Kerberos level, and the principals generation (§7.2) |
 | directory answers | the question (§5.2) |
@@ -1055,6 +1100,15 @@ the value was derived from:
   collision-resistant hash of the whole key.
 - No cache entry outlives the proof it was built from: an entry built from a
   session or GSS context is not served to a request on another.
+- **No entry outlives the directory answers it read.** An entry built from a
+  directory answer — a directory principal's groups or enabled state, and so
+  any closure, caller or admission result that used them — carries the
+  earliest freshness deadline among those answers, the TTL after each
+  (§5.2), and **MUST NOT** be served past it. Past it the entry is rebuilt
+  through the directory cache, which then answers fresh, stale within the
+  grace, or refuses (§5.3). The principals generation cannot do this for
+  them: directory groups and enabled state are not written to the store
+  (§5.1), and an NTLM proof has no `Expires`.
 
 ### 7.2 Local changes take effect within a second
 
@@ -1093,7 +1147,8 @@ and grants. Their sign-in — passwords, tokens, roles, sessions — is
   or SID is allocated for it (§2.3), no NT hash is kept, `Find` never returns
   it, and no ACL entry or owner can name it, so it can sign in over no file
   protocol. Giving it any spelling makes it a file user, and allocates the
-  spellings it still lacks in the same transaction.
+  spellings it still lacks in the same transaction; its NT hash is stored at
+  its next password set (§3.5).
 - An API user and a file principal **MAY** be one `User` record, sharing a
   name and password; the API reads its role, and file access reads its grants.
   A password change updates the NT hash with it while NTLM is on (§3.5).
@@ -1142,9 +1197,13 @@ and grants. Their sign-in — passwords, tokens, roles, sessions — is
 | ID9 | `admin` is set only from a share grant, on an authenticated flavour. |
 | ID10 | A squashed caller carries nothing of the principal it replaced. |
 | ID11 | A group closure is used whole or not at all. |
-| ID12 | A directory answer is used no longer than the TTL plus the grace after it was given. |
+| ID12 | A directory answer is used no longer than the TTL plus the grace after it was given, read directly or through any cache derived from it. |
 | ID13 | A disabled or deleted local principal is refused on every call within one second of the change. |
 | ID14 | Adapters map, squash and grant nothing; every spelling they show or read goes through `Identities`. |
+| ID15 | A security context acts as the principal its sign-in bound it to, for its whole life; its name is never mapped again. |
+| ID16 | An unlinked machine principal acts on files as `Anonymous`: never `authenticated`, and no share grant names it. |
+| ID17 | A deny-only SID matches deny entries only; it never grants, through an ACL or a share grant. |
+| ID18 | A grant of `none` is stored, and is distinct from no grant. |
 
 ### 10.2 Metrics
 
@@ -1185,6 +1244,13 @@ with the directory and KDC as local test services.
 | §2.5 group cap | A principal in `identity.max_groups` + 1 groups: assert refused, never resolved with fewer. A nested group whose read fails mid-closure: assert the call fails. | truncated group lists |
 | §4.5 owner strings | Over `sec=krb5`, `chown` to `alice@corp.example` and to `alice@other.example`: assert success then `NFS4ERR_BADOWNER`. Over `AUTH_SYS`, `GETATTR`: assert numeric owners. A file owned by a deleted user: assert `nobody@…` and, over SMB, `S-1-0-0`. | names mapped by guesswork |
 | §3.4 PAC | A ticket whose PAC server signature is corrupted: assert the sign-in fails. A ticket with no PAC for a user in a store group: assert the group applies. | an unverified PAC trusted |
+| §3.4 deny-only SIDs | A test PAC marks `Finance` `SE_GROUP_USE_FOR_DENY_ONLY`. A file's ACL allows `Finance` read: assert refused. Another's ACL allows alice and denies `Finance` read: assert refused. A share whose only grant names `Finance` read-write: assert the share refuses alice. | a deny-only SID dropped, or treated as a group |
+| §3.1 binding | Over SMB, alice holds a Kerberos session. Delete alice and create a user named alice: assert every call on the old session refused, and a fresh sign-in acts as the new principal. Repeat with an NTLM pass-through session, its user SID re-linked. | a live proof re-mapped by name |
+| §3.5 pass-through | A directory user with no `krb` row signs in by NTLM pass-through: assert the caller is the principal holding its verified user SID. | pass-through with no mapping path |
+| §2.4 machines | On a share whose only grant is authenticated users read, a machine principal reads a file: assert refused, the caller not `authenticated`. A second machine's state operation on the first's `SP4_MACH_CRED` client record: assert refused. A grant naming a machine: assert refused. | a machine treated as an authenticated file caller |
+| §6.4 `none` is stored | Grant `Finance` read-write and alice `none`: assert alice refused. Remove alice's grant: assert alice granted through `Finance`. | `none` stored as no grant |
+| §7.1 directory deadline | Resolve bob over NTLM; remove bob from a directory group. Keep the session open past the TTL: assert his next call drops the group, with no generation change. | a derived cache outliving the directory answer |
+| §4.4 SID-less directory | An RFC 2307 directory entry with no SID: assert the minted principal holds a local SID from the RID counter, unchanged when the directory later adds one. | a directory principal with no SID |
 
 ## 12. Open questions
 
