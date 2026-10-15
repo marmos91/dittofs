@@ -375,6 +375,8 @@ when a value changed:
 - the records whose restart-class field has changed since it started — its
   restart-pending set;
 - its health conditions, as [RFC 25](rfc-25-observability.md) derives them.
+- the version of each secret it holds, so that an old version is deleted only
+  once every node that resolves the secret holds the new one (RFC 13 §7).
 
 A record changed at generation *G* is **applied** on a node once that node's
 applied generation of the matching kind is at least *G* and the record is not in
