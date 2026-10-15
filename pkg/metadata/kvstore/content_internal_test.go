@@ -3,15 +3,15 @@ package kvstore
 import (
 	"context"
 	"errors"
-	"github.com/google/uuid"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
 const mib = 1 << 20
@@ -212,71 +212,9 @@ func (f *cfix) block(name entity.BlockName) (entity.Block, bool) {
 // equals its reverse keys and the refs naming it, and every block's live is
 // the chunk records naming it with a nonzero count, retired exactly at zero.
 func (f *cfix) checkCounts() {
-	f.checkFloor()
-	f.checkUsage()
 	f.t.Helper()
-	ctx := context.Background()
-	refsPer := map[entity.ChunkHash]int64{}
-	if err := f.s.kv.View(ctx, func(r kv.Reader) error {
-		pre := filesPrefix(f.share)
-		for row, err := range r.Scan(pre, nil) {
-			if err != nil {
-				return err
-			}
-			rest := row.Key[len(pre)+keys.IDLen:]
-			if len(rest) == 9 && rest[0] == keys.FRef {
-				c, err := decodeRef(entity.FileID{}, 0, row.Value)
-				if err != nil {
-					return err
-				}
-				if !c.IsZeroRef() {
-					refsPer[c.Chunk]++
-				}
-			}
-		}
-		live := map[entity.BlockName]int64{}
-		cpre := []byte{keys.KindC}
-		cpre = keys.ID(cpre, f.ns[:])
-		for row, err := range r.Scan(cpre, nil) {
-			if err != nil {
-				return err
-			}
-			h := entity.ChunkHash(row.Key[len(cpre):])
-			rec, err := decodeChunk(h, row.Value)
-			if err != nil {
-				return err
-			}
-			n, err := countReverse(r, f.ns, h)
-			if err != nil {
-				return err
-			}
-			if rec.Refcount != n || rec.Refcount != refsPer[h] {
-				f.t.Errorf("chunk %x: refcount %d, reverse keys %d, refs %d", h[31], rec.Refcount, n, refsPer[h])
-			}
-			if rec.Refcount > 0 {
-				live[rec.Block]++
-			}
-		}
-		bpre := keys.ID([]byte{keys.KindB}, f.ns[:])
-		for row, err := range r.Scan(bpre, nil) {
-			if err != nil {
-				return err
-			}
-			name := entity.BlockName(row.Key[len(bpre):])
-			blk, err := decodeBlock(name, row.Value)
-			if err != nil {
-				return err
-			}
-			if blk.Live != live[name] {
-				f.t.Errorf("block %x: live %d, referenced chunk records %d", name[31], blk.Live, live[name])
-			}
-			if (blk.Live == 0) != (blk.State != entity.BlockLive) {
-				f.t.Errorf("block %x: live %d in state %v", name[31], blk.Live, blk.State)
-			}
-		}
-		return nil
-	}); err != nil {
-		f.t.Fatal(err)
+	if err := f.s.Check(context.Background()); err != nil {
+		f.t.Error(err)
 	}
 }
 

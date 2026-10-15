@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
 // checkFloor asserts RFC 6 §8.3's index over the fixture's share: every
@@ -16,54 +14,8 @@ import (
 // other entry.
 func (f *cfix) checkFloor() {
 	f.t.Helper()
-	want := map[string]bool{}
-	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
-		pre := filesPrefix(f.share)
-		for row, err := range r.Scan(pre, nil) {
-			if err != nil {
-				return err
-			}
-			id := entity.FileID(row.Key[len(pre) : len(pre)+keys.IDLen])
-			sub := row.Key[len(pre)+keys.IDLen:]
-			switch {
-			case len(sub) == 0:
-				x, err := decodeFile(f.share, id, row.Value)
-				if err != nil {
-					return err
-				}
-				want[string(floorKey(f.share, id, x.Version))] = true
-			case sub[0] == keys.FT:
-				d, err := decodeDelta(row.Value)
-				if err != nil {
-					return err
-				}
-				want[string(deltaFloorKey(f.share, id, d.Version, [32]byte(sub[1:])))] = true
-			case sub[0] == keys.FRm:
-				v, _, err := keys.ReadVersion(sub[1:])
-				if err != nil {
-					return err
-				}
-				if m, err := decodeRemoval(v, row.Value); err == nil && m.Kind == entity.RemoveRelease {
-					want[string(floorKey(f.share, id, m.FileVersion))] = true
-				}
-			}
-		}
-		got := 0
-		for row, err := range r.Scan(shareKey(f.share, keys.SVf), nil) {
-			if err != nil {
-				return err
-			}
-			got++
-			if !want[string(row.Key)] {
-				f.t.Errorf("stray version-index entry %x", row.Key)
-			}
-		}
-		if got != len(want) {
-			f.t.Errorf("%d version-index entries, want %d", got, len(want))
-		}
-		return nil
-	}); err != nil {
-		f.t.Fatal(err)
+	if err := f.s.Check(context.Background()); err != nil {
+		f.t.Error(err)
 	}
 }
 

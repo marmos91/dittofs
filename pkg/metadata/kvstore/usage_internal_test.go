@@ -2,12 +2,10 @@ package kvstore
 
 import (
 	"context"
-	"maps"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata/entity"
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
 // checkUsage asserts RFC 16 §4.4 over the fixture's share: the folded
@@ -15,48 +13,8 @@ import (
 // every project, the sum of the files' Charged and their count.
 func (f *cfix) checkUsage() {
 	f.t.Helper()
-	var want usageDelta
-	got, err := f.s.usageOf(context.Background(), f.share)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
-		pre := filesPrefix(f.share)
-		for row, err := range r.Scan(pre, nil) {
-			if err != nil {
-				return err
-			}
-			if len(row.Key) != len(pre)+keys.IDLen {
-				continue
-			}
-			x, err := decodeFile(f.share, entity.FileID(row.Key[len(pre):]), row.Value)
-			if err != nil {
-				return err
-			}
-			want.charge(x, x.Charged, 1)
-		}
-		return nil
-	}); err != nil {
-		f.t.Fatal(err)
-	}
-	nonzero := func(m map[entity.Principal]entity.Usage) map[entity.Principal]entity.Usage {
-		out := maps.Clone(m)
-		maps.DeleteFunc(out, func(_ entity.Principal, u entity.Usage) bool { return u == entity.Usage{} })
-		return out
-	}
-	if got.Share != want.Share {
-		f.t.Errorf("share usage %+v, files say %+v", got.Share, want.Share)
-	}
-	if g, w := nonzero(got.Principals), nonzero(want.Principals); !maps.Equal(g, w) {
-		f.t.Errorf("principal usage %v, files say %v", g, w)
-	}
-	pz := func(m map[uint64]entity.Usage) map[uint64]entity.Usage {
-		out := maps.Clone(m)
-		maps.DeleteFunc(out, func(_ uint64, u entity.Usage) bool { return u == entity.Usage{} })
-		return out
-	}
-	if g, w := pz(got.Projects), pz(want.Projects); !maps.Equal(g, w) {
-		f.t.Errorf("project usage %v, files say %v", g, w)
+	if err := f.s.Check(context.Background()); err != nil {
+		f.t.Error(err)
 	}
 }
 

@@ -217,7 +217,4 @@ func historyPrefix(share entity.ShareID, id entity.FileID) []byte {
 	return fileSub(share, id, keys.FHis)
 }
 
-// filesPrefix covers every file record of a share.
-func filesPrefix(share entity.ShareID) []byte { return keys.ID([]byte{keys.KindF}, share[:]) }
-
 func numberKey(share entity.ShareID) []byte { return shareKey(share, keys.SFnc) }
