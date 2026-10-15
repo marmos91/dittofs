@@ -1225,8 +1225,13 @@ The scheduler **MUST**:
 - **retry per item**: a failed item is re-posted at a backoff deadline with jitter,
   bounded by `Deadline`, never by an attempt count ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)); a batch's
   successes are never retried with its failures;
-- **bound concurrency and memory**: at most `Concurrency` runs per source and
-  one entry per key, so posting never blocks and never grows with bytes;
+- **bound concurrency and memory**: at most `Concurrency` runs per source,
+  one entry per key, and at most a fixed total of pending entries per instance
+  (RFC 24 §5.1), so posting never blocks and never grows with bytes. A post
+  past the total is dropped and counted, and the source **MUST** re-derive
+  dropped work from its durable records within its own bound: offload by
+  `AgeTick`, removals by re-reading the unfinished-removal index, GC by its
+  cursors;
 - **share fairly**: under contention, sources and the tenants within them (shares,
   namespaces) receive work in proportion to `Weight`;
 - **rate-limit**: a source with a `Rate` is paced to it, and a throttled result

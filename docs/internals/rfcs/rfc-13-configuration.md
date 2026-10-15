@@ -1133,7 +1133,10 @@ supplies one before the setting is built.
 | buffer classes | RFC 24 §3.1 | — | fixed | 4 KiB, 64 KiB, 1 MiB, 8 MiB |
 | per-request overhead charged beside a request's buffer | RFC 24 §3.1 | — | fixed | proposed: 8 KiB; settled by: RFC 24 §8's M1 |
 | connection cost charged at accept | RFC 24 §4.4 | — | fixed | proposed: 64 KiB; settled by: RFC 24 §8's M2 |
+| NFSv4.1 session cost; slot cost, per slot of each channel | RFC 24 §4.5 | — | fixed | proposed: 4 KiB; 256 bytes; settled by: RFC 24 §8's M2 |
 | open-state costs: per open; per lock range, waiter, grant or reservation | RFC 24 §4.6 | — | fixed | proposed: 1 KiB; 256 bytes; settled by: RFC 24 §8's M6 |
+| open-state reclaim allowance: how far a reclaim during grace may take the open-state pool | RFC 24 §4.6 | — | fixed | the pool at twice its share, the excess taken from the unpooled quarter; a reclaim of durable state is never refused ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) |
+| work-scheduler pending entries per instance | RFC 24 §5.1, [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler) | — | fixed | proposed: 262,144; settled by: RFC 24 §8's M8 |
 | client and share caps on the receive and reply pools | RFC 24 §4.1, §4.2 | — | fixed | three quarters of a pool per client key while another waits; three quarters per share while the pool is more than half full |
 | `connection_limit`: client connections one node accepts | RFC 24 §4.4 | node | restart | derived: the least of the connection-state pool's ceiling over the connection cost and half the open-file limit; a value above either is refused at start |
 | connections per address | RFC 24 §4.4 | — | fixed | a quarter of `connection_limit` |

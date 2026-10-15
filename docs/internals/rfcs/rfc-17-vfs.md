@@ -403,10 +403,17 @@ type Data interface {
 
 // Locking: byte-range locks, caching grants, watches (RFC 14).
 type Locking interface {
-	Lock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive, wait, reclaim bool) error // wait: a conflict leaves a waiter (RFC 14), answered ErrLocked (NFSv4 polls) or ErrBlocked (NLM, SMB)
+	// Lock is all or nothing: if any range cannot be granted, the ranges this
+	// call took are released before it answers that range's error. wait is
+	// honoured only for a single range: a conflict leaves a waiter (RFC 14),
+	// answered ErrLocked (NFSv4 polls) or ErrBlocked (NLM, SMB).
+	Lock(ctx context.Context, o OpenRef, rs []metadata.LockRange, wait, reclaim bool) error
 	CancelLock(ctx context.Context, o OpenRef, r metadata.ByteRange) (granted bool, err error)     // drops a waiting lock, or reports it granted first; called before any answer to an ErrBlocked request but the grant (RFC 14 §2.10)
 	TestLock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive bool) (*metadata.Lock, error)
-	Unlock(ctx context.Context, o OpenRef, r metadata.ByteRange) error
+	// Unlock releases rs in order and stops at the first range the owner does
+	// not hold, ErrRangeNotLocked; the ranges before it stay unlocked. An NFSv4
+	// or NLM owner holds every sub-range it locked, so it never meets the error.
+	Unlock(ctx context.Context, o OpenRef, rs []metadata.ByteRange) error
 	ReturnGrant(ctx context.Context, c metadata.ClientID, g metadata.GrantID) error
 	AckBreak(ctx context.Context, c metadata.ClientID, g metadata.GrantID, to GrantKind) error
 	Watch(ctx context.Context, c metadata.ClientID, id Identity, dir Handle, recursive bool, filter metadata.ChangeMask) (metadata.WatchID, error)
@@ -443,6 +450,12 @@ type Identities interface {
 	Find(ctx context.Context, s Spelling) (metadata.Principal, error)                 // the principal holding s; ErrUnknownPrincipal when none does
 }
 ```
+
+**A protocol request naming several ranges is one call.** An SMB `LOCK` of
+several elements is one `Lock` or one `Unlock` carrying every range in order;
+NFSv4 and NLM pass a one-element list. Rollback of a partial acquisition is the
+service's, never the adapter's: the ranges go to the file's one primary in one
+call, which takes them all or none ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)).
 
 Every open-state call names the `ClientID` it acts for, and the service
 **MUST** refuse, with `ErrNotYours`, an `OpenID`, `GrantID`, `WatchID`,
@@ -732,7 +745,7 @@ Adapters own, and the service never sees:
 ### 4.3 Errors are neutral values
 
 The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrPerm`, `ErrStale`,
-`ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`,
+`ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`, `ErrRangeNotLocked`,
 `ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrBlocked`, `ErrNotYours`, `ErrRevoked`, `ErrBadLayout`, `ErrWrongSecurity`, `ErrInvalid`, `ErrCrossNamespace`, `ErrCrossShard`, `ErrCrossProject`, `ErrInconsistent`, `ErrClientInUse`, `ErrClientBusy`, `ErrSeqMisordered`, `ErrStaleClient`, `ErrStaleState`, `ErrBadState`, RFC 14's `ErrNoReclaim`, `ErrReclaimRevoked`, `ErrDeletePending`, `ErrNoCopy` and `ErrBadSeqID`, `ErrIncomplete`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly", and every one the service returns is a
@@ -1033,7 +1046,10 @@ call to the share of the handle or open it names, in this order:
    read-only, by a client rule or `ReadOnly`, reaches the chokepoint as a field of that identity, since the
    chokepoint evaluates no client rule (RFC 19 §3.2);
 5. the share's cap on the node's request buffers (RFC 24 §4.2) — `ErrDelay`
-   with `DelayResources`, at once.
+   with `DelayResources`, at once — except a call that only releases state
+   (close, unlock, lock cancel, grant or layout return, freeing a state ID) or
+   reclaims it, with the operations that carry it, which steps 1–4 and
+   `Authorize` still gate (RFC 24 §4.2).
 
 Then `Authorize` applies the share access as a ceiling and evaluates the file
 (§4.6). **There is no call
@@ -1486,8 +1502,10 @@ at one point in the source's history. The two kinds differ in atomicity:
    a sixteenth of the process memory limit (RFC 24 §2.1) — derived, not a
    setting; a test
    sizes it by setting that limit, 128 MiB giving an 8 MiB pool. A call
-   drawn on it is charged its write's bytes, and at least 64 KiB, one SMB
-   credit's size, so the pool bounds held calls as well as bytes. A call that
+   drawn on it is charged its whole receive reservation, buffer class and
+   overhead (RFC 24 §4.3); the per-key byte budget counts its write's bytes,
+   and at least 64 KiB, one SMB credit's size, so the pool bounds held calls
+   as well as bytes. A call that
    would pass a hard budget, or a pooled key's floor while the pool cannot take
    it, is answered `ErrDelay` with `DelayHoldBudget` at once, holds nothing,
    and is counted as a refusal (§7).

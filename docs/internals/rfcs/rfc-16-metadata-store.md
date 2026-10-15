@@ -506,7 +506,7 @@ type Share struct {
 type ShareGrant struct {
 	Share     ShareID
 	Principal Principal
-	Access    ShareAccess // none, read, read-write, admin
+	Access    ShareAccess // none, read, read-write, admin; none is stored, and is distinct from no grant
 	Version   uint64      // raised by every change; the authorisation cache key carries it
 }
 
@@ -868,7 +868,7 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
      `being removed` ([RFC 12 §2.7](rfc-12-snapshots.md#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)), so no lock committing after this
      step stalls step 2 for up to `lock_max`; with `detach` it is allowed;
    - every control-plane write that names the share — `PutShare`,
-     `SetShareState`, `SetGrant`, `PutExportPolicy`, a share-scoped
+     `SetShareState`, `SetGrant`, `DeleteGrant`, `PutExportPolicy`, a share-scoped
      `PutSetting` — reads `S‖id‖st` with tracking and refuses a share that is
      `being removed` or `retired` with `ErrStale`, so none leaves a row after
      step 5 has deleted the rest;
@@ -1094,7 +1094,8 @@ type ControlPlane interface {
 	PutShare(ctx context.Context, s Share, expect uint64) error // Name, Path, Root, Config only
 	SetShareState(ctx context.Context, share ShareID, from, to ShareState) error
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition) error // §2.3.2
-	SetGrant(ctx context.Context, g ShareGrant) error // Access none deletes the grant and its GR key; Version is the writing commit's, so a re-created grant never repeats a Version an authorisation cache keyed on
+	SetGrant(ctx context.Context, g ShareGrant) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a machine principal is refused; Version is the writing commit's, so a re-created grant never repeats a Version an authorisation cache keyed on
+	DeleteGrant(ctx context.Context, share ShareID, p Principal) error // deletes the grant and its GR key, so the principal falls through to its groups' grants; Version rules as SetGrant
 	PutExportPolicy(ctx context.Context, p ExportPolicy, expect uint64) error // raises Version, as SetGrant does
 	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, the user and group defaults, per principal and per project
 	SetQuota(ctx context.Context, share ShareID, q Quota) error         // a quota that limits nothing deletes it, and a share-wide or project one its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace; a principal's grace under a changed default, or one that gains or loses its own quota, restarts at its next check, which finds the soft limit qx recorded no longer in force (RFC 7 §2.8)
