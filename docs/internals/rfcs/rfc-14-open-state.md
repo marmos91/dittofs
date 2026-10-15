@@ -2302,8 +2302,16 @@ with the client and file.
    period ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), so it moves only with the lease's own
    `decision:` ([§4.1](#4.1%20A%20client%20lease)). Open is whether a measured
    workload needs an NFS recall deadline shorter than the lease.
-2. **Persistent opens** for continuously available shares: which shares allow
-   them, and the cost of a synchronous write per open, grant change and close.
+2. **The cost of persistent opens**: a synchronous store write per open, grant
+   change and close, unmeasured. Which shares allow them is decided below.
+
+> decision: continuous availability, and with it persistent opens, is opt-in per
+> share and off by default ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)). A share holding per-user profile
+> containers **SHOULD** enable it in a cluster: only a persistent open survives
+> its primary's failover ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens)), so on any other share a failover breaks
+> every open container. Only the shares that need it pay for stable writes and
+> one store record per open. Overturned if measured persistent-open cost is low
+> enough to make it the cluster default.
 3. **Byte-range lock splitting** across protocols with different range
    semantics (SMB's 64-bit ranges against NFS's end-of-file locks).
 4. **Directory grants** (NFSv4.1 directory delegations, SMB directory leases):

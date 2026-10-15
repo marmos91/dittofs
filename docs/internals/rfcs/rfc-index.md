@@ -56,6 +56,7 @@ order: each part builds on the ones before it.
 | RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
 | **Testing** | | | |
 | [RFC 29](rfc-29-test-harness.md) | test harness | reviewed | the `dt` runner, the suite registry, fixtures, tiers, grading against known failures, the result format and how red is reported |
+| [RFC 30](rfc-30-kubernetes.md) | deployment on Kubernetes | draft | the operator's cluster resource with protocol and storage pools, tiers mapped to Deployment and StatefulSet, storage identity on its volume, drain before removal, autoscaling the protocol pool and operator-paced storage, service or floating-IP addressing |
 
 RFC 26 and RFC 27 were split out of RFC 12. They sit with it under data management but are numbered after the
 planned RFC 18–25, whose numbers were already reserved, so the numbering is out of order there. RFC 28 was split out of RFC 1 the same way and sits

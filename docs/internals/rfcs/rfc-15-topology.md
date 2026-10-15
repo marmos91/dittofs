@@ -920,14 +920,16 @@ table.
 
 ## 11. Open questions
 
-1. **Forwarding bounds.** Whether a forwarding `protocol` node streams or buffers,
-   and how that is bounded ([RFC 24](rfc-index.md)).
+1. **Forwarding bounds.** A forwarding `protocol` node streams (item 3); how its
+   in-flight bytes are bounded is [RFC 24](rfc-index.md)'s.
 2. **Striping one file across data servers** waits on per-file and range shards
    ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
-3. **The node-to-node wire format.** [§4.3](#4.3%20The%20route%20envelope) fixes what a forwarded call carries —
-   the route envelope — and [§4.4](#4.4%20Node%20channels) how a channel is secured, but not the
-   encoding of forwarded calls and of replication traffic ([RFC 10](rfc-10-journal-replication.md)), nor
-   their versioning across a rolling upgrade.
+3. **The node-to-node wire format** is decided in outline: a typed RPC framework
+   with schemas versioned for a rolling upgrade (gRPC is the example in mind),
+   over the mutually authenticated channel of [§4.4](#4.4%20Node%20channels), with bidirectional
+   streams carrying forwarded data and replication batches ([RFC 10](rfc-10-journal-replication.md)) so no
+   hop buffers a whole payload. Open: the schemas themselves, and the rule for
+   which versions a node accepts during an upgrade.
 
 ## Appendix A — prior art
 
