@@ -18,16 +18,19 @@ import (
 // The loop check walks the destination's ancestors inside the transaction,
 // reading each, so two renames that would each put a directory under the
 // other conflict and the second is refused, in either commit order.
-func (n Namespace) Rename(ctx context.Context, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte) (Orphaned, error) {
+//
+// open is the opens of the file a rename replaces, as for Unlink: made
+// durable when the rename takes that file's last entry.
+func (n Namespace) Rename(ctx context.Context, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte, open ...entity.Open) (Orphaned, error) {
 	var out Orphaned
 	err := n.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
-		out, err = n.rename(tx, id, from, fromName, to, toName)
+		out, err = n.rename(tx, id, from, fromName, to, toName, open)
 		return err
 	})
 	return out, err
 }
 
-func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte) (Orphaned, error) {
+func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fromName []byte, to entity.Handle, toName []byte, open []entity.Open) (Orphaned, error) {
 	share, sd, err := dirIn(tx, from)
 	if err != nil {
 		return Orphaned{}, err
@@ -123,7 +126,7 @@ func (n Namespace) rename(tx kv.Txn, id entity.Identity, from entity.Handle, fro
 
 	var out Orphaned
 	if replaced != nil {
-		if out, err = dropEntry(tx, dstKey, *replaced); err != nil {
+		if out, err = dropEntry(tx, dstKey, *replaced, open); err != nil {
 			return Orphaned{}, err
 		}
 	}

@@ -684,7 +684,7 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 	if m.Cursor >= end {
 		m.Done = true
 		if m.Kind == entity.RemoveClone {
-			if err := tx.Delete(cloneOpenKey(share, file, m.Version, *m.Clone)); err != nil {
+			if err := dropCloneHold(tx, file, m); err != nil {
 				return false, err
 			}
 		}

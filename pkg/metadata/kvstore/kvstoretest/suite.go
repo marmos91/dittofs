@@ -80,6 +80,9 @@ func Run(t *testing.T, open Opener) {
 		{"Clients", testClients},
 		{"CreateSession", testCreateSession},
 		{"ClientOwnerRace", testClientOwnerRace},
+		{"DurableOpens", testDurableOpens},
+		{"OpenRacesRelease", testOpenRacesRelease},
+		{"CloneHold", testCloneHold},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

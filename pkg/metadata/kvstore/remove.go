@@ -20,7 +20,12 @@ type Orphaned struct{ File entity.FileID }
 // directory must be empty, which this transaction proves under a range
 // guard of its entries while writing its record: a create racing into it
 // conflicts in either commit order.
-func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte) (Orphaned, error) {
+//
+// open is the file's opens, held only in memory at its primary: when this
+// unlink takes the file's last entry, each is written durable in the same
+// transaction, since an open is the second holder of a file and the release
+// finds its holders only in the store.
+func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Handle, name []byte, open ...entity.Open) (Orphaned, error) {
 	var out Orphaned
 	err := n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		share, d, err := dirIn(tx, dir)
@@ -53,7 +58,7 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 		if err := mayRemove(tx, id, d, child); err != nil {
 			return err
 		}
-		out, err = dropEntry(tx, key, child)
+		out, err = dropEntry(tx, key, child, open)
 		if err != nil {
 			return err
 		}
@@ -64,8 +69,8 @@ func (n Namespace) Unlink(ctx context.Context, id entity.Identity, dir entity.Ha
 
 // dropEntry deletes the entry at key naming child and takes one from
 // child's Nlink, refusing a non-empty directory. A last entry writes the
-// pending release.
-func dropEntry(tx kv.Txn, key []byte, child entity.File) (Orphaned, error) {
+// pending release, and makes durable each of open that opens child.
+func dropEntry(tx kv.Txn, key []byte, child entity.File, open []entity.Open) (Orphaned, error) {
 	if child.IsDir() {
 		if err := provedEmpty(tx, child); err != nil {
 			return Orphaned{}, err
@@ -86,6 +91,14 @@ func dropEntry(tx kv.Txn, key []byte, child entity.File) (Orphaned, error) {
 	}
 	if child.Nlink > 0 {
 		return Orphaned{}, nil
+	}
+	for _, op := range open {
+		if op.File != child.ID {
+			continue
+		}
+		if err := putOpen(tx, child.Share, child.Shard, op); err != nil {
+			return Orphaned{}, err
+		}
 	}
 	return Orphaned{File: child.ID}, putRelease(tx, child.Share, child.Shard, child.ID)
 }

@@ -2,7 +2,6 @@ package kvstore
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"slices"
 	"time"
@@ -75,10 +74,16 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 			return err
 		}
 	}
-	return e.s.kv.Update(ctx, func(tx kv.Txn) error { return clonePhase1(tx, op, e.s.k) })
+	hold, err := e.s.NextOpenID(ctx)
+	if err != nil {
+		return err
+	}
+	return e.s.kv.Update(ctx, func(tx kv.Txn) error { return clonePhase1(tx, op, e.s.k, hold) })
 }
 
-func clonePhase1(tx kv.Txn, op CloneOp, k int) error {
+// clonePhase1 applies the clone's first phase, holding its source with a
+// durable open under the ID hold.
+func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
 	sp, share, file := op.Spec, op.Share, op.File
 	if err := rewriteFences(tx, share, file, op.Epoch); err != nil {
 		return err
@@ -151,7 +156,31 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int) error {
 	if err := putRemoval(tx, share, file, m); err != nil {
 		return err
 	}
-	return tx.Set(cloneOpenKey(share, file, op.Version, sp), encodeEmpty())
+	// The source's hold: a durable open of the clone-source kind, held by
+	// no client, which no grace end closes and only the clone's last batch
+	// does.
+	return putOpen(tx, sp.SrcShare, src.Shard, entity.Open{ID: hold, File: sp.Src, Kind: entity.OpenCloneSource,
+		CloneDst: file, CloneVersion: op.Version})
+}
+
+// dropCloneHold deletes the durable open a clone holds on its source, found
+// among the source's opens by the destination and the clone's version.
+func dropCloneHold(tx kv.Txn, dst entity.FileID, m entity.Removal) error {
+	sp := m.Clone
+	src, err := fileIn(tx, sp.SrcShare, sp.Src)
+	if err != nil {
+		return err
+	}
+	opens, err := opensOf(tx, sp.SrcShare, sp.Src)
+	if err != nil {
+		return err
+	}
+	for _, op := range opens {
+		if op.Kind == entity.OpenCloneSource && op.CloneDst == dst && op.CloneVersion == m.Version {
+			return dropOpen(tx, sp.SrcShare, src.Shard, sp.Src, op.ID)
+		}
+	}
+	return nil
 }
 
 // gapHole makes [size, at) a hole at version v, joined with a visible hole
@@ -198,20 +227,6 @@ func noCloneOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity
 		}
 	}
 	return nil
-}
-
-// cloneOpenKey is the durable open a clone holds on its source: its ID is
-// derived from the clone, so the clone's last batch finds it again.
-//
-// decision: the record holds no open state, only its existence, since the
-// open-state records of RFC 14 are not written yet; what the release check
-// needs is that some durable open names the source, and this one does.
-func cloneOpenKey(share entity.ShareID, file entity.FileID, v entity.JournalVersion, sp entity.CloneSpec) []byte {
-	h := sha256.New()
-	h.Write(share[:])
-	h.Write(file[:])
-	h.Write(v[:])
-	return append(opensPrefix(sp.SrcShare, sp.Src), h.Sum(nil)[:16]...)
 }
 
 // sameNamespaces refuses a clone unless the destination's share counts
