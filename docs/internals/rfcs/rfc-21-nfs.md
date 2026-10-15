@@ -13,8 +13,12 @@ depends_on:
   - "[[rfc-15-topology]]"
   - "[[rfc-16-metadata-store]]"
   - "[[rfc-17-vfs]]"
+  - "[[rfc-18-identity]]"
+  - "[[rfc-19-authorization]]"
   - "[[rfc-20-adapters]]"
   - "[[rfc-22-smb]]"
+  - "[[rfc-24-resources]]"
+  - "[[rfc-25-observability]]"
   - "[[rfc-27-namespace-migration]]"
   - "[[rfc-28-journal-format]]"
 aliases:
@@ -247,8 +251,10 @@ This document **MUST NOT**:
   [RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)'s;
 - decide admission, squashing, the pseudo-filesystem or `SECINFO` (the call
   that asks which security flavours a share accepts) — [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees);
-- decide authentication, principals or the `owner@domain` mapping — RFC 18
-  (planned); or ACL (access control list) semantics — RFC 19 (planned);
+- decide authentication, principals or the `owner@domain` mapping —
+  [RFC 18](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings); or ACL (access
+  control list) semantics and their NFSv4 spelling —
+  [RFC 19](rfc-19-authorization.md#7.%20NFSv4%20ACLs);
 - restate the XDR (External Data Representation, the wire encoding) of RFC 1813,
   RFC 7530, RFC 8881 or RFC 7862, or the rows of the error table that follow
   from those specifications, which the adapter holds and
@@ -331,7 +337,7 @@ to P2 after an address takeover.
 
 > ponytail: one transfer size for every client and every share. 1 MiB already
 > makes per-request overhead small on a fast link, and each request in flight
-> holds one buffer of that size (RFC 24, planned), so a larger size costs
+> holds one buffer of that size ([RFC 24 §3.5](rfc-24-resources.md#3.5%20What%20a%20transfer%20size%20costs)), so a larger size costs
 > memory. Raise it, or make it per share, when a benchmark on the reference box
 > shows large sequential I/O limited by request count rather than by the journal.
 
@@ -355,10 +361,13 @@ a channel is how many requests may be in flight on it at once.
 
 - The fore channel offers at most **64 slots**, the back channel at most **16**.
   The call that opens a session (`CREATE_SESSION`) grants the lesser of what the
-  client asks and these.
+  client asks and these, and fewer where the node cannot charge the session's
+  reply cache: the slots it can charge, at least one; where it cannot charge
+  one, `CREATE_SESSION` is answered `NFS4ERR_DELAY`
+  ([RFC 24 §4.5](rfc-24-resources.md#4.5%20Sessions%20and%20reply%20caches)).
 - Under memory pressure the server **MAY** ask the client to use fewer slots (by
-  lowering `sr_target_highest_slotid` in its replies), and **MUST** honour a
-  client that then retires slots. It **MUST NOT** shrink the table
+  lowering `sr_target_highest_slotid` in its replies; RFC 24 §4.5 says when),
+  and **MUST** honour a client that then retires slots. It **MUST NOT** shrink the table
   (`sr_highest_slotid`) below a slot with a request in flight.
 - The largest reply the server will cache (`ca_maxresponsesize_cached`) is the
   lesser of what the client asks and **8 KiB**, so one session's reply cache
@@ -1164,6 +1173,7 @@ NLM codes are for NFSv3 locking (§6).
 | Service error | NFSv4 | NFSv3 / NLM |
 | --- | --- | --- |
 | `ErrDelay` — a recall or break in progress, a write held behind a clone past its own deadline, a call past its session's hold budget (`DelayHoldBudget`, §9.3), a share frozen for a move (§7.4), any transient refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes as retry-later, a stability reply waiting on a stalled store (§9.1), or a store conflict still unresolved at the caller's deadline (`DelayConflict`, [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
+| `ErrDelay` with `DelayResources` — a node memory pool spent: the share's cap on the request buffers, open state, or a reply reservation's deadline ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) | `NFS4ERR_DELAY`, at once; never held | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_NOLOCKS` |
 | `ErrBlocked` — a blocking NLM lock left waiting (§6.1) | — | NLM: `NLM4_BLOCKED` |
 | `ErrStale` — the share is being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | `NFS4ERR_STALE` for every handle into it; a pseudo-filesystem `LOOKUP` of its path, gone from the pseudo-filesystem, is `NFS4ERR_NOENT`; a stateid of the share in an operation with no handle (`TEST_STATEID`, `FREE_STATEID`) is `NFS4ERR_BAD_STATEID`, and `SEQUENCE` sets no revoked-state flag for it | `NFS3ERR_STALE`; `MOUNT` of its path is `MNT3ERR_NOENT`; NLM: `NLM4_STALE_FH` |
 | `ErrNoSpace` — a permanent capacity refusal, as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes it | `NFS4ERR_NOSPC`, at once | `NFS3ERR_NOSPC` |
@@ -1542,14 +1552,29 @@ say which accesses are recorded; reading them tells a user what is watched, and
 changing them turns auditing off. Both protocols gate them alike
 ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)):
 
-- `GETATTR` or `SETATTR` of `sacl` by a principal that is not an administrator
-  of the share (RFC 18, planned) **MUST** be `NFS4ERR_ACCESS`.
+- `GETATTR` or `SETATTR` of `sacl` by a caller without `admin` — set only from
+  an `admin` share grant on an authenticated flavour
+  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20flavour%20proved%3A%20authenticated%2C%20admin%2C%20privileged)),
+  and so without the system-security right
+  ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right))
+  — **MUST** be `NFS4ERR_ACCESS`.
 - The `acl` attribute, served on every minor version — the only ACL attribute
   of NFSv4.0, and beside `dacl` and `sacl` on NFSv4.1 and NFSv4.2 — can carry
   audit and alarm entries too. A `GETATTR` of `acl` by a non-administrator
   **MUST** omit them; a `SETATTR` of `acl` by a non-administrator that contains
   any is `NFS4ERR_ACCESS`, and one that contains none leaves the stored audit
   entries as they were.
+- **`acl`, `dacl` and `sacl` are RFC 19's spelling** of the stored ACL, through
+  the one translation both adapters use
+  ([RFC 19 §7](rfc-19-authorization.md#7.%20NFSv4%20ACLs)). A set it refuses is
+  refused whole, and nothing is stored
+  ([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)):
+  a `who` no principal holds is `NFS4ERR_BADOWNER`
+  ([RFC 19 §7.2](rfc-19-authorization.md#7.2%20Entries%20and%20%60who%60)); every
+  other refusal — an entry type other than allow, deny, audit and alarm, a list
+  of more than 128 entries or 64 KiB, a deny naming a well-known principal that
+  matches no caller, `acl` named in one `SETATTR` with `dacl` or `sacl` — is
+  `NFS4ERR_INVAL`.
 - `mode` and `dacl` are unaffected: the file's owner may set them through its
   implicit rights to read and write the ACL, unless the ACL holds an
   owner-rights entry, in which case the walk decides
@@ -1570,8 +1595,9 @@ changing them turns auditing off. Both protocols gate them alike
   `root_squash` squashes it, and a share grant naming a principal `admin` makes
   no `AUTH_SYS` caller privileged, whatever uid it sends. An `admin` grant makes
   a caller privileged only over `RPCSEC_GSS`, where the principal is
-  authenticated (§10). Over `RPCSEC_GSS`, a principal the ID mapping (RFC 18,
-  planned) maps to uid 0 is privileged exactly when the export leaves root
+  authenticated (§10). Over `RPCSEC_GSS`, a principal the ID mapping
+  ([RFC 18 §4](rfc-18-identity.md#4.%20Identity%20mapping)) maps to uid 0 is
+  privileged exactly when the export leaves root
   unsquashed, as `AUTH_SYS` uid 0 is, and `root_squash` squashes it alike:
   root on a client running `tar xpf` on a `sec=krb5` export with
   `no_root_squash` restores owners as on a local disk, and the flavour gives
@@ -1854,7 +1880,8 @@ A long server-side copy may answer at once and report completion later.
 `RPCSEC_GSS` is how NFS carries Kerberos: client and server set up a GSS
 (Generic Security Services) **context** — a handle, a session key and a window
 of accepted sequence numbers — and every later call is checked against it.
-Authentication and principal mapping are RFC 18's (planned). On the wire:
+Authentication and principal mapping are
+[RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos)'s. On the wire:
 
 - a GSS context **MUST** be held in the memory of the `protocol` node that
   created it, and is not shared or stored. After a `protocol` node loss, the
@@ -2024,7 +2051,8 @@ profile.
 
 ## 13. Observability
 
-Metric names are shown without the deployment's prefix.
+Metric names follow [RFC 25 §2](rfc-25-observability.md#2.%20Metrics) and are
+shown without the `dittofs_` prefix the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
@@ -2048,7 +2076,8 @@ or client label.
    writes whose versions only its overlay had reported can let a later write
    draw one of those versions again. Until that case is closed, `UNDEFINED`.
 2. **RDMA.** NFS over RDMA (RFC 8166) is not offered. Whether it pays for
-   itself depends on a deployment with RDMA fabrics and on RFC 24's buffer model.
+   itself depends on a deployment with RDMA fabrics and on
+   [RFC 24 §3](rfc-24-resources.md#3.%20Request%20and%20reply%20buffers)'s buffer model.
 3. **Directory delegations and notifications** (§5.3), with RFC 14's open
    question 4.
 4. **Session trunking across nodes** (§3.3) would need slots held at a shared
@@ -2077,9 +2106,9 @@ attributes that are supported, and where each is read from:
 | `change` | `File.Version` with the engine's overlay ([RFC 17 §5.7](rfc-17-vfs.md#5.7%20GetAttr)); §9.2 |
 | `change_attr_type` | `NFS4_CHANGE_TYPE_IS_UNDEFINED` (§14) |
 | `size`, `space_used` | `Size`; `Charged` ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)) |
-| `mode`, `owner`, `owner_group`, `mode_set_masked` | the File; owner strings by RFC 18 (planned) |
+| `mode`, `owner`, `owner_group`, `mode_set_masked` | the File; owner strings by [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings) |
 | `mode_umask` (RFC 8275) | settable at create only: the mode is masked by the umask when the parent holds no inheritable ACL entry, and the umask is ignored when it does (RFC 8275 §3), so an inherited ACL is narrowed only by the create mode, as an AND that never adds an entry ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). Linux clients send it on NFSv4.2 instead of applying the umask themselves, which would cut an inherited grant to the mode's bits |
-| `acl`, `dacl`, `aclsupport` | RFC 7's ACL, mapped by RFC 19 (planned) |
+| `acl`, `dacl`, `aclsupport` | RFC 7's ACL, spelled by [RFC 19 §7](rfc-19-authorization.md#7.%20NFSv4%20ACLs); `aclsupport` reports allow, deny, audit and alarm |
 | `sacl` | the ACL's audit entries ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)); administrators only (§8.1) |
 | `archive`, `hidden`, `system` | `Flags` |
 | `time_access`, `time_modify`, `time_metadata`, `time_create`, `*_set` | `Access`, `Modify`, `Change`, `Birth` |

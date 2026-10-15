@@ -10,8 +10,13 @@ depends_on:
   - "[[rfc-14-open-state]]"
   - "[[rfc-15-topology]]"
   - "[[rfc-17-vfs]]"
+  - "[[rfc-18-identity]]"
+  - "[[rfc-19-authorization]]"
   - "[[rfc-21-nfs]]"
   - "[[rfc-22-smb]]"
+  - "[[rfc-23-control-plane]]"
+  - "[[rfc-24-resources]]"
+  - "[[rfc-25-observability]]"
   - "[[rfc-27-namespace-migration]]"
   - "[[rfc-29-test-harness]]"
 aliases:
@@ -206,10 +211,10 @@ This RFC **MUST NOT** be read as specifying:
   counts, attributes, names — those are [RFC 21](rfc-21-nfs.md)'s and
   [RFC 22](rfc-22-smb.md)'s;
 - how a principal is authenticated against a directory, or how it is mapped to
-  numeric IDs and SIDs — that is planned RFC 18's. This RFC fixes only that the
+  numeric IDs and SIDs — that is [RFC 18](rfc-18-identity.md)'s. This RFC fixes only that the
   adapter runs the protocol's handshake and hands the service what it proved
   (§4.4);
-- memory budgets and buffer pool sizes — planned RFC 24's. This RFC fixes where
+- memory budgets and buffer pool sizes — [RFC 24 §2](rfc-24-resources.md#2.%20The%20node%20memory%20budget)'s. This RFC fixes where
   the bounds apply, not their values (§6);
 - the test runner, tiers and grading — [RFC 29](rfc-29-test-harness.md)'s. This
   RFC states the checks.
@@ -310,9 +315,11 @@ An adapter's packages **MUST** import only:
 
 They **MUST NOT** import a metadata store, the open-state tables, the content
 engine, the topology or routing code, the configuration store, or another
-adapter. Two adapters that need the same helper — an ACL translation between a
-security descriptor and the neutral ACL, a time conversion — take it from a
-shared translation package that itself imports only neutral types.
+adapter. Two adapters that need the same helper — the ACL translation between a
+security descriptor or an NFSv4 ACL and the neutral ACL
+([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)),
+a time conversion — take it from a shared translation package that itself
+imports only neutral types.
 
 A test **MUST** enforce this list from the import graph, and fail naming the
 package and the forbidden import (§7.1). A rule nobody checks drifts the first
@@ -326,7 +333,8 @@ feature:
 | Detail | Why it is the adapter's |
 | --- | --- |
 | Name presentation: names SMB cannot carry, invalid UTF-8 hidden ([RFC 22 §12.3](rfc-22-smb.md#12.3%20Names%20SMB%20cannot%20carry)) | a reversible mapping of a stored name; the stored name is the service's |
-| NFSv4 owner strings `user@domain` | the encoding of an identity; the mapping is RFC 18's |
+| NFSv4 owner strings `user@domain` | the encoding of an identity; the mapping is [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings)'s |
+| Security descriptors and NFSv4 ACLs | spelled by the one shared translation ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)); what an ACL means, and what a set of one may hold, are RFC 19's |
 | Attribute bitmaps, SMB information classes, `FSINFO` and volume replies | formatting what the service returned |
 | `READDIR` and `QUERY_DIRECTORY` reply trimming to the client's buffer | the service resumes from a cursor ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)); fitting a reply is the protocol's |
 | SMB control codes | each translated into one service call — copychunk to `Copy`, zero data to `Deallocate`, allocated ranges to `Seek` ([RFC 22 §10](rfc-22-smb.md#10.%20Control%20codes)) |
@@ -348,7 +356,7 @@ And what looks protocol-only but is not:
 ### 3.1 The adapter's states
 
 Every adapter runs through the same four states, driven by the control plane
-(planned RFC 23):
+([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20runtime%20reconciles%3B%20it%20does%20not%20take%20orders)):
 
 ![The adapter's states — configured, serving, draining, stopped, with reconfigure looping on serving — and below them one connection's life: accept, negotiate, authenticate, serve with the pipeline per request, close](img/rfc20-lifecycle.svg)
 
@@ -388,7 +396,8 @@ mapper answering on UDP, reads into a bounded queue and drops a datagram that
 arrives at a full one: the client retries.
 
 **Health.** An adapter is healthy when it is serving with every listener and
-side program bound. Draining reports not ready, so that whatever steers new
+side program bound. Draining reports not ready
+([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)), so that whatever steers new
 clients — an address takeover ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)), a load balancer — stops sending
 them before the drain ends.
 
@@ -402,8 +411,11 @@ by a drain and a start, never by changing a serving connection under its client.
 
 The lower half of the drawing above:
 
-1. **accept** — the connection is counted against the node's connection limit
-   (§6.4); past it, the connection is closed at once, before any byte is read.
+1. **accept** — the connection is charged its fixed cost to the node's
+   connection-state pool and counted against the node's connection limit and
+   its address's quarter of it (§6.4,
+   [RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)); past any of them, the
+   connection is closed at once, before any byte is read.
 2. **negotiate** — the protocol's version or dialect exchange. Requests other
    than the negotiation are refused as the protocol says until it completes.
 3. **authenticate** — the protocol's security handshake (§4.4). NFS's
@@ -454,9 +466,9 @@ Every request, in either protocol, passes the same stages in this order:
 
 | Stage | Does | Fails as |
 | --- | --- | --- |
-| frame | reads one record (RPC record marking, NetBIOS session header), bounded by the protocol's largest request ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes), [RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)) | connection closed |
+| frame | reads one record (RPC record marking, NetBIOS session header), bounded by the protocol's largest request ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes), [RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)); reserves its receive bytes from the length in its header before reading the body ([RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)) | a length past the cap: connection closed; no room in the receive pool: the record is not read until room frees |
 | decode header | the RPC header and credential, or the SMB2 header; signature check | the protocol's garbage-args or invalid-parameter answer; a bad signature drops the request |
-| admit | charges the request to the connection's flow control (§6.3) | the protocol's busy answer, or the request is not read until room frees |
+| admit | charges the request to the connection's flow control (§6.3) | the request is not read until room frees |
 | replay check | the NFSv4.1 slot and sequence, SMB replay and channel sequence | the cached reply, or the protocol's sequence error |
 | decode args | the operation's arguments, through its codec (§5) | the protocol's garbage-args or invalid-parameter answer |
 | resolve IDs | wire IDs to service values: stateid or `FileId` to an `OpenRef`, tree ID to its root handle | the protocol's bad- or stale-ID answer |
@@ -584,11 +596,15 @@ flavour and level, the principal or numeric IDs the credential carried, the
 client's address.
 
 The adapter **MUST NOT** map a principal to numeric IDs or SIDs, apply
-squashing, or decide that a principal is privileged. Those are planned RFC 18's
-and the service's, per share. Where the handshake itself needs a directory —
-verifying an NTLM response, a Kerberos ticket against a keytab — the adapter
-calls the authentication interface RFC 18 defines, and holds only the result in
-its security context.
+squashing, or decide that a principal is privileged. Those are the service's,
+per share, by [RFC 18 §6](rfc-18-identity.md#6.%20Resolution%20per%20share)'s
+resolution. Where the handshake itself needs a directory — verifying an NTLM
+response, a Kerberos ticket against a keytab — the adapter calls the
+authentication interface RFC 18 defines
+([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), and
+holds only the result in its security context. A handshake that fails is
+answered as the protocol's logon failure, and never becomes an anonymous or
+guest session.
 
 An `Identity` **MUST** be built afresh for each request from the connection's
 security context. Any cache keyed on identity carries every field the
@@ -692,7 +708,8 @@ session's reply size, since a client may ask for more than it gets.
   filled, sent as one gathered write, with the protocol's padding appended, not
   copied in.
 
-Receive and reply buffers come from pools whose sizes are RFC 24's. A buffer
+Receive and reply buffers come from pools whose sizes are
+[RFC 24 §2.3](rfc-24-resources.md#2.3%20The%20pools)'s. A buffer
 lent to the service is never reused before the call returns, and a buffer
 holding a reply is never reused before the writer has sent it.
 
@@ -760,19 +777,32 @@ The bound on requests in flight per connection is the protocol's own mechanism
 wherever it has one — NFSv4.1 slots ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)),
 SMB credits ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). Where it has
 none — NFSv3, NFSv4.0, the side programs — the adapter imposes a fixed
-per-connection cap, and a connection at its cap is simply not read until a
-request completes, so TCP's own window pushes back on the client.
+per-connection cap of **64** requests in flight
+([RFC 24 §3.4](rfc-24-resources.md#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control)),
+and a connection at its cap is simply not read until a request completes, so
+TCP's own window pushes back on the client.
 
-Node-wide bounds — total requests in flight, bytes held in request buffers,
-held requests ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) — are
-planned RFC 24's. The adapter applies them at **admit** (§4.1), and a request
-refused there for a node-wide bound is answered the protocol's busy status
-(`NFS4ERR_DELAY`, `NFS3ERR_JUKEBOX`, `STATUS_INSUFFICIENT_RESOURCES`), never
-queued without bound.
+Node-wide bounds — bytes held in request and reply buffers, held requests
+([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)), open state — are
+[RFC 24](rfc-24-resources.md)'s, and none is an unbounded queue. Receive bytes are charged
+at **frame** (§4.1), before a request's body is read: a reader that cannot
+reserve them waits, its connection is not read, and no answer is owed
+([RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
+Reply bytes are reserved before the service is called
+([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)).
+The busy answers are the service's, never the adapter's: a call refused for a
+node memory pool — the share cap, open state, a reply reservation's deadline —
+returns `ErrDelay` with `DelayResources`, and one past its hold budget
+`DelayHoldBudget` ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)).
+The error table answers both at once and holds neither
+([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
+[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)):
+`DelayResources` is `NFS4ERR_DELAY`, `NFS3ERR_JUKEBOX`, `NLM4_DENIED_NOLOCKS`
+or `STATUS_INSUFFICIENT_RESOURCES`.
 
-> ponytail: a fixed per-connection cap for protocols without flow control. One
-> NFSv3 client on one connection is limited to the cap however idle the node is.
-> Size it from RFC 24's budget per connection when a single-client NFSv3
+> ponytail: a fixed cap of 64 per connection for protocols without flow control.
+> One NFSv3 client on one connection is limited to the cap however idle the node
+> is. Raise it, or size it from the receive pool, when a single-client NFSv3
 > benchmark on the reference box is limited by it.
 
 ### 6.4 Deadlines and limits
@@ -783,7 +813,7 @@ queued without bound.
 | idle timeout | a connection with no request and no held state | closed |
 | write deadline | the writer, per message | connection closed |
 | handshake deadline | negotiate and authenticate | connection closed |
-| connection limit | per node | new connections closed at accept |
+| connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept |
 | drain deadline | draining (§3.1) | remaining requests abandoned |
 
 Each is a setting with a default in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
@@ -822,11 +852,15 @@ each buys:
    the service filled, sent in one gathered write; a `WRITE`'s data is decoded in
    place in the receive buffer.
 4. **Buffers pooled by size class.** Receive and reply buffers come from pools
-   in a few classes — a header with attributes, a directory page, the protocol's
-   largest transfer with its headers — so the large class is drawn only for
-   `READ` and `WRITE`. A buffer goes back to its pool when its last borrower, the
-   writer or the service, releases it, never before; a buffer larger than the
-   largest class is not pooled. How much memory each pool may hold is RFC 24's.
+   in four classes, each with the protocol's headers
+   ([RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes)) — small, 4 KiB, a
+   header with attributes; directory, 64 KiB, a directory page; transfer,
+   1 MiB; large, 8 MiB, SMB past 1 MiB — so the transfer and large classes are
+   drawn only for `READ` and `WRITE`. A buffer goes back to its pool when its
+   last borrower, the writer or the service, releases it, never before; a buffer
+   larger than the largest class its protocol uses is not pooled. How much
+   memory each pool may hold is
+   [RFC 24 §2.3](rfc-24-resources.md#2.3%20The%20pools)'s.
 5. **Coalesced sends.** When several replies are queued, the writer sends them
    in one gathered write, so a burst of small replies costs one system call. This
    is why Nagle's algorithm is off (§6.7): batching is the writer's, where it
@@ -839,7 +873,7 @@ each buys:
    what the handshake established (§4.4), with no directory call per request.
 
 > ponytail: one goroutine per request, bounded by the connection's flow control
-> and RFC 24's node-wide budget; no worker pool. A pool adds a queue and a
+> and [RFC 24](rfc-24-resources.md#6.1%20Goroutines)'s node-wide budget; no worker pool. A pool adds a queue and a
 > handoff to every request and bounds nothing the budgets do not already bound.
 > Add one only when a profile on the reference box shows per-request scheduling
 > or allocation limiting the small-operation rate.
@@ -1072,7 +1106,9 @@ tests, per change, without waiting for the nightly run.
 
 ## 10. Observability
 
-Metric names are shown without the deployment's prefix. Operation latency is
+Metric names follow [RFC 25 §2](rfc-25-observability.md#2.%20Metrics) and are
+shown without the `dittofs_` prefix the exporter adds
+([RFC 25 §2.1](rfc-25-observability.md#2.1%20Names)). Operation latency is
 the service's ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)); the adapter
 measures only what happens before and after the service call.
 
@@ -1087,6 +1123,13 @@ measures only what happens before and after the service call.
 | How often does a handler fault? | `adapter_handler_panics_total{protocol, op}` | counter |
 | How often does an error have no row? | `adapter_unmapped_errors_total{protocol}` | counter |
 | Bytes in and out | `adapter_bytes_total{protocol, direction}` | counter |
+
+`adapter_wire_seconds` takes the `request` bucket set
+([RFC 25 §2.6](rfc-25-observability.md#2.6%20Histogram%20buckets)). The
+`reason` of `adapter_connection_closes_total` is a closed set that includes
+[RFC 24 §10](rfc-24-resources.md#10.%20Observability)'s `pool`, `limit` and
+`per_address` for connections closed at accept. No metric carries a client,
+principal, share or path label.
 
 `adapter_unmapped_errors_total` and `adapter_handler_panics_total` are zero in
 a healthy node; any increase is a bug, and alerts as one.
