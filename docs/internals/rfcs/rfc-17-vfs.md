@@ -91,27 +91,7 @@ NFSv4 client presenting a saved handle meets the same checks as one walking the
 pseudo-filesystem into the share. Mounts, tree connects and sessions are never
 stored.
 
-```text
-  alice-pc (SMB)                            build01 (NFSv3)
-  WRITE 64 KiB, own open                    WRITE, same file, no open
-        │                                         │
-        ▼                                         ▼
-  SMB adapter: decode,                      NFS adapter: decode,
-  SMB file ID → alice's open                anonymous open
-        │                                         │
-        ▼                                         ▼
- ┌──────────────────────── filesystem service ─────────────────────────┐
- │ 1 admit to share `profiles`: state, flavour, client rules, squash   │
- │ 2 route to the primary of the file's shard                          │
- │ 3 authorise through the metadata store's one chokepoint             │
- │ 4 check open state: locks, deny modes, caching grants, grace        │
- │ 5 reserve quota if the file grows                                   │
- │ 6 engine: stage the bytes in the journal, return the verifier       │
- └─────────────────────────────────────────────────────────────────────┘
-        │                                         │
-   alice-pc: OK                     build01: refused at step 4,
-                                    alice's deny mode
-```
+![The six steps of every call — admit, route, authorise, check open state, reserve quota, engine — run in one order for both protocols: alice-pc's 64 KiB SMB write through her own open passes all six and gets OK, while build01's NFSv3 write on an anonymous open is refused at step 4 by alice's deny mode as ErrShareViolation, which the NFS adapter turns into an NFS error](img/rfc17-six-steps.svg)
 
 **The words you need.**
 
@@ -252,18 +232,7 @@ namespace, checked against open state, charged to a quota, staged in the journal
 and later recorded as existence. Something has to put those steps in order. This
 document names that something and fixes where it stands:
 
-```
-   NFS adapter      SMB adapter      pNFS endpoints       wire only
-        \                |                /
-   ┌───────────────── vfs.Service ─────────────────┐
-   │ open, close, read, write, commit, lookup,     │     the one API
-   │ readdir, getattr, setattr, create, link,      │     adapters see
-   │ remove, rename, lock, grants, watches, statfs,│
-   │ mount, tree connect, pseudo-fs, share list    │
-   └───┬────────────┬─────────────┬────────────┬───┘
-   metadata      content        open state    routing
-   (RFC 16)      (RFC 8)        (RFC 14)      (RFC 15)
-```
+![The layers: NFS, SMB and pNFS adapters speak wire only and call one vfs.Service, made of the Clients, Names, Attributes, Data, Locking, Volumes and Shares groups; the service alone calls the metadata store (RFC 16), the content engine (RFC 8), open state (RFC 14) and routing (RFC 15), calls adapters back only through the Callbacks interface they implement, and emits quota and access events to a sink it never waits on](img/rfc17-layers.svg)
 
 [RFC 0 §1.3](rfc-0-data-lifecycle.md#1.3%20The%20layers) draws the same picture with the roles marked.
 
@@ -531,6 +500,8 @@ A callback **MUST NOT** block the service beyond its context's deadline, and a
 callback that fails or times out **MUST** be treated as the client not answering:
 a recall that is not acknowledged by its deadline revokes the grant
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
+
+![A recall without a waiting worker: build01's NFS write conflicts with alice-pc's SMB lease, so the service sends RecallGrant, which the SMB adapter turns into a lease break, and answers ErrDelay at once, mapped to NFS4ERR_DELAY or NFS3ERR_JUKEBOX; alice-pc acknowledges, the service gets AckBreak, and build01's retry goes ahead. If alice-pc never answers, the break is forced at 35 s and the lease drops to none; if the conflicting caller is an SMB client, the SMB adapter sends an interim response and re-drives the call itself, held up to smb_pending_deadline, which exceeds the break deadline](img/rfc17-recall.svg)
 
 **No worker waits on a recall.** An operation that conflicts with a caching
 grant starts the recall and returns `ErrDelay` at once. The adapter maps
@@ -1000,6 +971,8 @@ share meet the same four checks. A compound crossing from one share into another
 is re-admitted, and re-squashed, at the crossing. The admission result may be
 cached per (share, identity) only with `ExportPolicy.Version`, the netgroups'
 versions and `ShareList.Version` in the key.
+
+![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same four checks — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the flavour rule (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only) and squash — then Authorize; a compound crossing shares is re-admitted, and a cached admission result is keyed with the policy, netgroup and share-list versions](img/rfc17-admission.svg)
 
 **A share's removal joins the calls admitted before it.** The service counts,
 per share at each primary, the calls it has admitted and not yet answered.

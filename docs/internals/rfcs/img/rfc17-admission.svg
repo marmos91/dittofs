@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 440" width="900" height="440" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}.ok{font-size:11px;font-weight:600;fill:#4c8a58}
+      .no{font-size:12px;font-weight:700;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .life{stroke:#9aa3ad;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="440" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Every call meets the same four admission checks, then Authorize, however it entered the share.</text>
+
+  <rect x="24" y="44" width="272" height="52" rx="5" class="pr"/>
+  <text x="36" y="64" class="h">NFSv4 PUTFH of a held handle</text><text x="36" y="82" class="s">a saved handle, or one a moved client brings</text>
+  <rect x="314" y="44" width="272" height="52" rx="5" class="pr"/>
+  <text x="326" y="64" class="h">NFSv4 walk of the pseudo-fs</text><text x="326" y="82" class="s">PUTROOTFH, then LOOKUPs into the share</text>
+  <rect x="604" y="44" width="272" height="52" rx="5" class="pr"/>
+  <text x="616" y="64" class="h">a call naming only an open</text><text x="616" y="82" class="s">lock, test-lock, layout, watch, grant return</text>
+  <path d="M160,98 L160,116" class="ln"/><path d="M450,98 L450,116" class="ln"/><path d="M740,98 L740,116" class="ln"/>
+
+  <rect x="24" y="118" width="852" height="28" rx="5" class="zone"/>
+  <text x="36" y="136" class="s">the share of the handle or open the call names — admission is a property of the share reached, not of the path; no call skips it</text>
+  <path d="M104,148 L104,168" class="ln"/>
+
+  <rect x="24" y="170" width="160" height="54" rx="5" class="pr"/>
+  <text x="36" y="190" class="h">1 share state</text><text x="36" y="208" class="s">RFC 16 §2.3.1</text>
+  <rect x="197" y="170" width="160" height="54" rx="5" class="pr"/>
+  <text x="209" y="190" class="h">2 flavour rule</text><text x="209" y="208" class="s">the share's ExportPolicy</text>
+  <rect x="370" y="170" width="160" height="54" rx="5" class="pr"/>
+  <text x="382" y="190" class="h">3 client rules</text><text x="382" y="208" class="s">address and netgroups</text>
+  <rect x="543" y="170" width="160" height="54" rx="5" class="pr"/>
+  <text x="555" y="190" class="h">4 squash</text><text x="555" y="208" class="s">Identity → principal</text>
+  <rect x="716" y="170" width="160" height="54" rx="5" class="sv"/>
+  <text x="728" y="190" class="h">Authorize</text><text x="728" y="208" class="s">share grant and file, §4.6</text>
+  <path d="M185,197 L195,197" class="ln"/><path d="M358,197 L368,197" class="ln"/>
+  <path d="M531,197 L541,197" class="ln"/><path d="M704,197 L714,197" class="ln"/>
+
+  <path d="M60,226 L60,248" class="ex"/>
+  <text x="36" y="262" class="e">ErrDelay while quiesced</text><text x="36" y="277" class="e">ErrStale once being</text><text x="36" y="292" class="e">removed or retired</text>
+  <path d="M233,226 L233,248" class="ex"/>
+  <text x="209" y="262" class="e">ErrWrongSecurity</text>
+  <path d="M406,226 L406,248" class="ex"/>
+  <text x="382" y="262" class="e">ErrAccess, or a narrowing</text><text x="382" y="277" class="e">to read-only</text>
+  <text x="555" y="262" class="s">refuses nothing: sets who</text><text x="555" y="277" class="s">the call acts as on this</text><text x="555" y="292" class="s">share</text>
+  <path d="M752,226 L752,248" class="ex"/>
+  <text x="728" y="262" class="e">refused when no grant</text><text x="728" y="277" class="e">admits the caller</text>
+
+  <rect x="24" y="312" width="852" height="96" rx="6" class="dr"/>
+  <text x="36" y="332" class="s">A compound crossing from one share into another is re-admitted, and re-squashed, at the crossing.</text>
+  <text x="36" y="350" class="s">Mount, PseudoRoot and TreeConnect resolve, admit and authorise too: that is where a client fails early, not where it is</text>
+  <text x="36" y="366" class="s">gated, since every later call is admitted again.</text>
+  <text x="36" y="384" class="s">An admission result may be cached per (share, identity) only with ExportPolicy.Version, the netgroups' versions and</text>
+  <text x="36" y="400" class="s">ShareList.Version in the key.</text>
+  <text x="16" y="430" class="s">A client removed from a share is refused on its next call, whatever handles it holds.</text>
+</svg>
