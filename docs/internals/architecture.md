@@ -530,18 +530,22 @@ Mark is idempotent, so resume-on-restart is intentionally not built.
 
 ### Triggers and observability
 
-- **Periodic GC is not yet wired.** There is no scheduler; schedule via
-  cron until one ships.
+- **Periodic** via the background scheduler, on by default. `dfs start`
+  runs GC every `gc.auto_interval` (default 15m; values in (0, 1m) are
+  refused) unless `gc.auto_enabled` is false. See
+  [Garbage Collection](../guide/garbage-collection.md#automatic-gc-default).
 - **On-demand** via `dfsctl store block gc <share> [--dry-run]`;
   `--dry-run` skips DELETEs and prints up to `gc.dry_run_sample_size`
   candidate keys (default 1000). The mark-sweep is global across every
-  share that targets the same remote, so the `<share>` argument selects
-  which remote(s) to scan rather than scoping the live set to one share.
+  share that targets the same remote, and every run scans every remote.
+  The `<share>` argument only selects where the run summary
+  (`last-run.json`) is written; it does not choose the remotes or scope
+  the live set to one share.
 - **Observability** via structured slog INFO at start/end with `run_id`,
   `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`, and
-  `error_count`, plus a persisted summary at
-  `<localStore>/gc-state/last-run.json`. Inspect with
-  `dfsctl store block gc-status <share>`.
+  `error_count`. An on-demand run also persists its summary at
+  `<localStore>/gc-state/last-run.json`; inspect it with
+  `dfsctl store block gc-status <share>`. A scheduled run persists none.
 
 GC coordinates with the share-snapshots subsystem through a single
 rule: **manifest-on-disk = block held**. Snapshots register a hold
@@ -920,7 +924,7 @@ type MetadataService struct {
 
 // Usage by protocol handlers
 metaSvc := metadata.New()
-metaSvc.RegisterStoreForShare("/export", memoryStore)
+metaSvc.RegisterStoreForShare("/export", inMemoryBadgerStore)
 metaSvc.RegisterStoreForShare("/archive", badgerStore)
 
 // High-level operations (with business logic)
@@ -1268,10 +1272,14 @@ threading, so changes to the read/write path stay confined to the helpers.
 
 ### Operator surfaces
 
-- `dfsctl store block audit-refcounts <share>` runs the refcount
-  reconciliation audit (`∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)`),
-  emits aggregate counts as structured slog INFO, and persists the
-  last-run summary at `<localStore>/audit-state/last-inv02.json`. See
+- `dfsctl store block audit-refcounts <share>` runs the manifest
+  consistency audit: every block reference in `FileAttr.Blocks` must have
+  a backing `FileChunk` row at the same offset with the same hash. It
+  reports `total_refs`, `backed_refs` and `dangling_refs`; a non-zero
+  dangling count is corruption and the command exits non-zero. It does
+  not look for leaked blocks. It emits aggregate counts as structured slog
+  INFO and persists the last-run summary at
+  `<localStore>/audit-state/last-inv02.json`. See
   `docs/guide/cli.md` for the full reference and `docs/guide/faq.md` for operator
   guidance.
 - The cache has no operator-facing config knobs: its RAM budget is
