@@ -668,7 +668,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so for the run `dt` lowers the first unprivileged port of the server's network namespace to 445, `sudo -n sysctl net.ipv4.ip_unprivileged_port_start=445` (§3), and restores it after. A file capability on `{bin}/dfs` would do it too, but puts the binary in secure mode, where Go prints no trace when the server panics; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so for the run `dt` lowers the first unprivileged port of the server's network namespace to 445, `sudo -n sysctl net.ipv4.ip_unprivileged_port_start=445` (§3), and restores it on every exit path, an interrupt or a failure included, so no host is left changed. A file capability on `{bin}/dfs` would do it too, but puts the binary in secure mode, where Go prints no trace when the server panics; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
@@ -728,12 +728,16 @@ The fixture gives the command these placeholders:
   `client` it's the host's bridge address. Until step 3 the suites' scripts still reach their
   server at `localhost`, and WPTS and smbtorture reach it inside the server's container. When
   step 2's exit criterion compares results through `dt` with the scripts' (§8), a difference that
-  comes from the address, or from where the server runs, has its cause listed beforehand.
+  comes from the address, or from where the server runs, has its cause listed beforehand. The
+  scripts stay as they are, except that pynfs's reference run is given `--server` with the host's
+  address, so a difference in the delegation tests isn't hidden behind the address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
   port run one at a time.
 - `{client2}`: the second client's address, with `clients: 2`.
-- `{mount}` and `{realm}`.
+- `{mount}`: where the share is mounted, a path as short as today's `/tmp/dittofs-test`, so a
+  test of path length such as pjdfstest's `open/03.t` measures the server, not the mount point.
+- `{realm}`.
 - `{share}`: the share a test runs on: its `share=` in a `.txt` list, else the fixture's first
   share, without its leading `/`.
 - `{user}` and `{password}`: a test user whose password is generated per run, in place of the
