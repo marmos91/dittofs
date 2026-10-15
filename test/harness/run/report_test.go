@@ -185,12 +185,12 @@ func TestPanicky(t *testing.T) {
 	got := readSummary(t, filepath.Join(dir, "summary.json")).cases()
 	slices.Sort(got)
 	want := []string{
-		"g example.com/m/a > TestFail: failed | a_test.go:6: broke",
-		"g example.com/m/a > TestParent/bad: failed | a_test.go:10: sub broke",
+		"g example.com/m/a > TestFail: failed |     a_test.go:6: broke",
+		"g example.com/m/a > TestParent/bad: failed |     a_test.go:10: sub broke",
 		"g example.com/m/a > TestParent/good: passed",
 		"g example.com/m/a > TestParent: failed",
 		"g example.com/m/a > TestPass: passed",
-		"g example.com/m/a > TestSkip: skipped [ungraded] | a_test.go:7: nothing to check here",
+		"g example.com/m/a > TestSkip: skipped [ungraded] |     a_test.go:7: nothing to check here",
 		"g example.com/m/p > TestPanicky: other | panic: boom",
 	}
 	if len(got) != len(want) {
@@ -323,8 +323,10 @@ func TestRunNameAttempt(t *testing.T) {
 	}
 }
 
-// The checkout is dirty when it has changes its commit doesn't, an untracked
-// file among them; its branch is "" when it's on none.
+// One git status gives the checkout's commit, shortened, or "nocommit"
+// before the first commit and outside a checkout; its branch, "" when it's on
+// none; and whether it's dirty: it has changes its commit doesn't, an
+// untracked file among them.
 func TestGitState(t *testing.T) {
 	// A git hook running the tests exports GIT_DIR and the like, which would
 	// point these commands at the repository being committed to.
@@ -335,12 +337,14 @@ func TestGitState(t *testing.T) {
 		}
 	}
 	root := t.TempDir()
-	git := func(args ...string) {
+	git := func(args ...string) string {
 		t.Helper()
 		pre := []string{"-C", root, "-c", "user.name=dt", "-c", "user.email=dt@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=" + os.DevNull}
-		if out, err := exec.Command("git", append(pre, args...)...).CombinedOutput(); err != nil {
+		out, err := exec.Command("git", append(pre, args...)...).CombinedOutput()
+		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
+		return strings.TrimSpace(string(out))
 	}
 	write := func(name, body string) {
 		t.Helper()
@@ -348,27 +352,29 @@ func TestGitState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	git("init", "-q", "-b", "work")
-	write("a.txt", "a\n")
-	git("add", ".")
-	git("commit", "-q", "-m", "a")
-	check := func(when, branch string, dirty bool) {
+	check := func(when, commit, branch string, dirty bool) {
 		t.Helper()
-		if b, d := gitState(root); b != branch || d != dirty {
-			t.Errorf("%s: branch %q, dirty %v; want %q, %v", when, b, d, branch, dirty)
+		if c, b, d := gitState(root); c != commit || b != branch || d != dirty {
+			t.Errorf("%s: %q, %q, dirty %v; want %q, %q, %v", when, c, b, d, commit, branch, dirty)
 		}
 	}
-	check("clean", "work", false)
+	git("init", "-q", "-b", "work")
+	write("a.txt", "a\n")
+	check("no commit yet", "nocommit", "work", true)
+	git("add", ".")
+	git("commit", "-q", "-m", "a")
+	head := git("rev-parse", "--short=8", "HEAD")
+	check("clean", head, "work", false)
 	write("new.txt", "")
-	check("an untracked file", "work", true)
+	check("an untracked file", head, "work", true)
 	_ = os.Remove(filepath.Join(root, "new.txt"))
 	write("a.txt", "b\n")
-	check("a change", "work", true)
+	check("a change", head, "work", true)
 	git("checkout", "-q", "--", "a.txt")
 	git("checkout", "-q", "--detach")
-	check("detached", "", false)
-	if b, d := gitState(t.TempDir()); b != "" || d {
-		t.Errorf("not a checkout: %q, %v", b, d)
+	check("detached", head, "", false)
+	if c, b, d := gitState(t.TempDir()); c != "nocommit" || b != "" || d {
+		t.Errorf("not a checkout: %q, %q, %v", c, b, d)
 	}
 }
 
@@ -395,7 +401,8 @@ func lines(tests []report.Test) []string {
 // outside any test. A test whose binary crashed, or that go test's own
 // timeout stopped, is its package's one result, timed to the package's end:
 // other for the crash, failed for the timeout. Every test the recording
-// starts, its package's end closes.
+// starts, its package's end closes. A message keeps its lines' indentation,
+// a stack's frames included.
 func TestGoJSONRecordedRun(t *testing.T) {
 	events, err := os.ReadFile("testdata/go-test.json")
 	if err != nil {
@@ -410,10 +417,10 @@ func TestGoJSONRecordedRun(t *testing.T) {
 	ungraded(&registry.Suite{}, res.cases)
 	want := []string{
 		"example.com/m/a > TestPass: passed, 20ms",
-		"example.com/m/a > TestFail: failed, 0s | a_test.go:9: broke",
-		"example.com/m/a > TestSkip: skipped, 0s [ungraded] | a_test.go:10: nothing to check here",
+		"example.com/m/a > TestFail: failed, 0s |     a_test.go:9: broke",
+		"example.com/m/a > TestSkip: skipped, 0s [ungraded] |     a_test.go:10: nothing to check here",
 		"example.com/m/a > TestParent/good: passed, 0s",
-		"example.com/m/a > TestParent/bad: failed, 0s | a_test.go:13: sub broke",
+		"example.com/m/a > TestParent/bad: failed, 0s |     a_test.go:13: sub broke",
 		"example.com/m/a > TestParent: failed, 0s",
 		"example.com/m/b: failed, 0s | build failed",
 		"example.com/m/p > TestPanicky: other, 3ms | panic: boom",
@@ -423,6 +430,10 @@ func TestGoJSONRecordedRun(t *testing.T) {
 	}
 	if got := lines(res.cases); !slices.Equal(got, want) || len(res.running) != 0 {
 		t.Errorf("got %q\nwant %q\nstill open: %v", got, want, slices.Collect(maps.Keys(res.running)))
+	}
+	i := slices.IndexFunc(res.cases, func(tc report.Test) bool { return tc.Name == "TestPanicky" })
+	if i < 0 || !strings.Contains(res.cases[i].Message, "\n\t/src/m/p/p_test.go:9 +0x") {
+		t.Errorf("the crash's stack lost its indentation: %q", res.cases)
 	}
 }
 

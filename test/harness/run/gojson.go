@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/report"
@@ -355,13 +356,14 @@ func (r *results) end(pkg string, when time.Time, stopped string) bool {
 // framing matches the lines go test frames a test's own output with.
 var framing = regexp.MustCompile(`^(=== (RUN|PAUSE|CONT|NAME)|--- (PASS|FAIL|SKIP):) `)
 
-// message is a test's own output, each line trimmed, without the framing or
-// blank lines.
+// message is a test's own output without go test's framing or blank lines.
+// Each line keeps its indentation, as a stack's frames do, and loses the
+// space after it.
 func message(output []string) string {
 	var kept []string
 	for _, line := range strings.Split(strings.Join(output, ""), "\n") {
-		if line = strings.TrimSpace(line); line != "" && !framing.MatchString(line) {
-			kept = append(kept, line)
+		if text := strings.TrimSpace(line); text != "" && !framing.MatchString(text) {
+			kept = append(kept, strings.TrimRightFunc(line, unicode.IsSpace))
 		}
 	}
 	return strings.Join(kept, "\n")
