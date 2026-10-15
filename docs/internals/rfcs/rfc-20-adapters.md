@@ -444,12 +444,26 @@ client's setup.
 
 The `Callbacks` an adapter registers at `Connect`
 ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) are implemented once per protocol
-on the shared connection runtime: they find the connection holding the client's
-back channel, encode the protocol's callback — `CB_RECALL`, a lease break,
-`NLM_GRANTED`, a change notification — and send it on that connection's writer
-(§6.2). A callback **MUST** return within its context's deadline whether or not
-the client answers; a client that has no live connection is a callback that
-failed, and the service handles it as the client not answering.
+on the shared connection runtime. Each protocol reaches the client its own way:
+
+- **SMB and NFSv4.1** send on a connection the client opened: a lease break or
+  change notification on a channel of the SMB session, `CB_RECALL` on the
+  NFSv4.1 back channel
+  ([RFC 21 §3.4](rfc-21-nfs.md#3.4%20The%20back%20channel%20and%20where%20callbacks%20go)).
+  The callback is encoded and sent on that connection's writer (§6.2); a client
+  with no such connection live is a callback that failed.
+- **NLM** callbacks — `NLM4_GRANTED`, `NLM4_GRANTED_MSG`, the `*_RES` replies —
+  are RPCs the server makes to the host's own NLM service, not replies on the
+  connection that carried the request, which may have closed since. The adapter
+  connects out to the host, from the floating address the host used
+  ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM)), as §6.6's decision says; a host it
+  cannot reach is a callback that failed.
+- **NFSv4.0** has no callback path: none is ever opened
+  ([RFC 21 §4.1](rfc-21-nfs.md#4.1%20SETCLIENTID%20and%20the%20callback%20path)).
+
+A callback **MUST** return within its context's deadline whether or not the
+client answers; the service handles a failed callback as the client not
+answering.
 
 `Revoked` is the adapter's prompt to answer what it holds pending on the
 revoked state — a waiting lock, an outstanding notification, a held request —
@@ -467,7 +481,7 @@ Every request, in either protocol, passes the same stages in this order:
 | Stage | Does | Fails as |
 | --- | --- | --- |
 | frame | reads one record (RPC record marking, NetBIOS session header), bounded by the protocol's largest request ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes), [RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)); reserves its receive bytes from the length in its header before reading the body ([RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)) | a length past the cap: connection closed; no room in the receive pool: the record is not read until room frees |
-| decode header | the RPC header and credential, or the SMB2 header; signature check | the protocol's garbage-args or invalid-parameter answer; a bad signature drops the request |
+| decode header | the RPC header and credential, or the SMB2 header; signature check | the protocol's garbage-args or invalid-parameter answer; a failed signature is the protocol's: SMB `STATUS_ACCESS_DENIED` on the request's message ID, connection kept ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)); an `RPCSEC_GSS` verifier that fails `RPCSEC_GSS_CREDPROBLEM`, and a sequence number outside the window dropped unanswered ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | charges the request to the connection's flow control (§6.3) | the request is not read until room frees |
 | replay check | the NFSv4.1 slot and sequence, SMB replay and channel sequence | the cached reply, or the protocol's sequence error |
 | decode args | the operation's arguments, through its codec (§5) | the protocol's garbage-args or invalid-parameter answer |
@@ -531,6 +545,10 @@ type Handler[Req, Rep any] func(ctx context.Context, c *Conn, req *Req) (*Rep, e
 - It **MUST** make at most one service call that changes state. A wire
   operation the service cannot express in one call is a missing service
   operation ([RFC 17 §4.1](rfc-17-vfs.md#4.1%20The%20operation%20set%20is%20the%20union%2C%20not%20the%20intersection)), never a sequence in the handler.
+  An SMB `LOCK` of several elements is the case in point: it is one `Lock` or
+  one `Unlock` call carrying every element's range, and the service — not the
+  handler — releases the ranges it took when a later one fails
+  ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)).
 - It **MAY** make further read-only calls only to fill fields the reply
   carries, and only where the service's mutating call does not already return
   them. Where it does — pre- and post-operation attributes, the change
@@ -567,12 +585,26 @@ service calls, admitted separately
 
 - A compound longer than the protocol's operation cap is refused before any of
   its operations runs; the cap is the protocol RFC's.
-- **The reply budget is checked before each operation, not after.** The runner
-  compares the operation's reply bound (§4.2) with what is left of the reply the
-  client allows — NFSv4.1's `ca_maxresponsesize`, SMB's output buffer — and
-  refuses an operation that would not fit before it runs (`NFS4ERR_REP_TOO_BIG`).
-  A mutation applied whose reply then cannot be sent is a mutation the client
-  will send again.
+- **The reply budget is checked before each operation, not after.** In an
+  NFSv4.1 compound the runner compares the operation's reply bound (§4.2) with
+  what is left of the session's `ca_maxresponsesize`, and refuses an operation
+  that would not fit before it runs (`NFS4ERR_REP_TOO_BIG`). When the
+  `SEQUENCE` set `sa_cachethis`, it checks the same bound against
+  `ca_maxresponsesize_cached` too, and refuses with
+  `NFS4ERR_REP_TOO_BIG_TO_CACHE`
+  ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)). A mutation applied whose
+  reply then cannot be sent, or cannot be cached when the client asked, is a
+  mutation the client will send again.
+- **SMB has no compound-wide reply budget.** A command's output-length field —
+  `READ`'s `Length`, the `OutputBufferLength` of `QUERY_INFO`,
+  `QUERY_DIRECTORY`, `IOCTL` and `CHANGE_NOTIFY` — bounds that command's output
+  data only, not its header or the compound, and is answered by the command's
+  own rule (MS-SMB2 3.3.5) — truncation with `STATUS_BUFFER_OVERFLOW`, or
+  `STATUS_INFO_LENGTH_MISMATCH` / `STATUS_BUFFER_TOO_SMALL` before it runs. A
+  command without one, `CREATE` or `CLOSE`, has a reply bounded by its own
+  structure and the create contexts the server returns. The whole
+  message is bounded by the negotiated sizes
+  ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)).
 
 **Example: an SMB compound.** Explorer reading a file's properties sends
 `CREATE`, `QUERY_INFO` and `CLOSE`, related. The runner calls `Open`, keeps the
@@ -651,8 +683,9 @@ answered `ErrDelay`, sends the interim response, and re-drives the call
 ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). The re-drive is a pipeline
 mechanism, not handler code:
 
-- a held request holds no worker between attempts; it is a timer and the
-  decoded request;
+- a held request holds no worker between attempts; it is a timer, the
+  decoded request and the receive buffer its arguments point into, which it
+  keeps until its final answer (§5.3);
 - each attempt re-runs **call service** onward with the same decoded arguments
   and the same wire IDs re-resolved, so an open closed meanwhile is seen;
 - how long a request is held, per cause, is RFC 17 §3.2's table, applied by the
@@ -702,15 +735,20 @@ session's reply size, since a client may ask for more than it gets.
 `READ` and `WRITE` payloads are not copied by the adapter
 ([RFC 17 §4.5](rfc-17-vfs.md#4.5%20No%20copies%20on%20the%20data%20path)):
 
-- a `WRITE`'s data is a slice of the receive buffer, lent to the service for the
-  call and released when the call returns;
+- a `WRITE`'s data is a slice of the receive buffer, lent to the service for
+  each call. The request, not the call, owns the buffer: it is released only
+  when the request has its final answer — a held request (§4.6) keeps it
+  across every re-drive — and the service's last borrower has released it.
+  Released after the first attempt, the pool could refill it before a re-drive,
+  which would then write another request's bytes;
 - a `READ`'s reply is encoded as a header followed by the buffer the service
   filled, sent as one gathered write, with the protocol's padding appended, not
   copied in.
 
 Receive and reply buffers come from pools whose sizes are
 [RFC 24 §2.3](rfc-24-resources.md#2.3%20The%20pools)'s. A buffer
-lent to the service is never reused before the call returns, and a buffer
+lent to the service is never reused before its request is answered and every
+borrower has released it, and a buffer
 holding a reply is never reused before the writer has sent it.
 
 Encryption and signing, where a protocol wraps the whole message, necessarily
@@ -818,17 +856,30 @@ or `STATUS_INSUFFICIENT_RESOURCES`.
 
 Each is a setting with a default in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
 the same name for every protocol, overridable per protocol where the protocol
-RFC says why. A connection holding state the client relies on — an NFSv4.0
-callback path, an SMB session with durable opens — is not idle while that
+RFC says why. A connection holding state the client relies on — an NFSv4.1
+back channel, an SMB session with durable opens — is not idle while that
 state lives.
 
 ### 6.5 Cancellation
 
-A client cancel (SMB `CANCEL`), a closed connection or a drain cancels the
-request's context. The service decides what a cancelled context means for a
-call already in progress; the adapter only stops waiting for it and drops its
-reply. A mutation that the service applied after the cancel is applied: the
-adapter **MUST NOT** report to the client that it was not.
+A client cancel (SMB `CANCEL`), a closed connection or a drain deadline
+cancels the request's context. The service decides what a cancelled context
+means for a call already in progress. What the adapter does with the reply
+depends on which it was:
+
+- **A client cancel is answered.** The connection is live and the client still
+  waits for the request's final response, so the adapter **MUST** send one:
+  the call's own result if it took effect — a waiting lock granted before
+  `CancelLock` returned is success
+  ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)) — and
+  `STATUS_CANCELLED` only when the service reports it did not. `CANCEL` itself
+  has no response.
+- **A closed connection or an expired drain abandons.** There is no one to
+  answer, or no answer that is safe (§3.1): the adapter stops waiting and drops
+  the reply.
+
+Either way, a mutation that the service applied after the cancel is applied:
+the adapter **MUST NOT** report to the client that it was not.
 
 ### 6.6 Throughput and latency
 
@@ -884,10 +935,20 @@ each buys:
 > backlog.
 
 > decision: an adapter keeps no connection pool. A file server is the passive
-> end, and clients choose how many connections to open. The only connection an
-> adapter opens is an NFSv4.0 callback path to a client, which it keeps, one per
-> client, and reuses. Connections between `protocol` and `storage` nodes belong
-> to the shard service ([RFC 15](rfc-15-topology.md)), not to an adapter.
+> end, and clients choose how many connections to open. The only connections an
+> adapter opens are NLM's: callbacks to a host's NLM service, its port looked up
+> through the host's port mapper (`GETPORT` for NLM version 4 over TCP), and
+> NSM's `SM_NOTIFY`, each from the floating address the host used
+> ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM),
+> [§6.2](rfc-21-nfs.md#6.2%20NSM)). It keeps one NLM callback connection per
+> host while that host has a grant or `*_RES` reply to send, and closes it
+> after. NFSv4.0 callback connections are never opened
+> ([RFC 21 §4.1](rfc-21-nfs.md#4.1%20SETCLIENTID%20and%20the%20callback%20path)),
+> and NFSv4.1 and SMB call back on connections the client opened. Connections
+> between `protocol` and `storage` nodes belong to the shard service
+> ([RFC 15](rfc-15-topology.md)), not to an adapter. Revisit if a client
+> protocol is added whose callbacks need a server-opened connection other than
+> NLM's.
 
 The ceilings above are measured on the reference box
 ([index](rfc-index.md#Test%20tiers)) by four benchmarks, each per protocol:
@@ -1005,10 +1066,18 @@ request by request.
   retries and timing differ between runs and hide the reply under test. The
   kernel clients are exercised by the protocol suites
   ([RFC 21 §12](rfc-21-nfs.md#12.%20Conformance), [RFC 22 §17](rfc-22-smb.md#17.%20Conformance)).
-- A script may also be a capture of a real client's session, re-sent: allowed
-  only for traffic with no security context, since a signed or encrypted
-  session cannot be replayed into a new session's keys. Authenticated scripts
-  are run live against both servers instead.
+- A script may also be derived from a capture of a real client's session:
+  allowed only for traffic with no security context, since a signed or
+  encrypted session cannot be replayed into a new session's keys.
+  Authenticated scripts are run live against both servers instead.
+- **A capture-derived script rebinds what the server issued.** Every value a
+  request carries that an earlier reply issued — file handles, stateids,
+  client, session and tree IDs, `FileId`s, `READDIR` cookies and verifiers —
+  **MUST** be taken from the live run's own replies, by the same bindings §8.3
+  tokenises, never re-sent as captured. A captured `LOOKUP` then `READ` re-sent
+  verbatim sends the first server's handle to the second, which answers a
+  stale handle instead of the read; normalising the replies cannot repair the
+  requests.
 - Encryption and signing are switched off where the protocol allows, so the
   dissector sees the messages; one script per protocol runs them on, to compare
   the security exchange itself.
@@ -1021,7 +1090,12 @@ that "the handle this `LOOKUP` returned is the one that `READ` sent" still
 compares:
 
 - times, nonces, verifiers, GUIDs, session and tree IDs, client IDs;
-- file handles, `FileId`s, stateids, `READDIR` cookies;
+- file handles, `FileId`s, `READDIR` cookies;
+- the `other` field of an ordinary stateid. Its `seqid` is compared, since a
+  client acts on its increments
+  ([RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)): a server that steps it 1→3
+  where the reference steps 1→2 differs. The special stateids — all zeros, all
+  ones, the current stateid — are compared as they are;
 - numeric file IDs and `fsid`s;
 - signatures, encrypted payloads, and the lengths of fields that carry only
   these;
@@ -1098,7 +1172,7 @@ tests, per change, without waiting for the nightly run.
 | A8 | Decoders allocate nothing a length field claims before checking it against the bytes remaining and the protocol's cap. |
 | A9 | The adapter does not copy `READ` or `WRITE` payloads, apart from encryption and signing. |
 | A10 | No worker waits on a client; a slow client blocks only its own connection, and a connection at its flow-control bound is not read. |
-| A11 | A drained or cancelled request is never answered with a final error the service may contradict. |
+| A11 | A drained or cancelled request is never answered with a final error the service may contradict, and a request cancelled by its client on a live connection is always answered. |
 | A12 | The adapter maps no identity, applies no squash and grants no privilege; it hands the service what the handshake proved. |
 | A13 | Every wire divergence from the reference server that survives normalisation is a red run or a recorded entry citing a protocol RFC rule. |
 | A14 | Nagle's algorithm is off on every connection, and the socket buffers are left to the kernel unless a setting fixes them. |

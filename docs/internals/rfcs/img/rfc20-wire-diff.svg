@@ -47,8 +47,8 @@
 
   <text x="24" y="330" class="h">normalised (tokens)</text>
   <text x="24" y="348" class="s">times, nonces, verifiers, GUIDs, session / tree / client IDs,</text>
-  <text x="24" y="362" class="s">handles, FileIds, stateids, cookies, fsids, signatures, names</text>
+  <text x="24" y="362" class="s">handles, FileIds, stateid other, cookies, fsids, signatures, names</text>
   <text x="400" y="330" class="h">compared</text>
   <text x="400" y="348" class="s">statuses, flags, optional fields present, attributes,</text>
-  <text x="400" y="362" class="s">sizes, counts, offsets, credit grants, entry order</text>
+  <text x="400" y="362" class="s">sizes, counts, offsets, stateid seqids, credits, entry order</text>
 </svg>
