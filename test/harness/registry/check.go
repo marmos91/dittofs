@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -196,6 +197,19 @@ func checkUnit(root string, u *Suite) []error {
 	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
 	}
+	// Only a running cell finds the tests of a glob holding a placeholder, so
+	// nothing that needs them when the cell is planned can have them.
+	if u.Tests.Deferred() {
+		planned := map[string]bool{"shards": u.Shards > 1, "needs_by_test": len(u.NeedsByTest) > 0, "timeout.test: size": u.Timeout.Test == "size"}
+		for t, sel := range u.Select {
+			planned["select."+t] = sel.Glob != ""
+		}
+		for _, field := range slices.Sorted(maps.Keys(planned)) {
+			if planned[field] {
+				fail("%s needs the tests when the cell is planned, but tests %s holds a placeholder, which only a running cell fills", field, u.Tests.Glob)
+			}
+		}
+	}
 	inCell := map[string]bool{}
 	for _, s := range u.cellStrings() {
 		for _, p := range Placeholders(s) {
@@ -238,7 +252,7 @@ func Placeholders(s string) []string {
 }
 
 // Tools returns the test tools the suite names, as {tools}/NAME in any of its
-// fields, each once and in order.
+// fields, each once, sorted by name.
 func (u *Suite) Tools() []string {
 	var out []string
 	for _, s := range u.allStrings() {

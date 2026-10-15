@@ -3,8 +3,12 @@ package run
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -369,4 +373,52 @@ func TestToolsMissing(t *testing.T) {
 	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "nix isn't installed") {
 		t.Errorf("no nix: %+v", o)
 	}
+}
+
+// The dtc image checks each tool out at the revision flake.lock pins for its
+// source, so its copies under /opt, which dt takes inside dtc, are what nix
+// builds elsewhere. A revision changed on one side only fails.
+func TestDtcToolsMatchFlakeLock(t *testing.T) {
+	lock, err := os.ReadFile("../../../flake.lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile, err := os.ReadFile("../docker/dev.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range pinDrift(lock, dockerfile) {
+		t.Error(d)
+	}
+	changed := strings.Replace(string(dockerfile), "PYNFS_REV=", "PYNFS_REV=0", 1)
+	if d := pinDrift(lock, []byte(changed)); len(d) != 1 || !strings.Contains(d[0], "PYNFS_REV=0") {
+		t.Errorf("a changed revision gives %q", d)
+	}
+}
+
+// pinDrift compares, for each tool dt has, the revision flake.lock pins for
+// its NAME-src input with the NAME_REV the Dockerfile checks out, and says
+// how each differs.
+func pinDrift(lock, dockerfile []byte) []string {
+	var l struct {
+		Nodes map[string]struct{ Locked struct{ Rev string } }
+	}
+	if err := json.Unmarshal(lock, &l); err != nil {
+		return []string{"flake.lock: " + err.Error()}
+	}
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(toolDirs)) {
+		input, arg := name+"-src", strings.ToUpper(name)+"_REV"
+		pinned := l.Nodes[input].Locked.Rev
+		m := regexp.MustCompile(`(?m)^ARG ` + arg + `=(\S+)$`).FindSubmatch(dockerfile)
+		switch {
+		case pinned == "":
+			out = append(out, "flake.lock pins no "+input)
+		case m == nil:
+			out = append(out, "the Dockerfile sets no "+arg)
+		case string(m[1]) != pinned:
+			out = append(out, fmt.Sprintf("the Dockerfile has %s=%s, but flake.lock pins %s at %s", arg, m[1], input, pinned))
+		}
+	}
+	return out
 }

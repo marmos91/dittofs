@@ -43,6 +43,10 @@ func TestLoadRules(t *testing.T) {
 		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},
 		{"a selection names a value", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [] } } }\n", "selects no value"},
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},
+		{"a placeholder's tests aren't sharded", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', shards: 2 }\n", "shards needs the tests when the cell is planned"},
+		{"a placeholder's tests have no needs_by_test", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', needs_by_test: { 'a*': [linux] } }\n", "needs_by_test needs the tests"},
+		{"a placeholder's tests aren't timed by size", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', timeout: { test: size } }\n", "timeout.test: size needs the tests"},
+		{"a placeholder's tests aren't narrowed by a glob", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', select: { pr: 'a*' } }\n", "select.pr needs the tests"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
