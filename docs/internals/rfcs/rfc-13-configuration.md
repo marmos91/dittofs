@@ -316,7 +316,7 @@ only, and **MUST NOT** be on by default.
 ### 2.3 A record is versioned
 
 Each record carries a **generation**, raised by every change, and a **schema
-version**. A node reports, per kind (`settings`, `shares`, `principals`), the generation it has applied, and the records it refused (RFC 23 §2.4)
+version**. A node reports, per kind (`settings`, `shares`, `principals`), the position it has reconciled through, the records it refused and those awaiting a restart; a record is applied once that position reaches the record's own (RFC 23 §2.4)
 ([§8](#8.%20Observability)). A reader that meets a schema version it does not know refuses
 the record rather than reading the fields it recognises: a field it skipped may
 be the one that mattered.
@@ -843,15 +843,15 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| the generation a node has applied per kind — `settings`, `shares`, `principals` — read against the store's current generation per kind | RFC 23's `runtime_applied_generation{kind}` | gauge |
-| how long a node's applied generation has been behind the store's, per kind — `settings` (`CFGGEN`), `shares` (`SL`), `principals` (`PGEN`) | `config_generation_lag_seconds{kind}` | gauge |
+| the position a node has reconciled through per kind — `settings`, `shares`, `principals` — read against the store's current counter per kind; a record is applied once it reaches the record's own | RFC 23's `runtime_applied_generation{kind}` | gauge |
+| how long a node's reconciled position has been behind the store's counter, per kind — `settings` (`CFGGEN`), `shares` (`SL`), `principals` (`PGEN`) | `config_generation_lag_seconds{kind}` | gauge |
 | secrets a node holds at an older version than the current one | `config_secrets_behind` | gauge, a count |
 | each format's active version, and the range each node registers | `format_active_version`, `format_supported_range` | gauges, labelled by format |
 | records refused, by component and reason | `config_refused_total` | counter |
 | changes refused because a setting is bound | `config_bound_refusals_total` | counter |
 | the provisioning file hash each node applied, and applies refused by reason | `config_provisioning_applied`, `config_provisioning_refused_total` | gauge, counter |
 
-A node whose generation for a live record stays behind the store's for longer
+A node whose reconciled position stays behind a live record's own for longer
 than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node,
 `config_generation_behind`, which names the records behind; no metric is
 labelled by record or by secret.
