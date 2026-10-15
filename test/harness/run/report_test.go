@@ -144,12 +144,13 @@ func TestExitResultsPerCommand(t *testing.T) {
 	t.Setenv("GITHUB_EVENT_NAME", "schedule")
 	root, r := repo(t, `groups: { g: [lint, listed] }
 suites:
-  lint: { cmd: [ "true", "false", "no-such-check {base}", { sh: "exit 75" }, { sh: "echo two\n# more" } ] }
+  lint: { cmd: [ "true", "true {out}", "false", "no-such-check {base}", { sh: "exit 75" }, { sh: "echo two\n# more" } ] }
   listed: { cmd: "no-such-check {base}", known: known.yaml }
 `, map[string]string{"known.yaml": "[]\n"})
 	rep := runIn(t, root, r, "g")
 	want := []string{
 		"lint > true: passed",
+		"lint > true {out}: passed",
 		"lint > false: failed | `false` exited 1",
 		"lint > no-such-check {base}: skipped [ungraded] | no change to check",
 		"lint > echo two: passed",
