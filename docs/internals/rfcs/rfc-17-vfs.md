@@ -988,7 +988,7 @@ type AccessEvent struct {
 	Name       []byte // the name acted on, for namespace operations
 	Want       Access
 	Allowed    bool
-	SelectedBy Selector // Policy: the share's audit policy; Entry: an audit or alarm entry of the file's ACL (RFC 19 §3.7)
+	SelectedBy Selector // Policy: the share's audit policy; Entry: an audit or alarm entry of the file's ACL, which the chokepoint reports with its decision (RFC 7 §7.6, RFC 19 §3.7)
 }
 
 // QuotaEvent is one quota transition or refusal. Transitions are emitted once
@@ -1368,8 +1368,9 @@ the handle or open it names, in this order:
    share: map it to a principal, squash it, collect its groups, read its share
    access from the grants, and set its flags
    ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)).
-   Step 3's narrowing to read-only reaches the chokepoint as a field of that
-   caller, since the chokepoint evaluates no client rule (RFC 19 §3.2);
+   Step 3's narrowing to read-only, by a client rule or `ReadOnly`, reaches
+   the chokepoint as a field of that caller, since the chokepoint evaluates no
+   client rule (RFC 19 §3.2);
 5. the share's cap on the node's request buffers
    ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission))
    — `ErrDelay` with `DelayResources`, at once.
@@ -1890,10 +1891,11 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 > bounds nothing and only delays writes. Add it with the cluster's remote
 > primary, as the bullet above states it.
 - **Soft limits.** Crossing the advisory threshold or the soft limit emits a
-  quota event (§3.3) and refuses nothing; the metadata store records when the
-  soft limit was first exceeded, and once the grace time has run from then the
-  soft limit is enforced as the hard one. Falling back under it clears the
-  record. The time is the store's `Now`, so the grace time ends up to the
+  quota event (§3.3) and refuses nothing; a grace that expires, a hard refusal
+  and a fall back under a limit each emit one too. The metadata store records
+  when the soft limit was first exceeded, and once the grace time has run from
+  then the soft limit is enforced as the hard one. Falling back under it clears
+  the record. The time is the store's `Now`, so the grace time ends up to the
   clock-offset bound σ early or late; a quota's grace is not a fence and
   tolerates it.
 

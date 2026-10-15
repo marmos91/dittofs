@@ -401,18 +401,18 @@ what moves with a share:
 // deleting one leaves its principal in ACLs as an unknown principal, which is
 // how both protocols already report it.
 type User struct {
-	Principal Principal
-	Name      string
-	IDs       ProtocolIDs   // UID, SID, Kerberos principal: the mapping RFC 18 owns; each also a PX‖ row
-	Primary   Principal     // the group a new file gets (RFC 7 §2.4, RFC 18); zero, or a group deleted or being deleted: none, and a new file's group is then its creator's own principal
-	Disabled  bool
-	Secret    SecretRef     // by reference, never the credential itself (RFC 13)
+	Principal  Principal
+	Name       string
+	IDs        ProtocolIDs // UID, SID, Kerberos principal: the mapping RFC 18 owns; each also a PX‖ row
+	Primary    Principal   // the group a new file gets (RFC 7 §2.4, RFC 18); zero, or a group deleted or being deleted: none, and a new file's group is then its creator's own principal
+	Disabled   bool
+	Secret     SecretRef   // by reference, never the credential itself (RFC 13)
 	// Role, NotBefore and MustChange are the management API's (RFC 23 §5):
 	// they grant nothing on files, and a user with no Role is no API account.
-	Role       APIRole   // none, viewer, operator, admin
-	NotBefore  time.Time // store time: an access or API token issued before it is refused; raised by a disable, a role or password change, or a sign-out everywhere
-	MustChange bool      // set with a generated password: until it changes, a sign-in permits only the password change and sign-out
-	Generation uint64    // raised by every PutUser; the management API's entity tag (RFC 23 §4.4)
+	Role       APIRole     // none, viewer, operator, admin
+	NotBefore  time.Time   // store time: an access or API token issued before it is refused; raised by a disable, a role or password change, or a sign-out everywhere
+	MustChange bool        // set with a generated password: until it changes, a sign-in permits only the password change and sign-out
+	Generation uint64      // raised by every PutUser; the management API's entity tag (RFC 23 §4.4)
 }
 
 type Group struct {
@@ -663,8 +663,9 @@ nothing. The KV lets any node read the sealed bytes; confidentiality rests on
 the keys a node's bootstrap names.
 
 ```go
-// The management API's records (RFC 23, which owns their meaning). Each is
-// written in the transaction of the request it records, alongside the change.
+// The management API's records (RFC 23, which owns their meaning, and the types
+// named here and not defined). Each is written in the transaction of the
+// request it records, alongside the change.
 type Operation struct { // RFC 23 §4.6
 	ID       OperationID // minted, 16 bytes
 	Kind     string      // "share.delete", "user.delete", "share.rehome", ...
@@ -724,6 +725,7 @@ type NodeStatus struct {
 	Principals     uint64 // PGEN applied
 	Refused        []RefusedRecord // each with the generation and the error
 	RestartPending []RecordRef
+	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
 	Conditions     []byte // the node's health conditions (RFC 25)
 }
 ```
@@ -1135,10 +1137,12 @@ else answers size or times, and `Existence` offers no read of them.
 
 `User` and `Share` here are entities, not wire types: `PutUser` receives a
 `User` and overwrites it whole, and the only field it writes that another
-entity reads is the name index. That is the one place in the model where a
-whole-entity put is allowed, and only the management API makes one. Identity
-never calls `PutUser`: what a sign-in mints goes through `Minter`, which never
-overwrites. `PutShare` writes `S‖id‖info` alone — name, path,
+entity reads is the name index. `PutUser`, `PutGroup`, `PutShare`,
+`PutExportPolicy`, `PutNetgroup` and `PutSetting` are the only places in the
+model where a whole-record put is allowed, each checked against `expect` inside
+its transaction, and only the management API makes one. Identity never calls
+`PutUser`: what a sign-in mints goes through `Minter`, which never overwrites.
+`PutShare` writes `S‖id‖info` alone — name, path,
 root, configuration — and the name and path indexes. The two parts of a `Share`
 that a background path changes are records of their own: `S‖id‖st`, the state,
 which cuts, deletions and the management API all change through
@@ -1556,7 +1560,8 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | **Store** | `\x00format` | store format record (§4.6) |
 
 The table is **exhaustive**: every key the store writes has a row. A new
-record kind is a format bump (§4.6) and gets its row in the same change;
+record kind is a format bump (§4.6) and gets its row in the same change — the
+management API's records, `N‖node‖st` and `OP` to `AUX`, arrive with one;
 volatile open state (locks, caching grants, watches, layouts, asynchronous copies, non-durable opens, delete pending without a persistent open) and
 the primary's in-memory tables (quota reservations, routed-request dedup) are
 never written to the KV and so have none. A file's shard and its primary's epoch
@@ -1635,7 +1640,7 @@ are the prefix's. No separator byte is written.
 - **Sub-kind**: one byte, unique among its siblings at its position, from the
   second table. The labels are names only, so `rq` and `rqx` are two codes like
   any other two.
-- **Integer** — offset, `start`, cut, `born`, `died`, shard, generation,
+- **Integer** — offset, `start`, cut, `born`, `died`, shard, generation, a client, open or lock ID,
   bucket, digest, epoch, sequence, a GC partition, a record's own `Version` (a Secret's, a
   grant's), a repair partition (`RS‖partition`), a POSIX uid or gid (`PX‖uid`,
   `PX‖gid`, zero-extended): unsigned, 8 bytes, big-endian, so refs scan in offset order and
@@ -1665,7 +1670,7 @@ are the prefix's. No separator byte is written.
   block name's first, repeated ahead of the time or bucket, so a contiguous
   range of `b` is one GC partition's keys whatever the partition count
   ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
-- **Byte string** — an entry's folded key, an xattr name, a user, group, share
+- **Byte string** — an entry's folded key, an xattr name, an idempotency key (`IK`), an operation or resource kind (`OPR`, `AUX`), a user, group, share
   or netgroup name, a path, a setting key, a SID, a Kerberos principal, a
   client owner, a backup location's name (`NS‖ns‖bk‖location`, and `NS‖ns‖keyseq‖target`, empty for the namespace's own object), a namespace key ID (up to 255 bytes, [RFC 5](rfc-5-transforms.md)), a master key ID
   (`MKP`'s `masterKeyID`, [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)): each `0x00` byte written as `0x00 0xFF`, then the two-byte
@@ -1674,7 +1679,7 @@ are the prefix's. No separator byte is written.
   another's, whatever component follows. A string sorts before every longer
   string it begins, since `0x00 0x01` sorts below `0x00 0xFF` and below any
   other byte that can follow.
-- **Tagged** component — a quota's `target`, a setting's `scope`, a forwarding
+- **Tagged** component — an expiry entry (`XP`), an audit index entry (`AUX`), a resource target (`OPR`), a quota's `target`, a setting's `scope`, a forwarding
   entry's `ref`: one tag byte from the last row of the second table, then the
   tagged value in its own encoding above — a PrincipalID, a project number as an
   integer, a default's principal kind as its enumerated byte, nothing for a share-wide quota or the installation scope, the scope's
