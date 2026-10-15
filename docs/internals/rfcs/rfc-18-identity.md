@@ -1158,7 +1158,7 @@ and grants. Their sign-in — passwords, tokens, roles, sessions — is
 | Directory queries and their latency | `identity_directory_queries_total{question, outcome}`, `identity_directory_seconds` | counter, histogram (`request`) |
 | Resolution cache effectiveness | `identity_cache_hits_total{cache}`, `identity_cache_misses_total{cache}` | counters |
 | How many principals were refused over the group cap? | `identity_group_cap_refusals_total` | counter |
-| How old is the principals generation each node serves? | `identity_generation_lag_seconds` | gauge |
+| How old is the principals generation each node serves? | `config_generation_lag_seconds{kind="principals"}`, RFC 13's gauge | gauge |
 
 `identity_unavailable_total` and `identity_directory_refusals_total` rising
 together is a directory outage; `identity_unmapped_total{scheme="uid"}` rising
