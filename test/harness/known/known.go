@@ -142,7 +142,8 @@ func Match(pattern, name string) bool {
 // aren't supported, because no list uses them. They get path.Match's
 // reading, which agrees with the shell's on plain sets and escapes but not
 // on classes, a "]" or "-" at the edge of a set, an unclosed "[" or a
-// trailing backslash. A later check of known.yaml refuses such patterns.
+// trailing backslash. Revisit when a list needs one of those: match it as
+// the shell does, or refuse the pattern.
 func glob(pattern, name string) bool {
 	ok, err := path.Match(shellPattern.Replace(pattern), strings.ReplaceAll(name, "/", "\x00"))
 	return err == nil && ok

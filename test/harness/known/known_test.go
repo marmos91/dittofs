@@ -23,8 +23,13 @@ func rows(l *List) []string {
 	return out
 }
 
-// differ says how got differs from want, or returns "" when it doesn't.
+// differ says how got differs from want, or returns "" when it doesn't. Both
+// are sorted rows: as the shell test compares its text, a want that isn't
+// sorted bytewise, or repeats a row, differs.
 func differ(got, want []string) string {
+	if slices.Equal(got, want) {
+		return ""
+	}
 	var b strings.Builder
 	for _, r := range want {
 		if !slices.Contains(got, r) {
@@ -36,15 +41,22 @@ func differ(got, want []string) string {
 			fmt.Fprintf(&b, "\n  extra   %q", r)
 		}
 	}
+	if b.Len() == 0 {
+		b.WriteString("\n  the same rows, but want isn't sorted bytewise or repeats one")
+	}
 	return b.String()
 }
 
-// lines returns the file's lines, without their newlines.
+// lines returns the file's lines, without their newlines; none for an empty
+// file.
 func lines(t *testing.T, path string) []string {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		return nil
 	}
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }

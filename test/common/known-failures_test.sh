@@ -37,7 +37,7 @@ assert_eq() {
 reset_kf() {
     unset KF_KNOWN KF_REASON
     # shellcheck disable=SC2034  # populated and consumed by kf_load
-    declare -gA KF_KNOWN KF_REASON
+    declare -gA KF_KNOWN=() KF_REASON=()
     KF_COUNT=0
 }
 
@@ -52,7 +52,9 @@ rows() {
 }
 
 # Each table loads exactly its expected rows, and KF_COUNT counts them.
-for table in "$TESTDATA"/*.md; do
+tables=("$TESTDATA"/*.md)
+checked=0
+for table in "${tables[@]}"; do
     case_name="$(basename "$table" .md)"
     want="$(cat "${table%.md}.want")"
     got="$(rows "$table")"
@@ -65,7 +67,10 @@ for table in "$TESTDATA"/*.md; do
     reset_kf
     kf_load "$table"
     assert_eq "${case_name}: KF_COUNT counts the rows" "$(grep -c . "${table%.md}.want")" "$KF_COUNT"
+    checked=$((checked + 1))
 done
+# An unset variable in kf_load ends the loop early without failing the script.
+assert_eq "every table was checked" "${#tables[@]}" "$checked"
 
 # Each pattern matches the names it should and no others.
 while IFS=$'\t' read -r pattern name want; do
