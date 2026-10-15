@@ -290,7 +290,7 @@ removedHashes)` with **only the hashes that disappeared from the
 file**. Hashes that survived (unchanged ranges) and hashes still
 referenced by other files via dedup remain in the cache.
 
-### How do I run the refcount audit?
+### How do I run the manifest audit (`audit-refcounts`)?
 
 The audit walks every file in the share and checks that each block
 reference in the file's manifest (`FileAttr.Blocks`) has a backing
