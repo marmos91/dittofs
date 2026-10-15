@@ -45,7 +45,7 @@ order: each part builds on the ones before it.
 | [RFC 13](rfc-13-configuration.md) | configuration | draft | what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | | |
 | RFC 18 | identity and authentication | planned | principals, authentication flavours, identity mapping, squashing |
-| RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
+| [RFC 19](rfc-19-authorization.md) | authorization | draft | one ACL model: entries, principals, rights, flags; the order of a decision, share ceiling, maximum allowed, audit selection; mode↔ACL functions and inheritance; the shared translation to security descriptors and NFSv4 ACLs |
 | **Protocols** | | | |
 | RFC 20 | adapter model | planned | the protocol handler contract, auth context, error mapping, dispatch |
 | [RFC 21](rfc-21-nfs.md) | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
@@ -96,6 +96,7 @@ graph LR
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
+  R19["19 authorization"] --> R7 & R13 & R14 & R16 & R17 & R18 & R20 & R21 & R22
   R21["21 nfs"] --> R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R22 & R27 & R28
   R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R21 & R27 & R28
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
