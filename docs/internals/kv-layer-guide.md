@@ -504,46 +504,41 @@ flowchart TB
 
 ## 15. Against today's store
 
-*The new store next to `pkg/metadata/store/badger` and the metadata service the server runs today, measured on 13 Oct 2026.*
+*The new store next to `pkg/metadata/store/badger` and the metadata service the server runs today, measured on 13 and 15 Oct 2026.*
 
-The new store is faster at almost everything a client does, most of all lookup, rename and parallel creates on disk. A single client creating files on disk is about even with the old store. It also lacks large parts of today's functionality: locks, durable handles, quota enforcement, backups and the block engine's content model.
+The new store is faster at almost everything a client does, most of all lookup, rename and parallel creates. A single client creating files on disk is slightly slower than the old store syncing every commit, and the old store's relaxed mode, which the server ships with, matches it on disk. It also lacks large parts of today's functionality: the open-state service, quota enforcement, backups, migration, credentials and the block engine's content model.
 
 ### Speed
 
-A throwaway benchmark, not committed, ran the same operations through both: the old metadata service over its Badger store, as the server runs it, and the new store over `badgerkv`. Both acted as an administrator, with directories of 10,000 entries. The disk runs used NVMe on ext4, with both stores syncing every commit. Figures are p50 latency, or throughput where marked.
+A throwaway benchmark, not committed, ran the same operations through both on 13 Oct: the old metadata service over its Badger store, as the server runs it, and the new store over `badgerkv`. Both acted as an administrator, with directories of 10,000 entries. The disk runs used NVMe on ext4, with both stores syncing every commit. The new-store columns were measured again on 15 Oct with the store's own `BenchmarkStore`, after the review fixes, each disk figure in a run of its own. Figures are p50 latency, or throughput where marked.
 
 | Operation | Old, memory | New, memory | Old, disk | New, disk |
 |---|---|---|---|---|
-| Create in a directory of 10k | 100 µs | **52 µs** | 1.3 ms | 1.1–1.6 ms² |
-| Lookup in a directory of 10k | 71 µs | **10 µs** | 41 µs | **30 µs** |
-| Getattr | 10 µs | **2 µs** | 33 µs | **9 µs** |
-| List 1,000 entries with attributes | 4.9 ms | **2.5 ms** | 4.6 ms | not run¹ |
-| Rename between two directories of 10k | 6.9 ms | **52 µs** | 6.9 ms | **3.7 ms** |
-| 64 clients creating in one directory | **32,200/s** | 22,900/s | 880/s | **6,200/s** |
+| Create in a directory of 10k | 100 µs | **46 µs** | **1.3 ms** | 1.35–1.55 ms |
+| Lookup in a directory of 10k | 71 µs | **7 µs** | 41 µs | **7 µs** |
+| Getattr | 10 µs | **2 µs** | 33 µs | **9 µs**¹ |
+| List 1,000 entries with attributes | 4.9 ms | **2.5 ms**¹ | 4.6 ms | not run |
+| Rename between two directories of 10k | 6.9 ms | **53 µs** | 6.9 ms | **4.0 ms** |
+| 64 clients creating in one directory | 32,200/s | **40,000/s** | 880/s | **11,800/s** |
 
-¹ On disk only the listing without attributes was run for the new store: 1.1 ms. A listing commits nothing, so the memory column is the fairer comparison.
+¹ From 13 Oct; not measured again.
 
-² Measured again later on 13 Oct, each store in its own process, with a 3 s pause after filling the directory. Without the pause, two runs in four came out at 3.4–4 ms (see below).
-
-- **Reads are 1.4 to 7 times faster.** A lookup is one keyed read, where the old store goes through its service-layer caches and several lookups per call.
-
-- **Rename is about 130 times faster in memory.** The old rename takes about 7 ms on memory and disk alike, so it does heavy work before any disk write. The new one writes a fixed number of keys.
-
-- **Parallel creates on disk are 7 times faster.** That is group commit: 64 concurrent creates share syncs, where the old store syncs each commit on its own.
+- **Reads are 5 to 10 times faster.** A lookup is one keyed read, where the old store goes through its service-layer caches and several lookups per call.
+- **Rename is about 130 times faster in memory, but not for a reason of design.** The old rename spends its 4–7 ms, on memory and disk alike, in one scan: `anyOtherChildName` (`store/badger/transaction.go`) reads every child of the parent, values included. Fixing that scan would close most of the gap.
+- **Parallel creates on disk are 13 times faster.** That is group commit: 64 concurrent creates share syncs, where the old store syncs each commit on its own.
+- **The old store's relaxed mode matches the new store on disk.** The server ships with `relaxed_durability: true`, where the old store does not sync each commit: in a run on macOS it created in 35 µs and handled 38,700 creates/s with 64 clients. The new store has no such mode; it acknowledges a commit only once a sync covers it.
 
 > **Where the new store is behind.**
 >
-> A first run put a single client's create on disk at 3.7 ms against 1.4 ms. Measured again, each store in its own process, the two are about even: the old store takes 1.3 ms, and the new one 1.1–1.6 ms once Badger has settled. A create is one commit and one sync. The sync flushes the write-ahead log (0.75–0.9 ms, the device flush) and the value log (0.1–0.2 ms), where Badger's own sync flushes only the log. Listing the directory costs 0.016 ms. A plain small commit takes 1.03 ms against 0.94 ms for Badger syncing on its own.
+> **A single client's create on disk is slightly slower:** 1.35–1.55 ms against 1.3 ms. A create is one commit and one sync, and the new store's sync flushes the write-ahead log (0.75–0.9 ms, the device flush), the value log (0.1–0.2 ms) and, for a new file, the directory, where the old store's flushes only its log. Skipping the value-log flush when that file has not changed would need Badger's internal write offset, since Badger preallocates the file and writes it through a memory mapping. It is not worth the code.
 >
-> The 3.7 ms is a slow mode right after a burst. Started straight after the 10,000-create fill, two runs in four took 3.4–4 ms; with a 3 s pause, none did. The new store fills the directory much faster than the old one, because concurrent creates share syncs, so Badger is most likely still flushing or compacting the fill when measurement starts. A server under steady write load would meet that contention with either store.
+> **Right after a burst, the disk runs slow down.** Started straight after the 10,000-create fill, a single create took 3.4–4 ms in two runs of four; with a 3 s pause, none did. Badger is most likely still flushing or compacting the fill. A server under steady write load would meet that with either store, so each disk figure here comes from a run of its own.
 >
-> Skipping the value-log flush when that file has not changed would save about 0.1–0.2 ms per commit, but Badger preallocates the file and writes it through a memory mapping, so a correct check would need Badger's internal write offset. It is not worth the code.
+> **On macOS every commit pays a full device flush.** Go's `File.Sync` there is `F_FULLFSYNC`, about 4.4 ms, where the old store's Badger sync is `msync`, which leaves the drive's cache. The figures above are from Linux.
 >
-> With 64 clients in one directory in memory, the new store manages 23k creates/s against 32k/s, probably because transactions conflict and retry. On disk the sync dominates, and the new store wins.
+> **The offload commit** of a 64-chunk block has no counterpart in the old store. Its target is 5 ms. With scan prefetching off (`a0739b57`) it went from 7.1 ms to 2.0 ms in memory and from 10.2 ms to 6.7 ms on disk. What is left on disk is mostly two synced commits per block, the intent and then the commit.
 >
-> The offload commit of a 64-chunk block has no counterpart in the old store to compare with. Its target is 5 ms. Scans used to prefetch the values of up to 100 records on every seek, while an offload commit runs one short scan per ref it places. With prefetching off (`a0739b57`), the commit went from 7.1 ms to 2.0 ms in memory, and from 10.2 ms to 6.7 ms on disk. What is left on disk is mostly two synced commits per block, the intent and then the commit, each about 0.8 ms of device flush on this consumer NVMe drive, which has no power-loss protection.
->
-> The new-store columns above were measured before that fix. Lookups and listings also scan, so they may be faster now, but they have not been measured again. Disk figures on this machine vary: run back to back in one process, the benchmarks hit the slow mode after a burst, so each disk figure here comes from a run of its own.
+> **One lock change was measured and kept out.** Taking the commit lock shared for every commit without a range guard was 20% slower here (36,500 against 45,000 creates/s with 64 clients in memory, interleaved runs on 8 threads), so every commit still takes it exclusively.
 
 ### Design
 
@@ -572,9 +567,17 @@ A throwaway benchmark, not committed, ran the same operations through both: the 
 | Backup and restore | Yes, a raw Badger dump | No |
 | Trash | Yes | No |
 | The block engine's model: payload rows, synced hashes, block records | Yes | Replaced by refs, chunks and blocks; the engine is not ported yet (RFC 8) |
-| xattrs, ACLs, symlinks and special files, hard links, sticky bit, squash | Yes | Yes |
-| Netgroups and export policy | In the GORM database | In the store |
+| Oplocks, leases, delegations, share reservations | Yes | No: the open-state service (RFC 14) |
+| Migration of existing stores | — | None: handles change from `"shareName:uuid"` to binary, and nothing converts the old layout, so existing NFS handles would go stale |
+| Credentials: password and NT hashes, roles | Yes, in the GORM database | No: `User.Secret` references a sealed credential that nothing stores or verifies yet, and there is no global admin role |
+| SMB named streams | Yes, with xattrs spilling into streams | No: `Create` refuses a stream; xattrs are capped at 64 KiB a value and 128 a file |
+| Case folding | Per call: NFS case-sensitive, SMB folding, on one share | Per share |
+| WCC pre-operation attributes, FSSTAT, change notify, health and metrics | Yes | No |
+| Share options: access-based enumeration, streams disabled, blocked operations, retention | Yes | No typed home yet |
+| xattrs, ACLs, symlinks and special files, hard links, sticky bit | Yes | Yes |
+| Squash, netgroups and export policy | Applied by the adapters, from the GORM database | Stored and validated in the store; the caller still applies them |
 
 ### Next
 
-1. **Look at 64 clients in one directory in memory,** which points to retries on conflict.
+1. **Developer aids from the review:** export `newFS` and the held store for other packages' tests, an invariant checker `Check`, a key decoder, and errors that carry their operation.
+2. **The filesystem service's call shapes (RFC 17),** such as `Unlink` and the xattr calls taking an `OpenGrant`, with step 9.
