@@ -52,7 +52,7 @@ order: each part builds on the ones before it.
 | [RFC 22](rfc-22-smb.md) | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |
 | RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
-| RFC 24 | resources and concurrency | planned | memory budgets, buffer pools, admission, backpressure |
+| [RFC 24](rfc-24-resources.md) | resources and concurrency | draft | the node memory budget: one process memory limit divided into fixed pools with floors and ceiling rules, request and reply buffer classes and where they are charged, fairness across clients and shares, the queue inventory and backpressure chain, goroutine, CPU and file-descriptor bounds |
 | RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
 | **Testing** | | | |
 | [RFC 29](rfc-29-test-harness.md) | test harness | reviewed | the `dt` runner, the suite registry, fixtures, tiers, grading against known failures, the result format and how red is reported |
@@ -96,6 +96,7 @@ graph LR
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
+  R24["24 resources"] --> R1 & R3 & R8 & R13 & R14 & R15 & R17 & R20 & R21 & R22 & R29
   R21["21 nfs"] --> R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R22 & R27 & R28
   R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R21 & R27 & R28
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
