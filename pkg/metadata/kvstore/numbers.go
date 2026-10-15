@@ -71,7 +71,7 @@ const (
 // own, if their reservations show in a profile.
 func (s *Store) nextID(ctx context.Context, kind byte) (uint64, error) {
 	for {
-		n, err := s.numbers.next(ctx, s.kv, idKey(kind), true, math.MaxUint64-numberRange, ErrIDsExhausted)
+		n, err := s.numbers.next(ctx, s.kv, idKey(kind), true, math.MaxUint64, ErrIDsExhausted)
 		if err != nil || n != 0 {
 			return n, err
 		}
@@ -108,7 +108,7 @@ func (a *numbers) next(ctx context.Context, db kv.KV, key []byte, fresh bool, bo
 					return err
 				}
 			}
-			if start+numberRange > bound {
+			if start > bound || bound-start < numberRange { // never start+numberRange, which wraps near the top
 				return exhausted
 			}
 			return tx.Set(key, encodeCounter(start+numberRange))
