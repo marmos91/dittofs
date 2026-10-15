@@ -41,6 +41,16 @@ This document specifies behaviour, not the current code.
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+Every DittoFS setting lives in one place: records in the metadata store, called the control plane.
+A server's own file holds only what it needs to find that place: who it is, where the store is, its local disks.
+Each setting also says what changing it does: apply now, apply at the next restart, apply to new data only, or never once data exists.
+Think of a building whose plans are kept at the town hall: you may repaint a room any day, but not move a load-bearing wall.
+Where the picture breaks: here the town hall refuses the wall change outright, naming the setting and the rule.
+A wrong value is refused when it is written, and again when it is used; it is never quietly swapped for a default.
+Passwords and keys never sit in a setting; a setting holds only the name of a sealed secret.
+
 **What this is.** Every DittoFS component takes a few settings. This RFC says
 where all of them live — in one place, the control plane, kept in the metadata
 store — which quantities are settings at all, how far each one reaches, and
@@ -153,6 +163,49 @@ backup location's record, §3 the scopes, §4 what is fixed and what is a settin
 §11 what is still open. Appendix A lists where today's code differs, and
 Appendix B every setting the RFCs name, with its scope, class and default —
 the table to look a setting up in.
+
+### Scenarios
+
+Each runs on N1, serving the `profiles` share from the bucket `dfs-data`.
+
+**An operator changes the `atime` policy of `profiles`.**
+
+1. The change goes through the API, which runs the component's own validator before writing it ([§6](#6.%20Validation)).
+2. The same transaction raises one installation-wide counter, the settings generation ([§5](#5.%20Binding%20classes)).
+3. Every node reads that counter once a second and re-reads only the records whose generation moved ([§5](#5.%20Binding%20classes)).
+4. The setting is live, so every node runs the new policy within 5 s of the commit ([§5](#5.%20Binding%20classes)).
+
+Outcome: no restart, and each node reports which generation of the record it runs ([§2.3](#2.3%20A%20record%20is%20versioned)).
+
+**A provisioning file with a misspelled field is reloaded.**
+
+1. The reload validates the whole file with the API's validator before writing anything ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+2. The misspelled field is unknown to the schema, so it is refused rather than ignored ([§6](#6.%20Validation)).
+3. The whole file is refused; nothing is half-applied ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+4. The running records stay as they were, and N1 reports a health condition naming the record and the reason ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+5. Had N1 been starting rather than reloading, it would have refused to start ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)).
+
+Outcome: a typo never silently runs the default it was meant to replace.
+
+**The bucket's credential is rotated.**
+
+1. The remote store's record holds a reference to a sealed secret, never the credential itself ([§7](#7.%20Secrets)).
+2. Rotating writes the new value under the same reference as a new version; the old version stays usable ([§7](#7.%20Secrets)).
+3. The change raises the settings generation, so every node using it picks it up within the live bound ([§7](#7.%20Secrets)).
+4. The new credential must prove it reaches the same bucket: the store's check must find the namespace's claim there ([§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change)).
+5. Only once every node reports the new version is the old one deleted ([§7](#7.%20Secrets)).
+
+Outcome: no setting changes, and no node is ever left holding a credential that was already deleted.
+
+**N1 is upgraded to a new binary, then rolled back.**
+
+1. At start the new binary registers the format versions it can read and write ([§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)).
+2. It opens the store the old binary wrote and keeps writing the old active versions, the ones the installation records as current ([§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)).
+3. Until an operator raises a version through the control plane, reinstalling the old binary still works ([§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)).
+4. In a cluster, the raise is refused while any registered node lacks the new version, naming the nodes that lag ([§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)).
+5. Once a version is raised, the old binary refuses to start rather than misread what it finds ([§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)).
+
+Outcome: a rollback is safe up to the moment the operator raises a version, and refused cleanly after it.
 
 ## In short
 

@@ -34,6 +34,20 @@ share; what the first release, one node, follows instead is
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+Every file has one desk where all promises about it are kept: who has it open,
+who locked which bytes, who may cache it. The desk sits at the file's primary,
+and NFS and SMB requests both come to it. So an SMB lock refuses an NFS write it
+forbids, and the check and the write happen in one place. Most of the desk lives
+in memory, not on paper. If its node fails, the new one runs a grace period: for
+a while it only gives back what clients say they held. Three things here share
+the word "lease", and nothing else:
+
+- a **node lease**: is this server still in charge of its shards?
+- a **client lease**: is this client still alive? 90 s for NFSv4;
+- an **SMB lease**: a promise that the client may cache the file.
+
 File protocols do more than name files and move bytes. A client opens a file
 and may forbid others to open it while it does; it locks byte ranges; it caches
 reads and writes under a promise from the server that nobody else is using the
@@ -155,6 +169,75 @@ breaks.
   writes no open record, unless the open is persistent.
 - Writers that do not coordinate get whole writes, ordered byte by byte by
   arrival at the primary, and nothing more; applications that need more lock.
+
+### Scenarios
+
+**An NFS build tool and an SMB editor share one file.**
+
+1. A Windows editor holds an SMB byte-range lock on the first 4 KiB of
+   `data.bin`.
+2. build01 sends an NFS `WRITE` across that range. It is refused: SMB locks are
+   mandatory ([§7](#7.%20Conflicts%20across%20protocols)).
+3. build01 takes an NFS lock on another range. SMB I/O there is still allowed:
+   NFS locks are advisory and gate only lock requests
+   ([§7](#7.%20Conflicts%20across%20protocols)).
+4. An SMB client asks for a lock overlapping build01's. It is refused
+   ([§7](#7.%20Conflicts%20across%20protocols)).
+
+One table serves both protocols, and each lock means what its own protocol says.
+
+**A laptop sleeps holding a lock.**
+
+1. A laptop holds an NFSv4 lock on `todo.txt`, then goes to sleep.
+2. It renews nothing. After one lease period, 90 s, it is treated as gone
+   ([§4.1](#4.1%20A%20client%20lease)).
+3. Its lease owner expires it and releases every open, lock and grant it held,
+   at every shard, in one step ([§4.1](#4.1%20A%20client%20lease), [§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)).
+4. A colleague's lock on the same range now succeeds.
+
+No client waits forever on one that left.
+
+**A caching grant that is never returned.**
+
+1. build01 holds an NFS write delegation on `config.json` and buffers its writes
+   locally ([§5.1](#5.1%20What%20a%20grant%20is)).
+2. alice-pc opens the file over SMB for writing, so the primary recalls the
+   delegation ([§7](#7.%20Conflicts%20across%20protocols)).
+3. build01's network has failed and it never answers. At the recall deadline,
+   one lease period for NFS, the delegation is revoked ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
+4. alice-pc's open proceeds. build01's later writes under the grant are refused,
+   and it gets no grants for 90 s ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
+
+A promise the server made is always taken back in bounded time; an SMB break
+waits 35 s.
+
+**A failover in the middle of the day.**
+
+1. N1, primary of shard A, dies, and N2 takes A over
+   ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
+2. A's table was in memory, so N2 runs a grace period for A only. Other shards
+   keep granting ([§4.4](#4.4%20Grace%20is%20per%20shard)).
+3. N2 tells each client its records name to reclaim: NFSv4.1 by a flag on its
+   next reply, SMB by breaking the connection ([§4.4](#4.4%20Grace%20is%20per%20shard)).
+4. alice-pc reclaims its persistent open; build01 reclaims its lock, then sends
+   `RECLAIM_COMPLETE` ([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe)).
+5. Grace ends early once every recorded client has finished. An NFSv4.0 or NLM
+   client keeps it the full 90 s ([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe)).
+
+Nobody takes what another client held. An SMB open that was durable but not
+persistent is not reclaimed ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens)).
+
+**A file deleted while still open.**
+
+1. build01 has `run.log` open, and another client deletes its only name.
+2. In the unlink's own transaction, the open is made durable and the file's
+   pending release is written ([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)).
+3. build01 keeps reading and writing. A crash of the primary cannot free the
+   file early: the durable open record still names it ([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)).
+4. At build01's last close the record goes, and the file is released
+   ([§9.1](#9.1%20An%20open%20keeps%20a%20file%20alive)).
+
+Delete-while-open behaves as on a local disk, in a cluster too.
 
 ### How the rest is organised
 

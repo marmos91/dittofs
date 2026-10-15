@@ -52,6 +52,25 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+A cluster has receptionists and workers. Receptionists, the protocol nodes, take
+calls from NFS and SMB clients. They keep nothing about files: they look up
+which worker is in charge and pass the call on. Workers, the storage nodes, keep
+each file's recent writes, opens and locks. The metadata store is not a DittoFS
+node at all; both call it. Every passed-on call travels in an envelope: a request
+number, the shard, and the ticket number the receptionist expects. A worker
+refuses an old ticket, and answers a repeated request number with its first
+answer. Unlike a real receptionist, a protocol node may split one client call
+across several workers. On one node, both are one process, and passing a call
+on is a function call.
+
+```text
+ clients ─► protocol nodes ──shard service──► storage nodes ─► bucket
+                 │ reads                          │ transactions
+                 └──────────► metadata store ◄────┘
+```
+
 One node can run all of DittoFS. Several nodes need to agree on three things:
 what each node runs, which node is in charge of each file, and which node a
 client's call goes to. This RFC answers them. It gives every node one or both
@@ -164,6 +183,76 @@ The whole cluster, with every role and what it shares:
   makes its clients reconnect at once.
 - A cluster of nodes with both roles is highly available; splitting the roles
   buys isolation and separate scaling, not availability.
+
+### Scenarios
+
+**alice opens a file in a split deployment.** P1 is protocol-only; S1 is primary
+of shard A, `profiles/alice/`.
+
+1. alice-pc asks P1 to open `profiles/alice/notes.txt`.
+2. P1's filesystem service walks the path. Each `Lookup` is a store read P1
+   makes itself, with no hop ([§2.5](#2.5%20The%20cut), [§4](#4.%20Where%20each%20call%20runs)).
+3. The open touches open state, so P1 forwards it through the shard service to
+   S1 ([§2.5](#2.5%20The%20cut), [§4](#4.%20Where%20each%20call%20runs)).
+4. Each write goes P1 to S1, then to S1's two replicas, before the OK
+   ([§2.5](#2.5%20The%20cut)).
+
+A write crosses the network four times before its OK; a protocol node on S1's own
+node saves one crossing.
+
+**Draining a protocol node for maintenance.**
+
+1. An operator drains P1, which holds the address `10.0.0.50`
+   ([§5.3](#5.3%20Client%20addressing)).
+2. NFSv4 clients are given another protocol node's location, and move before P1
+   stops ([§5.3](#5.3%20Client%20addressing)).
+3. SMB clients registered for Witness are told which node to move to
+   ([§5.3](#5.3%20Client%20addressing)).
+4. P1 stops forwarding, then releases its addresses; NFSv3 clients follow the
+   address. A drain needs no fencing wait ([§5.3](#5.3%20Client%20addressing)).
+
+No client waits for a transport timeout, and no open state is lost: the primaries
+hold it.
+
+**A rename across two shards.**
+
+1. A user moves `profiles/alice/report.docx` into `profiles/bob/`, in shards A
+   and B ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+2. The coordinator is the source directory's primary, S1. It asks B's primary,
+   S2, to prepare ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+3. S2 checks open state, recalls grants the rename breaks, writes a durable hold
+   record and answers yes ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+4. S1 commits one store transaction guarding both shards' fences and S2's hold
+   record ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+5. S2 drops its hold. Had S1 vanished, S2's hold would end at its deadline
+   ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+
+One rename, two primaries, no coordinator log. The file stays in shard A: a
+rename never changes a file's shard ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)).
+
+**A clone across shards becomes a copy.**
+
+1. An NFSv4.2 client asks to `CLONE` a file in shard A into shard B
+   ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+2. Source and destination are in different shards, so admission refuses the
+   clone ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+3. The adapter answers `NFS4ERR_XDEV`, never `NFS4ERR_NOTSUPP`, so the client
+   keeps cloning within one shard ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+4. A `COPY` of the same pair runs as a server-side byte copy
+   ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+
+The bytes are right; only the speed of a clone is lost.
+
+**The metadata store stalls for 15 s.**
+
+1. The store is unreachable for longer than a node lease, 10 s by default
+   ([§5.3](#5.3%20Client%20addressing)).
+2. When P1 and P2 reach it again, each sees the other's lease apparently lapsed.
+3. Neither marks the other lapsed until it has held the claim hold after
+   reconnecting ([§5.3](#5.3%20Client%20addressing)).
+4. Both resume, and no address moves ([§9](#9.%20Conformance%20and%20benchmarks)).
+
+A store outage does not turn into a storm of address takeovers.
 
 ### How the rest is organised
 

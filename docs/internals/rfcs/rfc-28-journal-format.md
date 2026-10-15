@@ -31,6 +31,21 @@ Conventions and test tiers are in [the RFC index](rfc-index.md).
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The journal keeps its state in a few plain files in one directory. Think of a
+stack of numbered notebooks. Each entry ends with a check digit, so a smudged
+entry is noticed, not misread. A full notebook gets a table of contents at the
+back, so a restart can skim it instead of reading every page. The analogy has a
+limit: the table of contents is only a shortcut. Where it and the pages
+disagree, the pages win. After any crash, the journal rebuilds everything from
+these files alone, asking no other component.
+
+```text
+ 0041.seg  [entries ...][seal][table of contents]   full, sealed
+ 0042.seg  [entries ...]                            being written
+```
+
 **What this is.** DittoFS is a file server. It answers a client's write once the
 bytes are in its **journal**: a handful of files in one directory on a fast local
 disk ([RFC 1](rfc-1-journal.md)). Later the bytes are uploaded to an object store,
@@ -106,6 +121,72 @@ dirty slice. §3 is recovery: rebuilding the index, offload state after a restar
 torn and corrupt records, and files recovery cannot attach. §4 holds the checks
 and benchmarks of both, §5 the open questions, and Appendix A how sync and
 allocation work on each platform.
+
+### Scenarios
+
+**The DittoFS process is killed, but N1 keeps running.**
+
+1. alice-pc's last writes were acknowledged but not yet synced. They still sit
+   in the operating system's cache, and verify when the journal reopens
+   ([§3.1](#3.1%20Rebuilding)).
+2. A later power cut could still take them. So recovery syncs the newest segment
+   of each stream first ([§3.1](#3.1%20Rebuilding)).
+3. It then re-reads every record past the last proven sync point, bypassing the
+   cache, and checks its checksums ([§3.1](#3.1%20Rebuilding)).
+4. A record that verifies stays where it is. One that does not is re-appended
+   to a new segment from the copy that verified at first read
+   ([§3.1](#3.1%20Rebuilding)).
+5. Re-appends draw on the repack reserve, not on a share's limit. So a journal
+   killed while full still opens ([§3.1](#3.1%20Rebuilding)).
+
+Outcome: "verified at open" means "on the device", and the common case
+re-appends nothing.
+
+**N1 boots with the journal's disk not mounted.**
+
+1. The journal directory is empty: the mount point is there, the NVMe disk is
+   not.
+2. The caller opens the journal with the identity it recorded for this
+   directory. Since that is not zero, the empty directory fails the open
+   ([§3.4](#3.4%20Unattachable%20files)).
+3. Open never creates a fresh journal there. A fresh one would answer every
+   unuploaded write as never written ([§3.4](#3.4%20Unattachable%20files)).
+4. Only after an operator acknowledges a real loss does the caller run the
+   initialisation step again ([§3.4](#3.4%20Unattachable%20files)).
+
+Outcome: a wrong mount stops the start loudly, instead of silently serving
+stale bucket content where acknowledged writes were.
+
+**One write fails in the middle while its neighbours succeed.**
+
+1. Several writers append to one segment at once, each at a slot reserved in
+   order ([§2.2](#2.2%20Segments)).
+2. One write gets a device error. Its slot stays zeros, and its `WriteAt`
+   returns the error, so it is never acknowledged ([§2.2](#2.2%20Segments)).
+3. The records after it were written, synced and acknowledged
+   ([§2.2](#2.2%20Segments)).
+4. At the next open, a scan meets the zero slot. It searches forward, at each
+   8-byte boundary, for a header that verifies ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
+5. It finds the next record, steps over the zeros, and attaches everything
+   after them. The zeros are reported as neither damage nor a torn tail
+   ([§3.3](#3.3%20Torn%20and%20corrupt%20records)).
+
+Outcome: one failed write never takes the acknowledged writes behind it with
+it.
+
+**The power fails while an old segment is being recycled.**
+
+1. Repack retires a full segment, and the pool of spare segments is short, so
+   the segment is reused as a spare ([§2.2](#2.2%20Segments)).
+2. It is first renamed to a fresh id, above every id in the directory, and the
+   directory is synced ([§2.2](#2.2%20Segments)).
+3. The power fails before its header and trailer slots are zeroed.
+4. At open, its old records name the old segment id, so none verifies under the
+   new name ([§2.2](#2.2%20Segments)).
+5. Recovery re-adopts the file as a spare, and zeroes both slots before any
+   stream takes it ([§3.1](#3.1%20Rebuilding)).
+
+Outcome: the segment's old life is never read back as live data.
 
 ## 1. Purpose
 

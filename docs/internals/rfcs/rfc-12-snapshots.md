@@ -41,6 +41,16 @@ where the code differs.
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+A snapshot is a read-only view of a share as it was at one instant, which users can browse later.
+Taking one copies no data: it raises a per-share counter, the cut number, and writes a few records.
+From then on, a version the snapshot can see is kept as history instead of being overwritten.
+History versions still count their bytes in the metadata store, so garbage collection leaves those bytes in the bucket.
+Think of a library that, instead of photocopying its shelves for an archive, stops pulping old editions while the archive lists them.
+Where the picture breaks: the share keeps changing freely, and space grows only with what changes after the snapshot.
+A writable clone is a new share started from a snapshot; it shares bytes in the bucket with its source, and nothing else.
+
 **What this is.** A snapshot is a read-only view of a share as it was at one
 instant, kept as long as it is wanted and browsable from the client. This RFC
 also specifies writable clones, made from a snapshot. The other ways of
@@ -145,6 +155,52 @@ questions. Catalog backups, restore and the export format are
 [RFC 26](rfc-26-catalog-backups.md); moving a namespace between installations
 and re-homing a share out of a shared one are
 [RFC 27](rfc-27-namespace-migration.md).
+
+### Scenarios
+
+Each runs on N1, with the `profiles` share taking a policy snapshot every hour and the bucket `dfs-data` behind it.
+
+**The bucket is unreachable when the hourly snapshot is due.**
+
+1. Uploads fail, so dirty bytes pile up in N1's journal; writes go on being acknowledged ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
+2. At the tick, the cut adds held and not-yet-uploaded bytes, for the share and for its journal ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
+3. Past the share's `hold_bound`, or a quarter of the journal's capacity (proposed), the cut is refused with `ErrHoldBacklog` ([§2.4](#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
+4. The tick is skipped and counted, not queued for later ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+5. Three skipped ticks in a row raise a health condition naming `profiles` and the reason ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+6. Retention skips the empty hours instead of counting them, so no older snapshot is pruned to make room ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+
+Outcome: snapshots stop before the journal fills, and writes never stop for a snapshot.
+
+**An operator clones last night's snapshot into a test share.**
+
+1. The clone first writes a use record on the snapshot, a mark saying "being read" ([§2.6](#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace)).
+2. A request to delete that snapshot meanwhile is refused with `ErrHeld` ([§2.8](#2.8%20Deleting)).
+3. The tree is copied into `profiles-test` with new file IDs, and hard links stay links ([§2.6](#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace)).
+4. Each ref the snapshot sees becomes a ref of the new share and raises its chunk's count; nothing is copied in the bucket ([§2.6](#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace)).
+5. One transaction publishes `profiles-test` and deletes the use record ([§2.6](#2.6%20A%20writable%20clone%20is%20a%20new%20share%20in%20the%20same%20namespace)).
+6. The clone lives in the source's namespace, which is what lets it count the source's chunks ([§2.1](#2.1%20A%20namespace%20is%20the%20unit%20that%20moves)).
+
+Outcome: deleting `profiles`, the snapshot or the clone later releases only that one's own refs.
+
+**A stolen administrator login is used to erase the snapshots.**
+
+1. The policy takes each snapshot with a 7-day compliance lock ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+2. Deleting a locked snapshot is refused with `ErrLocked`, whoever asks ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+3. Shortening or removing a compliance lock is refused too; it can only be set or extended ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+4. Deleting `profiles` with its snapshots is refused; deleting it with them detached keeps them, still locked ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+5. A lock past `lock_max` (proposed: one year) is refused, so a mistyped expiry cannot pin data for decades ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+
+Outcome: one stolen DittoFS login cannot erase the snapshots; the lock does not stop someone holding the bucket's own credentials ([§2.7](#2.7%20Scheduled%20snapshots%2C%20retention%20and%20locks)).
+
+**A slow metadata commit keeps the cut's gate closed.**
+
+1. The cut closes the share's gate: new metadata writes wait at it, while reads never do ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+2. A commit already admitted stalls, so the gate cannot drain ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+3. After `gate_max` (proposed: 1 s) closed, N1 reopens the gate by committing the cut's abort ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+4. The waiting writes go on; none waited longer than `gate_max` ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+5. The coordinator retries after a backoff; a cut that never fits is refused, and the policy skips that tick ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)).
+
+Outcome: a snapshot can be late or skipped, but a write never waits at the gate longer than `gate_max`.
 
 ## In short
 

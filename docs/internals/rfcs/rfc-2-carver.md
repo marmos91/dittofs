@@ -22,6 +22,17 @@ tags:
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+Before bytes go to the bucket, they are cut into pieces and the pieces are
+boxed. Picture cutting a long ribbon wherever a certain stitch pattern appears,
+not every 10 cm. Sew a bit extra near the start, and only the piece holding the
+new bit changes. Every later piece still ends at the same stitches, so it keeps
+its name. The picture is loose in one way: no stitch is marked in advance. The
+carver computes from the last 64 bytes whether a spot is a cut, within a minimum
+and maximum length. The block assembler then boxes whole pieces into objects of
+about 4 MiB, never splitting one.
+
 Clients write to DittoFS over NFS (Network File System) or SMB (Server Message
 Block). Writes land first in a local **journal** ([RFC 1](rfc-1-journal.md)); in the background
 the bytes are cut into **chunks**, packed into **blocks** and uploaded to a
@@ -124,6 +135,84 @@ the cutting is fixed now, because changing it later re-cuts all stored content.
   no write into the namespace **and knows none of its stored content**; anyone
   who knows some stored content can map the keyed table, so in practice it hides
   little ([§6](#6.%20Boundaries%20are%20public)). A non-encrypting namespace cuts under the public, unkeyed table.
+
+### Scenarios
+
+**A build log is still growing when the offer stops.**
+
+1. build01 appends to `build.log` in `builds`. The engine offers the dirty bytes
+   up to the offer's byte limit, so the stretch's end is artificial
+   ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
+2. `Cut` emits chunks up to the last boundary the content gave. It cuts nothing
+   after it, and returns how many bytes it consumed
+   ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
+3. The uncut tail, always shorter than `Max` (1 MiB by default), stays dirty
+   ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
+4. The next offer starts on that boundary and cuts as one long stretch would
+   have ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
+5. If build01 stops writing, the tail is not stuck. Once its oldest byte reaches
+   the offload pass's maximum age, the caller may cut it as final
+   ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)).
+
+Outcome: a file written in bursts is cut exactly as if written at once.
+
+**A disk image holds 64 MiB of zeros.**
+
+1. The offer hands the carver a stretch of 64 MiB of zeros. `builds` does not
+   encrypt, so it cuts under the public, unkeyed table
+   ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)).
+2. The fingerprint depends only on the last 64 bytes. On zeros it has one value,
+   which never passes the test, so no boundary is ever found
+   ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)).
+3. `Max` ends every chunk: 64 chunks of exactly 1 MiB
+   ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)).
+4. Each chunk is all zeros, so the assembler records a **zero ref**, a ref
+   naming no chunk, and puts it in no block ([§5.1](#5.1%20What%20it%20takes%20and%20what%20it%20returns), [§5.2](#5.2%20Packing%20rules)).
+5. Zero refs add nothing toward the 4 MiB block target, which counts only bytes
+   a block carries ([§5.2](#5.2%20Packing%20rules)).
+
+Outcome: the 64 MiB costs no upload, and `Max` is what kept the chunks bounded.
+
+**Reading the offered bytes fails halfway through a cut.**
+
+1. `Cut` is part-way through the 40 MiB archive and has emitted some chunks.
+2. The reader returns an error. `Cut` stops and returns it ([§7](#7.%20Errors)).
+3. Chunks already handed to `emit` stay delivered; the carver does not take
+   them back ([§7](#7.%20Errors)).
+4. The chunk it was building is dropped, never handed over short
+   ([§7](#7.%20Errors)).
+5. The extents stay dirty and the pass is retried. The same bytes cut into the
+   same chunks ([§7](#7.%20Errors), [§3.5](#3.5%20What%20%22deterministic%22%20covers)).
+
+Outcome: a failed pass costs work, never correctness.
+
+**A block's put is retried, then abandoned and tried again.**
+
+1. The engine plans a block. Its name is derived from the namespace, a fresh
+   16-byte random nonce, the encoding and the chunk IDs ([§4.2](#4.2%20A%20block)).
+2. Before the first put of that name, a put intent is recorded durably
+   ([§4.2](#4.2%20A%20block)).
+3. The put times out. Every retry reuses the same name and plan, and writes the
+   same bytes ([§4.2](#4.2%20A%20block)).
+4. The attempt is abandoned. A new attempt at the same chunks draws a new nonce,
+   so it mints a new name ([§4.2](#4.2%20A%20block)).
+
+Outcome: no name is ever put by two attempts, so no name needs defending against
+a second writer.
+
+**An operator creates a namespace with a 32 KiB chunk target.**
+
+1. `Target` 32 KiB gives a `Min` of 8 KiB. The floor is a 64 KiB `Target`, a
+   16 KiB `Min` ([§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)).
+2. Startup refuses the setting with an error
+   ([§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)).
+3. It does not quietly fall back to the 256 KiB default, which would cut chunks
+   the operator never planned for ([§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)).
+4. Changing `Target` later, once the namespace holds content, is reported as a
+   migration, never applied as a quiet configuration change
+   ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
+
+Outcome: a namespace's chunk sizes are always the ones it asked for.
 
 ### How the rest is organised
 

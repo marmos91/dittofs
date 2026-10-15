@@ -48,6 +48,24 @@ loss of the node that accepted it.
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+Each shard keeps a notebook of recent writes, the journal, on a fast local disk.
+The node in charge, the primary, writes every entry first. It reads the entry
+out to two other nodes, the replicas, and waits until both have written it down.
+Only then does the client hear OK. Later the primary files the pages in the
+warehouse, the object bucket, and tells the replicas they may tear theirs out.
+The metadata store keeps the list of who holds a copy, stamped with a ticket
+number, the epoch. Nobody votes on each entry: the store only settles who is in
+the group, and a replica never writes an entry the primary did not send.
+
+```text
+ write ─► S1 primary ──copy──► S2 ✓
+             │      └──copy──► S3 ✓
+             ▼  all three hold it
+            OK ─► client        later: S1 ─► bucket; S2, S3 drop their copies
+```
+
 **What this is.** When several DittoFS servers serve one share, a write must
 survive the loss of the server that accepted it. This layer copies every write
 into the local journals of a small group of servers before the client is told
@@ -157,6 +175,83 @@ lapsed. The fence is enforced by every receiver, never by S1's own check.
   the read.
 - Adding a replica never pauses writes, and a single node runs the same code
   with a replica set of one.
+
+### Scenarios
+
+Shard A has primary S1 and replicas S2 and S3, at the default of three copies
+and a floor of two ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)).
+
+**A replica dies while writes keep coming.**
+
+1. S3 loses power. Writes to A wait, because S1 acknowledges only what every
+   listed replica holds ([§4](#4.%20The%20write%20path)).
+2. S3 stays silent past the removal bound. S2 answered within it, so S1 keeps
+   S2 and removes S3 ([§7.2](#7.2%20Removal)).
+3. S1 writes the shard record without S3 at the next epoch, by
+   compare-and-swap. The waiting writes are acknowledged without it ([§7.2](#7.2%20Removal)).
+4. Two members remain, the floor, so A keeps writing. It is under-replicated,
+   so S1 offloads eagerly ([§7.1](#7.1%20Count%2C%20floor%20and%20placement), [§5](#5.%20Offload%20and%20release)).
+5. The repair scheduler joins S4, from a failure domain A does not use, as a
+   learner ([§7.4](#7.4%20Repair), [§7.3](#7.3%20Joining)).
+
+The stall is about the removal bound plus one compare-and-swap
+([§15](#15.%20Test%20plan%20and%20benchmarks)); A has three copies again once S4's tail
+is covered.
+
+**A slow replica that still answers.**
+
+1. S3's disk slows down. It still answers, but lags by more than the configured
+   bytes or time ([§7.2](#7.2%20Removal)).
+2. Until then every write to A runs at S3's pace: acknowledgement needs the whole
+   replica set, not a quorum ([§4](#4.%20The%20write%20path)).
+3. Before removing S3, S1 probes S2, the replica it keeps, and acts only on S2's
+   answer ([§7.2](#7.2%20Removal)).
+4. S1 removes S3 at the next epoch, and writes return to S2's pace.
+
+A slow node is removed like a dead one; until then it sets the shard's write
+latency.
+
+**A replica comes back after a reboot.**
+
+1. S3 restarts, its journal still holding old entries of A's files.
+2. It joins A as a learner and first discards those entries: they may include
+   writes never acknowledged ([§7.3](#7.3%20Joining)).
+3. S1 adds it at the next epoch with a join point. From there S3 receives every
+   new write and counts for its acknowledgement ([§7.3](#7.3%20Joining)).
+4. S1 covers the older tail file by file, by copying or offloading it
+   ([§7.3](#7.3%20Joining)).
+5. Once every file is covered, S1 clears the learner flag. Only now may S3 take
+   over or serve reads ([§7.3](#7.3%20Joining)).
+
+Writes never pause. A short absence still costs a full tail copy today; a
+dirty-region map is the recorded upgrade ([§7.3](#7.3%20Joining)).
+
+**The primary is cut off from both replicas.**
+
+1. A network fault isolates S1 from S2 and S3, while S1 still reaches the
+   metadata store.
+2. S1 hears from no replica within the removal bound. It cannot tell its own
+   isolation from their loss ([§7.2](#7.2%20Removal)).
+3. So it removes neither. It relinquishes A: it stops serving A, then marks the
+   record relinquished at the next epoch ([§7.2](#7.2%20Removal)).
+4. S2 or S3 takes A over at once, with no wait for S1's lease
+   ([§9.2](#9.2%20Takeover)).
+5. S1 may not claim A back while the record marks it relinquished
+   ([§7.2](#7.2%20Removal)).
+
+A never runs on one isolated copy. If both replicas are truly lost, only an
+operator's acknowledgement lets S1 claim A alone.
+
+**A client's read lands on a replica.**
+
+1. A read of a file in A reaches S2 ([§8](#8.%20Reads)).
+2. S2 asks S1 for the newest version of each extent the read covers. The
+   answer carries no bytes ([§8](#8.%20Reads)).
+3. S2 serves its own bytes only if each extent carries exactly that version,
+   and the answer is still fresh by S2's own clock ([§8](#8.%20Reads)).
+4. Otherwise S2 forwards the read to S1.
+
+One round trip spreads reads over the replicas without ever serving stale bytes.
 
 **How the rest is organised.** §1–§3 give the purpose, the terms, the journal
 extension replication needs and what it takes from [RFC 11](rfc-11-ownership.md);

@@ -45,6 +45,19 @@ where the code differs.
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+A namespace is the folder in a bucket where one or more shares keep their
+blocks. Exactly one installation, a DittoFS deployment with its own metadata
+store, holds it at a time. A move hands a namespace to another installation that
+reaches the same bucket. Only the metadata and the right to delete garbage
+change hands; no block is copied. Think of handing over a storage unit: the
+boxes stay put, the inventory and the key go to the new tenant, and a sign on
+the door says whose it is. That sign is the **claim**. Unlike a lock, it cannot
+stop a second writer by itself, so the move's order and a self-fence do that. A
+re-home is different: it copies one share out of a shared namespace, so that
+share can later move alone.
+
 **What this is.** A **namespace** is the folder in a bucket a share's blocks live
 in, and the unit that moves ([RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves)).
 Exactly one installation holds a namespace at a time, proven by a **claim**
@@ -110,6 +123,85 @@ then GC across installations, key scope, versions and FileIDs on import,
 replication, and the re-home (§2.7, long and self-contained). §3 is the API and
 configuration, §4 the invariants, §5–§6 tests and metrics, §7 the open
 questions.
+
+### Scenarios
+
+**The freeze cannot finish within `migration.freeze_timeout`.**
+
+1. A has frozen `ns-photos` and is offloading what is dirty, while client calls
+   are answered "retry later"
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+2. The freeze is bounded by `migration.freeze_timeout`. One that cannot finish
+   in time aborts the move ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+3. A records the namespace `serving` again and reopens the gates. It deletes
+   its base cuts, and only then the GC pause record
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+4. B drops its staged copy; it had published nothing
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+
+Outcome: clients carry on at A. An abort like this is possible only before A
+writes the claim `released`.
+
+**A copy of A's virtual machine boots from yesterday's image.**
+
+1. At start, the copy compares the platform's machine-generation identifier
+   with the one it recorded, and they differ
+   ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+2. It mints a new instance part for its identity, and holds no namespace until an operator
+   says which copy is the installation
+   ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+3. On a platform that reports nothing, the claim's nonce, a fresh value written
+   at every start and recheck, catches it. The copy reads the claim before
+   rewriting it ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+4. The claim holds the original's newer nonce, which the copy never recorded.
+   The copy stops writing, its GC stops deleting, and it alerts
+   ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+
+Outcome: a copy of an installation's disks never silently becomes a second
+holder.
+
+**An operator tries to clone `photos` during the pre-seed.**
+
+1. A wrote the namespace's GC pause record before it took the base cut
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+2. The clone's first transaction reads that record and finds it names a move
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+3. The clone is refused with `ErrMoving`, as are share creation and deletion,
+   backups and re-homes ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+4. Snapshot deletion and pruning are deferred, not refused
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+
+Outcome: what the move carries stays fixed until the move ends.
+
+**A stalled GC process of A wakes up after A released the claim.**
+
+1. Before each batch of deletes, GC reads the claim, which now names B
+   ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+2. The claim does not name A `owned`, so GC issues no delete
+   ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+3. Even without that read, it stops two recheck periods after its last good
+   claim read, by its own clock
+   ([§2.1](#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)).
+4. If it puts a block instead, the commit finds no intent, and the object only
+   leaks until B's listing collects it
+   ([§2.3](#2.3%20GC%20across%20installations%20on%20one%20bucket)).
+
+Outcome: a stale A can waste space but not delete B's blocks, unless it stalls
+past the clock bound between its check and its delete.
+
+**An NFS client of `photos` still points at A after the move.**
+
+1. A has dropped the moved share and no longer holds it
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+2. The client's next call there is answered stale
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+3. The client remounts at B. Share identities and FileIDs are kept, so the
+   handles it took at A resolve there
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+4. Its opens, locks and delegations are not carried
+   ([§2.2](#2.2%20The%20move%2C%20step%20by%20step)).
+
+Outcome: files and handles survive the move; NFS protocol state does not.
 
 ## In short
 

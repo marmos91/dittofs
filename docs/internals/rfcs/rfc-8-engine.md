@@ -39,6 +39,21 @@ labelled **proposal** and names the measurement that would overturn it.
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The engine decides what happens to file content on one node, and in what order.
+It holds no bytes itself: the journal holds recent writes, the bucket holds what was uploaded, and the metadata store records which is where.
+Its job is to call those three at the right moments: acknowledge from the journal, upload later, evict only what is safely uploaded.
+On a read it asks the journal before the metadata store, so content in flight between them is never missed.
+Think of a head chef who cooks nothing, but calls each order to the right station in the right order.
+Where the picture breaks: after a crash the engine rebuilds its whole to-do list from the journal and the metadata store, losing time but no content.
+One engine serves every share on the node, and one share must not stall another.
+
+```text
+ write ─► journal ─(later)─► upload to bucket ─► metadata commit ─► evictable
+ read  ─► journal first ─► then metadata ─► fetch from bucket if needed
+```
+
 **What this is.** The engine is the coordinator of file content on a storage
 node. When the filesystem service asks to write, flush or read a file's bytes,
 the engine decides what happens next — acknowledge from the local journal,
@@ -147,6 +162,53 @@ deallocate ([§8](#8.%20Truncate%2C%20deallocate%20and%20release)), clone ([§9]
 facade the filesystem service calls, [§13](#13.%20Invariants) the invariants in one table. [§14](#14.%20Observability)–[§15](#15.%20Conformance)
 (metrics, tests, benchmarks) and Appendix A (where today's code differs) can
 wait for a second reading.
+
+### Scenarios
+
+Each runs on N1, with alice-pc writing to `profiles/alice/ODFC_alice.vhdx` and the bucket `dfs-data` as the remote tier.
+
+**The bucket stops answering for an hour.**
+
+1. alice-pc keeps writing; each write is staged in the journal and acknowledged as usual ([§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)).
+2. Before each offload pass the engine asks whether the bucket accepts uploads; while not, the pass is skipped and retried ([§6.3](#6.3%20The%20offload%20pipeline)).
+3. Retries never stop while N1 serves the share; the wait grows from 1 s to at most 60 s (proposed defaults) ([§6.3](#6.3%20The%20offload%20pipeline)).
+4. The share reports a health condition for failing offload, separate from the bucket being unreachable ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)).
+5. A read of content held only in the bucket fails with a transient error, never with the "lost" error ([§7.5](#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)).
+6. If the journal fills, writes get retry-later, never "no space", because an outage clears by itself ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+
+Outcome: once the bucket answers, offload resumes within one backoff and drains the backlog, with no operator step ([§6.3](#6.3%20The%20offload%20pipeline)).
+
+**N1 crashes after an upload, before its metadata commit.**
+
+1. An offload pass minted block name B1, durably recorded a put intent (a note "about to upload B1"), and uploaded B1 ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)).
+2. N1 dies before the metadata commit, so alice's extents never got their offloaded mark and stay dirty ([§10](#10.%20Local%20space)).
+3. On restart, before serving a file, the engine re-applies from the journal the sizes and times metadata had not recorded ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+4. It rebuilds its work queue: every held extent without an offloaded mark is offered again ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+5. The re-offer mints a new name, B2; the name B1 is never used again ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+6. On a single node, N1 abandons B1's intent before serving, and GC deletes the orphan object from it ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
+
+Outcome: the crash leaks bucket space for a while and loses no content.
+
+**alice-pc truncates the file while its offload pass is uploading.**
+
+1. The pass captured alice's dirty bytes under the file's guard, a short per-file lock, then started the upload ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)).
+2. The truncate takes the guard next, so the journal gives it a version above everything the pass offered ([§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it)).
+3. The truncate neither waits for the upload nor cancels it ([§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it)).
+4. If the pass commits first, the truncate hides its refs and drops them later; otherwise the pass drops every ref overlapping the removed range ([§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it)).
+5. A ref straddling the new end is dropped whole; its part inside the file stays dirty and is uploaded again ([§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it)).
+
+Outcome: in either order, a later extend reads zeros past the truncation point; the cost is at most one chunk re-uploaded per edge.
+
+**The journal fills faster than the bucket drains it.**
+
+1. Writes are paced on dirty plus not-yet-reclaimed bytes: what only an upload or a repack can free ([§10](#10.%20Local%20space)).
+2. Below half of the limit no write is delayed; above it, every file with dirty bytes may be offloaded at once ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)).
+3. The delay grows in a straight line, from zero at half the limit to the time the journal takes to drain that write ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)).
+4. If the journal still refuses a write, the engine first repacks: it copies live records out so a segment's space can be reused ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+5. Then it evicts uploaded extents; if the bucket is healthy, it pushes dirty files to offload at once, and retries ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+6. A delay that would outlast the client's deadline returns retry-later at once, instead of sleeping ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)).
+
+Outcome: alice-pc slows down gradually instead of hitting a wall, and no acknowledged write is dropped to make room.
 
 ## In short
 
@@ -2234,14 +2296,25 @@ reported pass returns what it did not report to Dirty.
 ### 10.1 Eviction is chosen here, and needs no new record
 
 `EvictionPolicy` selects what to evict, and the engine calls `Release` on it.
-**Proposal:** by segment — the segments whose held bytes are coldest and fewest,
+**Proposal:** by segment — the segments whose held bytes are oldest and fewest,
 evicted together so the repack that follows copies least — and within that,
-coldest first by last access, until allocated occupancy falls below a target
-under the maximum.
-Evicting the coldest extents scattered over many segments frees nothing until
+oldest first, until allocated occupancy falls below a target under the maximum.
+An extent's age is the latest of its write, its fill and its last repack copy:
+nothing records a read that hits held content, and neither the journal's
+statistics nor its per-segment accounting ([RFC 1 §4.4](rfc-1-journal.md#4.4%20Inspection)) carries an access
+time.
+Evicting the oldest extents scattered over many segments frees nothing until
 repack has copied everything else in each, about u/(1−u) bytes copied per byte
 freed at a live fraction u: 5.7 at 85 %. Overturned by a measurement of repack
 bytes per byte freed under the profile workload.
+
+> ponytail: eviction by age is first in, first out, with a miss as the second
+> chance: a read-only working set is evicted and filled again once per journal
+> turnover, about 0.85 × the maximum ÷ (write + fill + repack rate) — roughly
+> half an hour at 1 GB/s on 2 TB — costing one remote fetch of the hot set per
+> turn, and repack makes the old content it copies look new. Upgrade to an
+> in-memory access stamp per segment, updated on hits and never persisted, when
+> refetches of a read-mostly hot set show up in remote-tier traffic.
 
 The record that makes eviction safe is the offload commit, made before the
 offloaded bit was set ([RFC 6 §4.3](rfc-6-block-metadata.md#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)); a carved extent the journal does not hold

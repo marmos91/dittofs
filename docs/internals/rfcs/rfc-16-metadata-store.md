@@ -35,6 +35,23 @@ share; what the first release, one node, follows instead is
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The metadata store is DittoFS's memory for everything except the bytes inside
+files. It knows which files exist, what they are called, who may use them, and
+where their bytes went. Think of a library's card catalogue: the books sit in
+the stacks, and the cards say what exists and where to find it. Unlike a drawer
+of cards, every change is a transaction: all of its records land, or none do.
+Each caller gets a narrow view of the store: the filesystem service, the engine,
+GC (the garbage collector, which deletes blocks nothing uses) and the management
+API each see only what they need. One small interface hides the database
+underneath: an embedded one on a single node, a replicated one in a cluster.
+
+```text
+ file bytes:      journal ──► blocks in the bucket
+ everything else: one transactional store (this RFC)
+```
+
 DittoFS keeps every fact it must remember, other than file content, in one
 transactional database: files and directories, which chunks hold each file's
 bytes, the open state that must survive a restart, users, shares, nodes and
@@ -153,6 +170,83 @@ lists every key.
 - A store opens only under a binary that understands its format and fold
   rules, and a value written in an unknown codec version is refused, never
   guessed.
+
+### Scenarios
+
+**alice-pc and build01 each create a file in `profiles/alice/` at the same moment.**
+
+1. Each create is one transaction. It guards the directory's record, a claim on
+   a key it does not write, instead of rewriting it
+   ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+2. Two guards on one key never conflict, so both transactions commit
+   ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+3. Each writes its own Entry, and a directory-time delta under a key unique to
+   its transaction ([§4.4](#4.4%20Counters%20that%20many%20writers%20change)).
+4. Later the primary of the directory's shard folds the deltas into the
+   directory's record, at a moment when no create there is in flight
+   ([§4.4](#4.4%20Counters%20that%20many%20writers%20change)).
+
+Outcome: creates in one busy folder run in parallel; measured, the deltas kept
+the full rate where rewriting the directory cut it from 111k/s to 28k/s.
+
+**On a case-insensitive share, alice-pc creates `Report.docx` while build01 creates `REPORT.DOCX`.**
+
+1. The share's fold rule turns both names into one key, `report.docx`
+   ([§4.6](#4.6%20Store%20format)).
+2. Both transactions write that one Entry key. The store sees a write-write
+   conflict and aborts whichever commits second
+   ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+3. `Update` retries the loser within its caller's deadline, against a fresh
+   snapshot ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+4. The retry reads the entry the winner wrote, so the second create finds the
+   name taken.
+
+Outcome: one entry, spelled as the winner spelled it, and no client ever sees a
+raw conflict error.
+
+**N1 loses power just after a flush is reported done.**
+
+1. The flush's transaction returned only once its writes were synced to N1's
+   device ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+2. Other commits ready at that moment shared the same sync (group commit), and
+   none was acknowledged before it ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+3. On restart, every transaction that was reported done is in the store. The
+   journal may already have released bytes because of one; that is safe.
+4. A commit whose `Update` returned an error may or may not have landed;
+   callers treat it as unknown, never as refused
+   ([§4.1](#4.1%20One%20small%20interface%20per%20backend)).
+
+Outcome: nothing reported as committed is lost, so nothing built on a commit
+has to be undone.
+
+**An operator removes the share `profiles`.**
+
+1. If a snapshot cut is running, `DeleteShare` answers "retry later". If
+   snapshots exist, the request has to say whether to delete or detach them
+   ([§2.3.2](#2.3.2%20Removing%20a%20share)).
+2. Otherwise one transaction marks the share `being removed` and frees its name
+   and path ([§2.3.2](#2.3.2%20Removing%20a%20share)).
+3. From that commit, every call into the share is answered stale, and a new
+   share may take the name ([§2.3.2](#2.3.2%20Removing%20a%20share)).
+4. The rest runs in the background. Each step is idempotent and recorded, so a
+   crash resumes where the record says it stopped
+   ([§2.3.2](#2.3.2%20Removing%20a%20share)).
+
+Outcome: clients lose the share at once, and the cleanup finishes on its own,
+even across crashes.
+
+**N1 is upgraded to a newer binary, then rolled back.**
+
+1. The new binary reads the format record before any other key, and finds a
+   format it can read ([§4.6](#4.6%20Store%20format)).
+2. It keeps writing that older format, and records the range it supports in
+   its node record ([§4.6](#4.6%20Store%20format)).
+3. Rolling back is reinstalling the old binary, which still opens the store
+   ([§4.6](#4.6%20Store%20format)).
+4. Once an operator raises the format through the control plane's gate, the old
+   binary refuses the store and says why ([§4.6](#4.6%20Store%20format)).
+
+Outcome: opening a store never upgrades it; only an explicit raise does.
 
 ### How the rest is organised
 

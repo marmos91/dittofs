@@ -25,6 +25,25 @@ redefine them. Conventions, including the RFC 2119 key words, are in
 
 *Explanatory. The rules are in [§1](#1.%20Scope) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+This RFC follows one piece of file content from the moment a client writes it until it is gone for good.
+Every write first lands in a **journal**, a fast log on the server's local disk, and is acknowledged from there.
+Later, in the background, the bytes are packed into large objects and uploaded to a bucket, a cheap remote store.
+A **metadata store**, a small database, records which file uses which bytes and which object holds them.
+Think of a desk in-tray, a warehouse and a ledger: papers wait in the tray until the ledger says the warehouse has them.
+Only then may the tray copy be thrown away, and a later read fetches it back from the warehouse.
+Where the picture breaks: a box in this warehouse is never edited, only replaced by a new one.
+Because the tray and the ledger are asked separately, the server can tell "never written" from "written, then lost".
+The rest of the RFC names the words, the states and the rules that keep those three in step.
+
+```text
+ write ──► journal (local disk) ──offload──► bucket (remote objects)
+                 │                                 │
+                 └──────── metadata store ◄────────┘
+                    which file uses which bytes, and where they are
+```
+
 DittoFS is a file server that runs as an ordinary program, with no kernel
 module. Clients mount it over NFS (Network File System) or SMB (Server Message
 Block), as they would mount a NAS (network-attached storage) box. Behind the
@@ -230,6 +249,53 @@ one continues in the next.
   named by its keyed hash); a **block** (an object in the bucket packing many
   chunks, 4 MiB by default); a **namespace** (a prefix in the bucket); a **shard**
   (a set of files owned by one node at a time).
+
+### Scenarios
+
+Each runs on node N1 with the bucket `dfs-data`, and picks up where the walk-through above stops.
+
+**The bucket stops answering for an afternoon.**
+
+1. alice-pc keeps writing; N1 stages each write in the journal and acknowledges it ([§10](#10.%20Failure%20model)).
+2. No upload succeeds, so no extent becomes offloaded, and nothing written since can be evicted ([§8.1](#8.1%20Evict)).
+3. A read of an extent that lives only in the bucket fails with an error, never with zeros ([§10](#10.%20Failure%20model)).
+4. The share reports a health condition, not just a log line, while offload keeps failing ([§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave)).
+5. If the journal fills, writes are refused with retry-later; NFS clients retry, and SMB holds the request pending up to `smb_pending_cap` ([§10.3](#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)).
+6. The bucket returns; offload drains the backlog and eviction frees space again, with no operator step ([§10.2](#10.2%20No%20state%20requires%20intervention%20to%20leave)).
+
+Outcome: no acknowledged write is dropped to make room; clients wait instead.
+
+**N1 crashes in the middle of an upload.**
+
+1. An offload mints a fresh block name and records a put intent for it, then starts the put ([§5.2](#5.2%20Offload)).
+2. The process dies before metadata records the block, so the offered extents are still **Dirty** ([§5.2](#5.2%20Offload)).
+3. On restart the journal rebuilds its index; a half-written last record counts as never written ([§10](#10.%20Failure%20model)).
+4. Before serving, the engine re-applies from the journal the existence of writes metadata had not yet committed ([§5.1](#5.1%20Write)).
+5. The dead attempt's intent is abandoned at start; GC (garbage collection) deletes any object it left ([RFC 9 §5](rfc-9-gc.md#5.%20Unrecorded%20objects)).
+6. The next offload offers the same bytes again under a new block name ([§5.2](#5.2%20Offload)).
+
+Outcome: the failed upload costs time and bucket space, never data.
+
+**alice overwrites an extent while a read of it is still fetching.**
+
+1. Windows reads the evicted extent at 4 GiB: the journal holds nothing, metadata names chunk C in block K1 ([§6.1](#6.1%20Resolution)).
+2. N1 gets the bytes, checks their hash and serves them, without waiting to keep a local copy ([§6.1](#6.1%20Resolution)).
+3. Meanwhile alice-pc writes 64 KiB over the same range; the journal stages it ([§5.1](#5.1%20Write)).
+4. The fetched bytes arrive to be kept locally, but fill never overwrites what the journal holds: the write wins ([§6.2](#6.2%20Fill)).
+5. The next read asks the journal first and gets the new bytes ([§6.1](#6.1%20Resolution)).
+
+Outcome: an older copy from the bucket can never hide a newer write.
+
+**build01 runs `rm -rf` on its build tree.**
+
+1. Each unlink removes the name at once ([§7](#7.%20Mutation%20and%20removal)).
+2. A file the compiler still has open keeps its content until its last open is closed ([§7](#7.%20Mutation%20and%20removal)).
+3. A large file's removal is recorded first, then its refs are dropped in small batches that resume after a crash ([§7](#7.%20Mutation%20and%20removal)).
+4. Nothing leaves the bucket yet: deleting a file never deletes remote content ([§7](#7.%20Mutation%20and%20removal)).
+5. Sweep later deletes a block once no chunk still referenced is recorded in it ([§8.3](#8.3%20Sweep)).
+6. A block that also packs alice's chunks stays; the compactor may copy her chunks out first ([RFC 9 §4](rfc-9-gc.md#4.%20Compactor)).
+
+Outcome: names vanish at once, bucket space returns later, and only sweep destroys a last copy.
 
 ### How the rest is organised
 

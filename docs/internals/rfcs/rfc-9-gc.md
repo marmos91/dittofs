@@ -32,6 +32,22 @@ where the code differs.
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+GC (garbage collection) frees space in the bucket once no file and no snapshot needs an object.
+It is the only part of DittoFS that can destroy the last copy of someone's data.
+Think of an office shredder with a two-day out-tray.
+A box of papers nobody uses goes into the tray, not the shredder.
+After two days, someone checks the ledger once more, and shreds the box only if nobody still uses anything in it.
+Unlike a real out-tray, waiting never makes shredding allowed; only the final check against the ledger does.
+Reclaiming space comes second to never shredding a box someone still needs.
+
+```text
+ last use dropped ──► retired (trash, 48 h) ──► check: still unused? ──yes──► deleted ──► object gone
+                         ▲                              │ no
+                         └──────────── back to live ◄───┘
+```
+
 **What this is.** GC (garbage collection) deletes objects from the remote
 object store (S3) once no file and no snapshot can read them any more, and
 rewrites half-empty objects so their dead bytes can go too. It is the only part
@@ -143,6 +159,52 @@ correction resurrect a retired block in the first release. [§4](#4.%20Compactor
 objects no record names, [§6](#6.%20Audit) the audit that keeps counts honest. [§7](#7.%20Bounds%2C%20records%20and%20scheduling) covers
 scheduling, records and service-setting rechecks; [§8](#8.%20API%20surface)–[§10](#10.%20Observability) the API, invariants and
 metrics; [§11](#11.%20Test%20plan%20and%20benchmarks) the tests. Appendix A lists where today's code differs.
+
+### Scenarios
+
+Each runs on node N1 with the bucket `dfs-data` and the default 48-hour trash.
+
+**A restore needs a chunk just as the deleter reaches its block.**
+
+1. alice's old `archive.pst` is deleted; dropping its refs takes chunk h, block K7's last live chunk, to zero; K7 retires for 48 hours ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.7](#3.7%20Trash)).
+2. At 48 hours, a restore of a copy taken before the delete adopts h, meaning it adds a ref to h without uploading it ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)).
+3. At the same moment the deleter finds K7 due; both read K7's block record as `retired` ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)).
+4. Both write that one record, so the metadata store lets only one of them commit ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)).
+5. If the restore wins, K7 is live again, and the deleter's retry drops it from its batch ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)).
+6. If the deleter wins, K7 is `deleted`, and the restore fails and publishes nothing ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)).
+
+Outcome: no file ever ends up naming an object that is being deleted.
+
+**N1 crashes between marking a block deleted and deleting its object.**
+
+1. The deleter checks the reverse ref index, finds no ref to any chunk of K9, and marks K9 `deleted` in one transaction ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)).
+2. It sends the delete only once a check of the bucket's settings, started after that mark, has passed ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.7](#3.7%20Trash)).
+3. N1 crashes before it records that the delete succeeded ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)).
+4. On restart, GC resumes from its index of `deleted` blocks, with no scan of all block records ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.2](#3.2%20A%20retirement%20not%20yet%20deleted%20is%20durably%20recorded)).
+5. It sends the delete again; if the bucket says the object is already gone, that counts as success ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)).
+6. After a further recheck passes, K9's records are pruned ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)).
+
+Outcome: a record always names the object until it is gone, so nothing leaks and nothing is lost.
+
+**A slow read is in flight when the compactor moves its chunk.**
+
+1. A read of `ODFC_alice.vhdx` resolves chunk h to block B2, which is mostly dead bytes ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)).
+2. The compactor copies B2's live chunks into a new block T, then one transaction points h at T and retires B2 ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
+3. B2 waits out the trash like any retired block, so the read almost always still finds it ([§3.7](#3.7%20Trash), [§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
+4. A read that arrives after B2 is deleted is told "absent"; it looks h up again, finds T, and retries ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)).
+5. It reports the data lost only if the same block name misses twice, or h has no record at all ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)).
+
+Outcome: compaction never shows up as an error to a reader.
+
+**The bucket refuses deletes for a day.**
+
+1. `dfs-data` starts refusing or throttling delete requests ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)).
+2. Blocks already marked `deleted` stay so; the scheduler backs off with jitter and lowers its rate for that store ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)).
+3. Retirement keeps running, since it only writes metadata, so due blocks pile up as records ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)).
+4. A backlog that does not drain is reported as a health condition, not only logged ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)).
+5. When deletes work again, the deleter drains the backlog from its index keys, with no operator step ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object), [§3.6](#3.6%20Failures%20resolve%20on%20their%20own)).
+
+Outcome: space comes back late, and no data is lost while it waits.
 
 ## 1. Purpose
 

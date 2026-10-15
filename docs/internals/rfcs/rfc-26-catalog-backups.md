@@ -42,6 +42,18 @@ where the code differs.
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+A backup is a copy kept outside the installation, for the day something is lost.
+A catalog backup copies metadata only: the tree of names, and the refs that say
+which chunks in the bucket hold each file's bytes. It is small and cheap,
+because the bytes stay where they are. A copying backup also copies the blocks
+those refs name, to a folder somewhere else. Think of photographing a library's
+card catalogue: the photo saves you if the catalogue burns, but only while the
+books are still on the shelves. Boxing up the books and storing them across town
+is the copying backup. Both are written in one sealed format, the export, which
+a namespace move uses too.
+
 **What this is.** A backup copies what one snapshot sees to a place outside the
 installation's metadata store, so the files can be brought back when that store
 is lost. A **catalog backup** copies the metadata only: the tree, and the refs
@@ -116,6 +128,81 @@ not. §2 covers catalog backups and restore; §2.4 on copying backups is long an
 self-contained. §3 is the export format and how an import is staged. §4 is the
 API and configuration, §5 the invariants, §6–§7 tests and metrics, §8 the open
 questions.
+
+### Scenarios
+
+**An operator tries to delete snapshot 12 while a catalog backup of it lives.**
+
+1. The backup began by writing a use record on snapshot 12
+   ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
+2. The deletion checks for use records, finds that one, and the snapshot stays
+   ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
+3. A catalog backup keeps its use record until it expires, because the
+   snapshot's refs are what keep its blocks counted
+   ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
+4. A copying backup drops its use record when it completes instead, because it
+   then holds its own blocks
+   ([§2.4.3](#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+
+Outcome: GC never sweeps a block that a live backup still needs from the
+bucket.
+
+**The node writing a catalog backup crashes halfway.**
+
+1. The use record carries a deadline, which the backup renews while it makes
+   progress ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
+2. Nothing renews it now. The snapshot service finds the deadline past and
+   treats the backup as abandoned
+   ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
+3. If the backup record names no export digest yet, the backup is marked
+   `failed`, and only then is the use record deleted
+   ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
+4. If the digest was already recorded, the backup is completed from its record,
+   never exported again ([§2.2](#2.2%20A%20backup%20holds%20its%20snapshot)).
+
+Outcome: a crash never pins the snapshot for good, and a `failed` backup is
+never restored.
+
+**A share's first copying backup to `vault` needs longer than `max_copy_time`.**
+
+1. The copy puts blocks in batches. After each batch, a progress object at the
+   location lists the blocks put
+   ([§2.4.3](#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+2. At `max_copy_time` the attempt is marked `failed`, and its progress objects
+   stay ([§2.4.3](#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+3. The next attempt counts the listed blocks as its base and copies only the
+   rest ([§2.4.2](#2.4.2%20What%20is%20copied)).
+4. Attempt by attempt the copy finishes, never starting again from zero
+   ([§2.4.2](#2.4.2%20What%20is%20copied)).
+
+Outcome: a first copy too large for one attempt completes across several.
+
+**`Verify` finds a block missing from the `vault` folder.**
+
+1. `Verify` reads every block the backup's manifest lists, and checks each chunk
+   against its plaintext hash
+   ([§2.4.3](#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+2. The missing block marks the backup `damaged`
+   ([§2.4.3](#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+3. A damaged backup is never a base, so the share's next copy does not reuse
+   its blocks ([§2.4.2](#2.4.2%20What%20is%20copied)).
+4. A restore from it is refused with `ErrBackupDamaged`
+   ([§2.4.3](#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+
+Outcome: damage is found by a routine check, not by a restore on the worst
+day.
+
+**A recovery import is interrupted before it publishes.**
+
+1. The import writes into a staging area, which no share serves and no dedup
+   lookup reads ([§3.2](#3.2%20Import%20is%20staged%20and%20published%20atomically)).
+2. It is interrupted before its one publish transaction.
+3. At the next start its staging records are removed. An import is never
+   resumed from a partial staging area
+   ([§3.2](#3.2%20Import%20is%20staged%20and%20published%20atomically)).
+4. A new import starts over from the export.
+
+Outcome: clients see the whole restored share or none of it.
 
 ## In short
 

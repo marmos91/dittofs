@@ -51,6 +51,19 @@ tags:
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+Files are grouped into shards, like classrooms in a school. Each classroom has
+one teacher, the primary, who decides everything in it: writes, opens and locks.
+The metadata store keeps one card per classroom, naming its teacher and a
+ticket number, the epoch. Protocol nodes act as receptionists: they read the
+card and send each request to that teacher. A new teacher always gets a higher
+ticket, so an old one who wanders back is ignored. Classrooms are spread over
+nodes by a fixed seating chart of 4,096 slots. Moving a classroom moves its
+recent notes, never the books, which stay in the shared library, the bucket.
+Where the analogy stops: a classroom can be a whole share, a subtree, or one
+user's folder.
+
 **What this is.** In a cluster, every file has exactly one server allowed to
 change it at any moment. This RFC groups files into shards, says which server is
 in charge of each shard, how a request arriving at any server reaches it, and
@@ -199,6 +212,83 @@ proposed size cap does not fit profile shares ([§15](#15.%20Open%20questions)).
 - No planned change moves a shard's primary sooner than the dwell time
   (`shard.dwell`, proposal: 30 min) after the last one, so two writers cannot bounce it back
   and forth.
+
+### Scenarios
+
+**A fourth storage node joins.**
+
+1. S4 joins the placement set, with its capacity setting
+   ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+2. The slot table is recomputed to move as few of its 4,096 slots as the new
+   weights allow, each slot's nodes in distinct failure domains where the
+   nodes span enough of them ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+3. The new table is written by one compare-and-swap
+   ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+4. Only shards whose slots changed are handed over, at a configured rate, each
+   no sooner than 30 min after its last planned move
+   ([§2.2](#2.2%20Automatic%20per-child%20shards), [§3.3](#3.3%20The%20primary%20follows%20the%20writer)).
+5. Each handover makes S4 a replica first, then ships only the un-offloaded tail
+   and the open-state table. No grace period runs ([§4](#4.%20Moving%20files%20and%20primaries)).
+
+S4 takes slots in proportion to its capacity, and no byte in the bucket moves.
+
+**Ten build machines write into one share.**
+
+1. Ten machines write into `builds/`, a share that is one shard, through P1 and
+   P2 ([§2](#2.%20Shards)).
+2. P1 and P2 forward every write to the shard's primary, S3, which orders them
+   all ([§2.1](#2.1%20One%20primary%20per%20shard), [§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+3. The share gets one node's throughput, and one journal device's, however many
+   clients write ([§2.1](#2.1%20One%20primary%20per%20shard)).
+4. Where two writes overlap, the one reaching S3 later wins, byte by byte
+   ([RFC 14 §7.1](rfc-14-open-state.md#7.1%20Writers%20that%20do%20not%20coordinate)).
+
+Correctness costs nothing extra; more throughput needs the share split into
+subtree or per-child shards.
+
+**The primary follows its writer.** Nodes run both roles. N1 is primary of shard
+A; N2 is a replica of A and holds alice-pc's connection.
+
+1. Over 5 min, at least 90% of A's written bytes arrive forwarded from N2
+   ([§3.3](#3.3%20The%20primary%20follows%20the%20writer)).
+2. A's last planned change of primary was more than 30 min ago
+   ([§3.3](#3.3%20The%20primary%20follows%20the%20writer)).
+3. N2 is not a learner, so N1 hands A over to it
+   ([§3.3](#3.3%20The%20primary%20follows%20the%20writer), [§4](#4.%20Moving%20files%20and%20primaries)).
+4. If the tail stops shrinking while it ships, N1 abandons the handover and the
+   30 min wait restarts ([§3.3](#3.3%20The%20primary%20follows%20the%20writer)).
+
+alice-pc's writes stop paying the forwarding hop, and A never moves more than
+once per 30 min.
+
+**Marking `profiles/` per-child on a live share.**
+
+1. An operator marks `profiles/`, which already holds `alice/` and `bob/`
+   ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+2. Each existing child tree moves to a new shard of its own. The new shard is
+   written on the tree's root first, so files created mid-walk are born in it
+   ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+3. Each batch freezes only its own files, ships their un-offloaded operations,
+   and commits in one transaction ([§4](#4.%20Moving%20files%20and%20primaries)).
+4. A move costs about three store writes per file. A live subtree snapshot over
+   the shard refuses the marking ([§2.2](#2.2%20Automatic%20per-child%20shards)).
+
+Users spread across nodes by slot, and new children start in their own shard.
+
+**A primary the protocol nodes cannot reach.**
+
+1. N1 still renews its lease, but P1 and P2 cannot reach it
+   ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+2. They report the failed forwards, and the store records a health condition on
+   N1 ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+3. After the unreachable delay, proposed 30 s, each of N1's shards is handed to a
+   replica they can reach ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+4. If N1 does not finish within the handover bound, proposed 60 s, its next
+   renewal is refused, which makes it a failover
+   ([§5.1](#5.1%20Front-ends%20forward%20to%20the%20primary)).
+
+A node that is alive to the store but lost to its clients does not keep its
+shards.
 
 **How the rest is organised.** §1 states the three shapes of scaling and the
 non-goals. §2 defines shards and their policies, §3 the primary, its lease and

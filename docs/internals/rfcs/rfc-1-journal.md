@@ -23,6 +23,17 @@ and its recovery after a crash are [RFC 28](rfc-28-journal-format.md).
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The journal is DittoFS's notebook on a fast local disk. Every write is added at
+the end of the notebook, and the client is answered from there. Later the engine
+copies those bytes to the bucket and tells the journal which ones arrived. Only
+those may be thrown away to make room. A notebook you only ever write at the end
+of is the right picture, with one difference: you cannot tear out one page. Space
+comes back only when a whole notebook file is deleted, after its live pages are
+copied forward. Asked for bytes it no longer has, the journal says "missing",
+never hands back blank zeros.
+
 DittoFS is a file server. Clients write to it over NFS (Network File System) or
 SMB (Server Message Block); each write lands first in a fast local **journal**
 and is acknowledged from there. In the background the bytes are cut into
@@ -127,6 +138,76 @@ offer picks it up, and a release of it is refused until then.
   would pass the index's cap, each retry-later
   ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)). After a crash the journal rebuilds itself from its own
   files alone ([RFC 28 §3](rfc-28-journal-format.md#3.%20Recovery)).
+
+### Scenarios
+
+**The power fails half a second after a write nobody flushed.**
+
+1. alice-pc writes 64 KiB and does not flush. The journal writes the record
+   before `WriteAt` returns, and the write is acknowledged ([§3.1](#3.1%20Write)).
+2. Had only the DittoFS process died now, the record would survive: the
+   operating system still holds it ([§5.2](#5.2%20Sync%20policy)).
+3. The share's sync policy is `bounded`, the default. Its timer syncs the record
+   within the time bound, 1 s proposed ([§5.2](#5.2%20Sync%20policy)).
+4. The power fails 0.5 s after the write, before that sync. An unsynced record
+   does not survive host loss, so the write can be gone ([§5.2](#5.2%20Sync%20policy)).
+5. At restart, a half-written record at the end is cut off as a torn tail, not
+   reported as damage ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)).
+
+Outcome: a client that never flushes can lose at most the last bound's worth of
+writes; anything a flush covered survives ([§5.1](#5.1%20Ordering%20rules)).
+
+**The disk reports an error when the journal syncs.**
+
+1. alice-pc flushes, and the journal's sync of segment `0042.seg` fails
+   ([§5.3](#5.3%20A%20failed%20sync)).
+2. Everything written to `0042.seg` since its last good sync is now treated as
+   not durable. The segment takes no further append, not even a seal marker
+   ([§5.3](#5.3%20A%20failed%20sync)).
+3. The stream carries on in a new segment ([§5.3](#5.3%20A%20failed%20sync)).
+4. The journal re-appends the failed window's records there, from its own
+   memory copy or a checksum-verified read, or fails them as loss events
+   ([§5.3](#5.3%20A%20failed%20sync), [§3.8](#3.8%20Loss%20events)).
+5. If it fails them, the next `Sync` of each file with a write in the window
+   returns the error, once. The engine's write verifier, the token that tells a
+   client its unflushed writes are gone, changes, so the client resends them
+   ([§5.3](#5.3%20A%20failed%20sync)).
+
+Outcome: a later successful sync of `0042.seg` never counts as success for
+writes made before the failure ([§5.1](#5.1%20Ordering%20rules)).
+
+**The journal is full while a large copy streams in.**
+
+1. A write needs space the journal's maximum does not allow. `WriteAt` fails at
+   once with `ErrNoSpace` naming that limit. It does no I/O and does not wait
+   ([§6](#6.%20Capacity)).
+2. The engine answers the client retry-later (`ErrDelay`), because offload,
+   release and repack can still drain the journal ([§6](#6.%20Capacity)).
+3. The engine releases extents already reported offloaded. Release records draw
+   on a reserved headroom, so a full journal still accepts them
+   ([§3.5](#3.5%20Release), [§6](#6.%20Capacity)).
+4. A release frees no storage by itself. Repack copies a segment's live records
+   forward and unlinks it, and only that returns space
+   ([§3.5](#3.5%20Release), [§7.2](#7.2%20Repack)).
+5. The engine retries the write within the client's deadline, and it fits
+   ([§6](#6.%20Capacity)).
+
+Outcome: the limit is never overrun, and no dirty byte is dropped to make room.
+
+**A fetch from the bucket races a new write to the same file.**
+
+1. Windows reads `[0, 1 MiB)` of `ODFC_alice.vhdx`. The journal holds none of
+   it, reports it missing, and returns the file's change version, say v50
+   ([§3.2](#3.2%20Read)).
+2. The engine starts fetching those bytes from `dfs-data`.
+3. Meanwhile alice-pc writes 4 KiB at offset 0. It gets v51, and the file's
+   change version rises to v51 ([§3.1](#3.1%20Write), [§3.4](#3.4%20Fill)).
+4. The fetch returns, and the engine calls `Fill` with v50. The file has changed
+   since, so `Fill` writes nothing and returns a distinct error
+   ([§3.4](#3.4%20Fill)).
+
+Outcome: the old bucket bytes never land over the new write, and are never
+marked offloaded. A needless refusal costs only a cache miss ([§3.4](#3.4%20Fill)).
 
 ### How the rest is organised
 
@@ -1422,7 +1503,7 @@ diverge.
 | a repack copy of content | a new one | the original's, unchanged ([§7.2](#7.2%20Repack)) |
 | a header-only record carried forward by repack | the original's, unchanged | the original's, unchanged ([§7.2](#7.2%20Repack)) |
 | a record re-appended after a failed sync, or at open ([§5.3](#5.3%20A%20failed%20sync), [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) | the original's, unchanged | the original's, unchanged |
-| used by | precedence among equal versions; `Fill`'s staleness check | precedence; `Offload` offers, `Since`, reseed, the stale rule ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) |
+| used by | precedence among equal versions | precedence; `Fill`'s staleness check ([§3.4](#3.4%20Fill)); `Offload` offers, `Since`, reseed, the stale rule ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)) |
 
 **A content version is 128 bits: an epoch, then a counter,** compared as one
 unsigned number. The journal takes the counter from one monotonically increasing

@@ -35,6 +35,23 @@ This document specifies behaviour, not the current code. Where the code differs,
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The bucket is where file content lives for good. DittoFS stores one kind of
+thing there, the block: a header listing its chunks, then the chunks
+themselves. The remote block store is the small adapter that talks to one
+service. It puts, gets, lists and deletes blocks, one try per call, and
+remembers nothing afterwards. Retries, worker counts and health belong to the
+syncer above it. Think of a warehouse clerk who files sealed crates by their
+label and fetches them back on request. Unlike a clerk, it never learns the
+regulars. Each time it opens, it first tests that the service really does what
+it claims.
+
+```text
+ syncer:  retries, pools, health   ── one call ──►  store: one try, no memory  ──►  dfs-data
+ codec:   encodes blocks, checks every chunk on read; the store never opens a block
+```
+
 DittoFS keeps recent writes on a fast local disk and copies them, in the
 background, to an object store such as an S3 (Amazon Simple Storage Service)
 compatible bucket, which is the lasting home of all file content. This RFC
@@ -128,6 +145,67 @@ disk file), receives 64 KiB overwrites all day.
   configured `immutable`, which then requires those settings, never deletes,
   sets a capped retain-until on every put, and keeps every version of its
   exports and state objects listable.
+
+### Scenarios
+
+**`dfs-data` reaches its storage quota during the afternoon.**
+
+1. Puts start coming back with the service's quota reply. The backend profile
+   maps it to `ErrDenied` with cause `quota` ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)).
+2. The store makes no retry and keeps no flag; it returns the error
+   ([§4.9](#4.9%20No%20state%20across%20calls)).
+3. As puts keep failing, the syncer turns the store's put direction unhealthy,
+   naming the cause
+   ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)).
+4. Writes waiting on offload are answered as out of space, not as an outage
+   ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
+5. Gets are untouched: a store that cannot be written can still be read
+   ([§4.7](#4.7%20Health%20is%20one%20probe%20call)).
+
+Outcome: the operator sees "quota" and frees space; reads never stop.
+
+**GC deletes a batch of 1,000 blocks and the reply is lost.**
+
+1. GC hands `Delete` 1,000 names in one call; the store splits it to fit the
+   service's batch limit ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)).
+2. The connection resets before the reply arrives. Every name in that batch
+   fails with `ErrTransient` ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)).
+3. GC keeps its records for those names and sends the batch again
+   ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)).
+4. Names already deleted the first time succeed again: deleting an absent block
+   succeeds ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)).
+
+Outcome: GC clears a record only for a name whose result reads `nil` in a reply.
+
+**Someone turns on versioning for `dfs-data` after N1 opened it.**
+
+1. N1's store opened against an unversioned bucket, which the capability check
+   verified ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+2. On its recheck period, GC runs a `Recheck`, which reads versioning as enabled
+   ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+3. GC issues no delete and raises the store's drift condition
+   ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+4. The syncer then refuses puts to the store; gets go on
+   ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)).
+5. A later `Recheck` that passes clears the condition
+   ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+
+Outcome: no block is put into, or deleted from, a bucket that would keep old
+versions behind GC's back. A `Recheck` that merely could not read is not drift.
+
+**A chunk's record points past the end of its block.**
+
+1. The engine asks for the recorded byte range of one chunk
+   ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)).
+2. The service clamps the range and sends fewer bytes. The store compares what
+   was sent with what was asked and returns `ErrInvalid`
+   ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)).
+3. The codec knows the range came from a record, so it reports `ErrCorrupt` of
+   kind `malformed` ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)).
+4. The syncer reports it at once, without a re-get: a flipped bit cannot shorten
+   a stored object ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
+
+Outcome: a short answer surfaces as corruption, never as short data.
 
 ### How the rest is organised
 

@@ -32,6 +32,23 @@ rules to build around.
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+Block metadata is the bookkeeping behind every file's bytes.
+A file's content ends up as chunks, small pieces named by a hash of their bytes, packed into blocks, the objects in the bucket.
+For each stretch of a file, a **ref** says which chunk holds it.
+For each chunk, a record says which block holds it and how many refs still use it.
+Think of a warehouse ledger: each line says which box on which shelf holds a part, and how many orders still want it.
+Unlike most ledgers, it also records "written, not yet shipped" apart from "never written".
+So a lost local copy is reported as an error, not read as zeros.
+The read path asks it where bytes are; GC (garbage collection) asks it what nobody uses any more.
+
+```text
+ file offset ──ref──► chunk A ──chunk record──► block K1 ──► object in dfs-data
+                      (by hash)  "A sits in K1,    "K1 has one chunk
+                                  2 refs use it"    still in use"
+```
+
 Block metadata is the ledger of what each file's content is made of. For every
 byte offset of every file it answers: was anything ever written here, which
 chunk holds it, which block in the remote store holds that chunk, and how many
@@ -136,6 +153,51 @@ than any before it for that file.
 - Uploads and client writes never write the same record, and a commit costs what
   it changed, not the size of the file, so a 30 GB disk rewritten all day stays
   cheap to commit; a truncate or delete returns after one small transaction.
+
+### Scenarios
+
+Each runs on node N1 with the bucket `dfs-data`.
+
+**build01 appends to a log, and N1 restarts before metadata hears of it.**
+
+1. build01 appends 64 KiB at the end of `out/build.log` and sends `COMMIT`; the reply waits only for the journal sync ([§3.4](#3.4%20Ordering%20against%20the%20journal)).
+2. An append writes no overwrite record, so its existence is group-committed later, within a bounded age ([§3.3](#3.3%20Holes%2C%20not%20written%20extents), [§3.4](#3.4%20Ordering%20against%20the%20journal)).
+3. N1 restarts before that group commit; metadata's `size`, the file length it records, is still the old one ([§3.4](#3.4%20Ordering%20against%20the%20journal)).
+4. Before serving the file, recovery applies every journal operation above `applied`, the newest version metadata has taken in ([§3.4](#3.4%20Ordering%20against%20the%20journal)).
+5. Later the bytes are uploaded, and one commit records the ref, the chunk and the block, after the block is stored ([§4.1](#4.1%20What%20one%20commit%20records), [§4.2](#4.2%20Only%20after%20the%20block%20is%20stored)).
+
+Outcome: the append survives the restart, because the journal held it durably.
+
+**N1 crashes after a block's commit, before the journal learns of it.**
+
+1. An upload of `ODFC_alice.vhdx` stores block K3, and one transaction records its refs, chunks and block ([§4.1](#4.1%20What%20one%20commit%20records)).
+2. N1 crashes before the journal records those extents as offloaded, meaning safely in the bucket ([§4.3](#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)).
+3. After the restart the journal still lists them as waiting for upload ([§4.3](#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)).
+4. Before offering the file again, the engine checks its extents against its refs ([§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)).
+5. An extent covered by a ref at or above its version is reported offloaded and not uploaded again ([§4.3](#4.3%20The%20commit%20is%20the%20report%27s%20return%20edge)).
+
+Outcome: no second upload, and no born-dead block for GC to sweep.
+
+**alice-pc truncates a file while its upload is in flight.**
+
+1. An upload pass has been offered all 10 MiB of `profiles/alice/cache.db` and is still putting its block ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+2. alice-pc truncates the file to 5 MiB; the journal cuts it first and gives the truncate a version, v ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+3. One small transaction sets `size`, writes a removal record and touches no ref; the truncate returns ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+4. Until the refs are dropped, reads treat the old refs past 5 MiB as absent ([§8.1](#8.1%20Covering%20lookup)).
+5. The upload's commit reads the file's removals and drops each of its refs that overlaps the cut part ([§4.1](#4.1%20What%20one%20commit%20records)).
+6. Batches within the key budget then drop any older refs past 5 MiB and lower their chunks' counts ([§6.2](#6.2%20Truncation%20and%20deallocation)).
+
+Outcome: if the file later grows again, the cut bytes read as zeros, never as the old content.
+
+**Two uploads of one extent commit in the wrong order.**
+
+1. Pass P1 is offered an extent of `ODFC_alice.vhdx` at versions up to v5 and starts uploading ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+2. alice-pc rewrites the extent at v8, and pass P2 is offered it ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+3. P2 is faster and commits a ref whose `newest`, its highest version, is 8 ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+4. Both commits write the file's offload fence, a per-file record, so they never apply against the same read of its refs ([§4.1](#4.1%20What%20one%20commit%20records)).
+5. A ref is replaced only by one with a higher `newest`, so P1's older ref does not replace P2's ([§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)).
+
+Outcome: the ref keeps naming the v8 bytes, so a later read never fetches the older ones.
 
 ### How the rest is organised
 

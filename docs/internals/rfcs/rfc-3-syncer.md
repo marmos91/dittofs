@@ -26,6 +26,23 @@ and the remote tier. Conventions and test tiers are in [the RFC index](rfc-index
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The syncer is the delivery crew between N1's journal and the bucket. It
+carries whole blocks out and chunks back in. It never chooses what to carry or
+when: the engine hands it jobs, and it reports how each one ended. It has two
+fixed crews, 128 workers for uploads and 128 for fetches by default. Those
+headcounts are the only limit on work in flight, so they also cap memory. A
+waiting reader always goes first, ahead of offload and far ahead of a guess
+such as pre-warm. Think of a courier with a fixed fleet: more parcels make a
+longer queue, never more vans. Unlike a courier, it keeps no ledger of what it
+delivered; block metadata does.
+
+```text
+ N1 journal ──offered block──► uploader, 128 workers ──put──► dfs-data
+ engine ◄──verified chunks──── fetcher, 128 workers  ◄──get── dfs-data
+```
+
 Clients write to DittoFS over NFS (Network File System) or SMB (Server Message
 Block). Writes land first in a local **journal** ([RFC 1](rfc-1-journal.md)); in the background
 the bytes are cut into **chunks** and packed into **blocks** ([RFC 2](rfc-2-carver.md)) and
@@ -125,6 +142,91 @@ new writes still landing in the journal until it fills.
   for access or because it cannot be reached.
 - A copying backup carries a block byte for byte, at its exact size, without
   the keys to open it, and learns the version the backup location stored.
+
+### Scenarios
+
+**A block of alice's disk goes out while she keeps writing to it.**
+
+1. The engine assembles block `K7` from alice's chunks and calls `Upload` on
+   the `profiles` flow ([§3.1](#3.1%20It%20is%20triggered%2C%20not%20scheduled)).
+2. While `K7` waits for a worker, it holds a plan of hashes and offsets, not a
+   copy of its bytes ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)).
+3. alice overwrites one of those extents meanwhile. The plan still reads the
+   bytes as offered, which the journal keeps until the upload returns
+   ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)).
+4. A worker streams `K7` as one put of the whole block, re-hashing each chunk
+   as it reads ([§3.4](#3.4%20One%20put%20per%20block), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration)).
+5. The bucket acknowledges the put, and only then is `K7` reported stored
+   ([§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred)). Block metadata records it, not the syncer
+   ([§2.7](#2.7%20It%20reports%3B%20it%20does%20not%20persist)).
+
+Outcome: `K7` holds the bytes that were offered; alice's newer write goes out in
+a later block.
+
+**The bucket asks N1 to slow down during the evening offload.**
+
+1. Say 96 puts are in flight to `dfs-data`. Several come back throttled,
+   meaning "send me less" ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
+2. Each throttled flow waits out its backoff, a random pause of at most 5 s, and
+   the store's throttle limit halves, to 48 workers, and halves again on further
+   throttling ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)).
+3. A throttled attempt spends no retry token and does not count toward the
+   four-attempt bound; a transfer gets up to eight of them
+   ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
+4. Each put that then finishes without throttling raises the limit by one, back
+   up to the cap ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)).
+5. The store stays healthy throughout: throttling is backpressure, not a
+   fault ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+
+Outcome: N1 sends fewer puts at once instead of the same number later. An
+upload fails for throttling only on its eighth throttled attempt.
+
+**The connection drops after a put was sent.**
+
+1. A put of block `K9` reaches the bucket, then the reply is lost. The block
+   may or may not be stored ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
+2. The syncer counts that as not stored, a failure
+   ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
+3. Its retry puts the same name with the same bytes, so either way the bucket
+   ends with one object ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
+4. If every attempt fails, `Upload` reports failure. The engine offers the
+   content again later under a new name
+   ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)).
+5. Any object the lost put left behind is an orphan, which GC finds through the
+   put intent recorded before the put ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)).
+
+Outcome: nothing is reported stored without an acknowledgement, and an unknown
+outcome costs at most one orphan.
+
+**Twenty users read the same cold chunk of an installer in `builds/` at once.**
+
+1. The first read starts a fetch of the chunk; the other nineteen join it
+   ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)).
+2. A joiner takes no worker of its own; the fetch keeps its starter's
+   ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)).
+3. One user giving up does not cancel the fetch for the others
+   ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)).
+4. A user whose client takes no chunk for 5 s is detached. It fetches again, or
+   reads what a fill left ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch), [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)).
+
+Outcome: one get and one worker serve twenty readers.
+
+**`dfs-data` goes dark for two minutes.**
+
+1. The get probe, sent every 5 s, fails twice in a row, the second at once. The
+   get direction turns unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work), [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)).
+2. A read that needs the bucket now fails at once, without taking a worker
+   ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+3. With puts also unhealthy, new writes still land in the journal until it
+   fills ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+4. The log shows one error line per direction, then one warning a minute with
+   refused counts
+   ([What an unhealthy store logs](#What%20an%20unhealthy%20store%20logs)).
+5. Probes never stop. Two passing in a row make the direction healthy again
+   ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
+
+Outcome: the outage is seen within about one probe interval, its end likewise,
+and writers lose nothing while the journal has room.
 
 ### How the rest is organised
 

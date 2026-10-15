@@ -33,6 +33,20 @@ Conventions, RFC 2119 keywords and test tiers are set once in the
 
 *Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The filesystem service sits between the protocol adapters and everything that
+stores data. An adapter is a translator: it turns NFS or SMB messages into plain
+calls such as open, write or rename. The service is the one place that runs each
+call's checks, always in the same order: may this share be reached, may this
+user do this, do others' opens or locks forbid it, is there quota. Picture a
+hotel whose guests speak two languages: interpreters at the door translate, and
+one front desk checks every request against the same rules. Unlike a front
+desk, the service keeps nothing between calls. Each file's state lives with its
+**primary**, the storage node in charge of the file. In a cluster the service
+runs on protocol nodes and reaches storage nodes through the shard service. An
+adapter never learns which node holds a file.
+
 **What this is.** DittoFS speaks NFS and SMB. Each protocol has an **adapter**
 that decodes requests off the wire and encodes the replies. Beneath them sits
 one filesystem service, the single API every adapter calls. It puts the steps of
@@ -144,6 +158,69 @@ adapters, the event hooks — and can be skimmed. §4 holds the rules, with §4.
 shares, mounts and the pseudo-filesystem. §5, the order of each operation, is
 the core. §6–§8 are invariants, metrics and the conformance suite; §9 lists open
 questions.
+
+### Scenarios
+
+**alice-pc's write reaches protocol node P1, and the file's primary is storage node S2.**
+
+1. P1's SMB adapter decodes the WRITE and calls the service, exactly as it would
+   on a single node ([§4.2](#4.2%20Translation%20stays%20in%20adapters)).
+2. The service admits the call to `profiles` and finds that S2 is the primary of
+   the file's shard ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees),
+   [§4.8](#4.8%20One%20primary%20per%20file)).
+3. It forwards the call through the shard service, the one interface between
+   the two tiers, with a route envelope: request ID, shard and epoch, hop count
+   ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut),
+   [§4.7](#4.7%20Callable%20across%20the%20network)).
+4. S2 checks opens and locks, reserves quota and stages the bytes, with no hop
+   between the check and the write ([§4.8](#4.8%20One%20primary%20per%20file),
+   [§5.1](#5.1%20Write)).
+5. Before the write is acknowledged, it also reaches two replicas, say S1 and
+   S3, at the default count ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)).
+
+Outcome: four network crossings before OK, and the adapter never knew there
+was a hop.
+
+**The reply to build01's write is lost, and build01 sends it again.**
+
+1. The resent NFSv3 WRITE carries the same request ID, built from the client's
+   address, the XID, the procedure and a checksum of the arguments
+   ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)).
+2. Meanwhile another write has landed on the same bytes.
+3. The primary finds the request ID in its dedup table and returns the first
+   write's original result ([§4.7](#4.7%20Callable%20across%20the%20network)).
+4. Had the primary changed in between, the new one would find that result in
+   the write's own durable record ([§4.7](#4.7%20Callable%20across%20the%20network)).
+
+Outcome: the retry is answered once, and never overwrites the newer write.
+
+**build01 writes `profiles/alice/notes.txt` over NFS while alice-pc holds an SMB lease on it.**
+
+1. The lease is a caching grant, leave for alice-pc to cache the file. The
+   service sees the conflict and starts a recall, an SMB lease break
+   ([§3.2](#3.2%20Callbacks)).
+2. It answers build01 with `ErrDelay` at once, which the NFS adapter sends as
+   the protocol's retry signal. No worker waits ([§3.2](#3.2%20Callbacks)).
+3. build01 retries shortly; once alice-pc acknowledges the break, the write can
+   go ahead.
+4. If alice-pc never answers, the break is forced at its deadline, 35 s for
+   SMB, and the lease drops to none ([§3.2](#3.2%20Callbacks)).
+
+Outcome: a silent client costs others a retry interval, never a stuck server
+thread.
+
+**An administrator removes bob's grant on `profiles` while bob-pc still holds handles.**
+
+1. bob-pc's next call presents a handle it got earlier.
+2. The service admits the call, and the metadata store's one permission
+   function evaluates bob's share grant again, as on every call
+   ([§4.6](#4.6%20One%20chokepoint)).
+3. No grant admits him now, so the call is refused. Holding a handle grants
+   nothing ([§4.6](#4.6%20One%20chokepoint)).
+4. Any cache of permission results has the grant in its key, so no stale "yes"
+   survives ([§4.6](#4.6%20One%20chokepoint)).
+
+Outcome: losing access takes effect on the next call, not at the next mount.
 
 ## In short
 

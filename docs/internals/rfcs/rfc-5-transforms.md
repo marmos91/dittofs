@@ -28,6 +28,23 @@ This document specifies behaviour, not the current code. Where the code differs,
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+Before a chunk leaves N1 for the bucket, it can be squeezed, locked, or both.
+Each such step is a transform, and a store's chain is the steps its operator
+switched on. They always run in one order: compress, then encrypt, then
+redundancy. Each stored body starts with a short label, the envelope, listing
+the steps that actually ran. A reader undoes exactly those, whatever the
+configuration says today. Think of a parcel that is vacuum-packed, then
+locked in a box, with a sticker saying so on the outside. The analogy stops at
+trust: the sticker is not believed on its own. The chunk's hash, taken before
+any step and checked after all are undone, decides.
+
+```text
+ plain chunk ─► hash ─► compress ─► encrypt ─► [envelope | body] ─► bucket
+ bucket ─► read envelope ─► undo listed steps in reverse ─► hash matches? ─► reader
+```
+
 Before a chunk of file content leaves the machine for the remote object store,
 it may be compressed, encrypted, or both. A **transform** is one such step,
 applied to one chunk at a time; a store's **chain** is the transforms its
@@ -127,6 +144,66 @@ the operator turned compression on with it explicitly, accepting the size leak
 - A missing key is an outage, retried, never zeros; a key lost for good makes
   exactly the chunks it covered **Lost**, and says so. A key the provider was
   never given is a configuration fault, reported as such, never corruption.
+
+### Scenarios
+
+**The operator suspects the `profiles` data key has leaked.**
+
+1. A new data key becomes current for the namespace. It has a new ID, so the
+   chain ID changes and new chunks use it ([Appendix B.3](#B.3%20Rotation), [§2.8](#2.8%20The%20chain%20ID)).
+2. Old bodies name the old key, and stay readable while the provider holds it
+   ([Appendix B.3](#B.3%20Rotation), [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
+3. GC relocates every block whose census, its record of the keys its bodies
+   used, names the old key. Each chunk is re-encrypted under the new one
+   ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census), [§5.2](#5.2%20Relocation%20re-encodes)).
+4. Removal waits for encodes still using the old key, then for an empty census,
+   and for no copying backup's census to name it
+   ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+5. Removal erases the key everywhere the installation keeps it; the provider
+   then reports it destroyed ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+
+Outcome: no stored body needs the old key. Wrapped copies of it inside older
+exports remain, readable to whoever holds their master key.
+
+**Someone replaces a key file on N1 under the same ID.**
+
+1. The file's content no longer matches the fingerprint recorded with that ID
+   ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
+2. The provider refuses to serve it and reports `ErrMaterialUnavailable`, with a
+   health condition ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
+3. A read of a chunk under that key fails as the remote being unavailable. It
+   is retried and never returns zeros ([§2.7](#2.7%20Failures)).
+4. Restoring the right key file ends the outage ([Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)).
+
+Outcome: the wrong key never decodes a body, so no chunk is wrongly marked
+corrupt.
+
+**The key service is down when N1 starts.**
+
+1. The engine builds the `profiles` chain as it opens the store
+   ([§3.2](#3.2%20Configuration)).
+2. The encryption transform cannot get its material, so the chain cannot be
+   built ([§2.7](#2.7%20Failures)).
+3. The store does not open, and does not fall back to writing without
+   encryption ([§2.7](#2.7%20Failures), [Appendix B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)).
+
+Outcome: N1 writes nothing to the bucket in plaintext because a key failed to
+load.
+
+**Someone with write access to the bucket tampers with a body of alice's.**
+
+1. They strip encryption from the envelope. In an encrypting namespace,
+   encryption is implicitly required, so the body is `ErrMalformed`
+   ([§3.2](#3.2%20Configuration)).
+2. They list two compressors, or the stages out of order. The reader rejects
+   the envelope before decoding anything ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
+3. They name a key ID the block's census does not list. That is `ErrMalformed`,
+   and the key service is never asked ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
+4. Whatever survives decoding must still match the chunk's hash, which local
+   metadata holds ([§2.6](#2.6%20The%20plaintext%20hash%20is%20the%20final%20check)).
+
+Outcome: each case ends as a corrupt-chunk error, never as wrong bytes
+([§2.7](#2.7%20Failures)).
 
 ### How the rest is organised
 

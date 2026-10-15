@@ -33,6 +33,22 @@ build around.
 
 *Explanatory. The rules are in [§1](#1.%20Purpose) onward; where this section and a rule differ, the rule wins.*
 
+### In plain words
+
+The namespace is the part of DittoFS that holds names, folders and permissions.
+A name is only a pointer; the file behind it has its own random ID that never changes.
+Think of a library: catalogue cards carry titles, and each card points at a book by its number.
+Renaming a file rewrites one card; the book does not move.
+A client holds a **handle**, a slip naming the book's number, so a rename never breaks it.
+A book is thrown out only when no card points at it and nobody still has it out.
+Unlike a library, a book's number is random and never reused, so an old slip never fetches another book.
+
+```text
+ profiles/alice/ODFC_alice.vhdx ──entry──► File f7 ◄── handle (profiles, f7)
+ rename: the entry moves               f7 stays    the handle still works
+ last entry gone + nobody has it open ──► release: content is let go
+```
+
 This RFC specifies the part of the metadata that clients see as a filesystem:
 names, directories, files and their attributes, the handles clients hold, and
 who may do what. It also decides the moment a file stops existing, which is the
@@ -131,6 +147,50 @@ every chunk of the file, because nothing is left to find them by.
   that differ only in case are one entry, found with one read.
 - Every permission decision, for every protocol, is made in this component,
   against the file the operation will act on.
+
+### Scenarios
+
+Each runs on node N1.
+
+**build01 deletes an object file the linker still has open.**
+
+1. On the `builds` share, an unlink of `out/app.o` removes its only entry; in the same transaction its link count, `Nlink`, drops to zero ([§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries)).
+2. That transaction also writes a pending release and makes the linker's open durable, so it survives a crash ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+3. No name finds `app.o` now, but the linker keeps reading it through its handle ([§4.2](#4.2%20Open%20state%20is%20the%20second%20holder)).
+4. When the linker closes it, the release runs and checks again, inside its own transaction, that nothing holds the file ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees), [§4.5](#4.5%20A%20release%20re-checks%20its%20holders%20inside%20its%20own%20transaction)).
+5. The release drops the file's content references and deletes its records ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+
+Outcome: the name goes at once; the content goes only after the last close.
+
+**An editor saves by renaming a temporary file over a document bob has open.**
+
+1. bob has `report.docx` open; alice's editor writes `~report.tmp`, then renames it over `report.docx` ([§5.4](#5.4%20Rename%20over%20an%20existing%20entry)).
+2. One transaction removes the old entry, installs the new one and takes the old file's `Nlink` to zero ([§5.1](#5.1%20One%20transaction)).
+3. The same transaction writes the old file's pending release, since it lost its last name ([§5.1](#5.1%20One%20transaction)).
+4. bob's open keeps the old file alive, and he still reads the old text through his handle ([§4.2](#4.2%20Open%20state%20is%20the%20second%20holder)).
+5. bob closes it, and the old file is released ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+6. A later request on bob's old handle is answered "stale", never "not found" and never with the new file ([§6.3](#6.3%20Staleness%20is%20reported%2C%20never%20guessed)).
+
+Outcome: no reader sees half a save, and bob's client knows to look the name up again.
+
+**Two administrators move two folders into each other at the same moment.**
+
+1. One renames `projects/a` into `projects/b`; the other renames `projects/b` into `projects/a` ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)).
+2. Each rename walks its destination's parents, inside its own transaction, to make sure it is not moving a folder into itself ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)).
+3. Each guards every parent it reads, so each depends on a record the other writes ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)).
+4. The second to commit finds that record changed, retries, sees the loop and is refused ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)).
+
+Outcome: one move succeeds; there is never a folder loop that no path can reach.
+
+**N1 restarts while the linker still holds the deleted object file.**
+
+1. `out/app.o` has no name, a pending release and a durable open record when N1 goes down ([§4.2](#4.2%20Open%20state%20is%20the%20second%20holder), [§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+2. On restart N1 finds the pending release through an index, without scanning the share ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+3. It releases nothing until the grace period ends, the window in which clients reclaim their opens ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)).
+4. The linker's handle still resolves, since handles survive a restart ([§6.2](#6.2%20A%20handle%20is%20stable%20across%20restart)).
+5. If the linker reclaims its open, the file stays until it closes; if not, it is released when grace ends ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+
+Outcome: a restart neither leaks the file nor pulls it from under an open.
 
 ### How the rest is organised
 
