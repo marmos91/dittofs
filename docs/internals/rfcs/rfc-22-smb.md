@@ -1279,6 +1279,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrNotYours` | `STATUS_FILE_CLOSED`: the FileId names no open of this session |
 | `ErrShareViolation` | `STATUS_SHARING_VIOLATION`; `STATUS_ACCESS_DENIED` for the rename or delete of a directory with an open child (§13) |
 | `ErrLocked` | `STATUS_FILE_LOCK_CONFLICT` for I/O; `STATUS_LOCK_NOT_GRANTED` for a lock asked to fail at once |
+| `ErrRangeNotLocked` | `STATUS_RANGE_NOT_LOCKED`: an unlock element names a range the open does not hold; the elements before it stay unlocked (§7) |
 | `ErrDeletePending` | `STATUS_DELETE_PENDING` |
 
 SMB clients do not retry a request on their own, so every condition that may

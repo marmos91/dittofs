@@ -1157,6 +1157,13 @@ protocol's own ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)).
   and a reply carrying an over-long owner fails to decode, so the client fails
   the call instead of seeing a conflict.
 
+**`LOCK`, `LOCKU`, `NLM4_LOCK` and `NLM4_UNLOCK` each name one range**, passed
+to the service as a one-element list
+([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)). A `LOCKU` of a range the owner
+holds only part of, or none of, releases what it holds there and succeeds, as a
+POSIX unlock does; `NFS4ERR_LOCK_RANGE`, which RFC 8881 §18.12.4 allows there,
+is never answered (§5.6).
+
 **A blocking NFSv4 lock is polled, and its waiter reserved.** A `LOCK` of type
 `READW_LT` or `WRITEW_LT` that conflicts is `NFS4ERR_DENIED` (`ErrLocked`) and
 leaves a waiter; the client polls by sending it again, and a repeat of the same
@@ -1203,6 +1210,7 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrWrongSecurity` — the share's policy does not admit the call's flavour ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) | `NFS4ERR_WRONGSEC` | the RPC is rejected `AUTH_TOOWEAK` (§10) |
 | `ErrBadSeqID` | `NFS4ERR_BAD_SEQID` | — |
 | `ErrLocked` | `NFS4ERR_DENIED` for `LOCK` / `LOCKT`; `NFS4ERR_LOCKED` for I/O | `NFS3ERR_ACCES`; NLM: `NLM4_DENIED` |
+| `ErrRangeNotLocked` | never answered: an NFSv4 lock-owner's locks merge and split ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)), so a `LOCKU` releases what the owner holds of its range and succeeds on a range it holds none of, as a POSIX unlock does. RFC 8881 §18.12.4 and RFC 7530 §16.12.4 let a server answer `NFS4ERR_LOCK_RANGE` there; this one does not, so a client never has to split its unlock into the ranges it holds | NLM: never answered; `NLM4_UNLOCK` likewise succeeds, `NLM4_GRANTED` |
 | `ErrShareViolation` | `NFS4ERR_SHARE_DENIED` for `OPEN`; `NFS4ERR_LOCKED` for I/O; `NFS4ERR_FILE_OPEN` for a `REMOVE` or `RENAME` of a file an SMB open denies delete to (RFC 8881 §18.25.3) | `NFS3ERR_ACCES`, for I/O, `REMOVE` and `RENAME` alike; NLM: `NLM4_DENIED` for `NLM4_SHARE` |
 | `ErrDeletePending` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrBadLayout` | `NFS4ERR_BADLAYOUT` | — |
