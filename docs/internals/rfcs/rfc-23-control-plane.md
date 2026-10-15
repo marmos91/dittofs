@@ -29,7 +29,8 @@ tags:
 ---
 # RFC 23 — the control plane
 
-**Status:** draft. [§13](#13.%20Open%20questions) lists what is known to be undecided.
+**Status:** draft. [§13](#13.%20Open%20questions) lists what is known to be undecided, and
+records the one question since settled.
 **Audience:** anyone adding a management-API resource or action, changing how a
 node is composed or how it applies a record, or writing a client of the API —
 the CLI, the Kubernetes operator, a script.
@@ -683,6 +684,10 @@ several records — a share's info, its state and its namespaces are three
 ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)) — takes its tag from the one its `spec` writes; the others
 change through actions that name their expected value, as quiesce names the
 state it expects.
+
+A quota record carries no generation of its own, so a quota's tag is
+`ETag: "p<position>"`, its record's position (§2.4), and a quota write names
+that position as its expected value.
 
 - **Every `PUT`, `PATCH` and `DELETE` MUST carry `If-Match`.** One without is
   refused `428`. One whose tag is not the current generation is refused `412`,
