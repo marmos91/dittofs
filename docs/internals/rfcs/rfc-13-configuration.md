@@ -154,7 +154,8 @@ Other settings of the same share change differently:
 - A node joins only an installation whose format and protocol versions it
   supports, and no version is raised until every node supports it.
 - No secret value appears in any record, API answer, export, log or metric, and
-  a node without the `storage` role cannot unseal the remote store's credentials.
+  a node without the `storage` role cannot unseal the remote store's credentials
+  or a password hash, nor one without the `protocol` role an NT hash.
 
 **How the rest is organised.** §2 says where configuration lives, including the
 backup location's record, §3 the scopes, §4 what is fixed and what is a setting.
@@ -276,7 +277,7 @@ only these, come from the host — a file or the environment:
 | `events.path`, where the node spools its event streams (RFC 25 §4.6) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
 | log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |
 | the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md))                          | they decide what the node composes, including whether it writes control-plane records, which only `storage` does ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)); fixed for the life of the process |
-| the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak                     |
+| the location of the wrapping key of each role the node runs, and no other, for `Secret` records, and the public half of every role's key, which only seals ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak                     |
 
 **A scratch path is checked against the journals at every start, in both
 directions.** The node refuses `backups.spill_path`, `salvage.path` or
@@ -719,11 +720,18 @@ own roles:
 
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
-| `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | the `protocol` role: authentication |
-| `storage` | remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3) | the `storage` role: the remote tier, the material provider and the management API |
+| `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | the `protocol` role: authentication |
+| `storage` | password hashes, which only the management API's sign-in verifies (RFC 23 §5.3); remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3) | the `storage` role: the remote tier, the material provider and the management API |
 
-So a compromised protocol-only node, which must read the KV, holds sealed
-remote-tier credentials it cannot open. A deployment **MAY** split a role's key
+A secret's role is the role that **opens** it, which is not always the one that
+writes it: the management API runs on `storage` nodes ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)), and a
+password set there writes the NT hash with it, as a keytab or bind credential
+uploaded there is written. So a wrapping key is a key pair: **sealing needs only
+a role's public half, opening needs its private half**, and every node's
+bootstrap names the public half of every role's key and the private half of its
+own roles' only. A `storage`-only node seals an NT hash it cannot open; a
+compromised protocol-only node, which must read the KV, holds sealed
+remote-tier credentials and password hashes it cannot open. A deployment **MAY** split a role's key
 further by secret kind; it **MUST NOT** merge the two roles' keys unless every
 node runs both roles, which is the single-node default.
 
@@ -737,11 +745,12 @@ record. Signatures are indicative:
 // SecretProvider resolves a secret reference to its value. It never lists
 // values and never returns one through any other path.
 type SecretProvider interface {
-	// Resolve returns the current value of ref, unsealed with the wrapping key
-	// of role. It fails if this node does not hold that role's key.
+	// Resolve returns the current value of ref, unsealed with the private half
+	// of role's wrapping key. It fails if this node does not hold that half.
 	Resolve(ctx context.Context, role Role, ref SecretRef) ([]byte, error)
-	// Seal stores value under ref, sealed with role's wrapping key, and
-	// returns the reference to record in configuration.
+	// Seal stores value under ref, sealed with the public half of role's
+	// wrapping key, which every node holds, and returns the reference to
+	// record in configuration.
 	Seal(ctx context.Context, role Role, ref SecretRef, value []byte) (SecretRef, error)
 	// Delete destroys every version of the secret; a later Resolve of ref
 	// fails.
@@ -772,7 +781,7 @@ type SecretProvider interface {
   copy of it.
 - **A wrapping key rotates the same way.** A node's bootstrap **MAY** name two
   keys for one role, the current and the next. Re-sealing every `Secret` of that
-  role under the next key is one pass; each record names the key ID it is sealed
+  role under the next key is one pass, run by a node of that role, since it opens each; each record names the key ID it is sealed
   under, and the current key is removed from bootstraps only once no record
   names it.
 - **Material is a secret with a lifecycle.** Encryption keys are resolved through
@@ -860,7 +869,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) refused | For every setting, feed one value out of range and one of the wrong type, through the API and directly to the component. Assert both refuse, with the field named; assert no component runs a default in its place. |
 | [§6](#6.%20Validation) one validator | Assert the API and the component return the same error for every invalid record in the fixture set. |
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
-| [§7](#7.%20Secrets) role keys | Start a protocol-only node. Assert its bootstrap names no `storage` wrapping key and that unsealing a remote-tier credential from it fails. |
+| [§7](#7.%20Secrets) role keys | Start a protocol-only node. Assert its bootstrap names no private half of the `storage` wrapping key and that unsealing a remote-tier credential or a password hash from it fails. Start a storage-only node with NTLM on: assert an API sign-in verifies a password, a password set writes an NT hash, and unsealing that NT hash from it fails while a protocol node opens it. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) explicit initialisation | Start a node against an empty metadata store and empty journal directories: assert it refuses, creating nothing. Initialise: assert the store's Installation record and every journal's `format` file carry one installation ID. Start with the store volume unmounted: assert it reports the metadata store lost and creates nothing; with the journal directory emptied, the journal missing. Only with initialise-if-empty set does a start on empty storage create an installation. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) location deletion | Delete a location record holding one unexpired backup: refused `ErrLocation`, naming it. Expire it; delete again: accepted. Make a second location unreachable for good with one backup there: deletion refused. State it lost, crashing after the lost mark and after the first batch: assert the statement resumes from the mark, the backup reads `lost` in the store, its folder record's census and block count are empty, the statement is in the audit log, deletion is accepted, and a master key only that backup's export named can be destroyed. Leave a third location unreachable for a day without the statement: still refused. |

@@ -694,8 +694,10 @@ type QuotaEvent struct {
 Both streams are emitted from the one path every operation takes, by this
 service and nothing else: access events where the service consults the
 chokepoint ([§4.6](#4.6%20One%20chokepoint)), quota events where it enforces the quota ([§5.6](#5.6%20Quota)). The chokepoint
-returns its decision, and with it which of the audit policy and the file's
-audit entries selected it; the service builds and emits the event. No adapter,
+returns its decision, and with it whether an audit or alarm entry of the file's
+ACL selected it ([RFC 7 §7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable)); it never reads the share's audit policy.
+The service applies that policy to the decision and the entry flag, decides
+whether an event is due, and builds and emits it. No adapter,
 store or engine emits either, so no protocol can reach a file without appearing
 in the audit stream.
 
@@ -949,7 +951,8 @@ with the open; the service evaluates it on the operations it gates.
 - **The share grant is checked on every call**, not only at mount or tree
   connect. The service reads the caller's grants at admission each time
   (§4.9 step 4), `Authorize` applies the access they give as the share ceiling,
-  and any cache of authorisation results **MUST** include the grant versions read, and the `via`
+  and any cache of authorisation results **MUST** include the share's grant-list
+  version, which a grant's deletion moves as well as its change, and the `via`
   directory below with its whole record's version — owner and group as well as
   mode and ACL, since the group bits and the sticky rule read them — in its
   key ([RFC 7 §7.5](rfc-7-namespace-metadata.md#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read)). A
@@ -1060,7 +1063,8 @@ compound that `PUTFH`s a handle and one that walks the pseudo-filesystem into th
 share meet the same five checks. A compound crossing from one share into another
 is re-admitted, and re-squashed, at the crossing. The result of steps 1–4 may be
 cached per (share, identity) only with `ExportPolicy.Version`, the netgroups'
-versions, `ShareList.Version`, the grant versions read and the principals
+versions, `ShareList.Version`, the share's grant-list version
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s `S‖id‖gv`) and the principals
 generation in the key, beside everything RFC 18 §7.1 lists; step 5 reads the
 pools as they are and is never cached.
 
@@ -1360,8 +1364,9 @@ engine refuses a write for quota.
 - **Soft limits.** A quota's soft limit and grace time
   ([RFC 16](rfc-16-metadata-store.md)) are enforced here too. Crossing the
   advisory threshold or the soft limit emits a quota event (§3.3) and refuses
-  nothing, and so do a grace that expires, a hard refusal and a fall back under
-  a limit; the metadata store records when the soft limit was first exceeded,
+  nothing. A grace that expires, a hard refusal and a fall back under a limit
+  each emit one too; whether they refuse is the hard limit's rule above and
+  the enforcement below. The metadata store records when the soft limit was first exceeded,
   and once the grace time has run from then the soft limit is enforced as the
   hard one. Falling back under it clears the record. The time is taken from
   the store's `Now` and compared with a later `Now`, which on a store whose

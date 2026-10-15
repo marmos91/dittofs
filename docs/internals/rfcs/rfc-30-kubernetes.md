@@ -236,13 +236,18 @@ given a fresh volume is a new node.
 The resource's `Ready` condition **MUST** be false while either pool has no live
 pod ([RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%20work)) or the metadata store is unreachable. Readiness probes
 gate traffic: a protocol pod is ready once its adapters accept clients, a
-storage pod once it has rejoined the store and holds no shard it cannot serve.
+storage pod once it has rejoined the store; a shard it cannot serve is that
+shard's `shard_relinquished` or `replication_under_floor` condition, which
+§5.1's upgrade waits on beside readiness, not a reason to be unready.
 
 The probes are RFC 23 §2.5's endpoints, unauthenticated and answering one word:
-the liveness probe is `GET /health/live`, which fails only when RFC 25 §3.5's
-watchdog does, and the readiness probe is `GET /health/ready`. Neither reads a
-condition the pod's restart would clear, so a probe never restarts a pod for a
-dependency's failure.
+the liveness probe is `GET /health/live` and the readiness probe
+`GET /health/ready`, and they answer different questions. Liveness fails only
+when RFC 25 §3.5's watchdog does — an internal loop has stopped turning, which
+a restart may clear — and reads no dependency, so the metadata store, the
+remote tier or a journal device failing never restarts a pod. Readiness may
+fail on a dependency, the metadata store lost among them (RFC 25 §3.6), and
+then takes the pod out of traffic without restarting it.
 
 The operator calls the management API as a service account (RFC 23 §5.1): a
 user record with role `admin`, no password and no protocol spelling, signing in
@@ -257,7 +262,7 @@ files.
 
 Storage pods **MUST** be upgraded one at a time, each handing its shards over
 before it stops ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)) and the next waiting until the upgraded pod is
-ready and holds no under-replicated shard. The operator runs this itself
+ready and has no shard under `replication_under_floor` or `shard_relinquished`. The operator runs this itself
 (`updateStrategy: OnDelete`) rather than the StatefulSet's rolling update,
 which waits for readiness but not for handovers. A storage pod's `preStop`
 hook **MUST** run the same handover, so an eviction the operator did not start
