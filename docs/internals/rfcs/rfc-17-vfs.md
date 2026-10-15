@@ -644,6 +644,7 @@ type Service interface {
 	Data
 	Locking
 	Shares
+	Identities
 }
 
 // Clients (RFC 14). The lease owner is the server of the node holding the
@@ -721,6 +722,17 @@ type Shares interface {
 	StatFS(ctx context.Context, id Identity, h Handle) (FilesystemInfo, error)                // the share's, or the tighter of it and h's project
 	Quota(ctx context.Context, id Identity, h Handle, p Principal) (Usage, Quota, error)      // p's own, else the share's default for its kind
 	Snapshots(ctx context.Context, id Identity, h Handle) ([]SnapshotInfo, error)             // the snapshots visible at h's path (RFC 12 §2.5)
+}
+
+// Identities: how an adapter encodes and decodes a principal — a file's owner,
+// an ACL entry's who, a quota's target, a name in an lsarpc lookup. It holds
+// no policy: squashing and grants are applied at admission (§4.9), not here.
+// The mapping is RFC 18 §4's; an adapter never derives one spelling from
+// another, and an error other than not-found reaches the client as a server
+// failure, never as an unknown principal.
+type Identities interface {
+	Spell(ctx context.Context, p metadata.Principal, scheme Scheme) (Spelling, error) // p's spelling in scheme: uid, gid, SID, Kerberos name, owner string; ErrNoSpelling when it has none
+	Find(ctx context.Context, s Spelling) (metadata.Principal, error)                 // the principal holding s; ErrUnknownPrincipal when none does
 }
 ```
 
@@ -991,8 +1003,10 @@ audit stream.
 - An event hook **MUST NOT** block or fail the operation. The sink queues, and
   an event it cannot queue is dropped and counted (§7).
 - Which operations produce an access event — every decision, denials only,
-  writes and namespace changes, per share — is the audit policy, a setting
-  ([RFC 13](rfc-13-configuration.md)). With no policy, no access event is built.
+  writes and namespace changes, per share — and whether the file's audit
+  entries select events too (RFC 19 §3.7) is the audit policy, a setting
+  ([RFC 13](rfc-13-configuration.md)). With no policy, no access event is built, whatever audit entries
+  a file holds.
 - Delivery, retention and the export format of both streams are
   [RFC 25](rfc-25-observability.md)'s. This RFC fixes only where they are
   emitted and what an event carries.
@@ -1225,7 +1239,7 @@ conflict check, in that order:
 ```go
 // The order of every call (indicative), in the server at the file's primary,
 // where the gateway has routed it (§2.1); RFC 7 §7 owns what Authorize decides.
-caller, err := s.admit(ctx, id, shareOf(h)) // state, flavour, client rules, squash → RFC 18's Caller
+caller, err := s.admit(ctx, id, shareOf(h)) // state, flavour, client rules, resolution, share cap → RFC 18's Caller
 switch {
 case t.Open != nil && t.Open.Kind == Opened: // through an open: its stored grant
 	g := openGrant(t.Open)                     // RFC 14's Access, Privileged and Via
@@ -1238,11 +1252,13 @@ default: // anonymous, delegated or no open: the caller afresh
 err = open.CheckIO(ctx, ref, r, write)  // or CheckChange: deny modes, locks, grants — RFC 14 §7
 ```
 
-- **The share grant is checked on every call**, not only at `Root`.
-  `Authorize` evaluates the caller's `ShareGrant` each time, and any cache of
-  authorisation results **MUST** include the grant, and the parent directory
-  with its whole record's version — owner and group as well as mode and ACL,
-  since the group bits and the sticky rule read them — in its key
+- **The share grant is checked on every call**, not only at `Root`. The
+  server reads the caller's grants at admission each time (§4.9 step 4),
+  `Authorize` applies the access they give as the share ceiling, and any cache
+  of authorisation results **MUST** include the grant versions read, and the
+  parent directory with its whole record's version — owner and group as well
+  as mode and ACL, since the group bits and the sticky rule read them — in its
+  key
   ([RFC 7 §7.5](rfc-7-namespace-metadata.md#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read)).
   A client removed from a share loses access on its next call, cached handles
   or not.
@@ -1323,25 +1339,34 @@ the handle or open it names, in this order:
 3. its client rules, against the call's address and the netgroups it is in —
    `ErrAccess`, or a narrowing to read-only;
 4. resolution, which turns the `Identity` into the caller it acts as on this
-   share, squashing included ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)).
+   share: map it to a principal, squash it, collect its groups, read its share
+   access from the grants, and set its flags
+   ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)).
+   Step 3's narrowing to read-only reaches the chokepoint as a field of that
+   caller, since the chokepoint evaluates no client rule (RFC 19 §3.2);
+5. the share's cap on the node's request buffers
+   ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission))
+   — `ErrDelay` with `DelayResources`, at once.
 
 In a cluster the gateway's router reads the handle's shard to route it, but
 nothing it learns reaches the client: a handle it cannot place goes to the
 local server, which admits first ([§2.1](#2.1%20What%20runs%20where)).
 
-Then the shard's `Authorize` evaluates the grant and the file (§4.6). **There is
-no call that skips admission**: lock, unlock, test-lock, watch, grant
-acknowledgement and the calls that name only an open are admitted like a read.
-Admission is a property of the share a call reaches, not of how it reached it,
-so an NFSv4 compound that `PUTFH`s a handle and one that walks the
-pseudo-filesystem into the share meet the same four checks. A compound crossing
-from one share into another is re-admitted, and re-resolved, at the crossing.
-The admission result may be cached per (share, identity) only with
-`ExportPolicy.Version`, the netgroups' versions, `ShareList.Version` and the
-principals generation in the key: the last is what drops a cached resolution
-when a principal, a group or a mapping changes
+Then the shard's `Authorize` applies the share access as a ceiling and
+evaluates the file (§4.6). **There is no call that skips admission**: lock,
+unlock, test-lock, watch, grant acknowledgement and the calls that name only an
+open are admitted like a read. Admission is a property of the share a call
+reaches, not of how it reached it, so an NFSv4 compound that `PUTFH`s a handle
+and one that walks the pseudo-filesystem into the share meet the same five
+checks. A compound crossing from one share into another is re-admitted, and
+re-resolved, at the crossing. The result of steps 1–4 may be cached per
+(share, identity) only with `ExportPolicy.Version`, the netgroups' versions,
+`ShareList.Version`, the grant versions read and the principals generation in
+the key, beside everything RFC 18 §7.1 lists: the principals generation is what
+drops a cached resolution when a principal, a group or a mapping changes
 ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)),
-so a disabled user's next call resolves afresh.
+so a disabled user's next call resolves afresh. Step 5 reads the pools as they
+are and is never cached.
 
 ![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same four checks — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the flavour rule (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only) and squash — then Authorize; a compound crossing shares is re-admitted, and a cached admission result is keyed with the policy, netgroup and share-list versions](img/rfc17-admission.svg)
 

@@ -43,7 +43,7 @@ Every file has one desk where all promises about it are kept: who has it open,
 who locked which bytes, who may cache it. The desk sits at the file's primary,
 and NFS and SMB requests both come to it. So an SMB lock refuses an NFS write it
 forbids, and the check and the write happen in one place. Most of the desk lives
-in memory, not on paper. If its node fails, the new one runs a grace period: for
+in memory, not on paper. If its node fails or restarts, the one serving it next runs a grace period: for
 a while it only gives back what clients say they held. Three things here share
 the word "lease", and nothing else:
 
@@ -93,7 +93,7 @@ alice-pc chose.
 6. **N1 restarts.** The in-memory table is gone. Without a rule, the second
    desktop could open the file before alice-pc comes back, and both would think
    they hold it. Instead N1, whose start raised the shard's incarnation, runs a
-   new **grace period**: for one lease period it refuses every new open, lock or grant, and lets clients its durable
+   new **grace period**: for one lease period it refuses every new open, lock, deny mode, grant or layout, and every read or write a lost lock or deny mode might have forbidden, and lets clients its durable
    records name reclaim what they held. alice-pc reclaims its persistent open,
    whose record survived the restart, with every write it was told was done;
    grace then ends on its own, early once every recorded client has reclaimed.
@@ -1003,8 +1003,10 @@ period for the client, and runs whether or not the shard is in grace.
 Every open-state operation reaches the file's primary
 ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)), so a grace
 period is scoped to the RFC 11 shards, the unit whose primary changes, that
-lost state, and the rest of the cluster keeps granting. Only a failover loses state: a handover
-or a batch move of files hands the table over and runs no grace ([§10](#10.%20Shard%20placement)).
+lost state, and the rest of the cluster keeps granting. Only losing the table
+loses state — a restart of the primary, a failover, or a handover whose old
+primary is lost before the new one holds the table, as listed below; a handover
+or a batch move of files that hands the table over runs no grace ([§10](#10.%20Shard%20placement)).
 
 ![(cluster) Grace per shard after a failover: N1 dies and its in-memory table for shard A is lost; after N1's node lease lapses plus the drift bound, N2 serves A under a raised incarnation and a new grace instance, granting only reclaims, while shard B keeps granting; alice-pc's connection is broken and it reclaims its persistent open, build01 sees ReclaimNeeded on its next renewal, reclaims and completes, another client's new lock gets ErrGrace and its retry is granted once grace ends early; grace is capped at 90 s and runs that long if an NFSv4.0 client or NLM host is recorded](img/rfc14-grace.svg)
 

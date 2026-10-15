@@ -628,10 +628,11 @@ Three rules, in order of how much they cost to get wrong:
 ### 2.6 ACL, and how it agrees with the mode
 
 ```go
-// ACL is the one access-control list a file has. Its semantics —
-// evaluation, inheritance, and the NFSv4 and Windows mappings — are RFC 19's.
+// ACL is the one access-control list a file has. Its model — entry kinds,
+// rights, flags, what a stored ACL may hold — the order one decision runs in,
+// how inheritance is computed, and the NFSv4 and Windows mappings are RFC 19's.
 // This component stores it, keeps Mode in agreement with it, and evaluates it
-// at the one chokepoint (§7.1).
+// at the one chokepoint (§7.1) by the walk below, which RFC 19 adopts.
 type ACL struct {
 	Entries []ACE
 	Flags   ACLFlags // protected, auto-inherited, …
@@ -657,6 +658,11 @@ type ACE struct {
   - the owner, group and everyone entries are rewritten to match the new mode;
   - every allow entry for a named principal is limited to the new mode's group
     bits, so `chmod 600` leaves no named user or group with access;
+  - a limit removes only the rights a missing bit withholds, never the minor
+    rights every bit grants (below), and keeps every other right of the entry;
+  - where the ACL has no effective owner, group or everyone allow to rewrite,
+    the merge adds one, after the explicit entries, so it cannot override an
+    explicit deny (RFC 19 §4.3);
   - an inherit-only entry is left untouched: it governs children, not this file;
   - an entry that is both effective and inheritable is split into an
     inherit-only copy, unchanged, and an effective copy, limited as above;
@@ -671,7 +677,7 @@ the owner, group and everyone entries would fail the same way: `chmod 600`
 would keep granting a named user access, and the ACL's implied mode would no
 longer equal `Mode`.
 
-**How an ACL is evaluated until RFC 19 exists.** The chokepoint walks the
+**How an ACL is evaluated**, adopted by RFC 19, which fixes the order it runs in. The chokepoint walks the
 entries in order, as [RFC 8881 §6.2.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.2.1) specifies: an entry is skipped
 unless it names the caller (directly, through one of the caller's groups, or as
 owner, group or everyone) and is effective on this file; an allow entry grants
@@ -694,7 +700,7 @@ Two rules come before the walk:
 - **A privileged caller** ([§7.4](#7.4%20The%20identity%20arrives%20resolved)) is granted every right without the walk,
   except what [§7.4](#7.4%20The%20identity%20arrives%20resolved) and the flags of [§7.8](#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint) refuse.
 
-Four inputs the walk meets are fixed for release 1, until RFC 19 replaces them:
+Four inputs the walk meets are fixed here, and adopted by RFC 19, which fixes the order it runs in:
 
 - **Generic rights.** `GENERIC_READ`, `GENERIC_WRITE`, `GENERIC_EXECUTE` and
   `GENERIC_ALL`, in a requested mask (an SMB `CREATE`'s `DesiredAccess`) or in
@@ -736,6 +742,7 @@ Four inputs the walk meets are fixed for release 1, until RFC 19 replaces them:
   | **NETWORK** | every caller: every caller arrives over the network | `S-1-5-2` · `NETWORK@` |
   | **SYSTEM** | no caller: nothing a client presents is the server's own system | `S-1-5-18` · none |
   | **CREATOR OWNER**, **CREATOR GROUP** | no caller: they act only through inheritance (below) | `S-1-3-0`, `S-1-3-1` · none |
+  | **ANONYMOUS LOGON** | a caller acting as the anonymous principal: an AUTH_NONE caller, an anonymous SMB session, a caller squashed to it (RFC 18 §2.1) | `S-1-5-7` · none |
 
   The last column is how the adapters spell them on the wire
   (RFC 21 and RFC 22); where it reads none, that protocol has no
@@ -797,20 +804,21 @@ succeed exactly when `want` is a subset of `Granted`.
 | no entries | bob | maximal | nothing |
 
 > decision: the ordered allow/deny walk, with the owner's implicit rights and owner
-> rights as the one exception to them, is the interim evaluation. It is what
+> rights as the one exception to them, is the evaluation, adopted unchanged by
+> RFC 19. It is what
 > NFSv4 clients assume and what Windows' access check does for a DACL of
 > allow and deny entries, canonical or not, since both walk in stored order.
-> It lives behind `Files.Authorize` and `Files.Granted` only ([§7.1](#7.1%20One%20chokepoint)), so RFC 19
-> can replace it without touching a caller. Well-known principals have fixed
+> It lives behind `Files.Authorize` and `Files.Granted` only ([§7.1](#7.1%20One%20chokepoint)), so a change
+> to it touches no caller. Well-known principals have fixed
 > IDs in the store and are matched by the identity's `authenticated` and
 > `admin` fields, not by privilege, because the walk runs in the store against
 > stored entries, and a principal matched by privilege is inert: privileged
 > callers skip the walk, so an "Administrators: full" entry copied from Windows
 > would grant an admin nothing. It does not model object or conditional
 > entries, well-known principals beyond those listed above, or privileges
-> beyond the one flag of [§7.4](#7.4%20The%20identity%20arrives%20resolved). Overturned by RFC 19's model, or by a case of the
-> table above, or of an extension of it run against a Windows server, that
-> Windows answers differently.
+> beyond the one flag of [§7.4](#7.4%20The%20identity%20arrives%20resolved). Overturned by a case run against Windows: a case of the
+> table above, or of an extension of it, that a Windows server answers
+> differently.
 
 ### 2.7 Extended attributes and named streams
 
@@ -931,7 +939,7 @@ outside the extent changed.
 `chown` and `chgrp` move exactly `Charged` from the old principal to the new one
 in the transaction that changes the owner. How usage is counted without a hot key
 is [RFC 16](rfc-16-metadata-store.md)'s. Enforcement is the filesystem service's, at the file's primary
-and at write time, against an in-memory reservation per principal and project
+and at write time, against an in-memory reservation per principal, per project and per share
 released when the write's existence commits ([RFC 17](rfc-17-vfs.md)): a write is checked
 before the charge exists, so the overshoot is bounded by each primary's
 reservation slack, and that bound is stated, not hidden.
@@ -1792,11 +1800,16 @@ applied by the filesystem service on every call, before this one
 ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and the identity that arrives here is
 what the caller already is on this share.
 
-**The share grant is not export policy.** A `ShareGrant` ([RFC 16](rfc-16-metadata-store.md)) is a record
-of this store naming a principal's access to a share, and `Authorize` **MUST**
-evaluate it on every call, not only at mount or tree connect, before the file's
-mode or ACL. A client removed from a grant is then refused on its next call,
-whatever handles it has cached. `Root` takes the identity, and is authorised
+**The share grant is not export policy, and arrives with the identity.** A
+`ShareGrant` ([RFC 16](rfc-16-metadata-store.md)) is a record of this store naming a principal's access to a
+share. The filesystem service reads the caller's grants on every call, in RFC 18
+§6.4's order, and the identity carries the access they give — narrowed to
+read-only where admission narrowed it, by a client rule or a share marked
+read-only ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), as a field of the identity, since this component
+evaluates no client rule. `Authorize` **MUST** apply that access on every call,
+not only at mount or tree connect, as the share ceiling RFC 19 §3.2 defines,
+intersected with what the file's mode or ACL grants. A client removed from a
+grant is then refused on its next call, whatever handles it has cached. `Root` takes the identity, and is authorised
 against the grant like every other call; the filesystem service calls it when
 a client mounts or tree-connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
 
@@ -1920,15 +1933,16 @@ another link; keyed on the mode and ACL alone, it is served after the parent's
 
 ### 7.6 Decisions are observable
 
-The chokepoint **MUST** emit an access-audit event for every decision an audit
-or alarm entry of the file's ACL selects ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)), and for every decision a
-share-level audit setting selects: principal, file, access asked, outcome.
+The chokepoint **MUST** emit an access-audit event for every decision the
+share's audit policy selects ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), and, when that policy honours file
+entries, for every decision an audit or alarm entry of the file's ACL selects
+([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode), RFC 19 §3.7): principal, file, access asked, outcome. With no policy,
+no entry selects anything and no event is built ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)).
 Quota events ([§2.8](#2.8%20A%20share%20is%20one%20filesystem)) go through the same hook. The hook is a
 declared sink the filesystem service supplies ([RFC 17](rfc-17-vfs.md)); this component
 emits to it and never waits on it, so a slow consumer drops events, counted,
 rather than delaying a decision. The event stream's format and delivery — to a
-log, an antivirus scanner or a ransomware detector — are a planned RFC's
-([index](rfc-index.md)).
+log, an antivirus scanner or a ransomware detector — are planned RFC 25's.
 
 Because every decision is made here ([§7.1](#7.1%20One%20chokepoint)), one hook sees every access through
 every protocol; an audit emitted by an adapter would miss the others.

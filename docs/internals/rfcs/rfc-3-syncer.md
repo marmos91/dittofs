@@ -824,7 +824,13 @@ Two further limits are permitted, each with its interaction stated:
 - the **throttle limit** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store and direction. It is never above
   the store's cap, is lowered only by a throttling response and raised only by
   successes, and binds only on a store that has throttled; on a store that has
-  not, it equals the cap and the pool and caps decide as before.
+  not, it equals the cap and the pool and caps decide as before;
+- the **background CPU token** of RFC 24 §6.2, one per node. A worker takes one
+  for the encode or hash of one chunk and returns it before its next network
+  wait, so it bounds the CPU time of a transfer's encode, not how many
+  transfers run; on a node whose link is the bottleneck no token is waited for,
+  and the pool size decides as before. A worker waiting for a token holds its
+  worker and nothing else.
 
 ### 2.2 The pool size is a memory bound
 
@@ -1479,8 +1485,8 @@ The syncer exposes exactly two settings, both process-wide:
 
 | Setting | Sizes | Default |
 | --- | --- | --- |
-| `upload_workers` | the uploader's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
-| `fetch_workers` | the fetcher's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
+| `upload_workers` | the uploader's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)); unset, reduced with the other in equal proportion until both halves and staging fit the node's transfers pool, and at least eight (RFC 24 §7.2) |
+| `fetch_workers` | the fetcher's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)); unset, reduced with the other in equal proportion until both halves and staging fit the node's transfers pool, and at least eight (RFC 24 §7.2) |
 
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
