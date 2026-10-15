@@ -740,9 +740,9 @@ type AuditCursor struct {
 // is a node record (RFC 15 §2.5).
 type NodeStatus struct {
 	Node           NodeID
-	Settings       uint64 // CFGGEN applied
-	ShareList      uint64 // SL applied
-	Principals     uint64 // PGEN applied
+	Settings       uint64 // CFGGEN reconciled through
+	ShareList      uint64 // SL reconciled through
+	Principals     uint64 // PGEN reconciled through
 	Refused        []RefusedRecord // each with the generation and the error
 	RestartPending []RecordRef
 	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
@@ -1107,11 +1107,21 @@ type Lifecycle interface {
 // nothing under any F‖ prefix.
 type ControlPlane interface {
 	Users(ctx context.Context, after string) iter.Seq2[User, error]
-	// Every whole-record put takes expect, the generation (Version, for an
-	// export policy or a netgroup) the caller read, zero for a create. It reads
-	// the record with conflict tracking and refuses ErrGenerationMismatch when
-	// the stored one differs, so the management API's If-Match check sits
-	// inside the put's transaction (RFC 23 §4.4); the put raises the generation.
+	// Every Put* and Set* takes expect, the generation the caller read
+	// (Version, for a grant, an export policy or a netgroup; Position, for a
+	// quota, which has no generation of its own). It reads the record with
+	// conflict tracking and refuses ErrGenerationMismatch when the stored one
+	// differs, so the management API's If-Match check sits inside the write's
+	// transaction (RFC 23 §4.4); the write raises the generation. Zero expects
+	// the record absent: the write is create-only and refused
+	// ErrGenerationMismatch when one exists, which is If-None-Match: *.
+	//
+	// Every record this interface writes also carries Position uint64: the
+	// value of its kind's counter (CFGGEN, SL or PGEN) that its last change
+	// raised, written in that change's transaction. A generation counts one
+	// record's changes and is not comparable with the counters; a node reports
+	// the counter value it has reconciled through (NodeStatus), and a record is
+	// applied there once that reaches its Position (RFC 23 §2.4).
 	PutUser(ctx context.Context, u User, expect uint64) error
 	DeleteUser(ctx context.Context, p Principal) error // as DeleteGroup: the first transaction deletes the indexes (NX, PX) and marks the record deleted, bounded batches a restart resumes from that mark drop its grants (through GR), memberships (MR, M) and quota records, and the last transaction deletes the record with every version of the secret it names (SEC‖id‖*, through RFC 13 §7), so no password or NT hash outlives its user; a marked user is admitted nowhere
 	Groups(ctx context.Context, after string) iter.Seq2[Group, error]
@@ -1123,11 +1133,11 @@ type ControlPlane interface {
 	PutShare(ctx context.Context, s Share, expect uint64) error // Name, Path, Root, Config only
 	SetShareState(ctx context.Context, share ShareID, from, to ShareState) error
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition) error // §2.3.2
-	SetGrant(ctx context.Context, g ShareGrant) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a machine principal is refused; Version, and the share's grant-list version S‖id‖gv written in the same transaction, are the writing commit's, so neither ever repeats a value a cache keyed on
+	SetGrant(ctx context.Context, g ShareGrant, expect uint64) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a machine principal is refused; Version, and the share's grant-list version S‖id‖gv written in the same transaction, are the writing commit's, so neither ever repeats a value a cache keyed on
 	DeleteGrant(ctx context.Context, share ShareID, p Principal) error // deletes the grant and its GR key, so the principal falls through to its groups' grants, and sets S‖id‖gv to the writing commit's version, so a cache keyed before the deletion misses
 	PutExportPolicy(ctx context.Context, p ExportPolicy, expect uint64) error // raises Version, as SetGrant does
 	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, the user and group defaults, per principal and per project
-	SetQuota(ctx context.Context, share ShareID, q Quota) error         // a quota that limits nothing deletes it, and a share-wide or project one its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace; a principal's grace under a changed default, or one that gains or loses its own quota, restarts at its next check, which finds the soft limit qx recorded no longer in force (RFC 7 §2.8)
+	SetQuota(ctx context.Context, share ShareID, q Quota, expect uint64) error // a quota that limits nothing deletes it, and a share-wide or project one its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace; a principal's grace under a changed default, or one that gains or loses its own quota, restarts at its next check, which finds the soft limit qx recorded no longer in force (RFC 7 §2.8)
 	Netgroups(ctx context.Context, after string) iter.Seq2[Netgroup, error]
 	PutNetgroup(ctx context.Context, n Netgroup, expect uint64) error // sets Version to the writing commit's, as SetGrant does
 	DeleteNetgroup(ctx context.Context, name string) error // rules naming it are not rewritten and fail closed (Netgroup)
