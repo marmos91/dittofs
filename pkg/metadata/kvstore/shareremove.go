@@ -25,7 +25,10 @@ const (
 
 // DeleteShare starts a share's removal and returns once the share is being
 // removed: its name and path are free for a new share, ShareList moves, and
-// every call into it is stale. Removal is one-way; a second call is stale.
+// the control plane's calls into it and Root answer stale. A handle into it
+// still resolves here: the filesystem service gates every call on the share
+// state, with the grant (see resolveIn). Removal is one-way; a second call
+// is stale.
 //
 // The mark refuses a share a cut is freezing, one with a re-home running, one
 // any of whose namespaces a move has paused,

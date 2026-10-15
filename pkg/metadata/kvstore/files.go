@@ -30,6 +30,12 @@ func (f Files) Resolve(ctx context.Context, share entity.ShareID, h entity.Handl
 	return id, err
 }
 
+// decision: resolving a handle does not read the share's state, so a handle
+// into a share being removed or retired still resolves while its records
+// stay. The state gates every call where the grant is evaluated, in the
+// filesystem service, which holds both; reading it here too would add a
+// read to every operation, GETATTR's single one included. Gate here if a
+// caller ever reaches the store without passing that service.
 func resolveIn(r kv.Reader, share entity.ShareID, h entity.Handle) (entity.FileID, entity.File, error) {
 	hs, id, err := h.Parse()
 	if err != nil {
