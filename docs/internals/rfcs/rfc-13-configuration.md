@@ -700,8 +700,8 @@ both keys in its bootstrap:
 
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
-| `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | authentication |
-| `storage` | remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3) | the remote tier, the material provider and the management API |
+| `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | authentication |
+| `storage` | password hashes, which only the management API's sign-in verifies (RFC 23 §5.3); remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3) | the remote tier, the material provider and the management API |
 
 A deployment **MAY** split a key further by secret kind.
 
@@ -756,7 +756,7 @@ type SecretProvider interface {
   copy of it.
 - **A wrapping key rotates the same way.** A node's bootstrap **MAY** name two
   keys for one role, the current and the next. Re-sealing every `Secret` of that
-  role under the next key is one pass; each record names the key ID it is sealed
+  role under the next key is one pass, run by a node of that role, since it opens each; each record names the key ID it is sealed
   under, and the current key is removed from bootstraps only once no record
   names it.
 - **Material is a secret with a lifecycle.** Encryption keys are resolved through
@@ -844,7 +844,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) refused | For every setting, feed one value out of range and one of the wrong type, through the API and directly to the component. Assert both refuse, with the field named; assert no component runs a default in its place. |
 | [§6](#6.%20Validation) one validator | Assert the API and the component return the same error for every invalid record in the fixture set. |
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
-| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and a password hash. Assert each unseals under its own wrapping key and fails under the other. |
+| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and an NT hash. Assert each unseals under its own wrapping key and fails under the other. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) explicit initialisation | Start a node against an empty metadata store and empty journal directories: assert it refuses, creating nothing. Initialise: assert the store's Installation record and every journal's `format` file carry one installation ID. Start with the store volume unmounted: assert it reports the metadata store lost and creates nothing; with the journal directory emptied, the journal missing. Only with initialise-if-empty set does a start on empty storage create an installation. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) location deletion | Delete a location record holding one unexpired backup: refused `ErrLocation`, naming it. Expire it; delete again: accepted. Make a second location unreachable for good with one backup there: deletion refused. State it lost, crashing after the lost mark and after the first batch: assert the statement resumes from the mark, the backup reads `lost` in the store, its folder record's census and block count are empty, the statement is in the audit log, deletion is accepted, and a master key only that backup's export named can be destroyed. Leave a third location unreachable for a day without the statement: still refused. |

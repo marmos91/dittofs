@@ -320,7 +320,7 @@ behaviour beyond pure methods (§2.4), and each renders as JSON for debugging
 | `Share`, `ShareGrant`, `Snapshot` | a share, who may reach it, its snapshots | §2.3 |
 | `Node`, `Shard`, `SlotTable` | cluster membership and shard placement ([RFC 11](rfc-11-ownership.md)) | §2.3 |
 | `Setting`, `Secret` | configuration values and sealed credentials ([RFC 13](rfc-13-configuration.md)) | §2.3 |
-| `Operation`, `IdempotencyRecord`, `Session`, `APIToken`, `AuditRecord`, `NodeStatus` | the management API's records (RFC 23) | §2.3 |
+| `Operation`, `IdempotencyRecord`, `Session`, `APIToken`, `AuditRecord`, `AuditCursor`, `NodeStatus` | the management API's records (RFC 23) | §2.3 |
 
 Holes, removals, fences, cuts, put intents, the GC index keys and
 the chunk change stamp are [RFC 6](rfc-6-block-metadata.md)'s bookkeeping for its guarantees. They are
@@ -393,7 +393,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 26](rfc-26-catalog-backups.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
-| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, and the management API's Operation, IdempotencyRecord, Session, APIToken and AuditRecord | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
+| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, and the management API's Operation, IdempotencyRecord, Session, APIToken, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -467,10 +467,13 @@ type Share struct {
 // ShareGrant is one principal's access to one share. The filesystem service
 // reads a caller's grants on every call, in RFC 18 §6.4's order, and the
 // access they give arrives with the identity, which Files.Authorize applies as
-// the share ceiling before any file ACL (RFC 19 §3.2); the grant's version is
-// part of the authorisation cache key (RFC 7 §7), so a revoked grant stops a
+// the share ceiling before any file ACL (RFC 19 §3.2); the share's grant-list
+// version is part of the authorisation cache key (RFC 7 §7.5), so a revoked
+// grant stops a
 // client that still holds handles; mount and tree connect only fail early on
-// it. A share's default access, for callers no other grant names, is a grant
+// it. A deleted grant leaves no record whose version could change, so the key
+// carries the share's grant-list version (S‖id‖gv), which every SetGrant and
+// DeleteGrant sets in its own transaction. A share's default access, for callers no other grant names, is a grant
 // to the well-known everyone or authenticated users principal; there is no
 // other default.
 // An admin grant makes its principal privileged only as RFC 7 §7.4 states:
@@ -487,7 +490,7 @@ type ShareGrant struct {
 	Share     ShareID
 	Principal Principal
 	Access    ShareAccess // none, read, read-write, admin; none is stored, and is distinct from no grant
-	Version   uint64      // raised by every change; the authorisation cache key carries it
+	Version   uint64      // the writing commit's; a cache keys on the share's grant-list version, which covers this grant's absence too
 }
 
 // ExportPolicy is the share's admission and identity-mapping rule, one per
@@ -690,7 +693,7 @@ type IdempotencyRecord struct { // RFC 23 §4.5
 type Session struct { // RFC 23 §5.3
 	ID        [16]byte
 	Account   Principal
-	Refresh   [32]byte  // hash of the current refresh token; never the token
+	Refresh   [32]byte  // hash of the current refresh token; never the token. It and every hash it replaced are keys under SS‖session‖h (§4.2)
 	Expires   time.Time // api.session_lifetime after sign-in
 	Revoked   bool
 }
@@ -713,6 +716,23 @@ type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.re
 	Before, After uint64 // the target's generation
 	Change  []byte    // spec fields changed, old and new; a secret field as "set", never a value
 	Outcome []byte    // applied, refused with its problem code, or the operation's ID
+}
+
+// AuditCursor is the admin stream's export position for one node that takes
+// requests (RFC 25 §4.3): how far that node's audit records, read in order
+// through AUX‖node, have been appended to a spool. Exactly one holder
+// advances it: the node itself while its lease holds; once it is lost, the
+// live storage node that took it, which exports the lost node's records into
+// its own spool. Every write of it — a take, a give-back, an advance after a
+// synced batch — is a conditional write naming the holder it read, so a
+// holder that lost it stops at its next batch. A record exported by both
+// holders across a change is a duplicate the consumer drops by request ID.
+type AuditCursor struct {
+	Node        NodeID    // whose records it walks
+	Time        time.Time // the last record exported, by its store time
+	Audit       [16]byte  // and ID: the position in AUX‖0x03‖node; both zero before the first
+	Holder      NodeID    // who exports them now
+	HolderEpoch uint64    // the holder's node epoch at its take; a holder whose epoch has moved on holds nothing
 }
 
 // NodeStatus is what one node reports (RFC 23 §2.4), written by that node at
@@ -1103,8 +1123,8 @@ type ControlPlane interface {
 	PutShare(ctx context.Context, s Share, expect uint64) error // Name, Path, Root, Config only
 	SetShareState(ctx context.Context, share ShareID, from, to ShareState) error
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition) error // §2.3.2
-	SetGrant(ctx context.Context, g ShareGrant) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a machine principal is refused; Version is the writing commit's, so a re-created grant never repeats a Version an authorisation cache keyed on
-	DeleteGrant(ctx context.Context, share ShareID, p Principal) error // deletes the grant and its GR key, so the principal falls through to its groups' grants; Version rules as SetGrant
+	SetGrant(ctx context.Context, g ShareGrant) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a machine principal is refused; Version, and the share's grant-list version S‖id‖gv written in the same transaction, are the writing commit's, so neither ever repeats a value a cache keyed on
+	DeleteGrant(ctx context.Context, share ShareID, p Principal) error // deletes the grant and its GR key, so the principal falls through to its groups' grants, and sets S‖id‖gv to the writing commit's version, so a cache keyed before the deletion misses
 	PutExportPolicy(ctx context.Context, p ExportPolicy, expect uint64) error // raises Version, as SetGrant does
 	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, the user and group defaults, per principal and per project
 	SetQuota(ctx context.Context, share ShareID, q Quota) error         // a quota that limits nothing deletes it, and a share-wide or project one its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace; a principal's grace under a changed default, or one that gains or loses its own quota, restarts at its next check, which finds the soft limit qx recorded no longer in force (RFC 7 §2.8)
@@ -1480,6 +1500,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `S‖id‖st` | the share's `State`; changed only by a conflict-tracked read-modify-write naming the state it expects (§3) |
 | | `S‖id‖nsg` | the share's `Namespaces` and `Write` generation; written only by a re-home and an import, by a conflict-tracked read-modify-write (§3, [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)) |
 | | `S‖id‖g‖principal` | ShareGrant; its reverse key `GR‖principal‖ShareID` is written and deleted with it |
+| | `S‖id‖gv` | grant-list version: the commit version of the share's last `SetGrant` or `DeleteGrant`, written in that transaction and read with the caller's grants. Authorisation and admission caches key on it ([RFC 7 §7.5](rfc-7-namespace-metadata.md#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read), [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)): a deleted grant has no record left to carry a version, and this one moves with it. `DeleteUser` and `DeleteGroup`, dropping a principal's grants through `GR`, set it on each share in the batch that drops the grant |
 | | `S‖id‖xp` | ExportPolicy |
 | | `S‖id‖snap‖cut` | Snapshot, with its ordinal; nothing else lives under this prefix, so listing snapshots reads only snapshots |
 | | `S‖id‖cut`, `S‖id‖live‖k` | Cut: `k`, `klatest`, the cut time of the share's latest cut, and `deleting`, the cut a running deletion removes; LiveCut, one per live snapshot, with its kind, share or subtree, its snapshot's ordinal, and a subtree cut's covered set of shards ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree), [RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting), [RFC 12 §2.10](rfc-12-snapshots.md#2.10%20Subtree%20snapshots)) |
@@ -1554,15 +1575,16 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` tagged |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
 | | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`) and session (0x03, session ID), written and deleted with it, so the sweep is one ordered scan |
-| | `SS‖session`, `SSH‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3) |
+| | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH` |
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
 | | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, resource kind and ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
+| | `AUC‖node` | AuditCursor (§2.3): one per node that takes requests, written first by that node's first export and changed only by conditional writes naming the holder it read; it outlives the node's lease, and is deleted with the node's record once its last audit record within `audit.retention` is exported (RFC 25 §4.3) |
 | **Store** | `\x00format` | store format record (§4.6) |
 
 The table is **exhaustive**: every key the store writes has a row. A new
 record kind is a format bump (§4.6) and gets its row in the same change — the
-management API's records, `N‖node‖st` and `OP` to `AUX`, arrive with one;
+management API's records, `N‖node‖st` and `OP` to `AUC`, arrive with one;
 volatile open state (locks, caching grants, watches, layouts, asynchronous copies, non-durable opens, delete pending without a persistent open) and
 the primary's in-memory tables (quota reservations, routed-request dedup) are
 never written to the KV and so have none. A file's shard and its primary's epoch
@@ -1700,14 +1722,14 @@ are the prefix's. No separator byte is written.
 | Store | `\x00` 0x00, followed by the bytes `format`; nothing else is under 0x00 |
 | Per file, per share | `F` 0x01, `S` 0x02 |
 | Per namespace | `C` 0x10, `CR` 0x11, `B` 0x12, `BR` 0x13, `BD` 0x14, `BC` 0x15, `I` 0x16, `NS` 0x17 |
-| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46; 0x39 retired |
+| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47; 0x39 retired |
 
 | Under | Sub-kind codes |
 | --- | --- |
 | `F‖id` | none for the File itself; `acl` 0x01, `x` 0x02, `s` 0x03, `e` 0x04, `t` 0x05, `h` 0x06, `rm` 0x07, `ov` 0x08, `ref` 0x09, `H` 0x0A, `fx` 0x0B, `fo` 0x0C, `rel` 0x0D, `op` 0x0E, `dp` 0x0F; under `op‖openID`, `l` 0x01 |
-| `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16, `vl` 0x17, `shs` 0x18, `pr` 0x19, `rr` 0x1A, `do` 0x1B, `od` 0x1C, `pjn` 0x1D |
+| `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16, `vl` 0x17, `shs` 0x18, `pr` 0x19, `rr` 0x1A, `do` 0x1B, `od` 0x1C, `pjn` 0x1D, `gv` 0x1E |
 | `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06, `keyseq` 0x07, `park` 0x08, `backup` 0x09 |
-| `N‖node`, `SH‖shard`, `CL‖clientID` | `exp` 0x01, `clk` 0x02, `st` 0x03; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05, `rqx` 0x06; `sh` 0x01 |
+| `N‖node`, `SH‖shard`, `CL‖clientID`, `SS‖session` | `exp` 0x01, `clk` 0x02, `st` 0x03; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05, `rqx` 0x06; `sh` 0x01; `h` 0x01 |
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | protocol: NFSv4.0 0x01, NFSv4.1 0x02, SMB 0x03, NLM 0x04 |
 | `IDS` | kind: client 0x01, open 0x02, lock 0x03, uid 0x04, gid 0x05, RID 0x06 |

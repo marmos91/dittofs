@@ -1016,8 +1016,8 @@ back under. Both kinds are emitted from the one path every operation takes, by
 the server and nothing else. **The chokepoint emits nothing**
 ([RFC 7 §7.6](rfc-7-namespace-metadata.md#7.6%20Decisions%20are%20observable)):
 `Files.Authorize` returns its decision and whether an audit or alarm entry of
-the file selected it — only the chokepoint knows that — and the server builds
-the access event from the resolved caller, which carries the protocol and
+the file selected it — only the chokepoint knows that — and never reads the
+share's audit policy. The server applies the policy and builds the access event from the resolved caller, which carries the protocol and
 client, and the file, access and outcome, when the share's audit policy selects
 the decision or honours the entry (RFC 19 §3.7). Quota events are emitted where
 the server enforces quota ([§5.6](#5.6%20Quota)). Each decision is audited
@@ -1280,8 +1280,8 @@ err = open.CheckIO(ctx, ref, r, write)  // or CheckChange: deny modes, locks, gr
 - **The share grant is checked on every call**, not only at `Root`. The
   server reads the caller's grants at admission each time (§4.9 step 4),
   `Authorize` applies the access they give as the share ceiling, and any cache
-  of authorisation results **MUST** include the grant versions read, and the
-  parent directory with its whole record's version — owner and group as well
+  of authorisation results **MUST** include the share's grant-list version,
+  which a grant's deletion moves as well as its change, and the parent directory with its whole record's version — owner and group as well
   as mode and ACL, since the group bits and the sticky rule read them — in its
   key
   ([RFC 7 §7.5](rfc-7-namespace-metadata.md#7.5%20A%20cached%20decision%20is%20keyed%20by%20everything%20it%20read)).
@@ -1391,8 +1391,9 @@ and one that walks the pseudo-filesystem into the share meet the same five
 checks. A compound crossing from one share into another is re-admitted, and
 re-resolved, at the crossing. The result of steps 1–4 may be cached per
 (share, identity) only with `ExportPolicy.Version`, the netgroups' versions,
-`ShareList.Version`, the grant versions read and the principals generation in
-the key, beside everything RFC 18 §7.1 lists: the principals generation is what
+`ShareList.Version`, the share's grant-list version
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s
+`S‖id‖gv`) and the principals generation in the key, beside everything RFC 18 §7.1 lists: the principals generation is what
 drops a cached resolution when a principal, a group or a mapping changes
 ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)),
 so a disabled user's next call resolves afresh. Step 5 reads the pools as they
@@ -1894,8 +1895,9 @@ func (q *Quota) Reserve(ctx context.Context, c Caller, owner Owner, f File, byte
 > bounds nothing and only delays writes. Add it with the cluster's remote
 > primary, as the bullet above states it.
 - **Soft limits.** Crossing the advisory threshold or the soft limit emits a
-  quota event (§3.3) and refuses nothing; a grace that expires, a hard refusal
-  and a fall back under a limit each emit one too. The metadata store records
+  quota event (§3.3) and refuses nothing. A grace that expires, a hard refusal
+  and a fall back under a limit each emit one too; whether they refuse is the
+  hard limit's rule above and the enforcement below. The metadata store records
   when the soft limit was first exceeded, and once the grace time has run from
   then the soft limit is enforced as the hard one. Falling back under it clears
   the record. The time is the store's `Now`, so the grace time ends up to the

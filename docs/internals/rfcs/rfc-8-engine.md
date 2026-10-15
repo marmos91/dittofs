@@ -1385,7 +1385,11 @@ The scheduler **MUST**:
   past the total is dropped and counted, and the source **MUST** re-derive
   dropped work from its durable records within its own bound: offload by
   `AgeTick`, removals by re-reading the unfinished-removal index, GC by its
-  cursors;
+  cursors. The instances are bounded by count too: one per journal for the
+  engine's offload and removals, and one per process for GC, whose sources
+  serve every GC partition the node leases
+  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), so a node holds at most its journals plus
+  one times the total;
 - **share fairly**: under contention, sources and the tenants within them (shares,
   namespaces) receive work in proportion to `Weight`;
 - **rate-limit**: a source with a `Rate` is paced to it, and a throttled result

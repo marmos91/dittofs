@@ -1936,8 +1936,10 @@ because the defect is in the key and the key never mentions it.
 Adding a field to an identity is therefore an edit to every key derived from
 one, and a key that cannot be shown to include the whole identity **MUST** be
 replaced by one that does. A cached authorisation result is derived from the
-share grant too, so its key **MUST** include the grant's version: a changed or
-removed grant is a different key. A result computed with `via`, the directory a
+share grant too, so its key **MUST** include the share's grant-list version
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s `S‖id‖gv`), which every grant write and deletion
+sets: a changed or removed grant is a different key. A grant's own version
+would not do, since a removed grant leaves no record to carry one. A result computed with `via`, the directory a
 handle was resolved through ([§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)), is derived from that directory's rights too,
 so its key **MUST** include `via` and the directory's whole record version, its
 `Version`, which moves with its owner, group, `Mode` and ACL alike: the group
@@ -2645,7 +2647,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) root | Resolve `..` at a share's root. Assert it is the root. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) logical charging | Write the same content into two files owned by two users, clone one of them to a third user, let dedup and GC run. Assert each user is charged the full logical size. Punch a hole and truncate: assert `Charged` and usage fall by the bytes removed. `chown`: assert exactly `Charged` moves. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) soft quota | Exceed `Soft`, write within `Grace`, then after it. Assert the first succeeds, the second is refused, and an event was emitted at each crossing. |
-| [§7.4](#7.4%20The%20identity%20arrives%20resolved) share grant | Remove a principal's grant while it holds cached handles and a cached authorisation. Assert its next call on each handle is refused. |
+| [§7.4](#7.4%20The%20identity%20arrives%20resolved) share grant | Remove a principal's grant while it holds cached handles and a cached authorisation: once by setting it to `none`, once by deleting it with no group grant left to admit it. Assert its next call on each handle is refused both times; a cache keyed on the grant's own version serves the deleted one. |
 | [§3.3](#3.3%20Case) case | On a case-insensitive share, create `README`, then `readme`. Assert the second conflicts, a lookup of `ReadMe` reads one key, and a listing returns `README` as given. |
 | [§3.3](#3.3%20Case) fold rule fixed | Change the case sensitivity of a share holding a file: assert refused. Copy a case-sensitive share's directory holding `a.txt` and `A.txt` into a case-insensitive share: assert the second create fails as existing, the first file is intact, and nothing was renamed. Import a share whose fold rule this binary does not implement: assert refused before anything is published. Import a case-insensitive share: assert every name found by lookup and a cookie taken before the export resumes in the import. |
 | [§3.5](#3.5%20A%20cookie%20survives%20concurrent%20mutation) cookie | Delete an entry before the cursor mid-listing. Assert no untouched entry is skipped or repeated. Then evict every cached cookie and assert the listing resumes rather than restarting. |
