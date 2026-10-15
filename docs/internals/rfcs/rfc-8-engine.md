@@ -2696,8 +2696,7 @@ The engine exports what only it can see; each component exports its own. No
 per-operation metric carries a share label: one engine serves every share of its
 node, and at 10⁴ shares a share label multiplies every histogram by 10⁴
 ([RFC 16 §8.1](rfc-16-metadata-store.md#8.1%20Metrics)). Per-share figures — offload backlog, oldest unoffloaded age,
-health — are gauges exported for the shares a stated rule selects (the worst
-*n* by each figure), and every share's are readable through the management API. Metric names are shown without the
+health — are gauges exported under RFC 25's worst-n rule, and every share's are readable through the management API. Metric names are shown without the
 deployment's prefix.
 
 | Answers | Metric | Type |
@@ -2719,6 +2718,7 @@ deployment's prefix.
 | speculative bytes fetched, and those read before eviction ([§7.4](#7.4%20The%20speculator)) | `engine_speculation_bytes_total`, `engine_speculation_used_bytes_total` | counter |
 | re-resolutions after an absent object ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | `engine_reresolves_total` | counter |
 | evictions and bytes freed; pacing delays; refusals ([§10](#10.%20Local%20space)) | `engine_evicted_bytes_total`, `engine_pacing_seconds`, `engine_write_refusals_total` | counter, histogram, counter |
+| self-fences, labelled `reason` = `store` (no write transaction committed for 30 s, [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) and, (cluster), `lease`, `unreachable` or `clock`; the one count of self-fences, which RFC 10 and RFC 11 read rather than count again | `engine_self_fences_total` | counter |
 | offloaded bits cleared by the consistency check ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) | `engine_ledger_mismatches_total` | counter |
 | time waiting on engine-internal locks, labelled `area` (file state, share context table, work queue); not labelled by share ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | `engine_lock_wait_seconds` | histogram |
 

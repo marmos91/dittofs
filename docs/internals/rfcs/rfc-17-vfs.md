@@ -640,39 +640,62 @@ watch never reports names below a directory its holder cannot enter.
 // Events is implemented by an event sink supplied at composition. The
 // service calls it and never waits on it.
 type Events interface {
-	Quota(ctx context.Context, e QuotaEvent)   // advisory threshold crossed, soft limit exceeded, grace expired, hard refusal
+	Quota(ctx context.Context, e QuotaEvent)   // advisory threshold crossed, soft limit exceeded, grace expired, hard refusal, back under
 	Access(ctx context.Context, e AccessEvent) // one authorisation decision the audit policy selects
 }
 
 type AccessEvent struct {
-	Time     time.Time
-	Share    metadata.ShareID
-	Client   metadata.ClientID // zero for NFSv3
-	Identity Identity
-	Protocol Protocol
-	Op       Op
-	File     metadata.FileID
-	Name     []byte // the name acted on, for namespace operations
-	Want     Access
-	Allowed  bool
+	Time       time.Time
+	Share      metadata.ShareID
+	Client     metadata.ClientID // zero for NFSv3
+	Addr       netip.Addr        // the client's address
+	Identity   Identity
+	Protocol   Protocol
+	Op         Op
+	File       metadata.FileID
+	Name       []byte // the name acted on, for namespace operations
+	Want       Access
+	Allowed    bool
+	SelectedBy Selector // Policy: the share's audit policy; Entry: an audit or alarm entry of the file's ACL (RFC 19 §3.7)
+}
+
+// QuotaEvent is one quota transition or refusal. Transitions are emitted once
+// each; hard refusals are coalesced by the sink per share, scope, subject and
+// resource (RFC 25 §4.4), which stamps the count it coalesced.
+type QuotaEvent struct {
+	Time      time.Time
+	Share     metadata.ShareID
+	Scope     QuotaScope         // User, Group, Project or Share
+	Subject   metadata.Principal // the user or group; zero for a project or share quota
+	Project   metadata.ProjectID // the tree; zero otherwise
+	Resource  QuotaResource      // Bytes or Files
+	Kind      QuotaEventKind     // AdvisoryCrossed, SoftExceeded, GraceExpired, HardRefused, BackUnder
+	Used      int64              // the usage judged, in the resource's unit
+	Soft      int64
+	Hard      int64
+	GraceEnd  time.Time          // zero when no grace runs
+	Writer    Identity           // the refused caller, for HardRefused only
 }
 ```
 
-Both streams are emitted from the one path every operation takes: access events
-where the service consults the chokepoint ([§4.6](#4.6%20One%20chokepoint)), quota events where it
-enforces the quota ([§5.6](#5.6%20Quota)). No adapter, store or engine emits either,
-so no protocol can reach a file without appearing in the audit stream.
+Both streams are emitted from the one path every operation takes, by this
+service and nothing else: access events where the service consults the
+chokepoint ([§4.6](#4.6%20One%20chokepoint)), quota events where it enforces the quota ([§5.6](#5.6%20Quota)). The chokepoint
+returns its decision, and with it which of the audit policy and the file's
+audit entries selected it; the service builds and emits the event. No adapter,
+store or engine emits either, so no protocol can reach a file without appearing
+in the audit stream.
 
 - An event hook **MUST NOT** block or fail the operation. The sink queues, and
-  an event it cannot queue is dropped and counted (§7).
+  an event it cannot queue is dropped and counted by the sink (RFC 25's
+  `events_dropped_total`).
 - Which operations produce an access event — every decision, denials only,
   writes and namespace changes, per share — and whether the file's audit
   entries select events too (RFC 19 §3.7) is the audit policy, a setting
   ([RFC 13](rfc-13-configuration.md)). With no policy, no access event is built, whatever audit entries
   a file holds.
-- Delivery, retention and the export format of both streams belong to the
-  planned observability RFC (RFC 25). This RFC fixes only where they are
-  emitted and what an event carries.
+- Delivery, retention and the export format of both streams belong to RFC 25.
+  This RFC fixes only where they are emitted and what an event carries.
 
 ## 4. Rules
 
@@ -1002,7 +1025,8 @@ call to the share of the handle or open it names, in this order:
    `ErrStale` once being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share));
 2. the share's `ExportPolicy` flavour rule — `ErrWrongSecurity`;
 3. its client rules, against the call's address and the netgroups it is in —
-   `ErrAccess`, or a narrowing to read-only;
+   `ErrAccess`, or a narrowing to read-only — and the policy's `ReadOnly` flag,
+   which narrows every caller to read-only;
 4. resolution, which turns the `Identity` into the caller it acts as on this
    share: map it to a principal, squash it, collect its groups, read its share
    access from the grants, and set its flags (RFC 18 §6). Step 3's narrowing to
@@ -1537,15 +1561,16 @@ Metric names are shown without the deployment's prefix.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| How fast is each operation, per protocol? | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| How fast is each operation, per protocol? `outcome` is `ok`, `error` or `delay` | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| Which errors does each operation answer? | `vfs_errors_total{op, error}`, `error` one of §4.3's neutral errors | counter |
 | How often are clients told to retry? | `vfs_delayed_total{op, reason}` | counter |
 | How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{kind}`, `vfs_quota_reserved_bytes` | counter, gauge |
 | Are callbacks failing? | `vfs_callback_errors_total{kind}` | counter |
-| Are events being lost? | `vfs_events_dropped_total{stream}` | counter |
 | What is held, and how often is a call refused past its hold budget (§5.9)? | `vfs_held_calls`, `vfs_held_bytes`, `vfs_hold_pool_bytes`, `vfs_hold_refusals_total{protocol}` | gauge, gauge, gauge, counter |
 | How often is a delete on close refused after its client closed (§5.3)? | `vfs_deferred_unlink_refusals_total` | counter |
 
-Operation latency and quota metrics are owned here and nowhere else.
+Operation latency and quota metrics are owned here and nowhere else. Events
+dropped are counted at the sink, RFC 25's `events_dropped_total`, not here.
 Forwarding and epoch refusals are RFC 15's; recalls are RFC 14's.
 
 Each service call opens a trace span that parents the metadata store's and the

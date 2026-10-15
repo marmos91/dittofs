@@ -272,12 +272,15 @@ only these, come from the host — a file or the environment:
 | the scratch paths beside them: `backups.spill_path`, where copy staging spills ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and `salvage.path`, where stranded journal tags are exported ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
 | the process memory limit — the soft limit the runtime enforces (on the Go runtime, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes every node memory pool (RFC 24 §2.3), the hold pool of [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) among them, and what memory a process has only its host knows; read once at start, as RFC 24 §2.1 orders the sources |
 | listen addresses                                                                                                      | a port conflict is a host's problem                                                                                                       |
+| the management API's TLS certificate and key (RFC 23 §5.3) | the API is served over TLS before anything is read from the control plane, and a certificate names its host |
+| `events.path`, where the node spools its event streams (RFC 25 §4.6) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
 | log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |
 | the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md))                          | they decide what the node composes, including whether it writes control-plane records, which only `storage` does ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)); fixed for the life of the process |
 | the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak                     |
 
 **A scratch path is checked against the journals at every start, in both
-directions.** The node refuses `backups.spill_path` or `salvage.path` if it
+directions.** The node refuses `backups.spill_path`, `salvage.path` or
+`events.path` if it
 shares a device, a filesystem or free space with any of its journals — the path
 checked against every journal, and every journal, one added since included,
 against the path — since a scratch write that fills a journal's space answers
@@ -285,7 +288,8 @@ its writers no space ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refus
 the two lie in one filesystem, one pool or one thinly provisioned volume group,
 not only on one device. A refused path does not stop the node: a refused spill
 path spills nothing, and a refused salvage path fails each export as
-[RFC 1 §3](rfc-1-journal.md#3.%20Interface) has it. A value set for the whole
+[RFC 1 §3](rfc-1-journal.md#3.%20Interface) has it; the one exception is a refused events path, which
+refuses the start, as RFC 25 §4.6 requires. A value set for the whole
 installation could not be checked this way, since one node's scratch disk can
 be another's journal filesystem.
 
@@ -502,7 +506,9 @@ above. [Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings) writes it in one
 - *scope* **default**, *narrower scope* **override** — a value at the wider
   scope that one narrower record **MAY** replace, such as a replica count with
   an installation default and a per-shard value in the shard record. The two are
-  one setting, validated by one rule.
+  one setting, validated by one rule. A shard is not a sixth scope: it is a
+  part of one share ([RFC 11](rfc-11-ownership.md)), so a shard override is a refinement of the share
+  scope, the narrowest record a value may be written in.
 
 A quantity that is **fixed** or **derived** ([§4.1](#4.1%20Fixed%20by%20default)), or a **bootstrap** fact
 ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), has no scope, and Appendix B says so in its class column instead.
@@ -714,7 +720,7 @@ own roles:
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
 | `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | the `protocol` role: authentication |
-| `storage` | remote-tier credentials, references to master keys | the `storage` role: the remote tier and the material provider |
+| `storage` | remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3) | the `storage` role: the remote tier, the material provider and the management API |
 
 So a compromised protocol-only node, which must read the KV, holds sealed
 remote-tier credentials it cannot open. A deployment **MAY** split a role's key
@@ -828,16 +834,18 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| the generation of each record a node runs, against the store's current one | `config_generation` | gauge, labelled by record |
-| the version of each secret a node holds, against the current one | `config_secret_version` | gauge, labelled by reference |
+| the generation a node has applied per kind — `settings`, `shares`, `principals` — read against the store's current generation per kind | RFC 23's `runtime_applied_generation{kind}` | gauge |
+| how long a node's applied generation has been behind the store's, per kind — `settings` (`CFGGEN`), `shares` (`SL`), `principals` (`PGEN`) | `config_generation_lag_seconds{kind}` | gauge |
+| secrets a node holds at an older version than the current one | `config_secrets_behind` | gauge, a count |
 | each format's active version, and the range each node registers | `format_active_version`, `format_supported_range` | gauges, labelled by format |
 | records refused, by component and reason | `config_refused_total` | counter |
 | changes refused because a setting is bound | `config_bound_refusals_total` | counter |
 | the provisioning file hash each node applied, and applies refused by reason | `config_provisioning_applied`, `config_provisioning_refused_total` | gauge, counter |
 
 A node whose generation for a live record stays behind the store's for longer
-than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node, not
-only a gauge.
+than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node,
+`config_generation_behind`, which names the records behind; no metric is
+labelled by record or by secret.
 
 ## 9. Test plan
 
@@ -948,7 +956,7 @@ Descriptive, for the refactor.
 | C3 | Refused, never replaced ([§6](#6.%20Validation)) | several settings fall back silently: an invalid chunk profile keeps the default, an out-of-range upload parallelism turns adaptive, an empty compression algorithm becomes zstd, a non-boolean durability flag is ignored, a zero backpressure wait becomes 60 s (its own range check can never fire), a zero Kerberos uid or gid becomes 65534 |
 | C4 | Unknown fields refused ([§6](#6.%20Validation)) | unknown host-file keys are warnings; store settings are an untyped document |
 | C5 | No secret in configuration ([§7](#7.%20Secrets)) | remote store credentials, the LDAP bind password and Kerberos settings are stored in the configuration database in plain text; reads redact them |
-| C6 | Node-local facts only on the host ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | the machine SID and the token-signing secret are per-host and must be copied between nodes by hand; key-file paths held in the shared database must exist on every node |
+| C6 | Node-local facts only on the host ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)); the management API's token-signing key is an installation-wide `Secret` sealed under the `storage` wrapping key (RFC 23 §5.3), not a host fact | the machine SID and the token-signing secret are per-host and must be copied between nodes by hand; key-file paths held in the shared database must exist on every node |
 | C7 | Every setting read by something | a generic settings table and its CLI have no reader; the SMB encryption adapter setting is a stub |
 | C8 | One default per setting ([§4.2](#4.2%20Every%20setting%20has%20a%20default%2C%20or%20is%20required)) | log retention defaults differ between the file path and the built-in defaults; a documented journal log limit is described as gating writes and does not |
 | C9 | Host fields not overridable, flags or otherwise | the documented order names command-line flags as the highest source; none binds to a setting |
@@ -994,7 +1002,7 @@ supplies one before the setting is built.
 | data key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write | created with the namespace when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | master keys | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | remote store | live: rotates by re-wrapping; never destroyed while a retained export names it | required on every store configuration, held where [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) requires; a key file needs verified escrow where B.2 says (`ErrNotEscrowed`); references only ([§7](#7.%20Secrets)) |
 | block format version to write | [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) | namespace | next write | the newest version every node reads |
-| `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | installation | restart | derived: 128 each, or the sizing tool's figure, reduced in equal proportion until both halves' peak and the staging budget fit the node's transfers pool, an eighth of the process memory limit, and at least eight each (RFC 24 §7.2) — about 100 each on an 8 GiB node; counts set explicitly that do not fit are refused at start, naming the pool; the 128 is proposed, settled by: the sizing tool's put curve (upload) and ranged-get curve (fetch) per supported service ([RFC 4 §7.5](rfc-4-remote-tier.md#7.5%20Benchmarks%20and%20targets)), and B5 at that size |
+| `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | node | restart | derived: 128 each, or the sizing tool's figure, reduced in equal proportion until both halves' peak and the staging budget fit the node's transfers pool, an eighth of the process memory limit, and at least eight each (RFC 24 §7.2) — about 100 each on an 8 GiB node; counts set explicitly that do not fit are refused at start, naming the pool; the 128 is proposed, settled by: the sizing tool's put curve (upload) and ranged-get curve (fetch) per supported service ([RFC 4 §7.5](rfc-4-remote-tier.md#7.5%20Benchmarks%20and%20targets)), and B5 at that size |
 | slow-tail retry share: most slow-tail retries per store and direction, as a share of its transfers over a fixed window | [RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports) | — | fixed | proposed in RFC 3: 5% over 60 s; settled by: the slow-tail retry rate on each supported service under the sizing tool's load, and a store slowed fourfold, against first-attempt latency ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 | retry budget demand reserve; throttled-attempt bound | [RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports) | — | fixed | proposed in RFC 3: a quarter of each bucket; eight throttled attempts per transfer; settled by: a copying backup and a reader's cold fetches sharing one failing path, and a throttling service's burst replies |
 | endpoint, credential reference | [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface) | remote store | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) | required |
@@ -1118,7 +1126,7 @@ supplies one before the setting is built.
 | `identity.directory_ttl`, `identity.directory_negative_ttl`: how long a positive and a "no such entry" directory answer stay fresh | RFC 18 §5.2 | installation | live | 5 min; 30 s, so a user just created in the directory signs in soon after |
 | `identity.directory_timeout`: a directory query unanswered this long is an error, never "no such entry" | RFC 18 §5.2 | installation | live | 5 s |
 | `identity.directory_stale_grace`: how long past the TTL an entry may be served while the directory fails | RFC 18 §5.3 | installation | live | 15 min; a policy, not a measurement: the window an operator accepts a disabled directory account keeping access through an outage, 0 where it must stop within the TTL |
-| export policy `Squash`, `Anonymous`, `ManageGIDs`: who is squashed, the principal a squashed or anonymous caller acts as, and whether an `AUTH_SYS` caller's gids are replaced by its store memberships | RFC 18 §6.2, §3.2 | share | live: the policy's version is in every resolved caller's key | `root`; the well-known anonymous principal; off |
+| export policy `Squash`, `Anonymous`, `ManageGIDs`, `ReadOnly`: who is squashed, the principal a squashed or anonymous caller acts as, whether an `AUTH_SYS` caller's gids are replaced by its store memberships, and whether every caller is narrowed to read-only | RFC 18 §6.2, §3.2; [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) | share | live: the policy's version is in every resolved caller's key | `root`; the well-known anonymous principal; off; off |
 | process memory limit *L*: the runtime's soft limit, else the container's, else the host's memory | RFC 24 §2.1 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), read once at start | the first source set |
 | node memory pools: share of *L*, and floor | RFC 24 §2.3, §2.4 | — | fixed | receive, reply, hold, connection state, open state 1/16 each; metadata store 3/16; journal index 1/8; transfers 1/8; a quarter unpooled. Floors: receive and reply 16 MiB, connection and open state 4 MiB, metadata store 64 MiB. The metadata store's share is proposed, settled by: RFC 24 §8's M3; the unpooled quarter by M4 |
 | buffer classes | RFC 24 §3.1 | — | fixed | 4 KiB, 64 KiB, 1 MiB, 8 MiB |
@@ -1131,3 +1139,21 @@ supplies one before the setting is built.
 | requests in flight per connection, for protocols without flow control | RFC 24 §3.4 | — | fixed | proposed: 64, one NFSv4.1 session's fore channel; settled by: RFC 24 §8's M7 |
 | background CPU: work holding a CPU token at once | RFC 24 §6.2 | — | fixed | proposed: three quarters of the runtime's parallelism, at least one; settled by: RFC 24 §8's M5 |
 | open-file limit split: journal segments, client connections, the rest | RFC 24 §6.3 | — | fixed | a quarter; a half; a quarter, of the soft limit raised to the hard limit |
+| `api.session_lifetime`: how long a sign-in's refresh token lasts | RFC 23 §5.3 | installation | live | proposed: 12 h, a working day of one sign-in |
+| `api.token_max_lifetime`: the latest expiry a service account's API token may have | RFC 23 §5.3 | installation | live | proposed: 365 days |
+| `audit.retention`: how long a management audit record is kept before it is deleted in bounded batches | RFC 23 §6 | installation | live | proposed: 400 days, a year and a quarter, so one annual review finds the whole year |
+| management API limits: access token lifetime; idempotency records kept; finished operations kept; an operation runner's claim | RFC 23 §4.5, §4.6, §5.3 | — | fixed | 15 min; 24 h; 7 days; 30 s ahead, renewed every 10 s |
+| management API paging and waits: page size; `?wait` cap | RFC 23 §4.2, §4.6 | — | fixed | 100 by default, at most 1 000; 60 s |
+| API calls one node runs at once, the next answered `503` | RFC 23 §4.3 | — | fixed | 64 |
+| sign-in throttle: consecutive failures per account or source address before waits begin; the wait | RFC 23 §5.3 | — | fixed | 5; 1 s, doubling to 5 min |
+| generated first password | RFC 23 §5.4 | — | fixed | 24 random bytes |
+| `metrics.top_shares`: shares exported with a `share` label per per-share gauge, the worst by it | RFC 25 §2.5 | installation | live | 20 |
+| `events.retention`, `events.max_bytes`: the event spool's age and size bounds, past which the oldest file is deleted | RFC 25 §4.6 | node | live | proposed: 7 days; 4 GiB |
+| `tracing.endpoint`: the trace collector; none turns tracing off | RFC 25 §6.3 | node | live | none: tracing off |
+| `tracing.sample_ratio`: the fraction of requests sampled at the adapter | RFC 25 §6.3 | node | live | proposed: 0.01 |
+| metric limits: values per entity label per metric per node; series per node and per metric at the reference profile | RFC 25 §2.4, §2.5 | — | fixed | 64; 50 000 and 10 000 |
+| histogram bucket sets | RFC 25 §2.6 | — | fixed | `request`, `background`, `size`, `count`, as RFC 25 §2.6 lists them |
+| event rings: entries per stream, size per entry | RFC 25 §4.3 | — | fixed | 16 384 for `access`, 4 096 for `quota`; 1 KiB |
+| event spool: rotation; sync interval; high-water warning | RFC 25 §4.3, §4.6 | — | fixed | 64 MiB or one hour, whichever first; 1 s; 80% of `events.max_bytes` |
+| quota hard-refusal coalescing window | RFC 25 §4.4 | — | fixed | 60 s |
+| liveness watchdog: how long an internal loop may go without a turn before liveness fails | RFC 25 §3.5 | — | fixed | 60 s |

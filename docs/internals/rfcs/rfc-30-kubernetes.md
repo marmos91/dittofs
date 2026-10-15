@@ -238,6 +238,19 @@ pod ([RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%2
 gate traffic: a protocol pod is ready once its adapters accept clients, a
 storage pod once it has rejoined the store and holds no shard it cannot serve.
 
+The probes are RFC 23 §2.5's endpoints, unauthenticated and answering one word:
+the liveness probe is `GET /health/live`, which fails only when RFC 25 §3.5's
+watchdog does, and the readiness probe is `GET /health/ready`. Neither reads a
+condition the pod's restart would clear, so a probe never restarts a pod for a
+dependency's failure.
+
+The operator calls the management API as a service account (RFC 23 §5.1): a
+user record with role `admin`, no password and no protocol spelling, signing in
+with an API token. It needs `admin` because draining is not all it does: it
+decommissions node records (§5.3, §5.4), which RFC 23 §5.2 gives to `admin`
+only. The role grants nothing on
+files.
+
 ## 5. Lifecycle
 
 ### 5.1 Rolling upgrade

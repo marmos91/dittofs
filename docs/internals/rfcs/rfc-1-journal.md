@@ -1206,8 +1206,10 @@ failing — **MUST** be readable from one `Stats` call.
 
 The journal exports nothing itself: its dependency set excludes any metrics
 library ([§1.1](#1.1%20Non-goals)). The engine exports every `Stats` field of [§3.7](#3.7%20State%20introspection), and the
-counters below, labelled with the journal, and the per-share fields labelled with
-the share too. A metric is listed only if the journal alone knows it; the caller
+counters below. The engine exports each counter as `journal_<field>_total` —
+`written_bytes` as `journal_written_bytes_total`, `syncs` as
+`journal_syncs_total` — and each gauge as `journal_<field>`, labelled with the
+journal; per-share fields follow RFC 25's worst-n rule. A metric is listed only if the journal alone knows it; the caller
 times `WriteAt` and counts read hits and misses itself. The counters live in
 `Stats` and reset on open.
 

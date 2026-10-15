@@ -1514,13 +1514,13 @@ Metric names are shown without the deployment's prefix.
 | shards this node is primary of, and replica of | `shard_primaries`, `shard_replicas` | gauge |
 | shard records in the store; they follow shares and directories, not files | `shard_records` | gauge |
 | planned moves back to a primary the shard left within the dwell time; nonzero is a bug | `shard_bounces_total` | counter |
-| self-fences, labelled `reason` = `lease` or `clock` | `shard_self_fences_total` | counter |
 | cross-shard operations, labelled `result` = `committed`, `refused` or `timed_out` | `shard_cross_ops_total` | counter |
 | shards away from their placed node, waiting out the re-placement delay | `shard_displaced` | gauge |
 | slots per node, and the node's share of capacity, so a skew is visible | `shard_slots`, `shard_capacity_share` | gauge |
 | slots whose nodes a rebalance changed, and slots whose shards are still being handed over | `shard_slot_moves_total`, `shard_slots_pending` | counter, gauge |
 
-Forwarding and refusals by epoch are counted once, in [RFC 15 §10](rfc-15-topology.md#10.%20Observability).
+Forwarding and refusals by epoch are counted once, in [RFC 15 §10](rfc-15-topology.md#10.%20Observability);
+self-fences are counted once, in [RFC 8 §14](rfc-8-engine.md#14.%20Observability)'s `engine_self_fences_total`.
 
 Logs: a change of primary and a move batch at `Info`, with shard, old and new
 primary, epoch and reason. A node that fences itself on its lease or its clock
