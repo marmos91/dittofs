@@ -135,6 +135,14 @@ This document **MUST NOT**:
   and this RFC only references it;
 - depend on a particular cloud. Every cloud-specific piece is an option behind
   one of the two addressing modes ([§7](#7.%20Client%20addressing)).
+- specify a CSI driver. What one needs from the core is there: a volume is a
+  share or a project inside one, made by `SetProject` on the volume's empty
+  directory and limited by a quota on it ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)); `statfs` inside
+  the volume reports its own room, and a write past its quota is answered as
+  a full disk ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). `SetProject` is safe to retry, so a driver
+  that puts the share, the `ProjectID` and the path in its opaque volume ID
+  keeps no mapping of its own; deleting a volume is removing its tree, then
+  deleting its quota, which ends the project's last record.
 
 ## 2. What exists and what changes
 

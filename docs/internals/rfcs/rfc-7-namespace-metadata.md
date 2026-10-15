@@ -859,8 +859,8 @@ another, and no share's path is an ancestor of another's
 type FilesystemInfo struct {
 	Share        ShareID
 	Capabilities Capabilities // from configuration (RFC 13), fixed while mounted
-	Usage        Usage        // counted (RFC 16)
-	Quota        Quota        // the share-wide limit, if any
+	Usage        Usage        // counted (RFC 16); the share's, or its project's as below
+	Quota        Quota        // the share-wide limit, if any, or its project's as below
 }
 
 type Capabilities struct {
@@ -962,7 +962,19 @@ differs from the destination directory's is refused with `ErrCrossProject`,
 with one exception: a project's root — a directory whose `Project` differs
 from its source parent's — may move to a destination outside every project.
 A project outlives its root: its quota stays until `SetQuota` deletes it, and
-its usage reads zero once its files are gone.
+its usage reads zero once its files are gone. `SetProject` on a directory that
+is already its project's root — its `Project` differs from its parent's —
+returns that project's `ProjectID` and writes nothing, so a caller that lost
+the reply can retry it; any other directory inside a project is refused.
+
+**A project reports itself as a filesystem.** `Info` asked for a share and a
+project reports, for bytes and for files each, the share-wide quota and usage or
+the project's, whichever leaves less room under its hard limit, so `statfs`
+on a directory inside a project shows the tighter of the two, as XFS reports a
+project-quota tree. A project with no quota, and a share with none, leave no
+room bound and are never the tighter. The project's usage is the sum of its
+per-shard counters, the same read a quota check makes
+([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)).
 
 > decision: `SetProject` takes only an empty directory, so a quota cannot be
 > put on a tree that already holds files; the operator creates the project and
@@ -2471,8 +2483,9 @@ type Files interface {
 	// request came through, as for Rename; nil for a request on no open.
 	SetAttrs(ctx context.Context, id Identity, v JournalVersion, h Handle, a Attrs, open *OpenGrant) (File, error) // v: as for Namespace's mutating calls
 	// SetProject makes the empty directory h a new project's root (§2.8):
-	// ErrNotEmpty for a directory with an entry, ErrInvalid for one already in
-	// a project or not a directory, ErrPerm for a caller not privileged (§7.4).
+	// ErrNotEmpty for a directory with an entry, ErrInvalid for one inside a
+	// project it is not the root of or not a directory, ErrPerm for a caller
+	// not privileged (§7.4). On a project's root it returns that project.
 	SetProject(ctx context.Context, id Identity, v JournalVersion, h Handle) (ProjectID, error)
 	ACL(ctx context.Context, id Identity, h Handle) (ACL, error) // synthesised from Mode if none stored (§2.6)
 	SetACL(ctx context.Context, id Identity, v JournalVersion, h Handle, acl ACL, open *OpenGrant) (File, error) // ErrInvalid for a deny naming a well-known principal with no row in §2.6's table
@@ -2489,7 +2502,7 @@ type Files interface {
 }
 
 type Capacity interface {
-	Info(ctx context.Context, share ShareID) (FilesystemInfo, error)
+	Info(ctx context.Context, share ShareID, p ProjectID) (FilesystemInfo, error) // p zero: the share's alone; else the tighter of share and project (§2.8)
 	Usage(ctx context.Context, share ShareID, p Principal) (PrincipalUsage, error) // rquota, SMB quota
 }
 
@@ -2647,7 +2660,8 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) share-wide quota and grace | Set a share-wide quota, list the share's quotas and find it; set every limit to zero and assert it is gone. Exceed a `Soft` limit, then change `Soft`: assert the grace restarts; change `Hard` only: assert the grace runs on. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) limits stack | Cap a share at 10 MiB and every user at 6 MiB by a default user quota. As alice write 6 MiB: assert the next byte refused by her limit. As bob write 4 MiB: assert the next byte refused by the share's, though bob is under his. Delete alice's and bob's data, give carol her own 20 MiB quota and write as her: assert she passes the default's 6 MiB and is refused at the share's 10. |
 | [§2.8](#2.8%20A%20share%20is%20one%20filesystem) default grace is per principal | Set a default user quota with a `Soft` limit and a grace. Take alice above `Soft`, wait out the grace, then take bob above it: assert alice is refused and bob is not. Give alice her own quota with a higher `Soft` she is still above: assert her grace restarts. A build that keeps one grace on the default refuses bob at once. |
-| [§2.8](#2.8%20A%20share%20is%20one%20filesystem) projects | `SetProject` on an empty directory P with a 1 MiB quota; write 1 MiB under a subdirectory of P: assert the next byte refused while the share and the user are under theirs. Rename a file from P to outside and from outside into P, and link one across: assert each `ErrCrossProject`, which NFS answers `NFS4ERR_XDEV` and `mv` follows by copying. Rename P itself to another parent outside any project: assert allowed. `SetProject` on a directory holding a file: assert `ErrNotEmpty`; on a subdirectory of P: assert `ErrInvalid`. Race a create into an empty directory with `SetProject` on it, in both commit orders: assert either the `SetProject` is refused or the new file carries the project. |
+| [§2.8](#2.8%20A%20share%20is%20one%20filesystem) projects | `SetProject` on an empty directory P with a 1 MiB quota; write 1 MiB under a subdirectory of P: assert the next byte refused while the share and the user are under theirs. Rename a file from P to outside and from outside into P, and link one across: assert each `ErrCrossProject`, which NFS answers `NFS4ERR_XDEV` and `mv` follows by copying. Rename P itself to another parent outside any project: assert allowed. `SetProject` on a directory holding a file: assert `ErrNotEmpty`; on a subdirectory of P: assert `ErrInvalid`; on P again: assert it returns P's `ProjectID` and writes nothing. Race a create into an empty directory with `SetProject` on it, in both commit orders: assert either the `SetProject` is refused or the new file carries the project. |
+| [§2.8](#2.8%20A%20share%20is%20one%20filesystem) a project reports itself | A 10 GiB share-wide quota and a project P with a 1 GiB quota: assert `Info` for P reports P's limit and usage, and for the share alone the share's. Fill the share to 9.5 GiB outside P: assert `Info` for P reports the share's 0.5 GiB of room. Give P a file limit only: assert bytes report the share's and files P's. Delete P's quota: assert the share's. |
 
 ### 12.2 Group B — cost
 

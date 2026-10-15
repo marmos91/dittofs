@@ -1670,7 +1670,8 @@ covered, and replay re-reserves what it replays.
 > decision: quota fails open by a stated bound, not exactly. One primary sees
 > only its own reservations, so where one principal, project or share is written
 > through several shards concurrently the overshoot is at most the reservation slack each such
-> primary may hold beyond the committed total, summed over those primaries —
+> primary may hold (`min(S, f × Hard)`, so a small quota gets a small one,
+> [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) beyond the committed total, summed over those primaries —
 > what caps each primary's reservations is the bytes it has admitted whose
 > existence has not yet committed; with one shard it is zero once every
 > removal is done.

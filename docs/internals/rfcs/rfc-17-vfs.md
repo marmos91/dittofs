@@ -425,7 +425,7 @@ type Shares interface {
 
 // Volumes: what statfs, FSSTAT and SMB volume queries ask.
 type Volumes interface {
-	StatFS(ctx context.Context, id Identity, h Handle) (metadata.FilesystemInfo, error)
+	StatFS(ctx context.Context, id Identity, h Handle) (metadata.FilesystemInfo, error) // the share's, or the tighter of it and h's project (RFC 7 §2.8)
 	Quota(ctx context.Context, id Identity, h Handle, p metadata.Principal) (metadata.Usage, metadata.Quota, error) // p's own quota, else the share's default for its kind
 }
 ```
@@ -765,7 +765,13 @@ row of [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20ba
 request waits and will be granted through `LockWaitOver` (§3.2); NLM maps it to
 `NLM_BLOCKED`, SMB to a pending response. `ErrNoSpace` means no space will come
 without operator action; `ErrQuota` means a logical quota
-refused. Both are answered at once, and no other space refusal is. `ErrInvalid` means the arguments
+refused. Both are answered at once, and no other space refusal is. Every
+`ErrQuota` is a `*QuotaError` that `errors.Is(err, ErrQuota)` matches, whose
+`Scope` names the quota that refused — `QuotaShare`, `QuotaProject`,
+`QuotaUser` or `QuotaGroup`, the first exceeded in that order. A share-wide or
+project quota is the volume a client sees, its room what `StatFS` reports, so
+adapters answer it as no space; a user or group quota is answered as a quota
+exceeded (RFC 21, RFC 22). `ErrInvalid` means the arguments
 cannot be honoured as given — an overlapping copy or clone within one file, a
 clone longer than `clone_max_len` (§5.9), or a deny ACL entry naming a
 well-known principal with no row in
@@ -1273,12 +1279,14 @@ engine refuses a write for quota.
   does a write that fails. A reservation is volatile: after a crash the journal
   re-applies the writes and their charge ([RFC 8](rfc-8-engine.md)).
 - **Overshoot bound.** A primary sees its own reservations, not other primaries'.
-  Each primary lets a principal, project or share hold at most `S` bytes reserved and
-  uncommitted (the reservation slack, a setting of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)); a write past it waits for a
+  Each primary lets a principal, project or share hold at most its **slack**
+  reserved and uncommitted: `min(S, f × Hard.Bytes)`, where `S` and the
+  fraction `f` are settings of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings), so a small quota's slack is small; a write past it waits for a
   commit or returns `ErrDelay`. A principal writing through `k` primaries at once
-  can therefore exceed its hard limit by at most `(k − 1) × S`, plus what
-  transactions committing concurrently add, and so can a share writing through
-  `k` primaries, under the same bound. With one primary, only the latter.
+  can therefore exceed its hard limit by at most `(k − 1) ×` its slack, plus what
+  transactions committing concurrently add, and so can a project or a share
+  writing through `k` primaries, under the same bound. With one primary, only
+  the latter.
 - **Soft limits.** A quota's soft limit and grace time
   ([RFC 16](rfc-16-metadata-store.md)) are enforced here too. Crossing the
   advisory threshold or the soft limit emits a quota event (§3.3) and refuses
@@ -1548,7 +1556,14 @@ engine's spans. No share label on per-operation metrics ([RFC 16 §8.1](rfc-16-m
     is unchanged across a shard-epoch raise that moves nothing (§5.8); a service
     that caches the verifier per process passes the last and fails the others;
   - writers through `k` primaries overshoot a hard limit by no more than §5.6's
-    bound, counted per run;
+    bound, counted per run, on a 1 GiB project quota as on a 1 TiB one: an
+    installation slack applied to the small quota unscaled fails it;
+  - a write refused by a share-wide, project, user and group quota in turn
+    returns a `*QuotaError` naming each scope, and with two of them exceeded
+    names the first in §4.3's order;
+  - `StatFS` on a handle inside a project with a quota tighter than the
+    share's reports the project's limit and usage, and the share's once the
+    project's quota is deleted;
   - an event sink that blocks does not slow an operation, and its drops are
     counted;
   - for each of lock, unlock, test-lock, layout-get and watch, reached both by
