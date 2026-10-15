@@ -548,7 +548,10 @@ one `protocol` node's memory; a client that loses the node signs in again.
   response **MUST** set `SMB2_NEGOTIATE_SIGNING_REQUIRED`, so every client
   signs from session setup on. After a session is set up, every request on it
   **MUST** be signed or encrypted, and one that is neither is
-  `STATUS_ACCESS_DENIED`. There is no per-share signing setting: SMB2 cannot
+  `STATUS_ACCESS_DENIED`. A request whose signature fails verification is
+  answered `STATUS_ACCESS_DENIED` on its message ID too, and the connection
+  stays open (MS-SMB2 3.3.5.2.4): it is never dropped unanswered, which would
+  leave the client waiting out its timeout. There is no per-share signing setting: SMB2 cannot
   tell a client that one share needs signing and another does not, so a
   per-share requirement could only refuse an unsigned client's every request on
   that share.
@@ -1295,6 +1298,24 @@ that against every protocol; this section maps the SMB request.
 
 - `LOCK` elements map onto RFC 14 locks under the open: shared or exclusive, a
   64-bit range.
+- **A `LOCK` is one service call, however many elements it carries.** Its
+  elements are all locks or all unlocks, as the first element's flags say
+  (MS-SMB2 3.3.5.14); every element's flags are checked when the arguments are
+  decoded, and a request mixing the two, or with a flag combination MS-SMB2
+  2.2.26.1 does not list, is `STATUS_INVALID_PARAMETER` before any range is
+  touched. The handler then makes one `Lock` or one `Unlock` call with every
+  element's range in order
+  ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)):
+  - a lock list is all or nothing: if any range cannot be granted, the service
+    releases the ranges it took for this request before answering, and the
+    request is answered as that range's conflict (MS-SMB2 3.3.5.14.2);
+  - an unlock list is applied in order and stops at the first range not held,
+    answered `STATUS_RANGE_NOT_LOCKED`; the ranges unlocked before it stay
+    unlocked (MS-SMB2 3.3.5.14.1);
+  - a lock list of more than one element in which any element lacks
+    `FAIL_IMMEDIATELY` is `STATUS_INVALID_PARAMETER` (MS-SMB2 3.3.5.14.2), so
+    only a single-element `LOCK` ever waits.
+
 - A conflicting lock asked to fail at once (`FAIL_IMMEDIATELY`) is
   `STATUS_LOCK_NOT_GRANTED`. Without that flag the request goes async, as a
   break does ([§6.3](#6.3%20Breaks)), and its waiter has RFC 14's one
@@ -1321,6 +1342,14 @@ that against every protocol; this section maps the SMB request.
   (MS-FSA 2.1.5.7; [§6.3](#6.3%20Breaks)), and waits pending while it does.
 - Unlocking a range not held is `STATUS_RANGE_NOT_LOCKED`.
 - A zero-length lock conflicts with nothing and is held.
+
+> decision: a mixed lock-and-unlock array is refused before any range is taken,
+> where MS-SMB2 lets a lock array take its earlier ranges and keep them when an
+> unlock element fails it. Checking every element at decode keeps the call all
+> or nothing, which the one-call rule needs; the client sees the same
+> `STATUS_INVALID_PARAMETER` either way and only the earlier ranges' state
+> differs. Revisit if a client is shown to send such arrays and depend on the
+> ranges taken before the bad element.
 
 ## 8. Change notification
 
@@ -1931,7 +1960,7 @@ restore; here they are the share's read-only snapshots
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §3.1 dialects | An SMB1-only and a 2.0.2-only negotiate are refused; a 3.1.1 client gets SHA-512 and its first shared cipher. | an SMB1 fallback left in |
-| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up an anonymous session, and a guest one, which RFC 18 §3.6 makes anonymous: assert `TREE_CONNECT` to a data share is `STATUS_ACCESS_DENIED` and to `IPC$` succeeds. | a per-share signing flag, unsigned requests accepted, or a keyless session reaching data |
+| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up an anonymous session, and a guest one, which RFC 18 §3.6 makes anonymous: assert `TREE_CONNECT` to a data share is `STATUS_ACCESS_DENIED` and to `IPC$` succeeds. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a keyless session reaching data, or a bad signature dropped unanswered |
 | §4.4 client record | From one machine, sign in as alice and then bob on two connections with one `ClientGuid`: assert both sessions succeed under one client record, and that bob's durable reconnect naming alice's FileId is refused. | a principal kept on the SMB client record, or opens checked against it |
 | §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
 | §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |
@@ -1954,7 +1983,7 @@ restore; here they are the share's read-only snapshots
 | §3.3 multi-session host through a freeze *(1 node)* | One connection carries 40 sessions, each writing its own 4 GiB profile disk at queue depth 8 with 64 KiB writes. Freeze the share for 20 s, then stall the metadata store for 30 s: assert every write held is answered success after each, none `STATUS_INSUFFICIENT_RESOURCES`, `vfs_held_calls` past 256 during the hold, and `vfs_hold_refusals_total{protocol="smb"}` unchanged. | a per-connection cap that fails a multi-session host's writes during a planned freeze or a short stall |
 | §6.5 replay | smbtorture `smb2.replay`; replay a `CREATE` with the same `CreateGuid` through another node. On a persistent open, send a `LOCK` with a lock sequence, fail the primary over before the reply, and replay it; assert success and one lock held. On two channels of one session, send two different `WRITE`s with the same message ID; assert both applied. Hold a `WRITE` under channel sequence 1 at a clone; on a second channel replay it under sequence 2: assert the replay `STATUS_FILE_NOT_AVAILABLE` while the original is held, a `READ` under 2 served meanwhile, and the replay applied once when sent again after the original ends. Send a `WRITE` and a `READ` under sequence 0 after `ChannelSeq` is 2: assert the `WRITE` refused and the `READ` served. | a lock sequence held only in memory, replays matched by message ID, a replay run beside its original, or a stale `READ` refused |
 | §4.3 session after a restart *(1 node)* | Hold a persistent open made on the node's first session after a start; restart the node and, before the client reconnects, set up a session, which takes the same session ID; drop that session's connection: assert the persistent open's timeout does not start, and the client's reconnect then succeeds. | an open named by a session ID a new process reuses |
-| §7 locks | smbtorture `smb2.lock`; an SMB lock refuses an NFSv3 write across it. Client A holds an RW lease and a local lock; client B sends `LOCK` over the range: assert A's lease is broken and its lock reaches the server before B is answered. Repeat with A holding an R lease; assert it is broken to none before B is granted. | locks held in the adapter, or a lock request that does not break read or write caching |
+| §7 locks | smbtorture `smb2.lock`; an SMB lock refuses an NFSv3 write across it. Client A holds an RW lease and a local lock; client B sends `LOCK` over the range: assert A's lease is broken and its lock reaches the server before B is answered. Repeat with A holding an R lease; assert it is broken to none before B is granted. A `LOCK` of three `FAIL_IMMEDIATELY` elements whose third conflicts: assert `STATUS_LOCK_NOT_GRANTED` and none of the three held. An unlock of three ranges whose second is not held: assert `STATUS_RANGE_NOT_LOCKED`, the first unlocked and the third still held. A `LOCK` of two elements without `FAIL_IMMEDIATELY`: assert `STATUS_INVALID_PARAMETER`. | locks held in the adapter, a lock request that does not break read or write caching, or a failed multi-element `LOCK` leaving earlier ranges held |
 | §7 waiting locks | Client B waits on client A's lock; A holds it 5 minutes, then releases: assert B's lock granted and its request completed. B waits again; send `CANCEL` racing A's unlock, 10^3 times: assert each request is either `STATUS_CANCELLED` with no lock held by B afterwards, or success with the lock held. | a waiting lock answered on a timer, or a cancel answered before `CancelLock` |
 | §6.3 handle before sharing, NFS | Client A opens with deny-write under an RWH lease and closes its handle locally; an NFSv4 client opens for write and an NFSv3 client writes. Assert each is told to retry while A's handle caching is broken, then succeeds. | an NFS request refused by a deny mode only a handle cache held |
 | §8 notify | smbtorture `smb2.notify`; overflow returns `STATUS_NOTIFY_ENUM_DIR`; a change made over NFS is reported. With a subtree below the watched directory placed in its own shard, a create in that subtree completes a recursive watch `STATUS_NOTIFY_ENUM_DIR`; create a new shard below the directory after registration and assert a create in it does the same. On a `posix` share, over NFS, create `a:b` and a non-UTF-8 name in the watched directory: assert the first reported as `a` U+F022 `b` and the second not reported. | a recursive watch that sees only its own primary's changes, or a notification naming a file as no listing does |

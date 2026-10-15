@@ -1263,6 +1263,14 @@ client, are RFC 14's.
   from the floating address the host's requests arrived on, never from a
   node's own address, because clients match a callback against the server
   they sent the lock to and drop one from any other address.
+- **Callbacks are calls the server makes, on its own connection.** A callback
+  is an RPC to the host's NLM service, not a reply on the connection that
+  carried the request, which may have closed by the time a lock is granted.
+  The adapter finds the service's port through the host's port mapper
+  (`GETPORT`, NLM version 4, TCP) and connects to it from the floating address
+  ([RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver)).
+  A host whose port mapper or NLM service cannot be reached is a callback that
+  failed, and the grant is resent as below.
 
 > decision: binding a host to its source address stops one host from
 > releasing another's locks by naming it, which is all NLM's design allows.
@@ -1888,7 +1896,9 @@ Authentication and principal mapping are
   created it, and is not shared or stored. After a `protocol` node loss, the
   client's next call on the old handle is answered `RPCSEC_GSS_CREDPROBLEM`,
   and it establishes a new context;
-- the sequence window is 128;
+- the sequence window is 128. A call whose sequence number falls outside the
+  window is dropped unanswered, and one whose verifier checksum fails is
+  rejected with `RPCSEC_GSS_CREDPROBLEM` (RFC 2203 §5.3.3.1); neither runs;
 - `krb5` (authentication), `krb5i` (plus integrity) and `krb5p` (plus privacy,
   i.e. encryption) are served; the share's minimum level is
   [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)'s
@@ -1927,7 +1937,7 @@ Authentication and principal mapping are
 | N12 | A stateid's `other` holds at least 64 random bits; I/O under an open or lock stateid is served only to the open's principal; I/O under a delegation stateid to any principal of the holding client, authorised afresh. |
 | N13 | A `RECLAIM_COMPLETE` closes reclaim for one (client, shard, grace instance); every failover or restart, a single node's included, opens a new instance, never a repeated one, and is signalled by `SEQ4_STATUS_RESTART_RECLAIM_NEEDED`, or to an NFSv4.0 client by `NFS4ERR_STALE_CLIENTID`. |
 | N14 | A lock request from another client recalls a read or write delegation before the lock is decided, and meanwhile is answered retry or blocked, never denied; a delegation is never a handle grant. |
-| N15 | An NLM host is its name and source address; NLM callbacks leave from the floating address the host used. |
+| N15 | An NLM host is its name and source address; NLM callbacks are calls to the host's NLM service, on a connection the server opens from the floating address the host used. |
 | N16 | Audit entries are read or changed only by an administrator, on every minor version; the ctime NFS reports moves on every change. |
 | N17 | A stability reply waits for the journal sync of its range and for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's; a capacity refusal is answered as RFC 8 §10.2 classifies it, a transient one retry-later for as long as it lasts, never "no space" because a deadline passed; only a logical quota or a permanent cause is answered at once. |
 | N18 | The owner string, verifier, creating principal, state protection, back-channel node, session holders and last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `OwnerSeq`. |
@@ -1988,7 +1998,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.3 lock recall | Client A holds a write delegation; client B sends an NLM lock and, separately, an NFSv4 `LOCK` over a range A locked locally. Assert `CB_RECALL` before B's answer and A's lock sent to the server; once the recall ends, B's NFSv4 `LOCK` is `NFS4ERR_DENIED`, a non-blocking NLM lock `NLM4_DENIED`, and a blocking NLM lock stays `NLM4_BLOCKED` behind A's lock and is sent `NLM4_GRANTED` when A unlocks. Repeat with A holding a read delegation and no local lock; assert `CB_RECALL` before B is granted. While A delays its `DELEGRETURN`, assert B's NFSv4 `LOCK` answered `NFS4ERR_DELAY`, a blocking NLM lock `NLM4_BLOCKED` and then `NLM4_GRANTED` once A returns, and a non-blocking one `NLM4_DENIED_GRACE_PERIOD` — never `NFS4ERR_DENIED` or `NLM4_DENIED`. | a lock request that does not recall, recalls write delegations only, or is answered "held" or "blocked" with no waiter while the recall runs |
 | §5.3 handle-cached deny mode | An SMB client opens with deny-write under an RWH lease and closes its handle locally. An NFSv4 client opens for write, and an NFSv3 client writes: assert each `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX` while the break runs, then succeeds. Repeat with the SMB handle still in use: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES` only after the break. | an NFS request refused by a deny mode only a handle cache held |
 | §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLM4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |
-| §6.1 host binding | Host A locks a range. From another address, send `NLM4_FREE_ALL` and `NLM4_UNLOCK` naming A's `caller_name`; assert A's lock still held. Block a lock of A's, release it, and capture `NLM4_GRANTED`: assert its source is the floating address A used. | a host identified by its name alone, or callbacks from a node address |
+| §6.1 host binding | Host A locks a range. From another address, send `NLM4_FREE_ALL` and `NLM4_UNLOCK` naming A's `caller_name`; assert A's lock still held. Block a lock of A's, release it, and capture `NLM4_GRANTED`: assert its source is the floating address A used. Block a lock of A's again, close the connection that carried it, then release: assert `NLM4_GRANTED` still arrives, on a connection the server opened to A's NLM port. | a host identified by its name alone, callbacks from a node address, or a grant sent only on the request's connection |
 | §6.1 waiter lifetime | Host B blocks on host A's lock; hold A's lock for 5 minutes, then release; assert B is sent `NLM4_GRANTED`. Block again and send `NLM4_CANCEL` racing A's unlock, 10^3 times; assert every time either the cancel answered with no lock held by B afterwards, or B granted and told. Drop B's acknowledgements of `NLM4_GRANTED` for 5 minutes; assert it is resent throughout, B still holds the lock and host C's conflicting lock stays `NLM4_BLOCKED`; then let an acknowledgement through and assert the resending stops. Have B refuse the grant; assert the lock released and C granted. Remove the share while C waits; assert C's waiter gone and its next request `NLM4_STALE_FH`. | a waiter dropped on an adapter timer, a cancel answered before the waiter is gone, or a grant released for a silence |
 | §6.1 NLM grace | Fail over a shard in which one NLM host and one NFSv4.1 client held locks; the NFSv4.1 client sends `RECLAIM_COMPLETE`. Assert grace runs its whole lease period. | an NLM host counted finished by a guess |
 | §5.5, §6.1 conflict holder | Hold a range by NLM, then by an SMB byte-range lock; from an NFSv4 client send `LOCK` and `LOCKT` over it. Decode the reply bytes: `NFS4ERR_DENIED`, client ID 0, owner length 0, for all four. Then `NLM4_TEST` against an NFSv4 lock: `svid` 0, `oh` length 0. | an internal owner identity encoded as the holder |
