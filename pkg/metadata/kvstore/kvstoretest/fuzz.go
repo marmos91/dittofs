@@ -24,6 +24,8 @@ func FuzzNamespace(f *testing.F, open Opener) {
 		{opMkdir, 0, 0, 0, opCreate, 1, 1, 0, opRename, 0, 0, 4},                  // a directory moved into itself
 		{opCreate, 0, 0, 0, opCreate, 0, 1, 0, opRename, 0, 0, 1},                 // a file renamed over a file
 		{opMkdir, 0, 0, 0, opMkdir, 0, 1, 0, opRename, 0, 0, 1},                   // a directory over an empty one
+		{opMkdir, 0, 0, 0, opCreate, 0, 1, 0, opRename, 0, 0, 1},                  // a directory over a file
+		{opCreate, 0, 0, 0, opMkdir, 0, 1, 0, opRename, 0, 0, 1},                  // a file over a directory
 		{opCreate, 0, 0, 0, opLink, 0, 0, 1, opUnlink, 0, 0, 0},                   // a link, then one name goes
 		{opMkdir, 0, 0, 0, opCreate, 1, 0, 0, opUnlink, 0, 0, 0},                  // a directory that is not empty
 		{opMkdir, 0, 0, 0, opMkdir, 1, 1, 0, opRename, 0, 0, 8, opChmod, 1, 0, 0}, // moving a parent under its child
@@ -98,13 +100,15 @@ func runNamespaceOps(t *testing.T, open Opener, ops []byte) {
 	for step := 0; step+4 <= len(ops) && step/4 < maxOps; step += 4 {
 		kind, x, y, z := ops[step]%opKinds, int(ops[step+1]), int(ops[step+2]), int(ops[step+3])
 		var desc string
-		var want bool
+		var want merrs.ErrorCode // the code the operation must fail with; zero: it succeeds
 		var err error
 		switch kind {
 		case opCreate, opMkdir:
 			d, name := dirs[x%len(dirs)], opNames[y%len(opNames)]
 			desc = fmt.Sprintf("create %q dir=%v in %v", name, kind == opMkdir, d.id)
-			want = d.entries[name] == nil
+			if d.entries[name] != nil {
+				want = merrs.ErrAlreadyExists
+			}
 			nf := regular(0o644)
 			if kind == opMkdir {
 				nf = directory(0o755)
@@ -112,7 +116,7 @@ func runNamespaceOps(t *testing.T, open Opener, ops []byte) {
 			var h entity.Handle
 			var made entity.File
 			h, made, err = ns.Create(ctx, fx.admin, d.h, []byte(name), nf)
-			if err == nil && want {
+			if err == nil && want == 0 {
 				n := &mnode{dir: kind == opMkdir, links: 1, id: made.ID, h: h}
 				if n.dir {
 					n.entries, n.parent = map[string]*mnode{}, d
@@ -128,9 +132,11 @@ func runNamespaceOps(t *testing.T, open Opener, ops []byte) {
 			}
 			target, d, name := plain[x%len(plain)], dirs[y%len(dirs)], opNames[z%len(opNames)]
 			desc = fmt.Sprintf("link %v as %q in %v", target.id, name, d.id)
-			want = d.entries[name] == nil
+			if d.entries[name] != nil {
+				want = merrs.ErrAlreadyExists
+			}
 			err = ns.Link(ctx, fx.admin, d.h, []byte(name), target.h)
-			if err == nil && want {
+			if err == nil && want == 0 {
 				target.links++
 				d.entries[name] = target
 			}
@@ -138,9 +144,14 @@ func runNamespaceOps(t *testing.T, open Opener, ops []byte) {
 			d, name := dirs[x%len(dirs)], opNames[y%len(opNames)]
 			desc = fmt.Sprintf("unlink %q in %v", name, d.id)
 			e := d.entries[name]
-			want = e != nil && (!e.dir || len(e.entries) == 0)
+			switch {
+			case e == nil:
+				want = merrs.ErrNotFound
+			case e.dir && len(e.entries) > 0:
+				want = merrs.ErrNotEmpty
+			}
 			_, err = ns.Unlink(ctx, fx.admin, d.h, []byte(name))
-			if err == nil && want {
+			if err == nil && want == 0 {
 				delete(d.entries, name)
 				drop(e)
 			}
@@ -149,18 +160,23 @@ func runNamespaceOps(t *testing.T, open Opener, ops []byte) {
 			dd, dn := dirs[(z>>2)%len(dirs)], opNames[z%len(opNames)]
 			desc = fmt.Sprintf("rename %q in %v to %q in %v", sn, sd.id, dn, dd.id)
 			s, d := sd.entries[sn], dd.entries[dn]
+			// The rules in the order the store applies them.
 			switch {
-			case s == nil, s.dir && dd.under(s):
-				want = false
+			case s == nil:
+				want = merrs.ErrNotFound
 			case d == s:
-				want = true // two names of one file, or one name to itself: nothing changes
-			case d != nil && (d.dir != s.dir || d.dir && len(d.entries) > 0):
-				want = false
-			default:
-				want = true
+				// two names of one file, or one name to itself: nothing changes
+			case d != nil && s.dir && !d.dir:
+				want = merrs.ErrNotDirectory
+			case d != nil && !s.dir && d.dir:
+				want = merrs.ErrIsDirectory
+			case s.dir && sd != dd && dd.under(s):
+				want = merrs.ErrInvalidArgument
+			case d != nil && d.dir && len(d.entries) > 0:
+				want = merrs.ErrNotEmpty
 			}
 			_, err = ns.Rename(ctx, fx.admin, sd.h, []byte(sn), dd.h, []byte(dn))
-			if err == nil && want && d != s {
+			if err == nil && want == 0 && d != s {
 				if d != nil {
 					delete(dd.entries, dn)
 					drop(d)
@@ -174,22 +190,39 @@ func runNamespaceOps(t *testing.T, open Opener, ops []byte) {
 		case opChmod:
 			all := append(slices.Clone(dirs), plain...)
 			n := all[x%len(all)]
-			desc = fmt.Sprintf("chmod %v", n.id)
-			want = true
-			_, err = files.SetAttrs(ctx, fx.admin, n.h, entity.Attrs{}.WithMode(uint32(0o700|y&0o77)))
+			mode := uint32(0o700 | y&0o77)
+			desc = fmt.Sprintf("chmod %v to %o", n.id, mode)
+			_, err = files.SetAttrs(ctx, fx.admin, n.h, entity.Attrs{}.WithMode(mode))
+			if err == nil {
+				if got, gerr := files.Get(ctx, fx.admin, n.h); gerr != nil || got.Mode&0o7777 != mode {
+					t.Fatalf("step %d, %s: mode %o after it, %v", step/4, desc, got.Mode&0o7777, gerr)
+				}
+			}
 		}
-		if (err == nil) != want {
-			t.Fatalf("step %d, %s: error %v, want success %v", step/4, desc, err, want)
+		if code := codeOf(err); code != want {
+			t.Fatalf("step %d, %s: error %v, want code %d (0: success)", step/4, desc, err, want)
 		}
 		compareTree(t, fx, dirs, plain, step/4, desc)
 	}
-	if err := fx.s.Check(ctx); err != nil {
-		t.Fatal(err)
+	// The fixture's cleanup runs the store's Check.
+}
+
+// codeOf is err's store error code: zero for no error, and -1 for an error
+// that is not a store error, which no operation here may return.
+func codeOf(err error) merrs.ErrorCode {
+	if err == nil {
+		return 0
 	}
+	var se *merrs.StoreError
+	if errors.As(err, &se) {
+		return se.Code
+	}
+	return -1
 }
 
 // compareTree checks every model directory's entries against the store's
-// listing, and every node's link count against its record.
+// listing, every node's link count against its record, and every
+// directory's parent.
 func compareTree(t *testing.T, fx *fs, dirs, plain []*mnode, step int, desc string) {
 	t.Helper()
 	ns, files := fx.s.Namespace(), fx.s.Files()
@@ -211,6 +244,9 @@ func compareTree(t *testing.T, fx *fs, dirs, plain []*mnode, step int, desc stri
 		f, err := files.Get(ctx, fx.admin, d.h)
 		if err != nil {
 			t.Fatalf("step %d, %s: get %v: %v", step, desc, d.id, err)
+		}
+		if d.parent != nil && f.Parent != d.parent.id {
+			t.Fatalf("step %d, %s: directory %v has parent %v, model %v", step, desc, d.id, f.Parent, d.parent.id)
 		}
 		if lc := f.LinkCount(); lc != uint64(2+d.subdirs()) {
 			t.Fatalf("step %d, %s: directory %v link count %d, model %d", step, desc, d.id, lc, 2+d.subdirs())
@@ -328,13 +364,18 @@ func testConcurrentNamespace(t *testing.T, kvo Opener) {
 			t.Errorf("%v: Nlink %d, %d entries", got.ID, got.Nlink, names[got.ID])
 		}
 	}
-	must(t, fx.s.Check(ctx))
+	// The fixture's cleanup runs the store's Check.
 }
 
 // expected is an error an operation meets on its own merits: a name taken
-// or missing, a directory not empty, a move under itself, a handle whose
-// file another writer removed. Anything else is a bug.
+// or missing, a directory not empty, a move under itself, a rename across
+// kinds, a handle whose file another writer removed. Anything else, an
+// access, I/O or space error among them, is a bug under contention.
 func expected(err error) bool {
-	var se *merrs.StoreError
-	return errors.As(err, &se) || errors.Is(err, entity.ErrStale)
+	switch codeOf(err) {
+	case merrs.ErrAlreadyExists, merrs.ErrNotFound, merrs.ErrNotEmpty, merrs.ErrInvalidArgument,
+		merrs.ErrIsDirectory, merrs.ErrNotDirectory:
+		return true
+	}
+	return errors.Is(err, entity.ErrStale)
 }
