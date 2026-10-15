@@ -14,6 +14,7 @@ depends_on:
   - "[[rfc-20-adapters]]"
   - "[[rfc-21-nfs]]"
   - "[[rfc-22-smb]]"
+  - "[[rfc-23-control-plane]]"
   - "[[rfc-26-catalog-backups]]"
 aliases:
   - RFC 18
