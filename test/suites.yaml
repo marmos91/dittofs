@@ -44,6 +44,7 @@ suites:
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
       - .github/scripts/run-e2e-selftest.sh    # the e2e wrapper against failing, hung and false-green stand-ins
+      - go test ./test/harness/...              # dt's own tests
   # Every shell script: the *.sh files, and the executables without an extension whose first
   # line is a shell's shebang.
   shellcheck:

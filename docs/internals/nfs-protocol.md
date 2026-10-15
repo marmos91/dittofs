@@ -544,9 +544,9 @@ dittofs/
 1. TCP connection accepted
 2. RPC message parsed (`rpc/message.go`)
 3. Program/version/procedure validated
-4. Auth context extracted (`dispatch.go:ExtractAuthContext`)
+4. Credentials copied into a handler context (`middleware.ExtractHandlerContext` for v3, `ExtractV4HandlerContext` for v4)
 5. Procedure handler dispatched
-6. Handler calls repository methods
+6. Handler builds the `*metadata.AuthContext` with share permission and squashing applied (`BuildAuthContextWithMapping` for v3, `buildV4AuthContext` for v4), then calls repository methods
 7. Response encoded and sent
 
 ### Critical Procedures

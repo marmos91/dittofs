@@ -1152,7 +1152,8 @@ planned backend for multi-node deployments; it is not implemented yet.
 
 A store row naming `memory`, `sqlite` or `postgres` (types earlier releases
 accepted) fails with `unsupported metadata store type "<x>": badger is the only
-metadata store type`; recreate it as `badger`. Filesystem capabilities and
+metadata store type`; see the
+[metadata store migration guide](metadata-store-migration.md). Filesystem capabilities and
 limits are supplied by the metadata store and protocol implementation, not by a
 config-file capabilities block.
 

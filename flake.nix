@@ -252,13 +252,6 @@
             echo "PostgreSQL container not found"
           fi
 
-          # Also clean up content store
-          if [ -d "/tmp/dittofs-content-postgres" ]; then
-            echo "Cleaning up content store..."
-            rm -rf /tmp/dittofs-content-postgres 2>/dev/null \
-              || sudo rm -rf /tmp/dittofs-content-postgres
-          fi
-
           echo "Cleanup complete"
         '';
 

@@ -290,7 +290,7 @@ func NewAlreadyExistsError(path string) *StoreError {
 }
 
 // NewConflictError creates a Conflict error.
-// op is the calling operation name (e.g., "memory UpdateAttrs",
+// op is the calling operation name (e.g.,
 // "badger UpdateAttrs"); message is the specific reason (e.g.,
 // "transaction conflict, retries exhausted").
 func NewConflictError(op, message string) *StoreError {
