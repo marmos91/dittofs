@@ -128,12 +128,11 @@ Appendix A is prior art, Appendix B where the current code differs.
 
 1. `SETATTR` of `mode` reaches the chokepoint as a `chmod` on a file with a
    stored ACL.
-2. RFC 7's merge rewrites the owner, group and everyone entries and limits
-   every named allow entry to the new group bits
-   ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)); bob's
+2. RFC 7's merge rewrites the owner and everyone entries and limits every
+   named allow entry to the new group bits, which are their mask (§4.3); bob's
    deny is untouched.
-3. The stored `Mode` is the mode the merged ACL implies (§4.2), written in the
-   same transaction.
+3. The stored `Mode` is the mode the merged ACL implies for its owner (§4.2),
+   written in the same transaction.
 
 Outcome: `ls -l` and the Security tab show the same permission, and the deny
 survives a `chmod`.
@@ -418,7 +417,9 @@ as a null DACL.
 The access list is walked in **stored order**, and the stored order is the order
 the client sent. The server **MUST NOT** reorder, merge or deduplicate entries
 a client set: a later allow after a deny means something different from the
-same allow before it, and the client chose.
+same allow before it, and the client chose. The one exception is §6.3's fold of
+an owner or group pair into the one `OWNER@` or `GROUP@` entry it spells, which
+changes no decision on the file or on any file created below it.
 
 *Canonical order* — explicit deny, explicit allow, inherited deny, inherited
 allow, each inherited group in its order of inheritance — is what Windows tools
@@ -433,7 +434,11 @@ The audit list has no order that matters: an audit entry never decides.
 A set **MUST** be refused whole, with `ErrInvalid`, and nothing stored, when:
 
 - either list holds more than 128 entries, or its encoding is larger than
-  64 KiB (both fixed values);
+  64 KiB (both fixed values). An entry is counted as many times as either
+  protocol spells it: an effective, inheritable `OWNER@` or `GROUP@` entry
+  counts two, being two entries in a security descriptor (§6.3). So a list
+  stored within the limit is always within it on the wire, and writing back
+  what was read never exceeds it;
 - an entry is of a kind §2.2 does not hold;
 - an entry's principal cannot be resolved to a principal ([RFC 18](rfc-18-identity.md));
 - a deny names a well-known principal with no row in RFC 7's table.
@@ -483,10 +488,12 @@ after the service has admitted the call and the identity is resolved:
    ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)).
 8. **The flags** of [RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)
    remove what they refuse.
-9. **Intersect with the ceiling**: the granted set `G` is what steps 3–8
-   granted, within `C`. `Granted` returns `G`. `Authorize` succeeds exactly
-   when every right in `want` is in `G`, and is refused `ErrAccess` otherwise;
-   with maximum allowed, as §3.4 says.
+9. **Intersect with the ceiling**: the granted set `G` is what steps 3 and
+   5–8 granted, within `C`, plus the system-security right when step 4 granted
+   it. `C` holds only entry rights, so the system-security right does not pass
+   through it; the ceiling governs it through §3.5 instead. `Granted` returns
+   `G`. `Authorize` succeeds exactly when every right in `want` is in `G`, and
+   is refused `ErrAccess` otherwise; with maximum allowed, as §3.4 says.
 10. **Select audit events** for the outcome (§3.7).
 
 ![The ten steps one request runs, shown for bob's SMB open asking GENERIC_WRITE on release/notes.txt: mapped to FILE_GENERIC_WRITE, ceiling read-write, not privileged, not the owner, the walk denies write data at bob's deny entry, the parent and flags change nothing, the request is refused, and an audit entry selects the refusal](img/rfc19-evaluation.svg)
@@ -571,8 +578,13 @@ access check decides. The open's grant, stored with the open
 ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), is `G`.
 
 NFS `ACCESS`, SMB's `MaximalAccess` and the `MxAc` create context answer `G` too
-([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), computed without the privileged
-flag ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)).
+([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)). NFS `ACCESS` answers it with the
+privileged flag, as every later operation is authorised
+([RFC 21 §8.1](rfc-21-nfs.md#8.1%20Supported)): unsquashed root asking `READ` of
+another user's mode-000 file is told yes, because the read that follows is
+granted. SMB's `MaximalAccess` and `MxAc` are computed without the flag, even on
+a backup-intent open
+([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)).
 
 ### 3.5 Privilege and the system-security right
 
@@ -586,8 +598,26 @@ ownership or by privilege alone. Over SMB a request for it without `admin` is
 `STATUS_PRIVILEGE_NOT_HELD`
 ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)); over NFS, `sacl`
 and the audit entries of `acl` are gated the same way
-([RFC 21 §8.1](rfc-21-nfs.md#8.1%20Supported)). Under an admission narrowed to
-read-only, an administrator may read the audit list and a set of it is refused.
+([RFC 21 §8.1](rfc-21-nfs.md#8.1%20Supported)). `MAXIMUM_ALLOWED` never
+grants it: it is in `G` only when asked for explicitly, as on Windows.
+
+The right is granted at step 4 and added to `G` at step 9 outside the ceiling,
+so an open that asked for it holds it in its grant
+([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) whatever the ceiling. The
+ceiling still decides what it may do. Reading the audit list needs the right
+alone. **Writing** it — an SMB set naming the SACL, a `SETATTR` of `sacl`, or one
+of `acl` carrying audit entries — needs the right and also write the ACL in the
+ceiling `C` of the call that writes, which a read-only admission removes (§3.2).
+So under an admission narrowed to read-only, an administrator may read the audit
+list, and a set of it is refused `ErrAccess`. `C` is taken per call, so an open
+made before the admission narrowed cannot write the audit list after it.
+
+> decision: the system-security right bypasses the ceiling's intersection,
+> because the ceiling is made of entry rights and no row of §3.2 could hold it
+> without becoming an entry. Its two limits are kept elsewhere: who may hold it
+> at all is the `admin` flag, which only the admin level sets, and whether it
+> may write is the call's ceiling. Overturned if a level below admin is ever
+> allowed to read the audit list.
 
 ### 3.6 Deleting and renaming
 
@@ -608,7 +638,10 @@ audit or alarm entry selects a decision when:
 
 - it names the caller, matched as the walk matches (§2.3);
 - its mask holds at least one right the request asked for, after generic
-  mapping;
+  mapping — for a request with maximum allowed (§3.4), the rights it asked for
+  are, when it was granted, `G` and every right it asked explicitly; when it was
+  refused, every right it asked explicitly, or every entry right when it asked
+  none;
 - it carries the successful-access flag and the decision granted, or the
   failed-access flag and the decision refused.
 
@@ -630,7 +663,16 @@ entry has effect only while object-access auditing is on.
 RFC 7 requires the two to agree after every transaction and gives the `chmod`
 merge ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)).
 This section defines the two functions RFC 7 names but does not spell out —
-`ACLFromMode` and `ACL.Mode` — and how inheritance is computed.
+`ACLFromMode` and `ACL.Mode` — and how inheritance is computed. `ACL.Mode` and
+RFC 7's merge `ACL.WithMode` take the file's current owner `o`: ownership is a
+field of the File, not of the ACL (§2.1), and the same entries imply different
+modes on files with different owners — `allow alice READ_DATA` is 0400 on a file
+alice owns and 0040 on one bob owns.
+
+```go
+func (a ACL) Mode(owner Principal) uint32                // the nine bits a implies on a file owner owns
+func (a ACL) WithMode(mode uint32, owner Principal) ACL  // RFC 7's chmod merge, as §4.3 states it
+```
 
 ### 4.1 The ACL a mode implies
 
@@ -673,16 +715,18 @@ reading the Security tab is told a rule nothing enforces.
 
 ### 4.2 The mode an ACL implies
 
-`ACL.Mode()` gives the nine permission bits an ACL implies; setuid, setgid and
+`a.Mode(o)` gives the nine permission bits an ACL implies on a file owned by
+`o`; setuid, setgid and
 the sticky bit are not in an ACL and are kept from the stored `Mode`. Each class
 is the bits of what the walk (§3.3) would grant a hypothetical caller, mapped
 back — read from read data, write from write data, execute from execute:
 
-- **owner class**: a caller who is the file's owner, in no group, matched by
-  `OWNER@`, `EVERYONE@` and entries naming the owner's principal;
-- **group class**: the union, over `GROUP@` and every entry naming a principal
-  other than the owner, of what a caller matched by that principal and
-  `EVERYONE@` alone is granted — the mask POSIX ACLs show in the group bits;
+- **owner class**: a caller who is `o`, in no group, matched by `OWNER@`,
+  `EVERYONE@` and entries naming `o`;
+- **group class**: the union, over `GROUP@` and every **named** entry — one
+  naming a principal other than `OWNER@`, `GROUP@` and `EVERYONE@` — that does
+  not name `o`, of what a caller matched by that principal and `EVERYONE@` alone
+  is granted: the mask POSIX ACLs show in the group bits;
 - **other class**: a caller matched by `EVERYONE@` alone.
 
 Only effective entries count, and the owner's implicit rights do not: they are
@@ -695,25 +739,45 @@ read must grant afterwards exactly what was granted before. With the group class
 read from `GROUP@` alone, `chmod $(stat -c %a f) f` on alice's directory of §8
 would strip `builders` of read, write and execute.
 
+Because the group bits are then a mask over the named entries, a `chmod` must
+not turn them into a grant to the owning group, and §4.3's merge does not: on a
+file owned by alice, group `staff`, whose ACL is only `allow bob READ_DATA`,
+`Mode(alice)` is 0040, and a merge that added `allow GROUP@ R(r--)` for those
+bits would give every member of `staff` a read bob alone held.
+
 Two identities **MUST** hold, and are checked (§11):
 
-- `ACLFromMode(m).Mode() == m` for every nine-bit `m`;
-- for every ACL `a`, `a.WithMode(a.Mode())` grants every caller exactly what `a`
-  grants, where `WithMode` is RFC 7's merge.
+- `ACLFromMode(m).Mode(o) == m` for every nine-bit `m` and every owner `o`;
+- for every ACL `a` and owner `o`, `a.WithMode(a.Mode(o), o)` grants every
+  caller of a file owned by `o` exactly what `a` grants — for every `a` whose
+  allows hold write data wherever they hold another right the write bit adds
+  (§12, item 6).
 
 ### 4.3 Setting mode and ACL
 
-- Setting an ACL stores it and stores `Mode` as `ACL.Mode()` with the special
-  bits kept, in one transaction
+- Setting an ACL stores it and stores `Mode` as its `Mode(o)` for the owner the
+  file has after the set, with the special bits kept, in one transaction
   ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)).
-- A `chmod` of a file with a stored ACL is RFC 7's merge. The merge limits only
-  the rights of `R` (§4.1) that a missing bit withholds, never the minor rights
-  every bit grants, and keeps every other right of an entry. Where the ACL has no
-  effective `OWNER@`, `GROUP@` or `EVERYONE@` allow to rewrite, the merge adds
-  one, after the explicit entries, so it cannot override an explicit deny. `Mode`
-  becomes the merged ACL's `Mode()`, which equals the requested bits unless a
-  deny naming the owner's own principal withholds some; the stored `Mode` then
-  shows what is granted, never more.
+- A `chmod` of a file with a stored ACL is RFC 7's merge, `WithMode(m, o)`. The
+  merge limits only the rights of `R` (§4.1) that a missing bit withholds, never
+  the minor rights every bit grants, and keeps every other right of an entry.
+  The owner and everyone entries are rewritten from the owner and other bits.
+  The group bits are applied by what holds the group class (§4.2):
+  - when the ACL has an effective named allow not naming `o`, the group bits
+    are its mask:
+    every named allow **and** every `GROUP@` allow is limited to them, and no
+    `GROUP@` allow is rewritten upward or added — as a POSIX `chmod` sets the
+    mask and leaves the owning group's entry alone;
+  - otherwise `GROUP@` alone holds the group class, and its allow is rewritten
+    from the group bits like the owner's.
+
+  Where the ACL has no effective `OWNER@` or `EVERYONE@` allow to rewrite, or —
+  in the second case only — no `GROUP@` allow, the merge adds one, after the
+  explicit entries, so it cannot override an explicit deny; an entry it would add
+  with an empty mask is left out. `Mode` becomes the merged ACL's `Mode(o)`,
+  which equals the requested bits unless a deny naming `o` withholds some, or
+  the named entries grant less than the requested group bits; the stored `Mode`
+  then shows what is granted, never more.
 - A `chmod` of a file with no stored ACL changes `Mode` and stores no ACL.
 - A request that sets both — an NFSv4 `SETATTR` naming `mode` and `acl`, or
   `mode` and `dacl` — stores the ACL, and takes from `mode` only setuid, setgid
@@ -737,7 +801,11 @@ and MS-DTYP 2.5.3.4 compute it:
 | both | an effective copy, no inherit flags | an effective copy keeping both, unless no propagate |
 | no propagate, with either | as above, no inherit flags | an effective copy with no inherit flags, where a directory gets one |
 
-Every copy carries the inherited flag. An effective copy has its generic bits
+Every copy carries the inherited flag. An effective copy of an entry naming
+CREATOR OWNER or CREATOR GROUP names `OWNER@` or `GROUP@`: the entry for the new
+file's own owner or group RFC 7 requires, spelled as §6.3 stores an owner's
+entry, so an inherited `OWNER@` and an inherited CREATOR OWNER give a child the
+same entry. An effective copy has its generic bits
 mapped for the new file's type; an inherit-only copy keeps them as written. The
 new list carries the auto-inherited flag when the parent's does. A parent's
 protected flag does not pass to children; a list with the protected flag set
@@ -848,7 +916,7 @@ cannot match one after it, so no request is answered differently.
 | owner SID | the File's `Owner` | read the ACL | change the owner, under [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)'s rules for the value |
 | group SID | the File's `Group` | read the ACL | change the owner, under RFC 7 §7.4 |
 | DACL | the access list and its flags | read the ACL | write the ACL |
-| SACL | the audit list and its flags | system security (§3.5) | system security |
+| SACL | the audit list and its flags | system security (§3.5) | system security, and write the ACL in the call's ceiling (§3.5) |
 
 The rights are asked of the chokepoint through the open the request came on
 ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)), so the open's grant
@@ -891,14 +959,34 @@ way:
   `OWNER@` entry both effective and inheritable is spelled as two: the owner's
   SID with no inherit flags, then CREATOR OWNER inherit-only with the inherit
   flags. `GROUP@` likewise, with the group's SID and CREATOR GROUP.
-- **Write.** An entry with no inherit flags naming the SID that will be the
-  file's owner after the set is stored as `OWNER@`, and one naming the group's
-  SID as `GROUP@`. Every other entry is stored with the principal it names.
+- **Write.** First, a **pair** is folded into one entry: two adjacent entries
+  of the same kind and mask, and the same flags but the inherit flags, the first naming the SID that will
+  be the file's owner after the set with no inherit flags, the second naming
+  CREATOR OWNER, inherit-only, with at least one inherit flag, are stored as one
+  `OWNER@` entry carrying the second's inherit flags without inherit-only.
+  The group's SID followed by CREATOR GROUP folds to `GROUP@` alike. Then an
+  entry with no inherit flags naming the owner's SID is stored as `OWNER@`, and
+  one naming the group's SID as `GROUP@`. Every other entry is stored with the
+  principal it names.
 
-So the read and the write are inverse: the Security tab shows alice's own SID for
-the `OWNER@` entry of a mode-derived ACL, and writing the tab back keeps it
-`OWNER@`, which RFC 7's `chmod` merge rewrites from the owner bits rather than
-limiting as a named entry.
+The fold is what makes the write the inverse of the read for an inheritable
+`OWNER@`: without it, writing back the two entries one read produced would store
+`OWNER@` and a separate CREATOR OWNER, two entries where there was one. The fold
+changes no decision: on the file both forms grant the owner the same rights, and
+below it CREATOR OWNER's effective copy names `OWNER@` (§4.4), as the folded
+entry's copy does. Because a fold is lossless, both translations apply it — an
+NFSv4 `acl` naming `OWNER@` then CREATOR OWNER's `who` folds the same way
+(§7.2) — and no stored ACL holds an unfolded pair. A pair the client did not
+mean as one is still stored as one, which no request can tell apart.
+
+So the Security tab shows alice's own SID for the `OWNER@` entry of a
+mode-derived ACL, and writing the tab back keeps it `OWNER@`, which RFC 7's
+`chmod` merge rewrites from the owner bits rather than limiting as a named
+entry. The write is not the read's inverse in one case, which the decision below
+accepts: a stored named entry for the principal that now owns the file, with no
+inherit flags — set by name over NFS, or for bob before a `chown` to bob — is
+shown with the owner's SID and written back as `OWNER@`. It grants the same until
+the next `chown`.
 
 > decision: an effective entry naming the owner's SID is stored as `OWNER@`.
 > Without it, every Explorer edit of a file with a mode-derived ACL turns the
@@ -934,7 +1022,7 @@ The status code each refusal is answered with is RFC 22's.
 | --- | --- | --- | --- | --- |
 | `acl` | 4.0, 4.1, 4.2 | the access list, then the audit list; no flags | read the ACL, and system security for the audit entries | write the ACL, and system security for the audit entries |
 | `dacl` | 4.1, 4.2 | the access list and its flags | read the ACL | write the ACL |
-| `sacl` | 4.1, 4.2 | the audit list and its flags | system security | system security |
+| `sacl` | 4.1, 4.2 | the audit list and its flags | system security | system security, and write the ACL in the call's ceiling (§3.5) |
 | `aclsupport` | all | allow, deny, audit and alarm | — | — |
 
 - A `GETATTR` of `acl` by a caller without the system-security right returns the
@@ -956,6 +1044,9 @@ The status code each refusal is answered with is RFC 22's.
 - Masks and flags as §2.4 and §2.5; order as §2.7.
 - A `who` that resolves to no principal is refused `ErrInvalid`, which RFC 21
   answers `NFS4ERR_BADOWNER`.
+- An effective `OWNER@` or `GROUP@` entry with no inherit flags directly
+  followed by CREATOR OWNER's or CREATOR GROUP's inherit-only entry that §6.3
+  would fold with it is folded as §6.3 folds it.
 
 ### 7.3 `ACCESS` bits
 
@@ -978,8 +1069,8 @@ A bit with no right on that file type is never reported.
 ### 7.4 `mode` and `acl` in one `SETATTR`
 
 A `SETATTR` naming `mode` and `acl` (or `dacl`) stores the ACL, takes setuid,
-setgid and sticky from `mode`, and stores `Mode` as the ACL's `Mode()` with those
-bits (§4.3). Its permission bits are not merged: the client sent the ACL it
+setgid and sticky from `mode`, and stores `Mode` as the ACL's `Mode(o)` with
+those bits (§4.3). Its permission bits are not merged: the client sent the ACL it
 wants, and merging a mode into it would change it. `mode_set_masked` changes only
 the bits its mask names, as a `chmod` of those bits.
 
@@ -1016,7 +1107,7 @@ her read-write ceiling. The translation resolves the three SIDs to principals,
 maps the flags by name, and stores the entries and the flag in this order
 (§6.2). Entry 2 names the owner's SID with inherit flags, so it is stored
 as a named entry for alice, not as `OWNER@` (§6.3). `Mode` becomes the ACL's
-`Mode()` in the same transaction (§4.2): the owner class from entry 2 is `rwx`;
+`Mode(alice)` in the same transaction (§4.2): the owner class from entry 2 is `rwx`;
 the group class is the union of what `builders` (`rwx`) and bob (nothing: his
 only entry is a deny) are granted, `rwx`; the other class is empty. `Mode` is
 0770.
@@ -1039,7 +1130,8 @@ The parent's entries all carry file inherit, so the file gets the three as
 effective copies with no inherit flags and the inherited flag; the create mode
 is an **and** that limits the named allows to its group bits, `rw-`, so alice
 and `builders` keep every inherited right but execute, and adds no entry
-(RFC 7 §2.6). The file's `Mode` is the inherited ACL's `Mode()`, 0660.
+(RFC 7 §2.6). The file's `Mode` is the inherited ACL's `Mode` for its owner,
+0660.
 
 **5. bob is refused over both protocols.** bob opens `release/notes.txt` from
 his Windows desktop asking `GENERIC_WRITE`. The request maps to
@@ -1061,10 +1153,11 @@ first and intact.
 **7. alice runs `chmod 750 release` from a Linux box.** RFC 7's merge applies
 (§4.3): the named allows for alice and `builders` are each split into an
 inherit-only copy, unchanged, and an effective copy limited to the new group
-bits, `r-x`; bob's deny is untouched; allow `OWNER@` `R(rwx)` and allow
-`GROUP@` `R(r-x)` are added after the explicit entries. `Mode()` of the result
-is 0750: the owner class is `OWNER@`'s `rwx`, the group class the union of
-`builders`' and `GROUP@`'s `r-x`. alice keeps write on `release` through
+bits, `r-x`; bob's deny is untouched; allow `OWNER@` `R(rwx)` is added after the
+explicit entries. No `GROUP@` allow is added: the `builders` allow holds the
+group class, so the group bits are its mask. `Mode(alice)` of the result
+is 0750: the owner class is `OWNER@`'s `rwx`, the group class `builders`'
+`r-x`. alice keeps write on `release` through
 `OWNER@`; `builders` can no longer add files to `release` itself, and every file
 created below it still inherits modify from the unchanged inherit-only copy. A
 `chmod` narrows a named entry for the owner as it narrows any named entry, which
@@ -1078,11 +1171,11 @@ without inherit flags out of that case.
 | Z1 | A stored entry names its principal by ID, holds only the fourteen entry rights, and is one of four kinds. |
 | Z2 | A set either stores every entry it carried, in its order — entries naming deleted principals aside — or stores nothing. |
 | Z3 | The same request by the same identity of the same file is granted the same set, whatever protocol carried it. |
-| Z4 | `Authorize(want)` succeeds exactly when `want` is within `Granted`, and `Granted` is within the share ceiling. |
+| Z4 | `Authorize(want)` succeeds exactly when `want` is within `Granted`, and `Granted` is within the share ceiling but for the system-security right, which only §3.5 grants. |
 | Z5 | No file ACL widens a share ceiling, and no share ceiling is written into a file's ACL, stored or shown. |
 | Z6 | The ACL a client is shown is the ACL the walk reads, `ACLFromMode` of the mode where none is stored. |
-| Z7 | `ACLFromMode(m).Mode() == m`, and `a.WithMode(a.Mode())` grants what `a` grants. |
-| Z8 | Reading an ACL through either protocol and writing back what was read stores the same ACL, less entries naming deleted principals. |
+| Z7 | `ACLFromMode(m).Mode(o) == m`, and `a.WithMode(a.Mode(o), o)` grants what `a` grants on a file owned by `o`, for every `a` §4.2 names. |
+| Z8 | Reading an ACL through either protocol and writing back what was read stores the same ACL, less entries naming deleted principals; over SMB, a named entry with no inherit flags for the file's current owner or group comes back as `OWNER@` or `GROUP@` (§6.3). |
 | Z9 | Every principal an entry can name has a SID and an NFSv4 `who`; no entry is left out of a read for want of a spelling. |
 | Z10 | Audit and alarm entries never change a decision; the system-security right is granted only to an identity with `admin` set. |
 | Z11 | A change to one file's ACL changes no other file's. |
@@ -1115,15 +1208,19 @@ sits at the consumer of the translation, not beside it.
 
 | § | Check |
 | --- | --- |
-| §4.2 the two identities | For every nine-bit mode `m`, assert `ACLFromMode(m).Mode() == m`. For a generated corpus of ACLs — named users and groups, denies before and after allows, inherit-only and both-flag entries, owner rights — assert `a.WithMode(a.Mode())` grants every caller of a fixed population exactly what `a` grants. A `Mode()` reading the group class from `GROUP@` alone fails the second on the first ACL holding a named allow. |
+| §4.2 the two identities | For every nine-bit mode `m` and two owners, assert `ACLFromMode(m).Mode(o) == m`. For a generated corpus of ACLs — named users and groups, entries naming the owner, denies before and after allows, inherit-only and both-flag entries, owner rights — and each of two owners `o`, assert `a.WithMode(a.Mode(o), o)` grants every caller of a fixed population exactly what `a` grants. A `Mode` reading the group class from `GROUP@` alone fails the second on the first ACL holding a named allow. |
+| §4.2, §4.3 the group bits are a mask | On a file owned by alice, group `staff`, set the ACL `allow bob READ_DATA`: assert `Mode` is 0040. `chmod` it to its own mode over NFS: assert a member of `staff` other than bob is still refused read, and the stored ACL unchanged. Set the same ACL on a file bob owns: assert `Mode` is 0400. A merge that adds `GROUP@` for the group bits fails the first; a `Mode` that ignores the owner fails the second. |
 | §4.1 shown is evaluated | On a 0640 file with no stored ACL, query the descriptor over SMB and `acl` over NFSv4: assert both are `ACLFromMode(0640)`, and that each listed principal is granted exactly what its entry says. On 0604: assert a group deny is shown and a group member is refused read over both. |
 | §2.8, §6.4 no partial set | Set over SMB a DACL holding a callback deny for bob and an allow for everyone; assert the set is refused and the stored ACL unchanged, and bob's read still refused or granted as before. Repeat with an object allow, and with 129 entries. |
 | §5.2, Z8 round trip | Set from SMB an ACL naming a SID-only group with a deny, owner rights, CREATOR OWNER inherit-only, and a user with an NFS name. Read it over NFSv4 as an administrator, write back exactly what was read, read it over SMB: assert byte-equal descriptors. Then the reverse, starting from `nfs4_setfacl`. A translation that leaves out an entry it cannot name fails on the deny. |
 | §6.3 owner entries | On a mode-0755 file owned by alice, read the descriptor over SMB, write it back unchanged, `chown` the file to bob: assert bob, not alice, holds the owner's rights. Write a descriptor naming alice's SID with `OI CI` on a directory: assert it stays a named entry, and a new child owned by bob does not grant bob alice's rights. |
+| §6.3 fold | On a directory, set over NFSv4 `A:fd:OWNER@:rwx` and `A:fdg:GROUP@:rx`: read the descriptor over SMB and assert four entries, each owner or group SID followed by CREATOR OWNER or CREATOR GROUP inherit-only; write it back unchanged and read over NFSv4: assert the two original entries, byte-equal. Create a child: assert its entries are `OWNER@` and `GROUP@` either way. A write rule without the fold fails on the stored entry count. |
+| §2.8 count | Set over NFSv4 64 effective, inheritable `OWNER@` entries with distinct masks: assert stored; read over SMB: assert 128 entries; write back: assert accepted and unchanged. Set 65: assert refused `ErrInvalid` over NFSv4 though it carries 65 entries. |
 | §3.2 ceiling | bob's grant `read`; a file's ACL allows him full control: assert `Granted` over both protocols is the read row, a write open is refused, and `MAXIMUM_ALLOWED` is granted read. As the file's owner on that share, set the ACL: assert refused. As a privileged caller on a read-only admission: assert no write. |
 | §3.4 maximum allowed | `MAXIMUM_ALLOWED` alone where nothing is granted: refused. `MAXIMUM_ALLOWED` with `FILE_WRITE_DATA` where only read is granted: refused. With nothing explicit and read granted: granted read. Run the same descriptors against a Windows server and assert the same answers. |
-| §3.7 audit selection | With the share's policy honouring file entries and an inheritable failed-write audit entry on the root: a refused write by bob over SMB and over NFS each emit one event; a granted write emits none; with the policy off, none. A privileged caller's refused execute emits one. |
-| §3.5 system security | As a file's owner without `admin`: SMB query of the SACL is `STATUS_PRIVILEGE_NOT_HELD`, NFS `sacl` is refused. As an `admin` over AUTH_SYS, where `admin` is never set: refused. As an authenticated `admin`: both succeed. |
+| §3.4 privilege in `ACCESS` | On a mode-000 file owned by alice, on an export leaving root unsquashed: NFS `ACCESS` asking `READ` as uid 0 reports `READ`, and the read succeeds. Over SMB, a backup-intent open by an authenticated `admin` of a file whose DACL refuses it write: assert the open granted and `MaximalAccess` without write. A build computing `ACCESS` unprivileged fails the first. |
+| §3.7 audit selection | With the share's policy honouring file entries and an inheritable failed-write audit entry on the root: a refused write by bob over SMB and over NFS each emit one event; a granted write emits none; with the policy off, none. A privileged caller's refused execute emits one. With a successful-read entry: a `MAXIMUM_ALLOWED`-only open granted read emits one. With a failed-write entry: a `MAXIMUM_ALLOWED`-only open of a file granting bob nothing emits one. A rule matching only the explicit bits fails both. |
+| §3.5 system security | As a file's owner without `admin`: SMB query of the SACL is `STATUS_PRIVILEGE_NOT_HELD`, NFS `sacl` is refused. As an `admin` over AUTH_SYS, where `admin` is never set: refused. As an authenticated `admin`: both succeed, and an SMB open asking `ACCESS_SYSTEM_SECURITY` is granted with the right in its grant; `MAXIMUM_ALLOWED` alone does not include it. Under an admission narrowed to read-only, as that `admin`: the open asking it is granted, a SACL query and a `sacl` `GETATTR` succeed, and a SACL set and a `sacl` `SETATTR` are refused. A build intersecting the right with the ceiling fails the open. |
 | §7.1, §7.4 attributes | `SETATTR` of `acl` and `dacl` together: refused. `SETATTR` of `mode` 04750 with an `acl`: assert the ACL stored as sent, setuid set, and `Mode` the ACL's own bits. |
 | §4.4 inheritance | Each row of §4.4's table, over both protocols and against a Windows server. A set with the auto-inherit request on a child whose parent changed: assert the child's inherited entries recomputed and its explicit ones kept; assert its siblings unchanged. |
 | §2.3 kinds | A user entry for a principal whose UID equals a group's GID: assert a member of that group is not matched. |
@@ -1149,6 +1246,16 @@ not evidence for the ACL path, and the reverse.
    re-permissioning — is needed is an operator question (§3.2).
 5. **Mandatory labels.** Whether any Windows workload on the reference profile
    sets a mandatory-label entry on files, which §6.4 refuses, is unmeasured.
+6. **Allows holding part of what the write bit adds.** `Mode` reads the write
+   bit from write data alone, and a merge limiting to bits without write removes
+   append, write attributes and write extended attributes too. So an allow
+   holding append without write data — `allow bob APPEND_DATA` — implies no
+   write bit, and `chmod` to the file's own mode strips the append: §4.2's second
+   identity does not hold for it, and is stated without it. Reading the write bit
+   from any of those rights would keep the append, but then the owner's and
+   everyone's rewrite would add write data the entry lacked. Settling it needs
+   the merge to apply only the bits that changed, which is RFC 7's merge to
+   change, not this RFC's.
 
 ## Appendix A — prior art
 
