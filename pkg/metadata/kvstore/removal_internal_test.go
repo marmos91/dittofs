@@ -1,0 +1,536 @@
+package kvstore
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata/entity"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
+)
+
+func truncate(v uint64, size int64) RemoveOp {
+	return RemoveOp{Version: entity.VersionOf(v), Kind: entity.RemoveTruncate, Extent: entity.Extent{Offset: size},
+		Time: time.Unix(int64(1_900_000_000+v), 0)}
+}
+
+func dealloc(v uint64, off, n int64) RemoveOp {
+	return RemoveOp{Version: entity.VersionOf(v), Kind: entity.RemoveDeallocate, Extent: entity.Extent{Offset: off, Length: n},
+		Time: time.Unix(int64(1_900_000_000+v), 0)}
+}
+
+func (f *cfix) remove(file entity.FileID, op RemoveOp) {
+	f.t.Helper()
+	if err := f.s.Existence().Remove(context.Background(), f.share, file, 0, op, nil); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *cfix) resume(file entity.FileID) {
+	f.t.Helper()
+	if err := f.s.Content().Resume(context.Background(), f.share, file); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *cfix) removals(file entity.FileID) []entity.Removal {
+	f.t.Helper()
+	var out []entity.Removal
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) (err error) {
+		out, err = removals(r, f.share, file)
+		return err
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return out
+}
+
+func (f *cfix) want(file entity.FileID, step, layout string) {
+	f.t.Helper()
+	if got := f.layout(file); got != layout {
+		f.t.Fatalf("%s: %s, want %s", step, got, layout)
+	}
+}
+
+// RFC 6 §6.2: a truncate masks what it removes from phase 1 on, a truncate
+// up after it reads as a hole however the masked records overlap it, and
+// phase 2 drops only what is older than the removal.
+func TestTruncate(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	a, b := chunk(1), chunk(2)
+	f.exist(file, write(1, 0, 4*mib), write(2, 10*mib, mib))
+	f.commit(file, carry(a, b), ref(0, 4*mib, a, 1, 1), ref(10*mib, mib, b, 2, 2))
+
+	f.remove(file, truncate(4, 3*mib))
+	f.want(file, "phase 1", "carved[0,3)")
+	if got := f.get(file); got.Size != 3*mib || got.Charged != 3*mib || got.Applied != entity.VersionOf(4) {
+		t.Errorf("size %d charged %d applied %d", got.Size, got.Charged, got.Applied.Counter())
+	}
+	f.exist(file, grow(5, 12*mib))
+	f.want(file, "truncate up over masked records", "carved[0,3) hole[3,12)")
+	// A lookup starting inside the masked hole, which sorts nearer than the
+	// new one covering it, still finds the new one.
+	if s := f.spans(file, 5*mib, mib); len(s) != 1 || s[0].Class != entity.Hole {
+		t.Errorf("lookup inside the masked hole: %+v", s)
+	}
+	if rs := f.removals(file); len(rs) != 1 || rs[0].Done {
+		t.Fatalf("removals %+v", rs)
+	}
+	// A write over the masked hole fills only the new one.
+	f.exist(file, write(6, 5*mib, mib))
+	f.want(file, "a write over the masked hole", "carved[0,3) hole[3,5) uncarved[5,6) hole[6,12)")
+	if got := f.get(file).Charged; got != 4*mib {
+		t.Errorf("charged %d after filling 1 MiB", got)
+	}
+
+	f.resume(file)
+	f.want(file, "phase 2", "carved[0,3) hole[3,5) uncarved[5,6) hole[6,12)")
+	if rs := f.removals(file); len(rs) != 1 || !rs[0].Done {
+		t.Errorf("removals after phase 2 %+v", rs)
+	}
+	if refs := f.refs(file); len(refs) != 1 || refs[0].Length != 3*mib {
+		t.Errorf("refs %+v", refs)
+	}
+	if c, ok := f.chunkRec(b); ok && c.Refcount != 0 {
+		t.Errorf("B's refcount %d", c.Refcount)
+	}
+	f.exist(file, write(7, 3*mib, mib))
+	f.want(file, "a write into the regrown extent", "carved[0,3) uncarved[3,4) hole[4,5) uncarved[5,6) hole[6,12)")
+
+	// A replay changes nothing; a truncate up is not a removal.
+	f.remove(file, truncate(4, 3*mib))
+	f.resume(file)
+	if err := f.s.Existence().Remove(context.Background(), f.share, file, 0, truncate(8, 20*mib), nil); !isInvalid(err) {
+		t.Errorf("truncate up through Remove: %v", err)
+	}
+	f.want(file, "replay", "carved[0,3) uncarved[3,4) hole[4,5) uncarved[5,6) hole[6,12)")
+	f.checkCounts()
+}
+
+func isInvalid(err error) bool {
+	var se *merrs.StoreError
+	return errors.As(err, &se) && se.Code == merrs.ErrInvalidArgument
+}
+
+// RFC 6 §6.2: a deallocate reads as one hole at once; a write after it is
+// kept by phase 2, which splits the ref spanning the extent in two.
+func TestDeallocate(t *testing.T) {
+	f := newContentFix(t, nil)
+	f.s.SetKeyBudget(3*batchItemKeys + 4) // one record of each kind per batch
+	file := f.file(0)
+	c := chunk(3)
+	f.exist(file, write(1, 0, 8*mib))
+	f.commit(file, carry(c), ref(0, 8*mib, c, 1, 1))
+
+	f.remove(file, dealloc(2, 2*mib, 2*mib))
+	f.want(file, "phase 1", "carved[0,2) hole[2,4) carved[4,8)")
+	if got := f.get(file); got.Charged != 6*mib {
+		t.Errorf("charged %d", got.Charged)
+	}
+	f.exist(file, write(3, 3*mib, mib/2))
+	f.want(file, "a write after it", "carved[0,2) hole[2,3) uncarved[3,3.5) hole[3.5,4) carved[4,8)")
+
+	f.resume(file)
+	f.want(file, "phase 2", "carved[0,2) hole[2,3) uncarved[3,3.5) hole[3.5,4) carved[4,8)")
+	if refs := f.refs(file); len(refs) != 2 {
+		t.Errorf("refs %+v", refs)
+	}
+	if rec, _ := f.chunkRec(c); rec.Refcount != 2 {
+		t.Errorf("C's refcount %d, want 2 after the split", rec.Refcount)
+	}
+	f.checkCounts()
+}
+
+// RFC 6 §6.2: a deallocate's phase 1 joins the holes touching its edges
+// into its merged hole, one record, and leaves the hole inside it masked for
+// phase 2, which has nothing left to join.
+func TestDeallocateJoinsEdgeHoles(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	f.exist(file, write(1, 0, mib), write(2, 2*mib, mib), write(3, 4*mib, mib), write(4, 6*mib, mib))
+	f.want(file, "before", "uncarved[0,1) hole[1,2) uncarved[2,3) hole[3,4) uncarved[4,5) hole[5,6) uncarved[6,7)")
+
+	f.remove(file, dealloc(5, 2*mib, 3*mib))
+	if got := f.holeRecords(file); got != "[1,6)@5 [3,4)@3" {
+		t.Errorf("phase 1 holes %s", got)
+	}
+	if got := f.get(file); got.MaxSpan != 5*mib || got.Charged != 2*mib {
+		t.Errorf("max span %d, charged %d", got.MaxSpan, got.Charged)
+	}
+	f.exist(file, write(6, mib, mib/2))
+	f.want(file, "a write after it", "uncarved[0,1.5) hole[1.5,6) uncarved[6,7)")
+
+	f.resume(file)
+	if got := f.holeRecords(file); got != "[1.5,6)@5" {
+		t.Errorf("phase 2 holes %s", got)
+	}
+	f.want(file, "phase 2", "uncarved[0,1.5) hole[1.5,6) uncarved[6,7)")
+}
+
+// holeRecords is a file's hole records in MiB, each with its version.
+func (f *cfix) holeRecords(file entity.FileID) string {
+	f.t.Helper()
+	var b strings.Builder
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		pre := holesPrefix(f.share, file)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			start, err := startOf(pre, row.Key)
+			if err != nil {
+				return err
+			}
+			h, err := decodeHole(start, row.Value)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&b, "[%g,%g)@%d ", float64(h.Offset)/mib, float64(h.End())/mib, h.Version.Counter())
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// RFC 6 §6.2's transfer row: a pass offered before a truncate commits after
+// it, and a truncate up must not turn its refs back into readable content.
+func TestOffloadAfterTruncate(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	d := chunk(4)
+	f.exist(file, write(1, 0, 4*mib))
+	f.remove(file, truncate(2, mib))
+	_, res := f.commit(file, carry(d), ref(0, 4*mib, d, 1, 1))
+	if got := res[file]; len(got) != 1 || got[0] != entity.ExtentOf(0, mib) {
+		t.Errorf("reported offloaded %v", got)
+	}
+	f.exist(file, grow(3, 4*mib))
+	f.want(file, "regrown", "carved[0,1) hole[1,4)")
+	f.resume(file)
+	f.want(file, "phase 2", "carved[0,1) hole[1,4)")
+	f.checkCounts()
+}
+
+// RFC 6 §11.1's batching row: with K forced low, every sub-transaction of a
+// truncate of many refs leaves the extent reading as existence says, and a
+// write into it survives phase 2.
+func TestRemovalBatches(t *testing.T) {
+	f := newContentFix(t, nil)
+	f.s.SetKeyBudget(3*batchItemKeys + 4)
+	file := f.file(0)
+	const n = 20
+	f.exist(file, write(1, 0, n*mib))
+	for i := range int64(n) {
+		h := chunk(byte(10 + i))
+		f.commit(file, carry(h), ref(i*mib, mib, h, 1, 1))
+	}
+	f.remove(file, truncate(2, 0))
+	f.exist(file, grow(3, n*mib), write(4, 5*mib, mib))
+	const want = "hole[0,5) uncarved[5,6) hole[6,20)"
+	f.want(file, "phase 1", want)
+	batches := 0
+	for {
+		var more bool
+		if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) (err error) {
+			more, err = f.s.resumeBatch(tx, f.share, file)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			break
+		}
+		batches++
+		f.want(file, "between batches", want)
+		f.checkCounts()
+	}
+	if batches < n {
+		t.Errorf("%d batches for %d refs at one ref a batch", batches, n)
+	}
+	if refs := f.refs(file); len(refs) != 0 {
+		t.Errorf("refs left %+v", refs)
+	}
+}
+
+// Done removals at or below the in-flight floor are pruned; others stay.
+func TestPruneRemovals(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	f.exist(file, write(1, 0, 4*mib))
+	f.remove(file, truncate(2, 3*mib))
+	f.remove(file, truncate(3, 2*mib))
+	c := f.s.Content()
+	ctx := context.Background()
+	if err := c.PruneRemovals(ctx, f.share, file, entity.VersionOf(9)); err != nil {
+		t.Fatal(err)
+	}
+	if rs := f.removals(file); len(rs) != 2 {
+		t.Errorf("pruned a removal not done: %+v", rs)
+	}
+	f.resume(file)
+	if err := c.PruneRemovals(ctx, f.share, file, entity.VersionOf(2)); err != nil {
+		t.Fatal(err)
+	}
+	if rs := f.removals(file); len(rs) != 1 || rs[0].Version != entity.VersionOf(3) {
+		t.Errorf("after pruning at 2: %+v", rs)
+	}
+}
+
+// RFC 6 §6.2's phase 1 hole bound: with K forced to 4, a removal over 10
+// holes reads no more than K of them, charges off its whole extent and sets
+// holeCredit; Charged and usage read at or below their exact values while
+// phase 2 gives the holes back, and exactly them once it is done. A
+// deallocate's edge holes, joined into its merged hole in phase 1, are never
+// charged off. A release of such a file ends with usage exact.
+func TestHoleCredit(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		op    RemoveOp
+		exact int64 // Charged once the removal is done
+	}{
+		{"truncate", truncate(30, 0), 0},
+		{"deallocate inside holes at both edges", dealloc(30, 3*mib/2, 18*mib), 2 * mib},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newContentFix(t, nil)
+			file := f.file(0)
+			var ops []PendingOp
+			for i := range int64(11) {
+				ops = append(ops, write(uint64(i+1), 2*i*mib, mib)) // 10 holes between 11 writes
+			}
+			f.exist(file, ops...)
+			f.s.SetKeyBudget(4)
+			f.remove(file, c.op)
+			if rs := f.removals(file); len(rs) != 1 || !rs[0].HoleCredit {
+				t.Fatalf("removal %+v, want holeCredit", rs)
+			}
+			for more := true; more; {
+				if got := f.get(file).Charged; got > c.exact {
+					t.Errorf("Charged %d above its exact %d during phase 2", got, c.exact)
+				}
+				f.checkUsage()
+				if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) (err error) {
+					more, err = f.s.resumeBatch(tx, f.share, file)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := f.get(file).Charged; got != c.exact {
+				t.Errorf("Charged %d once done, want %d", got, c.exact)
+			}
+			f.checkUsage()
+		})
+	}
+
+	t.Run("release", func(t *testing.T) {
+		f := newContentFix(t, nil)
+		file := f.file(0)
+		var ops []PendingOp
+		for i := range int64(11) {
+			ops = append(ops, write(uint64(i+1), 2*i*mib, mib))
+		}
+		f.exist(file, ops...)
+		f.s.SetKeyBudget(4)
+		f.remove(file, truncate(30, mib)) // phase 1 only: usage reads low
+		f.unlinked(file)
+		f.remove(file, release(31))
+		f.resume(file)
+		f.checkUsage()
+		if u, err := f.s.Capacity().Usage(context.Background(), f.share); err != nil || u.Bytes != 0 {
+			t.Errorf("share usage %+v after releasing the only file, %v", u, err)
+		}
+	})
+}
+
+// RFC 6 §6.4's recovery reads one shard's range of the unfinished-removal
+// index. An entry is written with its removal and stays until the prune, not
+// until done, so a removal done but not pruned is still found. A released
+// file's prune drops the entries of every removal it had.
+func TestUnfinishedRemovals(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	unfinished := func(shard uint64) []UnfinishedRemoval {
+		t.Helper()
+		var out []UnfinishedRemoval
+		for u, err := range f.s.Content().UnfinishedRemovals(ctx, f.share, shard) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, u)
+		}
+		return out
+	}
+	file, other := f.file(0), f.file(0)
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		x := f.get(file)
+		x.Shard = 4
+		return tx.Set(fileKey(f.share, file), encodeFile(x))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.exist(file, write(1, 0, 4*mib))
+	f.exist(other, write(1, 0, 4*mib))
+	f.remove(file, truncate(2, mib))
+	f.remove(other, truncate(2, mib))
+	if got := unfinished(4); len(got) != 1 || got[0] != (UnfinishedRemoval{file, entity.VersionOf(2)}) {
+		t.Fatalf("shard 4 after phase 1: %v", got)
+	}
+	if got := unfinished(0); len(got) != 1 || got[0].File != other {
+		t.Fatalf("shard 0 after phase 1: %v", got)
+	}
+	f.resume(file)
+	if m := f.removals(file); len(m) != 1 || !m[0].Done {
+		t.Fatalf("removal after resume: %+v", m)
+	}
+	if got := unfinished(4); len(got) != 1 {
+		t.Errorf("a removal done but not pruned left the index: %v", got)
+	}
+	if err := f.s.Content().PruneRemovals(ctx, f.share, file, entity.VersionOf(2)); err != nil {
+		t.Fatal(err)
+	}
+	if got := unfinished(4); len(got) != 0 {
+		t.Errorf("shard 4 after the prune: %v", got)
+	}
+
+	// A released file whose prune meets an older removal not done, which
+	// the release's own prune deletes with the file's other keys.
+	f.unlinked(other)
+	f.remove(other, release(4))
+	f.resume(other)
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		return putRemoval(tx, f.share, other, entity.Removal{Version: entity.VersionOf(3), Kind: entity.RemoveTruncate,
+			Extent: entity.ExtentOf(0, entity.EndOfFile)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := unfinished(0); len(got) != 3 {
+		t.Fatalf("shard 0 after the release: %v", got)
+	}
+	if err := f.s.Content().PruneRemovals(ctx, f.share, other, entity.VersionOf(4)); err != nil {
+		t.Fatal(err)
+	}
+	if got := unfinished(0); len(got) != 0 {
+		t.Errorf("shard 0 after the release's prune: %v", got)
+	}
+}
+
+// exactCharged is what a file with no removal left to finish is charged:
+// its size less its holes, read from its hole records.
+func (f *cfix) exactCharged(file entity.FileID) int64 {
+	f.t.Helper()
+	n := f.get(file).Size
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		pre := holesPrefix(f.share, file)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			start, err := startOf(pre, row.Key)
+			if err != nil {
+				return err
+			}
+			h, err := decodeHole(start, row.Value)
+			if err != nil {
+				return err
+			}
+			n -= h.Length
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return n
+}
+
+// RFC 6 §6.2: a hole credit follows the hole, not the batch. With K forced
+// to 4 and holeCredit set, a masked hole's bytes are given back by whichever
+// transaction drops or replaces it, and the edge holes phase 1 cuts are
+// counted by phase 1 itself, so Charged and usage are exact once every
+// removal is done. No phase-2 batch but the last writes the File.
+func TestHoleCreditOtherPaths(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		after func(f *cfix, file entity.FileID) // between phase 1 and phase 2
+		op    RemoveOp
+		exact int64
+	}{
+		// The truncate cuts [3.5, 4) off a hole at the new size; a grow then
+		// writes a hole at that key.
+		{"truncate across a straddling hole, then a grow", func(f *cfix, file entity.FileID) {
+			f.exist(file, grow(31, 5*mib))
+		}, truncate(30, 7*mib/2), 2 * mib},
+		// A write into the merged hole splits it, and the piece after the
+		// write lands on the key of a masked hole.
+		{"a write over a masked hole's key", func(f *cfix, file entity.FileID) {
+			f.exist(file, write(31, 6*mib, mib))
+		}, dealloc(30, 2*mib, 16*mib), 4 * mib},
+		// A later truncate cuts the first removal's merged hole at its edge
+		// while the first one's masked holes are still there.
+		{"a later overlapping truncate", func(f *cfix, file entity.FileID) {
+			f.remove(file, truncate(31, 9*mib))
+		}, dealloc(30, 2*mib, 16*mib), mib},
+		// The truncate leaves a masked hole starting at the new size; a
+		// clone past the end of file writes its gap hole at that key.
+		{"a clone's gap hole over a masked hole's key", func(f *cfix, file entity.FileID) {
+			src := f.file(0)
+			f.exist(src, write(1, 0, mib))
+			f.clone(f.cloneOp(src, file, 0, 10*mib, mib, 31))
+		}, truncate(30, 3*mib), 3 * mib},
+		// A write leaves the masked hole at 5 MiB under data, with no
+		// visible hole touching it; a later deallocate starting there writes
+		// its merged hole at that key.
+		{"a deallocate's merged hole over a masked hole's key", func(f *cfix, file entity.FileID) {
+			f.exist(file, write(31, 4*mib, 2*mib))
+			f.remove(file, dealloc(32, 5*mib, mib/2))
+		}, dealloc(30, 2*mib, 16*mib), 9 * mib / 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newContentFix(t, nil)
+			file := f.file(0)
+			var ops []PendingOp
+			for i := range int64(11) {
+				ops = append(ops, write(uint64(i+1), 2*i*mib, mib)) // holes at [2i+1, 2i+2) MiB
+			}
+			f.exist(file, ops...)
+			f.s.SetKeyBudget(4)
+			f.remove(file, c.op)
+			if rs := f.removals(file); len(rs) != 1 || !rs[0].HoleCredit {
+				t.Fatalf("removal %+v, want holeCredit", rs)
+			}
+			c.after(f, file)
+			doneCount := func() (n int) {
+				for _, m := range f.removals(file) {
+					if m.Done {
+						n++
+					}
+				}
+				return n
+			}
+			for more := true; more; {
+				before, was := f.get(file), doneCount()
+				if err := f.s.kv.Update(context.Background(), func(tx kv.Txn) (err error) {
+					more, err = f.s.resumeBatch(tx, f.share, file)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if got := f.get(file); doneCount() == was && got.Version != before.Version {
+					t.Errorf("a batch that finished no removal wrote the File: Charged %d → %d", before.Charged, got.Charged)
+				}
+				f.checkUsage()
+			}
+			if got, want := f.get(file).Charged, f.exactCharged(file); got != want || got != c.exact {
+				t.Errorf("Charged %d once done, holes give %d, want %d; holes %s", got, want, c.exact, f.holeRecords(file))
+			}
+			f.checkUsage()
+		})
+	}
+}
