@@ -128,14 +128,13 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	if ctx.Err() != nil {
 		return NotRun, "interrupted"
 	}
-	if why := unsupported(c.Unit); why != "" {
-		return NotRun, why
-	}
-	if unmet := needs.Unmet(o.Root, c.Needs); len(unmet) > 0 {
-		if o.CI {
-			return NotRun, strings.Join(unmet, "; ")
+	if why, unmet := Blocked(c.Unit, c.Needs, func(n string) error { return needs.Check(o.Root, n) }); why != "" {
+		// A machine that met the needs could run the cell, so without --ci
+		// it's skipped; what dt can't do yet is never a skip.
+		if len(unmet) > 0 && !o.CI {
+			return Skipped, why
 		}
-		return Skipped, strings.Join(unmet, "; ")
+		return NotRun, why
 	}
 	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
@@ -381,6 +380,25 @@ func exitCode(err error) (int, error) {
 		return -1, err
 	}
 	return 0, nil
+}
+
+// Blocked says why dt can't run a cell of suite u that needs list on this
+// machine, or returns "" when it can. What dt doesn't do yet comes first, and
+// then each need that check finds unmet, as "need: reason"; unmet names those
+// needs, and is empty when what stops the cell is something dt doesn't do
+// yet. dt run and dt list both decide through it, so they can't disagree.
+func Blocked(u *registry.Suite, list []string, check func(need string) error) (why string, unmet []string) {
+	if why := unsupported(u); why != "" {
+		return why, nil
+	}
+	var reasons []string
+	for _, n := range list {
+		if err := check(n); err != nil {
+			unmet = append(unmet, n)
+			reasons = append(reasons, n+": "+err.Error())
+		}
+	}
+	return strings.Join(reasons, "; "), unmet
 }
 
 // unsupported says why dt can't run the suite yet, or returns "".
