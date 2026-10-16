@@ -1666,7 +1666,7 @@ func (r *Runtime) restoreSnapshot(
 	// This MUST run BEFORE resetable.Reset + snapshotable.RestoreSnapshot (not after):
 	// background rollup workers run throughout the restore. If we cleared
 	// the overlay only after Restore repopulated the metadata, a rollup
-	// worker could call PersistFileChunks against the freshly-restored
+	// worker could write file chunks against the freshly-restored
 	// metadata in the window between Restore and the clear, injecting
 	// post-snapshot FileChunk rows into the restored tree. Clearing the
 	// overlay first leaves no dirty intervals for a worker to flush.

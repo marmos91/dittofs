@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 590" width="900" height="590" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}.meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+.data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}.ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+.p{fill:#ffffff;stroke:#1b1f24;stroke-width:1.1}.k{fill:#fbefd9;stroke:#a8741f;stroke-width:1.3}.r{fill:#f8e3e6;stroke:#a33a4d;stroke-width:1.3}
+.a{fill:#eaf4ec;stroke:#2f6f4f;stroke-width:1.3}
+.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}.dash{stroke:#a33a4d;stroke-width:1.2;stroke-dasharray:5 3;fill:none;marker-end:url(#hr)}
+.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
+.garr{stroke:#2f6f4f;stroke-width:1.6;fill:none;marker-end:url(#hg)}.line{stroke:#5b6472;stroke-width:1.3;fill:none}
+.rt{font-size:11px;fill:#a33a4d}.gt{font-size:11px;fill:#2f6f4f}
+.tail{fill:#ffffff;stroke:#9aa4b2;stroke-width:1;stroke-dasharray:3 2}
+.cp{stroke:#1b1f24;stroke-width:2}.jp{stroke:#a8741f;stroke-width:1.6;stroke-dasharray:4 3}
+</style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a33a4d"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f6f4f"/></marker></defs>
+<rect width="900" height="590" fill="#ffffff"/>
+<text x="16" y="26" class="t">A new node joins without pausing writes: new bytes now, the old tail by copy or offload.</text>
+<text x="330" y="52" class="s" text-anchor="middle">tail ≤ J</text>
+<text x="690" y="52" class="s" text-anchor="middle">after J</text>
+<path d="M510 40V252" class="jp"/>
+<text x="516" y="52" class="h">J</text>
+<text x="20" y="83" class="h">remote tier</text>
+<rect x="150" y="66" width="30" height="24" rx="0" class="data"/>
+<rect x="180" y="66" width="30" height="24" rx="0" class="data"/>
+<rect x="210" y="66" width="30" height="24" rx="0" class="data"/>
+<rect x="240" y="66" width="30" height="24" rx="0" class="data"/>
+<rect x="270" y="66" width="30" height="24" rx="0" class="data"/>
+<rect x="300" y="66" width="30" height="24" rx="0" class="data"/>
+<rect x="330" y="66" width="30" height="24" rx="0" class="data"/>
+<rect x="360" y="66" width="510" height="24" rx="0" class="ext"/>
+<text x="20" y="157" class="h">primary journal</text>
+<rect x="150" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="180" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="210" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="240" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="270" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="300" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="330" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="360" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="390" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="420" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="450" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="480" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="510" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="540" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="570" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="600" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="630" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="660" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="690" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="720" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="750" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="780" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="810" y="140" width="30" height="24" rx="0" class="data"/>
+<rect x="840" y="140" width="30" height="24" rx="0" class="data"/>
+<text x="20" y="231" class="h">node D (learner)</text>
+<rect x="150" y="214" width="30" height="24" rx="0" class="tail"/>
+<rect x="180" y="214" width="30" height="24" rx="0" class="tail"/>
+<rect x="210" y="214" width="30" height="24" rx="0" class="tail"/>
+<rect x="240" y="214" width="30" height="24" rx="0" class="tail"/>
+<rect x="270" y="214" width="30" height="24" rx="0" class="tail"/>
+<rect x="300" y="214" width="30" height="24" rx="0" class="tail"/>
+<rect x="330" y="214" width="30" height="24" rx="0" class="tail"/>
+<rect x="360" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="390" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="420" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="450" y="214" width="30" height="24" rx="0" class="k"/>
+<rect x="480" y="214" width="30" height="24" rx="0" class="k"/>
+<rect x="510" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="540" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="570" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="600" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="630" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="660" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="690" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="720" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="750" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="780" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="810" y="214" width="30" height="24" rx="0" class="data"/>
+<rect x="840" y="214" width="30" height="24" rx="0" class="data"/>
+<path d="M345 138V94" class="garr"/>
+<text x="353" y="120" class="gt">offload, eager</text>
+<path d="M435 166V210" class="arr"/>
+<text x="427" y="194" class="s" text-anchor="end">Export: un-offloaded tail</text>
+<path d="M690 166V210" class="arr"/>
+<text x="698" y="186" class="s">live stream from J,</text>
+<text x="698" y="200" class="s">counts for acks</text>
+<text x="255.0" y="256" class="s" text-anchor="middle">offloaded: skipped</text>
+<text x="435.0" y="256" class="s" text-anchor="middle">copied / copying</text>
+<text x="690" y="256" class="s" text-anchor="middle">held since J</text>
+<path d="M14 276H886" class="lane"/>
+<path d="M36 294V556" class="arr"/>
+<text x="26" y="572" class="s">time</text>
+<rect x="56" y="294" width="130" height="22" rx="4" class="meta"/>
+<text x="121" y="309" class="s" text-anchor="middle">metadata store</text>
+<text x="202" y="306" class="h">CAS adds D to the shard record at join point J, learner=yes</text>
+<text x="202" y="321" class="s">J is the next version the primary assigns; writes never pause</text>
+<rect x="56" y="340" width="130" height="22" rx="4" class="data"/>
+<text x="121" y="355" class="s" text-anchor="middle">primary → D</text>
+<text x="202" y="352" class="h">the live stream starts first: every op after J goes to D</text>
+<text x="202" y="367" class="s">D counts for acks from J on, like any replica</text>
+<rect x="56" y="386" width="130" height="22" rx="4" class="data"/>
+<text x="121" y="401" class="s" text-anchor="middle">primary → D</text>
+<text x="202" y="398" class="h">then Export snapshots the tail ≤ J</text>
+<text x="202" y="413" class="s">it skips extents already offloaded and copies only the rest</text>
+<rect x="56" y="432" width="130" height="22" rx="4" class="data"/>
+<text x="121" y="447" class="s" text-anchor="middle">primary → remote</text>
+<text x="202" y="444" class="h">meanwhile the primary offloads eagerly</text>
+<text x="202" y="459" class="s">every offloaded extent is one D no longer needs copied</text>
+<rect x="56" y="478" width="130" height="22" rx="4" class="meta"/>
+<text x="121" y="493" class="s" text-anchor="middle">metadata store</text>
+<text x="202" y="490" class="h">every version ≤ J copied or offloaded: CAS clears learner</text>
+<text x="202" y="505" class="s">the primary checks coverage before it asks</text>
+<rect x="56" y="524" width="130" height="22" rx="4" class="a"/>
+<text x="121" y="539" class="s" text-anchor="middle">node D</text>
+<text x="202" y="536" class="h">D may now take over</text>
+<text x="202" y="551" class="s">until now it counted for acks but was not a takeover candidate</text>
+</svg>

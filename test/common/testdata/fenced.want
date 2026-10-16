@@ -1,0 +1,4 @@
+CSESS16a	another suffixed code
+EID6g	suffixed code, not just digits
+WRT18	change attr frozen across a write
+flock/*	NLM not implemented

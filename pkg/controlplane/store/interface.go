@@ -359,7 +359,7 @@ type PermissionStore interface {
 // MetadataStoreConfigStore provides metadata store configuration CRUD.
 //
 // These operations manage the configuration records for metadata store backends
-// (memory, BadgerDB, PostgreSQL). The actual metadata store instances are
+// (badger, on disk or in memory). The actual metadata store instances are
 // created and managed by the Runtime.
 type MetadataStoreConfigStore interface {
 	// GetMetadataStore returns a metadata store configuration by name.

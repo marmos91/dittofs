@@ -1,0 +1,3 @@
+OUT1	a tilde line closes a backtick fence
+OUT2	text after a marker doesn't stop it closing the fence
+OUT3	after the fence closes

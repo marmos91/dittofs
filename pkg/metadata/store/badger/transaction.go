@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 )
@@ -120,17 +119,13 @@ func (s *BadgerMetadataStore) WithTransactionRelaxed(ctx context.Context, fn fun
 // pkg/block/engine/flush.go — so a retry there re-derives from the state that
 // committed in between and loses nothing.
 //
-// Two closures elsewhere do hand in a wholesale list computed outside the call,
-// and neither makes the retry the thing at fault. Deallocate's PunchHole
+// One closure elsewhere does hand in a wholesale list computed outside the call,
+// and it does not make the retry the thing at fault. Deallocate's PunchHole
 // (pkg/metadata/sparse.go) reads the file outside and writes the recomputed list
 // back: the lost-update window there is opened by the unlocked read-then-write
-// and is equally open when the first attempt commits. PersistFileChunks
-// (pkg/controlplane/runtime/shares/coordinator.go) overwrites File.Blocks with a
-// list its caller computed — but it has no caller, in or out of this repo's
-// tree: the name occurs only in its own definition, the engine interface it
-// satisfies, and tests, whatever its doc comment says about a syncer. Withdraw
-// this the moment either grows a hot concurrent caller, because then the
-// contract, not the backoff, is what needs changing.
+// and is equally open when the first attempt commits. Withdraw this the moment
+// it grows a hot concurrent caller, because then the contract, not the backoff,
+// is what needs changing.
 func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, durable bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -278,8 +273,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 
 	// All retries exhausted. Classify the raw badgerdb.ErrConflict SSI abort as a
 	// StoreError{Code: ErrConflict} so codebase-wide conflict detection
-	// (errors.As(*StoreError) / IsConflictError, the runtime coordinator's
-	// mapObjectIDConflict) recognizes it. The raw sentinel stays reachable via
+	// (errors.As(*StoreError) / IsConflictError) recognizes it. The raw sentinel stays reachable via
 	// Cause/Unwrap for diagnostics and errors.Is.
 	if goerrors.Is(lastErr, badgerdb.ErrConflict) {
 		return mapBadgerError(lastErr, "badger WithTransaction", "")
@@ -447,10 +441,9 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 
 	// Read existing record once to capture the size delta (for usedBytes
 	// tracking), previous owner (for per-identity usage), and the previous
-	// ObjectID (for secondary-index cleanup).
+	// PayloadID (for secondary-index cleanup).
 	var old basestore.FileUsage
 	var oldWasRegular bool
-	var oldObjectID metadata.ContentHash
 	var oldPayloadID metadata.PayloadID
 	if item, err := tx.txn.Get(keyFile(file.ID)); err == nil {
 		_ = item.Value(func(val []byte) error {
@@ -462,7 +455,6 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 					old.GID = existing.GID
 					oldWasRegular = true
 				}
-				oldObjectID = existing.ObjectID
 				oldPayloadID = existing.PayloadID
 			}
 			return nil
@@ -521,46 +513,10 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 		}
 	}
 
-	// maintain ObjectID -> file UUID secondary index in the
-	// same Txn as the primary file write (atomic on commit).
-	//
-	// Step 1: drop stale secondary entry if the ObjectID changed.
-	if !oldObjectID.IsZero() && oldObjectID != file.ObjectID {
-		if err := tx.txn.Delete(keyObjectID(oldObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
-			return fmt.Errorf("badger UpdateAttrs: delete stale obj index: %w", err)
-		}
-	}
-
-	// Step 2: write new secondary entry if non-zero. Detect race
-	// (another file already claims this ObjectID) and surface as ErrConflict.
-	if !file.ObjectID.IsZero() {
-		if existing, gerr := tx.txn.Get(keyObjectID(file.ObjectID)); gerr == nil {
-			raw, verr := existing.ValueCopy(nil)
-			if verr == nil {
-				var existingID uuid.UUID
-				if uerr := existingID.UnmarshalBinary(raw); uerr == nil && existingID != file.ID {
-					return mderrors.NewConflictError(
-						"badger UpdateAttrs",
-						fmt.Sprintf("object_id already mapped to file %s", existingID),
-					)
-				}
-			}
-		} else if !goerrors.Is(gerr, badgerdb.ErrKeyNotFound) {
-			return fmt.Errorf("badger UpdateAttrs: probe obj index: %w", gerr)
-		}
-		idBin, merr := file.ID.MarshalBinary()
-		if merr != nil {
-			return fmt.Errorf("badger UpdateAttrs: marshal file ID: %w", merr)
-		}
-		if err := tx.txn.Set(keyObjectID(file.ObjectID), idBin); err != nil {
-			return fmt.Errorf("badger UpdateAttrs: set obj index: %w", err)
-		}
-	}
-
 	// maintain PayloadID -> file UUID secondary index (#1435) in the same Txn.
-	// PayloadID is unique per inode and stable across rename, so unlike the
-	// ObjectID index this needs no conflict probe -- drop the stale entry if it
-	// changed, then point the (possibly new) PayloadID at this file.
+	// PayloadID is unique per inode and stable across rename, so this needs no
+	// conflict probe -- drop the stale entry if it changed, then point the
+	// (possibly new) PayloadID at this file.
 	if oldPayloadID != "" && oldPayloadID != file.PayloadID {
 		if err := tx.txn.Delete(keyPayloadID(oldPayloadID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
 			return fmt.Errorf("badger UpdateAttrs: delete stale payload index: %w", err)
@@ -600,16 +556,14 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		return mapBadgerError(err, "file", "")
 	}
 
-	// Subtract size from counter for regular files; capture ObjectID and
-	// PayloadID for secondary-index cleanup.
-	var existingObjectID metadata.ContentHash
+	// Subtract size from counter for regular files; capture PayloadID for
+	// secondary-index cleanup.
 	var existingPayloadID metadata.PayloadID
 	var existing *metadata.File
 	_ = item.Value(func(val []byte) error {
 		file, decErr := decodeFile(val)
 		if decErr == nil {
 			existing = file
-			existingObjectID = file.ObjectID
 			existingPayloadID = file.PayloadID
 		}
 		return nil
@@ -620,9 +574,9 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		tx.quota.Add(existing.ShareName, existing.UID, existing.GID, -int64(existing.Size), -1)
 	}
 
-	// Delete the primary file row plus parent/link-count/ObjectID/PayloadID
-	// keys via the shared per-file teardown (also used by DeleteShare).
-	if err := deleteFileKeys(tx.txn, fileID, existingObjectID, existingPayloadID); err != nil {
+	// Delete the primary file row plus parent/link-count/PayloadID keys via the
+	// shared per-file teardown (also used by DeleteShare).
+	if err := deleteFileKeys(tx.txn, fileID, existingPayloadID); err != nil {
 		return err
 	}
 
@@ -1207,7 +1161,7 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 
 	// Tear down all file metadata on the active txn, identical to the pool
 	// path — deleting only the share key would orphan every file/parent/
-	// linkcount/child/objectID entry (store.go:161 contract).
+	// linkcount/child/payload-index entry (store.go:161 contract).
 	quotaFreed, err := tx.store.deleteShareFiles(tx.txn, shareName)
 	if err != nil {
 		return err

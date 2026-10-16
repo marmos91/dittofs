@@ -1,5 +1,10 @@
 # POSIX Compliance Test Results
 
+> **Dated record.** These results were measured in January 2026 on the metadata
+> stores of that time. The PostgreSQL and legacy `memory` metadata stores have
+> since been removed, and BadgerDB is the only metadata store. The results have
+> not been re-run on the current profiles.
+
 **Test Suite**: [pjdfstest](https://github.com/saidsay-so/pjdfstest) (8,789 tests)
 **Last Updated**: January 8, 2026
 
@@ -34,20 +39,17 @@ See `test/posix/KNOWN_FAILURES.md` for the complete list of known limitations.
 # Enter development shell
 nix develop
 
-# Start DittoFS with desired metadata store
-./dfs start --config test/posix/configs/config-memory.yaml
-./dfs start --config test/posix/configs/config-badger.yaml
-./dfs start --config test/posix/configs/config-postgres.yaml
+# Build and start DittoFS with a store profile and mount the share at
+# /tmp/dittofs-test. Profiles: memory (default), badger, memory-content,
+# cache-s3, badger-s3 (the S3 profiles require Localstack)
+sudo ./test/posix/setup-posix.sh <profile>
 
-# Additional content store configurations
-./dfs start --config test/posix/configs/config-memory-content.yaml  # Memory content store
-./dfs start --config test/posix/configs/config-cache-s3.yaml        # Cache + S3 (requires Localstack)
-
-# Mount and run tests
-dittofs-mount /tmp/dittofs-test
-dittofs-posix
-dittofs-umount /tmp/dittofs-test
+# Run the tests, then unmount and stop the server
+dfs-posix
+sudo ./test/posix/teardown-posix.sh
 ```
+
+See `test/posix/README.md` for the full set of options.
 
 ## Key Fixes Applied
 

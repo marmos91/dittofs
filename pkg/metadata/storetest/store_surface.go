@@ -31,7 +31,7 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("IdempotencyTokenRoundTrip", func(t *testing.T) { testIdempotencyTokenRoundTrip(t, factory) })
 	t.Run("Healthcheck", func(t *testing.T) { testHealthcheck(t, factory) })
 	t.Run("Pagination", func(t *testing.T) { testListChildrenPagination(t, factory) })
-	t.Run("DeleteSharePurgesUsedBytesAndObjectIndex", func(t *testing.T) { testDeleteSharePurgesCounters(t, factory) })
+	t.Run("DeleteSharePurgesUsedBytes", func(t *testing.T) { testDeleteSharePurgesCounters(t, factory) })
 	t.Run("ListChildrenCursorAfterDeletedEntry", func(t *testing.T) { testListChildrenCursorAfterDelete(t, factory) })
 	t.Run("UnlinkReleasesUsedBytes", func(t *testing.T) { testUnlinkReleasesUsedBytes(t, factory) })
 	t.Run("TypeChangeRefundsUsedBytes", func(t *testing.T) { testTypeChangeRefundsUsedBytes(t, factory) })
@@ -47,18 +47,6 @@ func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
 	handle := createTestFile(t, store, shareName, rootHandle, "big.bin", 0o644)
 	setFileSize(t, store, handle, 8192)
 
-	// Set an ObjectID so the objectIndex secondary mapping is exercised.
-	file, err := store.GetFile(ctx, handle)
-	if err != nil {
-		t.Fatalf("GetFile: %v", err)
-	}
-	for i := range file.ObjectID {
-		file.ObjectID[i] = byte(i + 1)
-	}
-	if err := store.UpdateAttrs(ctx, file); err != nil {
-		t.Fatalf("UpdateAttrs with ObjectID: %v", err)
-	}
-
 	if got, err := store.GetUsedBytesForShare(ctx, shareName); err != nil || got != 8192 {
 		t.Fatalf("pre-delete GetUsedBytesForShare(%q) = (%d, %v), want (8192, nil)", shareName, got, err)
 	}
@@ -70,21 +58,6 @@ func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
 	// The share's usage bucket must not outlive the share.
 	if got, err := store.GetUsedBytesForShare(ctx, shareName); err != nil || got != 0 {
 		t.Fatalf("post-delete GetUsedBytesForShare(%q) = (%d, %v), want (0, nil) — DeleteShare did not drop the share's usage", shareName, got, err)
-	}
-
-	// Recreating the share and a file with the same ObjectID must not produce
-	// ErrConflict — the objectIndex entry must have been purged.
-	root2 := createTestShare(t, store, shareName)
-	handle2 := createTestFile(t, store, shareName, root2, "big.bin", 0o644)
-	file2, err := store.GetFile(ctx, handle2)
-	if err != nil {
-		t.Fatalf("GetFile after recreate: %v", err)
-	}
-	for i := range file2.ObjectID {
-		file2.ObjectID[i] = byte(i + 1) // same ObjectID as before
-	}
-	if err := store.UpdateAttrs(ctx, file2); err != nil {
-		t.Fatalf("UpdateAttrs same ObjectID after DeleteShare: got ErrConflict or unexpected error: %v — objectIndex was not purged by DeleteShare", err)
 	}
 }
 
@@ -930,10 +903,9 @@ func testGetQuotaUsagePerShare(t *testing.T, factory StoreFactory) {
 // client's verifier against the stored one, so a backend that reads it back as
 // zero answers EEXIST to every retry instead.
 //
-// The value deliberately sits above 2^63. The field is uint64 and the SQL
-// column is signed, so a backend that clamps rather than carrying the bit
-// pattern loses exactly the high half of the space and still passes a
-// small-value check.
+// The value deliberately sits above 2^63. The field is uint64, so a backend
+// that stores it signed and clamps rather than carrying the bit pattern loses
+// exactly the high half of the space and still passes a small-value check.
 //
 // Both paths are exercised because the insert and the update are separate
 // statements: wiring a column into one and forgetting the other is the failure

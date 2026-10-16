@@ -101,9 +101,10 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// A fresh on-disk directory per run is the clean slate: no ObjectID rows
-	// from a prior run can pre-claim the payload's chunks before the first
-	// clone is written (false-negative regime).
+	// A fresh metadata directory and a fresh bucket per run keep a prior
+	// run's state out of the measurement: old cas/ objects would lower the
+	// measured reduction, and old sync markers would skip uploads and
+	// inflate it.
 	metaName := helpers.UniqueTestName("vmfleet-meta")
 	_, err := cli.CreateMetadataStore(metaName, "badger",
 		helpers.WithMetaDBPath(filepath.Join(t.TempDir(), "badger")))
@@ -203,8 +204,7 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 	require.GreaterOrEqualf(t, reduction, minReduction,
 		"DEDUP-03 VIOLATION: storage reduction %.4f < required %.2f "+
 			"(pre_dedup_bytes=%d post_dedup_bytes=%d cas_keys=%d clones=%d). "+
-			"Either file-level dedup (BSCAS-05 short-circuit) and block-level "+
-			"dedup (Phase 11 GetByHash) both failed to engage, or the qcow2 "+
+			"Either chunk-level CAS dedup failed to engage, or the qcow2 "+
 			"clones diverged more than expected.",
 		reduction, minReduction, preDedupBytes, postDedupBytes, len(casObjects), len(clones))
 }

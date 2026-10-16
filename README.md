@@ -80,8 +80,8 @@ Two binaries drive it:
 | **Observability** | Prometheus metrics endpoint, structured JSON logging |
 | **Deployment** | Single static binary; Docker images; Kubernetes operator |
 
-DittoFS passes the pjdfstest POSIX suite at 99.99% (8,788/8,789) across all three
-metadata backends; the single expected failure is the NFSv3 32-bit timestamp limit
+DittoFS passes the pjdfstest POSIX suite at 99.99% (8,788/8,789) on the BadgerDB
+metadata store; the single expected failure is the NFSv3 32-bit timestamp limit
 (year 2106). See the [FAQ](docs/guide/faq.md) for known limitations.
 
 On the SMB side, DittoFS passes the Samba **smbtorture** and Microsoft **Windows

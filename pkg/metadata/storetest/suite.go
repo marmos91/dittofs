@@ -128,15 +128,6 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runTruncateChunkRefTests(t, factory)
 	})
 
-	// ObjectIDOps conformance for FileAttr.ObjectID round-trip,
-	// FindByObjectID lookup, mutation lifecycle, and the first-
-	// committer-wins concurrent-quiesce race. The store implements
-	// ObjectIDIndexAccessor so the race
-	// scenario asserts index-row counts directly rather than skipping.
-	t.Run("ObjectIDOps", func(t *testing.T) {
-		runObjectIDOpsTests(t, factory)
-	})
-
 	// StoreSurface covers MetadataStore interface methods that previously
 	// had ZERO cross-backend conformance coverage (area-6 audit H1):
 	// DeleteShare, GetUsedBytes, GetFileByPayloadID, filesystem
