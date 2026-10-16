@@ -13,14 +13,20 @@ import (
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// fakeServer is a started fixture that gives fixed placeholders.
+// fakeServer is a started fixture that gives fixed placeholders, and
+// {mount} when mount is set.
 type fakeServer struct {
 	stops int
 	err   error // what Stop reports
+	mount string
 }
 
 func (f *fakeServer) Placeholders() map[string]string {
-	return map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "user": "dt-user", "password": "s3cret"}
+	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "user": "dt-user", "password": "s3cret"}
+	if f.mount != "" {
+		vals["mount"] = f.mount
+	}
+	return vals
 }
 
 func (f *fakeServer) Stop() error {

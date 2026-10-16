@@ -1,14 +1,18 @@
 package fixture
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
@@ -37,5 +41,44 @@ func TestDfsEndsWithDT(t *testing.T) {
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 	if !ended(runs[0][0]) {
 		t.Errorf("dfs %s outlived the dt that started it", runs[0][0])
+	}
+}
+
+// Where root and the NFS client are there, a real dfs's share is mounted at
+// {mount} at each NFS version, with pjdfstest's options, and answers there;
+// Stop unmounts it and removes {mount}.
+func TestRealMount(t *testing.T) {
+	for _, n := range []string{"root", "nfs-client"} {
+		if err := needs.Check("", n); err != nil {
+			t.Skipf("%s: %v", n, err)
+		}
+	}
+	bin := realBin(t)
+	for _, v := range []string{"3", "4", "4.1"} {
+		t.Run(v, func(t *testing.T) {
+			out := t.TempDir()
+			var w bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: v, Options: "noac,sync,lookupcache=none"}, Squash: "none"}
+			s, err := Start(ctx, f, bin, out, &w)
+			if err != nil {
+				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
+				t.Fatalf("Start: %v\n%s\ndfs.log:\n%s", err, w.String(), log)
+			}
+			mount := s.Placeholders()["mount"]
+			if _, err := os.ReadDir(mount); err != nil {
+				t.Errorf("reading {mount}: %v", err)
+			}
+			if err := s.Stop(); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+			if _, mounted, _ := mountedAt(mount); mounted {
+				t.Errorf("%s is still mounted", mount)
+			}
+			if _, err := os.Stat(mount); !os.IsNotExist(err) {
+				t.Errorf("{mount} stays: %v\n%s", err, w.String())
+			}
+		})
 	}
 }
