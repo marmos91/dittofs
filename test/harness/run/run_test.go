@@ -427,17 +427,29 @@ func TestNoBaseSkipsItsCommands(t *testing.T) {
 	}
 }
 
-// The job summary is a table of every cell's outcome; a | in a note can't
-// break it.
-func TestMarkdown(t *testing.T) {
-	rep := Report{Outcomes: []Outcome{
-		{Cell: "lint-go", Result: Failed, Note: "`a | b` exited 1", Took: 2 * time.Second},
-		{Cell: "shellcheck", Result: Passed, Took: time.Second},
-	}}
-	want := "### dt run lint\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n" +
-		"| `lint-go` | failed | 2s | `a \\| b` exited 1 |\n| `shellcheck` | passed | 1s |  |\n"
-	if got := rep.Markdown("dt run lint"); got != want {
-		t.Errorf("got\n%s\nwant\n%s", got, want)
+// With --ci each new failure is annotated, named by its cell and test, with
+// its message, and a test that passed isn't; a cell that didn't run, or
+// failed, without a new failure to name is annotated as itself. Without --ci
+// nothing is.
+func TestAnnotations(t *testing.T) {
+	root, r := repo(t, `groups: { g: [lint, held] }
+suites:
+  lint: { cmd: [ "false", "true" ] }
+  held: { cmd: { sh: "exit 75" } }
+`, nil)
+	_, out := runTarget(t, root, r, "g", true)
+	var got []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "::error ") {
+			got = append(got, line)
+		}
+	}
+	want := []string{"::error title=dt lint%3A false::`false` exited 1", "::error title=dt held::not run: `exit 75` exited 75: it ran nothing"}
+	if !slices.Equal(got, want) {
+		t.Errorf("annotations %q, want %q", got, want)
+	}
+	if _, out := runTarget(t, root, r, "g", false); strings.Contains(out, "::error") {
+		t.Errorf("annotated without --ci:\n%s", out)
 	}
 }
 

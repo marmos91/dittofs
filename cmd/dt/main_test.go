@@ -329,15 +329,19 @@ func TestDoctor(t *testing.T) {
 	}
 }
 
-// With --ci, the run's outcomes are added to the job summary.
-func TestRunWritesTheJobSummary(t *testing.T) {
+// dt run --ci writes no job summary: dt report --format md does, and gives
+// the outcomes dt run did.
+func TestRunWritesNoJobSummary(t *testing.T) {
 	checkout(t)
 	summary := filepath.Join(t.TempDir(), "summary.md")
 	t.Setenv("GITHUB_STEP_SUMMARY", summary)
-	_, _ = dt(t, "run", "away", "--ci", "--results", t.TempDir())
-	got, err := os.ReadFile(summary)
-	if err != nil || !strings.Contains(string(got), "| `away` | not run |") {
-		t.Errorf("summary %q, %v", got, err)
+	results := t.TempDir()
+	_, _ = dt(t, "run", "away", "--ci", "--results", results)
+	if _, err := os.Stat(summary); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dt run wrote the job summary: %v", err)
+	}
+	if md, err := dt(t, "report", "--format", "md", "--results", results); err != nil || !strings.Contains(md, "| `away` | not run |") {
+		t.Errorf("dt report: %v\n%s", err, md)
 	}
 }
 
@@ -377,8 +381,8 @@ func TestRunWritesSummaryJSON(t *testing.T) {
 	}
 }
 
-// When summary.json can't be written, dt run still prints how each cell went
-// and adds it to the job summary, then fails with the error.
+// When summary.json can't be written, dt run still prints how each cell went,
+// then fails with the error.
 func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the suite runs sh")
@@ -393,14 +397,9 @@ func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(root)
-	summary := filepath.Join(t.TempDir(), "summary.md")
-	t.Setenv("GITHUB_STEP_SUMMARY", summary)
 	out, err := dt(t, "run", "breaks", "--ci", "--results", t.TempDir())
 	var status exitStatus
 	if err == nil || errors.As(err, &status) || !strings.Contains(out, "breaks  passed") {
 		t.Errorf("dt run: %v\n%s", err, out)
-	}
-	if got, _ := os.ReadFile(summary); !strings.Contains(string(got), "| `breaks` | passed |") {
-		t.Errorf("job summary %q", got)
 	}
 }

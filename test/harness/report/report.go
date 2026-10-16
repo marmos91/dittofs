@@ -1,11 +1,14 @@
 // Package report holds a dt run's results, cell by cell and test by test, and
 // writes them as the run's summary.json, in the Common Test Report Format
-// (CTRF) at one pinned version, and each cell's as a JUnit file generated from
-// the same results.
+// (CTRF) at one pinned version, with each cell's as a JUnit file and the run's
+// report.md, both generated from the same results. It reads summary.json back,
+// and shows a run as dt report does.
 package report
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,9 +27,14 @@ const (
 	Other   = "other" // the test has no result: its output stopped before one
 )
 
-// Ungraded is the grade of a skip in a suite without a known file: it's
-// reported and counted, and passes.
-const Ungraded = "ungraded"
+// Grades dt gives a result.
+const (
+	// New is a failure no known entry matches.
+	New = "new"
+	// Ungraded is a skip in a suite without a known file: it's reported and
+	// counted, and passes.
+	Ungraded = "ungraded"
+)
 
 // Test is one result of one test. A test with several results in a cell has
 // one Test for each.
@@ -87,7 +95,8 @@ type Ran struct {
 // say.
 type Reader func(Ran) ([]Test, error)
 
-// Write writes each cell's JUnit file under dir/junit, then the run to
+// Write writes each cell's JUnit file under dir/junit, then dir/report.md,
+// which is what dt report --format md shows, then the run to
 // dir/summary.json, last, so the summary never names a JUnit file that isn't
 // there. Each file is replaced whole, by a rename, so a run stopped at any
 // moment leaves its last complete summary. Like the logs, anyone can read
@@ -110,11 +119,66 @@ func (r Run) Write(dir string) error {
 			return err
 		}
 	}
+	var md bytes.Buffer
+	if err := r.Show(&md, "md", false); err != nil {
+		return err
+	}
+	if err := replace(filepath.Join(dir, "report.md"), md.Bytes()); err != nil {
+		return err
+	}
 	data, err := r.JSON()
 	if err != nil {
 		return err
 	}
 	return replace(filepath.Join(dir, "summary.json"), data)
+}
+
+// Read reads the run in dir back from its summary.json, as Write wrote it.
+// A test goes back to the cell whose name begins its suite, the longest such
+// name when one cell's name begins another's.
+func Read(dir string) (Run, error) {
+	path := filepath.Join(dir, "summary.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Run{}, err
+	}
+	var doc document
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return Run{}, fmt.Errorf("%s: %w", path, err)
+	}
+	res := doc.Results
+	r := Run{Name: res.Extra.Run, Start: time.UnixMilli(res.Summary.Start), Stop: time.UnixMilli(res.Summary.Stop),
+		Commit: res.Environment.Commit, Branch: res.Environment.BranchName, Dirty: res.Extra.Dirty,
+		OS: res.Environment.OSPlatform, In: res.Extra.In, Tier: res.Extra.Tier, Exit: res.Extra.Exit}
+	var at [][]string
+	for _, c := range res.Extra.Cells {
+		name := c.Suite
+		if c.Cell != "" {
+			name += "/" + c.Cell
+		}
+		r.Cells = append(r.Cells, Cell{Name: name, Result: c.Result, Note: c.Note, Took: time.Duration(c.Seconds) * time.Second, Log: c.Log})
+		at = append(at, strings.Split(name, "/"))
+	}
+	for _, t := range res.Tests {
+		in := -1
+		for i, a := range at {
+			if len(a) <= len(t.Suite) && slices.Equal(a, t.Suite[:len(a)]) && (in < 0 || len(a) > len(at[in])) {
+				in = i
+			}
+		}
+		if in < 0 {
+			return Run{}, fmt.Errorf("%s: the test %q is in no cell", path, t.Name)
+		}
+		out := Test{Name: t.Name, Status: t.Status, Duration: time.Duration(t.Duration) * time.Millisecond, Message: t.Message, Flaky: t.Flaky}
+		if own := t.Suite[len(at[in]):]; len(own) > 0 {
+			out.Suite = own
+		}
+		if t.Extra != nil {
+			out.Grade, out.Reason = t.Extra.Grade, t.Extra.Reason
+		}
+		r.Cells[in].Tests = append(r.Cells[in].Tests, out)
+	}
+	return r, nil
 }
 
 // replace writes data to path through a temporary file beside it, renamed

@@ -71,22 +71,11 @@ func (r Report) Status() int {
 	return 0
 }
 
-// Markdown is the run's outcomes as a Markdown table under title, for a job
-// summary.
-func (r Report) Markdown(title string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "### %s\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n", title)
-	for _, o := range r.Outcomes {
-		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", o.Cell, o.Result, o.Took, strings.ReplaceAll(o.Note, "|", `\|`))
-	}
-	return b.String()
-}
-
 // Options say where a run happens and writes.
 type Options struct {
 	Root    string    // the repository
 	Results string    // where runs are written, each in a directory of its own
-	CI      bool      // --ci: an unmet need is an error, not a skip, and problems are annotated
+	CI      bool      // --ci: an unmet need is an error, not a skip, and new failures are annotated
 	Out     io.Writer // where the commands' output passes through
 	Tier    string    // the tier the run was asked for, recorded in its results
 }
@@ -136,8 +125,10 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		cell.Took = time.Since(start).Round(time.Second)
 		rep.Outcomes = append(rep.Outcomes, Outcome{c.Name, cell.Result, cell.Note, cell.Took})
 		_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, cell.Result, cell.Note)
-		if o.CI && (cell.Result == Failed || cell.Result == NotRun) {
-			_, _ = fmt.Fprintln(o.Out, annotation("dt "+c.Name, cell.Result+": "+cell.Note))
+		if o.CI {
+			for _, a := range annotations(cell) {
+				_, _ = fmt.Fprintln(o.Out, a)
+			}
 		}
 		ungraded(c.Unit, cell.Tests)
 		sum.Cells = append(sum.Cells, cell)
@@ -173,6 +164,26 @@ func runName(start time.Time, commit string) string {
 		name += "-a" + strconv.Itoa(n)
 	}
 	return name
+}
+
+// annotations are a cell's error annotations: one for each new failure, with
+// its message.
+//
+// decision: a cell that failed or didn't run with no new failure to name, as
+// one stopped before any test or one whose results it couldn't read, is
+// annotated as itself, with its note, so every cell that turns a run red has
+// an annotation.
+func annotations(c report.Cell) []string {
+	var out []string
+	for _, t := range c.Tests {
+		if t.NewFailure() {
+			out = append(out, annotation("dt "+c.Name+": "+t.Title(), cmp.Or(t.Message, "failed")))
+		}
+	}
+	if len(out) == 0 && (c.Result == Failed || c.Result == NotRun) {
+		out = append(out, annotation("dt "+c.Name, c.Result+": "+c.Note))
+	}
+	return out
 }
 
 // annotation is an error annotation with title and message, escaped as the

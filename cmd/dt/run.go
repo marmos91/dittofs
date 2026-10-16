@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -48,15 +47,9 @@ func newRun() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if results == "" {
-				results = filepath.Join("test", "harness", "results")
-			}
-			if !filepath.IsAbs(results) {
-				results = filepath.Join(root, results)
-			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: results, CI: ci, Out: cmd.OutOrStdout(), Tier: tier})
+			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier})
 			if rep.Dir == "" {
 				return err // the run couldn't start
 			}
@@ -68,11 +61,6 @@ func newRun() *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "results:", rep.Dir)
-			if ci {
-				if err := appendSummary(rep.Markdown("dt run " + strings.Join(args, " "))); err != nil {
-					return err
-				}
-			}
 			if err != nil {
 				return err // after the outcomes: summary.json couldn't be written
 			}
@@ -85,7 +73,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringVar(&tier, "tier", "pr", "run at tier T, or at a suite's own tier when wider: it sets args, env and select")
 	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these suites of the group")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these suites of the group")
-	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and problems are annotated")
+	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and new failures are annotated")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if r, err := load(); err == nil {
@@ -101,21 +89,16 @@ func newRun() *cobra.Command {
 	return cmd
 }
 
-// appendSummary adds md to the job summary, when the run has one.
-func appendSummary(md string) error {
-	path := os.Getenv("GITHUB_STEP_SUMMARY")
-	if path == "" {
-		return nil
+// resultsDir is where runs go: results, relative to the checkout's root, else
+// test/harness/results there.
+func resultsDir(root, results string) string {
+	if results == "" {
+		results = filepath.Join("test", "harness", "results")
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
+	if !filepath.IsAbs(results) {
+		results = filepath.Join(root, results)
 	}
-	_, err = f.WriteString(md)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	return err
+	return results
 }
 
 // alias is a command people use today, `dt NAME ARGS`, which is

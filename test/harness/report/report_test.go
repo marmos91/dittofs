@@ -99,19 +99,6 @@ func TestJSONKeepsAReasonAlone(t *testing.T) {
 	}
 }
 
-// Each test's suite is its cell's name, split at /, then its own suite; the
-// counts follow the statuses, flaky passes counted too; a grade and its
-// reason go in the test's extra; durations are milliseconds; and the run's
-// own fields go in extra, each cell's suite apart from the rest of its name,
-// with its JUnit file.
-func TestJSON(t *testing.T) {
-	data, err := full.JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	golden(t, "full.summary.json", data)
-}
-
 // summary.json is readable by anyone, as the logs are, so a run as root
 // leaves one its user can read; the JUnit files too (TestWriteJUnit).
 func TestWriteIsReadable(t *testing.T) {
@@ -129,7 +116,8 @@ func TestWriteIsReadable(t *testing.T) {
 
 // A reader of summary.json, or of a JUnit file, never sees part of one: while
 // they're rewritten over and over, every read gives a whole document, and no
-// temporary file is left, beside summary.json or beside the JUnit files.
+// temporary file is left, beside summary.json and report.md or beside the
+// JUnit files.
 func TestWriteReplacesTheFileWhole(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a file open for reading can't be replaced here, so the reads would stop the writes")
@@ -175,7 +163,7 @@ func TestWriteReplacesTheFileWhole(t *testing.T) {
 		case <-done:
 			left, _ := os.ReadDir(dir)
 			junit, _ := os.ReadDir(filepath.Join(dir, "junit"))
-			if len(left) != 2 || len(junit) != 1 {
+			if len(left) != 3 || len(junit) != 1 {
 				t.Errorf("left behind: %v, junit/%v", left, junit)
 			}
 			return
