@@ -485,7 +485,7 @@ This hash chain serves as the KDF context for key derivation (see [Key Derivatio
 
 DittoFS uses the following default preference order:
 
-**Cipher preference** (configurable):
+**Cipher preference**:
 1. AES-128-GCM (0x0002) -- fastest on modern hardware with AES-NI
 2. AES-128-CCM (0x0001) -- fallback for 3.0/3.0.2
 3. AES-256-GCM (0x0004) -- higher security, slightly slower
