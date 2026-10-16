@@ -339,6 +339,32 @@ package github.com/marmos91/dittofs/pkg/block/journalv2/internal/index
 
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/platform
 
+var (
+	ErrNoBarriers	= errors.New("journal: filesystem is mounted without cache flushes")
+
+	ErrCopyOnWrite	= errors.New("journal: copy-on-write is not disabled for the directory")
+
+	ErrNotSubvolumeRoot	= errors.New("journal: directory is not a subvolume root")
+)
+
+func Check(r Report) error
+
+func OS(dir string) (storage.FS, error)
+
+type Report struct {
+	Barriers	bool
+
+	CopyOnWrite	bool
+
+	NoCoWSet	bool
+
+	BtrfsSubvolumeRoot	bool
+
+	ThinProvisioned	bool
+}
+
+func Probe(dir string) (Report, error)
+
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/reclaim
 
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/recovery
