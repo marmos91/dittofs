@@ -190,8 +190,9 @@ expected to run and did not. A check that did not run is a failure
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    `pkg/block/journal`. The import test enforces it. v1 is touched only in epic 10, and
    only at its callers. The one exception is the `v1-clean` marker, which ships in v1
-   ahead of v2 ([#3156](https://github.com/marmos91/dittofs/issues/3156)); v2 reads only
-   that file and the presence of v1 directories, never v1's format.
+   ahead of v2 ([#3156](https://github.com/marmos91/dittofs/issues/3156)). Only the
+   migration tool reads it; v2 itself checks only whether v1 directories exist, and
+   never reads v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
    stand-ins are allowed only for pure logic (index, codecs).
@@ -215,7 +216,7 @@ expected to run and did not. A check that did not run is a failure
 | 7 | **Recovery and identity** | `Init`, `Open`, `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 10 |
 | 8 | **Data path and capacity** ⛔ | `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 13 | B | 9, 10 |
 | 9 | **Offload, reclamation, holds and tags** | `Offload`, `OffloadMany`, pins, `MarkOffloaded`, `Unmark`, `Release`, auto-retire, `Repack` and drop test, snapshot holds, `Forget`, `Strand` | 13 | B | 10 |
-| 10 | **Integration and v1→v2 upgrade** 🔀 | One journal per disk in Runtime, engine bridge, startup order, upgrade preflight and adoption, config, metrics and span exporters, error mapping, salvage, API and CLI | 14 | B (wiring) + A (config, upgrade, exporters) | 11, 12 |
+| 10 | **Integration and v1→v2 upgrade** 🔀 | One journal per disk in Runtime, engine bridge, startup order, start check and journal side of initialisation, config, metrics and span exporters, error mapping, salvage, API and CLI | 14 | B (wiring) + A (config, upgrade, exporters) | 11, 12 |
 | 11 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | A + B | release |
 | 12 | **Dashboards** | 4 Grafana dashboards, each with an automated test | 6 | A | — |
 | | | | **~132** | | |
@@ -286,7 +287,9 @@ everything before it.
   need the data path's locking and capacity.
 - **E10** blocks E11 and E12's live tests.
 - **#3120 (external)**, the RFC 16 metadata store, blocks E10's version-limit raise, its
-  store contracts and the upgrade's adoption record.
+  store contracts and the initialisation step.
+- **The init command and the migration tool (external, no owner yet)** block the
+  upgrade path, not E10's wiring. See E10, "Upgrade from v1".
 
 ### 3.4 Splitting the load between two people
 
@@ -300,7 +303,7 @@ dependency.
 | 1 | E2: clock and fault implementations, crash-simulating seam, profiler, system e2e scaffolding | E2: known-failure mechanism, reference model, conformance test bodies, traceability matrix | → **S2** |
 | 2 | E3, then E5 (minimal stream first) | E4, then E8's storage-independent parts (share registry, capacity counters, version counter) | → **S3** |
 | 3 | E6, then E7 | E8 remainder, then E9 | → **S4** |
-| 4 | E10: config keys, per-device registry, upgrade preflight and adoption, metrics and span exporters | E10: Runtime and engine wiring, startup order, error mapping, salvage | → **S5** |
+| 4 | E10: config keys, per-device registry, start check and journal side of initialisation, metrics and span exporters | E10: Runtime and engine wiring, startup order, error mapping, salvage | → **S5** |
 | 5 | E12 dashboards; E11 burn-down of recovery, format and durability failures | E11 burn-down of data-path and reclamation failures | release |
 
 Load by subtask count: A ≈ 5 (E1) + 7 (E2) + 10 + 11 + 10 + 12 + 7 (E10) + 4 (E11) + 6
@@ -501,14 +504,17 @@ epic 10):**
   - restart with a removed share pending;
   - a disk moved to another installation, or a journal directory swapped: refused by
     `expect` and the installation ID.
-- **Upgrade** (epic 10's preflight and adoption):
-  - each row of the preflight table: adopted, fresh install, clean upgrade, refusal;
-  - a refused start writes nothing: the DB, the devices and the v1 directories are
-    byte-identical afterwards, and the previous v1 release starts on them;
-  - a crash at every adoption step: before the adoption record, a re-run adopts again and
-    the previous v1 release still starts; after it, the next start completes the v1
-    `format` stamp;
-  - after adoption, the previous v1 release refuses to start (`ErrFutureFormat`).
+- **Initialisation and upgrade** (epic 10's start check and its share of the
+  initialisation step):
+  - each row of the start-check table: normal start, and the two refusals with their
+    messages;
+  - a refused start writes nothing: the stores, the devices and the v1 directories are
+    byte-identical afterwards, and v0.36.0 still starts on them;
+  - a crash between journal init and `kvstore.Init`: a start reports the store lost, and
+    a re-run of the initialisation step wipes the devices and succeeds;
+  - a crash after `kvstore.Init`: the next start completes the `J‖journal` records and
+    the v1 `format` stamp;
+  - after the stamp, v0.36.0 refuses to start (`ErrFutureFormat`).
 - **Other sources:**
   - fsync-failure semantics after the PostgreSQL "fsyncgate" findings: a failed fsync is
     not retried into success;
@@ -831,8 +837,10 @@ Work:
   This follows the start order of RFC 8 §2.5 as far as the current engine allows. Gaps are
   recorded as `decision:` markers.
 - **Error mapping:** `ErrNoSpace{limit}` maps to retry-later or no-space following
-  RFC 8 §10.2, and `ENOSPC` stays distinct. `ErrOtherShare` maps to `ErrCorrupt`, never
-  retried. Loss generation is folded into the NFS write
+  RFC 8 §10.2, and `ENOSPC` stays distinct. `ErrOtherShare` and `ErrTagConflict` both
+  map to `ErrCorrupt`, never retried. They stay distinct inside the engine: the first names
+  one known owner, while the second means recovery found two, which only an operator's
+  `Forget` resolves. Loss generation is folded into the NFS write
   verifier.
 - **Salvage of stranded tags after serving.** Exports go under `salvage.path`, mode 0700,
   sealed with a salvage data key for encrypting shares, and a failed export becomes a
@@ -852,58 +860,85 @@ Work:
 
 #### Upgrade from v1
 
-The upgrade is one-way and needs no command. It rests on three things:
+No RFC yet specifies the upgrade from today's DittoFS to the storage-v2 architecture. It
+touches the metadata store (RFC 6, 7, 16), the remote tier (RFC 4, 5), GC (RFC 9),
+backups (RFC 26) and configuration (RFC 13, 15), not only the journal, so it belongs in an
+RFC of its own. This section fixes only the journal's part and the constraints the plan
+assumes from the rest.
 
-- **The `v1-clean` marker**, shipped in v1 ahead of v2
-  ([#3156](https://github.com/marmos91/dittofs/issues/3156), released as v0.36.0). v1
-  deletes `<journal.path>/v1-clean` before opening any journal. On a clean stop it drains
-  every share to the remote and writes the marker only if all of them reached zero
-  unsynced bytes. The marker exists only if deleting every v1 journal directory loses no
-  data. A crash or a failed drain leaves no marker.
-- **An adoption record**: the RFC 16 `Installation` record
-  ([#3120](https://github.com/marmos91/dittofs/pull/3120)), minted by the explicit
-  initialisation step and written last when v2 takes over the installation. This record,
-  and nothing else, says that v2 is active. A configuration key
-  could not do this job: the operator can edit it, so it can disagree with what is on
-  disk.
-- **A read-only preflight**, the first thing `dfs start` does. It runs before any store
-  is opened for writing and before any device is initialised:
+**The path an operator follows:**
 
-  | Adoption record | v1 directories | `v1-clean` | Action |
-  | --- | --- | --- | --- |
-  | present | any | any | normal start; v1 directories are leftovers |
-  | absent | absent | — | fresh install: adopt |
-  | absent | present | present | clean upgrade: adopt |
-  | absent | present | absent | **refuse**: v1 stopped uncleanly, or a v1 release older than v0.36.0 wrote it |
+1. upgrade to v0.36.0 and stop it cleanly, which writes `v1-clean`;
+2. install the storage-v2 release. Its start refuses to serve and names the migration
+   command;
+3. run the **offline migration tool**, shipped with that release. This is the point of no
+   return;
+4. start the release.
 
-  The refusal tells the operator to start v0.36.0 or later, let it sync, stop it cleanly,
-  and retry. Because the preflight has written nothing, that is always possible.
+**Constraints on the rest of storage v2**, owned by RFC 16 and the upgrade RFC rather than
+by this plan:
 
-Adoption order:
+- one metadata store at a time. The release reads and writes only the RFC 16 store, and
+  only the migration tool reads v1 metadata;
+- remote objects written by v1 are **not** migrated. The release reads v1 objects in
+  place, and the migration tool writes RFC 16 refs that point at them. GC must count those
+  refs, and backups must cover them;
+- every share has a remote block store (RFC 8 §2.1), so a v1 share with none must be
+  given one before it can be migrated.
 
-1. preflight (read-only);
-2. initialise the v2 devices and whatever the RFC 16 store needs besides `Installation`.
-   **Nothing the previous v1 release reads is modified**, so it still starts;
-3. write `Installation`: the point of no return;
-4. stamp a future `format` version in every v1 journal directory, so that v1 refuses them
-   with `ErrFutureFormat` instead of serving stale data. This step is repeated at every
-   start while v1 directories exist, so a crash between steps 3 and 4 leaves no gap.
+**What RFC 0 fixes.** An installation exists only through an **explicit initialisation
+step**, which writes the installation ID into the store's `Installation` record and into
+every journal's `format` file, and **a start never creates a store** (RFC 0 §1.4). So
+there is no adoption at start. A new installation runs the init command. An upgraded one
+runs the migration tool, which performs that same step and then converts.
 
-Storage v2 also replaces the metadata store (RFC 16), so this preflight gates the storage-v2
-upgrade as a whole, not only the journal. Migrating the metadata itself from the v1 stores
-is outside this plan; this section fixes only the gate and its ordering.
+**The start check** is read-only and runs before anything is opened for writing:
 
-A crash before step 3 leaves `v1-clean` in place: a re-run adopts again from the start,
-and the previous v1 release still starts. v1 directories are never deleted automatically.
-Removing them is an explicit cleanup.
+| `Installation` | v1 state | Action |
+| --- | --- | --- |
+| present | any | normal start |
+| absent | present | **refuse**, naming the migration tool |
+| absent | absent | **refuse**, naming the init command |
 
-What the upgrade costs:
+"v1 state" means v1 journal directories, or a v1 metadata or control-plane store. The
+check uses it only to choose the message. Without the first row the outcome is always a
+refusal, so a v1 metadata store can never be read as a fresh install.
 
-- after step 3 there is no downgrade;
-- v1's cold cache is dropped, and v2 refills it from the remote through `Fill`;
-- a local-only share has no remote, so its v1 journal holds the only copy, and #3156 does
-  not write the marker while such a share holds data. Such an installation stays refused
-  until a migration path for local-only shares is decided here.
+**The initialisation step**, shared by the init command and the migration tool:
+
+1. the migration tool only: refuse unless `v1-clean` is present
+   ([#3156](https://github.com/marmos91/dittofs/issues/3156)). The marker exists only if
+   every share's journal data reached the remote, so deleting every v1 journal directory
+   loses no data;
+2. `journalv2.Init` on every device, with the installation ID the step mints. Nothing in
+   the store is needed for this;
+3. `kvstore.Init`, which writes the format record, `Installation` and the share list in one
+   transaction. **This is the point of no return.** `kvstore.Open` refuses a store without
+   the format record, so nothing else in the store can be written before it;
+4. what the store holds besides, the `J‖journal` records included, written idempotently,
+   and repeated at every start so that a crash after step 3 leaves no gap;
+5. the migration tool only: convert the metadata, then stamp a future `format` version in
+   every v1 journal directory, so that v0.36.0 refuses them with `ErrFutureFormat` instead
+   of serving stale data. The start repeats the stamp while v1 directories exist.
+
+The step must be re-runnable. A crash between steps 2 and 3 leaves devices whose `format`
+names an installation with no store, which a *start* must report as a lost store
+(RFC 0 §1.4). Only the initialisation step may therefore wipe and re-initialise them. They
+have accepted no data, and before step 3 v0.36.0 still starts on the untouched v1 state.
+v1 directories are never deleted automatically; removing them is an explicit cleanup.
+
+**E10's share:**
+
+- the journal side of the initialisation step: steps 2 and 4 for journals, and the wipe of
+  devices left by an interrupted step;
+- the start check and its two refusals;
+- the v1 directory stamp at start.
+
+The init command, the migration tool and the order of their store-side steps belong to
+RFC 16 and the upgrade RFC. E10 depends on them as it depends on #3120.
+
+What the upgrade costs: there is no downgrade after step 3, and v1's cold cache is dropped.
+v2 refills it from the remote through `Fill`.
 
 ### Epic 11 — E2E green 🔀 (≈8 subtasks, A + B)
 
@@ -979,6 +1014,9 @@ named alerts (any `data_loss`, a growing `OldestDirty`, `RemovalMarkers` growing
   durable version limit, the derived version floor, `Applied`) comes from RFC 16's store,
   which [#3120](https://github.com/marmos91/dittofs/pull/3120) implements. E10 cannot
   finish before it lands on `feat/storage-v2` (S5).
+- **No RFC covers the upgrade from v1.** The path in E10 assumes an init command and an
+  offline migration tool that no RFC specifies yet, and that span the metadata store, the
+  remote tier, GC and backups. Until they exist, v2 serves new installations only.
 - **E10's estimate is soft.** Its ≈14 subtasks bridge into an RFC 8 engine and an RFC 16
   store that are both still being built. It is re-estimated when E10 starts.
 - **Segments vs staging files** (RFC 28 §2.6) is gated by benchmark J9. This plan assumes
