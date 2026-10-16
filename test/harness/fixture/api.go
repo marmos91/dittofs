@@ -57,7 +57,13 @@ func configure(c *apiclient.Client, f registry.Fixture, data, password string, n
 			return fmt.Errorf("user %d's grant: %w", uid, err)
 		}
 	}
-	if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: User, Password: password}); err != nil {
+	// decision: {user} has a UID and GID of its own, the first above the
+	// range users may name, since a user without one maps to 1000, which a
+	// users entry or the developer may hold. It has no grant on the default
+	// share: the shares-file rules give it the admin grant and the root on a
+	// shares file's shares, and nothing on the default one yet.
+	id := UserUID
+	if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: User, Password: password, UID: &id, GID: &id}); err != nil {
 		return fmt.Errorf("the test user: %w", err)
 	}
 	settings, err := nfsSettings(f)

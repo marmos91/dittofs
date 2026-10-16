@@ -110,7 +110,7 @@ func TestConfigureOrder(t *testing.T) {
 		"PUT /api/v1/shares/export/permissions/users/dt-65532 read-write",
 		"POST /api/v1/users dt-1 uid=1 gid=1",
 		"PUT /api/v1/shares/export/permissions/users/dt-1 read-write",
-		"POST /api/v1/users dt-user uid=<nil> gid=<nil>",
+		"POST /api/v1/users dt-user uid=65535 gid=65535",
 		"PATCH /api/v1/adapters/nfs/settings",
 		"PUT /api/v1/adapters/nfs on",
 		"GET /api/v1/adapters/nfs/settings",

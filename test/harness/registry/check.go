@@ -160,6 +160,17 @@ func checkUnit(root string, u *Suite) []error {
 		fail("shards is at least 1")
 	}
 
+	if f := u.Fixture; f != nil {
+		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
+		// squash decides, not a user to create, and the fixture's own test
+		// user takes the first UID above that range, so none shares it.
+		for _, uid := range f.Users {
+			if uid < 1 || uid > 65534 {
+				fail("fixture users: %d is not a UID from 1 to 65534", uid)
+			}
+		}
+	}
+
 	// Paths the suite reads must exist.
 	for _, p := range []string{u.Known, fixtureShares(u.Fixture)} {
 		if p != "" {

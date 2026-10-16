@@ -28,8 +28,12 @@ import (
 // Share is the fixture's share, the default one when no shares file is given.
 const Share = "/export"
 
-// User is {user}: the test user every fixture creates, with {password}.
-const User = "dt-user"
+// User is {user}: the test user every fixture creates, with {password} and
+// UserUID as its UID and GID.
+const (
+	User    = "dt-user"
+	UserUID = uint32(65535)
+)
 
 // stopGrace is how long dfs has to shut down before its group is killed.
 const stopGrace = 10 * time.Second

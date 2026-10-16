@@ -46,6 +46,7 @@ func TestLoadRules(t *testing.T) {
 		{"unknown fields are refused", ok + "suites:\n  a: { cmd: true, tiers: pr }\n", `unknown field "tiers"`},
 		{"unknown fields are refused at any depth", ok + "suites:\n  a: { cmd: true, fixture: { profil: memory } }\n", `unknown field "profil"`},
 		{"a newer version is refused", "version: 2\n", "this dt reads version 1"},
+		{"fixture users are UIDs from 1 to 65534", ok + "suites:\n  a: { cmd: true, fixture: { profile: memory, users: [1, 65534, 0, -1, 65535] } }\n", "users: 0 is not a UID from 1 to 65534\na: fixture users: -1 is not a UID from 1 to 65534\na: fixture users: 65535 is not"},
 		{"known paths exist", ok + "suites:\n  a: { cmd: true, known: missing.yaml }\n", "missing.yaml does not exist"},
 		{"{test} needs tests", ok + "suites:\n  a: { cmd: 'run {test}' }\n", "has no tests"},
 		{"groups name existing suites", ok + "groups: { g: [nope] }\nsuites:\n  a: { cmd: true }\n", `no suite "nope"`},
