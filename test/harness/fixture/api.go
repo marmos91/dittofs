@@ -21,8 +21,10 @@ func configure(c *apiclient.Client, f registry.Fixture, data, password string, n
 	// adapters enabled, on 12049 and 12445, and starts them; no setting stops
 	// that. So between the server's start and this step the fixture may hold
 	// those ports, or fail to bind them where another server holds them, which
-	// changes nothing here. Withdraw this when the server can start without
-	// its default adapters.
+	// changes nothing here. A developer's own dfs that starts in that moment
+	// finds the port taken and runs without that adapter, logging it, until
+	// the adapter is enabled again. Withdraw this when the server can start
+	// without its default adapters.
 	for _, a := range []string{"nfs", "smb"} {
 		if _, err := c.UpdateAdapter(a, &apiclient.UpdateAdapterRequest{Enabled: &off}); err != nil {
 			return fmt.Errorf("turning off the %s adapter the server starts with: %w", a, err)

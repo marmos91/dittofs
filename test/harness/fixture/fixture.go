@@ -189,8 +189,11 @@ func (s *Server) waitReady(ctx context.Context) error {
 }
 
 // Stop stops the process group dt started dfs in, and nothing outside it,
-// then removes the server's data; its output stays. It returns an error when
-// dfs had exited before Stop: the server ended before its cell did.
+// then removes the server's data; its output stays. dfs gets SIGTERM and
+// stopGrace to exit before SIGKILL, also when the setup's limit stops it, so
+// a dfs that hangs there holds its cell up to stopGrace past that limit. It
+// returns an error when dfs had exited before Stop: the server ended before
+// its cell did.
 func (s *Server) Stop() error {
 	s.stop.Do(func() {
 		select {
