@@ -577,3 +577,48 @@ func TestGoJSONPackageEndAfterTheLimit(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// A reader never reads a test the interrupt stopped. An interrupt between two
+// tests, which leaves the second unstarted, stops the cell too, so it keeps
+// no results, not even the first test's.
+func TestReaderInterrupted(t *testing.T) {
+	var cancel context.CancelFunc
+	var read []string
+	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
+		read = append(read, r.Test)
+		if r.Test == "b/a.sh" {
+			cancel() // between the two tests
+		}
+		return []report.Test{{Name: r.Test, Status: report.Passed}}, nil
+	}
+	t.Cleanup(func() { delete(readers, "tap") })
+	root, r := repo(t, `groups: { g: [during, between] }
+suites:
+  during: { cmd: "sh {test}", tests: "d/*.sh", format: tap }
+  between: { cmd: "sh {test}", tests: "b/*.sh", format: tap }
+`, map[string]string{"d/a.sh": "echo started; sleep 30\n", "b/a.sh": "true\n", "b/b.sh": "true\n"})
+	for _, c := range []struct {
+		target, note string
+		read         []string
+	}{
+		{"during", "d/a.sh: interrupted; no results", nil},
+		{"between", "1 tests not started: interrupted", []string{"b/a.sh"}},
+	} {
+		read = nil
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		cells, err := Select(root, r, c.target, "", "pr", nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: cancelOn{"started", cancel}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
+		if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != c.note || !slices.Equal(read, c.read) || len(s.cases()) != 0 {
+			t.Errorf("%s: %+v, read %q, results %q", c.target, o, read, s.cases())
+		}
+		cancel()
+	}
+}
