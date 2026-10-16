@@ -28,7 +28,7 @@ const DefaultLockGracePeriod = 90 * time.Second
 // Usage:
 //
 //	metaSvc := metadata.New()
-//	metaSvc.RegisterStoreForShare("/export", memoryStore)
+//	metaSvc.RegisterStoreForShare("/export", inMemoryBadgerStore)
 //	metaSvc.RegisterStoreForShare("/archive", badgerStore)
 //
 //	// High-level operations (with business logic)

@@ -1,6 +1,17 @@
-# RFC: one test harness, with a suite registry, one runner and one result format
+---
+rfc: 29
+title: "RFC 29 — one test harness, with a suite registry, one runner and one result format"
+component: test harness
+status: reviewed
+depends_on: []
+aliases:
+  - RFC 29
+tags:
+  - rfc
+---
+# RFC 29 — one test harness, with a suite registry, one runner and one result format
 
-**Status:** accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
+**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
 implemented yet; §8 orders the work.
 **Discussion:** #2975, and the pull request that settled §9.
 
@@ -67,6 +78,87 @@ Appendix A lists what was checked and what turned out different from what was as
 revision history is in the pull request's description.
 
 ---
+
+## Start here
+
+*Explanatory. The rules are in §1 onward; where this section and a rule differ, the rule wins.*
+
+### In plain words
+
+DittoFS has 15 test suites, and today each one is started its own way and
+reports its own way. `dt` is one command that runs them all the same way, on a
+laptop or in CI. It reads one file, `test/suites.yaml`, which lists every suite.
+For each suite it builds the DittoFS server the tests need, the **fixture**,
+and runs the test tool. It grades the results against lists of known failures
+and expected skips. Think of one report card for every subject: each teacher grades
+differently, but the card uses one scale. On this card "absent" is never written
+as "passed": a suite that did not run says so. Where the analogy stops, `dt`
+also remembers past runs, so "is this test flaky?" has an answer.
+
+### Scenarios
+
+**A pull request breaks one pjdfstest test.**
+
+1. The PR runs the `pr` tier, the quick set; pjdfstest runs there on the
+   production profile, `badger-s3`, only ([§4.3](#4.3%20Tiers)).
+2. The failing test is on no known-failure list, so it is graded a new failure
+   and its cell exits 1 ([§4.4](#4.4%20The%20command%20line)).
+3. No retry runs on a pull request, so a flaky test cannot sneak in
+   ([§4.7](#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)).
+4. The `gate` job fails, because a blocking cell did not exit 0
+   ([§4.8](#4.8%20CI)).
+
+Outcome: the PR shows one red gate, and its report names the test.
+
+**The bucket for a `badger-s3` cell refuses writes.**
+
+1. Before the first test, the fixture checks itself: the server answers, and
+   the bucket accepts a write and a read
+   ([§4.2](#4.2%20Fixtures%3A%20the%20DittoFS%20a%20suite%20runs%20against)).
+2. The bucket check fails, so no test runs.
+3. The cell exits 2, "not run", never a pass
+   ([§4.4](#4.4%20The%20command%20line)).
+4. A failed fixture step is never retried; someone re-runs the cell by hand
+   ([§4.2](#4.2%20Fixtures%3A%20the%20DittoFS%20a%20suite%20runs%20against)).
+
+Outcome: a cell that tested nothing shows as "not run" instead of green.
+
+**A test fails once on develop, then passes.**
+
+1. After a merge, the `merge` tier runs with `--retry 1`, which re-runs only the
+   failed tests ([§4.8](#4.8%20CI)).
+2. The test passes on retry, so it is graded flaky: no develop-red issue opens,
+   and `dt history` counts it
+   ([§4.7](#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)).
+3. Flaky twice in a week on develop, it becomes a quarantine candidate
+   ([§4.7](#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)).
+4. Quarantined, with an issue and an expiry date, it still runs but never fails
+   a run or alerts
+   ([§4.7](#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)).
+
+Outcome: a flaky test is tracked, not ignored, and wakes nobody up.
+
+**A merge really breaks develop.**
+
+1. The `merge` run still has a new failure after its retry, so it exits 1
+   ([§4.8](#4.8%20CI)).
+2. One issue labelled `develop-red` opens, or the open one is updated. Its body
+   is the current failing set, rewritten in place ([§4.8](#4.8%20CI)).
+3. A test failing 2 runs in a row also gets an issue of its own, unless more
+   than 10 tests fail at once ([§4.4](#4.4%20The%20command%20line)).
+4. The develop-red issue closes once every test in its set passes again in the
+   tier that runs it, or is listed known or quarantined ([§4.8](#4.8%20CI)).
+
+Outcome: red is noticed once, through one issue, without a flood of mail.
+
+**A pull request changes only documentation.**
+
+1. `dt plan --base` compares the branch with the PR's base ([§4.8](#4.8%20CI)).
+2. Every changed path is documentation, so the plan has no cells
+   ([§4.8](#4.8%20CI)).
+3. The `gate` job passes with nothing to wait for ([§4.8](#4.8%20CI)).
+
+Outcome: a docs-only PR is not held up by test suites.
 
 ## 1. Why
 

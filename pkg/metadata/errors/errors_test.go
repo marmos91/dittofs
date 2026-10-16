@@ -206,7 +206,7 @@ func TestClassifiersNonStoreError(t *testing.T) {
 
 // errors.As must be able to extract a *StoreError from the concrete type.
 func TestErrorsAsExtraction(t *testing.T) {
-	orig := NewConflictError("badger UpdateAttrs", "object_id already mapped")
+	orig := NewConflictError("badger UpdateAttrs", "transaction conflict")
 	var got *StoreError
 	if !goerrors.As(orig, &got) {
 		t.Fatal("errors.As failed to extract *StoreError")

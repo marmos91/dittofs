@@ -292,28 +292,15 @@ See `test/e2e/BENCHMARKS.md` for detailed documentation and `test/e2e/COMPARISON
 
 1. Add handler in `internal/adapter/nfs/v3/handlers/` or `internal/adapter/nfs/mount/handlers/`
 2. Implement XDR request/response parsing
-3. Extract auth context from call
+3. Build the auth context (NFSv3 handlers call `h.GetCachedAuthContext(ctx)`, which applies share permission and squashing)
 4. Delegate business logic to repository methods
-5. Update dispatch table in `dispatch.go`
+5. Add the procedure to its dispatch table (for NFSv3, `NfsDispatchTable` in `internal/adapter/nfs/v3/procedures.go`)
 6. Add test coverage
 
-Example:
-```go
-// internal/adapter/nfs/v3/handlers/myproc.go
-func HandleMyProc(ctx context.Context, call *rpc.Call, metadata metadata.Store) (*rpc.Reply, error) {
-    // 1. Parse XDR request
-    req := xdr.DecodeMyProcArgs(call.Body)
-
-    // 2. Extract auth context
-    authCtx := dispatch.ExtractAuthContext(call)
-
-    // 3. Delegate to repository
-    result, err := metadata.MyOperation(ctx, authCtx, req.Handle)
-
-    // 4. Encode response
-    return xdr.EncodeMyProcRes(result), nil
-}
-```
+For a complete example, follow READLINK: the handler is `ReadLink` in
+`internal/adapter/nfs/v3/handlers/readlink.go`, its XDR codec is in `readlink_codec.go`
+next to it, and `handleNFSReadLink` in `internal/adapter/nfs/v3/procedures.go` decodes
+the request, calls the handler and encodes the reply.
 
 ### Adding a New Store Backend
 

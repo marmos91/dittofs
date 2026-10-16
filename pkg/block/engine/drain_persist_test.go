@@ -7,21 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // testCoordinator is a faithful, test-local re-implementation of the
 // production engine.MetadataCoordinator (pkg/controlplane/runtime/shares/
 // coordinator.go) — that package may not be imported here per the
-// strict-grep boundary. It drives PersistFileChunks the exact way the
-// production wrapper does: resolve payloadID -> existing file row via
-// GetFileByPayloadID, mutate Blocks + ObjectID, SetManifest under the existing
-// id, all in one metadata transaction, wrapping a backend object_id
-// uniqueness conflict into engine.ErrObjectIDConflict.
+// strict-grep boundary.
 type testCoordinator struct {
 	store metadata.Store
 }
@@ -52,97 +46,9 @@ func (c *testCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	return count, nil
 }
 
-func (c *testCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
-	return c.store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
-		if err != nil {
-			return fmt.Errorf("coordinator: GetFileByPayloadID(%s): %w", payloadID, err)
-		}
-		if file == nil {
-			return fmt.Errorf("coordinator: GetFileByPayloadID(%s): nil file (no row)", payloadID)
-		}
-		file.Blocks = blocks
-		file.ObjectID = objectID
-		if perr := tx.SetManifest(ctx, file); perr != nil {
-			return mapObjectIDConflict(perr)
-		}
-		return nil
-	})
-}
-
-// mapObjectIDConflict mirrors the production runtime coordinator: an
-// object_id uniqueness violation (Memory/Badger surface mderrors.ErrConflict;
-// Postgres now maps the files_object_id_idx 23505 to the same ErrConflict
-// code) is wrapped into engine.ErrObjectIDConflict so the rollup-persist
-// path recognises the benign file-level-dedup conflict uniformly across
-// backends.
-func mapObjectIDConflict(err error) error {
-	if err == nil {
-		return nil
-	}
-	var storeErr *mderrors.StoreError
-	if errors.As(err, &storeErr) && storeErr.Code == mderrors.ErrConflict {
-		return errors.Join(engine.ErrObjectIDConflict, err)
-	}
-	return err
-}
-
-func (c *testCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error) {
-	file, err := c.store.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
-	if err != nil {
-		if metadata.IsNotFoundError(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if file == nil {
-		return nil, nil
-	}
-	if len(file.Blocks) > 0 {
-		return file.Blocks, nil
-	}
-	// Memory returns blocks inline with a zero ID; an unresolvable zero-ID
-	// handle means "no blocks yet". Postgres sets ID and omits blocks, so it
-	// loads them via the handle fallback.
-	if file.ID == uuid.Nil {
-		return nil, nil
-	}
-	handle, err := metadata.EncodeFileHandle(file)
-	if err != nil {
-		return nil, err
-	}
-	full, err := c.store.GetFile(ctx, handle)
-	if err != nil {
-		return nil, err
-	}
-	if full == nil {
-		return nil, nil
-	}
-	return full.Blocks, nil
-}
-
-func (c *testCoordinator) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
-	if objectID.IsZero() {
-		return nil, nil
-	}
-	return c.store.FindByObjectID(ctx, objectID)
-}
-
 // ReprojectBlocks is a no-op: this fake does not model the Blocks
 // projection.
 func (c *testCoordinator) ReprojectBlocks(_ context.Context, _ string) error { return nil }
-
-func (c *testCoordinator) GetFileObjectID(ctx context.Context, payloadID string) (block.ObjectID, error) {
-	var zero block.ObjectID
-	file, err := c.store.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
-	if err != nil {
-		return zero, nil
-	}
-	if file == nil {
-		return zero, nil
-	}
-	return file.ObjectID, nil
-}
 
 func createShare(t *testing.T, store metadata.Store, shareName string) metadata.FileHandle {
 	t.Helper()

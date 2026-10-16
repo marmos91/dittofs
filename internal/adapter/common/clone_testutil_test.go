@@ -16,22 +16,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
-// fakeCoordinator records IncrementRefCount/DecrementRefCount/PersistFileChunks
+// fakeCoordinator records IncrementRefCount/DecrementRefCount
 // invocations and lets tests inject failure on the Nth IncrementRefCount call
 // for the rollback contract.
 type fakeCoordinator struct {
 	incrementCalls    []block.ContentHash
 	decrementCalls    []block.ContentHash
 	reapIDs           []string
-	persistCalls      []persistCall
 	failOnNthIncrErr  error
 	failOnNthIncrTrip int // 1-based; 0 = never fail
-}
-
-type persistCall struct {
-	payloadID string
-	blocks    []block.ChunkRef
-	objectID  block.ObjectID
 }
 
 func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash block.ContentHash) error {
@@ -53,30 +46,6 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash block.Conten
 func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID string, offset uint64) (uint32, error) {
 	f.reapIDs = append(f.reapIDs, fmt.Sprintf("%s/%d", payloadID, offset))
 	return 0, nil
-}
-
-func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
-	f.persistCalls = append(f.persistCalls, persistCall{payloadID: payloadID, blocks: blocks, objectID: objectID})
-	return nil
-}
-
-func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.ChunkRef, error) {
-	return nil, nil
-}
-
-// FindByObjectID stub. Adapter-common tests don't exercise short-circuit
-// lookups (those live in pkg/block/engine and pkg/metadata/storetest);
-// satisfy the interface so the fake satisfies engine.MetadataCoordinator.
-func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.ChunkRef, error) {
-	return nil, nil
-}
-
-// GetFileObjectID stub. Adapter-common tests do not drive the
-// RemoteSync.Flush short-circuit path; returning the zero ObjectID + nil is
-// the "never quiesced" disposition that keeps the interface satisfied
-// without affecting any assertions.
-func (f *fakeCoordinator) GetFileObjectID(_ context.Context, _ string) (block.ObjectID, error) {
-	return block.ObjectID{}, nil
 }
 
 // ReprojectBlocks is a no-op: this fake does not model the Blocks

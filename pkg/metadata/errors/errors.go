@@ -93,10 +93,10 @@ const (
 	// ErrConnectionLimitReached indicates connection limit has been reached.
 	ErrConnectionLimitReached
 
-	// ErrConflict indicates a concurrent-write conflict: a Badger SSI abort,
-	// including two writers claiming the same Merkle-root ObjectID
-	// concurrently. The runtime coordinator wraps it into
-	// engine.ErrObjectIDConflict on the manifest write.
+	// ErrConflict indicates a concurrent-write conflict: a Badger SSI abort, or
+	// a directory entry that changed under a rename or remove between the
+	// unlocked lookup and the transaction. Callers may retry; it never means a
+	// rule refused the write.
 	ErrConflict
 
 	// ErrCrossShare indicates a two-handle operation named handles from two
@@ -290,9 +290,9 @@ func NewAlreadyExistsError(path string) *StoreError {
 }
 
 // NewConflictError creates a Conflict error.
-// op is the calling operation name (e.g., "memory UpdateAttrs",
+// op is the calling operation name (e.g.,
 // "badger UpdateAttrs"); message is the specific reason (e.g.,
-// "object_id already mapped to file <other-id>").
+// "transaction conflict, retries exhausted").
 func NewConflictError(op, message string) *StoreError {
 	return &StoreError{
 		Code:    ErrConflict,

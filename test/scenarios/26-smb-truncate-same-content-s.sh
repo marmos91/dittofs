@@ -2,11 +2,10 @@
 # The SMB side of B-01, as 25-smb-nfs-truncate-same-content-s.sh shows it over NFS. Every truncate here is
 # an SMB SET_INFO FileEndOfFileInformation, what a Windows program calling SetEndOfFile sends.
 # a.bin and b.bin are the same 8 MiB, so dedup gives them one chunk list. Truncated to 3 MB, both keep
-# the same chunks and get the same ObjectID, which every metadata store requires to be unique: the
-# first truncate succeeds, the second must too.
-# Fails today: the second truncate answers STATUS_INSUFFICIENT_RESOURCES (the store's conflict,
-# mapped as if it were a passing race) on every try, and b.bin stays 8 MiB. Control: c.bin, the same
-# content cut to 6 MB, keeps more chunks, so its ObjectID differs and its truncate succeeds.
+# the same chunks, and both truncates must succeed. A store used to give each truncated file a hash of
+# its remaining chunk list and require it to be unique, so the second truncate answered
+# STATUS_INSUFFICIENT_RESOURCES (the store's refusal, mapped as if it were a passing race) on every
+# try and b.bin stayed 8 MiB. Control: c.bin, the same content cut to 6 MB, keeps more chunks.
 
 # smb-truncate PATH SIZE: smbclient cannot set a file's size; libsmb2's smb2_truncate sends the
 # SET_INFO. libsmb2 tries Kerberos first, so NTLM is forced.

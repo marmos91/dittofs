@@ -2,9 +2,9 @@ name: Lint
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, feat/storage-v2]
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, feat/storage-v2]
 
 permissions:
   contents: read
@@ -79,9 +79,9 @@ jobs:
   repo-checks:
     name: Repo Checks
     runs-on: ubuntu-latest
-    # Checks whose separately measured maxima sum to about 70s: the
-    # conformance manifest 16s, the E2E harness self-test 34s, and the three
-    # diff checks under 10s apiece.
+    # Checks whose separately measured maxima sum to about 90s: the
+    # conformance manifest 16s, the E2E harness self-test 34s, dt's own tests
+    # about 20s, and the three diff checks under 10s apiece.
     timeout-minutes: 10
 
     steps:
@@ -93,7 +93,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Only to build dt, which needs a few modules, so no cache to restore.
+      # To build dt and run its own tests, which need a few modules, so no cache
+      # to restore.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
