@@ -446,11 +446,10 @@ func TestRevalidateAuthorization_RevokedSessionDrainsParkedCreate(t *testing.T) 
 
 // TestRevalidateAuthorization_ResolverErrorDoesNotRaisePermission pins the
 // re-check against a failed lookup. The resolver answers a lookup error with the
-// share's default permission, which TREE_CONNECT may hand out on a fresh
-// connect; writing it back here would raise a tree the operator had restricted
-// to whatever the share grants everyone. The tree below is pinned at read while
-// the share defaults to read-write, so a fallback treated as a decision shows up
-// as exactly that promotion.
+// share's default permission; writing it back here would raise a tree the
+// operator had restricted to whatever the share grants everyone. The tree below
+// is pinned at read while the share defaults to read-write, so a fallback
+// treated as a decision shows up as exactly that promotion.
 func TestRevalidateAuthorization_ResolverErrorDoesNotRaisePermission(t *testing.T) {
 	store := &revalidateUserStore{
 		user:    enabledUser(),
@@ -582,6 +581,91 @@ func TestRevalidateAuthorization_SIDResolverErrorDoesNotRaisePermission(t *testi
 	if tree.Permission != models.PermissionRead {
 		t.Errorf("Permission = %v, want read: the SID lookup failed, so the share default "+
 			"was left standing and written back as an authorization decision", tree.Permission)
+	}
+}
+
+// TestTreeConnect_UnresolvedPermissionRefused pins TREE_CONNECT against the
+// failed lookups the re-check tests above cover. The re-check keeps a tree's
+// earlier permission; a fresh connect has none to keep, so it refuses. The
+// share defaults to read-write, so an answer that fell back to the default
+// shows up as a read-write tree.
+func TestTreeConnect_UnresolvedPermissionRefused(t *testing.T) {
+	storeDown := errors.New("connection refused")
+	withGrant := func(perm models.SharePermission) *models.User {
+		u := enabledUser()
+		u.SharePermissions = []models.UserSharePermission{{ShareName: "/export", Permission: string(perm)}}
+		return u
+	}
+	uid := uint32(4242)
+
+	tests := []struct {
+		name    string
+		user    *models.User
+		store   *revalidateUserStore
+		pacSIDs []string
+		want    models.SharePermission // none: refused
+	}{
+		{
+			name:  "explicit read, store healthy",
+			user:  withGrant(models.PermissionRead),
+			store: &revalidateUserStore{resolveFromRecord: true},
+			want:  models.PermissionRead,
+		},
+		{
+			name:  "explicit read, permission lookup failing",
+			user:  withGrant(models.PermissionRead),
+			store: &revalidateUserStore{resolveFromRecord: true, permErr: storeDown},
+			want:  models.PermissionNone,
+		},
+		{
+			name:  "explicit none, permission lookup failing",
+			user:  withGrant(models.PermissionNone),
+			store: &revalidateUserStore{resolveFromRecord: true, permErr: storeDown},
+			want:  models.PermissionNone,
+		},
+		{
+			// No local account and no per-user row: the local lookup answers
+			// with the share default, and the SID grant is the rest.
+			name:    "directory principal, SID-grant lookup failing",
+			user:    &models.User{Username: "ad-user", UID: &uid, Enabled: true},
+			store:   &revalidateUserStore{perm: models.PermissionReadWrite, sidErr: storeDown},
+			pacSIDs: []string{"S-1-5-21-1-2-3-1104"},
+			want:    models.PermissionNone,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.store.user = tt.user
+			h, sessionID, _ := newRevalidateHandler(t, tt.user, tt.store, models.PermissionNone, false)
+			if tt.pacSIDs != nil {
+				sess, ok := h.GetSession(sessionID)
+				if !ok {
+					t.Fatal("fixture is wrong: no session")
+				}
+				sess.SetPACIdentity(tt.pacSIDs, "")
+			}
+
+			ctx := newTreeConnectTestContext(sessionID)
+			res, err := h.TreeConnect(ctx, buildTreeConnectRequestBody(`\\server\export`))
+			if err != nil {
+				t.Fatalf("TreeConnect: %v", err)
+			}
+			got := models.PermissionNone
+			switch res.Status {
+			case types.StatusSuccess:
+				tree, ok := h.GetTree(ctx.TreeID)
+				if !ok {
+					t.Fatal("TREE_CONNECT succeeded but published no tree")
+				}
+				got = tree.Permission
+			case types.StatusAccessDenied:
+			default:
+				t.Fatalf("Status = %#x, want success or STATUS_ACCESS_DENIED", res.Status)
+			}
+			if got != tt.want {
+				t.Errorf("tree permission = %q, want %q (none: refused)", got, tt.want)
+			}
+		})
 	}
 }
 

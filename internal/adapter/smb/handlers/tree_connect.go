@@ -446,7 +446,22 @@ func resolveSharePermission(
 		snap = sess.AuthzIdentity()
 		snap.User = currentRecordFor(ctx.Context, snap.User, userStore)
 	}
-	perm, identifier, _ := resolveSharePermissionForIdentity(ctx, sess, snap, share, defaultPerm, userStore)
+	perm, identifier, resolved := resolveSharePermissionForIdentity(ctx, sess, snap, share, defaultPerm, userStore)
+	// A lookup the store could not answer leaves the share default standing,
+	// which is no decision about this user: an explicit grant below the default
+	// would be raised to it. Refuse instead, as the NFS resolver does; the
+	// client can retry once the store answers.
+	//
+	// decision: a failed SID-grant lookup refuses too, where NFS goes on
+	// without the SID grant. The partial answer is never above the full one,
+	// but a tree keeps the permission it was published with until a
+	// control-plane change re-checks it, so the partial answer would outlive
+	// the failure.
+	if !resolved {
+		logger.Warn("SMB TREE_CONNECT refused: share permission could not be resolved",
+			"share", share.Name, "user", identifier, "sessionID", ctx.SessionID)
+		return models.PermissionNone, identifier, snap.Generation
+	}
 	return perm, identifier, snap.Generation
 }
 
@@ -557,17 +572,18 @@ func resolveSharePermissionForIdentity(
 	// resolved reports whether the permission below is a decision the store
 	// actually made — across both lookups, the local one here and the SID grant
 	// further down. A failed lookup falls back to the share default, which is a
-	// grant a caller must not mistake for a resolved one: TREE_CONNECT may hand
-	// out the default on a fresh connect, but a re-check that writes the result
-	// back would promote an explicitly restricted tree to it.
+	// grant a caller must not mistake for a resolved one: taken as an answer,
+	// it lifts an explicitly restricted user to the default. TREE_CONNECT
+	// refuses the share on an unresolved answer, and a re-check leaves the tree
+	// as it is.
 	resolved := true
 	switch {
 	case user != nil:
 		identifier = user.Username
 		if userStore != nil {
 			if perm, err := userStore.ResolveSharePermission(ctx.Context, user, share.Name); err != nil {
-				logger.Debug("Permission resolution failed, using default",
-					"shareName", share.Name, "user", user.Username, "error", err, "default", defaultPerm)
+				logger.Debug("Permission resolution failed",
+					"shareName", share.Name, "user", user.Username, "error", err)
 				resolved = false
 			} else {
 				localPerm = perm
@@ -598,7 +614,7 @@ func resolveSharePermissionForIdentity(
 		}
 		if len(sids) > 0 {
 			if sidPerm, err := r.ResolveSharePermissionForSIDs(ctx.Context, sids, share.Name); err != nil {
-				logger.Debug("SID permission resolution failed, ignoring",
+				logger.Debug("SID permission resolution failed",
 					"shareName", share.Name, "error", err)
 				// Unresolved for the same reason the local lookup is: an AD
 				// principal can hold its whole grant here, so a failure leaves
