@@ -1,6 +1,7 @@
 package needs
 
 import (
+	"cmp"
 	"net"
 	"os"
 	"path/filepath"
@@ -137,29 +138,55 @@ func TestServiceFallback(t *testing.T) {
 	}
 }
 
-// A hint says how to meet a need: a tool this platform has no program for by
-// running where it has one, never by installing it here; the linux need in
-// dtc too; a service by starting it with dt services.
+// A tool's hint names the program its check looks for, with a Debian and
+// Ubuntu package only on the platform that uses those. With no program here,
+// it names the platforms that have one, and dtc only when its image has the
+// tool. A service is started with dt services. Fake tools check each rule on
+// every platform.
 func TestHint(t *testing.T) {
-	// A tool with programs only on platforms other than this one, so the rule
-	// is checked on every platform.
 	elsewhere := map[string]string{"darwin": "x", "linux": "x", "windows": "x"}
 	delete(elsewhere, runtime.GOOS)
 	tools["elsewhere"] = elsewhere
-	t.Cleanup(func() { delete(tools, "elsewhere") })
-	for need, bins := range tools {
-		if got := Hint(need); (bins[runtime.GOOS] == "") != strings.HasPrefix(got, "run it on ") {
-			t.Errorf("%s on %s: %q", need, runtime.GOOS, got)
+	tools["here"] = map[string]string{runtime.GOOS: "prog"}
+	debian["here"] = "pkg"
+	t.Cleanup(func() {
+		delete(tools, "elsewhere")
+		delete(tools, "here")
+		delete(debian, "here")
+		delete(inDtc, "elsewhere")
+	})
+	others := map[string]string{"darwin": "run it on Linux or Windows", "linux": "run it on macOS or Windows", "windows": "run it on macOS or Linux"}[runtime.GOOS]
+	install := map[bool]string{true: "install prog (Debian and Ubuntu: pkg)", false: "install prog"}[runtime.GOOS == "linux"]
+	for need, want := range map[string]string{"elsewhere": others, "here": install, "linux": "run it on Linux, or in dtc", "service:kmip": "dt services up kmip"} {
+		if got := Hint(need); got != want {
+			t.Errorf("%s: %q, want %q", need, got, want)
 		}
 	}
-	want := map[string]string{"darwin": "run it on Linux or Windows", "linux": "run it on macOS or Windows", "windows": "run it on macOS or Linux"}[runtime.GOOS]
-	if got := Hint("elsewhere"); got != want {
-		t.Errorf("elsewhere: %q, want %q", got, want)
+	inDtc["elsewhere"] = true
+	if got := Hint("elsewhere"); got != others+", or in dtc" {
+		t.Errorf("elsewhere, in dtc: %q", got)
 	}
-	if got := Hint("linux"); !strings.Contains(got, "dtc") {
-		t.Errorf("linux: %q", got)
+	kerberos := map[string]string{
+		"darwin":  "install kinit",
+		"linux":   "install kinit (Debian and Ubuntu: krb5-user)",
+		"windows": "run it on macOS or Linux, or in dtc",
+	}[runtime.GOOS]
+	if got := Hint("kerberos"); got != kerberos {
+		t.Errorf("kerberos: %q, want %q", got, kerberos)
 	}
-	if got := Hint("service:kmip"); got != "dt services up kmip" {
-		t.Errorf("service:kmip: %q", got)
+}
+
+// The tools the hints place in dtc are the ones whose packages its image
+// installs.
+func TestInDtc(t *testing.T) {
+	data, err := os.ReadFile("../docker/dev.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := strings.Fields(string(data))
+	for need, bins := range tools {
+		if pkg := cmp.Or(debian[need], bins["linux"]); pkg != "" && slices.Contains(words, pkg) != inDtc[need] {
+			t.Errorf("%s: package %s in the image %t, in dtc %t", need, pkg, slices.Contains(words, pkg), inDtc[need])
+		}
 	}
 }
