@@ -548,3 +548,24 @@ func TestGoJSONInterruptedCellHasNoResults(t *testing.T) {
 		t.Errorf("tests %q, outcome %+v", got, rep.Outcomes[0])
 	}
 }
+
+// A package that ends after the cell's limit ends because dt stopped it, as
+// the limit's interrupt does go test run as root, which then reports the
+// package failed: the test it left open timed out, so it failed, timed to the
+// package's end.
+func TestGoJSONPackageEndAfterTheLimit(t *testing.T) {
+	res := results{limit: time.Date(2026, 10, 15, 12, 0, 5, 0, time.UTC)}
+	for _, line := range []string{
+		`{"Time":"2026-10-15T12:00:00Z","Action":"run","Package":"p","Test":"TestDone"}`,
+		`{"Time":"2026-10-15T12:00:00Z","Action":"pass","Package":"p","Test":"TestDone"}`,
+		`{"Time":"2026-10-15T12:00:01Z","Action":"run","Package":"p","Test":"TestWait"}`,
+		`{"Time":"2026-10-15T12:00:05.1Z","Action":"output","Package":"p","Test":"TestWait","Output":"signal: interrupt\n"}`,
+		`{"Time":"2026-10-15T12:00:05.2Z","Action":"fail","Package":"p","Elapsed":5.2}`,
+	} {
+		res.add([]byte(line+"\n"), io.Discard)
+	}
+	want := []string{"p > TestDone: passed, 0s", "p > TestWait: failed, 4.2s | stopped at the cell's limit"}
+	if got := lines(res.cases); !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

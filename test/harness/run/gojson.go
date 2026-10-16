@@ -44,7 +44,8 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 			return NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err), nil
 		}
 	}
-	var res results
+	limit, _ := t.ctx.Deadline()
+	res := results{limit: limit}
 	var problems []string
 	for i, cmd := range t.cell.Unit.Cmd {
 		argv, err := fill(cmd, t.vals, t.lists)
@@ -65,8 +66,8 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 		code, err := t.goTest(argv, root, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d.json", i+1)), &res)
 		switch {
 		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
-			res.end("", time.Now(), "stopped at the cell's limit")
-			return Failed, res.note(append(problems, "stopped at the cell's limit")), res.cases
+			res.end("", time.Now(), atCellLimit)
+			return Failed, res.note(append(problems, atCellLimit)), res.cases
 		case t.ctx.Err() != nil:
 			// The cell didn't finish, and what its tests reported once
 			// interrupted can come from the interrupt itself.
@@ -253,8 +254,12 @@ type event struct {
 	Elapsed                                    float64 // seconds
 }
 
+// atCellLimit says why a test the cell's limit stopped failed.
+const atCellLimit = "stopped at the cell's limit"
+
 // results are a go-json cell's tests, from their events.
 type results struct {
+	limit    time.Time           // the cell's limit; a package that ends after it, dt stopped
 	tests    map[string]string   // "package test" to fail once a command failed it, else its last pass or skip
 	failedIn map[string]bool     // packages with a failed test
 	broken   []string            // packages that failed outside any test
@@ -329,7 +334,14 @@ func (r *results) add(line []byte, w io.Writer) {
 		delete(r.running, k)
 		r.cases = append(r.cases, tc)
 	case e.Test == "" && (e.Action == "pass" || e.Action == "fail"):
-		recorded := r.end(e.Package, e.Time, "")
+		// A package that ends after the cell's limit ends because dt stopped
+		// it, as the limit's interrupt does a suite run as root: the tests it
+		// left open timed out.
+		stopped := ""
+		if !r.limit.IsZero() && !e.Time.Before(r.limit) {
+			stopped = atCellLimit
+		}
+		recorded := r.end(e.Package, e.Time, stopped)
 		if e.Action == "fail" && !r.failedIn[e.Package] {
 			why := "failed outside any test"
 			if e.FailedBuild != "" {
