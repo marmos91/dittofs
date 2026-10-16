@@ -235,7 +235,7 @@ Every suite has its own entry point, its own setup and its own way of saying how
 | R10 | Not run is never passed | an unmet need, a fixture that fails its own check, a suite that ran no tests, or, in a suite with a `known` file, a test that skips without being an expected skip ends in exit 2 (§4.4, §4.7) |
 | R11 | Each component RFC names the suites that cover it | every RFC under `docs/internals/rfcs/` has a section naming its harness suites or groups (§4.9), once #2894 lands them there |
 
-"Green" means no new failures, no unexpected skips and no listed test that passes. Every failing
+"Green" means no new failures, no unexpected skips and no unexpected passes (§4.7). Every failing
 test is either fixed or listed as a known failure, and in a suite that keeps a known-failure list
 every skipping test is listed as an expected skip, each with its reason (§4.7).
 That's how the conformance suites already handle failures, and it's the only definition that lets
@@ -851,7 +851,7 @@ dt report [RUN] [--format text|md|json]        show a run; CI appends --format m
 dt report [RUN] --failures [--post]            only the new failures; --post opens or updates an issue per failure
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
-dt known prune SUITE                           remove known failures and expected skips that no longer happen
+dt known prune SUITE                           remove entries that matched no failing or skipping test in recent runs
 dt known import FILE.md [--where AXIS=V,...]   convert a Markdown known-failure list to the YAML format, once
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
 dt docs [--check]                              write the documentation's suite tables, or check them
@@ -923,8 +923,8 @@ first version is narrow, so it can't flood the tracker as #1705's alarm did:
 | Exit status | Meaning |
 |---|---|
 | 0 | no new failures, no unexpected skips and no unexpected passes (known, quarantined and flaky ones are reported, not counted) |
-| 1 | at least one new failure, a test that timed out included: once the fixture's check passed, a hung operation is a regression until shown otherwise. Also a test its `known` file lists that passed (§4.7) |
-| 2 | something didn't run: unmet needs (with `--ci`), a fixture that failed its check or timed out, nothing ran, tests the cell's timeout left unstarted, a test whose output stopped before its result (§4.6), or, in a suite with a `known` file, a test that skipped without being an expected skip |
+| 1 | at least one new failure, a test that timed out or crashed the code under test included: once the fixture's check passed, a hung operation or a crash is a regression until shown otherwise (§4.6). Also an unexpected pass (§4.7) |
+| 2 | something didn't run: unmet needs (with `--ci`), a fixture that failed its check or timed out, nothing ran, tests the cell's timeout left unstarted, a test whose output stopped before its result without a crash of the code under test (§4.6), or, in a suite with a `known` file, a test that skipped without being an expected skip |
 | 3 | usage or registry error |
 
 Status 1 is a regression, or a list that no longer says what the server does; status 2 is an
@@ -1068,8 +1068,11 @@ grader:
 - `trx`: `Passed` passes; `Failed`, `Error`, `Timeout` and `Aborted` fail; `NotExecuted` and any
   other outcome skip, with the outcome kept as `rawStatus`.
 
-A test whose output stopped before its result is graded `incomplete`, exit 2, and no known-failure
-entry excuses it. A cell whose tool wrote no results, or results with no test in them, is not run,
+A crash of the code under test is a failure, exit 1, as a hang is (§4.4): a Go test binary that
+panics or dies on a signal fails the test it was running, and the fixture's server exiting during a
+test fails that test. Otherwise a test whose output stopped before its result is graded
+`incomplete`, exit 2: its client, such as smbtorture or pynfs, died or never reached the server. No
+known-failure entry excuses either. A cell whose tool wrote no results, or results with no test in them, is not run,
 exit 2, and so is one whose container didn't start (`docker run` exits 125 to 127). A name with
 several results in one cell is graded at each of them: smbtorture reports four subcases as
 `smb2.charset.Testing`, and three pass where one fails.
@@ -1088,14 +1091,14 @@ and never grade a run on their own (§4.10).
 
 | Grade | The result | CTRF | JUnit | The cell |
 |---|---|---|---|---|
-| none | passed, and no entry of the `known` file matches it, or another result of its name in the cell failed | `passed` | a pass | passes |
-| `new` | failed, and no known-failure entry matches it | `failed` | `<failure>` | exits 1 |
+| none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
+| `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
 | `known` | failed, and a known-failure entry matches it | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
-| `unexpected_pass` | passed, a known-failure or expected-skip entry matches it, and no other result of its name in the cell failed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
-| `expected_skip` | skipped, and an expected-skip entry matches it | `skipped`, with the reason | `<skipped>` with the reason | passes |
+| `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
+| `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
 | `ungraded` | skipped, in a suite without a `known` file: a Go suite until it opts in (§4.7) | `skipped`, with the tool's reason | `<skipped>` | passes |
-| `incomplete` | its output stopped before its result | `other` | `<error>` | exits 2 |
+| `incomplete` | its output stopped before its result, and the code under test didn't crash (§4.6) | `other` | `<error>` | exits 2 |
 
 A test that failed and then passed on retry is `passed` with `flaky: true` and its `retries`, and a
 pass with a `flaky` property in JUnit. A quarantined test is shown as a known failure, with the
@@ -1139,6 +1142,7 @@ converts the old lists once.
   category: proto              # bug | feature | env | proto | permanent
   reason: "NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1"
   where: { nfs: ["4", "4.1"] } # optional: the matrix values, tiers, options or OS it applies to
+  # intermittent: true        # optional: it fails on some runs only; a pass is reported, not failed
 - test: utimensat/09.t
   status: fail
   fix: wontfix
@@ -1212,16 +1216,19 @@ converts the old lists once.
   With `known` in the registry, `dt` reads the list itself and is the only matcher.
 
 **Expected skips.** In a suite with a `known` file, a test that skips, or doesn't execute, must be
-listed as an expected skip, with its reason. A skip that isn't listed makes the cell exit 2 (R10).
-The conformance suites and `system` have `known` files from the start. The Go suites have hundreds
-of skips (331 `Skip` calls on develop, and 71 test files that branch on `testing.Short()`), so
-they opt in package by package, starting with e2e (§9); until a Go suite opts in, its skips are
-reported and counted but not graded (`ungraded`, §4.6). Step 2 grades the skips of the suites with
-a `known` file; how a Go package opts in is settled with e2e's list, after step 2. This is what
-turns §1's silent cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance
-cases and the 11 Kerberos e2e subtests would each have shown as lost coverage the day they started
-skipping. The first lists are written from today's runs, each entry with a reason, so the suites
-start green and a new skip stands out.
+listed as an expected skip, with its reason. A skip that isn't listed makes the cell exit 2 (R10). A
+run that names no tests grades every test the tool reports. A run that names tests, on `dt run`'s
+command line or for a retry, grades only those: a named test that skipped because of a test it
+depends on is not run (exit 2), and any other skip is graded against the expected skips. The
+conformance suites and `system` have `known` files from the start. The Go suites have hundreds of
+skips (331 `Skip` calls on develop, and 71 test files that branch on `testing.Short()`), so they opt
+in package by package, starting with e2e (§9); until a Go suite opts in, its skips are reported and
+counted but not graded (`ungraded`, §4.6). Step 2 grades the skips of the suites with a `known`
+file; how a Go package opts in is settled with e2e's list, after step 2. This is what turns §1's
+silent cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance cases and the
+11 Kerberos e2e subtests would each have shown as lost coverage the day they started skipping. The
+first lists are written from today's runs, each entry with a reason, so the suites start green and a
+new skip stands out.
 
 **Quarantine.** For a flaky test, failing some runs and not others:
 - `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date.
@@ -1249,9 +1256,13 @@ the first attempt's `summary.json`, which `dt history` reads.
 **Unexpected pass.** A known failure that passes, or an expected skip that runs and passes, fails
 the cell (exit 1): its entry no longer says what the server does, and a list that keeps it would
 hide the test's next regression. A fix PR removes its own entry, and its run fails until it does.
-A name with several results in a cell (§4.6) passes unexpectedly only if none of them failed. A
-test that fails on some runs and passes on others belongs in quarantine, not in the list. An
-expected skip that runs and fails is a new failure, unless a known-failure entry covers it too.
+An entry is judged on every result it matched in the cell, and passes unexpectedly only if all of
+them passed: a pattern that matches five tests, one of them still failing, stays known, and so does
+a name with several results, one of them a failure (§4.6). An entry whose test fails on some runs
+and passes on others, for a known reason, says `intermittent: true`: its pass is reported, not
+failed, so it doesn't turn a cell red while the old scripts stay green. A flaky test with no entry
+belongs in quarantine. An expected skip that runs and fails is a new failure, unless a
+known-failure entry covers it too.
 
 **Scenarios.** Each one that fails today gets a known-failure entry naming its issue. The suite is
 then green, a regression shows as a new failure, and a fix shows as an unexpected pass.
@@ -1335,16 +1346,16 @@ Three things stay outside the registry:
 **Develop goes red.** This extends `ci-health.yml` and watches `tests.yml`, plus any workflow still
 outside it:
 
-- A merge-tier or nightly run that still exits 1 after `dt`'s retry, with new failures or listed
-  tests that pass, opens one issue labelled `develop-red`, or updates it if one is open.
+- A merge-tier or nightly run that still exits 1 after `dt`'s retry, with new failures or
+  unexpected passes, opens one issue labelled `develop-red`, or updates it if one is open.
 - The issue body is the current failing set, from `summary.json`, with links to each failure's own
   issue (§4.4). It's rewritten, not commented, so watchers get one notification per change, not per
   run. A comment is added only when the set of failing tests changes.
-- It closes once every test in its failing set has passed again on develop, in whichever tier
-  runs it, been listed as a known failure or quarantined, or no longer exists (renamed or deleted),
-  or, for a listed test that passed, once its entry is removed.
-  A green run of another tier doesn't close it: a merge-tier run doesn't include the nightly
-  suites, so it would close a nightly failure that reopens the next night.
+- It closes once nothing in its failing set fails a run on develop any more, in whichever tier runs
+  it: each new failure has passed again, or been listed as a known failure or quarantined; each
+  unexpected pass has had its entry removed; and a test that no longer exists (renamed or deleted)
+  leaves the set. A green run of another tier doesn't close it: a merge-tier run doesn't include the
+  nightly suites, so it would close a nightly failure that reopens the next night.
 - Exit 2 (an environment problem or lost coverage) alerts only after two consecutive runs.
 - Known failures, expected skips and quarantined tests never alert.
 - E-mail comes from GitHub's own issue notifications: repository watchers, and anyone the issue
@@ -1447,9 +1458,10 @@ a percentage.
 - **The `pr` tier misses something.** The merge tier runs after every merge, and the alert names
   the failing set. The cost is a red develop for one merge, not a lost regression.
 - **Expected-skip lists grow into a dumping ground.** Every entry needs a reason and a category,
-  `dt known prune` removes the ones that no longer apply, and `dt history` shows skips per suite.
-- **The known-failure lists rot.** Bug entries name an issue, a listed test that passes fails the
-  run until its entry goes (§4.7), and `dt known prune` removes entries that match nothing.
+  `dt known prune` removes the ones no recent run needed (§4.4), and `dt history` shows skips per
+  suite.
+- **The known-failure lists rot.** Bug entries name an issue, an unexpected pass fails the run until
+  its entry goes (§4.7), and `dt known prune` removes the entries no recent run needed (§4.4).
 - **Quarantine hides real bugs.** Entries expire, need an issue, and quarantined results are still
   recorded and shown in `dt history`.
 - **Posted issues flood the tracker or leak.** §4.4's guardrails limit when and how often; issues
@@ -1532,8 +1544,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    `dt run --tier nightly --place dedicated`. Then `fio-verify` against the fixture's mount.
    *Exit:* the merge tier includes the system scenarios, and has no new failures.
 5. **Alerting, flakes and issues.** The develop-status issue, quarantine, `dt history`,
-   `dt report --failures --post`, and `dt known prune`, which reads history, since one run can't
-   tell an entry that matches nothing from one whose test didn't run.
+   `dt report --failures --post`, and `dt known prune`, which reads `dt history`'s recent runs
+   (§4.4).
    *Exit:* two weeks with one alert per real regression and none from flakes.
 6. **Benchmarks.** `bench-smoke` and `unit --nonrace` nightly; tracked runs on the dedicated host.
 7. **Component RFCs name their suites.** Once #2894 lands them under `docs/internals/rfcs/`, each
