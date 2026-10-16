@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // notStarted are docker run's own exit statuses: its container didn't start.
@@ -31,7 +33,7 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 	u := t.cell.Unit
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
-	name = "dt-" + notInName.ReplaceAllString(slug(t.cell.Name), "-") + "-" + hex.EncodeToString(b)
+	name = "dt-" + notInName.ReplaceAllString(report.Slug(t.cell.Name), "-") + "-" + hex.EncodeToString(b)
 	// decision: the container runs as its image's own user, root in the
 	// images the registry names, since an image's entrypoint may write paths
 	// of its own that another user can't. An engine that keeps a file's owner
