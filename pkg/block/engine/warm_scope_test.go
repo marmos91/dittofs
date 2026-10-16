@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -200,7 +201,49 @@ func TestWarmScopeProgressCallbackMayAcquireExclusiveAdmission(t *testing.T) {
 		warmed <- err
 	}()
 	require.NoError(t, waitWarmScope(t, warmed))
-	require.Equal(t, [][2]int64{{0, 2}, {1, 2}, {2, 2}}, counts, "progress must remain ordered and finish before return")
+	// Both fetches may finish while the first call waits, and are then reported
+	// together.
+	require.Contains(t, [][][2]int64{{{0, 2}, {1, 2}, {2, 2}}, {{0, 2}, {2, 2}}}, counts,
+		"progress must remain ordered and finish before return")
+}
+
+func TestWarmProgressStalledCallbackHoldsNoBacklog(t *testing.T) {
+	const n = 1 << 20
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls [][2]int64
+	p := startWarmProgress(func(done, total int64) {
+		calls = append(calls, [2]int64{done, total})
+		if len(calls) == 1 {
+			close(entered)
+			<-release
+		}
+	}, n-3)
+	<-entered
+
+	// Every event lands while the first call is stalled. None of them may wait
+	// for it, and together they may not cost memory per event.
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	added := make(chan struct{})
+	go func() {
+		defer close(added)
+		p.add(0, 3)
+		for range n {
+			p.add(1, 0)
+		}
+	}()
+	select {
+	case <-added:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recording progress waited for the stalled callback")
+	}
+	runtime.ReadMemStats(&after)
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(n), "a stalled callback must not cost memory per event")
+
+	close(release)
+	p.finish()
+	require.Equal(t, [][2]int64{{0, n - 3}, {n, n}}, calls, "the backlog must reach the callback as one call reporting done == total")
 }
 
 func TestWarmScopeCancellationReleasesAdmission(t *testing.T) {
