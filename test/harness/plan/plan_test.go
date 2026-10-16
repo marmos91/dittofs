@@ -133,6 +133,13 @@ suites:
 	if merge[0].TimeoutMinutes != 90 {
 		t.Errorf("shard limit %d: the cell's 90m covers its tests", merge[0].TimeoutMinutes)
 	}
+	// The needs a glob adds count only on a tier that plans its tests.
+	for tier, want := range map[string]int{"merge": 0, "nightly": 1, "": 1} {
+		got, err := NeedsByTest(root, r.Units(r.Suites[0])[0], tier)
+		if err != nil || len(got) != want || want == 1 && !slices.Equal(got["9?-*.sh"], []string{"host:dedicated"}) {
+			t.Errorf("tier %q: needs by test %v, %v", tier, got, err)
+		}
+	}
 }
 
 func TestPlaceOf(t *testing.T) {

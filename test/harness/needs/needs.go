@@ -6,12 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,19 +32,71 @@ var tools = map[string]map[string]string{
 	"knfsd":          {"linux": "exportfs"},
 }
 
-// Unmet returns each need the machine doesn't meet, with the reason. root is
-// the checkout, whose local services' values a service need falls back to.
-func Unmet(root string, list []string) []string {
-	var out []string
-	for _, n := range list {
-		if err := Check(root, n); err != nil {
-			out = append(out, n+": "+err.Error())
+// debian names the Debian and Ubuntu package holding a tool's program, where
+// its name isn't the program's own.
+var debian = map[string]string{
+	"nfs-client":     "nfs-common",
+	"smb-client":     "cifs-utils",
+	"nfs4-acl-tools": "nfs4-acl-tools",
+	"kerberos":       "krb5-user",
+	"knfsd":          "nfs-kernel-server",
+}
+
+// inDtc are the tools the dtc image installs.
+var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true}
+
+// hints say how to meet a need that isn't a tool, by its kind.
+var hints = map[string]string{
+	"linux":   "run it on Linux, or in dtc",
+	"windows": "run it on Windows",
+	"macos":   "run it on macOS",
+	"root":    "allow passwordless sudo",
+	"docker":  "install or start Docker",
+	"podman":  "install podman (the scenarios need 5.6 or later)",
+	"rpcbind": "install and start rpcbind",
+	"disk":    "free disk space",
+	"port":    "stop what listens on the port",
+	"host":    "run it on the dedicated host",
+	"cloud":   "provide the provider's credentials and infrastructure",
+}
+
+// osNames names the platforms a tool's program can be on.
+var osNames = map[string]string{"darwin": "macOS", "linux": "Linux", "windows": "Windows"}
+
+// Hint says how to meet need n. A service is started by dt services. A tool's
+// hint names the program its check looks for, with its package from debian on
+// the one platform that uses those packages; where this platform has no
+// program for the tool, it names the platforms that have one, and dtc when
+// its image installs it.
+func Hint(n string) string {
+	kind, arg, _ := strings.Cut(n, ":")
+	bins, isTool := tools[n]
+	switch {
+	case kind == "service":
+		return "dt services up " + arg
+	case !isTool:
+		return hints[kind]
+	case bins[runtime.GOOS] != "":
+		hint := "install " + bins[runtime.GOOS]
+		if runtime.GOOS == "linux" && debian[n] != "" {
+			hint += " (Debian and Ubuntu: " + debian[n] + ")"
 		}
+		return hint
 	}
-	return out
+	var on []string
+	for _, goos := range slices.Sorted(maps.Keys(bins)) {
+		on = append(on, osNames[goos])
+	}
+	hint := "run it on " + strings.Join(on, " or ")
+	if inDtc[n] {
+		hint += ", or in dtc"
+	}
+	return hint
 }
 
 // Check returns why the machine doesn't meet need n, or nil when it does.
+// root is the checkout, whose local services' values a service need falls
+// back to.
 func Check(root, n string) error {
 	kind, arg, _ := strings.Cut(n, ":")
 	switch kind {

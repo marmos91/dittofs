@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,6 +210,37 @@ func TestUnsupportedIsNotRun(t *testing.T) {
 	rep, _ := runTarget(t, root, r, "g", false)
 	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "tap") {
 		t.Errorf("outcome %+v", o)
+	}
+}
+
+// What dt can't do yet decides before any need is checked; past it, every
+// need the check finds unmet is named, with its reason.
+func TestBlocked(t *testing.T) {
+	_, r := anyRepo(t, `suites:
+  fixed: { cmd: "true", fixture: { profile: memory }, needs: [docker] }
+  plain: { cmd: "true", needs: [docker, root, podman] }
+`, nil)
+	var checked []string
+	check := func(n string) error {
+		checked = append(checked, n)
+		if n == "root" {
+			return nil
+		}
+		return errors.New("no " + n)
+	}
+	units := map[string]*registry.Suite{}
+	for _, s := range r.Suites {
+		units[s.Name] = r.Units(s)[0]
+	}
+	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't set up fixtures yet" || unmet != nil || checked != nil {
+		t.Errorf("fixed: %q %q, checked %q", why, unmet, checked)
+	}
+	why, unmet := Blocked(units["plain"], units["plain"].Needs, check)
+	if why != "docker: no docker; podman: no podman" || !slices.Equal(unmet, []string{"docker", "podman"}) {
+		t.Errorf("plain: %q %q", why, unmet)
+	}
+	if why, unmet := Blocked(units["plain"], []string{"root"}, check); why != "" || unmet != nil {
+		t.Errorf("met: %q %q", why, unmet)
 	}
 }
 
