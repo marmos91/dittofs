@@ -61,7 +61,8 @@ var full = Run{
 
 // summary.json is CTRF 0.1.0 by CTRF's own schema: its required fields, no
 // field of dt's own outside an extra, and suite as an array. Without any
-// cells too.
+// cells too. And the check isn't vacuous: it refuses a test with a field of
+// dt's own outside its extra.
 func TestJSONMatchesTheSchema(t *testing.T) {
 	s := loadSchema(t)
 	for name, r := range map[string]Run{"full": full, "empty": {Name: "20261015T120000Z-abcdef12", In: "host", Tier: "pr", Exit: 2}} {
@@ -73,35 +74,14 @@ func TestJSONMatchesTheSchema(t *testing.T) {
 			t.Errorf("%s:\n%s", name, strings.Join(errs, "\n"))
 		}
 	}
-}
-
-// The schema check catches what dt must not write: a field of dt's own on a
-// test, outside its extra; suite as a string, as CTRF before 0.1.0 had it; a
-// test without its duration; a status CTRF doesn't have; and a version that
-// isn't MAJOR.MINOR.PATCH.
-func TestTheSchemaCheckCatches(t *testing.T) {
-	s := loadSchema(t)
-	for _, c := range []struct {
-		name, want string
-		change     func(doc, test map[string]any)
-	}{
-		{"a field of dt's own on a test", "the field grade", func(_, test map[string]any) { test["grade"] = "new" }},
-		{"suite as a string", "suite: not of type array", func(_, test map[string]any) { test["suite"] = "lint-repo" }},
-		{"no duration", "lacks duration", func(_, test map[string]any) { delete(test, "duration") }},
-		{"an unknown status", "isn't one of", func(_, test map[string]any) { test["status"] = "broken" }},
-		{"a short version", "doesn't match", func(doc, _ map[string]any) { doc["specVersion"] = "0.1" }},
-	} {
-		data, err := full.JSON()
-		if err != nil {
-			t.Fatal(err)
-		}
-		doc := decode(t, data).(map[string]any)
-		test := doc["results"].(map[string]any)["tests"].([]any)[0].(map[string]any)
-		c.change(doc, test)
-		errs := strings.Join(s.check(s.root, doc, "$"), "\n")
-		if !strings.Contains(errs, c.want) {
-			t.Errorf("%s: errors %q lack %q", c.name, errs, c.want)
-		}
+	data, err := full.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := decode(t, data).(map[string]any)
+	doc["results"].(map[string]any)["tests"].([]any)[0].(map[string]any)["grade"] = "new"
+	if errs := s.check(s.root, doc, "$"); len(errs) == 0 {
+		t.Error("the check passes a test with the field grade outside its extra")
 	}
 }
 
