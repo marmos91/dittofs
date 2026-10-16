@@ -13,6 +13,7 @@ var sentinels = []error{
 	ErrNotImplemented, ErrClosed, ErrHandleOpen, ErrJournalExists, ErrNoJournal,
 	ErrIdentityMismatch, ErrUnknownFormat, ErrCorrupt, ErrStaleFill, ErrNotOffloaded,
 	ErrNotOffered, ErrOfferEnded, ErrZeroLength, ErrSyncFailed, ErrNoSpace, ErrOtherShare,
+	ErrInvalidSetting,
 }
 
 // TestErrorRelations checks the relations callers rely on: each typed error

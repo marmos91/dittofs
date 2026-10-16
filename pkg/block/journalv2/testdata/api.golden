@@ -17,6 +17,20 @@ const (
 )
 
 const (
+	SegmentCapDefault	= 256 << 20
+
+	SyncBound	= time.Second
+
+	OfferPins	= 64
+
+	JournalPins	= 256
+
+	FloorBuckets	= 4096
+
+	IdleSealAge	= 30 * time.Second
+)
+
+const (
 	Bounded		= core.Bounded
 	Standard	= core.Standard
 )
@@ -38,7 +52,22 @@ var (
 	ErrSyncFailed		= core.ErrSyncFailed
 	ErrNoSpace		= core.ErrNoSpace
 	ErrOtherShare		= core.ErrOtherShare
+	ErrInvalidSetting	= core.ErrInvalidSetting
 )
+
+func Restamp(dir string, expect JournalID, install InstallationID, opts ...Option) error
+
+type Clock interface {
+	Now() time.Time
+
+	Elapsed() time.Duration
+
+	After(d time.Duration) <-chan struct{}
+}
+
+type DescriptorBudget struct{}
+
+func NewDescriptorBudget(limit int) *DescriptorBudget
 
 type Extent = core.Extent
 
@@ -52,7 +81,15 @@ type IdentityError = core.IdentityError
 
 type InstallationID = core.InstallationID
 
+type Journal struct{}
+
+func Open(dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error)
+
+func (j *Journal) Close() error
+
 type JournalID = core.JournalID
+
+func Init(dir string, install InstallationID, opts ...Option) (JournalID, error)
 
 type Limit = core.Limit
 
@@ -60,11 +97,33 @@ type NoSpaceError = core.NoSpaceError
 
 type NotOffloadedError = core.NotOffloadedError
 
+type Option func(*core.Config)
+
+func WithClock(c Clock) Option
+
+func WithDescriptorBudget(b *DescriptorBudget) Option
+
+func WithSettings(s Settings) Option
+
 type OtherShareError = core.OtherShareError
 
 type SegmentID = core.SegmentID
 
 type Seq = core.Seq
+
+type Settings struct {
+	MaxBytes	int64
+
+	Streams	int
+
+	ExtentLimit	int64
+
+	HeadroomRecords	int
+
+	IdleSealBytes	int64
+
+	SpareTarget	int
+}
 
 type ShareID = core.ShareID
 
@@ -115,8 +174,21 @@ var (
 
 	ErrNoSpace	= errors.New("journal: no space")
 
+	ErrInvalidSetting	= errors.New("journal: invalid setting")
+
 	ErrOtherShare	= errors.New("journal: file belongs to another share")
 )
+
+type Config struct {
+	MaxBytes	int64
+	Streams		int
+	ExtentLimit	int64
+	HeadroomRecords	int
+	IdleSealBytes	int64
+	SpareTarget	int
+
+	SegmentCap	int64
+}
 
 type Extent struct {
 	Off	int64

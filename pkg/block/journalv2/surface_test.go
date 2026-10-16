@@ -3,6 +3,8 @@ package journalv2
 import (
 	"fmt"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 )
 
 // surfaceCall is one exported function or method, called with zero or minimal
@@ -31,6 +33,14 @@ var surface = []surfaceCall{
 	{"IdentityError.Error", func() error { _ = (&IdentityError{}).Error(); return nil }},
 	{"SyncError.Error", func() error { _ = (&SyncError{}).Error(); return nil }},
 	{"NotOffloadedError.Error", func() error { _ = (&NotOffloadedError{}).Error(); return nil }},
+	{"Init", func() error { _, err := Init("", InstallationID{}); return err }},
+	{"Open", func() error { _, err := Open("", Version{}, JournalID{}); return err }},
+	{"Restamp", func() error { return Restamp("", JournalID{}, InstallationID{}) }},
+	{"Journal.Close", func() error { return (&Journal{}).Close() }},
+	{"WithClock", func() error { WithClock(nil)(&core.Config{}); return nil }},
+	{"WithSettings", func() error { WithSettings(Settings{})(&core.Config{}); return nil }},
+	{"WithDescriptorBudget", func() error { WithDescriptorBudget(nil)(&core.Config{}); return nil }},
+	{"NewDescriptorBudget", func() error { _ = NewDescriptorBudget(0); return nil }},
 }
 
 // TestSurface calls every entry of surface and asserts that it returns or

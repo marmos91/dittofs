@@ -21,6 +21,7 @@ var (
 	ErrSyncFailed       = core.ErrSyncFailed
 	ErrNoSpace          = core.ErrNoSpace
 	ErrOtherShare       = core.ErrOtherShare
+	ErrInvalidSetting   = core.ErrInvalidSetting
 )
 
 type (
