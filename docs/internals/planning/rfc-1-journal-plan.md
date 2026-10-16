@@ -831,10 +831,9 @@ Work:
   This follows the start order of RFC 8 §2.5 as far as the current engine allows. Gaps are
   recorded as `decision:` markers.
 - **Error mapping:** `ErrNoSpace{limit}` maps to retry-later or no-space following
-  RFC 8 §10.2, and `ENOSPC` stays distinct. `ErrOtherShare` and `ErrTagConflict` both
-  map to `ErrCorrupt`, never retried. They stay distinct inside the engine: the first names
-  one known owner, while the second means recovery found two, which only an operator's
-  `Forget` resolves. Loss generation is folded into the NFS write
+  RFC 8 §10.2, and `ENOSPC` stays distinct. `ErrOtherShare` maps to `ErrCorrupt`, never
+  retried. It covers both a file owned by another share and a file recovery rebuilt under
+  two tags. Loss generation is folded into the NFS write
   verifier.
 - **Salvage of stranded tags after serving.** Exports go under `salvage.path`, mode 0700,
   sealed with a salvage data key for encrypting shares, and a failed export becomes a
