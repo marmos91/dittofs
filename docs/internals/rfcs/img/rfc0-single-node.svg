@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 760" width="960" height="760" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+      .ada{fill:#eceff2;stroke:#9aa4b2;stroke-width:1.2}
+      .vfs{fill:#dce9f7;stroke:#4a7fb5;stroke-width:1.6}
+      .meta{fill:#f3e8d4;stroke:#b08a3e;stroke-width:1.4}
+      .data{fill:#d7ecd9;stroke:#4c8a58;stroke-width:1.4}
+      .ext{fill:#f9fafb;stroke:#c3cad3;stroke-width:1}
+      .zone{fill:none;stroke:#4c8a58;stroke-width:1;stroke-dasharray:5 4}
+      .role{font-size:11px;font-weight:700;fill:#5b6472;letter-spacing:.04em}
+      .arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .arr2{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#a);marker-start:url(#b)}
+      .dash{stroke:#9aa4b2;stroke-width:1.2;fill:none;stroke-dasharray:4 3;marker-end:url(#a)}
+      .bdg{fill:#4a7fb5}.bt{font-size:11px;font-weight:700;fill:#ffffff}
+      .al{font-size:10.5px;fill:#5b6472}
+    </style>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6472"/></marker>
+    <marker id="b" viewBox="0 0 8 8" refX="1" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M8,0 L0,4 L8,8 z" fill="#5b6472"/></marker>
+  </defs>
+  <rect width="960" height="760" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A single node: every layer a client operation passes through, down to the bucket</text>
+
+  <!-- clients -->
+  <rect x="175" y="44" width="200" height="34" rx="17" class="ext"/>
+  <text x="275" y="65" class="l" text-anchor="middle">build01 — Linux, NFS</text>
+  <rect x="525" y="44" width="200" height="34" rx="17" class="ext"/>
+  <text x="625" y="65" class="l" text-anchor="middle">alice-pc — Windows, SMB</text>
+  <path d="M275,79 L275,98" class="arr"/>
+  <path d="M625,79 L625,98" class="arr"/>
+
+  <!-- adapters -->
+  <text x="16" y="131" class="role">WIRE</text>
+  <rect x="110" y="100" width="330" height="52" rx="5" class="ada"/>
+  <text x="124" y="122" class="h">NFS adapter (RFC 21)</text>
+  <text x="124" y="141" class="s">v3, v4.0–4.2, MOUNT, NLM/NSM · translates only</text>
+  <rect x="460" y="100" width="330" height="52" rx="5" class="ada"/>
+  <text x="474" y="122" class="h">SMB adapter (RFC 22)</text>
+  <text x="474" y="141" class="s">2.1–3.1.1, IPC$ · translates only</text>
+  <path d="M275,153 L275,170" class="arr"/>
+  <path d="M625,153 L625,170" class="arr"/>
+
+  <!-- vfs -->
+  <text x="16" y="207" class="role">SERVICE</text>
+  <rect x="110" y="172" width="680" height="62" rx="5" class="vfs"/>
+  <text x="124" y="194" class="h">filesystem service — vfs.Service (RFC 17)</text>
+  <text x="124" y="211" class="l">shares, mounts, pseudo-filesystem · admission · authorisation · quota</text>
+  <text x="124" y="226" class="s">orders every operation: admit → authorise → open state → quota → content</text>
+
+  <rect x="810" y="172" width="135" height="62" rx="5" class="ext"/>
+  <text x="822" y="194" class="h">configuration</text>
+  <text x="822" y="210" class="s">RFC 13: a bootstrap file;</text>
+  <text x="822" y="224" class="s">settings in the store</text>
+
+  <!-- service down -->
+  <path d="M225,235 L225,260" class="arr"/>
+  <text x="232" y="252" class="al">names, attributes, ACLs</text>
+  <path d="M422,235 L422,260" class="arr"/>
+  <path d="M640,235 L640,260" class="arr"/>
+  <circle cx="660" cy="248" r="8" class="bdg"/><text x="660" y="252" class="bt" text-anchor="middle">1</text>
+  <circle cx="680" cy="248" r="8" class="bdg"/><text x="680" y="252" class="bt" text-anchor="middle">3</text>
+
+  <!-- storage zone -->
+  <text x="16" y="400" class="role" style="fill:#4c8a58">STORAGE</text>
+  <rect x="100" y="254" width="700" height="276" rx="8" class="zone"/>
+
+  <!-- metadata store -->
+  <rect x="110" y="262" width="230" height="190" rx="5" class="meta"/>
+  <text x="124" y="284" class="h">metadata store (RFC 16)</text>
+  <text x="124" y="304" class="l">namespace (RFC 7)</text>
+  <text x="124" y="319" class="s">files, entries, handles, ACLs</text>
+  <text x="124" y="339" class="l">content map (RFC 6)</text>
+  <text x="124" y="354" class="s">refs, chunks, blocks, holes,</text>
+  <text x="124" y="368" class="s">overwrites</text>
+  <text x="124" y="388" class="l">control plane</text>
+  <text x="124" y="403" class="s">shares, users, snapshots (RFC 12),</text>
+  <text x="124" y="417" class="s">settings, durable opens</text>
+  <text x="124" y="440" class="s">a leaf: it calls nothing</text>
+
+  <!-- open state -->
+  <rect x="355" y="262" width="135" height="112" rx="5" class="ada"/>
+  <text x="367" y="284" class="h">open state (RFC 14)</text>
+  <text x="367" y="302" class="s">opens, deny modes,</text>
+  <text x="367" y="316" class="s">locks, leases, grace</text>
+  <text x="367" y="338" class="s">in memory; what a</text>
+  <text x="367" y="352" class="s">restart needs is kept</text>
+  <text x="367" y="366" class="s">in the store</text>
+  <path d="M355,356 L342,356" class="dash"/>
+
+  <!-- engine -->
+  <rect x="505" y="262" width="285" height="50" rx="5" class="data"/>
+  <text x="517" y="283" class="h">engine (RFC 8)</text>
+  <text x="517" y="301" class="s">content facade: write, read, commit, clone</text>
+  <path d="M512,313 L512,402 L342,402" class="arr"/>
+  <text x="358" y="396" class="al">existence and refs commit</text>
+
+  <!-- content -->
+  <rect x="535" y="328" width="110" height="64" rx="5" class="data"/>
+  <text x="545" y="349" class="h">journal (RFC 1)</text>
+  <text x="545" y="366" class="s">records in segments</text>
+  <text x="545" y="380" class="s">dirty until offloaded</text>
+  <path d="M590,313 L590,326" class="arr"/>
+
+  <rect x="660" y="328" width="130" height="64" rx="5" class="data"/>
+  <text x="671" y="349" class="h">carver (RFC 2)</text>
+  <text x="671" y="366" class="s">~256 KiB chunks in</text>
+  <text x="671" y="380" class="s">4 MiB blocks</text>
+  <path d="M646,360 L658,360" class="arr"/>
+
+  <rect x="660" y="404" width="130" height="50" rx="5" class="data"/>
+  <text x="671" y="425" class="h">transforms (RFC 5)</text>
+  <text x="671" y="442" class="s">compress, encrypt</text>
+  <path d="M725,393 L725,402" class="arr"/>
+
+  <rect x="660" y="466" width="130" height="50" rx="5" class="data"/>
+  <text x="671" y="487" class="h">syncer (RFC 3)</text>
+  <text x="671" y="504" class="s">upload and fetch</text>
+  <path d="M725,455 L725,464" class="arr"/>
+  <circle cx="808" cy="378" r="8" class="bdg"/><text x="808" y="382" class="bt" text-anchor="middle">2</text>
+
+  <rect x="535" y="466" width="110" height="50" rx="5" class="data"/>
+  <text x="545" y="487" class="h">GC (RFC 9)</text>
+  <text x="545" y="504" class="s">retire, delete</text>
+  <path d="M535,491 L342,440" class="dash"/>
+  <text x="360" y="434" class="al">finds blocks no ref names</text>
+
+  <!-- keys -->
+  <rect x="810" y="404" width="135" height="50" rx="5" class="ext"/>
+  <text x="822" y="425" class="h">key management</text>
+  <text x="822" y="442" class="s">key file or KMS</text>
+  <path d="M809,429 L792,429" class="arr"/>
+
+  <!-- backing -->
+  <text x="16" y="590" class="role">BACKING</text>
+  <path d="M225,453 L225,556" class="arr"/>
+  <rect x="110" y="558" width="230" height="58" rx="12" class="meta"/>
+  <text x="124" y="580" class="h">transactional KV, embedded</text>
+  <text x="124" y="598" class="s">local disk · all metadata, one database</text>
+
+  <rect x="505" y="558" width="140" height="58" rx="12" class="data"/>
+  <text x="517" y="580" class="h">journal device</text>
+  <text x="517" y="598" class="s">local NVMe, fsync</text>
+  <path d="M535,372 L524,372 L524,556" class="arr"/>
+
+  <rect x="660" y="558" width="285" height="58" rx="12" class="ext"/>
+  <text x="672" y="580" class="h">remote tier (RFC 4) — S3 bucket</text>
+  <text x="672" y="598" class="s">one object per block, under the namespace prefix</text>
+  <path d="M725,517 L725,556" class="arr2"/>
+  <path d="M590,517 L700,556" class="dash"/>
+  <text x="600" y="546" class="al">delete</text>
+
+  <!-- legend -->
+  <rect x="16" y="634" width="928" height="112" rx="6" class="ext"/>
+  <circle cx="34" cy="654" r="8" class="bdg"/><text x="34" y="658" class="bt" text-anchor="middle">1</text>
+  <text x="50" y="658" class="l"><tspan font-weight="700">Write.</tspan> The service admits and authorises it, and the engine stages the bytes in the journal. The client is answered from</text>
+  <text x="50" y="673" class="l">the journal: a write never waits on the metadata store or the bucket.</text>
+  <circle cx="34" cy="695" r="8" class="bdg"/><text x="34" y="699" class="bt" text-anchor="middle">2</text>
+  <text x="50" y="699" class="l"><tspan font-weight="700">Offload,</tspan> in the background: dirty bytes are cut into chunks, packed, compressed, encrypted and uploaded; the refs commit</text>
+  <text x="50" y="714" class="l">in the metadata store, and only then may the journal mark the bytes offloaded and evict them.</text>
+  <circle cx="34" cy="736" r="8" class="bdg"/><text x="34" y="740" class="bt" text-anchor="middle">3</text>
+  <text x="50" y="740" class="l"><tspan font-weight="700">Read.</tspan> Bytes the journal holds come from it; the rest are fetched by their refs and verified. Missing content fails as Lost, never as zeros.</text>
+</svg>

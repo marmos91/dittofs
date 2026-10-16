@@ -7,9 +7,9 @@ name: Operator Tests
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop, main, feat/storage-v2]
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, feat/storage-v2]
     paths:
       - 'k8s/dittofs-operator/**'
       - '.github/workflows/operator-tests.yml'

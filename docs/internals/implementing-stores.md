@@ -243,51 +243,6 @@ The `pkg/metadata/storetest/` suite includes:
    batch. Runs against the built-in backend and any custom backend
    wired into the conformance harness.
 
-### FileAttr.ObjectID + FindByObjectID
-
-`FileAttr.ObjectID` is a BLAKE3 Merkle root over `BlockRef.Hash` values
-sorted by `Offset`, prefixed by the domain-separation tag
-`dittofs:objectid:v1\x00`. Computed by `blockstore.ComputeObjectID` and
-persisted at every full quiesce in the same metadata transaction that
-updates `Blocks`/`Size`/`Mtime`.
-
-Lifecycle: cleared (zeroed) on first dirty write that mutates `Blocks`,
-recomputed at next full quiesce (every block transitioned to `Remote`).
-Partial flushes leave `ObjectID` at zero so the lookup index never
-returns a half-quiesced file.
-
-#### `FindByObjectID(ctx, ObjectID) ([]BlockRef, error)`
-
-The file-level dedup short-circuit primitive. Looks up a file by its
-Merkle-root ObjectID. Returns `(nil, nil)` on miss; a non-nil result
-carries the canonical BlockRef list of the matching file (per-metadata-
-store scope, NOT per-share).
-
-Backends MUST maintain a secondary index from ObjectID to file row:
-
-Badger keeps a secondary key `obj:{hex} -> file_id`, maintained inside
-each `Put`/`Delete` write batch.
-
-Zero-valued ObjectID (legacy / pre-quiesce) MUST NOT match any row —
-implementations short-circuit and return `(nil, nil)` on zero input.
-
-The unique constraint enforces first-committer-wins on a concurrent
-quiesce. On race, the loser surfaces a backend-specific
-unique-violation error that the runtime coordinator wraps into the
-shared `metadata.ErrConflict` sentinel.
-
-A test-only optional capability `ObjectIDIndexAccessor.CountObjectIDIndexRows`
-is exercised by the storetest `ConcurrentQuiesceRace` scenario;
-backends implement it inline (Badger uses a `txn.Get(keyObjectID(oid))`
-probe). Production code MUST NOT call it.
-
-Conformance scenarios live in
-`pkg/metadata/storetest/objectid_roundtrip.go` and
-`pkg/metadata/storetest/objectid_lookup.go`. All built-in backends pass
-without per-backend `t.Skip` (the `ObjectIDIndexAccessor` capability is
-the only legitimate type-assertion-skip; backends without that accessor
-are still required to pass the functional scenarios).
-
 ### Block Record Store
 
 `BlockRecordStore` persists the bookkeeping needed by the blocks-only storage

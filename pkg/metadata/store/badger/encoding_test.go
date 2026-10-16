@@ -3,6 +3,7 @@ package badger
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,14 +154,10 @@ func TestBadgerEncodeFile_NilBlocksOmitted(t *testing.T) {
 }
 
 // TestEncodeDecodeFile_AllFields exercises every persisted FileAttr field
-// (including ACL, EAs, ObjectID, DeletedAt, unicode names, empty/nil maps and a
+// (including ACL, EAs, DeletedAt, unicode names, empty/nil maps and a
 // zero-length EA value) through encode -> binary decode. Path and the transient
 // request-scoped fields are intentionally not persisted.
 func TestEncodeDecodeFile_AllFields(t *testing.T) {
-	var oid block.ContentHash
-	for i := range oid {
-		oid[i] = byte(i + 1)
-	}
 	del := time.Unix(1700009999, 500).UTC()
 	orig := &metadata.File{
 		ID:        uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
@@ -196,7 +193,6 @@ func TestEncodeDecodeFile_AllFields(t *testing.T) {
 				"user.binary":   {0x00, 0xFF, 0x7B, 0xD5},
 			},
 			IdempotencyToken: 0x1122334455667788,
-			ObjectID:         oid,
 			DeletedAt:        &del,
 			OriginalPath:     "documents/старый.txt",
 			DeletedBy:        "user€",
@@ -259,7 +255,6 @@ func TestDecodeFile_NilAndEmptyMaps(t *testing.T) {
 	assert.Nil(t, got.ACL)
 	assert.Nil(t, got.EAs, "empty EAs map must not persist")
 	assert.Nil(t, got.Blocks)
-	assert.True(t, got.ObjectID.IsZero())
 	assert.Nil(t, got.DeletedAt)
 
 	// Explicit empty (non-nil) ACL: the deny-all case must survive as non-nil.
@@ -317,6 +312,48 @@ func TestDecodeFile_SchemaEvolution(t *testing.T) {
 	assert.Equal(t, orig.ID, got.ID)
 	assert.Equal(t, orig.Size, got.Size)
 	assert.Equal(t, orig.PayloadID, got.PayloadID)
+}
+
+// TestDecodeFile_RetiredObjectID pins the upgrade path for the retired ObjectID
+// field: a record written by an older binary still carries field 21. It must
+// decode with every other field intact, and re-encoding it must drop the field,
+// so the value disappears the next time the record is written.
+func TestDecodeFile_RetiredObjectID(t *testing.T) {
+	orig := &metadata.File{ID: uuid.New(), ShareName: "/s", FileAttr: metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o644, UID: 7, GID: 8, Size: 5, PayloadID: "s/p",
+	}}
+	enc, err := encodeFile(orig)
+	require.NoError(t, err)
+
+	// What an older writer stored: the same record plus a 32-byte ObjectID.
+	oid := make([]byte, 32)
+	for i := range oid {
+		oid[i] = byte(i + 1)
+	}
+	legacy := putField(append([]byte(nil), enc...), fObjectID, oid)
+
+	got, err := decodeFile(legacy)
+	require.NoError(t, err, "a record carrying the retired ObjectID must still decode")
+	assert.Equal(t, orig.ID, got.ID)
+	assert.Equal(t, orig.ShareName, got.ShareName)
+	assert.Equal(t, orig.Mode, got.Mode)
+	assert.Equal(t, orig.UID, got.UID)
+	assert.Equal(t, orig.GID, got.GID)
+	assert.Equal(t, orig.Size, got.Size)
+	assert.Equal(t, orig.PayloadID, got.PayloadID)
+
+	reEnc, err := encodeFile(got)
+	require.NoError(t, err)
+	assert.Equal(t, enc, reEnc, "re-encoding must not write the retired field back")
+
+	// A legacy JSON blob carries it as "object_id", in the "blake3:<hex>" form
+	// older binaries wrote; that must decode too.
+	jsonBlob := []byte(`{"id":"` + orig.ID.String() + `","share_name":"/s","size":5,"object_id":"blake3:` +
+		strings.Repeat("2a", 32) + `"}`)
+	gotJSON, err := decodeFile(jsonBlob)
+	require.NoError(t, err)
+	assert.Equal(t, orig.ID, gotJSON.ID)
+	assert.Equal(t, uint64(5), gotJSON.Size)
 }
 
 // TestDecodeFile_Corruption guards that a truncated/garbled binary record errors

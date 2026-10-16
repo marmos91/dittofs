@@ -618,10 +618,11 @@ else
         log_info "  Running: ${test}"
         # Same budget as the sub-suites, and for the same reason. The 60s these
         # used to get was not slack: smb2.maxfid opens 2000 handles one at a
-        # time, which is 18s on badger but 52s on postgres, and one postgres
-        # draw ran into the wall at 60s and lost the test entirely. Every other
-        # standalone finishes inside 20s, so the larger figure costs nothing
-        # unless something actually hangs.
+        # time, which took 18s on badger but 52s on postgres while the SQL
+        # metadata stores still ran here, and one postgres draw ran into the
+        # wall at 60s and lost the test entirely. Every other standalone
+        # finishes inside 20s, so the larger figure costs nothing unless
+        # something actually hangs.
         run_smbtorture "$test" 300 || record_rc $?
     done
 
@@ -835,14 +836,15 @@ else
         # One budget for every suite. It is there to bound a hang, not to
         # grade speed: a suite that legitimately runs for three minutes is not
         # a problem, a suite that never returns is. Per-suite numbers were
-        # tried and do not hold -- the same suite spans 22s on memory and 112s
+        # tried and do not hold -- the same suite spanned 22s on memory and 112s
         # on sqlite, so any figure tight enough to be meaningful on one profile
         # is a coin flip on another, and losing that flip silently drops every
         # test past the cut point.
         #
-        # Slowest legitimate suite measured across all five profiles is
-        # smb2.compound_find at 193s (sqlite); smb2.lease, smb2.replay,
-        # smb2.oplock and smb2.multichannel follow at 187/165/146/132s. 300s
+        # These figures were measured across the five profiles the script ran
+        # while the SQL metadata stores still existed. The slowest legitimate
+        # suite was smb2.compound_find at 193s (sqlite); smb2.lease, smb2.replay,
+        # smb2.oplock and smb2.multichannel followed at 187/165/146/132s. 300s
         # clears the slowest by ~1.6x, which is the margin the runner's own
         # variance has been observed to need, and still caps a wedged suite at
         # five minutes.

@@ -10,16 +10,14 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// fakeCoordinator records every IncrementRefCount/DecrementRefCountAndReap/
-// PersistFileChunks/FindByObjectID call so engine tests can assert what
-// the engine invoked (and with what arguments) without coupling to the
-// real metadata-store wiring.
+// fakeCoordinator records every IncrementRefCount/DecrementRefCountAndReap
+// call so engine tests can assert what the engine invoked (and with what
+// arguments) without coupling to the real metadata-store wiring.
 type fakeCoordinator struct {
 	mu sync.Mutex
 
-	incHashes    []block.ContentHash
-	reapIDs      []string
-	persistCalls []persistRecord
+	incHashes []block.ContentHash
+	reapIDs   []string
 
 	// Optional: failOnNthIncrement returns an error on the Nth (1-based)
 	// IncrementRefCount call. Zero disables.
@@ -42,49 +40,6 @@ type fakeCoordinator struct {
 	// DecrementRefCount call. Zero disables.
 	failOnNthDecrement int
 	decCallCount       int
-
-	// short-circuit support (RED tests).
-	//
-	// findCalls records every ObjectID looked up via FindByObjectID so
-	// tests can assert call sequence + count.
-	findCalls []block.ObjectID
-	// objectIDPersisted records the ObjectID arg passed on every
-	// PersistFileChunks call (parallel index to persistCalls). Tests
-	// assert the short-circuit threads the provisional ObjectID through
-	// the same metadata txn that writes Blocks.
-	objectIDPersisted []block.ObjectID
-	// objectIDHits is the seedable hit-table: when FindByObjectID is
-	// invoked with an ObjectID present here, returns the canned ChunkRef
-	// list (deep-copied on the way out to keep slice-aliasing discipline
-	// per). Empty / unset key means miss → (nil, nil).
-	objectIDHits map[block.ObjectID][]block.ChunkRef
-	// persistErr is a single-shot injection: the next PersistFileChunks
-	// call returns this error and clears the field. Used by the
-	// concurrent-race RED test to simulate the loser detecting a
-	// unique-violation on the partial UNIQUE index.
-	persistErr error
-	// fileObjectIDs is the seedable per-payload current-ObjectID lookup
-	// for GetFileObjectID.: RemoteSync.Flush
-	// reads this to evaluate the trigger condition before the
-	// per-block upload pump. Unset / zero-valued entries mean "never
-	// quiesced" (zero ObjectID), which lets the trigger condition fire
-	// when speculativeBlocks are present and all-Pending.
-	fileObjectIDs map[string]block.ObjectID
-
-	// getFileObjectIDCalls counts GetFileObjectID invocations.
-	// (Opt 4): the eager small-file dedup fast-path runs BEFORE
-	// the speculative-dedup hook in engine.Flush and does NOT consult
-	// GetFileObjectID; the speculative hook DOES. A zero count after a
-	// Flush therefore proves the eager path short-circuited (the
-	// speculative branch was skipped); a count of 1 proves the eager
-	// path missed/bypassed and the speculative hook ran.
-	getFileObjectIDCalls int
-}
-
-type persistRecord struct {
-	payloadID string
-	blocks    []block.ChunkRef
-	objectID  block.ObjectID
 }
 
 func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash block.ContentHash) error {
@@ -125,57 +80,9 @@ func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID 
 	return 0, nil
 }
 
-func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.ChunkRef, error) {
-	return nil, nil
-}
-
-func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	cp := append([]block.ChunkRef(nil), blocks...)
-	f.persistCalls = append(f.persistCalls, persistRecord{payloadID: payloadID, blocks: cp, objectID: objectID})
-	f.objectIDPersisted = append(f.objectIDPersisted, objectID)
-	if f.persistErr != nil {
-		err := f.persistErr
-		f.persistErr = nil // single-shot
-		return err
-	}
-	return nil
-}
-
-// FindByObjectID —. Records every lookup
-// in findCalls and returns a deep-copied ChunkRef slice when the
-// ObjectID is present in the seeded objectIDHits map. Miss returns
-// (nil, nil). The deep copy preserves slice-aliasing
-// discipline so tests cannot accidentally mutate seeded state.
-func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid block.ObjectID) ([]block.ChunkRef, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.findCalls = append(f.findCalls, oid)
-	if hit, ok := f.objectIDHits[oid]; ok {
-		return append([]block.ChunkRef(nil), hit...), nil
-	}
-	return nil, nil
-}
-
-// GetFileObjectID —. Returns the seeded
-// ObjectID for payloadID from the fileObjectIDs map, or the all-zero
-// sentinel + nil when the map is unset / payload absent. Mirrors the
-// runtime coordinator's "no row → zero ObjectID" disposition so unit
-// tests exercise the same trigger-condition code path as production.
 // ReprojectBlocks is a no-op: this fake does not model the Blocks
 // projection.
 func (f *fakeCoordinator) ReprojectBlocks(_ context.Context, _ string) error { return nil }
-
-func (f *fakeCoordinator) GetFileObjectID(_ context.Context, payloadID string) (block.ObjectID, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.getFileObjectIDCalls++
-	if oid, ok := f.fileObjectIDs[payloadID]; ok {
-		return oid, nil
-	}
-	return block.ObjectID{}, nil
-}
 
 // Compile-time assertion: fakeCoordinator satisfies MetadataCoordinator.
 var _ MetadataCoordinator = (*fakeCoordinator)(nil)
@@ -205,8 +112,8 @@ func TestMetadataCoordinator_NilTolerated(t *testing.T) {
 // TestMetadataCoordinator_AcceptsFakeCoordinator asserts that a *Store
 // can be constructed with a non-nil coordinator and that the field is
 // stored verbatim. Full integration assertions (the engine actually
-// invoking IncrementRefCount/DecrementRefCountAndReap/PersistFileChunks during
-// CopyPayload/Delete/Truncate/syncer-post-Flush) live in Task 2 tests.
+// invoking IncrementRefCount/DecrementRefCountAndReap during
+// CopyPayload/Delete/Truncate) live in Task 2 tests.
 func TestMetadataCoordinator_AcceptsFakeCoordinator(t *testing.T) {
 	fc := &fakeCoordinator{}
 	bs := newTestEngineWithCoordinator(t, fc)
@@ -233,18 +140,12 @@ func TestMetadataCoordinator_FakeImpl_RecordsCalls(t *testing.T) {
 	if _, err := fc.DecrementRefCountAndReap(ctx, "pid", 0); err != nil {
 		t.Fatalf("Decrement: %v", err)
 	}
-	if err := fc.PersistFileChunks(ctx, "pid", []block.ChunkRef{{Hash: h1, Offset: 0, Size: 1}}, block.ObjectID{}); err != nil {
-		t.Fatalf("Persist: %v", err)
-	}
 
 	if len(fc.incHashes) != 1 || fc.incHashes[0] != h1 {
 		t.Errorf("incHashes=%v, want [h1]", fc.incHashes)
 	}
 	if len(fc.reapIDs) != 1 || fc.reapIDs[0] != "pid/0" {
 		t.Errorf("reapIDs=%v, want [pid/0]", fc.reapIDs)
-	}
-	if len(fc.persistCalls) != 1 || fc.persistCalls[0].payloadID != "pid" {
-		t.Errorf("persistCalls=%v, want one call with pid", fc.persistCalls)
 	}
 }
 
