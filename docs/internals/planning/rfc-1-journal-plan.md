@@ -871,8 +871,8 @@ assumes from the rest.
 1. upgrade to v0.36.0 and stop it cleanly, which writes `v1-clean`;
 2. install the storage-v2 release. Its start refuses to serve and names the migration
    command;
-3. run the **offline migration tool**, shipped with that release. This is the point of no
-   return;
+3. run the **offline migration tool**, shipped with that release. It converts both the
+   metadata and the remote data, and its `kvstore.Init` is the point of no return;
 4. start the release.
 
 **Constraints on the rest of storage v2**, owned by RFC 16 and the upgrade RFC rather than
@@ -880,9 +880,11 @@ by this plan:
 
 - one metadata store at a time. The release reads and writes only the RFC 16 store, and
   only the migration tool reads v1 metadata;
-- remote objects written by v1 are **not** migrated. The release reads v1 objects in
-  place, and the migration tool writes RFC 16 refs that point at them. GC must count those
-  refs, and backups must cover them;
+- remote objects written by v1 are **migrated too**. The tool rewrites them in the
+  RFC 4/6 layout through the share's RFC 5 transform chain, so the release never reads
+  the v1 layout, and GC and backups see one layout only. The v1 objects are deleted only
+  after the new store is committed. The tool's runtime grows with the size of the remote,
+  so it must be resumable and report its progress;
 - every share has a remote block store (RFC 8 §2.1), so a v1 share with none must be
   given one before it can be migrated.
 
@@ -917,7 +919,8 @@ refusal, so a v1 metadata store can never be read as a fresh install.
    the format record, so nothing else in the store can be written before it;
 4. what the store holds besides, the `J‖journal` records included, written idempotently,
    and repeated at every start so that a crash after step 3 leaves no gap;
-5. the migration tool only: convert the metadata, then stamp a future `format` version in
+5. the migration tool only: convert the metadata and the remote objects, then stamp a
+   future `format` version in
    every v1 journal directory, so that v0.36.0 refuses them with `ErrFutureFormat` instead
    of serving stale data. The start repeats the stamp while v1 directories exist.
 
