@@ -1,8 +1,43 @@
 package github.com/marmos91/dittofs/pkg/block/journalv2
 
 const (
+	LimitShare	= core.LimitShare
+	LimitJournal	= core.LimitJournal
+	LimitIndex	= core.LimitIndex
+	LimitHeadroom	= core.LimitHeadroom
+	LimitVersion	= core.LimitVersion
+	LimitSpare	= core.LimitSpare
+)
+
+const (
+	UnitBytes	= core.UnitBytes
+	UnitEntries	= core.UnitEntries
+	UnitVersions	= core.UnitVersions
+	UnitSegments	= core.UnitSegments
+)
+
+const (
 	Bounded		= core.Bounded
 	Standard	= core.Standard
+)
+
+var (
+	ErrNotImplemented	= core.ErrNotImplemented
+	ErrClosed		= core.ErrClosed
+	ErrHandleOpen		= core.ErrHandleOpen
+	ErrJournalExists	= core.ErrJournalExists
+	ErrNoJournal		= core.ErrNoJournal
+	ErrIdentityMismatch	= core.ErrIdentityMismatch
+	ErrUnknownFormat	= core.ErrUnknownFormat
+	ErrCorrupt		= core.ErrCorrupt
+	ErrStaleFill		= core.ErrStaleFill
+	ErrNotOffloaded		= core.ErrNotOffloaded
+	ErrNotOffered		= core.ErrNotOffered
+	ErrOfferEnded		= core.ErrOfferEnded
+	ErrZeroLength		= core.ErrZeroLength
+	ErrSyncFailed		= core.ErrSyncFailed
+	ErrNoSpace		= core.ErrNoSpace
+	ErrOtherShare		= core.ErrOtherShare
 )
 
 type Extent = core.Extent
@@ -13,9 +48,19 @@ func NewFileID(id [16]byte) FileID
 
 type Held = core.Held
 
+type IdentityError = core.IdentityError
+
 type InstallationID = core.InstallationID
 
 type JournalID = core.JournalID
+
+type Limit = core.Limit
+
+type NoSpaceError = core.NoSpaceError
+
+type NotOffloadedError = core.NotOffloadedError
+
+type OtherShareError = core.OtherShareError
 
 type SegmentID = core.SegmentID
 
@@ -27,13 +72,51 @@ type ShareTag = core.ShareTag
 
 type SnapshotCut = core.SnapshotCut
 
+type SyncError = core.SyncError
+
 type SyncPolicy = core.SyncPolicy
+
+type Unit = core.Unit
 
 type Version = core.Version
 
 func VersionFromBytes(b [16]byte) Version
 
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/core
+
+var (
+	ErrNotImplemented	= errors.New("journal: not implemented")
+
+	ErrClosed	= errors.New("journal: closed")
+
+	ErrHandleOpen	= errors.New("journal: a handle of the tag is open")
+
+	ErrJournalExists	= errors.New("journal: directory already holds a journal")
+
+	ErrNoJournal	= errors.New("journal: directory holds no journal")
+
+	ErrIdentityMismatch	= errors.New("journal: identity does not match")
+
+	ErrUnknownFormat	= errors.New("journal: unknown format")
+
+	ErrCorrupt	= errors.New("journal: checksum does not verify")
+
+	ErrStaleFill	= errors.New("journal: fill is older than the file")
+
+	ErrNotOffloaded	= errors.New("journal: extent is not offloaded")
+
+	ErrNotOffered	= errors.New("journal: extent was not offered")
+
+	ErrOfferEnded	= errors.New("journal: offer has ended")
+
+	ErrZeroLength	= errors.New("journal: zero-length extent")
+
+	ErrSyncFailed	= errors.New("journal: sync failed")
+
+	ErrNoSpace	= errors.New("journal: no space")
+
+	ErrOtherShare	= errors.New("journal: file belongs to another share")
+)
 
 type Extent struct {
 	Off	int64
@@ -57,9 +140,66 @@ type Held struct {
 	Version	Version
 }
 
+type IdentityError struct {
+	Found		JournalID
+	Installation	InstallationID
+	Segments	bool
+}
+
+func (e *IdentityError) Error() string
+
+func (e *IdentityError) Is(target error) bool
+
 type InstallationID [16]byte
 
 type JournalID [16]byte
+
+type Limit uint8
+
+const (
+	LimitShare	Limit	= iota + 1
+
+	LimitJournal
+
+	LimitIndex
+
+	LimitHeadroom
+
+	LimitVersion
+
+	LimitSpare
+)
+
+func (l Limit) String() string
+
+type NoSpaceError struct {
+	Limit	Limit
+	Missing	int64
+	Unit	Unit
+}
+
+func (e *NoSpaceError) Error() string
+
+func (e *NoSpaceError) Is(target error) bool
+
+type NotOffloadedError struct {
+	File	FileID
+	Extents	[]Extent
+}
+
+func (e *NotOffloadedError) Error() string
+
+func (e *NotOffloadedError) Is(target error) bool
+
+type OtherShareError struct {
+	File	FileID
+	Tag	ShareTag
+	Owner	ShareTag
+}
+
+func (e *OtherShareError) Error() string
+
+func (e *OtherShareError) Is(target error) bool
 
 type SegmentID uint64
 
@@ -71,6 +211,18 @@ type ShareTag uint32
 
 type SnapshotCut uint64
 
+type SyncError struct {
+	Segment	SegmentID
+	Files	[]FileID
+	Err	error
+}
+
+func (e *SyncError) Error() string
+
+func (e *SyncError) Is(target error) bool
+
+func (e *SyncError) Unwrap() error
+
 type SyncPolicy uint8
 
 const (
@@ -78,6 +230,17 @@ const (
 
 	Standard
 )
+
+type Unit uint8
+
+const (
+	UnitBytes	Unit	= iota + 1
+	UnitEntries
+	UnitVersions
+	UnitSegments
+)
+
+func (u Unit) String() string
 
 type Version struct {
 	Epoch	uint64

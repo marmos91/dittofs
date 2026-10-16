@@ -24,6 +24,13 @@ var surface = []surfaceCall{
 	{"FileID.Bytes", func() error { _ = FileID{}.Bytes(); return nil }},
 	{"Extent.End", func() error { _ = Extent{}.End(); return nil }},
 	{"Extent.Overlaps", func() error { _ = Extent{}.Overlaps(Extent{}); return nil }},
+	{"Limit.String", func() error { _ = Limit(0).String(); return nil }},
+	{"Unit.String", func() error { _ = Unit(0).String(); return nil }},
+	{"NoSpaceError.Error", func() error { _ = (&NoSpaceError{}).Error(); return nil }},
+	{"OtherShareError.Error", func() error { _ = (&OtherShareError{}).Error(); return nil }},
+	{"IdentityError.Error", func() error { _ = (&IdentityError{}).Error(); return nil }},
+	{"SyncError.Error", func() error { _ = (&SyncError{}).Error(); return nil }},
+	{"NotOffloadedError.Error", func() error { _ = (&NotOffloadedError{}).Error(); return nil }},
 }
 
 // TestSurface calls every entry of surface and asserts that it returns or
