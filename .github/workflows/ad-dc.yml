@@ -15,7 +15,7 @@ name: AD-DC PAC Test
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, feat/storage-v2]
     paths-ignore:
       - '**.md'
       - 'docs/**'

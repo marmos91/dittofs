@@ -20,7 +20,7 @@ name: Conformance Suites
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop, main, feat/storage-v2]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -30,7 +30,7 @@ on:
       - '**.jpg'
       - '**.svg'
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, feat/storage-v2]
     paths-ignore:
       - '**.md'
       - 'docs/**'

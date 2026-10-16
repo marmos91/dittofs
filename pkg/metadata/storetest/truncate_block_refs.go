@@ -50,7 +50,6 @@ func testChunkRef_ChmodDoesNotRewriteRefs(t *testing.T, factory StoreFactory) {
 		h[0] = byte(i + 1)
 		file.Blocks[i] = block.ChunkRef{Hash: h, Offset: uint64(i) * mib, Size: uint32(mib)}
 	}
-	file.ObjectID = block.ComputeObjectID(file.Blocks)
 	if err := store.SetManifest(ctx, file); err != nil {
 		t.Fatalf("UpdateAttrs() seeding %d blocks failed: %v", nBlocks, err)
 	}
@@ -137,9 +136,6 @@ func testTruncateDownPrunesChunkRefs(t *testing.T, factory StoreFactory) {
 			Size:   uint32(mib),
 		}
 	}
-	// Quiesce the file: a non-zero ObjectID (Merkle root over Blocks) means the
-	// truncate must keep it consistent with the trimmed list, not leave it stale.
-	file.ObjectID = block.ComputeObjectID(file.Blocks)
 	// Seeding the manifest is a manifest-changing write, so it goes through
 	// SetManifest.
 	if err := store.SetManifest(ctx, file); err != nil {
@@ -193,12 +189,5 @@ func testTruncateDownPrunesChunkRefs(t *testing.T, factory StoreFactory) {
 		if _, found := referenced[b.Hash]; found {
 			t.Errorf("pruned tail block %x still referenced after truncate", b.Hash[:4])
 		}
-	}
-
-	// ObjectID must stay consistent with the trimmed block list (the dedup
-	// invariant: a non-zero ObjectID equals ComputeObjectID(Blocks)).
-	if want := block.ComputeObjectID(got.Blocks); got.ObjectID != want {
-		t.Errorf("ObjectID = %s, want recompute(Blocks) %s after truncate",
-			got.ObjectID.String(), want.String())
 	}
 }

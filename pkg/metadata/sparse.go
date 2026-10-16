@@ -84,13 +84,6 @@ func (s *Service) PunchHole(ctx *AuthContext, handle FileHandle, offset, length 
 	newBlocks := block.PunchHole(file.Blocks, offset, length)
 	file.Blocks = newBlocks
 	// PunchHole rewrote the manifest — persist the new list.
-	if !file.ObjectID.IsZero() {
-		if len(newBlocks) == 0 {
-			file.ObjectID = block.ObjectID{}
-		} else {
-			file.ObjectID = block.ComputeObjectID(newBlocks)
-		}
-	}
 
 	now := time.Now()
 	file.Mtime = now

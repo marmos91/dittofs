@@ -45,7 +45,7 @@ import (
 // Server Config         "cfg:"   cfg:server                             MetadataServerConfig (JSON)
 // Filesystem Caps       "cap:"   cap:fs                                 FilesystemCapabilities (JSON)
 // Format Version        "fmt:"   fmt:store                              uint32 (big-endian binary)
-// ObjectID Index        "obj:"   obj:<contentHash>                      file UUID (bytes)
+// Retired ObjectID idx  "obj:"   obj:<contentHash>                      dropped at open and restore (retired_objectid_index.go)
 // PayloadID Index       "pl:"    pl:<payloadID>                         file UUID (bytes)
 
 const (
@@ -58,7 +58,6 @@ const (
 	prefixLinkCount    = "l:"
 	prefixConfig       = "cfg:"
 	prefixCapabilities = "cap:"
-	prefixObjectID     = "obj:" // ObjectID -> file UUID
 	prefixPayloadID    = "pl:"  // PayloadID (content ID) -> file UUID
 	prefixFormat       = "fmt:" // on-disk format version of this database
 )
@@ -191,13 +190,6 @@ func keyFilesystemCapabilities() []byte {
 	return []byte(prefixCapabilities + "fs")
 }
 
-// keyObjectID generates a key for the ObjectID secondary index:
-// "obj:<hex>". Zero-valued ObjectIDs MUST NOT be written through this
-// helper -- caller checks IsZero() first.
-func keyObjectID(h metadata.ContentHash) []byte {
-	return []byte(prefixObjectID + h.String())
-}
-
 // keyPayloadID generates a key for the PayloadID secondary index:
 // "pl:<payloadID>". Empty PayloadIDs MUST NOT be written through this helper --
 // caller checks for "" first. PayloadID is the inode's stable content
@@ -281,7 +273,7 @@ const (
 	fEAs        = 18 // map[string][]byte (JSON)
 	fIdempotenc = 19 // uint64 (uvarint)
 	fBlocks     = 20 // []block.ChunkRef (JSON)
-	fObjectID   = 21 // block.ObjectID (32 raw bytes)
+	fObjectID   = 21 // retired: older binaries wrote the file's ObjectID here; decoded and discarded, never written
 	fDeletedAt  = 22 // *time.Time (MarshalBinary)
 	fOrigPath   = 23 // string
 	fDeletedBy  = 24 // string
@@ -377,10 +369,6 @@ func encodeFile(file *metadata.File) ([]byte, error) {
 	// Blocks (the chunk manifest) are NOT written here — they live in the
 	// sibling fm:<uuid> key so an attr-only write never rewrites the manifest.
 	// The fBlocks field ID survives only in the decoder as a legacy read shim.
-	if !a.ObjectID.IsZero() {
-		oid := a.ObjectID // [32]byte
-		buf = putField(buf, fObjectID, oid[:])
-	}
 	if a.DeletedAt != nil {
 		if buf, err = putTimeField(buf, fDeletedAt, *a.DeletedAt); err != nil {
 			return nil, fmt.Errorf("encode deleted_at: %w", err)
@@ -504,10 +492,9 @@ func decodeFileBinary(b []byte) (*metadata.File, error) {
 				return nil, fmt.Errorf("decode blocks: %w", err)
 			}
 		case fObjectID:
-			if len(val) != len(a.ObjectID) {
-				return nil, fmt.Errorf("failed to decode file: bad object_id length %d", len(val))
-			}
-			copy(a.ObjectID[:], val)
+			// Retired field: a record written by an older binary may still
+			// carry an ObjectID. Nothing reads it, so it is dropped here and
+			// disappears from the record on its next write.
 		case fDeletedAt:
 			var t time.Time
 			if err := t.UnmarshalBinary(val); err != nil {

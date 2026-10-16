@@ -229,25 +229,9 @@ func (c *reapCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	return count, nil
 }
 
-func (c *reapCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.ChunkRef, _ block.ObjectID) error {
-	return nil
-}
-
-func (c *reapCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.ChunkRef, error) {
-	return nil, nil
-}
-
-func (c *reapCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.ChunkRef, error) {
-	return nil, nil
-}
-
 // ReprojectBlocks is a no-op: this fake does not model the Blocks
 // projection.
 func (c *reapCoordinator) ReprojectBlocks(_ context.Context, _ string) error { return nil }
-
-func (c *reapCoordinator) GetFileObjectID(_ context.Context, _ string) (block.ObjectID, error) {
-	return block.ObjectID{}, nil
-}
 
 var _ MetadataCoordinator = (*reapCoordinator)(nil)
 

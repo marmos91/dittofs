@@ -21,14 +21,6 @@ type ContentHash = block.ContentHash
 func ParseContentHash(s string) (ContentHash, error) { return block.ParseContentHash(s) }
 
 // ============================================================================
-// ObjectID Type for FileAttr
-// ============================================================================
-
-// ObjectID is a reference to a content-addressed Object.
-// It's the ContentHash stored as a fixed-size array for embedding in FileAttr.
-type ObjectID = ContentHash
-
-// ============================================================================
 // BlockState (re-exported from blockstore for backward compatibility)
 // ============================================================================
 

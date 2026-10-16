@@ -14,12 +14,15 @@ import (
 // metadata-store backend at construction time.
 //
 // Transaction ownership rule (BLOCKER-1/2/3 resolution, 2026-04-26)
-// the engine NEVER opens a metadata txn. The CALLER (common.CloneWholeFile
-// for the clone path; common.WriteToBlockStore for the adapter path;
-// syncer post-Flush wrapper for PersistFileChunks) opens
-// the txn around the engine call. The coordinator's IncrementRefCount /
-// DecrementRefCount / PersistFileChunks operations run inside that
-// caller-owned txn.
+// the engine NEVER opens a metadata txn. Each coordinator operation runs in
+// one of two modes:
+//   - Caller-owned: the clone path (common.CloneWholeFile) and the adapter
+//     write path (common.WriteToBlockStore) open the txn around the engine
+//     call and bind it to ctx with metadata.WithTx; IncrementRefCount and the
+//     decrements run inside it, so the caller's rollback undoes them.
+//   - Coordinator-owned: the engine's Truncate and Delete reclaim path binds
+//     no txn, so DecrementRefCountAndReap and DecrementRefCountAndReapMany
+//     open their own (one per row, or one for the whole set).
 //
 // PayloadID is passed as a `string` rather than a strongly-typed
 // block.PayloadID to avoid type-system churn across every
@@ -81,59 +84,6 @@ type MetadataCoordinator interface {
 	// offsets MUST be distinct: each names one row, and reaping a row twice
 	// would strip a reference the file does not hold.
 	DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error
-
-	// PersistFileChunks updates FileAttr.Blocks AND FileAttr.ObjectID
-	// for a given file in a single metadata txn. It is invoked by the
-	// runtime coordinator wrapper (which resolves payloadID → fileHandle
-	// and runs SetManifest in one txn) after a Flush persists a file's chunk
-	// manifest — the engine itself no longer drives it from a local-store
-	// chunk-lifecycle hook, of which none remain.
-	//
-	// ObjectID is the BLAKE3 Merkle root over blocks (computed by
-	// block.ComputeObjectID at rollup commit time). Pass an
-	// all-zero ObjectID to mean "do not update ObjectID" (e.g.
-	// partial flushes — but those currently never reach this hook per
-	// Flush semantics).
-	PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error
-
-	// GetPersistedBlocks returns the file's currently-persisted
-	// FileAttr.Blocks (with content hashes) for payloadID, or an empty
-	// slice when the file has no blocks yet / does not exist. The
-	// rollup-completion callback reads this to merge a partial rollup
-	// pass into the already-committed block list before calling
-	// PersistFileChunks, so a multi-pass rollup keeps FileAttr.Blocks
-	// complete instead of replacing it with only the latest pass.
-	//
-	// Reads the manifest (the encoded FileAttr.Blocks) — NOT the per-file
-	// FileChunk index, whose Pending rows carry no content hash.
-	GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error)
-
-	// FindByObjectID looks up a previously-quiesced file in the
-	// metadata store by Merkle-root ObjectID. Returns (nil, nil) on
-	// miss. Used by the file-level dedup short-circuit.
-	// Per-metadata-store scope, not per-share.
-	//
-	// Implementations short-circuit on zero-valued ObjectID and return
-	// (nil, nil) without touching the metadata store.
-	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error)
-
-	// GetFileObjectID returns the current FileAttr.ObjectID for
-	// payloadID, or the all-zero sentinel when the file has never
-	// quiesced (or does not exist). Used by RemoteSync.Flush to evaluate the
-	// trigger condition for the file-level dedup short-circuit BEFORE
-	// running the per-block upload pump.
-	//
-	// Implementations MUST NOT open a metadata transaction — this is a
-	// single-row read on the public metadata-store surface. The
-	// runtime coordinator routes through metadataStore.GetFileByPayloadID
-	// directly (no caller-owned txn binding required for the trigger
-	// check).
-	//
-	// Returning the all-zero ObjectID + nil for "no row" is the
-	// authoritative pattern: callers treat zero as "skip short-circuit"
-	// and fall through to the per-block path. Real backend errors
-	// (storage I/O, corrupt row) propagate.
-	GetFileObjectID(ctx context.Context, payloadID string) (block.ObjectID, error)
 }
 
 // ErrMetadataCoordinatorNotWired is returned when an engine method
@@ -144,15 +94,3 @@ type MetadataCoordinator interface {
 // and for CopyPayload over an empty ChunkRef list (no work => no
 // coordinator needed).
 var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator not wired")
-
-// ErrObjectIDConflict signals that PersistFileChunks rejected a write
-// because another file already holds the same FileAttr.ObjectID
-// (first-committer-wins). The short-circuit
-// caller (applyFileLevelDedupHit) catches this, rolls back the
-// just-incremented refcounts on the original target, re-fetches the
-// now-canonical target via FindByObjectID, and retries once.
-//
-// Wrapping: the runtime coordinator joins this sentinel via errors.Join
-// onto a metadata.errors.StoreError with Code == errors.ErrConflict
-// returned by the manifest write.
-var ErrObjectIDConflict = errors.New("engine: object_id already mapped to another file")

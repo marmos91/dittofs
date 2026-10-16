@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 410" width="900" height="410" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <style>
+      .t  { font-size: 15px; font-weight: 600; fill: #1b1f24 }
+      .h  { font-size: 13px; font-weight: 600; fill: #1b1f24 }
+      .l  { font-size: 12px; fill: #3d444d }
+      .s  { font-size: 11px; fill: #5b6472 }
+      .m  { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 11px; fill: #1b1f24 }
+      .c  { fill: #dce9f7; stroke: #4a7fb5; stroke-width: 1.3 }
+      .other { fill: #eceff2; stroke: #9aa4b2; stroke-width: 1.1 }
+      .grp{ fill: none; stroke: #5b6472; stroke-width: 1.3 }
+      .tie{ stroke: #4a7fb5; stroke-width: 1; stroke-dasharray: 3 3; fill: none; opacity: .75 }
+    </style>
+  </defs>
+  <rect width="900" height="410" fill="#ffffff"/>
+
+  <text x="16" y="26" class="t">The same chunks, grouped twice, for two different purposes.</text>
+  <text x="16" y="46" class="s">A chunk's block says nothing about which segment holds its bytes.</text>
+
+  <text x="16" y="84" class="h">Remote — chunks boxed into blocks &#183; unit of transfer</text>
+
+  <rect x="120" y="100" width="300" height="52" rx="4" class="grp"/>
+  <text x="120" y="167" class="s">block B1</text>
+  <rect x="130" y="110" width="90" height="34" rx="3" class="c"/><text x="142" y="131" class="m">a91f…</text>
+  <rect x="224" y="110" width="90" height="34" rx="3" class="c"/><text x="236" y="131" class="m">7c02…</text>
+  <rect x="318" y="110" width="90" height="34" rx="3" class="c"/><text x="330" y="131" class="m">3b44…</text>
+
+  <rect x="470" y="100" width="110" height="52" rx="4" class="grp"/>
+  <text x="470" y="167" class="s">block B2</text>
+  <rect x="480" y="110" width="90" height="34" rx="3" class="c"/><text x="492" y="131" class="m">e5d8…</text>
+
+  <text x="16" y="248" class="h">Local — the same bytes as records in segments &#183; unit of local storage</text>
+
+  <rect x="120" y="264" width="310" height="52" rx="4" class="grp"/>
+  <text x="120" y="332" class="s">segment 0000017.seg</text>
+  <rect x="130" y="274" width="90" height="34" rx="3" class="c"/><text x="142" y="295" class="m">e5d8…</text>
+  <rect x="224" y="274" width="104" height="34" rx="3" class="other"/><text x="232" y="295" class="s">another file</text>
+  <rect x="332" y="274" width="90" height="34" rx="3" class="c"/><text x="344" y="295" class="m">a91f…</text>
+
+  <rect x="470" y="264" width="200" height="52" rx="4" class="grp"/>
+  <text x="470" y="332" class="s">segment 0000018.seg</text>
+  <rect x="480" y="274" width="90" height="34" rx="3" class="c"/><text x="492" y="295" class="m">3b44…</text>
+  <rect x="574" y="274" width="88" height="34" rx="3" class="c"/><text x="586" y="295" class="m">7c02…</text>
+
+  <path d="M175,144 C175,200 377,215 377,274" class="tie"/>
+  <path d="M269,144 C269,205 618,215 618,274" class="tie"/>
+  <path d="M363,144 C363,205 525,215 525,274" class="tie"/>
+  <path d="M525,144 C525,200 175,215 175,274" class="tie"/>
+
+  <text x="16" y="368" class="l">Different order, different grouping, different sizes. B1's three chunks land in two segments;</text>
+  <text x="16" y="386" class="l">segment 17 holds chunks from both blocks plus bytes of an unrelated file.</text>
+  <text x="16" y="404" class="s">This is why evicting a block frees no segment, and dropping a segment touches chunks from many blocks and many files.</text>
+</svg>

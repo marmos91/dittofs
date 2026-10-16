@@ -448,23 +448,6 @@ type Store interface {
 	// (legacy rows pre-CAS) are emitted; callers skip them as needed.
 	EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error
 
-	// FindByObjectID looks up a file by its Merkle-root ObjectID.
-	// Returns (nil, nil) on miss (no row matches); non-nil result
-	// carries the canonical ChunkRef list of the matching file
-	// (per-metadata-store scope, NOT per-share).
-	//
-	// Badger maintains a secondary index from ObjectID to file row:
-	// the key obj:{hex} -> file_id, maintained inside each Put/Delete
-	// write batch.
-	//
-	// Zero-valued ObjectID (legacy / pre-quiesce) MUST NOT match any
-	// row — implementations short-circuit and return (nil, nil) on zero
-	// input. The short-circuit caller only invokes this with
-	// a non-zero provisional ObjectID.
-	//
-	// Conformance scenarios live in pkg/metadata/storetest/objectid_*.go.
-	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error)
-
 	// EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a
 	// live inode through fn (deduped, order-independent). "Live" means nlink>0:
 	// nlink=0 (unlinked) inodes are EXCLUDED (#1433) — the file is dead, so its
