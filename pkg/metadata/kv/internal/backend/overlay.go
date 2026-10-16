@@ -32,12 +32,13 @@ func (o Overlay) Has(key []byte) bool {
 }
 
 // Cursor walks a snapshot's records in one direction. Key is valid until
-// Next.
+// Next. A cursor whose read failed is not Valid, and Err says why.
 type Cursor interface {
 	Valid() bool
 	Key() []byte
 	Value() ([]byte, error)
 	Next()
+	Err() error
 }
 
 // Scan yields the records under prefix after after, in key order: c's, which
@@ -58,6 +59,10 @@ func (o Overlay) Scan(prefix, after []byte, c Cursor, yield func(kv.KeyValue, er
 	slices.Sort(mine)
 
 	for c.Valid() || len(mine) > 0 {
+		if err := c.Err(); err != nil {
+			yield(kv.KeyValue{}, err)
+			return
+		}
 		var stored []byte
 		if c.Valid() {
 			stored = c.Key()
@@ -83,6 +88,9 @@ func (o Overlay) Scan(prefix, after []byte, c Cursor, yield func(kv.KeyValue, er
 		}
 		c.Next()
 	}
+	if err := c.Err(); err != nil {
+		yield(kv.KeyValue{}, err)
+	}
 }
 
 // Before returns the last record under prefix below key: c walks the stored
@@ -103,6 +111,9 @@ func (o Overlay) Before(prefix, key []byte, c Cursor) (kv.KeyValue, bool, error)
 	slices.Sort(mine)
 
 	for c.Valid() || len(mine) > 0 {
+		if err := c.Err(); err != nil {
+			return kv.KeyValue{}, false, err
+		}
 		var stored []byte
 		if c.Valid() {
 			stored = c.Key()
@@ -124,5 +135,5 @@ func (o Overlay) Before(prefix, key []byte, c Cursor) (kv.KeyValue, bool, error)
 		}
 		return kv.KeyValue{Key: bytes.Clone(stored), Value: v}, true, nil
 	}
-	return kv.KeyValue{}, false, nil
+	return kv.KeyValue{}, false, c.Err()
 }

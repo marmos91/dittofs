@@ -377,6 +377,7 @@ func (c cursor) Valid() bool            { return c.it.Valid() }
 func (c cursor) Key() []byte            { return c.it.Item().Key() }
 func (c cursor) Value() ([]byte, error) { return c.it.Item().ValueCopy(nil) }
 func (c cursor) Next()                  { c.it.Next() }
+func (c cursor) Err() error             { return nil } // Badger's iterator reports errors through Value
 
 // Versions reads the snapshot, untracked, and refuses a key the transaction
 // wrote: its version is the commit's, which Badger assigns only then.

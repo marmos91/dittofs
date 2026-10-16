@@ -416,6 +416,8 @@ github.com/ansel1/merry/v2 v2.2.2 h1:/R8URU5LtiYwP7UI1KoZW4ex4nTzr+/T49+TYZsjUas
 github.com/ansel1/merry/v2 v2.2.2/go.mod h1:sludwzkWfhZHOF4jSOViv+t2nnu2HNmtsMKzAfwmVB8=
 github.com/ansel1/vespucci/v4 v4.1.1/go.mod h1:zzdrO4IgBfgcGMbGTk/qNGL8JPslmW3nPpcBHKReFYY=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
+github.com/apple/foundationdb/bindings/go v0.0.0-20260416192139-3ea44ce1d900 h1:CNV2HQ5JfSweyw/IlJzi7s1Dx1SlK0rl93uw2cPQO+g=
+github.com/apple/foundationdb/bindings/go v0.0.0-20260416192139-3ea44ce1d900/go.mod h1:OMVSB21p9+xQUIqlGizHPZfjK+SHws1ht+ZytVDoz9U=
 github.com/aws/aws-sdk-go-v2 v1.47.1 h1:uOIZnp4PK3ZhKI0dNrJrhTEsLxbpXHTAJlwoS1pvAtw=
 github.com/aws/aws-sdk-go-v2 v1.47.1/go.mod h1:bttEH6JqnUL8LepvDVfdrds/fZ5bCIxzpe3abyUrhDU=
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 h1:GPRlPwz40I2B2VrBEASOA3Bi77NyeqejNLkifosX0rs=
