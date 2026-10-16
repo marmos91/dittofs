@@ -124,7 +124,7 @@ func TestSplitNUL(t *testing.T) {
 
 // checkout moves the test into a new checkout whose registry has a suite
 // with an option, one that fails, one that needs another platform, one with a
-// fixture, which dt can't run yet, one that needs this platform and whose 9x
+// fixture dt can't set up yet, one that needs this platform and whose 9x
 // tests, which the merge tier doesn't select, need the dedicated host, and a
 // group, so a dt run there runs only these. Checking their needs probes
 // nothing on the machine. It returns this platform's need and the other one.
@@ -141,7 +141,8 @@ func checkout(t *testing.T) (here, other string) {
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
-		"  fixed: { cmd: \"true\", fixture: { profile: memory } }\n" +
+		"  fixed: { cmd: \"true\", fixture: { profile: memory, smb: true } }\n" +
+		"  pictured: { image: x, needs: [" + here + "] }\n" +
 		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
 	for _, dir := range []string{"test", "t"} {
@@ -230,7 +231,8 @@ func TestAliases(t *testing.T) {
 // dt list says whether dt run would run each suite here, as dt run decides
 // it: first what dt can't do yet, then the suite's needs, and per
 // needs_by_test glob whose tests the tier plans, what those tests need beyond
-// them. It lists the groups too.
+// them. A suite with an image runs where its needs are met. It lists the
+// groups too.
 func TestListRunsHere(t *testing.T) {
 	_, other := checkout(t)
 	out, err := dt(t, "list", "--json")
@@ -253,14 +255,15 @@ func TestListRunsHere(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	fixtures := "dt doesn't set up fixtures yet"
+	fixtures := "dt doesn't serve SMB from fixtures yet"
 	want := map[string]suite{
-		"s":      {RunsHere: true},
-		"s/o":    {RunsHere: true},
-		"fails":  {RunsHere: true},
-		"away":   {Unmet: []string{other}},
-		"fixed":  {Unsupported: fixtures},
-		"partly": {RunsHere: true, UnmetByTest: map[string][]string{"9?-*.sh": {"host:dedicated"}}},
+		"s":        {RunsHere: true},
+		"s/o":      {RunsHere: true},
+		"fails":    {RunsHere: true},
+		"away":     {Unmet: []string{other}},
+		"fixed":    {Unsupported: fixtures},
+		"pictured": {RunsHere: true},
+		"partly":   {RunsHere: true, UnmetByTest: map[string][]string{"9?-*.sh": {"host:dedicated"}}},
 	}
 	for _, s := range got.Suites {
 		if w, ok := want[s.Name]; !ok || !reflect.DeepEqual(s.suite, w) {
@@ -308,15 +311,19 @@ func TestDoctor(t *testing.T) {
 	}
 }
 
-// With --ci, the run's outcomes are added to the job summary.
-func TestRunWritesTheJobSummary(t *testing.T) {
+// dt run --ci writes no job summary: dt report --format md does, and gives
+// the outcomes dt run did.
+func TestRunWritesNoJobSummary(t *testing.T) {
 	checkout(t)
 	summary := filepath.Join(t.TempDir(), "summary.md")
 	t.Setenv("GITHUB_STEP_SUMMARY", summary)
-	_, _ = dt(t, "run", "away", "--ci", "--results", t.TempDir())
-	got, err := os.ReadFile(summary)
-	if err != nil || !strings.Contains(string(got), "| `away` | not run |") {
-		t.Errorf("summary %q, %v", got, err)
+	results := t.TempDir()
+	_, _ = dt(t, "run", "away", "--ci", "--results", results)
+	if _, err := os.Stat(summary); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dt run wrote the job summary: %v", err)
+	}
+	if md, err := dt(t, "report", "--format", "md", "--results", results); err != nil || !strings.Contains(md, "| `away` | not run |") {
+		t.Errorf("dt report: %v\n%s", err, md)
 	}
 }
 
@@ -331,5 +338,50 @@ func TestRunResultsRelativeToRoot(t *testing.T) {
 	sep := string(filepath.Separator)
 	if !strings.Contains(out, sep+"rel"+sep) || strings.Contains(out, "sub"+sep+"rel") {
 		t.Errorf("results not under the root's rel:\n%s", out)
+	}
+}
+
+// dt run writes the run's summary.json, which records the tier the run was
+// asked for.
+func TestRunWritesSummaryJSON(t *testing.T) {
+	checkout(t)
+	results := t.TempDir()
+	_, _ = dt(t, "run", "away", "--tier", "merge", "--results", results)
+	files, err := filepath.Glob(filepath.Join(results, "*", "summary.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("summaries %v, %v", files, err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Results struct{ Extra struct{ Tier string } }
+	}
+	if err := json.Unmarshal(data, &doc); err != nil || doc.Results.Extra.Tier != "merge" {
+		t.Errorf("tier %q, %v", doc.Results.Extra.Tier, err)
+	}
+}
+
+// When summary.json can't be written, dt run still prints how each cell went,
+// then fails with the error.
+func TestRunReportsWhenTheSummaryFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the suite runs sh")
+	}
+	y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n" +
+		"  breaks: { cmd: { sh: \"rm {out}/../summary.json && mkdir -p {out}/../summary.json/x\" } }\n"
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "test"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "test", "suites.yaml"), []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	out, err := dt(t, "run", "breaks", "--ci", "--results", t.TempDir())
+	var status exitStatus
+	if err == nil || errors.As(err, &status) || !strings.Contains(out, "breaks  passed") {
+		t.Errorf("dt run: %v\n%s", err, out)
 	}
 }

@@ -8,10 +8,10 @@
       <!-- ============================================================== -->
       <!-- Network Configuration                                           -->
       <!-- ============================================================== -->
-      <Property name="SutComputerName" value="${DITTOFS_HOST}">
+      <Property name="SutComputerName" value="{server}">
         <Description>The computer name of the SUT (System Under Test).</Description>
       </Property>
-      <Property name="SutIPAddress" value="${DITTOFS_HOST}">
+      <Property name="SutIPAddress" value="{server}">
         <Description>The IP address of the SUT.</Description>
       </Property>
       <Property name="SutAlternativeIPAddress" value="">
@@ -20,7 +20,7 @@
       <Property name="TransportPort" value="445">
         <Description>The SMB transport port on the SUT (must be 445, WPTS hardcodes this).</Description>
       </Property>
-      <Property name="ClientNic1IPAddress" value="${CLIENT_IP}">
+      <Property name="ClientNic1IPAddress" value="{server}">
         <Description>The IP address of the primary client NIC.</Description>
       </Property>
       <Property name="ClientNic2IPAddress" value="">
@@ -30,22 +30,22 @@
       <!-- ============================================================== -->
       <!-- Authentication (Workgroup Mode)                                 -->
       <!-- ============================================================== -->
-      <Property name="DomainName" value="${DITTOFS_HOST}">
+      <Property name="DomainName" value="{server}">
         <Description>Set to SutComputerName for workgroup mode (no domain).</Description>
       </Property>
       <Property name="DCServerComputerName" value="">
         <Description>Empty for workgroup mode (no domain controller).</Description>
       </Property>
-      <Property name="AdminUserName" value="${ADMIN_USER}">
+      <Property name="AdminUserName" value="{user}">
         <Description>Admin user for the SUT.</Description>
       </Property>
-      <Property name="NonAdminUserName" value="${TEST_USER}">
+      <Property name="NonAdminUserName" value="{user2}">
         <Description>Non-admin user for the SUT.</Description>
       </Property>
       <Property name="GuestUserName" value="">
         <Description>Guest user (empty if not applicable).</Description>
       </Property>
-      <Property name="PasswordForAllUsers" value="${TEST_PASSWORD}">
+      <Property name="PasswordForAllUsers" value="{password}">
         <Description>Password used for all test users.</Description>
       </Property>
       <Property name="SupportedSecurityPackage" value="Ntlm">

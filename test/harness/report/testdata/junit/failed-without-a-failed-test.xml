@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="pjdfstest/memory/3" tests="2" failures="1" errors="0" skipped="0" time="60.000">
+    <properties>
+      <property name="result" value="failed"></property>
+      <property name="note" value="chmod/00.t: stopped at the cell&#39;s limit; 2 tests not started: stopped at the cell&#39;s limit"></property>
+    </properties>
+    <testcase name="chmod/00.t" classname="pjdfstest/memory/3" time="1.000"></testcase>
+    <testcase name="pjdfstest/memory/3" classname="pjdfstest/memory/3" time="0.000">
+      <failure message="chmod/00.t: stopped at the cell&#39;s limit; 2 tests not started: stopped at the cell&#39;s limit">chmod/00.t: stopped at the cell&#39;s limit; 2 tests not started: stopped at the cell&#39;s limit</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

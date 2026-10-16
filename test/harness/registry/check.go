@@ -22,7 +22,7 @@ var (
 	metrics    = set("fio-json", "dfsbench-json")
 	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
-	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "mount", "user", "password", "realm")
+	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "user", "user2", "password", "realm")
 
 	// runFlags are dt run's own flags, which no option may share a name with.
 	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "help")
@@ -109,6 +109,11 @@ func checkUnit(root string, u *Suite) []error {
 	if len(u.Cmd) == 0 && u.Image == "" {
 		fail("cmd is required unless an image provides one")
 	}
+	// decision: an image's own command is the same for every test, as
+	// nothing passes it {test}, so a suite without cmd has no tests.
+	if u.Image != "" && len(u.Cmd) == 0 && u.Tests.Set() {
+		fail("tests needs a cmd: the image's own command is the same for every test")
+	}
 	for _, c := range u.Cmd {
 		if strings.TrimSpace(c.Line+c.Sh) == "" {
 			fail("a command is blank")
@@ -160,6 +165,17 @@ func checkUnit(root string, u *Suite) []error {
 		fail("shards is at least 1")
 	}
 
+	if f := u.Fixture; f != nil {
+		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
+		// squash decides, not a user to create, and the fixture's own test
+		// user takes the first UID above that range, so none shares it.
+		for _, uid := range f.Users {
+			if uid < 1 || uid > 65534 {
+				fail("fixture users: %d is not a UID from 1 to 65534", uid)
+			}
+		}
+	}
+
 	// Paths the suite reads must exist.
 	for _, p := range []string{u.Known, fixtureShares(u.Fixture)} {
 		if p != "" {
@@ -168,8 +184,9 @@ func checkUnit(root string, u *Suite) []error {
 			}
 		}
 	}
+	var templates []string
 	if u.Templates != "" {
-		if m, _ := filepath.Glob(filepath.Join(root, u.Templates)); len(m) == 0 {
+		if templates, _ = filepath.Glob(filepath.Join(root, u.Templates)); len(templates) == 0 {
 			fail("templates %s matches no file", u.Templates)
 		}
 	}
@@ -184,6 +201,24 @@ func checkUnit(root string, u *Suite) []error {
 			fail("matrix axis %q has no values", a.Name)
 		}
 		axes[a.Name] = true
+	}
+	// A template takes the same placeholders as a command.
+	for _, f := range templates {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			fail("templates: %v", err)
+			continue
+		}
+		for _, p := range Placeholders(string(data)) {
+			switch {
+			case p == "test":
+				// decision: refused, since a template is filled in before
+				// the first test, when {test} has no value.
+				fail("template %s: {test} has no value before the first test, when templates are filled in", filepath.Base(f))
+			case !placeholders[p] && !axes[p]:
+				fail("template %s: unknown placeholder {%s}", filepath.Base(f), p)
+			}
+		}
 	}
 	used := map[string]bool{}
 	for _, s := range u.allStrings() {

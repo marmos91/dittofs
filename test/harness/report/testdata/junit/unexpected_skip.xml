@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="smbtorture/memory" tests="1" failures="0" errors="1" skipped="0" time="912.000">
+    <properties>
+      <property name="result" value="not run"></property>
+    </properties>
+    <testcase name="smb2.lock.rw" classname="smbtorture/memory" time="0.000">
+      <error message="skip: no lock support">skip: no lock support</error>
+    </testcase>
+  </testsuite>
+</testsuites>

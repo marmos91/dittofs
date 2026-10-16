@@ -1,0 +1,4 @@
+run 20261015T120000Z-abcdef12-a2: exit 1
+CELL          NEW FAILURE      MESSAGE
+lint-repo     false            `false` exited 1
+unit/windows  example.com/m/c  failed outside any test

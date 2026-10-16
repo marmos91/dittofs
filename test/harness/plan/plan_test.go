@@ -142,6 +142,46 @@ suites:
 	}
 }
 
+// A fixture adds to each cell's needs what its fields imply there: a service
+// for an S3 profile, and root and the client for a mount, but nothing for an
+// export without one.
+func TestFixtureNeeds(t *testing.T) {
+	root := t.TempDir()
+	y := `version: 1
+defaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }
+suites:
+  a:
+    cmd: "true"
+    matrix: { profile: [memory, badger-s3], nfs: ["export", "4.1"] }
+    fixture: { profile: "{profile}", nfs: "{nfs}" }
+    needs: [linux, root]
+  b: { cmd: "true", fixture: { profile: memory, smb: { mount: true } } }
+`
+	r, err := registry.Parse(root, []byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Plan(root, r, "merge", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"a/memory/export":    {"linux", "root"},
+		"a/memory/4.1":       {"linux", "root", "nfs-client"},
+		"a/badger-s3/export": {"linux", "root", "service:localstack"},
+		"a/badger-s3/4.1":    {"linux", "root", "service:localstack", "nfs-client"},
+		"b":                  {"root", "smb-client"},
+	}
+	for _, c := range cells {
+		if !slices.Equal(c.Needs, want[c.Name]) {
+			t.Errorf("%s: needs %v, want %v", c.Name, c.Needs, want[c.Name])
+		}
+	}
+	if len(cells) != len(want) {
+		t.Errorf("cells %v", names(cells))
+	}
+}
+
 func TestPlaceOf(t *testing.T) {
 	cases := map[string][]string{
 		Ubuntu:    {"linux", "root", "disk:10"},

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="smbtorture/memory" tests="0" failures="0" errors="0" skipped="0" time="0.000">
+    <properties>
+      <property name="result" value="skipped"></property>
+      <property name="note" value="docker: not found"></property>
+    </properties>
+  </testsuite>
+</testsuites>

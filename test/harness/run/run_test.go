@@ -217,7 +217,7 @@ func TestUnsupportedIsNotRun(t *testing.T) {
 // need the check finds unmet is named, with its reason.
 func TestBlocked(t *testing.T) {
 	_, r := anyRepo(t, `suites:
-  fixed: { cmd: "true", fixture: { profile: memory }, needs: [docker] }
+  fixed: { cmd: "true", fixture: { profile: memory, smb: true }, needs: [docker] }
   plain: { cmd: "true", needs: [docker, root, podman] }
 `, nil)
 	var checked []string
@@ -232,7 +232,7 @@ func TestBlocked(t *testing.T) {
 	for _, s := range r.Suites {
 		units[s.Name] = r.Units(s)[0]
 	}
-	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't set up fixtures yet" || unmet != nil || checked != nil {
+	if why, unmet := Blocked(units["fixed"], units["fixed"].Needs, check); why != "dt doesn't serve SMB from fixtures yet" || unmet != nil || checked != nil {
 		t.Errorf("fixed: %q %q, checked %q", why, unmet, checked)
 	}
 	why, unmet := Blocked(units["plain"], units["plain"].Needs, check)
@@ -427,17 +427,29 @@ func TestNoBaseSkipsItsCommands(t *testing.T) {
 	}
 }
 
-// The job summary is a table of every cell's outcome; a | in a note can't
-// break it.
-func TestMarkdown(t *testing.T) {
-	rep := Report{Outcomes: []Outcome{
-		{Cell: "lint-go", Result: Failed, Note: "`a | b` exited 1", Took: 2 * time.Second},
-		{Cell: "shellcheck", Result: Passed, Took: time.Second},
-	}}
-	want := "### dt run lint\n\n| Cell | Result | Time | Note |\n|---|---|---|---|\n" +
-		"| `lint-go` | failed | 2s | `a \\| b` exited 1 |\n| `shellcheck` | passed | 1s |  |\n"
-	if got := rep.Markdown("dt run lint"); got != want {
-		t.Errorf("got\n%s\nwant\n%s", got, want)
+// With --ci each new failure is annotated, named by its cell and test, with
+// its message, and a test that passed isn't; a cell that didn't run, or
+// failed, without a new failure to name is annotated as itself. Without --ci
+// nothing is.
+func TestAnnotations(t *testing.T) {
+	root, r := repo(t, `groups: { g: [lint, held] }
+suites:
+  lint: { cmd: [ "false", "true" ] }
+  held: { cmd: { sh: "exit 75" } }
+`, nil)
+	_, out := runTarget(t, root, r, "g", true)
+	var got []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "::error ") {
+			got = append(got, line)
+		}
+	}
+	want := []string{"::error title=dt lint%3A false::`false` exited 1", "::error title=dt held::not run: `exit 75` exited 75: it ran nothing"}
+	if !slices.Equal(got, want) {
+		t.Errorf("annotations %q, want %q", got, want)
+	}
+	if _, out := runTarget(t, root, r, "g", false); strings.Contains(out, "::error") {
+		t.Errorf("annotated without --ci:\n%s", out)
 	}
 }
 
