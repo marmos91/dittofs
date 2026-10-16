@@ -1,5 +1,5 @@
 // Command dt runs DittoFS's test suites from one registry, test/suites.yaml.
-// Its design is docs/internals/rfc-test-harness.md.
+// Its design is docs/internals/rfcs/rfc-29-test-harness.md.
 package main
 
 import (

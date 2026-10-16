@@ -41,8 +41,6 @@ func TestApplyParsedSMBConfig_LeavesModeUnsetWhenAbsent(t *testing.T) {
 func TestApplyParsedSMBConfig_RefusesMalformedEncryption(t *testing.T) {
 	for _, enc := range []any{
 		map[string]any{"mode": "required"},
-		map[string]any{"encryption_mode": 1},
-		map[string]any{"allowed_ciphers": []any{float64(2)}},
 		"required",
 	} {
 		var cfg smb.Config

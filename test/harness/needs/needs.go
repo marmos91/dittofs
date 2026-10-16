@@ -1,5 +1,5 @@
 // Package needs tells which of a suite's needs this machine meets
-// (docs/internals/rfc-test-harness.md, section 4.5).
+// (docs/internals/rfcs/rfc-29-test-harness.md).
 package needs
 
 import (

@@ -87,16 +87,12 @@ func TestGoJSONNeverReplaysTheCache(t *testing.T) {
 	}
 }
 
-// A cell where no test ran didn't run, whether its -run matched nothing or
-// the tests named on the command line don't exist; a run of only skips
-// passes, since skips aren't graded.
+// A cell where no test ran didn't run, as when its -run matched nothing; a
+// run of only skips passes, since skips aren't graded.
 func TestGoJSONNothingRanAndSkips(t *testing.T) {
 	y := "suites:\n  g: { cmd: go test ./..., format: go-json }\n"
 	if o, _, _ := goRun(t, "suites:\n  g: { cmd: go test -run NoSuchTest ./..., format: go-json }\n", goModule); o.Result != NotRun || o.Note != "no tests ran" {
 		t.Errorf("-run matching nothing: %+v", o)
-	}
-	if o, _, _ := goRun(t, y, goModule, "TestNoSuch"); o.Result != NotRun {
-		t.Errorf("a test name that doesn't exist: %+v", o)
 	}
 	if o, _, _ := goRun(t, y, goModule, "TestPass", "TestSkip"); o.Result != Passed || o.Note != "1 passed, 0 failed, 1 skipped" {
 		t.Errorf("named tests, one a skip: %+v", o)

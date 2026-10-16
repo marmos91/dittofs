@@ -1,5 +1,5 @@
 # test/suites.yaml: every test suite, one entry each. `dt list` prints it; `dt plan` expands it.
-# Format and rules: docs/internals/rfc-test-harness.md, section 4.1.
+# Format and rules: docs/internals/rfcs/rfc-29-test-harness.md.
 version: 1
 
 defaults:            # any suite field; a suite's own value wins

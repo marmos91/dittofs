@@ -1,6 +1,6 @@
 // Package registry loads test/suites.yaml, the list of every test suite, and
 // checks it as it loads. The format and its rules are those of
-// docs/internals/rfc-test-harness.md, section 4.1.
+// docs/internals/rfcs/rfc-29-test-harness.md.
 package registry
 
 import (

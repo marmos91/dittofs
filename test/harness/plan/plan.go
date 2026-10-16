@@ -1,5 +1,5 @@
 // Package plan expands the registry into the cells a tier runs, each with the
-// place it runs on (docs/internals/rfc-test-harness.md, sections 4.1 to 4.5).
+// place it runs on (docs/internals/rfcs/rfc-29-test-harness.md).
 package plan
 
 import (

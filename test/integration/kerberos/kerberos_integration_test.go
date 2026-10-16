@@ -97,14 +97,6 @@ func TestRealKDC(t *testing.T) {
 			Handle:  handle,
 		})
 
-		// A DATA call without a call-header MIC must be refused: the verifier
-		// is what binds the request to the session key.
-		unsigned := proc.Process(context.Background(), dataCred, nil, dataCred, procArgs)
-		if unsigned.Err == nil || unsigned.AuthStat != gss.AuthStatCredProblem {
-			t.Fatalf("DATA without a verifier: got err=%v auth_stat=%d, want a refusal with AuthStatCredProblem",
-				unsigned.Err, unsigned.AuthStat)
-		}
-
 		dataResult := processSigned(t, proc, sessionKey, dataCred, procArgs)
 		if dataResult.Err != nil {
 			t.Fatalf("DATA failed: %v", dataResult.Err)

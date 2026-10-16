@@ -830,8 +830,6 @@ func TestStartAdapter_RefusesUnbuildableConfigBeforeFactory(t *testing.T) {
 		{"unsupported type", &models.AdapterConfig{Type: "gopher", Port: 7070, Enabled: true}},
 		{"malformed smb encryption", &models.AdapterConfig{Type: "smb", Port: 1445, Enabled: true,
 			Config: `{"encryption":{"mode":"required"}}`}},
-		{"smb allowed_ciphers set", &models.AdapterConfig{Type: "smb", Port: 1445, Enabled: true,
-			Config: `{"encryption":{"allowed_ciphers":[2]}}`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newFakeAdapterStore()

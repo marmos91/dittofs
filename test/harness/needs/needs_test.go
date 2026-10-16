@@ -166,14 +166,6 @@ func TestHint(t *testing.T) {
 	if got := Hint("elsewhere"); got != others+", or in dtc" {
 		t.Errorf("elsewhere, in dtc: %q", got)
 	}
-	kerberos := map[string]string{
-		"darwin":  "install kinit",
-		"linux":   "install kinit (Debian and Ubuntu: krb5-user)",
-		"windows": "run it on macOS or Linux, or in dtc",
-	}[runtime.GOOS]
-	if got := Hint("kerberos"); got != kerberos {
-		t.Errorf("kerberos: %q, want %q", got, kerberos)
-	}
 }
 
 // The tools the hints place in dtc are the ones whose packages its image

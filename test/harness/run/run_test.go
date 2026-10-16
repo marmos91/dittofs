@@ -66,7 +66,7 @@ func runTarget(t *testing.T, root string, r *registry.Registry, target string, c
 }
 
 // Every command of a list runs, in order, even after one fails, and the cell
-// fails if any did (section 4.1, cmd).
+// fails if any did.
 func TestEveryCommandRuns(t *testing.T) {
 	root, r := repo(t, `suites:
   lint: { cmd: [ "false", "true", { sh: "echo ran > {out}/marker" } ] }
@@ -182,7 +182,7 @@ func TestCellLimitStopsTheCell(t *testing.T) {
 
 // Without --ci a cell whose needs aren't met is skipped, and a run where
 // nothing ran exits 2; with --ci the cell didn't run, which is exit 2 and an
-// annotation (sections 4.4 and 4.5).
+// annotation.
 func TestUnmetNeeds(t *testing.T) {
 	other := "windows" // repo skips the test there
 	root, r := repo(t, `groups: { g: [away, here] }
@@ -269,7 +269,7 @@ func TestTierSetsArgsAndEnv(t *testing.T) {
 }
 
 // The log has the cell, the commit, each command and its exit status and
-// duration (section 4.6).
+// duration.
 func TestLog(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { cmd: "false" }
@@ -319,7 +319,7 @@ func TestFill(t *testing.T) {
 	if _, err := fill(registry.Command{Line: "run {bin}"}, vals, nil); err == nil || !strings.Contains(err.Error(), "{bin}") {
 		t.Errorf("a placeholder dt doesn't provide: %v", err)
 	}
-	if _, err := fill(registry.Command{Line: "{args}"}, vals, nil); err == nil {
+	if _, err := fill(registry.Command{Line: "{args}"}, vals, map[string][]string{"args": {}}); err == nil {
 		t.Error("a command that fills to nothing has no error")
 	}
 }
@@ -383,7 +383,7 @@ suites:
 }
 
 // {base} is a pull request's base, the commit before a push, or none for an
-// event with no change to check; locally it's origin/develop (section 4.1).
+// event with no change to check; locally it's origin/develop.
 func TestBase(t *testing.T) {
 	event := filepath.Join(t.TempDir(), "event.json")
 	cases := []struct{ actions, name, baseRef, before, want string }{
@@ -414,7 +414,7 @@ func TestBase(t *testing.T) {
 }
 
 // Without a {base}, the commands that use it are skipped and say so; the cell
-// neither fails nor goes unrun (section 4.8).
+// neither fails nor goes unrun.
 func TestNoBaseSkipsItsCommands(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_EVENT_NAME", "schedule")
@@ -443,7 +443,7 @@ func TestMarkdown(t *testing.T) {
 
 // A command that exits 75 ran nothing, as the scenarios' setup does when
 // another run holds their lock: the test didn't run, and the cell didn't run
-// unless another test failed (section 4.6).
+// unless another test failed.
 func TestExit75IsNotRun(t *testing.T) {
 	root, r := repo(t, `suites:
   held: { cmd: "sh {test}", tests: "h/*.sh" }
@@ -459,7 +459,7 @@ func TestExit75IsNotRun(t *testing.T) {
 }
 
 // An interrupt leaves the running test, and every test and cell after it, not
-// run: an interrupted run is no regression (section 4.4).
+// run: an interrupted run is no regression.
 func TestInterruptIsNotRun(t *testing.T) {
 	root, r := repo(t, `groups: { g: [slow, next] }
 suites:
