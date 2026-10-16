@@ -115,9 +115,11 @@ func touches(globs, changed []string) bool {
 	return false
 }
 
-// group is a set of a unit's tests that run together, with the needs they add.
+// group is a set of a unit's tests that run together, with the needs they add
+// and the needs_by_test glob that sets them apart.
 type group struct {
 	label string
+	glob  string
 	tests []string
 	needs []string
 }
@@ -180,6 +182,22 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 	return cells, nil
 }
 
+// NeedsByTest gives, per needs_by_test glob, the needs it adds, for the globs
+// that match a test tier plans. Without a tier, no select narrows the tests.
+func NeedsByTest(root string, u *registry.Suite, tier string) (map[string][]string, error) {
+	groups, _, err := testGroups(root, u, u.Select[tier].Glob)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, g := range groups {
+		if g.glob != "" {
+			out[g.glob] = g.needs
+		}
+	}
+	return out, nil
+}
+
 // testGroups splits the unit's tests into the ones its needs cover and, per
 // needs_by_test entry, the ones that need more, and returns the tests that
 // carry their own limit. Tests are listed only when something needs them: a
@@ -213,7 +231,7 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 		g := extra[globs[i]]
 		if g == nil {
 			needs := u.NeedsByTest[globs[i]]
-			g = &group{label: placeOf(union(u.Needs, needs)), needs: needs}
+			g = &group{label: placeOf(union(u.Needs, needs)), glob: globs[i], needs: needs}
 			extra[globs[i]] = g
 		}
 		g.tests = append(g.tests, t)
@@ -238,16 +256,10 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 	var tests []string
 	limits := map[string]time.Duration{}
 	switch {
-	case u.Tests.Glob != "" && !strings.Contains(u.Tests.Glob, "{"):
-		m, err := filepath.Glob(filepath.Join(root, u.Tests.Glob))
-		if err != nil {
+	case u.Tests.Glob != "" && !u.Tests.Deferred():
+		var err error
+		if tests, err = Glob(root, filepath.Join(root, u.Tests.Glob), u.Exclude); err != nil {
 			return nil, nil, err
-		}
-		for _, p := range m {
-			rel, _ := filepath.Rel(root, p)
-			if !slices.ContainsFunc(u.Exclude, func(x string) bool { return match(x, rel) }) {
-				tests = append(tests, filepath.ToSlash(rel))
-			}
 		}
 	case len(u.Tests.Names) > 0:
 		tests = u.Tests.Names
@@ -275,6 +287,24 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 		tests = slices.DeleteFunc(slices.Clone(tests), func(t string) bool { return !match(narrow, t) })
 	}
 	return tests, limits, nil
+}
+
+// Glob returns the files pattern matches, each named by its path below dir
+// with forward slashes, without those an exclude glob matches by path or
+// file name.
+func Glob(dir, pattern string, exclude []string) ([]string, error) {
+	m, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	var tests []string
+	for _, p := range m {
+		rel, _ := filepath.Rel(dir, p)
+		if !slices.ContainsFunc(exclude, func(x string) bool { return match(x, rel) }) {
+			tests = append(tests, filepath.ToSlash(rel))
+		}
+	}
+	return tests, nil
 }
 
 func testsSource(u *registry.Suite, narrow string) string {

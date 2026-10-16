@@ -18,6 +18,12 @@ const Version = 1
 // Path is the registry's location, relative to the repository root.
 const Path = "test/suites.yaml"
 
+// ToolDirs maps each test tool {tools} holds to the directory of its output
+// that {tools}/NAME links to: pjdfstest's share/pjdfstest holds its binary
+// beside its tests, where misc.sh looks for it, and pynfs's whole output
+// holds bin/pynfs-4.x. A suite names a tool as {tools}/NAME.
+var ToolDirs = map[string]string{"pjdfstest": "share/pjdfstest", "pynfs": "."}
+
 // Registry is the whole file.
 type Registry struct {
 	Version  int                 `yaml:"version"`

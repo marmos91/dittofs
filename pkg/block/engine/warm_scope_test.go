@@ -200,7 +200,44 @@ func TestWarmScopeProgressCallbackMayAcquireExclusiveAdmission(t *testing.T) {
 		warmed <- err
 	}()
 	require.NoError(t, waitWarmScope(t, warmed))
-	require.Equal(t, [][2]int64{{0, 2}, {1, 2}, {2, 2}}, counts, "progress must remain ordered and finish before return")
+	// Both fetches may finish while the first call waits, and are then reported
+	// together.
+	require.Contains(t, [][][2]int64{{{0, 2}, {1, 2}, {2, 2}}, {{0, 2}, {2, 2}}}, counts,
+		"progress must remain ordered and finish before return")
+}
+
+func TestWarmProgressStalledCallbackHoldsNoBacklog(t *testing.T) {
+	const n = 1 << 20
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls [][2]int64
+	p := startWarmProgress(func(done, total int64) {
+		calls = append(calls, [2]int64{done, total})
+		if len(calls) == 1 {
+			close(entered)
+			<-release
+		}
+	}, n-3)
+	<-entered
+
+	// Every event lands while the first call is stalled, and none of them may
+	// wait for it.
+	added := make(chan struct{})
+	go func() {
+		defer close(added)
+		p.add(0, 3)
+		for range n {
+			p.add(1, 0)
+		}
+	}()
+	select {
+	case <-added:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recording progress waited for the stalled callback")
+	}
+	close(release)
+	p.finish()
+	require.Equal(t, [][2]int64{{0, n - 3}, {n, n}}, calls, "a stalled callback must leave no backlog: one call reports done == total")
 }
 
 func TestWarmScopeCancellationReleasesAdmission(t *testing.T) {

@@ -5,7 +5,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marmos91/dittofs/test/harness/needs"
 )
+
+// Every need the registry accepts says how to meet it, for dt doctor.
+func TestEveryNeedHasAHint(t *testing.T) {
+	all := []string{"disk:1", "port:1", "service:kmip", "cloud:aws"}
+	for n := range plainNeeds {
+		all = append(all, n)
+	}
+	for _, n := range all {
+		if err := checkNeed(n); err != nil {
+			t.Error(err)
+		}
+		if needs.Hint(n) == "" {
+			t.Errorf("%s has no hint", n)
+		}
+	}
+}
 
 // The repository's own registry loads and passes every rule.
 func TestRepositoryRegistryLoads(t *testing.T) {
@@ -43,6 +61,13 @@ func TestLoadRules(t *testing.T) {
 		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},
 		{"a selection names a value", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [] } } }\n", "selects no value"},
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},
+		{"{tools} names a tool", ok + "suites:\n  a: { cmd: 'run {tools}' }\n", "{tools} names no tool: write {tools}/NAME, NAME one of pjdfstest, pynfs"},
+		{"{tools} names a tool dt has", ok + "suites:\n  a: { cmd: 'run {tools}/pjdfstests/x' }\n", "{tools}/pjdfstests: no such tool; {tools} holds pjdfstest, pynfs"},
+		{"{tools} names no path out of it", ok + "suites:\n  a: { cmd: 'run {tools}/../x' }\n", "{tools}/..: no such tool"},
+		{"a placeholder's tests aren't sharded", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', shards: 2 }\n", "shards needs the tests when the cell is planned"},
+		{"a placeholder's tests have no needs_by_test", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', needs_by_test: { 'a*': [linux] } }\n", "needs_by_test needs the tests"},
+		{"a placeholder's tests aren't timed by size", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', timeout: { test: size } }\n", "timeout.test: size needs the tests"},
+		{"a placeholder's tests aren't narrowed by a glob", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', select: { pr: 'a*' } }\n", "select.pr needs the tests"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -60,6 +85,19 @@ func TestShellVariablesAreNotPlaceholders(t *testing.T) {
 		"suites:\n  a: { cmd: { sh: 'echo ${HOME} {out}' } }\n"
 	if _, err := Parse(t.TempDir(), []byte(y)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A shell's ${tools}/x in an sh command isn't a test tool the suite names.
+func TestShellVariableNamesNoTool(t *testing.T) {
+	y := "version: 1\ndefaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }\n" +
+		"suites:\n  a: { cmd: { sh: 'echo ${tools}/x {tools}/pynfs/bin/pynfs-4.1' } }\n"
+	r, err := Parse(t.TempDir(), []byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Units(r.Suites[0])[0].Tools(); len(got) != 1 || got[0] != "pynfs" {
+		t.Errorf("tools %q, want only pynfs", got)
 	}
 }
 
