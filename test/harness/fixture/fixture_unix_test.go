@@ -19,16 +19,35 @@ import (
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// fakeDFS writes a dfs into a new bin directory that records the pid of each
-// start in starts and never answers, as a server stuck in its start would.
+// fakeDFS writes a dfs into a new bin directory that never answers, as a
+// server stuck in its start would. Each start appends a line to starts: its
+// pid, the pid of the child it starts, and the names of the DITTOFS_
+// variables it was given.
 func fakeDFS(t *testing.T) (bin, starts string) {
 	t.Helper()
 	bin, starts = t.TempDir(), filepath.Join(t.TempDir(), "starts")
-	script := "#!/bin/sh\necho $$ >> " + starts + "\nsleep 60\n"
+	script := "#!/bin/sh\nsleep 60 &\n" +
+		"echo \"$$ $! $(env | grep '^DITTOFS_' | cut -d= -f1 | sort | tr '\\n' ,)\" >> " + starts + "\nwait\n"
 	if err := os.WriteFile(filepath.Join(bin, "dfs"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return bin, starts
+}
+
+// started waits up to a minute for the first start in starts and returns
+// every start's fields, or nil when there was none.
+func started(starts string) [][]string {
+	for end := time.Now().Add(time.Minute); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		data, _ := os.ReadFile(starts)
+		if lines := strings.Split(strings.TrimSpace(string(data)), "\n"); lines[0] != "" {
+			var out [][]string
+			for _, l := range lines {
+				out = append(out, strings.Fields(l))
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 // outsider starts a "dfs start" of the kind a developer runs, which dt didn't
@@ -37,36 +56,62 @@ func outsider(t *testing.T) *exec.Cmd {
 	t.Helper()
 	bin, _ := fakeDFS(t)
 	cmd := exec.Command(filepath.Join(bin, "dfs"), "start", "--foreground")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); _ = cmd.Wait() })
 	return cmd
 }
 
-// alive reports whether a process with this pid still runs.
-func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+// alive reports whether the process pid runs; one that ended and waits to be
+// reaped doesn't.
+func alive(pid int) bool {
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
 
-// A server that doesn't answer within the setup's limit is started once, and
-// stopped with its process group, its data removed and its output kept; a
-// "dfs start" dt didn't start survives.
-func TestSetupLimit(t *testing.T) {
+// ended waits up to 10 seconds for the process pid to end.
+func ended(pid string) bool {
+	n, err := strconv.Atoi(pid)
+	for end := time.Now().Add(10 * time.Second); err == nil && time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if !alive(n) {
+			return true
+		}
+	}
+	return false
+}
+
+// A server whose setup ends before it answers is started once, with none of
+// the caller's DITTOFS_ variables, and stopped with its whole process group,
+// its data removed and its output kept; a "dfs start" dt didn't start
+// survives.
+func TestSetupEnds(t *testing.T) {
 	other := outsider(t)
 	bin, starts := fakeDFS(t)
+	t.Setenv("DITTOFS_CONTROLPLANE_PORT", "1")
 	out := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		// End the setup once dfs runs, and late enough for a retry to show.
+		started(starts)
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
 	s, err := Start(ctx, registry.Fixture{Profile: "memory"}, bin, out, &bytes.Buffer{})
-	if s != nil || !errors.Is(err, context.DeadlineExceeded) {
+	if s != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("Start: %v, %v", s, err)
 	}
-	pids, _ := os.ReadFile(starts)
-	lines := strings.Fields(string(pids))
-	if len(lines) != 1 {
-		t.Fatalf("dfs started %d times: %q", len(lines), lines)
+	runs := started(starts)
+	if len(runs) != 1 || len(runs[0]) != 3 {
+		t.Fatalf("dfs started %d times: %q", len(runs), runs)
 	}
-	if pid, err := strconv.Atoi(lines[0]); err != nil || alive(pid) {
-		t.Errorf("the fixture's dfs %s still runs", lines[0])
+	if run := runs[0]; !ended(run[0]) || !ended(run[1]) {
+		t.Errorf("the fixture's dfs %s or its child %s still runs", run[0], run[1])
+	}
+	if env := runs[0][2]; env != "DITTOFS_ADMIN_INITIAL_PASSWORD," {
+		t.Errorf("dfs was given the DITTOFS_ variables %s", env)
 	}
 	if !alive(other.Process.Pid) {
 		t.Error("the dfs dt didn't start was stopped too")

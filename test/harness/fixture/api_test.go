@@ -22,7 +22,8 @@ type fakeAPI struct {
 	calls    []string
 	running  map[string]int // adapter type to the port it serves, when enabled
 	settings map[string]any
-	lease    int // what reading the settings back reports, when not 0
+	lease    int   // what reading the settings back reports, when not 0
+	deleg    *bool // the same for delegations, when not nil
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +52,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			lease = float64(f.lease)
 		}
 		deleg, _ := f.settings["delegations_enabled"].(bool)
+		if f.deleg != nil {
+			deleg = *f.deleg
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"lease_time": lease, "delegations_enabled": deleg})
 	case r.URL.Path == "/api/v1/adapters":
 		var list []apiclient.Adapter
@@ -122,8 +126,8 @@ func TestConfigureOrder(t *testing.T) {
 }
 
 // A fixture without NFS settings or an export sets none and enables no
-// adapter; one whose setting doesn't read back as set fails, as does a lease
-// that isn't whole seconds.
+// adapter; one whose lease or delegations don't read back as set fails, as
+// does a lease that isn't whole seconds.
 func TestConfigureSettings(t *testing.T) {
 	f, c, url := newFakeAPI(t)
 	if err := configure(c, registry.Fixture{Profile: "memory"}, "/data", "pw", 0); err != nil {
@@ -141,6 +145,14 @@ func TestConfigureSettings(t *testing.T) {
 	err := configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Lease: "30s"}, "/data", "pw", 40001)
 	if err == nil || !strings.Contains(err.Error(), "lease of 90s, not the 30s") {
 		t.Errorf("a lease that reads back wrong: %v", err)
+	}
+
+	f, c, _ = newFakeAPI(t)
+	yes, no := true, false
+	f.deleg = &yes
+	err = configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Delegations: &no}, "/data", "pw", 40001)
+	if err == nil || !strings.Contains(err.Error(), "delegations true, not the false") {
+		t.Errorf("delegations that read back wrong: %v", err)
 	}
 
 	_, c, _ = newFakeAPI(t)
