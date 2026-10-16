@@ -119,22 +119,13 @@ const (
 	LimitSpare
 )
 
+var limitNames = [...]string{"", "share", "journal", "index", "headroom", "version", "spare"}
+
 // String returns the limit's name: share, journal, index, headroom, version or
 // spare.
 func (l Limit) String() string {
-	switch l {
-	case LimitShare:
-		return "share"
-	case LimitJournal:
-		return "journal"
-	case LimitIndex:
-		return "index"
-	case LimitHeadroom:
-		return "headroom"
-	case LimitVersion:
-		return "version"
-	case LimitSpare:
-		return "spare"
+	if l != 0 && int(l) < len(limitNames) {
+		return limitNames[l]
 	}
 	return fmt.Sprintf("Limit(%d)", uint8(l))
 }
@@ -150,17 +141,12 @@ const (
 	UnitSegments
 )
 
+var unitNames = [...]string{"", "bytes", "entries", "versions", "segments"}
+
 // String returns the unit's name: bytes, entries, versions or segments.
 func (u Unit) String() string {
-	switch u {
-	case UnitBytes:
-		return "bytes"
-	case UnitEntries:
-		return "entries"
-	case UnitVersions:
-		return "versions"
-	case UnitSegments:
-		return "segments"
+	if u != 0 && int(u) < len(unitNames) {
+		return unitNames[u]
 	}
 	return fmt.Sprintf("Unit(%d)", uint8(u))
 }
