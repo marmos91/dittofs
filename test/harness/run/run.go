@@ -269,6 +269,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 			return didntRun("the templates: " + err.Error())
 		}
 	}
+	if c.Unit.Image != "" {
+		if err := pull(cellCtx, c.Unit.Image, workdir, os.Environ(), w); err != nil {
+			return didntRun("the image: " + err.Error())
+		}
+	}
 	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
 		return didntRun(err.Error())
@@ -476,7 +481,9 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		start := time.Now()
 		code, err := execute(ctx, argv, t.dir, t.env, w)
 		step.Duration = time.Since(start)
-		if container != "" && ctx.Err() != nil {
+		// A docker client that started, which execute says by returning no
+		// error, and was then killed leaves its container running.
+		if container != "" && err == nil && ctx.Err() != nil {
 			removeContainer(container, t.dir, t.env, w)
 		}
 		_, _ = fmt.Fprintf(t.log, "[dt] exit %d after %s\n", code, step.Duration.Round(time.Millisecond))

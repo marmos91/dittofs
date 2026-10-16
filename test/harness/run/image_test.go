@@ -18,16 +18,25 @@ var update = flag.Bool("update", false, "rewrite the golden files from what the 
 
 // fakeDocker puts a docker on PATH that records each call's arguments, one
 // per line and a blank line after the call, and returns the file it records
-// them in. For docker run it prints the value of each variable -e names, and
-// runs the command after the image as the container would, or says it ran the
-// image's own; docker rm does nothing more.
+// them in. docker image inspect finds the image unless FAKE_IMAGE is set;
+// docker pull stalls when it's "stall", fails when it's "fail", and else
+// passes. docker run touches the log's name with .run added once it has
+// started, prints the value of each variable -e names, and runs the command
+// after the image as the container would, or says it ran the image's own.
+// docker rm does nothing more.
 func fakeDocker(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
 	log := filepath.Join(bin, "docker.log")
 	script := `#!/bin/sh
 { for a in "$@"; do printf '%s\n' "$a"; done; echo; } >> ` + log + `
-[ "$1" = run ] || exit 0
+case "$1" in
+image) [ -z "$FAKE_IMAGE" ]; exit ;;
+pull) case "$FAKE_IMAGE" in stall) exec sleep 30 ;; fail) exit 1 ;; esac; exit 0 ;;
+run) ;;
+*) exit 0 ;;
+esac
+: > ` + log + `.run
 shift
 while :; do
 	case "$1" in
@@ -45,7 +54,7 @@ exec "$@"
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	for _, k := range []string{"DT_IN_CONTAINER", "DT_HOSTNET", "DT_CONTAINER_NAME"} {
+	for _, k := range []string{"DT_IN_CONTAINER", "DT_HOSTNET", "DT_CONTAINER_NAME", "FAKE_IMAGE"} {
 		t.Setenv(k, "")
 	}
 	return log
@@ -65,7 +74,8 @@ func calls(t *testing.T, log string) [][]string {
 	return out
 }
 
-// A command in an image runs as docker run --rm, with a name of its own, on
+// The cell pulls a missing image once, before its first test. Then a
+// command in an image runs as docker run --rm, with a name of its own, on
 // the host's network, with -e naming each of the suite's variables, whose
 // values reach the container through docker's environment, and -v for each
 // volume, its host path from the repository root unless it's absolute. An
@@ -82,6 +92,7 @@ func TestImageDockerArgs(t *testing.T) {
   own: { image: example.com/own:2 }
 `, nil)
 	log := fakeDocker(t)
+	t.Setenv("FAKE_IMAGE", "missing")
 	rep, out := runTarget(t, root, r, "img", false)
 	if o := rep.Outcomes[0]; o.Result != Passed {
 		t.Fatalf("img: %+v\n%s", o, out)
@@ -138,33 +149,80 @@ func TestKillRemovesContainer(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			if suite == "stop" {
-				time.AfterFunc(300*time.Millisecond, cancel)
+				go func() { // the interrupt, once docker run has started
+					for ctx.Err() == nil {
+						if _, err := os.Stat(log + ".run"); err == nil {
+							cancel()
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}()
 			}
 			if _, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &bytes.Buffer{}}); err != nil {
 				t.Fatal(err)
 			}
 			got := calls(t, log)
-			if len(got) != 2 || got[0][0] != "run" || got[0][2] != "--name" {
+			run, rm := got[len(got)-2], got[len(got)-1]
+			if run[0] != "run" || run[2] != "--name" {
 				t.Fatalf("calls %q", got)
 			}
-			if want := []string{"rm", "-f", got[0][3]}; strings.Join(got[1], " ") != strings.Join(want, " ") {
-				t.Errorf("after the kill: %q, want %q", got[1], want)
+			if want := []string{"rm", "-f", run[3]}; strings.Join(rm, " ") != strings.Join(want, " ") {
+				t.Errorf("after the kill: %q, want %q", rm, want)
 			}
 		})
 	}
 }
 
-// A container that exits normally isn't removed by dt: --rm removes it.
-func TestFinishedContainerIsNotRemoved(t *testing.T) {
+// dt removes no container that exited, which --rm removes, and none whose
+// docker client never started, as when the test's limit passed first.
+func TestOnlyAKilledContainerIsRemoved(t *testing.T) {
 	root, r := repo(t, `suites:
-  s: { image: x, cmd: "false" }
+  exited: { image: x, cmd: "false" }
+  unstarted: { image: x, cmd: "true", timeout: { test: 1ns } }
 `, nil)
-	log := fakeDocker(t)
-	if rep, _ := runTarget(t, root, r, "s", false); rep.Outcomes[0].Result != Failed {
-		t.Fatalf("outcome %+v", rep.Outcomes[0])
+	for suite, runs := range map[string]int{"exited": 1, "unstarted": 0} {
+		log := fakeDocker(t)
+		if rep, _ := runTarget(t, root, r, suite, false); rep.Outcomes[0].Result != Failed {
+			t.Fatalf("%s: %+v", suite, rep.Outcomes[0])
+		}
+		got := map[string]int{}
+		for _, call := range calls(t, log) {
+			got[call[0]]++
+		}
+		if got["run"] != runs || got["rm"] != 0 {
+			t.Errorf("%s: calls %q", suite, calls(t, log))
+		}
 	}
-	if got := calls(t, log); len(got) != 1 {
-		t.Errorf("calls %q, want docker run alone", got)
+}
+
+// The image is pulled before the first test, under a limit of its own, and
+// only when docker doesn't have it. A pull that fails or stalls leaves the
+// cell not run, and runs no test.
+func TestImagePull(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { image: x, cmd: "true", timeout: { test: 10s } }
+`, nil)
+	pullLimit = 300 * time.Millisecond
+	t.Cleanup(func() { pullLimit = 5 * time.Minute })
+	for _, c := range []struct{ image, result, note, calls string }{
+		{"", Passed, "", "image run"},
+		{"missing", Passed, "", "image pull run"},
+		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull"},
+		{"stall", NotRun, "the image: `docker pull x` took over 300ms", "image pull"},
+	} {
+		log := fakeDocker(t)
+		t.Setenv("FAKE_IMAGE", c.image)
+		rep, out := runTarget(t, root, r, "s", false)
+		if o := rep.Outcomes[0]; o.Result != c.result || o.Note != c.note {
+			t.Errorf("%q: %+v\n%s", c.image, o, out)
+		}
+		var got []string
+		for _, call := range calls(t, log) {
+			got = append(got, call[0])
+		}
+		if strings.Join(got, " ") != c.calls {
+			t.Errorf("%q: calls %q, want %s", c.image, got, c.calls)
+		}
 	}
 }
 

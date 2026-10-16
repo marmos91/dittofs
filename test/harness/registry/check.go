@@ -109,6 +109,11 @@ func checkUnit(root string, u *Suite) []error {
 	if len(u.Cmd) == 0 && u.Image == "" {
 		fail("cmd is required unless an image provides one")
 	}
+	// decision: an image's own command is the same for every test, as
+	// nothing passes it {test}, so a suite without cmd has no tests.
+	if u.Image != "" && len(u.Cmd) == 0 && u.Tests.Set() {
+		fail("tests needs a cmd: the image's own command is the same for every test")
+	}
 	for _, c := range u.Cmd {
 		if strings.TrimSpace(c.Line+c.Sh) == "" {
 			fail("a command is blank")
@@ -194,7 +199,12 @@ func checkUnit(root string, u *Suite) []error {
 			continue
 		}
 		for _, p := range Placeholders(string(data)) {
-			if !placeholders[p] && !axes[p] {
+			switch {
+			case p == "test":
+				// decision: refused, since a template is filled in before
+				// the first test, when {test} has no value.
+				fail("template %s: {test} has no value before the first test, when templates are filled in", filepath.Base(f))
+			case !placeholders[p] && !axes[p]:
 				fail("template %s: unknown placeholder {%s}", filepath.Base(f), p)
 			}
 		}

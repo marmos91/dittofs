@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -31,6 +32,13 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
 	name = "dt-" + notInName.ReplaceAllString(slug(t.cell.Name), "-") + "-" + hex.EncodeToString(b)
+	// decision: the container runs as its image's own user, root in the
+	// images the registry names, since an image's entrypoint may write paths
+	// of its own that another user can't. An engine that keeps a file's owner
+	// in a volume then leaves what the container writes there, such as WPTS's
+	// results in {out}/config, owned by root, and only dtc hands it back to
+	// the user (DT_FIX_OWNER). Pass --user once a suite's image is known to
+	// run as any user.
 	docker = []string{"docker", "run", "--rm", "--name", name, "--network", network()}
 	// decision: -e names each variable without its value, which docker takes
 	// from its own environment, so values stay out of the arguments dt prints
@@ -66,6 +74,41 @@ func network() string {
 		return "container:" + os.Getenv("DT_CONTAINER_NAME")
 	}
 	return "host"
+}
+
+// pullLimit is an image pull's limit: a pull is one of the fixture's own
+// steps, which have 5 minutes. A variable, so the tests can shorten it.
+//
+// decision: the pull has the 5 minutes to itself rather than sharing them
+// with the fixture's other steps.
+var pullLimit = 5 * time.Minute
+
+// pull pulls image unless docker has it, before the cell's first test, so
+// neither the pull's time nor a stalled registry counts against a test. It's
+// never retried.
+func pull(ctx context.Context, image, dir string, env []string, w io.Writer) error {
+	limited, cancel := context.WithTimeout(ctx, pullLimit)
+	defer cancel()
+	// decision: an image docker already has isn't pulled again, as docker
+	// run pulls only a missing one, so a machine without the registry still
+	// runs the image it has.
+	if code, err := execute(limited, []string{"docker", "image", "inspect", image}, dir, env, io.Discard); err == nil && code == 0 {
+		return nil
+	}
+	shown := "docker pull " + image
+	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", shown)
+	code, err := execute(limited, []string{"docker", "pull", image}, dir, env, w)
+	switch {
+	case ctx.Err() != nil:
+		return errors.New(stopped(ctx))
+	case limited.Err() != nil:
+		return fmt.Errorf("`%s` took over %s", shown, pullLimit)
+	case err != nil:
+		return err
+	case code != 0:
+		return fmt.Errorf("`%s` exited %d", shown, code)
+	}
+	return nil
 }
 
 // removeContainer removes a container whose docker client was killed. It has

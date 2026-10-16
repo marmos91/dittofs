@@ -1,3 +1,10 @@
+image
+inspect
+example.com/tool:1
+
+pull
+example.com/tool:1
+
 run
 --rm
 --name
@@ -36,6 +43,13 @@ example.com/tool:1
 sh
 -c
 echo $Usage 'a'
+
+image
+inspect
+example.com/own:2
+
+pull
+example.com/own:2
 
 run
 --rm

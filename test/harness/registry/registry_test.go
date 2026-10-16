@@ -67,6 +67,7 @@ func TestLoadRules(t *testing.T) {
 		{"a placeholder's tests aren't sharded", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', shards: 2 }\n", "shards needs the tests when the cell is planned"},
 		{"a placeholder's tests have no needs_by_test", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', needs_by_test: { 'a*': [linux] } }\n", "needs_by_test needs the tests"},
 		{"a placeholder's tests aren't timed by size", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', timeout: { test: size } }\n", "timeout.test: size needs the tests"},
+		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
 		{"a placeholder's tests aren't narrowed by a glob", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', select: { pr: 'a*' } }\n", "select.pr needs the tests"},
 	}
 	for _, c := range cases {
@@ -103,13 +104,15 @@ func TestShellVariableNamesNoTool(t *testing.T) {
 
 // A template takes the placeholders a command takes, a matrix axis's
 // included, and leaves a ${VAR} alone; one it doesn't know is a registry
-// error, as in a command.
+// error, as in a command, and so is {test}, which has no value when
+// templates are filled in.
 func TestTemplatePlaceholders(t *testing.T) {
 	root := t.TempDir()
 	for name, body := range map[string]string{
 		"ok/a.template":  "{server} {user2} {password} {p} ${KEEP}\n",
 		"bad/a.template": "{server}\n",
 		"bad/b.template": "{nope}\n",
+		"bad/c.template": "{test}\n",
 	} {
 		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(name)), 0o755); err != nil {
 			t.Fatal(err)
@@ -124,7 +127,9 @@ func TestTemplatePlaceholders(t *testing.T) {
 		t.Errorf("ok: %v", err)
 	}
 	_, err := Parse(root, []byte(strings.Replace(y, "DIR", "bad", 1)))
-	if err == nil || err.Error() != "a: template b.template: unknown placeholder {nope}" {
+	want := "a: template b.template: unknown placeholder {nope}\n" +
+		"a: template c.template: {test} has no value before the first test, when templates are filled in"
+	if err == nil || err.Error() != want {
 		t.Errorf("bad: got %v", err)
 	}
 }
