@@ -84,6 +84,10 @@ var (
 	// by one of the journal's limits.
 	ErrNoSpace = errors.New("journal: no space")
 
+	// ErrNoClock is returned by Open when it is given no clock. Nothing is
+	// opened. It is never retried: the caller passes WithClock.
+	ErrNoClock = errors.New("journal: no clock")
+
 	// ErrInvalidSetting is returned by Init, Open and Restamp when a setting
 	// or the descriptor limit is negative. Nothing is opened or written. It
 	// is never retried.

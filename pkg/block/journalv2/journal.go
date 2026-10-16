@@ -11,7 +11,8 @@ type Journal struct{}
 // step records in the metadata store. It returns the identity, for the caller
 // to record as the journal it expects in dir.
 //
-// Init is the only call that creates a journal. It refuses, with
+// Init reads no time and needs no clock. It is the only call that creates a
+// journal. It refuses, with
 // ErrJournalExists and writing nothing, a directory that already holds a
 // format file or a segment. A negative setting is refused with
 // ErrInvalidSetting.
@@ -34,6 +35,9 @@ func Init(dir string, install InstallationID, opts ...Option) (JournalID, error)
 // floor is the highest content version the caller has recorded for any file
 // of the journal's shares. Every version the journal issues after Open exceeds
 // both floor and every version on disk.
+//
+// Open requires WithClock. Without it, Open fails with ErrNoClock and opens
+// nothing.
 func Open(dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error) {
 	return nil, ErrNotImplemented
 }
@@ -44,7 +48,8 @@ func Open(dir string, floor Version, expect JournalID, opts ...Option) (*Journal
 // the metadata store under a new installation ID. The file is replaced whole,
 // never edited in place, so a crash leaves either the old file or the new one.
 //
-// Restamp fails as Open does when dir holds no journal or another one.
+// Restamp fails as Open does when dir holds no journal or another one. It
+// reads no time and needs no clock.
 func Restamp(dir string, expect JournalID, install InstallationID, opts ...Option) error {
 	return ErrNotImplemented
 }

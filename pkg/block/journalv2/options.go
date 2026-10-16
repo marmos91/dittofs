@@ -10,12 +10,9 @@ import (
 // every time the journal reports are read from it, so a test that advances
 // its clock controls all of them.
 //
-// decision: the journal declares its own clock rather than taking the shared
-// one, because it may import nothing but the standard library. The shared
-// clock reads monotonic time as a type of its own package, which no interface
-// built from standard-library types can match, so an adapter converts one to
-// the other. Revisit if the shared clock is ever expressed in
-// standard-library types alone.
+// It is the part of the node's one clock the journal reads, declared here
+// from standard-library types because the journal imports nothing else. The
+// node's clock and a test clock both satisfy it as they are.
 type Clock interface {
 	// Now returns the wall time. The journal uses it only for the times it
 	// reports, such as the oldest dirty byte's write time and the last sync
@@ -26,7 +23,7 @@ type Clock interface {
 	// the clock chose. Only differences between two readings mean anything.
 	Elapsed() time.Duration
 
-	// After returns a channel that receives once d has elapsed on the
+	// After returns a channel that is closed once d has elapsed on the
 	// monotonic clock.
 	After(d time.Duration) <-chan struct{}
 }
@@ -35,13 +32,15 @@ type Clock interface {
 //
 // decision: options are appended to the calls' signatures as a variadic
 // parameter, so a call written with only the parameters the journal's
-// contract names still compiles and gets every default. The parameter type is
-// internal, so only code inside the journal's tree can write an option that
-// reaches a field the public API does not offer.
+// contract names still compiles. Every option but the clock has a default;
+// Open refuses to run without a clock. The parameter type is internal, so
+// only code inside the journal's tree can write an option that reaches a
+// field the public API does not offer.
 type Option func(*core.Config)
 
-// WithClock makes the journal read time from c. Without it the journal uses
-// the system clock.
+// WithClock makes the journal read time from c. Open requires it: a journal
+// never falls back to the system clock on its own, so a test that forgets its
+// clock fails at once instead of running on real time.
 func WithClock(c Clock) Option {
 	return func(*core.Config) {}
 }

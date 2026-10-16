@@ -22,6 +22,7 @@ var (
 	ErrNoSpace          = core.ErrNoSpace
 	ErrOtherShare       = core.ErrOtherShare
 	ErrInvalidSetting   = core.ErrInvalidSetting
+	ErrNoClock          = core.ErrNoClock
 )
 
 type (
