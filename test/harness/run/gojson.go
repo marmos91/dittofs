@@ -260,7 +260,7 @@ const atCellLimit = "stopped at the cell's limit"
 // results are a go-json cell's tests, from their events.
 type results struct {
 	limit    time.Time           // the cell's limit; a package that ends after it, dt stopped
-	tests    map[string]string   // "package test" to fail once a command failed it, else its last pass or skip
+	tests    map[string]string   // "package test" to fail once a command failed it, else its last pass, skip or other
 	failedIn map[string]bool     // packages with a failed test
 	broken   []string            // packages that failed outside any test
 	cases    []report.Test       // each result of each test, and each package that failed outside any test
@@ -362,7 +362,8 @@ func (r *results) add(line []byte, w io.Writer) {
 // as running failed, a parent blocked on its subtest among them; any other's
 // output stopped before its result, so it's other, as after a crash or for a
 // parent waiting on its parallel subtests. The last two keep their output as
-// their message. end reports whether it recorded any.
+// their message. Each counts in the cell's note as a test that ran. end
+// reports whether it recorded any.
 func (r *results) end(pkg string, when time.Time, stopped string) bool {
 	recorded := false
 	for _, k := range slices.Sorted(maps.Keys(r.running)) {
@@ -384,6 +385,14 @@ func (r *results) end(pkg string, when time.Time, stopped string) bool {
 		}
 		r.cases = append(r.cases, tc)
 		recorded = true
+		action := "other"
+		if tc.Status == report.Failed {
+			action = "fail"
+			r.failedIn[p] = true
+		}
+		if r.tests[k] != "fail" {
+			r.tests[k] = action
+		}
 	}
 	return recorded
 }
@@ -451,6 +460,9 @@ func (r *results) note(problems []string) string {
 		}
 	}
 	note := fmt.Sprintf("%d passed, %d failed, %d skipped", count["pass"], count["fail"], count["skip"])
+	if count["other"] > 0 {
+		note += fmt.Sprintf(", %d with no result", count["other"])
+	}
 	if len(leaves) > 0 {
 		note += ": " + some(leaves)
 	}

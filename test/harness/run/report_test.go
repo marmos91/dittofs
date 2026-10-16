@@ -405,6 +405,8 @@ func lines(tests []report.Test) []string {
 // and never continued, it didn't run and has no result. Such a package has
 // no result of its own. Every test the recording starts, its package's end
 // closes. A message keeps its lines' indentation, a stack's frames included.
+// The cell's note counts the tests closed at their package's end, and they
+// ran, as a test paused in t.Parallel didn't.
 func TestGoJSONRecordedRun(t *testing.T) {
 	events, err := os.ReadFile("testdata/go-test.json")
 	if err != nil {
@@ -440,6 +442,12 @@ func TestGoJSONRecordedRun(t *testing.T) {
 	}
 	if got := lines(res.cases); !slices.Equal(got, want) || len(res.running) != 0 {
 		t.Errorf("got %q\nwant %q\nstill open: %v", got, want, slices.Collect(maps.Keys(res.running)))
+	}
+	if got, want := res.note(nil), "3 passed, 7 failed, 1 skipped, 6 with no result: TestFail, TestParent/bad, TestP/a, TestS/x, TestWait; example.com/m/b: build failed; example.com/m/p: failed outside any test; example.com/m/tm: failed outside any test; example.com/m/pc: failed outside any test; example.com/m/sc: failed outside any test"; got != want {
+		t.Errorf("note %q\nwant %q", got, want)
+	}
+	if !res.ran("TestS") || !res.ran("TestPanicky") || res.ran("TestP/b") {
+		t.Errorf("ran: TestS %v, TestPanicky %v, TestP/b %v", res.ran("TestS"), res.ran("TestPanicky"), res.ran("TestP/b"))
 	}
 	i := slices.IndexFunc(res.cases, func(tc report.Test) bool { return tc.Name == "TestPanicky" })
 	if i < 0 || !strings.Contains(res.cases[i].Message, "\n\t/src/m/p/p_test.go:9 +0x") {
