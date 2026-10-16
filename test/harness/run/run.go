@@ -4,6 +4,7 @@
 package run
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -136,26 +137,6 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 		}
 		return NotRun, why
 	}
-	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
-	if err != nil {
-		return NotRun, err.Error()
-	}
-	if len(c.Tests) > 0 {
-		tests = c.Tests
-	}
-	if !c.Unit.Tests.Set() {
-		tests = []string{""} // the commands are the one test
-	}
-	if len(tests) == 0 {
-		return NotRun, "no tests found"
-	}
-	each := make([]time.Duration, len(tests))
-	for i, test := range tests {
-		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
-			return NotRun, err.Error()
-		}
-	}
-
 	slug := strings.ReplaceAll(c.Name, "/", "-")
 	out := filepath.Join(dir, slug)
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
@@ -172,6 +153,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	}
 	if asRoot(c) {
 		vals["bin"] = filepath.Join(dir, "bin") // goJSON builds it before the commands run
+	}
+	if len(c.Unit.Tools()) > 0 {
+		vals["tools"] = filepath.Join(dir, "tools") // laid out below, before the tests are found
 	}
 	// A command dt can't fill can't run, whichever test it's for.
 	for _, cmd := range c.Unit.Cmd {
@@ -203,10 +187,41 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (string
 	}
 	defer func() { _ = log.Close() }()
 	_, _ = fmt.Fprintf(log, "[dt] cell %s, tier %s, commit %s\n", c.Name, c.Tier, commit)
+	w := io.MultiWriter(o.Out, log)
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
 	defer cancel()
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, out: io.MultiWriter(o.Out, log), log: log}
+	if vals["tools"] != "" {
+		if err := layOutTools(cellCtx, o.Root, vals["tools"], c.Unit.Tools(), w); err != nil {
+			return NotRun, "the test tools: " + err.Error()
+		}
+	}
+	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
+	if err != nil {
+		return NotRun, err.Error()
+	}
+	if len(c.Tests) > 0 {
+		tests = c.Tests
+	}
+	var paths map[string]string // each test's file, when only the cell finds them
+	if c.Unit.Tests.Deferred() {
+		if tests, paths, err = deferredTests(o.Root, c.Unit, vals, lists, c.Tests); err != nil {
+			return NotRun, err.Error()
+		}
+	}
+	if !c.Unit.Tests.Set() {
+		tests = []string{""} // the commands are the one test
+	}
+	if len(tests) == 0 {
+		return NotRun, "no tests found"
+	}
+	each := make([]time.Duration, len(tests))
+	for i, test := range tests {
+		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
+			return NotRun, err.Error()
+		}
+	}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		return t.goJSON(c.Tests)
 	}
@@ -250,6 +265,7 @@ type tester struct {
 	own      []string // the suite's alone
 	vals     map[string]string
 	lists    map[string][]string
+	paths    map[string]string // the file each test runs as {test}, when it isn't its name
 	out, log io.Writer
 }
 
@@ -264,7 +280,7 @@ func (t tester) run(test string, limit time.Duration) (string, string) {
 		ctx, cancel = context.WithTimeout(ctx, limit)
 		defer cancel()
 	}
-	t.vals["test"] = test
+	t.vals["test"] = cmp.Or(t.paths[test], test)
 	prefix := ""
 	if test != "" {
 		prefix = test + ": "

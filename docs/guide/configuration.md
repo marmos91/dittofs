@@ -1530,7 +1530,7 @@ exposed override, `adapter edit smb --config` is not a workaround.
 | `signing.enabled`, `signing.required` | `dfsctl adapter settings smb update --signing required`; modes are `disabled`, `enabled`, and `required`. SMB 3.1.1 still requires signing. |
 | `signing.preferred_algorithms` | No exposed override; algorithms are negotiated from built-in support. |
 | `encryption.encryption_mode` | No equivalent three-mode flag. `dfsctl adapter settings smb update --enable-encryption` can enable encryption support, but does not select a global `required` policy; see [encryption below](#smb3-encryption-configuration). |
-| `encryption.allowed_ciphers` | No exposed override; ciphers are negotiated from built-in support. |
+| `encryption.allowed_ciphers` | Not configurable: the cipher set is fixed, and `adapter edit smb --config` refuses a non-empty list. |
 | `leases.enabled` | No exposed global lease toggle. |
 | `leases.directory_leases` | REST-only `directory_leasing_enabled` in `PATCH /api/v1/adapters/smb/settings`; no CLI flag. |
 | `leases.lease_break_timeout` | No SMB CLI override: lease breaks use a fixed **5-second** bound. `--oplock-break-timeout` controls traditional oplocks only. |

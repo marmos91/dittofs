@@ -114,14 +114,19 @@ func (a *AdapterConfig) smbEncryptionMode() (string, error) {
 // encryption value must be an object, encryption_mode must be a string when
 // present, and the object may only contain encryption_mode and
 // allowed_ciphers. A typo or a wrong JSON type would otherwise leave the
-// adapter on preferred. It is the one reader of the field: the adapter build
-// and Validate both go through it.
+// adapter on preferred. allowed_ciphers is refused unless null or empty: the
+// cipher set is fixed, and a list the server never applies would report
+// success for a restriction that does not happen. It is the one reader of the
+// encryption object: the adapter build and Validate both go through it.
 //
 // decision: a null encryption reads as unset, not as malformed, so rows
 // already stored with it keep starting.
 //
 // decision: unknown keys are refused inside the encryption object only; a
 // misspelled top-level key is still ignored.
+//
+// decision: a null or empty allowed_ciphers reads as unset. Rows that carry
+// either change nothing, so refusing them would take SMB down for no gain.
 func SMBEncryptionMode(parsed map[string]any) (string, error) {
 	raw, present := parsed["encryption"]
 	if !present || raw == nil {
@@ -131,9 +136,13 @@ func SMBEncryptionMode(parsed map[string]any) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("encryption must be an object")
 	}
-	for key := range enc {
+	for key, value := range enc {
 		switch key {
-		case "encryption_mode", "allowed_ciphers":
+		case "encryption_mode":
+		case "allowed_ciphers":
+			if list, isList := value.([]any); value != nil && (!isList || len(list) > 0) {
+				return "", fmt.Errorf("allowed_ciphers cannot be configured: the SMB cipher set is fixed")
+			}
 		default:
 			return "", fmt.Errorf("unknown encryption key %q", key)
 		}

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,6 +31,8 @@ var (
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
 	// and dt run leave alone.
 	PlaceholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
+	// toolRE matches the tool's name after a {tools}, as /pjdfstest.
+	toolRE = regexp.MustCompile(`^/([A-Za-z0-9_.-]+)`)
 )
 
 func set(items ...string) map[string]bool {
@@ -190,9 +193,33 @@ func checkUnit(root string, u *Suite) []error {
 				fail("unknown placeholder {%s}", p)
 			}
 		}
+		for _, name := range toolRefs(s) {
+			if _, ok := ToolDirs[name]; ok {
+				continue
+			}
+			known := strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", ")
+			if name == "" {
+				fail("{tools} names no tool: write {tools}/NAME, NAME one of %s", known)
+			} else {
+				fail("{tools}/%s: no such tool; {tools} holds %s", name, known)
+			}
+		}
 	}
 	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
+	}
+	// Only a running cell finds the tests of a glob holding a placeholder, so
+	// nothing that needs them when the cell is planned can have them.
+	if u.Tests.Deferred() {
+		planned := map[string]bool{"shards": u.Shards > 1, "needs_by_test": len(u.NeedsByTest) > 0, "timeout.test: size": u.Timeout.Test == "size"}
+		for t, sel := range u.Select {
+			planned["select."+t] = sel.Glob != ""
+		}
+		for _, field := range slices.Sorted(maps.Keys(planned)) {
+			if planned[field] {
+				fail("%s needs the tests when the cell is planned, but tests %s holds a placeholder, which only a running cell fills", field, u.Tests.Glob)
+			}
+		}
 	}
 	inCell := map[string]bool{}
 	for _, s := range u.cellStrings() {
@@ -231,6 +258,38 @@ func Placeholders(s string) []string {
 		if !strings.HasPrefix(m[0], "$") {
 			out = append(out, m[1])
 		}
+	}
+	return out
+}
+
+// Tools returns the test tools the suite names, as {tools}/NAME in any of its
+// fields, each once, sorted by name.
+func (u *Suite) Tools() []string {
+	var out []string
+	for _, s := range u.allStrings() {
+		for _, name := range toolRefs(s) {
+			if name != "" && !slices.Contains(out, name) {
+				out = append(out, name)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// toolRefs returns the tool each {tools} in s names as {tools}/NAME, or ""
+// for one that names none. A shell's ${tools} is the shell's own.
+func toolRefs(s string) []string {
+	var out []string
+	for _, m := range PlaceholderRE.FindAllStringSubmatchIndex(s, -1) {
+		if s[m[0]] == '$' || s[m[2]:m[3]] != "tools" {
+			continue
+		}
+		name := ""
+		if sub := toolRE.FindStringSubmatch(s[m[1]:]); sub != nil {
+			name = sub[1]
+		}
+		out = append(out, name)
 	}
 	return out
 }
