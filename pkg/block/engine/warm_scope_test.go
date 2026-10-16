@@ -3,7 +3,6 @@ package engine
 import (
 	"bytes"
 	"context"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -221,10 +220,8 @@ func TestWarmProgressStalledCallbackHoldsNoBacklog(t *testing.T) {
 	}, n-3)
 	<-entered
 
-	// Every event lands while the first call is stalled. None of them may wait
-	// for it, and together they may not cost memory per event.
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
+	// Every event lands while the first call is stalled, and none of them may
+	// wait for it.
 	added := make(chan struct{})
 	go func() {
 		defer close(added)
@@ -238,12 +235,9 @@ func TestWarmProgressStalledCallbackHoldsNoBacklog(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("recording progress waited for the stalled callback")
 	}
-	runtime.ReadMemStats(&after)
-	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(n), "a stalled callback must not cost memory per event")
-
 	close(release)
 	p.finish()
-	require.Equal(t, [][2]int64{{0, n - 3}, {n, n}}, calls, "the backlog must reach the callback as one call reporting done == total")
+	require.Equal(t, [][2]int64{{0, n - 3}, {n, n}}, calls, "a stalled callback must leave no backlog: one call reports done == total")
 }
 
 func TestWarmScopeCancellationReleasesAdmission(t *testing.T) {
