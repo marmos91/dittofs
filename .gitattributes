@@ -1,4 +1,3 @@
 # Test fixtures compared byte for byte: a CRLF checkout on Windows would add
 # a \r to every expected line.
 test/common/testdata/** text eol=lf
-pkg/block/journalv2/testdata/** text eol=lf
