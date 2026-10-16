@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/fixture"
 	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
@@ -187,11 +189,23 @@ func annotation(title, message string) string {
 }
 
 // runCell runs one cell and returns how it went: its result, a note on it,
-// its log once it has one, and its tests' results.
-func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.Cell {
+// its log once it has one, and its tests' results. A cell with a fixture has
+// its server started before its first test and stopped after its last.
+func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res report.Cell) {
 	didntRun := func(why string) report.Cell { return report.Cell{Name: c.Name, Result: NotRun, Note: why} }
 	if ctx.Err() != nil {
 		return didntRun("interrupted")
+	}
+	var spec registry.Fixture // the cell's fixture, its matrix values filled in
+	if f := c.Unit.Fixture; f != nil {
+		var err error
+		if spec, err = cellFixture(*f, c.Matrix); err != nil {
+			return didntRun(err.Error())
+		}
+		// What dt can't do yet decides before the needs, as in Blocked.
+		if why := fixture.Unsupported(&spec); why != "" {
+			return didntRun(why)
+		}
 	}
 	if why, unmet := Blocked(c.Unit, c.Needs, func(n string) error { return needs.Check(o.Root, n) }); why != "" {
 		// A machine that met the needs could run the cell, so without --ci
@@ -220,25 +234,16 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 	if len(c.Unit.Tools()) > 0 {
 		vals["tools"] = filepath.Join(dir, "tools") // laid out below, before the tests are found
 	}
+	if c.Unit.Fixture != nil {
+		vals["bin"] = filepath.Join(dir, "bin")
+		for _, k := range fixture.Placeholders(spec) {
+			vals[k] = "" // filled once the server is up
+		}
+	}
 	// A command dt can't fill can't run, whichever test it's for.
 	for _, cmd := range c.Unit.Cmd {
 		if _, err := fill(cmd, vals, lists); err != nil {
 			return didntRun(err.Error())
-		}
-	}
-	own, err := suiteEnv(c.Unit, c.Tier, vals, lists)
-	if err != nil {
-		return didntRun(err.Error())
-	}
-	workdir := o.Root
-	if c.Unit.Dir != "" {
-		d, err := replace(c.Unit.Dir, vals, lists, nil)
-		if err != nil {
-			return didntRun(err.Error())
-		}
-		workdir = d
-		if !filepath.IsAbs(d) {
-			workdir = filepath.Join(o.Root, d)
 		}
 	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
@@ -287,6 +292,36 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 	for i, test := range tests {
 		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
 			return didntRun(err.Error())
+		}
+	}
+	if c.Unit.Fixture != nil {
+		server, why := setUpFixture(cellCtx, spec, o.Root, vals["bin"], out, w)
+		if why != "" {
+			return didntRun(why)
+		}
+		defer func() {
+			// The code under test crashing fails its cell, unless an
+			// interrupt stopped the cell first.
+			if err := server.Stop(); err != nil && ctx.Err() == nil {
+				_, _ = fmt.Fprintf(w, "[dt] fixture: %v\n", err)
+				res.Result, res.Note = Failed, strings.TrimSuffix("the fixture: "+err.Error()+"; "+res.Note, "; ")
+			}
+		}()
+		maps.Copy(vals, server.Placeholders())
+	}
+	own, err := suiteEnv(c.Unit, c.Tier, vals, lists)
+	if err != nil {
+		return didntRun(err.Error())
+	}
+	workdir := o.Root
+	if c.Unit.Dir != "" {
+		d, err := replace(c.Unit.Dir, vals, lists, nil)
+		if err != nil {
+			return didntRun(err.Error())
+		}
+		workdir = d
+		if !filepath.IsAbs(d) {
+			workdir = filepath.Join(o.Root, d)
 		}
 	}
 	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
@@ -445,6 +480,9 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		if cmd.Sh != "" {
 			shown = argv[2]
 		}
+		if pw := t.vals["password"]; pw != "" {
+			shown = strings.ReplaceAll(shown, pw, "{password}") // a credential stays out of the log
+		}
 		_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", shown)
 		w := t.out
 		if t.capture != nil {
@@ -601,9 +639,12 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 
 // unsupported says why dt can't run the suite yet, or returns "".
 func unsupported(u *registry.Suite) string {
+	if u.Fixture != nil {
+		if why := fixture.Unsupported(u.Fixture); why != "" {
+			return why
+		}
+	}
 	switch {
-	case u.Fixture != nil:
-		return "dt doesn't set up fixtures yet"
 	case u.Image != "":
 		return "dt doesn't run commands in images yet"
 	case u.Format != "exit" && u.Format != "go-json" && readers[u.Format] == nil:

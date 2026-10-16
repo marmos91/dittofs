@@ -26,8 +26,9 @@ const (
 // the dedicated host.
 const runnerDiskGB = 14
 
-// fixtureSetup is the fixture's own limit, which a cell's limit always covers.
-const fixtureSetup = 5 * time.Minute
+// FixtureSetup is the limit of a fixture's own steps, which a cell's limit
+// always covers.
+const FixtureSetup = 5 * time.Minute
 
 // Cell is one unit of work: a suite or option, at one point of its matrix,
 // with some or all of its tests, on one place.
@@ -143,7 +144,7 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 	var cells []Cell
 	for _, p := range points(u.Matrix, values) {
 		for _, g := range groups {
-			needs := union(u.Needs, g.needs)
+			needs := union(union(u.Needs, g.needs), fixtureNeeds(u.Fixture, p.asMap()))
 			place := placeOf(needs)
 			shards := 1
 			if u.Shards > 1 && place != Dedicated {
@@ -180,6 +181,34 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 		}
 	}
 	return cells, nil
+}
+
+// fixtureNeeds are the needs fixture f implies at one point of its matrix,
+// for its own steps: a service for an S3 profile, and root and the client for
+// a mount.
+func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
+	if f == nil {
+		return nil
+	}
+	fill := func(s string) string {
+		return registry.PlaceholderRE.ReplaceAllStringFunc(s, func(m string) string {
+			if v, ok := values[m[1:len(m)-1]]; ok {
+				return v
+			}
+			return m
+		})
+	}
+	var out []string
+	if fill(f.Profile) == "badger-s3" {
+		out = append(out, "service:localstack")
+	}
+	if v := fill(f.NFS.Version); v != "" && v != "export" {
+		out = append(out, "root", "nfs-client")
+	}
+	if f.SMB.Mount {
+		out = union(out, []string{"root", "smb-client"})
+	}
+	return out
 }
 
 // NeedsByTest gives, per needs_by_test glob, the needs it adds, for the globs
@@ -438,8 +467,8 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 			total += limit
 		}
 	}
-	if need := total + fixtureSetup; total > 0 && need > cell {
-		c.Notes = append(c.Notes, fmt.Sprintf("cell timeout raised from %s to %s: the sum of its tests' limits plus %s for the fixture", t.Cell, short(need), short(fixtureSetup)))
+	if need := total + FixtureSetup; total > 0 && need > cell {
+		c.Notes = append(c.Notes, fmt.Sprintf("cell timeout raised from %s to %s: the sum of its tests' limits plus %s for the fixture", t.Cell, short(need), short(FixtureSetup)))
 		cell = need
 	}
 	c.TimeoutMinutes = int((cell + time.Minute - 1) / time.Minute)

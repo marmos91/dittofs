@@ -129,7 +129,7 @@ func TestSplitNUL(t *testing.T) {
 
 // checkout moves the test into a new checkout whose registry has a suite
 // with an option, one that fails, one that needs another platform, one with a
-// fixture, which dt can't run yet, one that needs this platform and whose 9x
+// fixture dt can't set up yet, one that needs this platform and whose 9x
 // tests, which the merge tier doesn't select, need the dedicated host, and a
 // group, so a dt run there runs only these. Checking their needs probes
 // nothing on the machine. It returns this platform's need and the other one.
@@ -146,7 +146,7 @@ func checkout(t *testing.T) (here, other string) {
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
-		"  fixed: { cmd: \"true\", fixture: { profile: memory } }\n" +
+		"  fixed: { cmd: \"true\", fixture: { profile: memory, smb: true } }\n" +
 		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
 	for _, dir := range []string{"test", "t"} {
@@ -271,7 +271,7 @@ func TestListRunsHere(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	fixtures := "dt doesn't set up fixtures yet"
+	fixtures := "dt doesn't serve SMB from fixtures yet"
 	want := map[string]suite{
 		"s":      {RunsHere: true},
 		"s/o":    {RunsHere: true},
