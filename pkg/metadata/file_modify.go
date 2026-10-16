@@ -1034,16 +1034,6 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 				pruned := block.PruneChunkRefsToSize(row.Blocks, *attrs.Size)
 				if len(pruned) != len(row.Blocks) {
 					row.Blocks = pruned
-					// Keep ObjectID (the Merkle root over Blocks) consistent with
-					// the trimmed list, or zero it when no blocks remain so the
-					// file reads as "never quiesced" instead of carrying a stale
-					// dedup pointer.
-					switch {
-					case len(pruned) == 0 && !row.ObjectID.IsZero():
-						row.ObjectID = block.ObjectID{}
-					case len(pruned) > 0:
-						row.ObjectID = block.ComputeObjectID(pruned)
-					}
 					pruneManifest = true
 				}
 			}

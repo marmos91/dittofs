@@ -189,7 +189,7 @@ func BenchmarkRandomWrite4KB(b *testing.B) {
 
 // BenchmarkDedupHeavy mirrors the harness dedup-heavy workload: same
 // 8 MiB block bytes written across N distinct payloads to exercise
-// file-level dedup. Flush per op so the rollup → CAS path runs.
+// cross-file chunk dedup. Flush per op so the rollup → CAS path runs.
 func BenchmarkDedupHeavy(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(writeBenchSeqBlockSize)

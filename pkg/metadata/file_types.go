@@ -138,17 +138,6 @@ type FileAttr struct {
 	// then let a client pin an arbitrary mode or owner past the type default.
 	ExactAttrs bool `json:"-"`
 
-	// ObjectID is the BLAKE3 Merkle root over ChunkRef.Hash values sorted
-	// by Offset, populated lazily at the post-Flush coordinator hook
-	// (). All-zero sentinel means
-	// "never quiesced": legacy files, partially-flushed
-	// files (some blocks Pending), and freshly-mutated files awaiting
-	// next quiesce. migration backfills.
-	//
-	// Storage: rides the encoded FileAttr record; secondary key
-	// obj/{hex} -> file_id maintained on Put/Delete.
-	ObjectID block.ObjectID `json:"object_id,omitempty"`
-
 	// DeletedAt is set when this node was recycled (moved into #recycle).
 	// nil means the node is live. Drives retention reaping and trash listing.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
