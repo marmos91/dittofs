@@ -29,7 +29,7 @@ flowchart TB
   subgraph kv["pkg/metadata/kv — the backend contract"]
     direction LR
     kvi["KV interface<br/>Update · View · Limits"] --> badger["badgerkv<br/>(embedded, group commit)"]
-    kvi -.-> fdb["FoundationDB<br/>(blocked on cgo)"]
+    kvi --> fdb["fdbkv<br/>(FoundationDB, replicated)"]
   end
   vfs --> pr & fi & ns & cp & ca
   eng --> ex & co
@@ -42,7 +42,7 @@ flowchart TB
 
 **kv/**
 
-The interface every backend implements (`kv.go`), the Badger backend, key and value encoders, a cost-counting wrapper and the backend conformance suite.
+The interface every backend implements (`kv.go`), the two backends (`badgerkv` embedded, `fdbkv` on FoundationDB), what they share (`internal/backend`: a transaction's own writes and store time), key and value encoders, a cost-counting wrapper and the backend conformance suite.
 
 **entity/**
 
@@ -74,6 +74,41 @@ Everything above the backend talks to `kv.KV` (`pkg/metadata/kv/kv.go`). It is o
 `Limits()` reports the backend's ceilings (key size, value size, bytes and entries per transaction, maximum age). The store derives its batch size *K* from them at open (`kvstore/budget.go`): on Badger in memory, K is 214 keys. Every operation over many records — an existence commit, a removal's batches, a usage fold — splits itself to stay under K.
 
 `Close()` waits for the calls in flight, each of which completes as it would have. Every call after it fails with `kv.ErrClosed`, and a second `Close` does nothing.
+
+### The FoundationDB backend
+
+*How `fdbkv` meets the same contract on a replicated store.*
+
+FoundationDB is optimistic like Badger, so most of the contract maps straight onto it. Four things don't, and each has a fix in `fdbkv/fdbkv.go`:
+
+| Contract | On FoundationDB |
+|---|---|
+| `Get` tracked, `Scan`/`Before` untracked | A normal read adds a read conflict; scans read the snapshot view, which adds none |
+| Two blind writers conflict | FoundationDB checks reads against writes only, so each written key also gets a read conflict |
+| `Guard` / `GuardRange` | A read-conflict key / range, sent with the commit; two never conflict |
+| A guard binds from the snapshot | FoundationDB takes its read version at the first read. A transaction that only guards would take it at commit, after the write it must conflict with, so each attempt pins its read version first |
+| `Versions` | A 10-byte versionstamp the commit writes in front of every value; reads strip it |
+| Reading one's own writes | FoundationDB can't read back a value stamped in the same transaction, so writes stay in an overlay (`internal/backend/overlay.go`, shared with `badgerkv`) and reach FoundationDB at commit |
+| `Now` | The node's clock under a ceiling key, the same code as `badgerkv` (`internal/backend/clock.go`) |
+| Durable before `Update` returns | Native: FoundationDB acknowledges a commit once its logs hold it, and batches concurrent commits itself, so there is no syncer |
+
+Two decisions are marked in the code. An unknown commit result is returned as an error, not retried, because the commit may have landed and running the transaction again would answer as if it had not. And `Close` leaves the client's database handle open, because the client shares one handle among every store on a cluster file.
+
+`Limits()` on FoundationDB: keys up to 10 kB less the store's prefix, values up to 100 kB less the stamp, five seconds per transaction, and `TxnBytes` of 3 MB, under a third of FoundationDB's 10 MB because FoundationDB counts a written key three times (the mutation and both ends of its conflict range). A transaction of unusually short keys can still reach FoundationDB's limit first; it then gets `ErrTooLarge` from the backend's own estimate.
+
+The backend builds only with the `fdb` build tag for now, until the client library is part of the toolchain.
+
+**Speed.** The store's benchmarks on one FoundationDB 7.3.77 process in podman, on the same consumer NVMe as Badger's disk runs, 16 Oct 2026 (p50, or throughput where marked):
+
+| Operation | FoundationDB | Badger on disk |
+|---|---|---|
+| Lookup, 10,000 entries | 618 µs | 14 µs |
+| Create, one client | 2.7–2.9 ms | 1.0–3.2 ms |
+| Creates, 64 clients, one directory | 3,900–5,100/s | 7,650/s |
+| List a page, 10,000 entries | 6.8 ms | 0.5 ms |
+| Offload commit, about 330 reads and 455 writes | 29 ms | 7.4 ms |
+
+Writes are close: a sync dominates both, and creates in one directory don't queue on its guard. Reads are 40 to 80 times slower, because each is a round trip to the cluster, about 100 µs even locally, and each transaction first fetches a read version. Operations that read many known keys one after another, an offload commit or a listing, pay that per key; FoundationDB would run those reads in parallel, but `Get` returns one value per call.
 
 ## 3. Group commit
 
@@ -511,7 +546,9 @@ flowchart TB
 
 ### Running them
 
-`go test -race ./pkg/metadata/kv/... ./pkg/metadata/entity/... ./pkg/metadata/kvstore/...` runs everything; add `-short` to skip the on-disk Badger run. `go test -bench . ./pkg/metadata/kvstore/` runs the store's benchmarks, and `go test ./pkg/metadata/kvstore/ -run '^$' -fuzz '^FuzzNamespace$' -fuzztime 60s` fuzzes the namespace beyond its seeds.
+`go test -race ./pkg/metadata/kv/... ./pkg/metadata/entity/... ./pkg/metadata/kvstore/...` runs everything; add `-short` to skip the on-disk Badger run.
+
+On FoundationDB, `test/fdb/cluster.sh up` starts a one-process cluster in Docker or podman (`up 3` starts three), and `test/fdb/cluster.sh test -tags fdb ./pkg/metadata/kv/fdbkv/ ./pkg/metadata/kvstore/` runs the backend's conformance suite and the store's suites on it, each test under a prefix of its own. `cluster.sh down` removes the cluster and its data. `go test -bench . ./pkg/metadata/kvstore/` runs the store's benchmarks, and `go test ./pkg/metadata/kvstore/ -run '^$' -fuzz '^FuzzNamespace$' -fuzztime 60s` fuzzes the namespace beyond its seeds.
 
 ## 15. Against today's store
 
@@ -543,7 +580,7 @@ A throwaway benchmark, not committed, ran the same operations through both on 13
 >
 > **A single client's create on disk is slightly slower:** 1.35–1.55 ms against 1.3 ms. A create is one commit and one sync, and the new store's sync flushes the write-ahead log (0.75–0.9 ms, the device flush), the value log (0.1–0.2 ms) and, for a new file, the directory, where the old store's flushes only its log. Skipping the value-log flush when that file has not changed would need Badger's internal write offset, since Badger preallocates the file and writes it through a memory mapping. It is not worth the code.
 >
-> **Right after a burst, the disk runs slow down.** Started straight after the 10,000-create fill, a single create took 3.4–4 ms in two runs of four; with a 3 s pause, none did. Badger is most likely still flushing or compacting the fill. A server under steady write load would meet that with either store, so each disk figure here comes from a run of its own.
+> **Disk runs slow down after a few minutes of syncing, and the drive is why.** Back to back, a single create went from about 1.6 ms to about 4 ms. A raw 4 KiB write and fdatasync on a plain file, with no Badger involved, slowed the same way, from 0.83 ms to 2.9 ms, and both recovered after a minute or two idle. The test machine's drive is a consumer NVMe without power-loss protection, where every sync is a real cache flush; under sustained flushing it drops into a slower mode. A burst of 200,000 creates from 64 clients left later creates unaffected, so it is not Badger's flushes or compaction. Each disk figure here comes from a run of its own.
 >
 > **On macOS every commit pays a full device flush.** Go's `File.Sync` there is `F_FULLFSYNC`, about 4.4 ms, where the old store's Badger sync is `msync`, which leaves the drive's cache. The figures above are from Linux.
 >
@@ -555,7 +592,7 @@ A throwaway benchmark, not committed, ran the same operations through both on 13
 
 |  | Today (`store/badger` and the metadata service) | New (`kv` and `kvstore`) |
 |---|---|---|
-| Storage engine | Badger only, used directly | A small KV interface: Badger now, FoundationDB later |
+| Storage engine | Badger only, used directly | A small KV interface: Badger embedded, FoundationDB replicated |
 | Keys | Text prefixes such as `f:<uuid>` and `c:<parent>:<name>` | Binary keys, with a key budget per transaction |
 | Durability | A sync per commit, or relaxed with a bounded lag | Group commit: a commit is acknowledged after a sync that covers it |
 | File handles | `"shareName:uuid"` | Binary, with a numeric file ID per share |
