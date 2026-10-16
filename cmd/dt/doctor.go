@@ -8,13 +8,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmos91/dittofs/test/harness/needs"
-	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// decision: dt doctor checks only the needs the registry names, with the
-// checks dt run makes, so the two never disagree about what can run here.
-// Tool versions and the like aren't reported. When a suite fails for want of
-// something no need names, add that need rather than a check here.
+// decision: dt doctor reports only the needs the registry names, checked as
+// dt run checks them. What dt itself can't do yet isn't a need of the
+// machine, and dt list shows which suites it stops. Tool versions and the
+// like aren't reported: when a suite fails for want of something no need
+// names, add that need rather than a check here.
 func newDoctor() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
@@ -26,11 +26,13 @@ func newDoctor() *cobra.Command {
 				return err
 			}
 			root, _ := repoRoot()
-			var all []*registry.Suite
+			var lists [][]string
 			for _, s := range r.Suites {
-				all = append(all, r.Units(s)...)
+				for _, u := range r.Units(s) {
+					lists = append(append(lists, u.Needs), slices.Collect(maps.Values(u.NeedsByTest))...)
+				}
 			}
-			checked := checkNeeds(root, all)
+			checked := checkNeeds(root, lists)
 			rows := [][]string{{"NEED", "MET", "WHY", "HOW"}}
 			for _, n := range slices.Sorted(maps.Keys(checked)) {
 				if err := checked[n]; err != nil {
@@ -44,20 +46,14 @@ func newDoctor() *cobra.Command {
 	}
 }
 
-// checkNeeds checks the needs the given suites name, per-test needs
-// included, each once and all at the same time, since a probe can take
-// seconds: up to 30 for a stalled Docker daemon. It maps each need to why this
-// machine doesn't meet it, or to nil.
-func checkNeeds(root string, suites []*registry.Suite) map[string]error {
+// checkNeeds checks the needs of lists, each once and all at the same time,
+// since a probe can take seconds: up to 30 for a stalled Docker daemon. It
+// maps each need to why this machine doesn't meet it, or to nil.
+func checkNeeds(root string, lists [][]string) map[string]error {
 	names := map[string]bool{}
-	for _, u := range suites {
-		for _, n := range u.Needs {
+	for _, list := range lists {
+		for _, n := range list {
 			names[n] = true
-		}
-		for _, list := range u.NeedsByTest {
-			for _, n := range list {
-				names[n] = true
-			}
 		}
 	}
 	checked := make(map[string]error, len(names))

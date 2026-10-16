@@ -52,9 +52,10 @@ func TestToolNotFound(t *testing.T) {
 
 // Needs dt can't meet or check yet are unmet, never met.
 func TestUnmetUntilChecked(t *testing.T) {
-	got := Unmet("", []string{"host:dedicated", "cloud:aws", "disk:999999"})
-	if len(got) != 3 {
-		t.Errorf("got %q", got)
+	for _, n := range []string{"host:dedicated", "cloud:aws", "disk:999999"} {
+		if Check("", n) == nil {
+			t.Errorf("%s is met", n)
+		}
 	}
 }
 

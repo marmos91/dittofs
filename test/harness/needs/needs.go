@@ -74,19 +74,9 @@ func Hint(n string) string {
 	return hints[kind]
 }
 
-// Unmet returns each need the machine doesn't meet, with the reason. root is
-// the checkout, whose local services' values a service need falls back to.
-func Unmet(root string, list []string) []string {
-	var out []string
-	for _, n := range list {
-		if err := Check(root, n); err != nil {
-			out = append(out, n+": "+err.Error())
-		}
-	}
-	return out
-}
-
 // Check returns why the machine doesn't meet need n, or nil when it does.
+// root is the checkout, whose local services' values a service need falls
+// back to.
 func Check(root, n string) error {
 	kind, arg, _ := strings.Cut(n, ":")
 	switch kind {

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/marmos91/dittofs/test/harness/run"
 )
 
 // exitUsage is the status for a usage or registry error.
@@ -71,40 +73,44 @@ func newList() *cobra.Command {
 				Format string   `json:"format"`
 				Needs  []string `json:"needs,omitempty"`
 				Job    string   `json:"job,omitempty"`
-				// RunsHere is whether this machine meets the suite's needs,
-				// and Unmet lists those it doesn't. UnmetByTest gives, per
-				// needs_by_test glob, the extra needs of those tests it
-				// doesn't meet.
+				// RunsHere is whether dt run would run the suite's cells here,
+				// as dt run decides it: Unsupported names what dt doesn't do
+				// yet, and Unmet the needs this machine doesn't meet.
+				// UnmetByTest gives, per needs_by_test glob whose tests the
+				// tier plans, the extra needs of those tests it doesn't meet.
 				RunsHere    bool                `json:"runs_here"`
+				Unsupported string              `json:"unsupported,omitempty"`
 				Unmet       []string            `json:"unmet,omitempty"`
 				UnmetByTest map[string][]string `json:"unmet_by_test,omitempty"`
 			}
+			root, _ := repoRoot()
 			var listed []*registry.Suite
+			byTest := map[*registry.Suite]map[string][]string{}
+			var lists [][]string
 			for _, s := range r.Suites {
 				for _, u := range r.Units(s) {
-					if tier == "" || plan.RunsIn(u.Tier, tier) {
-						listed = append(listed, u)
+					if tier != "" && !plan.RunsIn(u.Tier, tier) {
+						continue
 					}
+					if byTest[u], err = plan.NeedsByTest(root, u, tier); err != nil {
+						return err
+					}
+					listed = append(listed, u)
+					lists = append(append(lists, u.Needs), slices.Collect(maps.Values(byTest[u]))...)
 				}
 			}
-			root, _ := repoRoot()
-			checked := checkNeeds(root, listed)
-			unmet := func(list []string) []string {
-				var out []string
-				for _, n := range list {
-					if checked[n] != nil {
-						out = append(out, n)
-					}
-				}
-				return out
-			}
+			checked := checkNeeds(root, lists)
+			check := func(n string) error { return checked[n] }
 			var suites []entry
 			for _, u := range listed {
+				why, unmet := run.Blocked(u, u.Needs, check)
 				e := entry{Name: u.Name, Tier: u.Tier, Format: u.Format, Needs: u.Needs, Job: u.Job,
-					Unmet: unmet(u.Needs), UnmetByTest: map[string][]string{}}
-				e.RunsHere = len(e.Unmet) == 0
-				for glob, list := range u.NeedsByTest {
-					if missing := unmet(list); len(missing) > 0 {
+					RunsHere: why == "", Unmet: unmet, UnmetByTest: map[string][]string{}}
+				if why != "" && len(unmet) == 0 {
+					e.Unsupported = why
+				}
+				for glob, list := range byTest[u] {
+					if _, missing := run.Blocked(u, list, check); len(missing) > 0 {
 						e.UnmetByTest[glob] = missing
 					}
 				}
@@ -117,7 +123,7 @@ func newList() *cobra.Command {
 			for _, e := range suites {
 				here := "yes"
 				if !e.RunsHere {
-					here = "no: " + strings.Join(e.Unmet, " ")
+					here = "no: " + cmp.Or(e.Unsupported, strings.Join(e.Unmet, " "))
 				}
 				for _, glob := range slices.Sorted(maps.Keys(e.UnmetByTest)) {
 					here += "; not " + glob + ": " + strings.Join(e.UnmetByTest[glob], " ")

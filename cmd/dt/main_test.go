@@ -128,10 +128,11 @@ func TestSplitNUL(t *testing.T) {
 }
 
 // checkout moves the test into a new checkout whose registry has a suite
-// with an option, one that fails, one that needs another platform, one that
-// needs this one and whose 9x tests need the dedicated host, and a group, so
-// a dt run there runs only these. Checking their needs probes nothing on the
-// machine. It returns this platform's need and the other one.
+// with an option, one that fails, one that needs another platform, one with a
+// fixture, which dt can't run yet, one that needs this platform and whose 9x
+// tests, which the merge tier doesn't select, need the dedicated host, and a
+// group, so a dt run there runs only these. Checking their needs probes
+// nothing on the machine. It returns this platform's need and the other one.
 func checkout(t *testing.T) (here, other string) {
 	t.Helper()
 	here, other = "linux", "windows"
@@ -145,10 +146,18 @@ func checkout(t *testing.T) (here, other string) {
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
-		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
+		"  fixed: { cmd: \"true\", fixture: { profile: memory } }\n" +
+		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "test"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{"test", "t"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []string{"01-a.sh", "91-b.sh"} {
+		if err := os.WriteFile(filepath.Join(root, "t", test), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(root, "test", "suites.yaml"), []byte(y), 0o644); err != nil {
 		t.Fatal(err)
@@ -236,9 +245,10 @@ func TestAliases(t *testing.T) {
 	}
 }
 
-// dt list says whether each suite can run here, from its needs and, per
-// needs_by_test glob, from what those tests need beyond them; it lists the
-// groups too.
+// dt list says whether dt run would run each suite here, as dt run decides
+// it: first what dt can't do yet, then the suite's needs, and per
+// needs_by_test glob whose tests the tier plans, what those tests need beyond
+// them. It lists the groups too.
 func TestListRunsHere(t *testing.T) {
 	_, other := checkout(t)
 	out, err := dt(t, "list", "--json")
@@ -247,6 +257,7 @@ func TestListRunsHere(t *testing.T) {
 	}
 	type suite struct {
 		RunsHere    bool                `json:"runs_here"`
+		Unsupported string              `json:"unsupported"`
 		Unmet       []string            `json:"unmet"`
 		UnmetByTest map[string][]string `json:"unmet_by_test"`
 	}
@@ -260,11 +271,13 @@ func TestListRunsHere(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
+	fixtures := "dt doesn't set up fixtures yet"
 	want := map[string]suite{
 		"s":      {RunsHere: true},
 		"s/o":    {RunsHere: true},
 		"fails":  {RunsHere: true},
 		"away":   {Unmet: []string{other}},
+		"fixed":  {Unsupported: fixtures},
 		"partly": {RunsHere: true, UnmetByTest: map[string][]string{"9?-*.sh": {"host:dedicated"}}},
 	}
 	for _, s := range got.Suites {
@@ -277,10 +290,16 @@ func TestListRunsHere(t *testing.T) {
 		t.Errorf("missing %v, groups %v:\n%s", want, got.Groups, out)
 	}
 	text, _ := dt(t, "list")
-	for _, line := range []string{"HERE", "no: " + other, "yes; not 9?-*.sh: host:dedicated"} {
+	for _, line := range []string{"HERE", "no: " + other, "no: " + fixtures, "yes; not 9?-*.sh: host:dedicated"} {
 		if !strings.Contains(text, line) {
 			t.Errorf("dt list lacks %q:\n%s", line, text)
 		}
+	}
+	if merge, _ := dt(t, "list", "--tier", "merge"); strings.Contains(merge, "9?-*.sh") {
+		t.Errorf("the merge tier selects no 9x test:\n%s", merge)
+	}
+	if run, _ := dt(t, "run", "fixed", "--results", t.TempDir()); !strings.Contains(run, "[dt] fixed: not run "+fixtures) {
+		t.Errorf("dt run fixed doesn't give dt list's reason:\n%s", run)
 	}
 }
 
