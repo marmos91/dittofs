@@ -63,20 +63,23 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
   what make the epics independent. Each epic implements one side of a seam and tests
   against the other side's interface.
 - **How dependencies are injected**: clock, storage seam, observability hooks, limits and
-  settings. RFC 1 fixes `Open(dir, floor, expect)`, so epic 1 picks a mechanism that keeps
-  that signature (for example functional options or an `OpenWith` variant) and states it
-  once.
+  settings. RFC 1 fixes `Open(dir, floor, expect)`, so epic 1 appends variadic options
+  that keep that signature. `Open` refuses to run without a clock (`ErrNoClock`), because
+  RFC 8 §2.1 rules out a silent fallback to the system clock (epic 1, D5).
 - **The observability contract**: the `Stats` struct with every field of RFC 1 §3.7 and
   §3.9, and a `Hooks` type for spans and events built from standard-library types only
   (`context.Context`, `time.Duration`, function fields). The journal may not import a
   metrics or tracing library, so epic 10 adapts these hooks to Prometheus and OpenTelemetry.
 - **Stub bodies**: every function returns `ErrNotImplemented` with zero values, or an empty
-  iterator, and never panics (epic 1, D8). This is what lets epic 2's tests compile and
-  fail on their assertions.
+  iterator, and never panics (epic 1, D8, a review rule). This is what lets epic 2's tests
+  compile and fail on their assertions. `Version`'s order and byte encoding are the one
+  piece of behaviour implemented, because other components store them.
 
 **Exit criteria:**
 
 - `go build ./...` and `go vet ./...` pass.
+- The kept tests pass: the import rule, the RFC signature compile check, typed errors
+  matching their sentinels, and `Version`'s byte order (§1.5, rule 10).
 - The import test passes, allowing stdlib only (plus `golang.org/x/sys` in
   `internal/platform`, epic 1 D6) and forbidding `pkg/block/journal`.
 - Every symbol carries a doc comment stating its contract in terms of the code.
@@ -92,13 +95,13 @@ Epic 2 makes "done" measurable before any implementation exists, following
 
 **1. Shared test components that block everything else:**
 
-- **Clock and fault implementations.** `pkg/sim` holds the set's one clock and one fault
-  interface ([RFC index, test harness item 1](../rfcs/rfc-index.md)). Epic 1 declares
-  them (subtask 1.4); epic 2 implements the virtual clock and the seeded fault schedule.
-  The journal declares its own `Clock` with standard-library types only, because its
-  import rule bars importing the shared package. RFC 8's `Clock` uses a named `Mono` type,
-  so the two are not structurally identical, and an adapter in `journalv2test` bridges
-  them (epic 1, D3).
+- **Clock and fault implementations.** The set has one clock interface
+  ([RFC index, test harness item 1](../rfcs/rfc-index.md)), which RFC 8 §2.1 declares in
+  standard-library types (`Now`, `Elapsed`, `After`). The journal declares the subset it
+  uses, so the production clock and the test clock satisfy it as they are, with no
+  adapter (epic 1, D3). Epic 2 implements the test clock and the seeded fault schedule;
+  the fault interface lands with the crash seam, its first consumer. Where these packages
+  live is decided with #3162.
 - **Crash-simulating storage seam.** It wraps a **real** filesystem and records every
   write, allocation and truncate since each file's last sync, and every create, rename and
   unlink since the last directory sync. A simulated crash discards exactly those
@@ -198,6 +201,19 @@ expected to run and did not. A check that did not run is a failure
    comments. Use `ponytail:` for knowingly-simple implementations and `decision:` for
    deliberate behaviour. Where the RFC already carries a ponytail or decision note, its
    marker goes at the code site that implements it.
+10. **A test must be able to fail.** Every test is code maintained for the life of the
+    project. Keep a test only if a plausible change would make it fail and nothing else
+    would catch that change: not the compiler, not the PR diff, not a later epic's tests.
+    A test that checks two `errors.New` values differ, that the standard library's
+    `errors.As` works, or that a stub returns zero does not qualify. A test that a
+    little-endian `Version.Bytes` would fail does. Review rules that no test can check
+    (for example, stubs never panic) stay review rules.
+11. **A symbol is exported only if RFC 1 §3 uses it.** Everything exported is frozen at
+    S1, so a helper exported for convenience becomes a contract. Helpers the internal
+    packages need (`Less`, `IsZero`, `End`, `Overlaps`, `Seq`, the proposed constants)
+    stay in `internal/core`.
+12. **Each subtask creates only what it declares.** No empty package and no stub without
+    a caller. A package, an option or a test helper lands with its first consumer.
 
 ---
 
@@ -314,14 +330,17 @@ read only the index and the segments.
 ## 4. Directory layout proposed for epic 1
 
 E1 confirms or amends this layout. It is listed here so that every epic knows where its
-code lives.
+code lives. Each package is created with its first symbol, never as a placeholder (§1.5,
+rule 12).
 
 ```text
 pkg/block/journalv2/              package journalv2 — public API (RFC 1 §3)
   doc.go  journal.go  handle.go  reservation.go
   types.go  errors.go  stats.go  hooks.go  inspect.go
-  clock.go  options.go            narrow stdlib-only Clock / injection points
+  options.go                      injection points; Clock is aliased from internal/core
   imports_test.go                 stdlib only (x/sys in internal/platform), no pkg/block/journal
+  rfc_signatures_test.go          RFC 1 calls as written; a drifted signature stops the build
+  errors_test.go                  every typed error Is its own sentinel
   internal/format/                RFC 28 §2 codecs, CRC32C, golden vectors       (E3)
   internal/platform/              per-OS sync/alloc/direct I/O/CoW probes        (E3)
   internal/storage/               the storage seam interface (RFC 1 §1.3)        (E1/E2)
@@ -332,7 +351,7 @@ pkg/block/journalv2/              package journalv2 — public API (RFC 1 §3)
   internal/reclaim/               repack, retirement                             (E9)
   conformance/                    component e2e: RFC 1 §9.4, RFC 28 §4.2         (E2)
   journalv2test/                  crash seam, reference model, profiler, fixtures (E2)
-pkg/sim/clock, pkg/sim/fault      shared clock & fault (RFC 8 signatures)   (E1 declares, E2 implements)
+(location decided in #3162)       the set's clock, test clock and fault schedule (RFC 8 §2.1) (E2)
 test/journalv2/KNOWN_FAILURES.md  one list, Markdown table read by Go and shell  (E2)
 test/e2e/journalv2_*_test.go      system e2e                       (E2 scaffolding, E10 tests)
 monitoring/grafana/journal/       dashboards                                     (E12)
@@ -354,7 +373,9 @@ detailed breakdown must also link §1.5.
 
 Epic 1 creates the tree of §4 and declares, with doc comments and stub bodies, every
 symbol and signature of RFC 1 §3–§4 and §7.2. It also declares the internal seams that let
-epics 3–9 proceed in parallel. **No behaviour is implemented.**
+epics 3–9 proceed in parallel. **No behaviour is implemented**, except `Version`'s order
+and encoding. It follows §1.5's rules 10–12: only tests that can fail, only symbols RFC 1
+§3 uses, and only packages with a first symbol.
 
 Candidate subtasks:
 
@@ -364,8 +385,8 @@ Candidate subtasks:
    `entity.JournalVersion`, so that `bytes.Compare` orders as `Compare` does.
 3. Error set, with `ErrNoSpace` naming the refusing limit (share, journal, index,
    headroom, version, spare) and the missing amount.
-4. `Init`, `Open` and `Restamp`, and the injection mechanism for clock, seam, hooks and
-   settings.
+4. `Init`, `Open` and `Restamp`, the options, and the journal's `Clock`. `Open` requires
+   a clock.
 5. `Journal`, `Handle` and `Reservation` methods.
 6. `Offer`, `Change`, `CloneSpec`, `RepackScope` and the snapshot-hold signatures.
 7. `Stats`, its per-share breakdown, the counters, `LossEvent`, and `Hooks`.
