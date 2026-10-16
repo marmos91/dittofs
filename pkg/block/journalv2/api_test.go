@@ -120,7 +120,8 @@ func renderPackage(t *testing.T, buf *bytes.Buffer, dir string) {
 	buf.WriteString("package ")
 	buf.WriteString(importPath)
 	buf.WriteString("\n")
-	decl := func(node any) {
+	decl := func(node ast.Node) {
+		stripComments(node)
 		buf.WriteString("\n")
 		if err := printer.Fprint(buf, fset, node); err != nil {
 			t.Fatalf("print %s: %v", importPath, err)
@@ -154,4 +155,30 @@ func renderPackage(t *testing.T, buf *bytes.Buffer, dir string) {
 	}
 
 	buf.WriteString("\n")
+}
+
+// stripComments drops every comment attached to node and to the declarations
+// inside it. go/printer prints no free-floating comment for a node that is not
+// a file, but it does print the Doc and Comment fields of the specs and fields
+// it reaches: a constant or variable in a parenthesised group and a struct
+// field would otherwise carry their comments into the golden file, and
+// rewording them would force a regeneration.
+func stripComments(node ast.Node) {
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.GenDecl:
+			n.Doc = nil
+		case *ast.FuncDecl:
+			n.Doc = nil
+		case *ast.ValueSpec:
+			n.Doc, n.Comment = nil, nil
+		case *ast.TypeSpec:
+			n.Doc, n.Comment = nil, nil
+		case *ast.ImportSpec:
+			n.Doc, n.Comment = nil, nil
+		case *ast.Field:
+			n.Doc, n.Comment = nil, nil
+		}
+		return true
+	})
 }
