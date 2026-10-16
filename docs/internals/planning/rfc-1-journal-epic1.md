@@ -3,7 +3,8 @@
 **Parent plan:** [rfc-1-journal-plan.md](rfc-1-journal-plan.md), epic 1.
 **Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §1, §3, §4, §6 and §7.2;
 [RFC 28](../rfcs/rfc-28-journal-format.md) §2 and Appendix A;
-[RFC 8 §2.1](../rfcs/rfc-8-engine.md) for the shared clock and fault interfaces.
+[RFC 8 §2.1](../rfcs/rfc-8-engine.md) for the shared clock and fault interfaces;
+[RFC 29](../rfcs/rfc-29-test-harness.md) for the test harness the guard tests feed.
 **Owners:** A and B, with the split given per subtask.
 **Estimate:** 10 subtasks.
 **Blocks:** every other epic. The end of this epic is sync point **S1, interfaces
@@ -54,45 +55,9 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
 
 ## 2. General rules for each epic
 
-> **Instruction for whoever expands an epic into its detailed description and subtasks,
-> human or AI:** copy this section **verbatim** into that description. Every subtask must
-> state how it meets each rule that applies to it. A rule that does not apply is named
-> with the reason.
-
-1. **Independent unit tests.** Each epic carries its own unit tests and does not rely on
-   another epic's implementation to be tested. It may rely on another epic's interfaces
-   from epic 1, and on the test components from epic 2.
-2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
-   bytes the journal did not just write: records, segment headers, seal markers, catalogs,
-   trailers, the `format` file. Also fuzz-drive operation sequences against the reference
-   model. The property is that any input is either accepted as valid or rejected: never a
-   panic, and never an extent the bytes do not contain.
-3. **Metrics, and tracing where relevant.** Every counter and gauge RFC 1 §3.7 and §3.9
-   assigns to the epic's area is maintained, and exposed through `Stats` (served from
-   maintained counters, never a walk). Spans and events go through epic 1's
-   standard-library `Hooks`, never a metrics or tracing library. Operations worth a span:
-   open and recovery, sync, offload pass, repack pass, fill, and a refused reservation.
-4. **Profiling.** Tests and benchmarks run under epic 2's profiling harness and fail on
-   goroutine, descriptor or memory leaks and on anomalous resource growth. Hot paths
-   (`WriteAt`, `ReadAt`, `Stats`, `report`, index lookup and insert) carry
-   allocations-per-op assertions and the counted checks of RFC 1 §9.7.
-5. **Public interface and internals.** Tests cover the epic's internal package API and the
-   public v2 interface behaviour it enables, including concurrency under `-race`. Per the
-   project rules, test at the layer that **consumes** a value, not the one that produces
-   it. A regression test is validated by reverting the fix and watching it fail **on its
-   assertion**.
-6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
-   known-failure list in the same change. The runner fails if a listed test passes.
-7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   `pkg/block/journal`. The import test enforces it. v1 is touched only in epic 10, and
-   only at its callers.
-8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
-   about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
-   stand-ins are allowed only for pure logic (index, codecs).
-9. **Code comment conventions** (`CLAUDE.md`). No epic, issue or plan IDs in source
-   comments. Use `ponytail:` for knowingly-simple implementations and `decision:` for
-   deliberate behaviour. Where the RFC already carries a ponytail or decision note, its
-   marker goes at the code site that implements it.
+The general rules are in [§1.5 of the plan](rfc-1-journal-plan.md#15-general-rules-for-each-epic).
+They are linked rather than copied, so they keep one source. Every subtask states how it
+meets each rule that applies to it; a rule that does not apply is named with the reason.
 
 ### 2.1 How the rules apply to this epic
 
@@ -149,7 +114,7 @@ For example, `type Version = core.Version`.
 
 ```go
 type Clock interface {
-    Now() time.Time                       // wall time, for mtimes and OldestDirty
+    Now() time.Time                       // wall time, for OldestDirty and LastSyncError
     Elapsed() time.Duration               // monotonic reading since an arbitrary origin
     After(d time.Duration) <-chan struct{} // fires after d on the monotonic clock
 }
@@ -161,6 +126,8 @@ type Clock interface {
   so Go's structural typing cannot make one interface satisfy the other. An adapter is
   needed, `journalv2test.Clock(sim.Clock) journalv2.Clock`. Epic 2 implements it for tests
   and epic 10 for production.
+- *What `Now` is not for:* mtimes. `WriteAt` takes the mtime from its caller, which stamps
+  it with store time, so the journal never reads the clock for one.
 - *What would overturn it:* RFC 8 changing its `Clock` to standard-library types only.
 
 **D4. The journal takes no `Fault` interface.**
@@ -178,7 +145,9 @@ writes it still compiles. The options are:
   `pkg/block/journalv2/` can build a value to pass;
 - `WithHooks`;
 - `WithSettings`;
-- `WithDescriptorBudget`.
+- `WithDescriptorBudget`;
+- `WithTestOverrides(testhook.Overrides)`. Like `WithStorage`, its parameter type is
+  internal, so only code under `pkg/block/journalv2/` can use it (D10).
 
 **D6. `golang.org/x/sys` is allowed in `internal/platform` only.**
 Everywhere else the rule is standard library only.
@@ -202,14 +171,19 @@ Every stub returns the zero value with `ErrNotImplemented`, or an empty iterator
 - *Why:* a panic aborts the test binary, and every later test in it then reports as not
   run, not as failing on its assertion. Epic 2 needs every test to fail on its own
   assertion.
+- *What it requires of tests:* a test that expects a refusal asserts the **specific**
+  error, through `errors.Is` with the named sentinel or `errors.As` with its type. A test
+  that accepts any error passes against `ErrNotImplemented` and proves nothing.
 
-**D9. `FileID` is an opaque struct built only by `NewFileID(id [16]byte)`.**
+**D9. `FileID` is an opaque struct built only by `NewFileID(id [16]byte) (FileID, error)`.**
 RFC 0 §3 requires a type that cannot be reached by conversion.
 
 - *Limit:* the journal cannot import the metadata store's ID type. The constructor
   therefore takes the UUID bytes, and epic 10 calls it in exactly one place, from the
   metadata file ID.
-- *Ceiling:* any 16 bytes are accepted. Recorded with a `decision:` marker.
+- *The all-zero ID is refused* with `ErrZeroFileID`: it is the zero value of the type, so
+  accepting it would let an uninitialised `FileID` name a real file.
+- *Ceiling:* any other 16 bytes are accepted. Recorded with a `decision:` marker.
 
 **D10. Proposed RFC constants are named constants. Settings are fields.**
 
@@ -217,9 +191,11 @@ RFC 0 §3 requires a type that cannot be reached by conversion.
   4,096 floor buckets, idle-seal age 30 s.
 - Settings: maximum bytes, append streams, `ExtentLimit`, `HeadroomRecords`,
   `IdleSealBytes`, spare-pool target, descriptor limit.
-- `Settings.SegmentCap` exists for tests only. Zero means the constant. This is a
-  `decision:` marker, because the RFC fixes the cap as a constant, and the tests need a
-  journal of 1,000 segments to fit a temporary directory.
+- The segment cap is **not** a setting. The RFC fixes it as a constant, and only tests
+  need another value, so that a journal of 1,000 segments fits a temporary directory. It
+  is overridden through `WithTestOverrides(testhook.Overrides{SegmentCap: n})`, whose
+  parameter type lives in `internal/testhook`, so production code outside
+  `pkg/block/journalv2/` cannot reach it. Recorded with a `decision:` marker.
 
 **D11. `SyncPolicy`'s zero value is `Bounded`**, which RFC 1 §5.2 names as the default.
 
@@ -227,6 +203,15 @@ RFC 0 §3 requires a type that cannot be reached by conversion.
 `NewDescriptorBudget(limit int) *DescriptorBudget`.**
 RFC 1 §7.4 makes the limit per process, while each journal is built separately. A
 journal built without a budget gets a private one at the default limit.
+
+**D13. `sim.FaultAction` is declared here, not copied.**
+RFC 8 §2.1 declares `Fault` with `At(op string, key []byte) FaultAction`, but gives
+`FaultAction` only as a comment listing its kinds: pass, fail with an error, delay by d,
+drop, tear after n bytes, reorder. Epic 1 declares it as a struct whose `Kind` is one of
+those six, with the payload that kind needs (`Err`, `Delay`, `N`).
+
+- *What would overturn it:* RFC 8 declaring `FaultAction` itself, which this declaration
+  then follows.
 
 ---
 
@@ -236,7 +221,7 @@ journal built without a budget gets a private one at the default limit.
 pkg/sim/
   doc.go
   clock.go          Clock, TestClock, Mono (RFC 8 §2.1, verbatim)
-  fault.go          Fault, FaultAction
+  fault.go          Fault (RFC 8 §2.1, verbatim), FaultAction (D13)
 pkg/block/journalv2/
   doc.go            package contract: what the journal is and is not
   journal.go        Journal; Init, Open, Restamp; Close; Share, Forget, Strand; Draw, SetVersionLimit
@@ -265,6 +250,7 @@ pkg/block/journalv2/
   internal/durability/  Coordinator, Window
   internal/recovery/    Rebuild, Sink, Verify
   internal/reclaim/     Repacker
+  internal/testhook/    Overrides (D10)
   journalv2test/doc.go  empty skeleton for epic 2, plus the Clock adapter signature
   conformance/doc.go    empty skeleton for epic 2
 ```
@@ -322,8 +308,8 @@ rule, not where the rule came from.
 
   | Type | Definition |
   | --- | --- |
-  | `Version` | `struct{ Epoch, Counter uint64 }`, with stubs for `Compare(Version) int`, `Less`, `IsZero`, `Bytes() [16]byte` and `VersionFromBytes([16]byte) Version`. The byte order is "epoch half then counter", matching how metadata stores a version. |
-  | `FileID` | opaque struct, `NewFileID([16]byte) FileID`, `(FileID) Bytes() [16]byte` (D9) |
+  | `Version` | `struct{ Epoch, Counter uint64 }`, with stubs for `Compare(Version) int`, `Less`, `IsZero`, `Bytes() [16]byte` and `VersionFromBytes([16]byte) Version`. `Bytes` is **big-endian, epoch then counter**: byte for byte the metadata store's `entity.JournalVersion`, so `bytes.Compare` on two `Bytes` orders as `Compare` does. It is never RFC 28's little-endian on-disk encoding, which belongs to `internal/format`. |
+  | `FileID` | opaque struct, `NewFileID([16]byte) (FileID, error)`, `(FileID) Bytes() [16]byte` (D9) |
   | `Extent` | `struct{ Off, Len int64 }`, with stubs for `End()` and `Overlaps` |
   | `Held` | `struct{ Extent Extent; Version Version }` |
   | `ShareTag` | `uint32` |
@@ -335,9 +321,14 @@ rule, not where the rule came from.
 
 - **Done when:**
   - every type is in the golden file;
-  - the doc comments state the invariants. For example: `FileID` encodes no share; a
-    version's epoch is zero in this format; a version is compared epoch first, as one
-    unsigned 128-bit number.
+  - the doc comments state the invariants. For example: `FileID` encodes no share and is
+    never all-zero; a version's epoch is zero in this format; a version is compared epoch
+    first, as one unsigned 128-bit number;
+  - the tests epic 4 owes for `Version` are named on its doc comment: a round trip
+    through `Bytes` and `VersionFromBytes`, and an ordering test asserting that
+    `bytes.Compare` of `Bytes` agrees with `Compare`, on counters that differ only in
+    their low byte, across the epoch boundary, and against `entity.JournalVersion`'s
+    encoding of the same values.
 - **Rules:**
   - 9: the `decision:` markers for D9 and D11 sit at their declarations.
 
@@ -350,6 +341,10 @@ rule, not where the rule came from.
     | Sentinel | Returned when |
     | --- | --- |
     | `ErrNotImplemented` | a stub is called |
+    | `ErrNoSpace` | a capacity limit refuses; always carried by a `NoSpaceError` (below) |
+    | `ErrOtherShare` | a call through a handle names a file whose tag is another share's; always carried by an `OtherShareError` (below) |
+    | `ErrTagConflict` | a call names a file recovery rebuilt under two tags |
+    | `ErrZeroFileID` | `NewFileID` is given the all-zero ID (D9) |
     | `ErrClosed` | a call reaches a closed journal or handle |
     | `ErrHandleOpen` | `Forget` is called while a handle of the tag is open |
     | `ErrJournalExists` | `Init` finds a `format` file or a segment |
@@ -372,6 +367,8 @@ rule, not where the rule came from.
       segments are present, for the `expect == 0` diagnosis.
     - `SyncError`, naming the window, the files it failed, and the cause.
     - `NotOffloadedError`, listing the refused extents.
+    - `OtherShareError{File FileID; Tag, Owner ShareTag}`, naming the handle's tag and the
+      tag that owns the file. It matches `ErrOtherShare` under `errors.Is`.
   - **The `ENOSPC` rule:** a full filesystem surfaces as the platform's
     `*fs.PathError` wrapping `syscall.ENOSPC`. It is **never** a `NoSpaceError`, so
     `errors.Is(err, ErrNoSpace)` and `errors.Is(err, syscall.ENOSPC)` are never both true
@@ -399,15 +396,14 @@ rule, not where the rule came from.
     - `Option`, and `WithClock(Clock)`, `WithStorage(storage.FS)`, `WithHooks(Hooks)`,
       `WithSettings(Settings)`, `WithDescriptorBudget(*DescriptorBudget)`;
     - `Settings{MaxBytes int64; Streams int; ExtentLimit int64; HeadroomRecords int;
-      IdleSealBytes int64; SpareTarget int; SegmentCap int64}`, with a documented default
-      per field;
+      IdleSealBytes int64; SpareTarget int}`, with a documented default per field;
+    - `WithTestOverrides`, and `internal/testhook.Overrides{SegmentCap int64}` (D10);
     - the D10 constants;
     - `Clock` (D3);
     - `NewDescriptorBudget` (D12).
-  - `pkg/sim/clock.go` and `pkg/sim/fault.go`: `Clock`, `TestClock`, `Mono`, `Fault` and
-    `FaultAction`, copied verbatim from RFC 8 §2.1. `FaultAction` is a struct whose kind
-    is one of pass, fail, delay, drop, tear-after-n or reorder, with the payload that kind
-    needs.
+  - `pkg/sim/clock.go` and `pkg/sim/fault.go`: `Clock`, `TestClock`, `Mono` and `Fault`,
+    copied verbatim from RFC 8 §2.1, and `FaultAction`, which RFC 8 does not declare
+    (D13).
   - `journalv2test/clock.go`: the adapter signature, `func Clock(c sim.Clock)
     journalv2.Clock`, stubbed. Epic 2 implements it.
 - **Done when:**
@@ -416,7 +412,7 @@ rule, not where the rule came from.
   - every setting documents its unit, default and refusal behaviour.
 - **Rules:**
   - 3: `WithHooks` is the only observability entry point.
-  - 9: `decision:` markers for D3, D5, D6, D10 and D12.
+  - 9: `decision:` markers for D3, D5, D6, D10, D12 and D13.
 
 ### 1.5 Share handles, the data path and capacity API
 
@@ -507,7 +503,10 @@ rule, not where the rule came from.
     `OpenDescriptors`, `DescriptorLimit`, `DamagedSegments`, `LastSyncError`,
     `SyncDuration`, `RemovalMarkers`, `VersionLimit`, `VersionsLeft`, `NextVersion`,
     `ExtentLimit`, `Counters`, `RejectedSegments`, `Recovery`, `Losses`,
-    `LossGeneration`, and `Shares map[ShareTag]ShareStats`. Supporting types:
+    `LossGeneration`, `TagConflicts []TagConflict`, and `Shares map[ShareTag]ShareStats`.
+    Supporting types:
+    - `TagConflict{File FileID; Tags [2]ShareTag}`, a file recovery rebuilt under two
+      tags;
     - `ShareStats`;
     - `Counters`, with every §3.9 counter: `WrittenBytes`, `FilledBytes`, `FillRefused`,
       `OfferedBytes`, `MarkedBytes`, `ReleasedBytes`, `FreedBytes`, `RepackedBytes`,
@@ -648,9 +647,13 @@ rule, not where the rule came from.
     conformance suite.
   - **`surface_test.go`:**
     - calls every exported function and method with zero or minimal arguments;
-    - asserts that none panics, that each returns `ErrNotImplemented` or a zero value, and
-      that iterators terminate. The assertion is written as "returns or errors cleanly",
-      so it stays valid once epics implement the methods;
+    - **checks its own table against the exported functions and methods `go/doc` finds**,
+      the same source as `api.golden`, so a method missing from the table fails the test
+      instead of passing silently;
+    - asserts that none panics, that iterators terminate, and that each call's error is
+      **checked, never dropped**: nil, `ErrNotImplemented`, or an error the method's doc
+      comment names. The assertion is written this way so it stays valid once epics
+      implement the methods;
     - runs the error-relation table from 1.3.
   - **The committed `testdata/api.golden`.**
   - **§6 of this file:** the symbol-to-RFC-section map, completed.
@@ -698,6 +701,7 @@ freeze.
 | `Repack`, `RepackScope` | RFC 1 §7.2 | 1.6 |
 | `DescriptorBudget` | RFC 1 §7.4 | 1.4 |
 | `NoSpaceError`, `Limit` | RFC 1 §6, §4.2, §4.3 | 1.3 |
+| `ErrOtherShare`, `OtherShareError`, `ErrTagConflict`, `TagConflict` | RFC 1 §3, §3.7 | 1.3, 1.7 |
 | `FileID` | RFC 0 §3; RFC 1 §2 | 1.2 |
 | `storage.FS`, `storage.File` | RFC 1 §1.3 | 1.8 |
 | `platform.Probe`, `platform.Check` | RFC 28 Appendix A | 1.8 |
@@ -708,6 +712,7 @@ freeze.
 | `recovery.*` | RFC 28 §3 | 1.9 |
 | `reclaim.*` | RFC 1 §7.1, §7.2 | 1.9 |
 | `sim.Clock`, `sim.TestClock`, `sim.Fault` | RFC 8 §2.1 | 1.4 |
+| `sim.FaultAction` | D13 (RFC 8 §2.1 lists its kinds only) | 1.4 |
 | `Hooks`, `SpanOp`, `Event` | this plan (general rule 3) | 1.7 |
 
 ---
@@ -727,12 +732,13 @@ freeze.
 **Allowed package imports.** Arrows point at the imported package. There is no cycle.
 
 ```text
-journalv2 ──► internal/{core, storage, format, index, segment, durability, recovery, reclaim}
+journalv2 ──► internal/{core, storage, format, index, segment, durability, recovery, reclaim, testhook}
 reclaim    ──► index, segment, durability, core
 recovery   ──► format, storage, core          (lands records through Sink, not into index directly)
 durability ──► segment, core
 segment    ──► format, storage, core
 index      ──► core
+testhook   ──► (nothing)
 format     ──► core
 platform   ──► storage, core, x/sys
 journalv2test ──► journalv2, internal/storage, pkg/sim
