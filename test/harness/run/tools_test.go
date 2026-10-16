@@ -383,6 +383,10 @@ func TestDtcToolsMatchFlakeLock(t *testing.T) {
 	for _, d := range pinDrift(lock, dockerfile) {
 		t.Error(d)
 	}
+	// A checkout may end its lines with \r\n.
+	if d := pinDrift(lock, []byte(strings.ReplaceAll(string(dockerfile), "\n", "\r\n"))); len(d) != 0 {
+		t.Errorf("CRLF line endings give %q", d)
+	}
 	changed := strings.Replace(string(dockerfile), "PYNFS_REV=", "PYNFS_REV=0", 1)
 	if d := pinDrift(lock, []byte(changed)); len(d) != 1 || !strings.Contains(d[0], "PYNFS_REV=0") {
 		t.Errorf("a changed revision gives %q", d)
@@ -403,7 +407,7 @@ func pinDrift(lock, dockerfile []byte) []string {
 	for _, name := range slices.Sorted(maps.Keys(registry.ToolDirs)) {
 		input, arg := name+"-src", strings.ToUpper(name)+"_REV"
 		pinned := l.Nodes[input].Locked.Rev
-		m := regexp.MustCompile(`(?m)^ARG ` + arg + `=(\S+)$`).FindSubmatch(dockerfile)
+		m := regexp.MustCompile(`(?m)^ARG ` + arg + `=(\S+)\r?$`).FindSubmatch(dockerfile)
 		switch {
 		case pinned == "":
 			out = append(out, "flake.lock pins no "+input)
