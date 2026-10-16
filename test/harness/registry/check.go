@@ -22,7 +22,7 @@ var (
 	metrics    = set("fio-json", "dfsbench-json")
 	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
-	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "mount", "user", "user2", "password", "realm")
+	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "user", "user2", "password", "realm")
 
 	// runFlags are dt run's own flags, which no option may share a name with.
 	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "help")
@@ -163,6 +163,17 @@ func checkUnit(root string, u *Suite) []error {
 	}
 	if u.Shards < 0 {
 		fail("shards is at least 1")
+	}
+
+	if f := u.Fixture; f != nil {
+		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
+		// squash decides, not a user to create, and the fixture's own test
+		// user takes the first UID above that range, so none shares it.
+		for _, uid := range f.Users {
+			if uid < 1 || uid > 65534 {
+				fail("fixture users: %d is not a UID from 1 to 65534", uid)
+			}
+		}
 	}
 
 	// Paths the suite reads must exist.

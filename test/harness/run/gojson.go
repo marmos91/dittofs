@@ -40,7 +40,7 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
 	if root {
-		if err := t.buildBin(); err != nil {
+		if err := buildBin(t.ctx, t.root, t.vals["bin"], t.env, t.out); err != nil {
 			return NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err), nil
 		}
 	}
@@ -126,18 +126,18 @@ func asRoot(c Cell) bool {
 	return c.Unit.Format == "go-json" && slices.Contains(c.Needs, "root") && os.Geteuid() != 0
 }
 
-// buildBin builds dfs and dfsctl as the user into {bin}, the run's bin
-// directory, once per run, for a suite whose tests run as root: they take the
-// binaries from DITTOFS_E2E_BIN, so root never runs go build.
-func (t tester) buildBin() error {
-	bin := t.vals["bin"]
+// buildBin builds dfs and dfsctl from the checkout at root, as the user, into
+// {bin}, the run's bin directory, once per run: for a cell with a fixture, and
+// for a suite whose tests run as root, which take the binaries from
+// DITTOFS_E2E_BIN, so root never runs go build.
+func buildBin(ctx context.Context, root, bin string, env []string, w io.Writer) error {
 	names := []string{"dfs", "dfsctl"}
 	if !slices.ContainsFunc(names, func(n string) bool { _, err := os.Stat(filepath.Join(bin, n)); return err != nil }) {
 		return nil // an earlier cell of this run built them
 	}
 	build := []string{"go", "build", "-o", bin + string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl"}
-	_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", strings.Join(build, " "))
-	code, err := execute(t.ctx, build, t.root, t.env, t.out)
+	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
+	code, err := execute(ctx, build, root, env, w)
 	if err == nil && code != 0 {
 		err = fmt.Errorf("go build exited %d", code)
 	}

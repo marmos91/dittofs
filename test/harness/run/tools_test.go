@@ -261,7 +261,7 @@ func TestRegistryNamesItsTools(t *testing.T) {
 			if suite != "pynfs" {
 				continue
 			}
-			vals := map[string]string{"tools": tools, "server": "10.0.0.1", "out": "/out", "minor": c.Matrix["minor"]}
+			vals := map[string]string{"tools": tools, "server": "10.0.0.1", "nfs-port": "12049", "out": "/out", "minor": c.Matrix["minor"]}
 			argv, err := fill(c.Unit.Cmd[0], vals, nil)
 			if err != nil {
 				t.Fatal(err)
