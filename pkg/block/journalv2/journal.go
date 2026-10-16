@@ -49,7 +49,7 @@ func Open(dir string, floor Version, expect JournalID, opts ...Option) (*Journal
 // never edited in place, so a crash leaves either the old file or the new one.
 //
 // Restamp fails as Open does when dir holds no journal or another one. It
-// reads no time and needs no clock.
+// reads no time and no setting, so it ignores every option it is given.
 func Restamp(dir string, expect JournalID, install InstallationID, opts ...Option) error {
 	return ErrNotImplemented
 }

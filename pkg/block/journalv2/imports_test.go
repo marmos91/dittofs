@@ -17,7 +17,6 @@ const (
 	journalv2Path = modulePath + "/pkg/block/journalv2"
 	journalv1Path = modulePath + "/pkg/block/journal"
 	simPath       = modulePath + "/pkg/sim"
-	clockPath     = modulePath + "/pkg/clock"
 	xsysPath      = "golang.org/x/sys"
 )
 
@@ -28,8 +27,7 @@ const (
 //   - the standard library and the journal's own packages are allowed
 //     everywhere;
 //   - golang.org/x/sys is allowed in internal/platform only;
-//   - the node's clock and the shared test package are allowed in
-//     journalv2test only;
+//   - the shared clock and fault package is allowed in journalv2test only;
 //   - the previous journal package is forbidden everywhere;
 //   - anything else is forbidden.
 //
@@ -140,11 +138,11 @@ func forbidden(rel, path string) string {
 			return ""
 		}
 		return "golang.org/x/sys is allowed in internal/platform only"
-	case within(path, simPath), within(path, clockPath):
+	case within(path, simPath):
 		if within(rel, "journalv2test") {
 			return ""
 		}
-		return "the clock and test packages are allowed in journalv2test only"
+		return "the shared clock and fault package is allowed in journalv2test only"
 	case isStdlib(path):
 		return ""
 	default:

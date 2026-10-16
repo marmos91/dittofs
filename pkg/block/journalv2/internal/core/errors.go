@@ -88,8 +88,8 @@ var (
 	// opened. It is never retried: the caller passes WithClock.
 	ErrNoClock = errors.New("journal: no clock")
 
-	// ErrInvalidSetting is returned by Init, Open and Restamp when a setting
-	// or the descriptor limit is negative. Nothing is opened or written. It
+	// ErrInvalidSetting is returned by Init and Open when a setting or the
+	// descriptor limit is negative. Nothing is opened or written. It
 	// is never retried.
 	ErrInvalidSetting = errors.New("journal: invalid setting")
 
