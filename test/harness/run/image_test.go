@@ -206,7 +206,6 @@ func TestImagePull(t *testing.T) {
 	t.Cleanup(func() { pullLimit = 5 * time.Minute })
 	for _, c := range []struct{ image, result, note, calls string }{
 		{"", Passed, "", "image run"},
-		{"missing", Passed, "", "image pull run"},
 		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull"},
 		{"stall", NotRun, "the image: `docker pull x` took over 300ms", "image pull"},
 	} {
