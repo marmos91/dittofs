@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
+	"github.com/marmos91/dittofs/pkg/metadata/kv/internal/backend"
 	"github.com/marmos91/dittofs/pkg/metadata/kv/kvtest"
 )
 
@@ -158,7 +159,7 @@ func TestNowStaysUnderCeiling(t *testing.T) {
 	// The clock jumps past the ceiling before the next raise: Now holds at
 	// the ceiling rather than pass it.
 	clock.set(start.Add(time.Hour))
-	if now, limit := txnNow(t, s), start.Add(ceilingAhead); now.After(limit) {
+	if now, limit := txnNow(t, s), start.Add(backend.CeilingAhead); now.After(limit) {
 		t.Fatalf("Now %v passed the ceiling %v", now, limit)
 	}
 	// Once raised, Now follows the clock again.

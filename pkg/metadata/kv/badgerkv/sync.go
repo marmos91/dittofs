@@ -2,7 +2,6 @@ package badgerkv
 
 import (
 	"errors"
-	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/marmos91/dittofs/pkg/metadata/kv"
 
 	badger "github.com/dgraph-io/badger/v4"
 )

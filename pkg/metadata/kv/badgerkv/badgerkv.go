@@ -8,14 +8,13 @@ import (
 	"fmt"
 	"iter"
 	"math"
-	"slices"
 	"sync"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
 
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
-	"github.com/marmos91/dittofs/pkg/metadata/kv/codec"
+	"github.com/marmos91/dittofs/pkg/metadata/kv/internal/backend"
 	"github.com/marmos91/dittofs/pkg/metadata/kv/keys"
 )
 
@@ -40,16 +39,12 @@ type Store struct {
 	db     *badger.DB
 	sync   *syncer // nil in memory
 	clk    []byte  // this node's clock-ceiling key
-	clock  func() time.Time
+	time   *backend.Clock
 	limits kv.TxnLimits
 
 	// commitMu orders every commit's conflict check, so a range guard's
 	// check and the commit it admits see no other commit between them.
 	commitMu sync.Mutex
-
-	mu      sync.Mutex
-	last    time.Time // the latest Now handed out
-	ceiling time.Time // Now never passes it
 
 	stop chan struct{}
 	done chan struct{}
@@ -60,14 +55,6 @@ type Store struct {
 	gate   sync.RWMutex
 	closed bool
 }
-
-// ceilingAhead is how far ahead of the clock the ceiling is raised, once per
-// ceilingPeriod. Twice the period, so Now reaches the ceiling only when a
-// raise has failed or stalled for a whole period.
-const (
-	ceilingPeriod = time.Second
-	ceilingAhead  = 2 * ceilingPeriod
-)
 
 // Open opens or creates the store and raises its clock ceiling before
 // returning, so no Now precedes a durable ceiling.
@@ -88,15 +75,11 @@ func Open(opts Options) (*Store, error) {
 		}
 	}
 	s := &Store{
-		db:    db,
-		sync:  y,
-		clk:   append(keys.ID([]byte{keys.KindN}, opts.NodeID[:]), keys.NClk),
-		clock: opts.Clock,
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
-	}
-	if s.clock == nil {
-		s.clock = time.Now
+		db:   db,
+		sync: y,
+		clk:  append(keys.ID([]byte{keys.KindN}, opts.NodeID[:]), keys.NClk),
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
 	}
 	// Badger refuses a transaction whose estimated size reaches its batch
 	// limits, counting one entry and markerSize bytes for its commit marker
@@ -120,7 +103,7 @@ func Open(opts Options) (*Store, error) {
 	// a restart cannot carry Now backward.
 	if err := db.View(func(t *badger.Txn) error {
 		c, err := readCeiling(t, s.clk)
-		s.last, s.ceiling = c, c
+		s.time = backend.NewClock(opts.Clock, c)
 		return err
 	}); err != nil {
 		s.closeSync()
@@ -132,7 +115,10 @@ func Open(opts Options) (*Store, error) {
 		_ = db.Close() // the open already failed; that error is the one returned
 		return nil, err
 	}
-	go s.ceilingLoop()
+	go func() {
+		defer close(s.done)
+		s.time.Run(s.stop, s.writeCeiling)
+	}()
 	return s, nil
 }
 
@@ -213,7 +199,7 @@ func (s *Store) attempt(fn func(kv.Txn) error) error {
 		return err
 	}
 	defer s.leave()
-	t := &txn{s: s, reader: reader{own: map[string]write{}}, now: s.now()}
+	t := &txn{s: s, reader: reader{own: backend.Overlay{}}, now: s.time.Now()}
 	t.w, t.snap = s.snapshotPair()
 	start := time.Now()
 	defer t.w.Discard()
@@ -303,67 +289,14 @@ func (s *Store) snapshotPair() (w, r *badger.Txn) {
 	}
 }
 
-// now is the node clock clamped strictly increasing: a nanosecond past the
-// last value handed out when the clock has not moved past it, as a coarse
-// clock does not between commits within one of its ticks, and never past the
-// ceiling. Its bound of real time is ceilingAhead ahead after a restart, and
-// behind by however long a ceiling raise stalls.
-//
-// decision: at the ceiling Now holds rather than pass it, so two
-// transactions there share one value. A version drawn from store time then
-// repeats; that takes the clock a full ceilingAhead past a stalled raise,
-// which stalls the store's commits too.
-func (s *Store) now() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t := s.clock()
-	if !t.After(s.last) {
-		t = s.last.Add(time.Nanosecond)
-	}
-	if t.After(s.ceiling) {
-		t = s.ceiling
-	}
-	s.last = t
-	return t
-}
+// raiseCeiling raises this node's clock ceiling now, as the loop does once
+// per period.
+func (s *Store) raiseCeiling() error { return s.time.Raise(s.writeCeiling) }
 
-func (s *Store) ceilingLoop() {
-	defer close(s.done)
-	tick := time.NewTicker(ceilingPeriod)
-	defer tick.Stop()
-	for {
-		select {
-		case <-s.stop:
-			return
-		case <-tick.C:
-			// A failed raise is retried next period; meanwhile Now holds at
-			// the old ceiling rather than pass it.
-			_ = s.raiseCeiling()
-		}
-	}
-}
-
-// raiseCeiling writes the ceiling ceilingAhead past the clock, and only then
-// lets Now use it. The ceiling is its own key, so raising it conflicts with
-// no other transaction's writes.
-func (s *Store) raiseCeiling() error {
-	s.mu.Lock()
-	c := s.clock().Add(ceilingAhead)
-	if c.Before(s.ceiling) {
-		c = s.ceiling
-	}
-	s.mu.Unlock()
-	v := codec.NewWriter(1).Uint64(uint64(c.UnixNano())).Encode()
-	// Through Update, so this commit is ordered by commitMu like every other.
-	if err := s.Update(context.Background(), func(t kv.Txn) error { return t.Set(s.clk, v) }); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	if c.After(s.ceiling) {
-		s.ceiling = c
-	}
-	s.mu.Unlock()
-	return nil
+// writeCeiling stores the clock ceiling through Update, so the commit is
+// ordered by commitMu like every other.
+func (s *Store) writeCeiling(v []byte) error {
+	return s.Update(context.Background(), func(t kv.Txn) error { return t.Set(s.clk, v) })
 }
 
 func readCeiling(t *badger.Txn, key []byte) (time.Time, error) {
@@ -378,26 +311,13 @@ func readCeiling(t *badger.Txn, key []byte) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	r, _, err := codec.NewReader(b, 1)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("clock ceiling: %w", err)
-	}
-	ns := r.Uint64()
-	if err := r.Done(); err != nil {
-		return time.Time{}, fmt.Errorf("clock ceiling: %w", err)
-	}
-	return time.Unix(0, int64(ns)), nil
+	return backend.DecodeCeiling(b)
 }
 
 // reader reads one snapshot.
 type reader struct {
 	snap *badger.Txn
-	own  map[string]write // the transaction's own writes; nil in a View
-}
-
-type write struct {
-	value   []byte
-	deleted bool
+	own  backend.Overlay // the transaction's own writes; nil in a View
 }
 
 func (r *reader) Get(key []byte) ([]byte, error) {
@@ -415,19 +335,8 @@ func get(t *badger.Txn, key []byte) ([]byte, error) {
 	return item.ValueCopy(nil)
 }
 
-// ponytail: each Scan inside Update sorts the transaction's own writes under
-// its prefix, O(w log w) for w writes. Keep them in an ordered structure when
-// a transaction that writes and scans many keys shows it in a profile.
 func (r *reader) Scan(prefix, after []byte) iter.Seq2[kv.KeyValue, error] {
 	return func(yield func(kv.KeyValue, error) bool) {
-		var mine []string
-		for k := range r.own {
-			if bytes.HasPrefix([]byte(k), prefix) && (after == nil || k > string(after)) {
-				mine = append(mine, k)
-			}
-		}
-		slices.Sort(mine)
-
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = prefix
 		opts.PrefetchValues = false
@@ -441,53 +350,13 @@ func (r *reader) Scan(prefix, after []byte) iter.Seq2[kv.KeyValue, error] {
 		if it.Valid() && after != nil && bytes.Equal(it.Item().Key(), after) {
 			it.Next()
 		}
-
-		for it.Valid() || len(mine) > 0 {
-			var stored []byte
-			if it.Valid() {
-				stored = it.Item().Key()
-			}
-			if len(mine) > 0 && (stored == nil || mine[0] <= string(stored)) {
-				k := mine[0]
-				mine = mine[1:]
-				if stored != nil && k == string(stored) {
-					it.Next()
-				}
-				if w := r.own[k]; !w.deleted && !yield(kv.KeyValue{Key: []byte(k), Value: w.value}, nil) {
-					return
-				}
-				continue
-			}
-			item := it.Item()
-			v, err := item.ValueCopy(nil)
-			if err != nil {
-				yield(kv.KeyValue{}, err)
-				return
-			}
-			if !yield(kv.KeyValue{Key: item.Key(), Value: v}, nil) {
-				return
-			}
-			it.Next()
-		}
+		r.own.Scan(prefix, after, cursor{it}, yield)
 	}
 }
 
-// Before merges a reverse walk of the snapshot with the transaction's own
-// writes below key: the larger key wins, and an own deletion hides the
-// stored key it names.
-//
-// ponytail: inside Update it sorts the transaction's own writes under prefix
-// on every call, as Scan does. Keep them ordered when a transaction that
-// writes and seeks many keys shows it in a profile.
+// Before merges a reverse walk of the snapshot below key with the
+// transaction's own writes.
 func (r *reader) Before(prefix, key []byte) (kv.KeyValue, bool, error) {
-	var mine []string
-	for k := range r.own {
-		if bytes.HasPrefix([]byte(k), prefix) && k < string(key) {
-			mine = append(mine, k)
-		}
-	}
-	slices.Sort(mine)
-
 	opts := badger.DefaultIteratorOptions
 	opts.Prefix = prefix
 	opts.Reverse = true
@@ -498,38 +367,23 @@ func (r *reader) Before(prefix, key []byte) (kv.KeyValue, bool, error) {
 	if it.Valid() && bytes.Equal(it.Item().Key(), key) {
 		it.Next()
 	}
-	for it.Valid() || len(mine) > 0 {
-		var stored []byte
-		if it.Valid() {
-			stored = it.Item().Key()
-		}
-		if n := len(mine); n > 0 && (stored == nil || mine[n-1] >= string(stored)) {
-			k := mine[n-1]
-			mine = mine[:n-1]
-			if stored != nil && k == string(stored) {
-				it.Next()
-			}
-			if w := r.own[k]; !w.deleted {
-				return kv.KeyValue{Key: []byte(k), Value: w.value}, true, nil
-			}
-			continue
-		}
-		item := it.Item()
-		v, err := item.ValueCopy(nil)
-		if err != nil {
-			return kv.KeyValue{}, false, err
-		}
-		return kv.KeyValue{Key: item.KeyCopy(nil), Value: v}, true, nil
-	}
-	return kv.KeyValue{}, false, nil
+	return r.own.Before(prefix, key, cursor{it})
 }
+
+// cursor walks a Badger iterator for the overlay's merge.
+type cursor struct{ it *badger.Iterator }
+
+func (c cursor) Valid() bool            { return c.it.Valid() }
+func (c cursor) Key() []byte            { return c.it.Item().Key() }
+func (c cursor) Value() ([]byte, error) { return c.it.Item().ValueCopy(nil) }
+func (c cursor) Next()                  { c.it.Next() }
 
 // Versions reads the snapshot, untracked, and refuses a key the transaction
 // wrote: its version is the commit's, which Badger assigns only then.
 func (r *reader) Versions(keys [][]byte) ([]uint64, error) {
 	vs := make([]uint64, len(keys))
 	for i, k := range keys {
-		if _, ok := r.own[string(k)]; ok {
+		if r.own.Has(k) {
 			return nil, kv.ErrUncommittedVersion
 		}
 		item, err := r.snap.Get(k)
@@ -633,7 +487,7 @@ func (t *txn) write(key, value []byte, deleted bool) error {
 	}
 	t.count++
 	t.bytes += len(key) + len(value)
-	t.own[string(key)] = write{value: value, deleted: deleted}
+	t.own.Put(key, value, deleted)
 	return nil
 }
 
