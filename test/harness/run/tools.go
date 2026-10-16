@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
 // dtcTools is where the dtc image keeps its copies of the test tools: a
@@ -18,23 +20,15 @@ import (
 // can point it elsewhere.
 var dtcTools = "/opt"
 
-// toolDirs maps each test tool to the directory of its output {tools}/NAME
-// links to: pjdfstest's share/pjdfstest holds its binary beside its tests,
-// where misc.sh looks for it, and pynfs's whole output holds bin/pynfs-4.x.
-var toolDirs = map[string]string{"pjdfstest": "share/pjdfstest", "pynfs": "."}
-
 // layOutTools makes {tools} at dir, with a link {tools}/NAME for each tool in
-// names, to the tool at the revision flake.lock pins. Each link is made once
-// per run: one already there, from an earlier cell, is kept.
+// names, to the directory registry.ToolDirs gives in the tool at the revision
+// flake.lock pins. Each link is made once per run: one already there, from an
+// earlier cell, is kept.
 func layOutTools(ctx context.Context, root, dir string, names []string, w io.Writer) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	for _, name := range names {
-		sub, ok := toolDirs[name]
-		if !ok {
-			return fmt.Errorf("dt has no tool %q", name)
-		}
 		link := filepath.Join(dir, name)
 		if _, err := os.Lstat(link); err == nil {
 			continue
@@ -43,7 +37,7 @@ func layOutTools(ctx context.Context, root, dir string, names []string, w io.Wri
 		if err != nil {
 			return err
 		}
-		if err := os.Symlink(filepath.Join(out, sub), link); err != nil && !errors.Is(err, fs.ErrExist) {
+		if err := os.Symlink(filepath.Join(out, registry.ToolDirs[name]), link); err != nil && !errors.Is(err, fs.ErrExist) {
 			return err
 		}
 	}

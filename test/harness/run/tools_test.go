@@ -19,7 +19,7 @@ import (
 
 // Suites of the test tools: pjd runs pjdfstest's tests, found below {tools},
 // and pynfs by its path there; only runs pjdfstest's tests alone, in two
-// cells; odd names a tool dt doesn't have.
+// cells.
 const toolsSuite = `suites:
   pjd:
     cmd: [ "sh {test}", "{tools}/pynfs/bin/pynfs-4.1 {test}" ]
@@ -28,7 +28,6 @@ const toolsSuite = `suites:
     cmd: "sh {test} {p}"
     tests: "{tools}/pjdfstest/tests/*/*.t"
     matrix: { p: [a, b] }
-  odd: { cmd: "{tools}/nosuch/run" }
   plain: { cmd: "true" }
 `
 
@@ -337,23 +336,17 @@ func TestToolsSelect(t *testing.T) {
 	}
 }
 
-// When the tools can't be had, the cell doesn't run, and says why: it names
-// a tool dt doesn't have, what nix built lacks a tool's programs, or nix
-// failed, or isn't installed.
+// When the tools can't be had, the cell doesn't run, and says why: what nix
+// built lacks a tool's programs, or nix failed, or isn't installed.
 func TestToolsMissing(t *testing.T) {
 	root, r := repo(t, toolsSuite, nil)
-	rep, _ := runTarget(t, root, r, "odd", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != `the test tools: dt has no tool "nosuch"` || rep.Status() != 2 {
-		t.Errorf("no such tool: %+v", o)
-	}
-
 	outs := t.TempDir()
 	fakeTools(t, outs)
 	if err := os.RemoveAll(filepath.Join(outs, "pynfs", "bin")); err != nil {
 		t.Fatal(err)
 	}
 	fakeNix(t, outs)
-	rep, _ = runTarget(t, root, r, "pjd", false)
+	rep, _ := runTarget(t, root, r, "pjd", false)
 	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.HasPrefix(o.Note, "the test tools: ") || !strings.Contains(o.Note, filepath.Join("pynfs", "bin")) || rep.Status() != 2 {
 		t.Errorf("no pynfs programs: %+v", o)
 	}
@@ -407,7 +400,7 @@ func pinDrift(lock, dockerfile []byte) []string {
 		return []string{"flake.lock: " + err.Error()}
 	}
 	var out []string
-	for _, name := range slices.Sorted(maps.Keys(toolDirs)) {
+	for _, name := range slices.Sorted(maps.Keys(registry.ToolDirs)) {
 		input, arg := name+"-src", strings.ToUpper(name)+"_REV"
 		pinned := l.Nodes[input].Locked.Rev
 		m := regexp.MustCompile(`(?m)^ARG ` + arg + `=(\S+)$`).FindSubmatch(dockerfile)

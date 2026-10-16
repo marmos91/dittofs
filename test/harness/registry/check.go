@@ -31,8 +31,8 @@ var (
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
 	// and dt run leave alone.
 	PlaceholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
-	// toolRE matches where a suite names a test tool, as {tools}/pjdfstest.
-	toolRE = regexp.MustCompile(`\{tools\}/([A-Za-z0-9_.-]+)`)
+	// toolRE matches the tool's name after a {tools}, as /pjdfstest.
+	toolRE = regexp.MustCompile(`^/([A-Za-z0-9_.-]+)`)
 )
 
 func set(items ...string) map[string]bool {
@@ -193,6 +193,17 @@ func checkUnit(root string, u *Suite) []error {
 				fail("unknown placeholder {%s}", p)
 			}
 		}
+		for _, name := range toolRefs(s) {
+			if _, ok := ToolDirs[name]; ok {
+				continue
+			}
+			known := strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", ")
+			if name == "" {
+				fail("{tools} names no tool: write {tools}/NAME, NAME one of %s", known)
+			} else {
+				fail("{tools}/%s: no such tool; {tools} holds %s", name, known)
+			}
+		}
 	}
 	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
@@ -256,13 +267,30 @@ func Placeholders(s string) []string {
 func (u *Suite) Tools() []string {
 	var out []string
 	for _, s := range u.allStrings() {
-		for _, m := range toolRE.FindAllStringSubmatch(s, -1) {
-			if !slices.Contains(out, m[1]) {
-				out = append(out, m[1])
+		for _, name := range toolRefs(s) {
+			if name != "" && !slices.Contains(out, name) {
+				out = append(out, name)
 			}
 		}
 	}
 	slices.Sort(out)
+	return out
+}
+
+// toolRefs returns the tool each {tools} in s names as {tools}/NAME, or ""
+// for one that names none. A shell's ${tools} is the shell's own.
+func toolRefs(s string) []string {
+	var out []string
+	for _, m := range PlaceholderRE.FindAllStringSubmatchIndex(s, -1) {
+		if s[m[0]] == '$' || s[m[2]:m[3]] != "tools" {
+			continue
+		}
+		name := ""
+		if sub := toolRE.FindStringSubmatch(s[m[1]:]); sub != nil {
+			name = sub[1]
+		}
+		out = append(out, name)
+	}
 	return out
 }
 
