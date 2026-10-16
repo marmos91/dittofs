@@ -488,7 +488,7 @@
 
               # Auto-updated by .github/workflows/nix-update-hash.yml on go.mod/go.sum changes.
               # Manual: go run scripts/update-nix-hash.go
-              vendorHash = "sha256-BPCC+4Ao1g9/m2ze8Ezjglpvw+emxW7HFKx9FNV+osw=";
+              vendorHash = "sha256-wJ26gazkp8oTbwtNcYxc2MzYbQxtgw9Y00Ke+kuN7Xw=";
 
               ldflags = [
                 "-s"
