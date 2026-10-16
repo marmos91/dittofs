@@ -38,6 +38,7 @@ var surface = []surfaceCall{
 	{"Restamp", func() error { return Restamp("", JournalID{}, InstallationID{}) }},
 	{"Journal.Close", func() error { return (&Journal{}).Close() }},
 	{"WithClock", func() error { WithClock(nil)(&core.Config{}); return nil }},
+	{"WithStorage", func() error { WithStorage(nil)(&core.Config{}); return nil }},
 	{"WithSettings", func() error { WithSettings(Settings{})(&core.Config{}); return nil }},
 	{"WithDescriptorBudget", func() error { WithDescriptorBudget(nil)(&core.Config{}); return nil }},
 	{"NewDescriptorBudget", func() error { _ = NewDescriptorBudget(0); return nil }},

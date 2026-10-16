@@ -105,6 +105,8 @@ func WithDescriptorBudget(b *DescriptorBudget) Option
 
 func WithSettings(s Settings) Option
 
+func WithStorage(fs storage.FS) Option
+
 type OtherShareError = core.OtherShareError
 
 type SegmentID = core.SegmentID
@@ -344,4 +346,38 @@ package github.com/marmos91/dittofs/pkg/block/journalv2/internal/recovery
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/segment
 
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage
+
+type FS interface {
+	Create(name string) (File, error)
+
+	Open(name string) (File, error)
+
+	Rename(oldName, newName string) error
+
+	Remove(name string) error
+
+	List() ([]string, error)
+
+	SyncDir() error
+}
+
+type File interface {
+	ReadAt(p []byte, off int64) (n int, err error)
+
+	ReadAtDirect(p []byte, off int64) (n int, err error)
+
+	WriteAt(p []byte, off int64) (n int, err error)
+
+	Allocate(off, n int64) error
+
+	Sync() error
+
+	Truncate(size int64) error
+
+	Size() (int64, error)
+
+	Close() error
+
+	Name() string
+}
 

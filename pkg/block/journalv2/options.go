@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 )
 
 // Clock is the journal's only source of time. The sync timer, every wait and
@@ -43,6 +44,15 @@ type Option func(*core.Config)
 // WithClock makes the journal read time from c. Without it the journal uses
 // the system clock.
 func WithClock(c Clock) Option {
+	return func(*core.Config) {}
+}
+
+// WithStorage makes the journal reach its directory and files through fs
+// instead of the operating system's. Its parameter type is internal, so only
+// code inside the journal's tree, such as the crash-simulating seam its tests
+// use, can build a value to pass. Without it the journal uses the operating
+// system's files.
+func WithStorage(fs storage.FS) Option {
 	return func(*core.Config) {}
 }
 
