@@ -20,13 +20,14 @@ func OS(dir string) (storage.FS, error) {
 }
 
 // Report is what Probe found about the filesystem holding a journal's
-// directory.
+// directory. Every field's zero value is the one Check accepts, so a property
+// Probe cannot determine, left at zero, never refuses a filesystem.
 type Report struct {
-	// Barriers reports whether a sync reaches the device: false when the
+	// NoBarriers reports that a sync does not reach the device: the
 	// filesystem is mounted without cache flushes (nobarrier or barrier=0),
 	// or the volume's write-cache buffer flushing is turned off by policy,
 	// where the platform reports either.
-	Barriers bool
+	NoBarriers bool
 
 	// CopyOnWrite reports whether the filesystem may allocate anew on a write
 	// into bytes already allocated, unless copy-on-write is disabled for the
@@ -50,14 +51,14 @@ type Report struct {
 }
 
 // Probe inspects the filesystem holding dir and reports what it found. A
-// property the platform cannot determine is reported as the value Check
-// accepts: an undetectable condition is not a refusal.
+// property the platform cannot determine is left at its zero value, which
+// Check accepts: an undetectable condition is not a refusal.
 func Probe(dir string) (Report, error) {
 	return Report{}, core.ErrNotImplemented
 }
 
 // Check returns the refusal r calls for, or nil. It returns
-// core.ErrNoBarriers when Barriers is unset; otherwise, when CopyOnWrite is
+// core.ErrNoBarriers when NoBarriers is set; otherwise, when CopyOnWrite is
 // set, core.ErrCopyOnWrite when NoCoWSet is unset and core.ErrNotSubvolumeRoot
 // when BtrfsSubvolumeRoot is unset, checked in that order. ThinProvisioned is
 // never refused. Init and Open return the refusal unchanged.

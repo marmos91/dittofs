@@ -39,8 +39,10 @@ func EncodeFormatFile(f FormatFile) [FormatFileSize]byte {
 // DecodeFormatFile decodes a format file's bytes, checked in this order:
 //
 //   - fewer than 6 bytes, or a magic other than MagicFormat: core.ErrCorrupt;
-//   - a format version other than FormatVersion: core.ErrUnknownFormat;
-//   - a length other than FormatFileSize: core.ErrCorrupt;
+//   - a format version this implementation does not recognise:
+//     core.ErrUnknownFormat;
+//   - for format version 1, a length other than FormatFileSize:
+//     core.ErrCorrupt;
 //   - a checksum that does not verify: core.ErrCorrupt;
 //   - a non-zero reserved byte under a checksum that verifies:
 //     core.ErrUnknownFormat.

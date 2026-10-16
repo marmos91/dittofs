@@ -40,8 +40,11 @@ type FS interface {
 	SyncDir() error
 }
 
-// File is one open file of a journal's directory. Its methods are safe for
-// concurrent use on disjoint ranges.
+// File is one open file of a journal's directory. ReadAt, ReadAtDirect and
+// WriteAt are safe for concurrent use on disjoint ranges. Sync, Size and Name
+// are safe for concurrent use with every method but Close: a Sync covers the
+// writes that returned before it began. Allocate and Truncate must not run
+// concurrently with a read or a write of the range they change.
 //
 // Every call is one a crash-simulating implementation can record and discard:
 // a WriteAt, Allocate or Truncate made since the file's last Sync that

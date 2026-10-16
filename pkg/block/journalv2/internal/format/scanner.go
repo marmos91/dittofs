@@ -87,7 +87,9 @@ func (s *Scanner) Next() (Slot, error) {
 }
 
 // Header returns the segment header the first Next read, and false until
-// then or if it did not verify.
+// then or if it did not verify. A header that verifies but names another
+// journal is returned with true, alongside Next's ErrForeignSegment, so the
+// caller can report which journal the segment belongs to.
 func (s *Scanner) Header() (SegmentHeader, bool) {
 	return SegmentHeader{}, false
 }
