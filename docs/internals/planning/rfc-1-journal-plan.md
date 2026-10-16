@@ -123,7 +123,7 @@ Epic 2 makes "done" measurable before any implementation exists. It has three ou
 - **System e2e.** These run a real `dfs` process configured for v2, with kernel NFS and SMB
   clients, under `test/e2e`. They cover what only the composed system shows: one journal
   per disk serving several shares, restart, device loss, a full disk, and the v1→v2
-  switch.
+  upgrade.
 
 The scenario catalogue the suite must cover is in §5, epic 2.
 
@@ -174,7 +174,9 @@ expected to run and did not. A check that did not run is a failure
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    `pkg/block/journal`. The import test enforces it. v1 is touched only in epic 10, and
-   only at its callers.
+   only at its callers. The one exception is the `v1-clean` marker, which ships in v1
+   ahead of v2 ([#3156](https://github.com/marmos91/dittofs/issues/3156)); v2 reads only
+   that file and the presence of v1 directories, never v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
    stand-ins are allowed only for pure logic (index, codecs).
@@ -198,7 +200,7 @@ expected to run and did not. A check that did not run is a failure
 | 7 | **Recovery and identity** | `Init`, `Open`, `Restamp`, rebuild by catalog and by scan, torn vs corrupt, unproven-tail re-verify, offload-state rebuild, stale rule, spare re-adoption, inspection and verify | 12 | A | 10 |
 | 8 | **Data path and capacity** ⛔ | `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 13 | B | 9, 10 |
 | 9 | **Offload, reclamation, holds and tags** | `Offload`, `OffloadMany`, pins, `MarkOffloaded`, `Unmark`, `Release`, auto-retire, `Repack` and drop test, snapshot holds, `Forget`, `Strand` | 13 | B | 10 |
-| 10 | **Integration and v1→v2 switch** 🔀 | One journal per disk in Runtime, engine bridge, startup order, offline switch command, config, metrics and span exporters, error mapping, salvage, API and CLI | 14 | B (wiring) + A (config, switch, exporters) | 11, 12 |
+| 10 | **Integration and v1→v2 upgrade** 🔀 | One journal per disk in Runtime, engine bridge, startup order, upgrade preflight and adoption, config, metrics and span exporters, error mapping, salvage, API and CLI | 14 | B (wiring) + A (config, upgrade, exporters) | 11, 12 |
 | 11 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | A + B | release |
 | 12 | **Dashboards** | 4 Grafana dashboards, each with an automated test | 6 | A | — |
 | | | | **~132** | | |
@@ -231,7 +233,7 @@ everything before it.
    A: E7 recovery      B: E9 offload / reclaim / holds
         └─────────┬─────────┘
                   ▼
-            E10 integration + switch     S4: core complete → S5: wired
+            E10 integration + upgrade    S4: core complete → S5: wired
                   │
            ┌──────┴──────┐
            ▼             ▼
@@ -252,8 +254,8 @@ everything before it.
   subtasks.
 - **S4. Core complete** (E3–E9 done). All component conformance tests are green. Only
   system e2e tests remain on the known-failure list. E10 cannot finish before this point.
-- **S5. Wired** (end of E10). v2 is selectable by configuration, and the system e2e suite
-  runs against it. E11 and E12 then run in parallel.
+- **S5. Wired** (end of E10). v2 replaces v1 in the Runtime, and the system e2e suite runs
+  against it. E11 and E12 then run in parallel.
 
 ### 3.3 Blockers
 
@@ -279,7 +281,7 @@ dependency.
 | 1 | E2: clock and fault interfaces, crash-simulating seam, profiler, system e2e scaffolding | E2: known-failure mechanism, reference model, conformance test bodies, traceability matrix | → **S2** |
 | 2 | E3, then E5 (minimal stream first) | E4, then E8's storage-independent parts (share registry, capacity counters, version counter) | → **S3** |
 | 3 | E6, then E7 | E8 remainder, then E9 | → **S4** |
-| 4 | E10: config keys, per-device registry, offline switch command, metrics and span exporters | E10: Runtime and engine wiring, startup order, error mapping, salvage | → **S5** |
+| 4 | E10: config keys, per-device registry, upgrade preflight and adoption, metrics and span exporters | E10: Runtime and engine wiring, startup order, error mapping, salvage | → **S5** |
 | 5 | E12 dashboards; E11 burn-down of recovery, format and durability failures | E11 burn-down of data-path and reclamation failures | release |
 
 Load by subtask count: A ≈ 5 (E1) + 7 (E2) + 10 + 11 + 10 + 12 + 7 (E10) + 4 (E11) + 6
@@ -314,11 +316,13 @@ pkg/block/journalv2/              package journalv2 — public API (RFC 1 §3)
 pkg/sim/clock, pkg/sim/fault      shared clock & fault interfaces (RFC 8 signatures) (E2)
 test/journalv2/KNOWN_FAILURES.md  one list, Markdown table read by Go and shell  (E2)
 test/e2e/journalv2_*_test.go      system e2e                                     (E2)
-monitoring/grafana/journalv2/     dashboards                                     (E12)
+monitoring/grafana/journal/       dashboards                                     (E12)
 ```
 
 The package is named `journalv2` while v1 exists. Renaming it once v1 is removed is out of
-scope.
+scope. The suffix stays in Go package and import paths only: metric and span names, log
+fields and dashboards say `journal`, with the version exposed as a label where it matters
+(epic 1, D1).
 
 ---
 
@@ -475,9 +479,14 @@ failure.
   - restart with a removed share pending;
   - a disk moved to another installation, or a journal directory swapped: refused by
     `expect` and the installation ID.
-- **Switch**:
-  - v1→v2 and v2→v1 offline switch on a clean system;
-  - the switch is refused while any uncommitted data exists, and nothing is changed.
+- **Upgrade** (epic 10's preflight and adoption):
+  - each row of the preflight table: adopted, fresh install, clean upgrade, refusal;
+  - a refused start writes nothing: the DB, the devices and the v1 directories are
+    byte-identical afterwards, and the previous v1 release starts on them;
+  - a crash at every adoption step: before the adoption record, a re-run adopts again and
+    the previous v1 release still starts; after it, the next start completes the v1
+    `format` stamp;
+  - after adoption, the previous v1 release refuses to start (`ErrFutureFormat`).
 - **Other sources:**
   - fsync-failure semantics after the PostgreSQL "fsyncgate" findings: a failed fsync is
     not retried into success;
@@ -718,7 +727,7 @@ Epic 9 implements RFC 1 §3.3, §3.5, §3.11, §7.1–§7.2, and the tag lifecyc
 Metrics: `offered_bytes`, `marked_bytes`, `released_bytes`, `freed_bytes`,
 `repacked_bytes`, `PinnedSegments`, `DropRanges`. Spans: `offload_pass`, `repack_pass`.
 
-### Epic 10 — Integration and the v1→v2 switch 🔀 (≈14 subtasks, B wiring + A config, switch and exporters)
+### Epic 10 — Integration and the v1→v2 upgrade 🔀 (≈14 subtasks, B wiring + A config, upgrade and exporters)
 
 Epic 10 connects v2 to the rest of DittoFS. The v1 survey found these callers:
 
@@ -736,7 +745,6 @@ Epic 10 connects v2 to the rest of DittoFS. The v1 survey found these callers:
 Work:
 
 - **Configuration:**
-  - `blockstore.journal.version: v1|v2` (default `v1`);
   - a list of journal devices (path, maximum) replacing the per-share root under v2;
   - share-to-device placement;
   - per-share limit and `sync.policy`;
@@ -769,20 +777,64 @@ Work:
   sealed with a salvage data key for encrypting shares, and a failed export becomes a
   health condition.
 - **Exporters:**
-  - `Stats` → Prometheus collectors labelled `journal` (and `share`);
-  - `Hooks` → OpenTelemetry spans and the existing metrics recorder.
-- **Offline switch command** (`dfs journal switch --to v2|v1`):
-  - the server must be stopped;
-  - **the switch is refused if any uncommitted data exists**: under v1, any unsynced or
-    dirty bytes in any share; under v2, `DirtyBytes` > 0, unsettled removal markers,
-    stranded tags or an unresolved failed window;
-  - on success it initialises the target journals, records their identities and flips the
-    config. Source files are left in place for an explicit cleanup;
-  - it is idempotent and safe to re-run after a crash at any step.
+  - `Stats` → Prometheus collectors labelled `journal` (and `share`), plus a `version`
+    label (`v1` or `v2`). Metric names carry no version suffix (epic 1, D1);
+  - `Hooks` → OpenTelemetry spans and the existing metrics recorder. Span names and
+    attribute keys carry no version suffix either.
 - **API and CLI:** API and `dfsctl` show journal stats per device and per share.
   `go run ./cmd/gendocs` is rerun afterwards.
-- **v1 coexistence:** v1 stays the default and keeps working, and both run in the test
-  fixtures.
+- **v1 retirement:** v2 replaces v1 in the Runtime, with no configuration key choosing
+  between them. The `pkg/block/journal` callers listed above move to v2, and v1's package
+  is deleted once none is left. What remains of v1 is the upgrade path below.
+
+#### Upgrade from v1
+
+The upgrade is one-way and needs no command. It rests on three things:
+
+- **The `v1-clean` marker**, shipped in v1 ahead of v2
+  ([#3156](https://github.com/marmos91/dittofs/issues/3156), released as v0.36.0). v1
+  deletes `<journal.path>/v1-clean` before opening any journal. On a clean stop it drains
+  every share to the remote and writes the marker only if all of them reached zero
+  unsynced bytes. The marker exists only if deleting every v1 journal directory loses no
+  data. A crash or a failed drain leaves no marker.
+- **An adoption record** in the control-plane DB, written last when v2 takes over the
+  installation. This record, and nothing else, says that v2 is active. A configuration key
+  could not do this job: the operator can edit it, so it can disagree with what is on
+  disk.
+- **A read-only preflight**, the first thing `dfs start` does. It runs before the
+  control-plane DB is opened for migration and before any device is initialised:
+
+  | Adoption record | v1 directories | `v1-clean` | Action |
+  | --- | --- | --- | --- |
+  | present | any | any | normal start; v1 directories are leftovers |
+  | absent | absent | — | fresh install: adopt |
+  | absent | present | present | clean upgrade: adopt |
+  | absent | present | absent | **refuse**: v1 stopped uncleanly, or a v1 release older than v0.36.0 wrote it |
+
+  The refusal tells the operator to start v0.36.0 or later, let it sync, stop it cleanly,
+  and retry. Because the preflight has written nothing, that is always possible.
+
+Adoption order:
+
+1. preflight (read-only);
+2. control-plane migrations, **additive only** (new tables and columns, nothing dropped or
+   renamed, so a v1 binary still opens the DB), then v2 device initialisation;
+3. commit the adoption record: the point of no return;
+4. stamp a future `format` version in every v1 journal directory, so that v1 refuses them
+   with `ErrFutureFormat` instead of serving stale data. This step is repeated at every
+   start while v1 directories exist, so a crash between steps 3 and 4 leaves no gap.
+
+A crash before step 3 leaves `v1-clean` in place: a re-run adopts again from the start,
+and the previous v1 release still starts. v1 directories are never deleted automatically.
+Removing them is an explicit cleanup.
+
+What the upgrade costs:
+
+- after step 3 there is no downgrade;
+- v1's cold cache is dropped, and v2 refills it from the remote through `Fill`;
+- a local-only share has no remote, so its v1 journal holds the only copy, and #3156 does
+  not write the marker while such a share holds data. Such an installation stays refused
+  until a migration path for local-only shares is decided here.
 
 ### Epic 11 — E2E green 🔀 (≈8 subtasks, A + B)
 
@@ -806,7 +858,8 @@ explicit, recorded decision.
 ### Epic 12 — Dashboards (≈6 subtasks, A)
 
 The repository has no dashboards today. Epic 12 builds four Grafana dashboards as JSON
-under `monitoring/grafana/journalv2/`, using the exporters from epic 10:
+under `monitoring/grafana/journal/`, using the exporters from epic 10. Dashboard titles,
+UIDs and queries say `journal`, never `journalv2`:
 
 1. **Capacity and pressure**, per journal and per share:
    - `UsedBytes` vs `MaxBytes`, limit;

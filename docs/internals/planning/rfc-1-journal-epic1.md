@@ -115,9 +115,25 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
 Each decision below is recorded at its code site with a `decision:` marker and is
 reviewed at the freeze (subtask 1.10).
 
-**D1. Package location and name: `pkg/block/journalv2`.**
-v1 keeps `pkg/block/journal` until epic 10 retires it. Renaming the package afterwards is
-out of scope.
+**D1. Package location and name: `pkg/block/journalv2`. The `v2` suffix stays in Go
+package and import paths only.**
+v1 keeps `pkg/block/journal` until epic 10 retires it. A sibling package lets v2 be built while v1
+keeps serving. Epic 10 then moves the callers over with no configuration key between them,
+and retiring v1 becomes a plain directory delete. Renaming the package afterwards is out of scope.
+
+- *Why the suffix stops at the package:* renaming a Go package later is cheap, because it
+  touches only import paths inside this repository. Names users see are not. Metric
+  names, span names, log fields and dashboard queries are built into users' dashboards
+  and alerts, and dropping a suffix from them later breaks those.
+- *The rule:* every name visible outside the Go code says `journal`, never `journalv2`.
+  This covers metric names and labels, span and event names, `slog` attribute keys, and
+  dashboard titles, UIDs and queries. Where the journal version matters to a consumer, it
+  is exposed as a `version` label (`v1` or `v2`) or attribute, never encoded in a name.
+- *Applies in this epic to:* the `SpanOp` and `EventKind` string values and the `slog`
+  attribute keys in `hooks.go`. None of them carries a version. The `Stats` field names
+  carry none either, so epic 10's exporters can name metrics from them directly.
+- *What would overturn it:* v1 and v2 needing metrics with the same name but
+  incompatible meanings, where a label cannot tell them apart.
 
 **D2. Value types live in a leaf package, `internal/core`, and the public package
 re-exports them as type aliases.**
