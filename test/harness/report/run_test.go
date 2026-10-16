@@ -3,6 +3,7 @@ package report_test
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,7 +18,9 @@ import (
 
 // A real run's summary.json is CTRF 0.1.0 by CTRF's own schema, with a
 // result for every test: exit tests and commands that passed, failed or
-// skipped, and Go tests and subtests that passed, failed or skipped.
+// skipped, and Go tests and subtests that passed, failed or skipped. Each
+// cell's JUnit file, which summary.json names, has a testcase for each of the
+// cell's results.
 func TestRealRunMatchesTheSchema(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the exit suites run sh")
@@ -76,6 +79,7 @@ suites:
 	var doc struct {
 		Results struct {
 			Summary struct{ Tests, Passed, Failed, Skipped int }
+			Extra   struct{ Cells []struct{ JUnit string } }
 		}
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
@@ -83,5 +87,24 @@ suites:
 	}
 	if got, want := doc.Results.Summary, (struct{ Tests, Passed, Failed, Skipped int }{10, 5, 3, 2}); got != want {
 		t.Errorf("summary %+v, want %+v", got, want)
+	}
+	cases := 0
+	for _, c := range doc.Results.Extra.Cells {
+		var junit struct {
+			Suite struct {
+				Cases []struct{} `xml:"testcase"`
+			} `xml:"testsuite"`
+		}
+		x, err := os.ReadFile(filepath.Join(rep.Dir, c.JUnit))
+		if err == nil {
+			err = xml.Unmarshal(x, &junit)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", c.JUnit, err)
+		}
+		cases += len(junit.Suite.Cases)
+	}
+	if len(doc.Results.Extra.Cells) != 3 || cases != doc.Results.Summary.Tests {
+		t.Errorf("%d JUnit files with %d testcases, for 3 cells and %d tests", len(doc.Results.Extra.Cells), cases, doc.Results.Summary.Tests)
 	}
 }

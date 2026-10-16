@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="smbtorture/memory" tests="1" failures="0" errors="0" skipped="1" time="912.000">
+    <properties>
+      <property name="result" value="passed"></property>
+    </properties>
+    <testcase name="smb2.durable-v2-open.reopen1a" classname="smbtorture/memory" time="0.000">
+      <skipped message="durable handles v2 aren&#39;t implemented"></skipped>
+    </testcase>
+  </testsuite>
+</testsuites>

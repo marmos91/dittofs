@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="lint-repo" tests="1" failures="1" errors="0" skipped="0" time="912.000">
+    <properties>
+      <property name="result" value="failed"></property>
+    </properties>
+    <testcase name="false" classname="lint-repo" time="0.002">
+      <failure message="`false` exited 1"></failure>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,6 +1,7 @@
 // Package report holds a dt run's results, cell by cell and test by test, and
 // writes them as the run's summary.json, in the Common Test Report Format
-// (CTRF) at one pinned version.
+// (CTRF) at one pinned version, and each cell's as a JUnit file generated from
+// the same results.
 package report
 
 import (
@@ -36,6 +37,8 @@ type Test struct {
 	Duration time.Duration
 	Message  string // what the tool said about the result
 	Grade    string // how dt graded the result, when it did
+	Reason   string // why the result was expected: the reason of the known entry that graded it
+	Flaky    bool   // it failed, then passed when run again
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -78,16 +81,42 @@ type Ran struct {
 // say.
 type Reader func(Ran) ([]Test, error)
 
-// Write writes the run to dir/summary.json. The file is replaced whole, by a
-// rename, so a run stopped at any moment leaves its last complete summary.
-// Like the logs, anyone can read it, so a run as root leaves one its user can
-// read.
+// Write writes the run to dir/summary.json, then each cell's JUnit file under
+// dir/junit. Each file is replaced whole, by a rename, so a run stopped at any
+// moment leaves its last complete summary. Like the logs, anyone can read
+// them, so a run as root leaves files its user can read.
+//
+// ponytail: every cell's JUnit file is rewritten with the summary, though only
+// the cell just added changed: about 15 ms more for the unit suite's 12,500
+// results. Write only the new cells' files when a run's time outside its
+// cells passes 10 seconds.
 func (r Run) Write(dir string) error {
 	data, err := r.JSON()
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".summary-*.json")
+	if err := replace(filepath.Join(dir, "summary.json"), data); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "junit"), 0o755); err != nil {
+		return err
+	}
+	for _, c := range r.Cells {
+		x, err := c.JUnit()
+		if err != nil {
+			return err
+		}
+		if err := replace(filepath.Join(dir, junitPath(c.Name)), x); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// replace writes data to path through a temporary file beside it, renamed
+// over path, so a reader never sees part of it.
+func replace(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return err
 	}
@@ -99,7 +128,7 @@ func (r Run) Write(dir string) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(f.Name(), filepath.Join(dir, "summary.json"))
+		err = os.Rename(f.Name(), path)
 	}
 	if err != nil {
 		_ = os.Remove(f.Name())
@@ -120,12 +149,15 @@ func (r Run) JSON() ([]byte, error) {
 	sum.Start, sum.Stop = r.Start.UnixMilli(), r.Stop.UnixMilli()
 	for _, c := range r.Cells {
 		suite, name, _ := strings.Cut(c.Name, "/")
-		res.Extra.Cells = append(res.Extra.Cells, cell{suite, name, c.Result, c.Note, int64(c.Took.Round(time.Second) / time.Second), c.Log})
+		res.Extra.Cells = append(res.Extra.Cells, cell{suite, name, c.Result, c.Note, int64(c.Took.Round(time.Second) / time.Second), c.Log, junitPath(c.Name)})
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
-			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, Duration: t.Duration.Milliseconds(), Message: t.Message}
-			if t.Grade != "" {
-				out.Extra = &testExtra{Grade: t.Grade}
+			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, Duration: t.Duration.Milliseconds(), Message: t.Message, Flaky: t.Flaky}
+			if t.Grade != "" || t.Reason != "" {
+				out.Extra = &testExtra{Grade: t.Grade, Reason: t.Reason}
+			}
+			if t.Flaky {
+				sum.Flaky++
 			}
 			res.Tests = append(res.Tests, out)
 			switch t.Status {
@@ -183,11 +215,13 @@ type test struct {
 	Status   string     `json:"status"`
 	Duration int64      `json:"duration"`
 	Message  string     `json:"message,omitempty"`
+	Flaky    bool       `json:"flaky,omitempty"`
 	Extra    *testExtra `json:"extra,omitempty"`
 }
 
 type testExtra struct {
-	Grade string `json:"grade"`
+	Grade  string `json:"grade,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type environment struct {
@@ -214,4 +248,5 @@ type cell struct {
 	Note    string `json:"note,omitempty"`
 	Seconds int64  `json:"seconds"`
 	Log     string `json:"log,omitempty"`
+	JUnit   string `json:"junit"`
 }

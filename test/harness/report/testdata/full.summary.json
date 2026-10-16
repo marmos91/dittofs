@@ -7,13 +7,13 @@
       "name": "dt"
     },
     "summary": {
-      "tests": 7,
-      "passed": 2,
+      "tests": 9,
+      "passed": 3,
       "failed": 2,
-      "skipped": 2,
+      "skipped": 3,
       "pending": 0,
       "other": 1,
-      "flaky": 0,
+      "flaky": 1,
       "start": 1791460800000,
       "stop": 1791460912000
     },
@@ -72,6 +72,32 @@
         }
       },
       {
+        "name": "TestKnown",
+        "suite": [
+          "unit",
+          "windows",
+          "example.com/m/a"
+        ],
+        "status": "skipped",
+        "duration": 5,
+        "message": "a_test.go:12: got 1, want 2",
+        "extra": {
+          "grade": "known",
+          "reason": "the clock has a one-second step"
+        }
+      },
+      {
+        "name": "TestFlaky",
+        "suite": [
+          "unit",
+          "windows",
+          "example.com/m/a"
+        ],
+        "status": "passed",
+        "duration": 70,
+        "flaky": true
+      },
+      {
         "name": "TestCrash",
         "suite": [
           "unit",
@@ -110,7 +136,8 @@
           "result": "failed",
           "note": "`false` exited 1",
           "seconds": 3,
-          "log": "logs/lint-repo.log"
+          "log": "logs/lint-repo.log",
+          "junit": "junit/lint-repo.xml"
         },
         {
           "suite": "unit",
@@ -118,21 +145,24 @@
           "result": "failed",
           "note": "1 passed, 0 failed, 1 skipped; example.com/m/c: failed outside any test",
           "seconds": 61,
-          "log": "logs/unit-windows.log"
+          "log": "logs/unit-windows.log",
+          "junit": "junit/unit-windows.xml"
         },
         {
           "suite": "pynfs",
           "cell": "badger-s3/1",
           "result": "not run",
           "note": "dt doesn't set up fixtures yet",
-          "seconds": 0
+          "seconds": 0,
+          "junit": "junit/pynfs-badger-s3-1.xml"
         },
         {
           "suite": "smbtorture",
           "cell": "memory",
           "result": "skipped",
           "note": "docker: not found",
-          "seconds": 0
+          "seconds": 0,
+          "junit": "junit/smbtorture-memory.xml"
         }
       ]
     }

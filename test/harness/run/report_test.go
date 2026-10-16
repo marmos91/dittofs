@@ -451,7 +451,7 @@ func TestGoJSONRecordedRun(t *testing.T) {
 	}
 	i := slices.IndexFunc(res.cases, func(tc report.Test) bool { return tc.Name == "TestPanicky" })
 	if i < 0 || !strings.Contains(res.cases[i].Message, "\n\t/src/m/p/p_test.go:9 +0x") {
-		t.Errorf("the crash's stack lost its indentation: %q", res.cases)
+		t.Errorf("the crash's stack lost its indentation: %#v", res.cases)
 	}
 }
 

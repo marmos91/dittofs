@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="pynfs/badger-s3/1" tests="0" failures="0" errors="0" skipped="0" time="0.000">
+    <properties>
+      <property name="result" value="not run"></property>
+      <property name="note" value="dt doesn&#39;t set up fixtures yet"></property>
+    </properties>
+  </testsuite>
+</testsuites>

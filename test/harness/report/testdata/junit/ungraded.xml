@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="unit" tests="1" failures="0" errors="0" skipped="1" time="912.000">
+    <properties>
+      <property name="result" value="passed"></property>
+    </properties>
+    <testcase name="TestB" classname="unit/example.com/m/a" time="0.000">
+      <skipped message="a_test.go:9: needs root"></skipped>
+    </testcase>
+  </testsuite>
+</testsuites>

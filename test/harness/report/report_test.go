@@ -35,8 +35,9 @@ func golden(t *testing.T, name string, got []byte) {
 }
 
 // full is a run with every field dt writes: a test of each status, a skip
-// graded ungraded, tests below their cell (a Go test's package), a cell of
-// an option and matrix values, and cells without tests, a log or a note.
+// graded ungraded, a known failure with its reason, a flaky pass, tests below
+// their cell (a Go test's package), a cell of an option and matrix values,
+// and cells without tests, a log or a note.
 var full = Run{
 	Name:   "20261015T120000Z-abcdef12-a2",
 	Start:  time.UnixMilli(1791460800000),
@@ -51,6 +52,8 @@ var full = Run{
 		{Name: "unit/windows", Result: "failed", Note: "1 passed, 0 failed, 1 skipped; example.com/m/c: failed outside any test", Took: 61 * time.Second, Log: "logs/unit-windows.log", Tests: []Test{
 			{Name: "TestA/sub", Suite: []string{"example.com/m/a"}, Status: Passed, Duration: 40 * time.Millisecond},
 			{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded},
+			{Name: "TestKnown", Suite: []string{"example.com/m/a"}, Status: Skipped, Duration: 5 * time.Millisecond, Message: "a_test.go:12: got 1, want 2", Grade: "known", Reason: "the clock has a one-second step"},
+			{Name: "TestFlaky", Suite: []string{"example.com/m/a"}, Status: Passed, Duration: 70 * time.Millisecond, Flaky: true},
 			{Name: "TestCrash", Suite: []string{"example.com/m/c"}, Status: Other, Message: "panic: boom"},
 			{Name: "example.com/m/c", Status: Failed, Duration: 300 * time.Millisecond, Message: "failed outside any test"},
 		}},
@@ -86,9 +89,10 @@ func TestJSONMatchesTheSchema(t *testing.T) {
 }
 
 // Each test's suite is its cell's name, split at /, then its own suite; the
-// counts follow the statuses; a grade goes in the test's extra; durations are
-// milliseconds; and the run's own fields go in extra, each cell's suite apart
-// from the rest of its name.
+// counts follow the statuses, flaky passes counted too; a grade and its
+// reason go in the test's extra; durations are milliseconds; and the run's
+// own fields go in extra, each cell's suite apart from the rest of its name,
+// with its JUnit file.
 func TestJSON(t *testing.T) {
 	data, err := full.JSON()
 	if err != nil {
@@ -98,7 +102,7 @@ func TestJSON(t *testing.T) {
 }
 
 // summary.json is readable by anyone, as the logs are, so a run as root
-// leaves one its user can read.
+// leaves one its user can read; the JUnit files too (TestWriteJUnit).
 func TestWriteIsReadable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file modes have no read bits for others here")
@@ -113,7 +117,8 @@ func TestWriteIsReadable(t *testing.T) {
 }
 
 // A reader of summary.json never sees part of one: while it's rewritten over
-// and over, every read gives a whole document, and no temporary file is left.
+// and over, every read gives a whole document, and no temporary file is left,
+// beside it or beside the JUnit files.
 func TestWriteReplacesTheFileWhole(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a file open for reading can't be replaced here, so the reads would stop the writes")
@@ -149,8 +154,10 @@ func TestWriteReplacesTheFileWhole(t *testing.T) {
 		}
 		select {
 		case <-done:
-			if left, _ := os.ReadDir(dir); len(left) != 1 {
-				t.Errorf("left behind: %v", left)
+			left, _ := os.ReadDir(dir)
+			junit, _ := os.ReadDir(filepath.Join(dir, "junit"))
+			if len(left) != 2 || len(junit) != 1 {
+				t.Errorf("left behind: %v, junit/%v", left, junit)
 			}
 			return
 		default:

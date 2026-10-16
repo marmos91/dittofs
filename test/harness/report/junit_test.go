@@ -1,0 +1,161 @@
+package report
+
+import (
+	"bytes"
+	"encoding/json"
+	"encoding/xml"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+)
+
+// Each grade gives the JUnit status its row of the grades table names: a
+// pass; a failure for a new failure and for an unexpected pass; skipped with
+// the entry's reason for a known failure and an expected skip, and with the
+// tool's for an ungraded skip; an error for an unexpected skip and for an
+// incomplete test; and a flaky pass is a pass with a flaky property. Until
+// grading, a failure isn't graded, and is a failure all the same.
+func TestJUnitGrades(t *testing.T) {
+	pjdfstest, smbtorture, unit := "pjdfstest/badger-s3/4.1", "smbtorture/memory", "unit"
+	for _, c := range []struct {
+		file, cell, result string
+		test               Test
+	}{
+		{"passed", pjdfstest, "passed", Test{Name: "chmod/00.t", Status: Passed, Duration: 1500 * time.Millisecond}},
+		{"failed", "lint-repo", "failed", Test{Name: "false", Status: Failed, Duration: 2 * time.Millisecond, Message: "`false` exited 1"}},
+		{"new", pjdfstest, "failed", Test{Name: "chmod/12.t", Status: Failed, Duration: 2140 * time.Millisecond, Message: "not ok 7", Grade: "new"}},
+		{"known", pjdfstest, "passed", Test{Name: "unlink/14.t", Status: Skipped, Duration: 860 * time.Millisecond, Message: "not ok 3", Grade: "known",
+			Reason: "NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1"}},
+		{"unexpected_pass", pjdfstest, "failed", Test{Name: "utimensat/09.t", Status: Failed, Duration: 400 * time.Millisecond, Message: "passed, and its known entry says it fails", Grade: "unexpected_pass"}},
+		{"expected_skip", smbtorture, "passed", Test{Name: "smb2.durable-v2-open.reopen1a", Status: Skipped, Message: "skip: not supported", Grade: "expected_skip",
+			Reason: "durable handles v2 aren't implemented"}},
+		{"unexpected_skip", smbtorture, "not run", Test{Name: "smb2.lock.rw", Status: Other, Message: "skip: no lock support", Grade: "unexpected_skip"}},
+		{"ungraded", unit, "passed", Test{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded}},
+		{"incomplete", smbtorture, "not run", Test{Name: "smb2.notify.dir", Status: Other, Message: "its output stopped before its result", Grade: "incomplete"}},
+		{"flaky", pjdfstest, "passed", Test{Name: "rename/09.t", Status: Passed, Duration: 3310 * time.Millisecond, Flaky: true}},
+	} {
+		cell := Cell{Name: c.cell, Result: c.result, Took: 912 * time.Second, Tests: []Test{c.test}}
+		got, err := cell.JUnit()
+		if err != nil {
+			t.Fatal(err)
+		}
+		golden(t, filepath.Join("junit", c.file+".xml"), got)
+		wellFormed(t, c.file, got)
+	}
+}
+
+// A cell with no tests, here one that didn't run, is a testsuite with none,
+// whose properties say how the cell went and why.
+func TestJUnitCellWithNoTests(t *testing.T) {
+	got, err := Cell{Name: "pynfs/badger-s3/1", Result: "not run", Note: "dt doesn't set up fixtures yet"}.JUnit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, filepath.Join("junit", "no-tests.xml"), got)
+	wellFormed(t, "no tests", got)
+}
+
+// What a tool prints can hold anything: markup, quotes, line ends, tabs, a
+// terminal's escapes, NUL. The file stays well-formed, the text comes back
+// as written, and a character XML can't hold comes back as U+FFFD. The
+// counts agree with the testcases.
+func TestJUnitIsWellFormed(t *testing.T) {
+	odd := "a <b> & \"c\" 'd' ]]> e\nf\r\n\tg"
+	cell := Cell{Name: "s/<&>", Result: "failed", Note: odd, Tests: []Test{
+		{Name: odd, Suite: []string{odd}, Status: Failed, Message: odd},
+		{Name: "esc", Status: Other, Message: "\x1b[31mred\x1b[0m\x00"},
+		{Name: "skip", Status: Skipped, Reason: odd},
+		{Name: "pass", Status: Passed},
+	}}
+	data, err := cell.JUnit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wellFormed(t, "odd", data)
+	var doc junitDoc
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	s := doc.Suites[0]
+	if s.Name != cell.Name || s.Properties.List[1].Value != odd || s.Cases[0].Name != odd || s.Cases[0].Classname != cell.Name+"/"+odd ||
+		s.Cases[0].Failure.Message != odd || s.Cases[2].Skipped.Message != odd {
+		t.Errorf("text changed: %+v", s)
+	}
+	if got, want := s.Cases[1].Error.Message, "�[31mred�[0m�"; got != want {
+		t.Errorf("escapes: got %q, want %q", got, want)
+	}
+	if s.Tests != 4 || s.Failures != 1 || s.Errors != 1 || s.Skipped != 1 {
+		t.Errorf("counts %+v", s)
+	}
+}
+
+// wellFormed fails the test unless data is one well-formed XML document.
+func wellFormed(t *testing.T, name string, data []byte) {
+	t.Helper()
+	d := xml.NewDecoder(bytes.NewReader(data))
+	roots := 0
+	for depth := 0; ; {
+		tok, err := d.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Errorf("%s: not well-formed: %v", name, err)
+			return
+		}
+		switch tok.(type) {
+		case xml.StartElement:
+			if depth == 0 {
+				roots++
+			}
+			depth++
+		case xml.EndElement:
+			depth--
+		}
+	}
+	if roots != 1 {
+		t.Errorf("%s: %d root elements", name, roots)
+	}
+}
+
+// Write writes a JUnit file for every cell, the one its entry in summary.json
+// names, readable by anyone, and leaves no temporary file.
+func TestWriteJUnit(t *testing.T) {
+	dir := t.TempDir()
+	if err := full.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Results struct {
+			Extra struct{ Cells []struct{ JUnit string } }
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "summary.json"))
+	if err == nil {
+		err = json.Unmarshal(data, &doc)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range full.Cells {
+		path := doc.Results.Extra.Cells[i].JUnit
+		got, err := os.ReadFile(filepath.Join(dir, path))
+		if err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
+		}
+		want, _ := c.JUnit()
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s: %s isn't the cell's JUnit", c.Name, path)
+		}
+		if info, _ := os.Stat(filepath.Join(dir, path)); runtime.GOOS != "windows" && info.Mode().Perm() != 0o644 {
+			t.Errorf("%s: mode %v", path, info.Mode())
+		}
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, "junit")); len(left) != len(full.Cells) {
+		t.Errorf("junit holds %d files for %d cells: %v", len(left), len(full.Cells), left)
+	}
+}
