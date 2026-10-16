@@ -202,13 +202,17 @@ func TestImagePull(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { image: x, cmd: "true", timeout: { test: 10s } }
 `, nil)
-	pullLimit = 300 * time.Millisecond
 	t.Cleanup(func() { pullLimit = 5 * time.Minute })
-	for _, c := range []struct{ image, result, note, calls string }{
-		{"", Passed, "", "image run"},
-		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull"},
-		{"stall", NotRun, "the image: `docker pull x` took over 300ms", "image pull"},
+	for _, c := range []struct {
+		image, result, note, calls string
+		limit                      time.Duration
+	}{
+		{"", Passed, "", "image run", time.Minute},
+		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull", time.Minute},
+		// Only a pull that stalls waits out its limit; the fake never ends one.
+		{"stall", NotRun, "the image: `docker pull x` took over 2s", "image pull", 2 * time.Second},
 	} {
+		pullLimit = c.limit
 		log := fakeDocker(t)
 		t.Setenv("FAKE_IMAGE", c.image)
 		rep, out := runTarget(t, root, r, "s", false)
