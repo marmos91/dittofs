@@ -21,7 +21,7 @@
       <Property name="ShareFolder2" value="SMBEncrypted">
         <Description>Secondary share folder for SMB2 tests.</Description>
       </Property>
-      <Property name="SharePath" value="\\\\${DITTOFS_HOST}\\SMBBasic">
+      <Property name="SharePath" value="\\\\{server}\\SMBBasic">
         <Description>UNC path to the basic share.</Description>
       </Property>
       <Property name="SutAlternativeIPAddress" value="">

@@ -253,7 +253,14 @@ render_ptfconfig() {
         [[ -f "$tmpl" ]] || continue
         local basename
         basename="$(basename "$tmpl" .template)"
-        envsubst < "$tmpl" > "${out_dir}/${basename}"
+        # The templates hold dt's placeholders. The client's own address stays
+        # CLIENT_IP here, where dt gives the server's.
+        sed -e "/\"ClientNic1IPAddress\"/s|{server}|${CLIENT_IP}|" \
+            -e "s|{server}|${DITTOFS_HOST}|g" \
+            -e "s|{user}|${ADMIN_USER}|g" \
+            -e "s|{user2}|${TEST_USER}|g" \
+            -e "s|{password}|${TEST_PASSWORD}|g" \
+            "$tmpl" > "${out_dir}/${basename}"
         if $VERBOSE; then
             log_info "Rendered: ${basename}"
         fi

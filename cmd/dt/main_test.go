@@ -147,6 +147,7 @@ func checkout(t *testing.T) (here, other string) {
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
 		"  fixed: { cmd: \"true\", fixture: { profile: memory } }\n" +
+		"  pictured: { image: x, needs: [" + here + "] }\n" +
 		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
 	for _, dir := range []string{"test", "t"} {
@@ -248,7 +249,8 @@ func TestAliases(t *testing.T) {
 // dt list says whether dt run would run each suite here, as dt run decides
 // it: first what dt can't do yet, then the suite's needs, and per
 // needs_by_test glob whose tests the tier plans, what those tests need beyond
-// them. It lists the groups too.
+// them. A suite with an image runs where its needs are met. It lists the
+// groups too.
 func TestListRunsHere(t *testing.T) {
 	_, other := checkout(t)
 	out, err := dt(t, "list", "--json")
@@ -273,12 +275,13 @@ func TestListRunsHere(t *testing.T) {
 	}
 	fixtures := "dt doesn't set up fixtures yet"
 	want := map[string]suite{
-		"s":      {RunsHere: true},
-		"s/o":    {RunsHere: true},
-		"fails":  {RunsHere: true},
-		"away":   {Unmet: []string{other}},
-		"fixed":  {Unsupported: fixtures},
-		"partly": {RunsHere: true, UnmetByTest: map[string][]string{"9?-*.sh": {"host:dedicated"}}},
+		"s":        {RunsHere: true},
+		"s/o":      {RunsHere: true},
+		"fails":    {RunsHere: true},
+		"away":     {Unmet: []string{other}},
+		"fixed":    {Unsupported: fixtures},
+		"pictured": {RunsHere: true},
+		"partly":   {RunsHere: true, UnmetByTest: map[string][]string{"9?-*.sh": {"host:dedicated"}}},
 	}
 	for _, s := range got.Suites {
 		if w, ok := want[s.Name]; !ok || !reflect.DeepEqual(s.suite, w) {

@@ -101,6 +101,34 @@ func TestShellVariableNamesNoTool(t *testing.T) {
 	}
 }
 
+// A template takes the placeholders a command takes, a matrix axis's
+// included, and leaves a ${VAR} alone; one it doesn't know is a registry
+// error, as in a command.
+func TestTemplatePlaceholders(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"ok/a.template":  "{server} {user2} {password} {p} ${KEEP}\n",
+		"bad/a.template": "{server}\n",
+		"bad/b.template": "{nope}\n",
+	} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	y := "version: 1\ndefaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }\n" +
+		"suites:\n  a: { image: x, templates: 'DIR/*.template', matrix: { p: [v] }, env: { P: '{p}' } }\n"
+	if _, err := Parse(root, []byte(strings.Replace(y, "DIR", "ok", 1))); err != nil {
+		t.Errorf("ok: %v", err)
+	}
+	_, err := Parse(root, []byte(strings.Replace(y, "DIR", "bad", 1)))
+	if err == nil || err.Error() != "a: template b.template: unknown placeholder {nope}" {
+		t.Errorf("bad: got %v", err)
+	}
+}
+
 // Paths the registry names are found relative to the repository root.
 func TestKnownPathRelativeToRoot(t *testing.T) {
 	root := t.TempDir()

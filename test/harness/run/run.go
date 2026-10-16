@@ -264,6 +264,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 			return didntRun("the test tools: " + err.Error())
 		}
 	}
+	if c.Unit.Templates != "" {
+		if err := renderTemplates(o.Root, c.Unit.Templates, filepath.Join(out, "config"), vals, lists); err != nil {
+			return didntRun("the templates: " + err.Error())
+		}
+	}
 	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
 		return didntRun(err.Error())
@@ -343,6 +348,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 				// A test that timed out failed, whatever its results say:
 				// the reader can only say which of its tests was open.
 				failed = append(failed, prefix+r.note)
+			}
+			if r.result == NotRun {
+				notRun = append(notRun, prefix+r.note)
 			}
 			cases = append(cases, got...)
 		}
@@ -429,23 +437,38 @@ func (t tester) run(test string, limit time.Duration) testRun {
 	t.vals["test"] = cmp.Or(t.paths[test], test)
 	var r testRun
 	var failed, notRun []string
-	for _, cmd := range t.cell.Unit.Cmd {
-		step := report.Test{Name: cmdName(cmd), Status: report.Failed}
+	image := t.cell.Unit.Image
+	cmds := t.cell.Unit.Cmd
+	if len(cmds) == 0 {
+		cmds = registry.Commands{{}} // the image's own command
+	}
+	for _, cmd := range cmds {
+		step := report.Test{Name: cmp.Or(cmdName(cmd), image), Status: report.Failed}
 		if t.vals["base"] == "" && uses(cmd, "base") {
 			_, _ = fmt.Fprintf(t.out, "[dt] skipped, no change to check: %s%s\n", cmd.Line, cmd.Sh)
 			step.Status, step.Message = report.Skipped, "no change to check"
 			r.steps = append(r.steps, step)
 			continue
 		}
-		argv, err := fill(cmd, t.vals, t.lists)
-		if err != nil {
-			return testRun{result: NotRun, note: err.Error()}
+		var argv []string
+		var err error
+		if cmd != (registry.Command{}) {
+			if argv, err = fill(cmd, t.vals, t.lists); err != nil {
+				return testRun{result: NotRun, note: err.Error()}
+			}
 		}
-		shown := strings.Join(argv, " ")
+		shown := cmp.Or(strings.Join(argv, " "), image)
 		if cmd.Sh != "" {
 			shown = argv[2]
 		}
-		_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", shown)
+		printed, container := shown, ""
+		if image != "" {
+			if argv, container, err = t.inImage(argv); err != nil {
+				return testRun{result: NotRun, note: err.Error()}
+			}
+			printed = strings.Join(argv, " ")
+		}
+		_, _ = fmt.Fprintf(t.out, "[dt] $ %s\n", printed)
 		w := t.out
 		if t.capture != nil {
 			w = io.MultiWriter(t.out, t.capture)
@@ -453,6 +476,9 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		start := time.Now()
 		code, err := execute(ctx, argv, t.dir, t.env, w)
 		step.Duration = time.Since(start)
+		if container != "" && ctx.Err() != nil {
+			removeContainer(container, t.dir, t.env, w)
+		}
 		_, _ = fmt.Fprintf(t.log, "[dt] exit %d after %s\n", code, step.Duration.Round(time.Millisecond))
 		if r.exit == 0 {
 			r.exit = code
@@ -470,6 +496,9 @@ func (t tester) run(test string, limit time.Duration) testRun {
 			failed = append(failed, step.Message)
 		case code == exitNotRun:
 			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: it ran nothing", firstLine(shown), code))
+			continue
+		case image != "" && notStarted(code):
+			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: its container didn't start", firstLine(shown), code))
 			continue
 		case code != 0:
 			step.Message = fmt.Sprintf("`%s` exited %d", firstLine(shown), code)
@@ -604,8 +633,6 @@ func unsupported(u *registry.Suite) string {
 	switch {
 	case u.Fixture != nil:
 		return "dt doesn't set up fixtures yet"
-	case u.Image != "":
-		return "dt doesn't run commands in images yet"
 	case u.Format != "exit" && u.Format != "go-json" && readers[u.Format] == nil:
 		return fmt.Sprintf("dt doesn't read %s results yet", u.Format)
 	}

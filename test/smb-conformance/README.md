@@ -21,10 +21,6 @@ Comprehensive SMB3 protocol conformance testing for the DittoFS SMB adapter. Thi
   - macOS: `brew install xmlstarlet`
   - Ubuntu: `sudo apt-get install -y xmlstarlet`
   - Alpine: `apk add xmlstarlet`
-- **envsubst** for ptfconfig template rendering (usually pre-installed)
-  - macOS: `brew install gettext`
-  - Ubuntu: `sudo apt-get install -y gettext-base`
-  - Alpine: `apk add gettext`
 - **Go 1.26+** (for E2E tests and local mode)
 - **perl** for the host-wide admission lease (`compose-env.sh`), which takes an
   `flock` on a fixed path so only one conformance run is in flight per host.
