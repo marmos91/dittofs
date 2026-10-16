@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // metadataCoordinator is the per-share implementation of
@@ -20,9 +19,8 @@ import (
 //
 // Transaction ownership rule (BLOCKER-1/2/3 resolution): the engine
 // NEVER opens a metadata txn. The CALLER (common.CloneWholeFile for the
-// clone path; common.WriteToBlockStore for the adapter path;
-// syncer post-Flush wrapper for PersistFileChunks) opens the txn around
-// the engine call. This implementation calls into metadataStore at the
+// clone path; common.WriteToBlockStore for the adapter path) opens the
+// txn around the engine call. This implementation calls into metadataStore at the
 // public surface; callers that need atomicity across multiple
 // IncrementRefCount calls (e.g. the clone manifest replacement) MUST drive
 // this from inside a metadataStore.WithTransaction wrapper.
@@ -158,132 +156,4 @@ func (c *metadataCoordinator) ReprojectBlocks(ctx context.Context, payloadID str
 	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return metadata.ProjectManifestToBlocks(ctx, tx, payloadID)
 	})
-}
-
-// PersistFileChunks atomically updates FileAttr.Blocks AND
-// FileAttr.ObjectID for the file identified by payloadID in a single
-// metadata transaction. The runtime wrapper resolves
-// payloadID → fileHandle → file via tx.GetFileByPayloadID and persists
-// the updated FileAttr via tx.SetManifest.
-//
-// This is the post-Flush seam — the syncer invokes this after every
-// successful Flush so the canonical FileAttr.Blocks list reflects every
-// Remote ChunkRef the engine has produced.
-//
-// The syncer computes the BLAKE3 Merkle-root ObjectID over `blocks`
-// (via block.ComputeObjectID) and threads it through this hook so
-// the metadata write atomically updates both Blocks AND ObjectID in the
-// same SetManifest transaction.
-//
-// Conflict mapping: a transaction conflict on the write
-// (mderrors.ErrConflict) is wrapped into engine.ErrObjectIDConflict by
-// mapObjectIDConflict so the file-level dedup short-circuit retry path
-// in RemoteSync.applyFileLevelDedupHit can detect the race.
-func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
-	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
-		if err != nil {
-			return fmt.Errorf("coordinator: GetFileByPayloadID(%s): %w", payloadID, err)
-		}
-		if file == nil {
-			return fmt.Errorf("coordinator: GetFileByPayloadID(%s): nil file (no row)", payloadID)
-		}
-		// FileAttr is embedded on metadata.File (not a pointer).
-		file.Blocks = blocks
-		// Post-Flush manifest write — must persist the manifest.
-		// Same-txn write of Blocks AND ObjectID.
-		file.ObjectID = objectID
-		if err := tx.SetManifest(ctx, file); err != nil {
-			return mapObjectIDConflict(err)
-		}
-		return nil
-	})
-}
-
-// GetPersistedBlocks returns the file's currently-persisted FileAttr.Blocks
-// (with content hashes) for payloadID. GetFileByPayloadID returns the
-// manifest inline, so the lookup is the whole read. Returns an empty slice
-// (nil) when the file has no blocks yet or does not exist.
-func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error) {
-	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
-	if err != nil {
-		// File deleted between WriteAt and rollup commit: no blocks to
-		// merge. Mirror GetFileObjectID — treat not-found as benign so the
-		// rollup persister falls through to PersistFileChunks (which then
-		// surfaces the missing row) rather than wedging on a wrapped error.
-		if metadata.IsNotFoundError(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("coordinator: GetFileByPayloadID(%s): %w", payloadID, err)
-	}
-	if file == nil || len(file.Blocks) == 0 {
-		return nil, nil
-	}
-	return file.Blocks, nil
-}
-
-// mapObjectIDConflict wraps a metadata.errors.StoreError with Code ==
-// ErrConflict into engine.ErrObjectIDConflict so the file-level dedup
-// short-circuit can detect concurrent-quiesce races. Returns nil when err
-// is nil; returns any other error untouched so other failure modes
-// propagate without false positives.
-//
-// Wrapping uses errors.Join so callers can both
-// `errors.Is(err, engine.ErrObjectIDConflict)` AND see the underlying
-// store error in logs.
-func mapObjectIDConflict(err error) error {
-	var storeErr *mderrors.StoreError
-	if errors.As(err, &storeErr) && storeErr.Code == mderrors.ErrConflict {
-		return errors.Join(engine.ErrObjectIDConflict, err)
-	}
-	return err
-}
-
-// FindByObjectID forwards to the underlying metadata store's
-// FindByObjectID lookup. Returns (nil, nil) on zero-valued ObjectID
-// (defense-in-depth — backends also short-circuit) and on cache miss.
-//
-// Callers use this to detect whether a provisional ObjectID matches a
-// previously-quiesced file's ChunkRef list, enabling file-level dedup
-// at write time.
-func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
-	if objectID.IsZero() {
-		return nil, nil
-	}
-	return c.metadataStore.FindByObjectID(ctx, objectID)
-}
-
-// GetFileObjectID reads the current FileAttr.ObjectID for payloadID
-// from the metadata store. Returns the all-zero ObjectID + nil when
-// the file does not exist or has never quiesced — callers (RemoteSync.Flush)
-// treat zero as "evaluate short-circuit" / "skip short-circuit".
-//
-// Callers use this to evaluate the trigger condition for file-level
-// dedup BEFORE running the per-block upload pump. Reads on the public
-// metadataStore surface (not bound to a caller-owned txn) — the read
-// is a single-row lookup, not part of any per-flow transaction.
-//
-// NotFound semantics: the store returns a StoreError with ErrNotFound
-// code when the payloadID has no row; that is mapped to
-// (zero ObjectID, nil) here so the caller's trigger evaluation does
-// not see a transient error during the very first quiesce of a fresh
-// file.
-func (c *metadataCoordinator) GetFileObjectID(ctx context.Context, payloadID string) (block.ObjectID, error) {
-	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
-	if err != nil {
-		// NotFound is the steady state for a never-quiesced file. The
-		// caller treats a zero ObjectID as "trigger condition holds"
-		// (the file has no prior Merkle root), so this is the correct
-		// disposition — not a real backend error.
-		if metadata.IsNotFoundError(err) {
-			return block.ObjectID{}, nil
-		}
-		return block.ObjectID{}, fmt.Errorf("coordinator: GetFileObjectID(%s): %w", payloadID, err)
-	}
-	if file == nil {
-		// Defense-in-depth: some backends return (nil, nil) for "no row"
-		// rather than an error. Treat the same as NotFound.
-		return block.ObjectID{}, nil
-	}
-	return file.ObjectID, nil
 }

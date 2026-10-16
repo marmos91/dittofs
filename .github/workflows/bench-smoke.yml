@@ -2,7 +2,7 @@ name: Bench Smoke
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, feat/storage-v2]
     paths: &paths
       - 'bench/workloads/**'
       - 'cmd/bench/**'
@@ -11,7 +11,7 @@ on:
       - 'go.sum'
       - '.github/workflows/bench-smoke.yml'
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, feat/storage-v2]
     paths: *paths
 
 permissions:

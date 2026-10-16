@@ -355,7 +355,7 @@ Before you start, if you plan to delete metadata stores, note their
 configuration while the server is still running:
 
 ```bash
-dfsctl store metadata list -o json   # config.path for local stores, connection settings for PostgreSQL
+dfsctl store metadata list -o json   # config.path for on-disk stores
 ```
 
 ### 1. Stop the server and unmount shares
@@ -451,8 +451,8 @@ sudo systemctl daemon-reload
 
 **Everywhere:**
 
-- Local metadata stores: the BadgerDB directory or SQLite database file named
-  by the `config.path` you noted before stopping the server.
+- Local metadata stores: the BadgerDB directory named by the `config.path` you
+  noted before stopping the server.
 - `dfsctl` credentials: `~/.config/dfsctl/config.json` (Windows:
   `%APPDATA%\dfsctl\config.json`), for each user who ran `dfsctl login`.
 - Client leftovers: `~/.smbcredentials`, mount point directories, and any
@@ -470,8 +470,8 @@ The single-container setup also bind-mounts `~/.config/dittofs/config.yaml`
 from the host; remove it as shown above.
 
 **Remote storage:** data in remote block stores such as S3 buckets, and in
-externally managed PostgreSQL databases used for the control plane or for
-metadata, is not touched by any step above. Delete it on the storage side if
-you no longer need it. The Compose `postgres-backend` database is different:
-it lives in the `dittofs-postgres` volume and is deleted by
-`docker compose down -v`.
+externally managed PostgreSQL databases used for the control plane, is not
+touched by any step above. Delete it on the storage side if you no longer need
+it. A PostgreSQL or SQLite metadata store left by an older version is not
+touched either; to move its shares to BadgerDB, see
+[Metadata store migration](metadata-store-migration.md).

@@ -331,8 +331,8 @@ func (f *byteVerifyFixture) createEmptyFile(ctx context.Context, name string) me
 }
 
 // writeFile writes the full payload at offset 0 through the real engine path
-// then flushes so the rollup chunker emits CAS blocks and the post-flush
-// coordinator persists FileAttr.Blocks + ObjectID.
+// then flushes, so the carve commit writes the CAS chunks and their FileChunk
+// rows and projects FileAttr.Blocks in the same metadata transaction.
 func (f *byteVerifyFixture) writeFile(ctx context.Context, payloadID metadata.PayloadID, data []byte) {
 	f.t.Helper()
 	if err := common.WriteToBlockStore(ctx, f.bs, payloadID, data, 0); err != nil {
@@ -341,11 +341,11 @@ func (f *byteVerifyFixture) writeFile(ctx context.Context, payloadID metadata.Pa
 	if err := common.CommitBlockStore(ctx, f.bs, payloadID); err != nil {
 		f.t.Fatalf("CommitBlockStore %q: %v", payloadID, err)
 	}
-	// Force the async rollup worker to roll the just-flushed payload into CAS
-	// + the FileChunk manifest NOW, bypassing the stabilization window. This
-	// is what the post-rollup coordinator hook uses to persist
-	// FileAttr.Blocks + ObjectID — the snapshot-create orchestration drains
-	// the same way before Backup(). Without it the bytes live only in the
+	// Flush the just-written payload into CAS + the FileChunk manifest NOW,
+	// bypassing the batching gate. The carve commit (DefaultCommitBlock) writes
+	// the FileChunk rows and projects FileAttr.Blocks in one metadata
+	// transaction; the snapshot-create orchestration drains the same way
+	// before Backup(). Without it the bytes live only in the
 	// append-log and FileAttr.Blocks stays empty.
 	if err := f.bs.DrainRollups(ctx); err != nil {
 		f.t.Fatalf("DrainRollups %q: %v", payloadID, err)

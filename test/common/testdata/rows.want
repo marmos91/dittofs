@@ -1,0 +1,13 @@
+# hash	a row may start with a hash
+**Expected**	unknown
+:---	:---
+blanked	unknown
+empty-reason	unknown
+escaped\	bug
+extra-fields	the reason
+no-closing-pipe	the reason
+no-reason	unknown
+override	a later row replaces the reason
+plain	the second field is the name, the fourth the reason
+tabbed	tabs around a field are trimmed too
+test name	only the exact header is skipped

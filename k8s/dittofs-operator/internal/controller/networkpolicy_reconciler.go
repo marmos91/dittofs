@@ -100,7 +100,7 @@ func buildAdapterIngressPorts(adapterType string, port int32) []networkingv1.Net
 // buildAdapterNetworkPolicy constructs a NetworkPolicy allowing ingress on adapter port(s).
 // NFS adapters get the NFS port (TCP) and the portmapper container port (TCP + UDP).
 // Only ingress is restricted; egress is left unrestricted because DittoFS pods need outbound
-// access to S3, external metadata stores, and other backend services.
+// access to S3, the control-plane database, and other backend services.
 func buildAdapterNetworkPolicy(crName, namespace, adapterType string, port int32) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
