@@ -355,17 +355,20 @@ Go, and the build is cached after the first call. It doesn't use `go run`, which
 failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per job with
 `go build -o`.
 
-`dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one:
-the fixture's mounts and unmounts, pjdfstest's `prove`, and restarting `rpc.gssd`. A Go suite
-whose tests need root themselves, like e2e, which mounts from inside `go test`, runs with
-`go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs only each
-binary under `sudo -n`, in its package's directory and with the flags `go test` gives every
-binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test binary;
-run as root, those builds would write root's files into the user's Go caches, and fail on the
-modules only the binaries use. So before a root suite runs, `dt` builds both as the user into
+`dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one: the
+fixture's mounts and unmounts, starting the server with the one capability that binds port 445 for
+WPTS (§4.2), restarting `rpc.gssd`, and the commands of a suite whose own `needs` name `root`.
+Unless its format is `go-json`, such a suite runs each command as `sudo -n env NAME=value ... CMD`,
+as pjdfstest's `prove` must run; the needs a fixture implies (§4.2) don't make its commands run as
+root. A Go suite whose tests need root themselves, like e2e, which mounts from inside `go test`,
+runs with `go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs
+only each binary under `sudo -n`, in its package's directory and with the flags `go test` gives
+every binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test
+binary; run as root, those builds would write root's files into the user's Go caches, and fail on
+the modules only the binaries use. So before a root suite runs, `dt` builds both as the user into
 `{bin}` and passes it as `DITTOFS_E2E_BIN`, and the e2e helpers take the binaries from there rather
-than building them. Root never runs `go build`: the Go caches and the results stay the user's,
-and the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
+than building them. Root never runs `go build`: the Go caches and the results stay the user's, and
+the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
 
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
@@ -538,7 +541,7 @@ suites:
     fixture:
       profile: "{profile}"
       nfs: { version: "{nfs}", options: "noac,sync,lookupcache=none" }   # mounted at {mount}; v3 adds nolock
-      squash: root_to_admin             # pjdfstest needs a privileged root
+      squash: none                      # root keeps its privileges, as pjdfstest needs (§4.2)
       users: [65532, 65533, 65534]
       delegations: false                # the server must see every operation
     known: test/posix/known.yaml
@@ -546,17 +549,18 @@ suites:
     needs: [linux, root, nfs-client]
   pynfs:
     format: junit                       # pynfs writes JUnit itself with --xml
-    cmd: "pynfs-4.{minor} {server}/export --minorversion {minor} --security sys --maketree --xml {out}/junit.xml all"
+    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
+    names: all                          # what {names} holds when a run names no tests
     matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
     select: { pr: { profile: [badger-s3] } }
-    fixture: { profile: "{profile}", nfs: export, lease: 30s, users: [1] }   # pynfs mounts nothing; uid 1 is its second client
+    fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # pynfs mounts nothing; uid 1 is its second client
     known: test/nfs-conformance/pynfs/known.yaml
     tier: pr
     needs: [linux]
     options:
       knfsd:                            # the same tests against the kernel's NFS server, for comparison
         matrix: { minor: ["0", "1"] }   # an option replaces `matrix` too: knfsd has no profile
-        fixture: { server: knfsd, nfs: export }
+        fixture: { server: knfsd, nfs: export, squash: none, lease: 30s }   # as baseline-knfsd.sh sets knfsd up
         tier: manual
         blocking: false
   wpts:
@@ -567,7 +571,7 @@ suites:
     select: { pr: { profile: [badger-s3] } }
     fixture:
       profile: "{profile}"
-      smb: { encryption: preferred }
+      smb: { encryption: preferred, port: 445 }   # WPTS connects to 445 only
       shares: test/smb-conformance/shares.yaml    # the 8 shares and their flags, as data
     templates: test/smb-conformance/ptfconfig/*.template   # WPTS's own config, filled in by dt
     volumes: { "{out}/config": /data/fileserver }
@@ -577,8 +581,8 @@ suites:
   smbtorture:
     format: subunit                     # smbtorture's test:, success: and failure: lines
     image: quay.io/samba.org/samba-toolbox:v0.8
-    cmd: "smbtorture //{server}/smbbasic -U{user}%{password} {test}"
-    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's timeout
+    cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}%{password} {test}"
+    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's timeout, share and name prefix
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
@@ -587,7 +591,7 @@ suites:
     needs: [linux, docker]
     options:
       kerberos:                         # dt run smbtorture --kerberos
-        cmd: "smbtorture //{server}/smbbasic -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
         tests: [smb2.session, smb2.read, smb2.lock]
         matrix: {}                      # one cell: it pins its profile
         fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
@@ -644,45 +648,55 @@ suites:
 | `needs` | What the machine must offer (§4.5) | none |
 | `needs_by_test` | Extra needs for the tests matching a glob; `dt plan` puts those tests in cells of their own, on a place that meets them (§4.5) | none |
 | `paths` | On pull requests, run only when the change touches a path matching one of these globs (`dir/**` for a whole tree). Only for a narrow suite that changes elsewhere can't break, as `e2e --kerberos` | every pull request |
-| `tests` | A glob, one test per matching file; a list of names; or a `.txt` file of names, one per line, each with an optional timeout | none: the suite is one test, or finds its own |
+| `tests` | A glob, one test per matching file; a list of names; or a `.txt` file of names, one per line, each with an optional timeout, and with `share=` and `prefix=` where smbtorture's list needs them (below). A glob holding a placeholder, such as `{tools}`, lists its tests when the cell runs, not when it's planned, and names each by its path below the glob's fixed directory (`chmod/00.t`), as the known-failure lists name them. Nothing that needs the tests when the cell is planned works with such a glob: its suite can't set `shards`, `needs_by_test`, `timeout: { test: size }` or a `select` glob, and its cell's limit isn't raised to the sum of its tests' limits: it is `cell`, or one test's limit plus the fixture's 5 minutes if that is more | none: the suite is one test, or finds its own |
 | `exclude` | Globs of files `tests` matches that aren't tests | none |
 | `matrix` | Axes and their values; `dt plan` makes one cell per combination | one cell |
 | `select` | Per tier below the suite's widest: a narrower glob for `tests`, or the `matrix` values that tier runs | every match, every value |
 | `options` | Named variants of the suite. An option is a copy of the suite with each field it sets replaced as a whole: a `needs`, `env`, `fixture` or `matrix` it sets replaces the suite's, and isn't merged into it. It runs as its own cells, and alone with `dt run SUITE --OPTION`. An option doesn't take the suite's `job`, which names the suite's own fixed job, and an option that sets `matrix` doesn't keep the suite's `select`, which narrowed the matrix it replaced | none |
 | `fixture` | The DittoFS server the tests run against (§4.2) | none: the suite starts what it needs itself |
-| `image` | A container image to run `cmd` in, on the fixture's network | none: the host, or `dtc` |
+| `image` | A container image to run `cmd` in, on the network the fixture's server is on: the host's (`--network host`) on Linux, or `dtc`'s (`--network container:NAME`) when `dtc` runs on a bridge network, as on Docker Desktop | none: the host, or `dtc` |
 | `volumes` | Mounts into `image`, host path to container path | none |
-| `templates` | Files filled in with the placeholders into `{out}/config` before the first test: a tool's own configuration, such as WPTS's | none |
+| `templates` | Files filled in with the placeholders into `{out}/config` before the first test: a tool's own configuration, such as WPTS's. They use the same `{x}` placeholders as commands, in place of the `${X}` that `envsubst` fills today. WPTS's become: `${DITTOFS_HOST}` and `${CLIENT_IP}`, `{server}`, since WPTS runs on the server's network and its own address is the server's, as both are loopback today; `${ADMIN_USER}`, `{user}`; `${TEST_USER}`, `{user2}`; `${TEST_PASSWORD}`, `{password}` | none |
 | `packages` | `{ tag: T }`: the Go packages whose tests the build tag `T` changes, found with `go list` | none |
 | `env` | Environment variables, for every tier, or per tier under the tier's name | none |
 | `args` | Text per tier, put where `{args}` appears | empty |
+| `names` | What `{names}` holds when a run names no tests, for a tool that finds its own tests and takes their names as arguments, as pynfs takes `all` or test codes | none |
 | `known` | The suite's known failures and expected skips (§4.7) | none |
 | `shards` | Split `tests` over this many CI jobs | `1` |
 | `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name. `unit` and `integration` keep theirs only until the ruleset requires the gate (§4.8) | none: a matrix cell |
 
 **Placeholders.** `dt` fills them once per cell, before the command runs. Each value is one
-argument, never split again, except `{packages}` and `{args}`, which hold lists and become one
-argument per item. Inside `{ sh: "..." }`, each value is shell-quoted. An unknown placeholder is
-a registry error (exit 3).
+argument, never split again, except `{packages}`, `{args}` and `{names}`, which hold lists and
+become one argument per item. Inside `{ sh: "..." }`, each value is shell-quoted. An unknown
+placeholder is a registry error (exit 3).
 
 | Placeholder | Value |
 |---|---|
 | each `matrix` key | the cell's value on that axis |
 | `{test}` | one test's file name or list entry |
+| `{names}` | the tests a run names, on `dt run`'s command line or for a retry, else the suite's `names`, which doesn't count as naming tests. A run that names no tests grades every test the tool reports. A run that names tests, on `dt run`'s command line or for a retry, grades only those: a named test that skipped because of a test it depends on is not run (exit 2), and any other skip is graded against the expected skips. pynfs runs with `--rundeps`, so a named test's dependencies run too, and it lists every other test as OMIT; neither is graded, and a scoped pynfs run that skipped what it named isn't a pass (§3) |
 | `{args}` | the tier's `args` |
 | `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
-| `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them |
-| `{out}` | the cell's results directory |
+| `{tools}` | the pinned test tools (pjdfstest, pynfs) at the revisions `flake.lock` pins: built with `nix build .#pjdfstest` and `.#pynfs` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, and `{tools}/pynfs` is pynfs's tree, with its `bin` |
+| `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do |
 | `{packages}` | the package list `packages` gives |
-| `{server}`, `{mount}`, `{user}`, `{password}`, `{realm}`, `{client2}` | from the fixture (§4.2) |
+| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{client2}` | from the fixture (§4.2) |
 
 For the pynfs cell `badger-s3/1`, for example:
 
 ```text
-cmd:  pynfs-4.{minor} {server}/export --minorversion {minor} --security sys --maketree --xml {out}/junit.xml all
-runs: pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --maketree --xml test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
+cmd:  {tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}
+runs: /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/tools/pynfs/bin/pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --uid 0 --gid 0 --rundeps --maketree --xml /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
 ```
+
+**smbtorture's test list.** `tests.txt` holds what `smbtorture/run.sh` holds today: each test or
+sub-suite and its timeout; `share=` when it runs on a share other than the first, as
+`smb2.acls_non_canonical` runs on `smbnoncanon`; and `prefix=` for the part of a name smbtorture
+leaves off what it reports. Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the
+`smb2.` the reader puts before a name that lacks it, as today's grader does, make that
+`smb2.oplock.batch1`, the name the known list uses. The comments on why some tests aren't run
+stay in the file.
 
 **Scenario timeouts.** A scenario's size class is in its file name (`test/scenarios/README.md`):
 `xs` under 10 s, `s` under 1 min, `m` under 5, `l` under 15, `xl` under 1 h. With `test: size`, its
@@ -743,15 +757,15 @@ carry a script that builds it.
 
 | Field | Meaning |
 |---|---|
-| `server` | `dfs` (the default), or `knfsd` for the pynfs comparison |
+| `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
-| `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. `export` exports the share without a mount, for pynfs |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
-| `shares` | A file of shares and their flags, as data; the default is one share, `/export` |
+| `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
-| `squash`, `delegations`, `lease` | Export and adapter settings |
+| `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
 | `kerberos` | `true` starts the KDC service, writes the keytabs, restarts `rpc.gssd` once the keytab is in place, puts a test user's ticket where the kernel's upcall reads it, and turns Kerberos on |
-| `reset` | `each`: recreate the shares before every test, as smbtorture's runner does today |
+| `reset` | `each`: recreate a test's share before it runs, as smbtorture's runner does today |
 | `client` | `namespace`: the cell's mounts and commands run on a client in a network namespace of its own, with its own rpcbind, `rpc.statd`, hostname and NFS client identifier, joined to the host by a bridge. A client on the server's own stack loses NLM, since its lockd takes the server's registration, and its traffic can't be told from the server's |
 | `clients` | `2` adds a second namespaced client at `{client2}`, which the user `dt` runs as can reach over ssh, for suites that drive two clients, such as nfstest's cache and delegation tests. Its traffic is copied into the first client's interface, as on a shared segment |
 | `rpcbind` | `host`: the server registers MOUNT and NLM with the host's rpcbind, so an NFSv3 client on another network stack can lock |
@@ -764,19 +778,63 @@ for e2e's NLM interop test (`test/e2e/testdata/nlm/nlm_axis_interop.sh`) and, wi
 cthon04 and nfstest, and none of it needs a test account of its own, since `dt` already runs as an
 ordinary user with passwordless sudo (§3).
 
+**Shares.** A `shares` file is a YAML list. Each share has a `name` and the settings
+`dfsctl share create` takes as flags, by the flag's name; the stores come from `profile`. The first
+share is the default `{share}`.
+
+```yaml
+# test/smb-conformance/shares.yaml: four of the eight shares bootstrap.sh creates
+- name: /smbbasic                                # the share smbtorture runs on unless told otherwise
+- { name: /smbencrypted, encrypt-data: true }
+- { name: /hideunread, access-based-enumeration: true }
+- { name: /smbnoncanon, acl-canonicalize-inherited: false }
+```
+
+In a `shares` file, `{user}` owns each share's root and holds the `admin` grant on it, as
+`wpts-admin` does today: ownership lets it write at the root, and `admin` lets `smb2.acls` take
+ownership. `{user2}` has a uid of its own, the same password and no grant: WPTS's non-admin user,
+and the restricted principal of `smb2.acls.ACCESSBASED`.
+
+**Settings.** A fixture sets only settings the server has. The storage RFCs (#2894) ask that
+fixtures use only the settings RFC 13, 14 and 16 define, which fix the NFSv4 lease at 90 seconds
+and let a share squash none, root or all. A fixture follows the server: when the server drops a
+setting, the fixtures that use it change in the same pull request. Until then pynfs keeps
+`lease: 30s`, so its lease-expiry tests each wait 30 seconds rather than 90. pjdfstest and pynfs
+use `squash: none`, RFC 16's none, which the server treats as it treats `root_to_admin` today:
+root keeps its privileges, as both suites need.
+
+**Needs a fixture implies.** A fixture adds to its cell's `needs` what its fields require, so the
+cell doesn't start without them and `dt plan` places it where they're met: `service:localstack` for
+an S3 profile, `root` and `nfs-client` for an NFS mount, `root` and `smb-client` for an SMB mount,
+and `root` and `port:445` for `smb: { port: 445 }`. They are for the fixture's own steps: only a
+suite's own `needs` make its commands run as root (§3).
+
 `dt` applies the adapter settings before enabling the adapter. Otherwise it restarts the adapter,
 because the server's settings watcher polls every 10 seconds and the tests would start before it
 notices.
 
 The fixture gives the command these placeholders:
-- `{server}`: the address the tools reach it at. It's the host's non-loopback address, so NFSv4.0
-  callbacks to the client can be dialled; DittoFS refuses loopback callback addresses, which is
-  why pynfs's delegation tests can't run today (#2996). From a namespaced `client` it's the
-  host's bridge address.
+- `{server}`: the address the tools reach it at, without a port. It's the host's non-loopback
+  address, so NFSv4.0 callbacks to the client can be dialed; DittoFS refuses loopback callback
+  addresses, which is why pynfs's delegation tests can't run today (#2996). From a namespaced
+  `client` it's the host's bridge address. Until step 3 the suites' scripts still reach their
+  server at `localhost`, and WPTS and smbtorture reach it inside the server's container. When
+  step 2's exit criterion compares results through `dt` with the scripts' (§8), a difference that
+  comes from the address, or from where the server runs, has its cause listed beforehand. The
+  scripts stay as they are, except that pynfs's reference run is given `--server` with the host's
+  address, so a difference in the delegation tests isn't hidden behind the address.
+- `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
+  unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
+  port run one at a time.
 - `{client2}`: the second client's address, with `clients: 2`.
-- `{mount}` and `{realm}`.
+- `{mount}`: where the share is mounted, a path as short as today's `/tmp/dittofs-test`, so a
+  test of path length such as pjdfstest's `open/03.t` measures the server, not the mount point.
+- `{realm}`.
+- `{share}`: the share a test runs on: its `share=` in a `.txt` list, else the fixture's first
+  share, without its leading `/`.
 - `{user}` and `{password}`: a test user whose password is generated per run, in place of the
-  WPTS password now written in six places.
+  WPTS password now written in six places. `{user2}`: a second user, with a uid of its own, that
+  password and no grant.
 
 Before the first test, the fixture checks itself, and a failed check ends the cell with exit 2,
 never a pass (R10):
@@ -1408,7 +1466,10 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    conformance cells (§4.3).
 2. **Fixtures, formats and results.**
    - The fixture (§4.2), with its self-check, its setup timeout and its non-loopback server
-     address.
+     address, and the fields the conformance suites' cells use: `profile`, `nfs`, `smb` without
+     `mount`, `shares`, `users`, `squash`, `delegations`, `lease` and `reset`. `kerberos` and
+     `server: knfsd` come in step 3 with the options that use them, as do `client`, `clients` and
+     `rpcbind` with cthon04 and nfstest; `smb: { mount: true }` comes with `clients` in step 4.
    - The `junit`, `tap`, `subunit` and `trx` formats, with the graders' rules moved into Go against
      their existing tests.
    - `known.yaml` with expected skips, `dt known import`, and graded skips.

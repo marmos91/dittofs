@@ -42,6 +42,10 @@ type Tests struct {
 // Set reports whether the suite names its tests.
 func (t Tests) Set() bool { return t.Glob != "" || t.File != "" || len(t.Names) > 0 }
 
+// Deferred reports whether the tests are a glob holding a placeholder, which
+// only a running cell fills, so only it finds them.
+func (t Tests) Deferred() bool { return len(Placeholders(t.Glob)) > 0 }
+
 // Axis is one matrix axis and its values.
 type Axis struct {
 	Name   string

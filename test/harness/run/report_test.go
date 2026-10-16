@@ -380,7 +380,7 @@ func TestGitState(t *testing.T) {
 
 // lines lists results as "package > name: status, duration", with the grade
 // in brackets and the message's first line after a |.
-func lines(tests []report.Test) []string {
+func caseLines(tests []report.Test) []string {
 	var out []string
 	for _, tc := range tests {
 		line := fmt.Sprintf("%s: %s, %s", strings.Join(append(slices.Clone(tc.Suite), tc.Name), " > "), tc.Status, tc.Duration.Round(time.Millisecond))
@@ -440,7 +440,7 @@ func TestGoJSONRecordedRun(t *testing.T) {
 		"example.com/m/sc > TestR: other, 4ms",
 		"example.com/m/sc > TestR/x: other, 4ms | panic: boom",
 	}
-	if got := lines(res.cases); !slices.Equal(got, want) || len(res.running) != 0 {
+	if got := caseLines(res.cases); !slices.Equal(got, want) || len(res.running) != 0 {
 		t.Errorf("got %q\nwant %q\nstill open: %v", got, want, slices.Collect(maps.Keys(res.running)))
 	}
 	if got, want := res.note(nil), "3 passed, 7 failed, 1 skipped, 6 with no result: TestFail, TestParent/bad, TestP/a, TestS/x, TestWait; example.com/m/b: build failed; example.com/m/p: failed outside any test; example.com/m/tm: failed outside any test; example.com/m/pc: failed outside any test; example.com/m/sc: failed outside any test"; got != want {
@@ -489,7 +489,7 @@ func TestGoJSONOnlyPausedTestsOpen(t *testing.T) {
 	} {
 		res.add([]byte(line+"\n"), io.Discard)
 	}
-	if got, want := lines(res.cases), []string{"x: failed, 1s | failed outside any test"}; !slices.Equal(got, want) {
+	if got, want := caseLines(res.cases), []string{"x: failed, 1s | failed outside any test"}; !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
@@ -573,7 +573,7 @@ func TestGoJSONPackageEndAfterTheLimit(t *testing.T) {
 		res.add([]byte(line+"\n"), io.Discard)
 	}
 	want := []string{"p > TestDone: passed, 0s", "p > TestWait: failed, 4.2s | stopped at the cell's limit"}
-	if got := lines(res.cases); !slices.Equal(got, want) {
+	if got := caseLines(res.cases); !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }

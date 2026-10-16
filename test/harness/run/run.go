@@ -5,6 +5,7 @@ package run
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -192,35 +193,14 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 	if ctx.Err() != nil {
 		return didntRun("interrupted")
 	}
-	if why := unsupported(c.Unit); why != "" {
+	if why, unmet := Blocked(c.Unit, c.Needs, func(n string) error { return needs.Check(o.Root, n) }); why != "" {
+		// A machine that met the needs could run the cell, so without --ci
+		// it's skipped; what dt can't do yet is never a skip.
+		if len(unmet) > 0 && !o.CI {
+			return report.Cell{Name: c.Name, Result: Skipped, Note: why}
+		}
 		return didntRun(why)
 	}
-	if unmet := needs.Unmet(o.Root, c.Needs); len(unmet) > 0 {
-		if o.CI {
-			return didntRun(strings.Join(unmet, "; "))
-		}
-		return report.Cell{Name: c.Name, Result: Skipped, Note: strings.Join(unmet, "; ")}
-	}
-	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
-	if err != nil {
-		return didntRun(err.Error())
-	}
-	if len(c.Tests) > 0 {
-		tests = c.Tests
-	}
-	if !c.Unit.Tests.Set() {
-		tests = []string{""} // the commands are the one test
-	}
-	if len(tests) == 0 {
-		return didntRun("no tests found")
-	}
-	each := make([]time.Duration, len(tests))
-	for i, test := range tests {
-		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
-			return didntRun(err.Error())
-		}
-	}
-
 	out := filepath.Join(dir, slug(c.Name))
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
 	for k, v := range c.Matrix {
@@ -236,6 +216,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 	}
 	if asRoot(c) {
 		vals["bin"] = filepath.Join(dir, "bin") // goJSON builds it before the commands run
+	}
+	if len(c.Unit.Tools()) > 0 {
+		vals["tools"] = filepath.Join(dir, "tools") // laid out below, before the tests are found
 	}
 	// A command dt can't fill can't run, whichever test it's for.
 	for _, cmd := range c.Unit.Cmd {
@@ -268,10 +251,45 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) report.
 	}
 	defer func() { _ = log.Close() }()
 	_, _ = fmt.Fprintf(log, "[dt] cell %s, tier %s, commit %s\n", c.Name, c.Tier, commit)
+	w := io.MultiWriter(o.Out, log)
+	// Once the log exists, a cell that doesn't run still points at it.
+	didntRun = func(why string) report.Cell {
+		return report.Cell{Name: c.Name, Result: NotRun, Note: why, Log: logName}
+	}
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
 	defer cancel()
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, out: io.MultiWriter(o.Out, log), log: log}
+	if vals["tools"] != "" {
+		if err := layOutTools(cellCtx, o.Root, vals["tools"], c.Unit.Tools(), w); err != nil {
+			return didntRun("the test tools: " + err.Error())
+		}
+	}
+	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
+	if err != nil {
+		return didntRun(err.Error())
+	}
+	if len(c.Tests) > 0 {
+		tests = c.Tests
+	}
+	var paths map[string]string // each test's file, when only the cell finds them
+	if c.Unit.Tests.Deferred() {
+		if tests, paths, err = deferredTests(o.Root, c.Unit, vals, lists, c.Tests); err != nil {
+			return didntRun(err.Error())
+		}
+	}
+	if !c.Unit.Tests.Set() {
+		tests = []string{""} // the commands are the one test
+	}
+	if len(tests) == 0 {
+		return didntRun("no tests found")
+	}
+	each := make([]time.Duration, len(tests))
+	for i, test := range tests {
+		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
+			return didntRun(err.Error())
+		}
+	}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		result, note, tests := t.goJSON(c.Tests)
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
@@ -382,6 +400,7 @@ type tester struct {
 	own      []string // the suite's alone
 	vals     map[string]string
 	lists    map[string][]string
+	paths    map[string]string // the file each test runs as {test}, when it isn't its name
 	out, log io.Writer
 	capture  io.Writer // also gets the commands' output, for a reader
 }
@@ -407,7 +426,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		ctx, cancel = context.WithTimeout(ctx, limit)
 		defer cancel()
 	}
-	t.vals["test"] = test
+	t.vals["test"] = cmp.Or(t.paths[test], test)
 	var r testRun
 	var failed, notRun []string
 	for _, cmd := range t.cell.Unit.Cmd {
@@ -559,6 +578,25 @@ func exitCode(err error) (int, error) {
 		return -1, err
 	}
 	return 0, nil
+}
+
+// Blocked says why dt can't run a cell of suite u that needs list on this
+// machine, or returns "" when it can. What dt doesn't do yet comes first, and
+// then each need that check finds unmet, as "need: reason"; unmet names those
+// needs, and is empty when what stops the cell is something dt doesn't do
+// yet. dt run and dt list both decide through it, so they can't disagree.
+func Blocked(u *registry.Suite, list []string, check func(need string) error) (why string, unmet []string) {
+	if why := unsupported(u); why != "" {
+		return why, nil
+	}
+	var reasons []string
+	for _, n := range list {
+		if err := check(n); err != nil {
+			unmet = append(unmet, n)
+			reasons = append(reasons, n+": "+err.Error())
+		}
+	}
+	return strings.Join(reasons, "; "), unmet
 }
 
 // unsupported says why dt can't run the suite yet, or returns "".
