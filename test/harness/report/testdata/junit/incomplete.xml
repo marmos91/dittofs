@@ -5,7 +5,7 @@
       <property name="result" value="not run"></property>
     </properties>
     <testcase name="smb2.notify.dir" classname="smbtorture/memory" time="0.000">
-      <error message="its output stopped before its result"></error>
+      <error message="its output stopped before its result">its output stopped before its result</error>
     </testcase>
   </testsuite>
 </testsuites>

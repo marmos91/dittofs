@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="pynfs/badger-s3/1" tests="0" failures="0" errors="0" skipped="0" time="0.000">
+  <testsuite name="pynfs/badger-s3/1" tests="1" failures="0" errors="1" skipped="0" time="0.000">
     <properties>
       <property name="result" value="not run"></property>
       <property name="note" value="dt doesn&#39;t set up fixtures yet"></property>
     </properties>
+    <testcase name="pynfs/badger-s3/1" classname="pynfs/badger-s3/1" time="0.000">
+      <error message="dt doesn&#39;t set up fixtures yet">dt doesn&#39;t set up fixtures yet</error>
+    </testcase>
   </testsuite>
 </testsuites>

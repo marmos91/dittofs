@@ -88,6 +88,17 @@ func TestJSONMatchesTheSchema(t *testing.T) {
 	}
 }
 
+// A reason goes in a test's extra even without a grade.
+func TestJSONKeepsAReasonAlone(t *testing.T) {
+	data, err := Run{Cells: []Cell{{Name: "s", Tests: []Test{{Name: "t", Status: Skipped, Reason: "why"}}}}}.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"reason": "why"`)) {
+		t.Errorf("no reason:\n%s", data)
+	}
+}
+
 // Each test's suite is its cell's name, split at /, then its own suite; the
 // counts follow the statuses, flaky passes counted too; a grade and its
 // reason go in the test's extra; durations are milliseconds; and the run's
@@ -116,9 +127,9 @@ func TestWriteIsReadable(t *testing.T) {
 	}
 }
 
-// A reader of summary.json never sees part of one: while it's rewritten over
-// and over, every read gives a whole document, and no temporary file is left,
-// beside it or beside the JUnit files.
+// A reader of summary.json, or of a JUnit file, never sees part of one: while
+// they're rewritten over and over, every read gives a whole document, and no
+// temporary file is left, beside summary.json or beside the JUnit files.
 func TestWriteReplacesTheFileWhole(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a file open for reading can't be replaced here, so the reads would stop the writes")
@@ -128,7 +139,7 @@ func TestWriteReplacesTheFileWhole(t *testing.T) {
 	for i := range 5000 {
 		big.Cells[0].Tests = append(big.Cells[0].Tests, Test{Name: "test " + strconv.Itoa(i), Status: Passed})
 	}
-	small := Run{Name: "small"}
+	small := Run{Name: "small", Cells: []Cell{{Name: "s", Tests: big.Cells[0].Tests[:1]}}}
 	if err := small.Write(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +162,14 @@ func TestWriteReplacesTheFileWhole(t *testing.T) {
 		if err != nil || !json.Valid(data) {
 			<-done
 			t.Fatalf("read %d: %d bytes, not a whole document: %v", reads, len(data), err)
+		}
+		x, err := os.ReadFile(filepath.Join(dir, "junit", "s.xml"))
+		if err == nil {
+			err = oneDocument(x)
+		}
+		if err != nil {
+			<-done
+			t.Fatalf("read %d: %d bytes of junit/s.xml, not a whole document: %v", reads, len(x), err)
 		}
 		select {
 		case <-done:

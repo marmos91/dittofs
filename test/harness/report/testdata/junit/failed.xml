@@ -5,7 +5,7 @@
       <property name="result" value="failed"></property>
     </properties>
     <testcase name="false" classname="lint-repo" time="0.002">
-      <failure message="`false` exited 1"></failure>
+      <failure message="`false` exited 1">`false` exited 1</failure>
     </testcase>
   </testsuite>
 </testsuites>

@@ -5,7 +5,7 @@
       <property name="result" value="passed"></property>
     </properties>
     <testcase name="unlink/14.t" classname="pjdfstest/badger-s3/4.1" time="0.860">
-      <skipped message="NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1"></skipped>
+      <skipped message="NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1">not ok 3</skipped>
     </testcase>
   </testsuite>
 </testsuites>

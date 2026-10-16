@@ -5,7 +5,7 @@
       <property name="result" value="failed"></property>
     </properties>
     <testcase name="chmod/12.t" classname="pjdfstest/badger-s3/4.1" time="2.140">
-      <failure message="not ok 7"></failure>
+      <failure message="not ok 7">not ok 7</failure>
     </testcase>
   </testsuite>
 </testsuites>

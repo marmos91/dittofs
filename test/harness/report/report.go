@@ -65,6 +65,12 @@ type Run struct {
 	Cells       []Cell
 }
 
+// Slug is a cell's name as one path element, which names the cell's
+// directory, its log and its JUnit file.
+func Slug(cell string) string {
+	return strings.ReplaceAll(cell, "/", "-")
+}
+
 // Ran is what one test's commands leave for a reader. Test is "" when the
 // suite lists no tests, so the commands ran once for the whole cell.
 type Ran struct {
@@ -81,8 +87,9 @@ type Ran struct {
 // say.
 type Reader func(Ran) ([]Test, error)
 
-// Write writes the run to dir/summary.json, then each cell's JUnit file under
-// dir/junit. Each file is replaced whole, by a rename, so a run stopped at any
+// Write writes each cell's JUnit file under dir/junit, then the run to
+// dir/summary.json, last, so the summary never names a JUnit file that isn't
+// there. Each file is replaced whole, by a rename, so a run stopped at any
 // moment leaves its last complete summary. Like the logs, anyone can read
 // them, so a run as root leaves files its user can read.
 //
@@ -91,13 +98,6 @@ type Reader func(Ran) ([]Test, error)
 // results. Write only the new cells' files when a run's time outside its
 // cells passes 10 seconds.
 func (r Run) Write(dir string) error {
-	data, err := r.JSON()
-	if err != nil {
-		return err
-	}
-	if err := replace(filepath.Join(dir, "summary.json"), data); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Join(dir, "junit"), 0o755); err != nil {
 		return err
 	}
@@ -110,7 +110,11 @@ func (r Run) Write(dir string) error {
 			return err
 		}
 	}
-	return nil
+	data, err := r.JSON()
+	if err != nil {
+		return err
+	}
+	return replace(filepath.Join(dir, "summary.json"), data)
 }
 
 // replace writes data to path through a temporary file beside it, renamed
@@ -153,8 +157,8 @@ func (r Run) JSON() ([]byte, error) {
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
 			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, Duration: t.Duration.Milliseconds(), Message: t.Message, Flaky: t.Flaky}
-			if t.Grade != "" || t.Reason != "" {
-				out.Extra = &testExtra{Grade: t.Grade, Reason: t.Reason}
+			if x := (testExtra{Grade: t.Grade, Reason: t.Reason}); x != (testExtra{}) {
+				out.Extra = &x
 			}
 			if t.Flaky {
 				sum.Flaky++

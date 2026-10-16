@@ -5,7 +5,7 @@
       <property name="result" value="passed"></property>
     </properties>
     <testcase name="TestB" classname="unit/example.com/m/a" time="0.000">
-      <skipped message="a_test.go:9: needs root"></skipped>
+      <skipped message="a_test.go:9: needs root">a_test.go:9: needs root</skipped>
     </testcase>
   </testsuite>
 </testsuites>

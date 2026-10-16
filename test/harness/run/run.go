@@ -175,11 +175,6 @@ func runName(start time.Time, commit string) string {
 	return name
 }
 
-// slug is a cell's name as one path element.
-func slug(cell string) string {
-	return strings.ReplaceAll(cell, "/", "-")
-}
-
 // annotation is an error annotation with title and message, escaped as the
 // workflow command's format asks: properties also escape : and ,.
 func annotation(title, message string) string {
@@ -215,7 +210,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		return didntRun(why)
 	}
-	out := filepath.Join(dir, slug(c.Name))
+	out := filepath.Join(dir, report.Slug(c.Name))
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
 	for k, v := range c.Matrix {
 		vals[k] = v
@@ -249,7 +244,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return didntRun(err.Error())
 	}
-	logName := path.Join("logs", slug(c.Name)+".log")
+	logName := path.Join("logs", report.Slug(c.Name)+".log")
 	log, err := os.Create(filepath.Join(dir, logName))
 	if err != nil {
 		return didntRun(err.Error())

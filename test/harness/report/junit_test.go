@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,27 +49,41 @@ func TestJUnitGrades(t *testing.T) {
 	}
 }
 
-// A cell with no tests, here one that didn't run, is a testsuite with none,
-// whose properties say how the cell went and why.
-func TestJUnitCellWithNoTests(t *testing.T) {
-	got, err := Cell{Name: "pynfs/badger-s3/1", Result: "not run", Note: "dt doesn't set up fixtures yet"}.JUnit()
-	if err != nil {
-		t.Fatal(err)
+// A cell that didn't run, or failed, with no testcase that says so, gets one
+// named after it, with its note, as an error or a failure, so a reader of
+// JUnit alone sees it red: a cell with no tests, and one whose tests passed
+// before its limit stopped it. A cell skipped for its needs, which passes,
+// gets none, and its properties say why.
+func TestJUnitCellResult(t *testing.T) {
+	for _, c := range []struct {
+		file string
+		cell Cell
+	}{
+		{"no-tests", Cell{Name: "pynfs/badger-s3/1", Result: "not run", Note: "dt doesn't set up fixtures yet"}},
+		{"failed-without-a-failed-test", Cell{Name: "pjdfstest/memory/3", Result: "failed", Took: 60 * time.Second,
+			Note:  "chmod/00.t: stopped at the cell's limit; 2 tests not started: stopped at the cell's limit",
+			Tests: []Test{{Name: "chmod/00.t", Status: Passed, Duration: time.Second}}}},
+		{"skipped-cell", Cell{Name: "smbtorture/memory", Result: "skipped", Note: "docker: not found"}},
+	} {
+		got, err := c.cell.JUnit()
+		if err != nil {
+			t.Fatal(err)
+		}
+		golden(t, filepath.Join("junit", c.file+".xml"), got)
+		wellFormed(t, c.file, got)
 	}
-	golden(t, filepath.Join("junit", "no-tests.xml"), got)
-	wellFormed(t, "no tests", got)
 }
 
 // What a tool prints can hold anything: markup, quotes, line ends, tabs, a
 // terminal's escapes, NUL. The file stays well-formed, the text comes back
-// as written, and a character XML can't hold comes back as U+FFFD. The
-// counts agree with the testcases.
+// as written, in attributes and bodies, and a character XML can't hold comes
+// back as U+FFFD. The counts agree with the testcases.
 func TestJUnitIsWellFormed(t *testing.T) {
 	odd := "a <b> & \"c\" 'd' ]]> e\nf\r\n\tg"
 	cell := Cell{Name: "s/<&>", Result: "failed", Note: odd, Tests: []Test{
 		{Name: odd, Suite: []string{odd}, Status: Failed, Message: odd},
 		{Name: "esc", Status: Other, Message: "\x1b[31mred\x1b[0m\x00"},
-		{Name: "skip", Status: Skipped, Reason: odd},
+		{Name: "skip", Status: Skipped, Reason: odd, Message: odd},
 		{Name: "pass", Status: Passed},
 	}}
 	data, err := cell.JUnit()
@@ -82,11 +97,11 @@ func TestJUnitIsWellFormed(t *testing.T) {
 	}
 	s := doc.Suites[0]
 	if s.Name != cell.Name || s.Properties.List[1].Value != odd || s.Cases[0].Name != odd || s.Cases[0].Classname != cell.Name+"/"+odd ||
-		s.Cases[0].Failure.Message != odd || s.Cases[2].Skipped.Message != odd {
+		s.Cases[0].Failure.Message != odd || s.Cases[0].Failure.Body != odd || s.Cases[2].Skipped.Message != odd || s.Cases[2].Skipped.Body != odd {
 		t.Errorf("text changed: %+v", s)
 	}
-	if got, want := s.Cases[1].Error.Message, "�[31mred�[0m�"; got != want {
-		t.Errorf("escapes: got %q, want %q", got, want)
+	if got, want := s.Cases[1].Error.Message, "�[31mred�[0m�"; got != want || s.Cases[1].Error.Body != want {
+		t.Errorf("escapes: got %q and %q, want %q", got, s.Cases[1].Error.Body, want)
 	}
 	if s.Tests != 4 || s.Failures != 1 || s.Errors != 1 || s.Skipped != 1 {
 		t.Errorf("counts %+v", s)
@@ -96,6 +111,13 @@ func TestJUnitIsWellFormed(t *testing.T) {
 // wellFormed fails the test unless data is one well-formed XML document.
 func wellFormed(t *testing.T, name string, data []byte) {
 	t.Helper()
+	if err := oneDocument(data); err != nil {
+		t.Errorf("%s: %v", name, err)
+	}
+}
+
+// oneDocument says why data isn't one well-formed XML document, or returns nil.
+func oneDocument(data []byte) error {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	roots := 0
 	for depth := 0; ; {
@@ -104,8 +126,7 @@ func wellFormed(t *testing.T, name string, data []byte) {
 			break
 		}
 		if err != nil {
-			t.Errorf("%s: not well-formed: %v", name, err)
-			return
+			return fmt.Errorf("not well-formed: %w", err)
 		}
 		switch tok.(type) {
 		case xml.StartElement:
@@ -118,7 +139,23 @@ func wellFormed(t *testing.T, name string, data []byte) {
 		}
 	}
 	if roots != 1 {
-		t.Errorf("%s: %d root elements", name, roots)
+		return fmt.Errorf("%d root elements", roots)
+	}
+	return nil
+}
+
+// Write writes summary.json last, so it never names a JUnit file that isn't
+// there: when a JUnit file can't be written, no summary.json is.
+func TestWriteSummaryLast(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "junit"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := full.Write(dir); err == nil {
+		t.Fatal("wrote with junit a file")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("summary.json written before the JUnit files: %v", err)
 	}
 }
 

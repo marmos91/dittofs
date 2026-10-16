@@ -5,7 +5,7 @@
       <property name="result" value="passed"></property>
     </properties>
     <testcase name="smb2.durable-v2-open.reopen1a" classname="smbtorture/memory" time="0.000">
-      <skipped message="durable handles v2 aren&#39;t implemented"></skipped>
+      <skipped message="durable handles v2 aren&#39;t implemented">skip: not supported</skipped>
     </testcase>
   </testsuite>
 </testsuites>
