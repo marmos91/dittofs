@@ -1,6 +1,7 @@
 package needs
 
 import (
+	"cmp"
 	"net"
 	"os"
 	"path/filepath"
@@ -52,9 +53,10 @@ func TestToolNotFound(t *testing.T) {
 
 // Needs dt can't meet or check yet are unmet, never met.
 func TestUnmetUntilChecked(t *testing.T) {
-	got := Unmet("", []string{"host:dedicated", "cloud:aws", "disk:999999"})
-	if len(got) != 3 {
-		t.Errorf("got %q", got)
+	for _, n := range []string{"host:dedicated", "cloud:aws", "disk:999999"} {
+		if Check("", n) == nil {
+			t.Errorf("%s is met", n)
+		}
 	}
 }
 
@@ -133,5 +135,58 @@ func TestServiceFallback(t *testing.T) {
 	}
 	if got := ServiceEnv(root, []string{"service:kmip"}); len(got) != 3 || got[2] != "DITTOFS_TEST_KMIP_CA=/certs/ca.pem" {
 		t.Errorf("kmip's variables: %q", got)
+	}
+}
+
+// A tool's hint names the program its check looks for, with a Debian and
+// Ubuntu package only on the platform that uses those. With no program here,
+// it names the platforms that have one, and dtc only when its image has the
+// tool. A service is started with dt services. Fake tools check each rule on
+// every platform.
+func TestHint(t *testing.T) {
+	elsewhere := map[string]string{"darwin": "x", "linux": "x", "windows": "x"}
+	delete(elsewhere, runtime.GOOS)
+	tools["elsewhere"] = elsewhere
+	tools["here"] = map[string]string{runtime.GOOS: "prog"}
+	debian["here"] = "pkg"
+	t.Cleanup(func() {
+		delete(tools, "elsewhere")
+		delete(tools, "here")
+		delete(debian, "here")
+		delete(inDtc, "elsewhere")
+	})
+	others := map[string]string{"darwin": "run it on Linux or Windows", "linux": "run it on macOS or Windows", "windows": "run it on macOS or Linux"}[runtime.GOOS]
+	install := map[bool]string{true: "install prog (Debian and Ubuntu: pkg)", false: "install prog"}[runtime.GOOS == "linux"]
+	for need, want := range map[string]string{"elsewhere": others, "here": install, "linux": "run it on Linux, or in dtc", "service:kmip": "dt services up kmip"} {
+		if got := Hint(need); got != want {
+			t.Errorf("%s: %q, want %q", need, got, want)
+		}
+	}
+	inDtc["elsewhere"] = true
+	if got := Hint("elsewhere"); got != others+", or in dtc" {
+		t.Errorf("elsewhere, in dtc: %q", got)
+	}
+	kerberos := map[string]string{
+		"darwin":  "install kinit",
+		"linux":   "install kinit (Debian and Ubuntu: krb5-user)",
+		"windows": "run it on macOS or Linux, or in dtc",
+	}[runtime.GOOS]
+	if got := Hint("kerberos"); got != kerberos {
+		t.Errorf("kerberos: %q, want %q", got, kerberos)
+	}
+}
+
+// The tools the hints place in dtc are the ones whose packages its image
+// installs.
+func TestInDtc(t *testing.T) {
+	data, err := os.ReadFile("../docker/dev.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := strings.Fields(string(data))
+	for need, bins := range tools {
+		if pkg := cmp.Or(debian[need], bins["linux"]); pkg != "" && slices.Contains(words, pkg) != inDtc[need] {
+			t.Errorf("%s: package %s in the image %t, in dtc %t", need, pkg, slices.Contains(words, pkg), inDtc[need])
+		}
 	}
 }

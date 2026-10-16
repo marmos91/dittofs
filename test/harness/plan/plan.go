@@ -115,9 +115,11 @@ func touches(globs, changed []string) bool {
 	return false
 }
 
-// group is a set of a unit's tests that run together, with the needs they add.
+// group is a set of a unit's tests that run together, with the needs they add
+// and the needs_by_test glob that sets them apart.
 type group struct {
 	label string
+	glob  string
 	tests []string
 	needs []string
 }
@@ -180,6 +182,22 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 	return cells, nil
 }
 
+// NeedsByTest gives, per needs_by_test glob, the needs it adds, for the globs
+// that match a test tier plans. Without a tier, no select narrows the tests.
+func NeedsByTest(root string, u *registry.Suite, tier string) (map[string][]string, error) {
+	groups, _, err := testGroups(root, u, u.Select[tier].Glob)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, g := range groups {
+		if g.glob != "" {
+			out[g.glob] = g.needs
+		}
+	}
+	return out, nil
+}
+
 // testGroups splits the unit's tests into the ones its needs cover and, per
 // needs_by_test entry, the ones that need more, and returns the tests that
 // carry their own limit. Tests are listed only when something needs them: a
@@ -213,7 +231,7 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 		g := extra[globs[i]]
 		if g == nil {
 			needs := u.NeedsByTest[globs[i]]
-			g = &group{label: placeOf(union(u.Needs, needs)), needs: needs}
+			g = &group{label: placeOf(union(u.Needs, needs)), glob: globs[i], needs: needs}
 			extra[globs[i]] = g
 		}
 		g.tests = append(g.tests, t)
