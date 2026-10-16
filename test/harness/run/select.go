@@ -68,8 +68,13 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 				// One -run pattern for several names would filter every
 				// matched test's subtests by each subtest name.
 				return nil, errors.New("name subtests one at a time")
-			case len(tests) > 0 && goTests:
-				// A name go test doesn't find runs nothing, which the cell reports.
+			case len(tests) > 0 && (goTests || unit.Tests.Deferred()):
+				// decision: only the running cell finds these tests, so each
+				// such suite of a group takes every name, and its cells don't
+				// run when a name picks none of their tests, as a go-json cell
+				// doesn't when go test finds no test of that name. --only
+				// narrows the group to the suite the names belong to. Withdraw
+				// this when the names can be checked before the cells run.
 				cell.Tests = tests
 				for _, name := range tests {
 					found[name] = true
@@ -170,7 +175,7 @@ func chosen(root string, c Cell, names []string, found map[string]bool) ([]strin
 	for _, t := range tests {
 		picked := false
 		for _, name := range names {
-			if name == t || name == filepath.Base(t) {
+			if picks(name, t) {
 				found[name] = true
 				picked = true
 			}
@@ -180,4 +185,57 @@ func chosen(root string, c Cell, names []string, found map[string]bool) ([]strin
 		}
 	}
 	return out, nil
+}
+
+// picks reports whether a name given on the command line picks the test: it
+// is its name or its file name.
+func picks(name, test string) bool {
+	return name == test || name == filepath.Base(test)
+}
+
+// deferredTests finds the tests of a glob holding a placeholder, once the
+// running cell has filled it, and maps each to its file. A test is named by
+// its path below the glob's last directory without a wildcard, as the known
+// lists name pjdfstest's chmod/00.t below {tools}/pjdfstest/tests. names,
+// when given, pick tests by name or file name, and each must pick one.
+func deferredTests(root string, u *registry.Suite, vals map[string]string, lists map[string][]string, names []string) ([]string, map[string]string, error) {
+	dir, err := replace(globDir(u.Tests.Glob), vals, lists, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	glob, err := replace(u.Tests.Glob, vals, lists, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !filepath.IsAbs(glob) {
+		dir, glob = filepath.Join(root, dir), filepath.Join(root, glob)
+	}
+	all, err := plan.Glob(dir, glob, u.Exclude)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, name := range names {
+		if !slices.ContainsFunc(all, func(t string) bool { return picks(name, t) }) {
+			return nil, nil, fmt.Errorf("no test %q in %s", name, u.Tests.Glob)
+		}
+	}
+	var tests []string
+	paths := map[string]string{}
+	for _, t := range all {
+		if len(names) == 0 || slices.ContainsFunc(names, func(name string) bool { return picks(name, t) }) {
+			tests = append(tests, t)
+			paths[t] = filepath.Join(dir, filepath.FromSlash(t))
+		}
+	}
+	return tests, paths, nil
+}
+
+// globDir is a glob's path up to its first element with a wildcard.
+func globDir(glob string) string {
+	elems := strings.Split(glob, "/")
+	i := slices.IndexFunc(elems, func(e string) bool { return strings.ContainsAny(e, `*?[`) })
+	if i < 0 {
+		i = len(elems) - 1
+	}
+	return strings.Join(elems[:i], "/")
 }

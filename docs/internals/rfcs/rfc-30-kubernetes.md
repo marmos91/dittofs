@@ -46,15 +46,7 @@ handing its work to someone else. Where the picture breaks: a worker's
 notebook is copied to two others, so losing one worker unannounced loses
 nothing — it only costs a short pause.
 
-```text
- clients ──► Service VIP or floating IPs
-                │
-   Deployment: protocol pods (stateless, HPA)
-                │  node channel: gRPC over mTLS
-   StatefulSet: storage pods (local NVMe journal, stable node ID)
-        │                         │
- metadata store (own operator)   bucket (outside the cluster)
-```
+![A DittoCluster resource reconciled by the operator into a protocol Deployment of at least two stateless pods scaled by an HPA, reached by clients through a Service VIP or floating IPs, and a storage StatefulSet whose pods each own a local NVMe journal volume holding their node ID and certificate, with a PodDisruptionBudget of one and one pod per host; the node channel between them is gRPC over mTLS; the metadata store runs under its own operator and is referenced, never owned; the bucket sits outside the cluster and its credential is mounted on storage pods only](img/rfc30-objects.svg)
 
 ### Scenarios
 
@@ -298,6 +290,8 @@ which is a new node (§4.3).
 > Overturned if lost hosts in practice never return, and waiting for an operator
 > shows up as long under-replication.
 
+![Side by side: a planned storage scale-down marks the pod draining, hands over its shards, decommissions its node record and only then deletes the pod and volume, with no failover, and is refused if it would leave fewer pods than the replica count or too few failure domains; a lost host fails over in about 14 s, repair restores replica counts, the volume is kept and the node reported lost until either the host returns as the same node with its journal or an operator acknowledges, after which the node record is decommissioned, the claim deleted and a new pod with a new volume becomes a new node](img/rfc30-drain.svg)
+
 ### 5.5 Whole-cluster restart
 
 All pods restarting together follows [RFC 10 §9.5](rfc-10-journal-replication.md#9.5%20Whole-cluster%20restart). The operator does
@@ -333,6 +327,8 @@ explicitly, and then runs the drain of §5.3.
 > a second planned move within the dwell; an autoscaler that follows short load
 > swings would keep the cluster rebalancing. Overturned if measured rebalance
 > cost becomes small enough that load-following pays.
+
+![Two columns: the protocol pool is scaled by a HorizontalPodAutoscaler on active connections per pod and CPU, new pods serve once ready, existing connections stay put, and scale-down waits a stabilization window of at least 10 minutes because each removal drains; the storage pool is scaled only by the operator's storage controller from journal fill, write bandwidth and unplaceable under-replicated shards, adds one pod with a fresh node ID, moves about 1/N of shards at a paced rate, waits a cooldown of at least the shard dwell, 30 minutes as proposed, and never scales on CPU or memory or down without an explicit policy](img/rfc30-autoscaling.svg)
 
 ### 6.3 Metadata store
 

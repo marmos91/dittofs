@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/marmos91/dittofs/test/harness/run"
 )
 
 // exitUsage is the status for a usage or registry error.
@@ -45,7 +47,7 @@ func newRoot(out io.Writer) *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.SetOut(out)
-	root.AddCommand(newList(), newPlan(), newRun(), alias("unit"), alias("integration"), alias("e2e"))
+	root.AddCommand(newList(), newPlan(), newRun(), newDoctor(), alias("unit"), alias("integration"), alias("e2e"))
 	root.AddCommand(newEnv()...)
 	return root
 }
@@ -55,7 +57,7 @@ func newList() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "Suites, options and groups, with their tier, format and needs",
+		Short: "Suites, options and groups, with their tier, format and needs, and whether they can run here",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			r, err := load()
@@ -71,21 +73,62 @@ func newList() *cobra.Command {
 				Format string   `json:"format"`
 				Needs  []string `json:"needs,omitempty"`
 				Job    string   `json:"job,omitempty"`
+				// RunsHere is whether dt run would run the suite's cells here,
+				// as dt run decides it: Unsupported names what dt doesn't do
+				// yet, and Unmet the needs this machine doesn't meet.
+				// UnmetByTest gives, per needs_by_test glob whose tests the
+				// tier plans, the extra needs of those tests it doesn't meet.
+				RunsHere    bool                `json:"runs_here"`
+				Unsupported string              `json:"unsupported,omitempty"`
+				Unmet       []string            `json:"unmet,omitempty"`
+				UnmetByTest map[string][]string `json:"unmet_by_test,omitempty"`
 			}
-			var suites []entry
+			root, _ := repoRoot()
+			var listed []*registry.Suite
+			byTest := map[*registry.Suite]map[string][]string{}
+			var lists [][]string
 			for _, s := range r.Suites {
 				for _, u := range r.Units(s) {
-					if tier == "" || plan.RunsIn(u.Tier, tier) {
-						suites = append(suites, entry{u.Name, u.Tier, u.Format, u.Needs, u.Job})
+					if tier != "" && !plan.RunsIn(u.Tier, tier) {
+						continue
+					}
+					if byTest[u], err = plan.NeedsByTest(root, u, tier); err != nil {
+						return err
+					}
+					listed = append(listed, u)
+					lists = append(append(lists, u.Needs), slices.Collect(maps.Values(byTest[u]))...)
+				}
+			}
+			checked := checkNeeds(root, lists)
+			check := func(n string) error { return checked[n] }
+			var suites []entry
+			for _, u := range listed {
+				why, unmet := run.Blocked(u, u.Needs, check)
+				e := entry{Name: u.Name, Tier: u.Tier, Format: u.Format, Needs: u.Needs, Job: u.Job,
+					RunsHere: why == "", Unmet: unmet, UnmetByTest: map[string][]string{}}
+				if why != "" && len(unmet) == 0 {
+					e.Unsupported = why
+				}
+				for glob, list := range byTest[u] {
+					if _, missing := run.Blocked(u, list, check); len(missing) > 0 {
+						e.UnmetByTest[glob] = missing
 					}
 				}
+				suites = append(suites, e)
 			}
 			if asJSON {
 				return writeJSON(cmd.OutOrStdout(), map[string]any{"suites": suites, "groups": r.Groups})
 			}
-			rows := [][]string{{"SUITE", "TIER", "FORMAT", "NEEDS"}}
+			rows := [][]string{{"SUITE", "TIER", "FORMAT", "NEEDS", "HERE"}}
 			for _, e := range suites {
-				rows = append(rows, []string{e.Name, e.Tier, e.Format, strings.Join(e.Needs, " ")})
+				here := "yes"
+				if !e.RunsHere {
+					here = "no: " + cmp.Or(e.Unsupported, strings.Join(e.Unmet, " "))
+				}
+				for _, glob := range slices.Sorted(maps.Keys(e.UnmetByTest)) {
+					here += "; not " + glob + ": " + strings.Join(e.UnmetByTest[glob], " ")
+				}
+				rows = append(rows, []string{e.Name, e.Tier, e.Format, strings.Join(e.Needs, " "), here})
 			}
 			rows = append(rows, nil, []string{"GROUP", "SUITES"})
 			for _, g := range slices.Sorted(maps.Keys(r.Groups)) {

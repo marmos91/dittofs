@@ -55,12 +55,15 @@ type warmTarget struct {
 // warm chunk is idempotent, so the cost of not knowing is a redundant GET, while
 // the cost of guessing wrong is a warm run that silently does nothing.
 //
-// progress (may be nil) is invoked after each block is processed with the
-// running (done, total) counts so callers can drive a poll/UI. total is the
-// number of enumerated chunks, which is what this run will fetch. Callbacks are
+// progress (may be nil) is invoked with the running (done, total) counts as
+// blocks are processed, so callers can drive a poll/UI. total is the number of
+// enumerated chunks, which is what this run will fetch. Callbacks are
 // serialized independently of downloads, and payload admission is released
-// before waiting for callbacks to finish. They may inspect or mutate files;
-// they must not close the engine whose lifecycle pins this operation.
+// before waiting for callbacks to finish. Blocks processed while a callback
+// runs are reported together by the next call, so done may advance by more
+// than one; the last call is delivered before WarmAll returns. Callbacks may
+// inspect or mutate files; they must not close the engine whose lifecycle
+// pins this operation.
 //
 // A nil remote tier is an error: there is nothing to warm from. A fetch that
 // fails with fs.ErrDiskFull is terminal — the bounded local tier cannot hold
@@ -169,7 +172,7 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 			break
 		}
 		if d := int64(len(targets)) - counted[i]; d != 0 {
-			prog.push(d)
+			prog.add(0, d)
 		}
 		// One reference per scheduled fetch plus this loop's own: the payload
 		// is released by whichever finishes last. A fetch drops its reference
@@ -212,7 +215,7 @@ func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int6
 					blocksFetched.Add(1)
 					bytesFetched.Add(int64(len(data)))
 				}
-				prog.push(0)
+				prog.add(1, 0)
 				return nil
 			})
 		}
@@ -297,14 +300,18 @@ func (m *RemoteSync) warmTargets(ctx context.Context, payloadID string, at uint6
 	return targets, nil
 }
 
-// warmProgress calls a warm's progress callback on one goroutine, in event
-// order. Events queue without bound, so a fetch never waits for a callback: a
-// callback may wait for exclusive admission on a payload that is released only
-// after one of those fetches finishes.
+// warmProgress calls a warm's progress callback on one goroutine. Producers
+// only add to two counters, so a fetch never waits for a callback: a callback
+// may wait for exclusive admission on a payload that is released only after
+// one of those fetches finishes. Whatever arrives while a callback runs is
+// folded into the next call, so a stalled callback costs two counters rather
+// than an entry per finished target, and every call still reports the counts
+// after some prefix of the events.
 type warmProgress struct {
 	fn       func(done, total int64)
 	mu       sync.Mutex
-	pending  []int64 // per event: 0 is a finished target, anything else corrects the total
+	done     int64 // targets finished since the last call
+	total    int64 // corrections to the total since the last call
 	closed   bool
 	wake     chan struct{}
 	finished chan struct{}
@@ -322,34 +329,32 @@ func startWarmProgress(fn func(done, total int64), total int64) *warmProgress {
 		fn(0, total)
 		for {
 			p.mu.Lock()
-			events, closed := p.pending, p.closed
-			p.pending = nil
+			d, t, closed := p.done, p.total, p.closed
+			p.done, p.total = 0, 0
 			p.mu.Unlock()
-			for _, e := range events {
-				if e == 0 {
-					done++
-				} else {
-					total += e
-				}
+			if d != 0 || t != 0 {
+				done += d
+				total += t
 				fn(done, total)
+				continue
 			}
-			if len(events) == 0 {
-				if closed {
-					return
-				}
-				<-p.wake
+			if closed {
+				return
 			}
+			<-p.wake
 		}
 	}()
 	return p
 }
 
-func (p *warmProgress) push(event int64) {
+// add records done more finished targets and a correction of total.
+func (p *warmProgress) add(done, total int64) {
 	if p.fn == nil {
 		return
 	}
 	p.mu.Lock()
-	p.pending = append(p.pending, event)
+	p.done += done
+	p.total += total
 	p.mu.Unlock()
 	select {
 	case p.wake <- struct{}{}:
@@ -357,7 +362,7 @@ func (p *warmProgress) push(event int64) {
 	}
 }
 
-// finish waits until every queued event has been delivered.
+// finish waits until every recorded event has been delivered.
 func (p *warmProgress) finish() {
 	if p.fn != nil {
 		p.mu.Lock()

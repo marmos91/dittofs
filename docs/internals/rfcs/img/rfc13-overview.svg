@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 462" width="900" height="462" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#1b1f24}.s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .pd{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="462" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Every setting lives in the control plane. A host holds only what it needs to reach it.</text>
+
+  <rect x="24" y="44" width="852" height="82" rx="6" class="st"/>
+  <text x="40" y="66" class="h">on each host — a file or the environment: bootstrap only</text>
+  <text x="40" y="86" class="s">node identity and roles · how to reach the metadata store, and its credential · local devices (journals) and scratch paths</text>
+  <text x="40" y="104" class="s">listen addresses · log destination and level · process memory limit · where the wrapping keys of its own roles are</text>
+
+  <path d="M450,128 L450,166" class="ln"/>
+  <text x="460" y="152" class="s">reach</text>
+  <text x="540" y="152" class="e">a host value never overrides a record field</text>
+
+  <rect x="24" y="170" width="852" height="180" rx="8" class="sv"/>
+  <text x="40" y="192" class="h">control plane — records in the metadata store, the one source of every setting</text>
+
+  <text x="40" y="226" class="l">scope</text>
+  <rect x="140" y="208" width="128" height="28" rx="4" class="st"/><text x="160" y="227" class="m">installation</text>
+  <rect x="280" y="208" width="128" height="28" rx="4" class="st"/><text x="328" y="227" class="m">node</text>
+  <rect x="420" y="208" width="128" height="28" rx="4" class="st"/><text x="449" y="227" class="m">namespace</text>
+  <rect x="560" y="208" width="128" height="28" rx="4" class="st"/><text x="576" y="227" class="m">remote store</text>
+  <rect x="700" y="208" width="128" height="28" rx="4" class="st"/><text x="744" y="227" class="m">share</text>
+
+  <text x="40" y="270" class="l">binding class</text>
+  <rect x="140" y="252" width="128" height="28" rx="4" class="sv"/><text x="191" y="271" class="m">live</text>
+  <rect x="280" y="252" width="128" height="28" rx="4" class="pr"/><text x="318" y="271" class="m">restart</text>
+  <rect x="420" y="252" width="128" height="28" rx="4" class="pd"/><text x="445" y="271" class="m">next write</text>
+  <rect x="560" y="252" width="128" height="28" rx="4" class="rf"/><text x="607" y="271" class="m">bound</text>
+  <text x="700" y="264" class="s">bound: refused while</text>
+  <text x="700" y="278" class="s">content exists</text>
+
+  <text x="40" y="314" class="l">secrets</text>
+  <text x="140" y="314" class="s">sealed Secret records, referenced by name; no record, API answer, export, log or metric holds a value</text>
+  <text x="40" y="336" class="l">changes</text>
+  <text x="140" y="336" class="s">each record carries a generation; every change raises one installation-wide settings generation</text>
+
+  <rect x="24" y="392" width="300" height="56" rx="6" class="pr"/>
+  <text x="40" y="414" class="h">operator, through the API</text>
+  <text x="40" y="432" class="s">or an optional provisioning file, applied by it</text>
+  <path d="M174,390 L174,354" class="ln"/>
+  <text x="184" y="368" class="s">written, validated, then committed</text>
+
+  <rect x="536" y="392" width="340" height="56" rx="6" class="sv"/>
+  <text x="552" y="414" class="h">each component validates again when built</text>
+  <text x="552" y="432" class="s">an invalid value is refused, never defaulted</text>
+  <path d="M580,352 L580,388" class="ln"/>
+  <text x="590" y="374" class="s">settings generation read every 1 s; live change ≤ 5 s</text>
+</svg>

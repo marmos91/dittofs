@@ -103,29 +103,9 @@ re-read and re-write the whole list, which is how a long sequential write
 slowed down as the file grew; one key per ref keeps each commit's cost to what
 changed.
 
-```text
- filesystem service      engine          GC        management API
- Namespace, Files,       Existence,      Blocks    ControlPlane
- Capacity, OpenState     Content
-       └──────────────────────┴────────────┴────────────┘
-              one store: entities, codecs, key layout
-                              │  Update, View, Guard, Now
-                              ▼
-          KV: embedded on one node, or replicated in a cluster
+![The filesystem service holds Namespace, Files, Capacity and OpenState; the engine Existence and Content; GC Blocks; authentication Principals; the management API ControlPlane; internal tools Inspect. Adapters hold only vfs.Service. Every view sits on one metadata store of entities, codecs, key layout and transaction-level helpers, which calls only the small KV interface (Update, View, Limits; Get, Scan, Before, Versions, Set, Delete, Guard, GuardRange, Now), backed by an embedded store on one node or a replicated one in a cluster](img/rfc16-views.svg)
 
- key (first part = kind)       holds                     written by
- F‖profiles‖f7                 File: size, times, …      flush
- F‖profiles‖f7‖ov‖4GiB         overwrite record          flush
- F‖profiles‖f7‖ref‖…           ref to chunk C            offload
- C‖ns‖C, B‖ns‖K1, CR‖ns‖C‖…    chunk, block, ref index   offload
- F‖profiles‖d9                 File: new directory       mkdir
- F‖profiles‖d1‖e‖downloads     Entry, value "Downloads"  mkdir
- F‖profiles‖d1‖t‖…             time delta for d1         mkdir
- S‖profiles‖ud‖…               usage delta               mkdir
- U‖…, SH‖A, CFG‖…              users, shards, settings   control plane
- (kinds and sub-kinds shown by label, shares and files by name; a key
-  holds one-byte codes and 16-byte IDs, §4.2.1)
-```
+![The keys the example writes, grouped by scope. Under F‖profiles‖f7 the flush writes the File and an overwrite record and the offload writes a ref; under d1 and d9 mkdir writes the new directory's File, the Entry keyed by the folded name and a time delta. mkdir guards d1's File record; the flush guards f7's fence and N1's node record. Per share, the flush moves the version-floor entry and mkdir writes a usage delta. Per namespace, the offload writes a put intent, then chunk, block and reverse-ref records. Server-wide records hold users, shards and settings; the store format record is read first](img/rfc16-keys.svg)
 
 Everything about one file sits under `F‖` with the share's ID and the file's
 ID, so a client operation stays inside one or two such prefixes and a share's
@@ -742,6 +722,8 @@ recording its cursor in `st`; `st` moves past step 4 only in the batch that
 finds the last shard done. One transaction over 10⁵ per-child shards would read
 2×10⁵ tracked keys, past a replicated store's transaction limits.
 
+![DeleteShare is refused, changing nothing, while a cut runs, a GC pause holds a namespace the share names, snapshots exist without a disposition, a delete meets a use record or locked snapshot, or the share is already being removed. Otherwise step 1, one transaction, marks it being removed and frees its name and path, and DeleteShare returns: every call is ErrStale. Step 2 handles snapshots. Steps 3 and 4 run per shard, recorded in SH‖shard‖rm: join, drop open state, offload for detach, forget the tag once every shard is offloaded, then drop files in batches. Steps 5 to 7 delete server-wide rows, the share's records and shards, the state record last or retired with detach, and drain the namespace](img/rfc16-removal.svg)
+
 1. **Mark.** One transaction. It reads with tracking (§4.1) `S‖id‖nsg`, the GC
    pause of every namespace that names, and `S‖id‖rh`, and it `GuardRange`s
    `S‖id‖snap‖` and `S‖id‖use‖`; it refuses as the table says. Then it moves
@@ -1162,6 +1144,8 @@ type Txn interface {
 	Now() time.Time
 }
 ```
+
+![One Update: fn runs against one snapshot, where Get, Guard and GuardRange are tracked, Scan and Before are not, and Set and Delete write. At commit, a conflict on any tracked or written key aborts the attempt, which is retried on a fresh snapshot within the caller's deadline; otherwise the commit shares a sync with other ready commits and returns only once durable. An error may still have committed. Panels: alice-pc and build01 both guard d1 and both commit; Report.docx and REPORT.DOCX fold to one key, so the second aborts and its retry finds the name taken; a guard committing before a writer lets both commit, a writer committing first aborts the guard](img/rfc16-txn.svg)
 
 **A commit is reported only once durable.** `Update` **MUST** return success only
 after the transaction's writes are durable: on the embedded store, synced to its
