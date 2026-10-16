@@ -383,9 +383,12 @@ func TestDtcToolsMatchFlakeLock(t *testing.T) {
 	for _, d := range pinDrift(lock, dockerfile) {
 		t.Error(d)
 	}
-	// A checkout may end its lines with \r\n.
-	if d := pinDrift(lock, []byte(strings.ReplaceAll(string(dockerfile), "\n", "\r\n"))); len(d) != 0 {
-		t.Errorf("CRLF line endings give %q", d)
+	// Either line ending passes, whichever one the checkout has.
+	lf := strings.ReplaceAll(string(dockerfile), "\r\n", "\n")
+	for name, f := range map[string]string{"LF": lf, "CRLF": strings.ReplaceAll(lf, "\n", "\r\n")} {
+		if d := pinDrift(lock, []byte(f)); len(d) != 0 {
+			t.Errorf("%s line endings give %q", name, d)
+		}
 	}
 	changed := strings.Replace(string(dockerfile), "PYNFS_REV=", "PYNFS_REV=0", 1)
 	if d := pinDrift(lock, []byte(changed)); len(d) != 1 || !strings.Contains(d[0], "PYNFS_REV=0") {
