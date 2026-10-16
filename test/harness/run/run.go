@@ -94,8 +94,9 @@ var minute = time.Minute
 // Run runs the cells one after another, each logged under a new directory in
 // o.Results, where summary.json holds every finished cell's results: it's
 // written when the run starts and rewritten after each cell, so a run stopped
-// at any point still has them. Cancelling ctx stops the cell running and the
-// ones after it.
+// at any point still has them. A summary.json that can't be written doesn't
+// stop the run: dt says so, and Run returns the first such error once the
+// cells are done. Cancelling ctx stops the cell running and the ones after it.
 func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	commit, branch, dirty := gitState(o.Root)
 	// Absolute, so {out} means the same from any directory a command runs in.
@@ -113,9 +114,16 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 	if os.Getenv("DT_IN_CONTAINER") == "1" {
 		sum.In = "container"
 	}
-	if err := sum.Write(dir); err != nil {
-		return rep, err
+	var writeErr error
+	write := func() {
+		if err := sum.Write(dir); err != nil {
+			_, _ = fmt.Fprintf(o.Out, "[dt] summary.json: %v\n", err)
+			if writeErr == nil {
+				writeErr = err
+			}
+		}
 	}
+	write()
 	if len(cells) == 0 {
 		_, _ = fmt.Fprintln(o.Out, "[dt] nothing to run")
 	}
@@ -136,11 +144,9 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		// Write each cell's results to a file of its own when a run's time
 		// outside its cells, its stop less its start less its cells'
 		// seconds, passes 10 seconds.
-		if err := sum.Write(dir); err != nil {
-			return rep, err
-		}
+		write()
 	}
-	return rep, nil
+	return rep, writeErr
 }
 
 // ungraded grades the skips of a suite without a known file: they're

@@ -291,3 +291,31 @@ func TestRunWritesSummaryJSON(t *testing.T) {
 		t.Errorf("tier %q, %v", doc.Results.Extra.Tier, err)
 	}
 }
+
+// When summary.json can't be written, dt run still prints how each cell went
+// and adds it to the job summary, then fails with the error.
+func TestRunReportsWhenTheSummaryFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the suite runs sh")
+	}
+	y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n" +
+		"  breaks: { cmd: { sh: \"rm {out}/../summary.json && mkdir -p {out}/../summary.json/x\" } }\n"
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "test"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "test", "suites.yaml"), []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	summary := filepath.Join(t.TempDir(), "summary.md")
+	t.Setenv("GITHUB_STEP_SUMMARY", summary)
+	out, err := dt(t, "run", "breaks", "--ci", "--results", t.TempDir())
+	var status exitStatus
+	if err == nil || errors.As(err, &status) || !strings.Contains(out, "breaks  passed") {
+		t.Errorf("dt run: %v\n%s", err, out)
+	}
+	if got, _ := os.ReadFile(summary); !strings.Contains(string(got), "| `breaks` | passed |") {
+		t.Errorf("job summary %q", got)
+	}
+}

@@ -57,8 +57,8 @@ func newRun() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: results, CI: ci, Out: cmd.OutOrStdout(), Tier: tier})
-			if err != nil {
-				return err
+			if rep.Dir == "" {
+				return err // the run couldn't start
 			}
 			rows := [][]string{{"CELL", "RESULT", "TIME", "NOTE"}}
 			for _, o := range rep.Outcomes {
@@ -72,6 +72,9 @@ func newRun() *cobra.Command {
 				if err := appendSummary(rep.Markdown("dt run " + strings.Join(args, " "))); err != nil {
 					return err
 				}
+			}
+			if err != nil {
+				return err // after the outcomes: summary.json couldn't be written
 			}
 			if s := rep.Status(); s != 0 {
 				return exitStatus(s)

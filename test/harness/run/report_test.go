@@ -622,3 +622,25 @@ suites:
 		cancel()
 	}
 }
+
+// A summary.json that can't be written doesn't stop the run: dt says so,
+// runs the cells left, and returns the error once they're done.
+func TestSummaryWriteFailureKeepsRunning(t *testing.T) {
+	root, r := repo(t, `groups: { g: [breaks, next] }
+suites:
+  breaks: { cmd: { sh: "rm {out}/../summary.json && mkdir -p {out}/../summary.json/x" } }
+  next: { cmd: { sh: "touch {out}/ran" } }
+`, nil)
+	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out})
+	if err == nil || len(rep.Outcomes) != 2 || rep.Outcomes[1].Result != Passed || !strings.Contains(out.String(), "[dt] summary.json: ") {
+		t.Errorf("error %v, outcomes %+v\n%s", err, rep.Outcomes, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(rep.Dir, "next", "ran")); err != nil {
+		t.Error("the cell after the failed write didn't run")
+	}
+}
