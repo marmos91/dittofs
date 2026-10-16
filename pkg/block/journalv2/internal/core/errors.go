@@ -84,6 +84,15 @@ var (
 	// by one of the journal's limits.
 	ErrNoSpace = errors.New("journal: no space")
 
+	// ErrNoClock is returned by Open when it is given no clock. Nothing is
+	// opened. It is never retried: the caller passes WithClock.
+	ErrNoClock = errors.New("journal: no clock")
+
+	// ErrInvalidSetting is returned by Init and Open when a setting or the
+	// descriptor limit is negative. Nothing is opened or written. It
+	// is never retried.
+	ErrInvalidSetting = errors.New("journal: invalid setting")
+
 	// ErrOtherShare is matched by every OtherShareError: a call through one
 	// share's handle named a file that belongs to another share. Nothing of
 	// the file is served, appended, changed or offered. It is never retried.
