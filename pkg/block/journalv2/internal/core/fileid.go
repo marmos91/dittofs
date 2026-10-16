@@ -19,11 +19,11 @@ type FileID struct {
 // without calling this constructor at all. Revisit if a zero identifier is
 // ever seen to reach the journal from a real file.
 func NewFileID(id [16]byte) FileID {
-	return FileID{}
+	return FileID{id: id}
 }
 
 // Bytes returns the identifier the FileID was built from: for every id,
 // NewFileID(id).Bytes() == id.
 func (f FileID) Bytes() [16]byte {
-	return [16]byte{}
+	return f.id
 }
