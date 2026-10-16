@@ -335,6 +335,241 @@ package github.com/marmos91/dittofs/pkg/block/journalv2/internal/durability
 
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/format
 
+const (
+	FormatFileSize		= 56
+	SegmentHeaderSize	= 48
+	SealMarkerSize		= 32
+	RecordHeaderSize	= 96
+	CatalogEntrySize	= 72
+	TrailerSize		= 32
+
+	RecordAlign	= 8
+)
+
+const (
+	ModTimeSize		= 8
+	LossPayloadSize		= 16
+	CloneSpecPayloadSize	= 56
+	CutPayloadSize		= 8
+)
+
+const (
+	MagicFormat	= "DJF1"
+	MagicSegment	= "DJH1"
+	MagicSeal	= "DJS1"
+	MagicRecord	= "DJR1"
+	MagicTrailer	= "DJT1"
+)
+
+const (
+	FormatVersion	= 1
+
+	CatalogVersion	= 1
+)
+
+var ErrForeignSegment = errors.New("journal: segment belongs to another journal")
+
+var ErrNoFooter = errors.New("journal: segment has no usable footer")
+
+func Checksum(seed *core.JournalID, parts ...[]byte) uint32
+
+func EncodeCatalogEntry(e CatalogEntry) [CatalogEntrySize]byte
+
+func EncodeCloneSpec(s CloneSpec) [CloneSpecPayloadSize]byte
+
+func EncodeCut(c Cut) [CutPayloadSize]byte
+
+func EncodeFormatFile(f FormatFile) [FormatFileSize]byte
+
+func EncodeLoss(l Loss) [LossPayloadSize]byte
+
+func EncodeModTime(t ModTime) [ModTimeSize]byte
+
+func EncodeRecordHeader(seed core.JournalID, h RecordHeader) [RecordHeaderSize]byte
+
+func EncodeSealMarker(seed core.JournalID, m SealMarker) [SealMarkerSize]byte
+
+func EncodeSegmentHeader(h SegmentHeader) [SegmentHeaderSize]byte
+
+func EncodeTrailer(t Trailer) [TrailerSize]byte
+
+type CatalogEntry struct {
+	File	core.FileID
+	Offset	int64
+
+	RecordOffset	uint32
+
+	Length	int64
+	Seq	core.Seq
+	Version	core.Version
+	Kind	Kind
+	Tag	core.ShareTag
+}
+
+func DecodeCatalogEntry(b []byte) (CatalogEntry, error)
+
+type CloneSpec struct {
+	SourceShare	core.ShareID
+	SourceFile	core.FileID
+	SourceOffset	int64
+	AsOf		core.Version
+}
+
+func DecodeCloneSpec(b []byte) (CloneSpec, error)
+
+type Cut struct {
+	Cut core.SnapshotCut
+}
+
+func DecodeCut(b []byte) (Cut, error)
+
+type FormatFile struct {
+	Version		uint16
+	Identity	core.JournalID
+	Installation	core.InstallationID
+
+	Generation	uint64
+}
+
+func DecodeFormatFile(b []byte) (FormatFile, error)
+
+type Kind uint8
+
+const (
+	KindWrite	Kind	= 1
+
+	KindFill	Kind	= 2
+
+	KindRelease	Kind	= 3
+
+	KindTruncate	Kind	= 4
+
+	KindDeallocate	Kind	= 5
+
+	KindDelete	Kind	= 6
+
+	KindCloneTarget	Kind	= 7
+
+	KindOffloaded	Kind	= 8
+
+	KindUnmark	Kind	= 9
+
+	KindLoss	Kind	= 10
+
+	KindHold	Kind	= 11
+
+	KindUnhold	Kind	= 12
+
+	KindStamp	Kind	= 13
+
+	KindForget	Kind	= 14
+)
+
+const (
+	KindCoreReservedFirst	Kind	= 15
+	KindCoreReservedLast	Kind	= 127
+	KindExtensionFirst	Kind	= 128
+	KindExtensionLast	Kind	= 255
+)
+
+type Loss struct {
+	Dropped	core.Seq
+
+	Synced	bool
+
+	Offloaded	bool
+
+	Reason	LossReason
+}
+
+func DecodeLoss(b []byte) (Loss, error)
+
+type LossReason uint8
+
+const (
+	LossCorrupt		LossReason	= 1
+	LossStale		LossReason	= 2
+	LossFailedSyncWindow	LossReason	= 3
+)
+
+type ModTime int64
+
+func DecodeModTime(b []byte) (ModTime, error)
+
+type RecordHeader struct {
+	Kind	Kind
+	Segment	core.SegmentID
+	File	core.FileID
+	Offset	int64
+	Length	int64
+	Seq	core.Seq
+	Version	core.Version
+	Tag	core.ShareTag
+
+	SyncedThrough	int64
+
+	PayloadChecksum	uint32
+}
+
+func DecodeRecordHeader(seed core.JournalID, segment core.SegmentID, b []byte) (RecordHeader, error)
+
+type Scanner struct{}
+
+func NewScanner(r io.ReaderAt, size int64, seed core.JournalID) *Scanner
+
+func (s *Scanner) Header() (SegmentHeader, bool)
+
+func (s *Scanner) Next() (Slot, error)
+
+type SealMarker struct {
+	Segment	core.SegmentID
+	Offset	int64
+}
+
+func DecodeSealMarker(seed core.JournalID, segment core.SegmentID, offset int64, b []byte) (SealMarker, error)
+
+type SegmentHeader struct {
+	Version		uint16
+	Identity	core.JournalID
+	Segment		core.SegmentID
+	Predecessor	core.SegmentID
+
+	Stream	uint32
+}
+
+func DecodeSegmentHeader(b []byte) (SegmentHeader, error)
+
+type Slot struct {
+	Kind	SlotKind
+	Offset	int64
+
+	Header	RecordHeader
+
+	Seal	SealMarker
+}
+
+type SlotKind uint8
+
+const (
+	SlotRecord	SlotKind	= iota + 1
+
+	SlotSeal
+
+	SlotZero
+
+	SlotDamage
+)
+
+type Trailer struct {
+	Version		uint16
+	Flags		uint16
+	FooterOffset	int64
+	EntryCount	uint32
+	EntriesChecksum	uint32
+}
+
+func DecodeTrailer(b []byte) (Trailer, error)
+
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/index
 
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/platform
