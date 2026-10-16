@@ -23,6 +23,9 @@ var (
 	ErrOtherShare       = core.ErrOtherShare
 	ErrInvalidSetting   = core.ErrInvalidSetting
 	ErrNoClock          = core.ErrNoClock
+	ErrNoBarriers       = core.ErrNoBarriers
+	ErrCopyOnWrite      = core.ErrCopyOnWrite
+	ErrNotSubvolumeRoot = core.ErrNotSubvolumeRoot
 )
 
 type (

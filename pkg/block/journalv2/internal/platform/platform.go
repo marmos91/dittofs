@@ -1,8 +1,6 @@
 package platform
 
 import (
-	"errors"
-
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
 	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
 )
@@ -58,27 +56,11 @@ func Probe(dir string) (Report, error) {
 	return Report{}, core.ErrNotImplemented
 }
 
-// The refusals Check returns. Init and Open return them unchanged: a journal
-// is not created or opened on a filesystem that would void its durability or
-// its headroom.
-var (
-	// ErrNoBarriers is returned for a filesystem on which no sync reaches
-	// the device, so a synced record would not survive a power loss.
-	ErrNoBarriers = errors.New("journal: filesystem is mounted without cache flushes")
-
-	// ErrCopyOnWrite is returned for a directory on a copy-on-write
-	// filesystem that does not have copy-on-write disabled.
-	ErrCopyOnWrite = errors.New("journal: copy-on-write is not disabled for the directory")
-
-	// ErrNotSubvolumeRoot is returned for a directory on a copy-on-write
-	// filesystem that is not the root of its own subvolume.
-	ErrNotSubvolumeRoot = errors.New("journal: directory is not a subvolume root")
-)
-
-// Check returns the refusal r calls for, or nil. It returns ErrNoBarriers
-// when Barriers is unset; otherwise, when CopyOnWrite is set, ErrCopyOnWrite
-// when NoCoWSet is unset and ErrNotSubvolumeRoot when BtrfsSubvolumeRoot is
-// unset, checked in that order. ThinProvisioned is never refused.
+// Check returns the refusal r calls for, or nil. It returns
+// core.ErrNoBarriers when Barriers is unset; otherwise, when CopyOnWrite is
+// set, core.ErrCopyOnWrite when NoCoWSet is unset and core.ErrNotSubvolumeRoot
+// when BtrfsSubvolumeRoot is unset, checked in that order. ThinProvisioned is
+// never refused. Init and Open return the refusal unchanged.
 func Check(r Report) error {
 	return core.ErrNotImplemented
 }
