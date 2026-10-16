@@ -1,5 +1,7 @@
-// Package known reads the Markdown known-failure lists and matches test names
-// against them, as test/common/known-failures.sh does: kf_load is Load and
+// Package known reads a suite's known file, its known failures and expected
+// skips, and grades a cell's results against it. It also reads the Markdown
+// known-failure lists the scripts still use, and matches test names against
+// either as test/common/known-failures.sh does: kf_load is Load and
 // kf_match_pattern is Match. Both run on the cases in test/common/testdata.
 package known
 

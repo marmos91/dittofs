@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/known"
 	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
@@ -103,7 +104,7 @@ suites:
 		t.Fatal(err)
 	}
 	seen := readSummary(t, filepath.Join(rep.Dir, "second", "seen"))
-	if got, want := seen.cases(), []string{"first > false: failed | `false` exited 1"}; !slices.Equal(got, want) || len(seen.Results.Extra.Cells) != 1 || seen.Results.Extra.Exit != 1 {
+	if got, want := seen.cases(), []string{"first > false: failed [new] | `false` exited 1"}; !slices.Equal(got, want) || len(seen.Results.Extra.Cells) != 1 || seen.Results.Extra.Exit != 1 {
 		t.Errorf("summary before the second cell: %q, %+v", got, seen.Results.Extra)
 	}
 	final := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
@@ -118,7 +119,7 @@ suites:
 }
 
 // An exit suite with tests has a result for each test: passed, or failed with
-// why, a timeout among them. A test that ran nothing has none.
+// why, a timeout among them, and graded new. A test that ran nothing has none.
 func TestExitResultsPerTest(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { cmd: "sh {test}", tests: "t/*.sh", timeout: { test: 1s } }
@@ -126,8 +127,8 @@ func TestExitResultsPerTest(t *testing.T) {
 	rep := runIn(t, root, r, "s")
 	want := []string{
 		"s > t/a.sh: passed",
-		"s > t/b.sh: failed | `sh t/b.sh` exited 3",
-		"s > t/c.sh: failed | timed out after 1s",
+		"s > t/b.sh: failed [new] | `sh t/b.sh` exited 3",
+		"s > t/c.sh: failed [new] | timed out after 1s",
 	}
 	if got := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
@@ -137,8 +138,9 @@ func TestExitResultsPerTest(t *testing.T) {
 // Without tests, each command of an exit suite is a test case, named by its
 // first line as the registry writes it: passed, failed, or skipped when there
 // is no {base} to compare with, which is ungraded in a suite without a known
-// file and left to the known file in one with it. A command that ran nothing
-// has no result.
+// file and an unexpected skip in one whose file doesn't list it. A command
+// that ran nothing has no result, and the cell's note says so after its
+// failures.
 func TestExitResultsPerCommand(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_EVENT_NAME", "schedule")
@@ -151,23 +153,23 @@ suites:
 	want := []string{
 		"lint > true: passed",
 		"lint > true {out}: passed",
-		"lint > false: failed | `false` exited 1",
+		"lint > false: failed [new] | `false` exited 1",
 		"lint > no-such-check {base}: skipped [ungraded] | no change to check",
 		"lint > echo two: passed",
-		"listed > no-such-check {base}: skipped | no change to check",
+		"listed > no-such-check {base}: other [unexpected_skip] | no change to check",
 	}
 	if got := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
-	if rep.Outcomes[0].Note != "`false` exited 1, `exit 75` exited 75: it ran nothing" {
+	if rep.Outcomes[0].Note != "`false` exited 1; `exit 75` exited 75: it ran nothing" {
 		t.Errorf("the cell's note changed: %q", rep.Outcomes[0].Note)
 	}
 }
 
 // A go-json cell has a result for each test and subtest, under its package: a
-// failure with what the test printed, a skip ungraded and with its reason. A
-// test whose binary crashed before its result is other, with its output, and
-// its package has no failure of its own besides.
+// failure with what the test printed, graded new, and a skip ungraded and with
+// its reason. A test whose binary crashed before its result failed, with its
+// output, and its package has no failure of its own besides.
 func TestGoJSONResults(t *testing.T) {
 	files := map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": goModule["a/a_test.go"], "p/p_test.go": `package p
 
@@ -185,13 +187,13 @@ func TestPanicky(t *testing.T) {
 	got := readSummary(t, filepath.Join(dir, "summary.json")).cases()
 	slices.Sort(got)
 	want := []string{
-		"g example.com/m/a > TestFail: failed |     a_test.go:6: broke",
-		"g example.com/m/a > TestParent/bad: failed |     a_test.go:10: sub broke",
+		"g example.com/m/a > TestFail: failed [new] |     a_test.go:6: broke",
+		"g example.com/m/a > TestParent/bad: failed [new] |     a_test.go:10: sub broke",
 		"g example.com/m/a > TestParent/good: passed",
-		"g example.com/m/a > TestParent: failed",
+		"g example.com/m/a > TestParent: failed [new]",
 		"g example.com/m/a > TestPass: passed",
 		"g example.com/m/a > TestSkip: skipped [ungraded] |     a_test.go:7: nothing to check here",
-		"g example.com/m/p > TestPanicky: other | panic: boom",
+		"g example.com/m/p > TestPanicky: failed [new] | panic: boom",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %q\nwant %q", got, want)
@@ -229,7 +231,7 @@ func TestGoJSONCellLimitResults(t *testing.T) {
 {`+now+`"Action":"output","Package":"p","Test":"TestWait","Output":"=== RUN   TestWait\n"}
 `)
 	rep := runIn(t, root, r, "g")
-	want := []string{"g p > TestDone: passed", "g p > TestWait: failed | stopped at the cell's limit"}
+	want := []string{"g p > TestDone: passed", "g p > TestWait: failed [new] | stopped at the cell's limit"}
 	if got := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(got, want) || rep.Outcomes[0].Result != Failed {
 		t.Errorf("got %q, %+v\nwant %q", got, rep.Outcomes[0], want)
 	}
@@ -304,7 +306,7 @@ suites:
 	if len(got) != 4 || got[0].Test != "p/a.sh" || got[0].Exit != 1 || string(got[0].Output) != "ok one\n" || got[0].Out != filepath.Join(rep.Dir, "pass") || got[0].TimedOut || !got[3].TimedOut {
 		t.Errorf("the reader got %+v", got)
 	}
-	want := []string{"pass > one: passed", "fail > two: failed", "slow > three: passed"}
+	want := []string{"pass > one: passed", "fail > two: failed [new]", "slow > three: passed"}
 	if cases := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(cases, want) {
 		t.Errorf("got %q, want %q", cases, want)
 	}
@@ -396,17 +398,16 @@ func caseLines(tests []report.Test) []string {
 }
 
 // Recorded go test -json runs, testdata/go-test.json, give a result for each
-// test and subtest under its package, timed by go test, with the skip
-// ungraded, and a failed result for each package that didn't build or failed
-// outside any test. A test left open when its package ended is timed to that
-// end: failed when go test's own timeout lists it as running, which takes in
-// a parent blocked on its subtest; other otherwise, as after a crash or for a
-// parent waiting on its parallel subtests; and, when it waited in t.Parallel
-// and never continued, it didn't run and has no result. Such a package has
-// no result of its own. Every test the recording starts, its package's end
-// closes. A message keeps its lines' indentation, a stack's frames included.
-// The cell's note counts the tests closed at their package's end, and they
-// ran, as a test paused in t.Parallel didn't.
+// test and subtest under its package, timed by go test, each failure graded
+// new and the skip ungraded, and a failed result for each package that didn't
+// build or failed outside any test. A test left open when its package ended
+// is timed to that end and failed, whether go test's own timeout stopped it
+// or its binary crashed, a parent waiting on its subtests included; when it
+// waited in t.Parallel and never continued, it didn't run and has no result.
+// Such a package has no result of its own. Every test the recording starts,
+// its package's end closes. A message keeps its lines' indentation, a stack's
+// frames included. The cell's note counts the tests closed at their package's
+// end as failed, as a test paused in t.Parallel isn't.
 func TestGoJSONRecordedRun(t *testing.T) {
 	events, err := os.ReadFile("testdata/go-test.json")
 	if err != nil {
@@ -418,32 +419,32 @@ func TestGoJSONRecordedRun(t *testing.T) {
 			res.add(line, io.Discard)
 		}
 	}
-	ungraded(&registry.Suite{}, res.cases)
+	known.Grade(res.cases, false, nil, nil)
 	want := []string{
 		"example.com/m/a > TestPass: passed, 20ms",
-		"example.com/m/a > TestFail: failed, 0s |     a_test.go:9: broke",
+		"example.com/m/a > TestFail: failed, 0s [new] |     a_test.go:9: broke",
 		"example.com/m/a > TestSkip: skipped, 0s [ungraded] |     a_test.go:10: nothing to check here",
 		"example.com/m/a > TestParent/good: passed, 0s",
-		"example.com/m/a > TestParent/bad: failed, 0s |     a_test.go:13: sub broke",
-		"example.com/m/a > TestParent: failed, 0s",
-		"example.com/m/b: failed, 0s | build failed",
-		"example.com/m/p > TestPanicky: other, 3ms | panic: boom",
+		"example.com/m/a > TestParent/bad: failed, 0s [new] |     a_test.go:13: sub broke",
+		"example.com/m/a > TestParent: failed, 0s [new]",
+		"example.com/m/b: failed, 0s [new] | build failed",
+		"example.com/m/p > TestPanicky: failed, 3ms [new] | panic: boom",
 		"example.com/m/tm > TestFine: passed, 0s",
-		"example.com/m/tm: failed, 223ms | failed outside any test",
-		"example.com/m/to > TestWait: failed, 3.004s | panic: test timed out after 3s",
-		"example.com/m/pt > TestP: other, 3.004s",
-		"example.com/m/pt > TestP/a: failed, 3.004s | panic: test timed out after 3s",
-		"example.com/m/st > TestS: failed, 3.009s",
-		"example.com/m/st > TestS/x: failed, 3.009s | panic: test timed out after 3s",
-		"example.com/m/pc > TestQ: other, 6ms",
-		"example.com/m/pc > TestQ/a: other, 6ms | panic: boom",
-		"example.com/m/sc > TestR: other, 4ms",
-		"example.com/m/sc > TestR/x: other, 4ms | panic: boom",
+		"example.com/m/tm: failed, 223ms [new] | failed outside any test",
+		"example.com/m/to > TestWait: failed, 3.004s [new] | panic: test timed out after 3s",
+		"example.com/m/pt > TestP: failed, 3.004s [new]",
+		"example.com/m/pt > TestP/a: failed, 3.004s [new] | panic: test timed out after 3s",
+		"example.com/m/st > TestS: failed, 3.009s [new]",
+		"example.com/m/st > TestS/x: failed, 3.009s [new] | panic: test timed out after 3s",
+		"example.com/m/pc > TestQ: failed, 6ms [new]",
+		"example.com/m/pc > TestQ/a: failed, 6ms [new] | panic: boom",
+		"example.com/m/sc > TestR: failed, 4ms [new]",
+		"example.com/m/sc > TestR/x: failed, 4ms [new] | panic: boom",
 	}
 	if got := caseLines(res.cases); !slices.Equal(got, want) || len(res.running) != 0 {
 		t.Errorf("got %q\nwant %q\nstill open: %v", got, want, slices.Collect(maps.Keys(res.running)))
 	}
-	if got, want := res.note(nil), "3 passed, 7 failed, 1 skipped, 6 with no result: TestFail, TestParent/bad, TestP/a, TestS/x, TestWait; example.com/m/b: build failed; example.com/m/p: failed outside any test; example.com/m/tm: failed outside any test; example.com/m/pc: failed outside any test; example.com/m/sc: failed outside any test"; got != want {
+	if got, want := res.note(nil), "3 passed, 13 failed, 1 skipped: TestFail, TestParent/bad, TestPanicky, TestQ/a, TestP/a, and 3 more; example.com/m/b: build failed; example.com/m/tm: failed outside any test"; got != want {
 		t.Errorf("note %q\nwant %q", got, want)
 	}
 	if !res.ran("TestS") || !res.ran("TestPanicky") || res.ran("TestP/b") {
@@ -489,7 +490,7 @@ func TestGoJSONOnlyPausedTestsOpen(t *testing.T) {
 	} {
 		res.add([]byte(line+"\n"), io.Discard)
 	}
-	if got, want := caseLines(res.cases), []string{"x: failed, 1s | failed outside any test"}; !slices.Equal(got, want) {
+	if got, want := caseLines(res.cases), []string{"x: failed, 1s [new] | failed outside any test"}; !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
@@ -572,7 +573,7 @@ func TestGoJSONPackageEndAfterTheLimit(t *testing.T) {
 	} {
 		res.add([]byte(line+"\n"), io.Discard)
 	}
-	want := []string{"p > TestDone: passed, 0s", "p > TestWait: failed, 4.2s | stopped at the cell's limit"}
+	want := []string{"p > TestDone: passed, 0s", "p > TestWait: failed, 4.2s [new] | stopped at the cell's limit"}
 	if got := caseLines(res.cases); !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}

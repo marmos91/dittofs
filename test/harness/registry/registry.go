@@ -10,6 +10,8 @@ import (
 	"reflect"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/marmos91/dittofs/test/harness/known"
 )
 
 // Version is the newest registry format this package reads.
@@ -30,6 +32,9 @@ type Registry struct {
 	Defaults Suite               `yaml:"defaults"`
 	Groups   map[string][]string `yaml:"groups"`
 	Suites   Suites              `yaml:"suites"`
+	// Known holds the entries of each known file a suite names, by its path,
+	// read and checked as the registry loads.
+	Known map[string][]known.Entry `yaml:"-"`
 }
 
 // Suites keeps the file's order.

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="smbtorture/memory" tests="1" failures="1" errors="0" skipped="0" time="912.000">
+    <properties>
+      <property name="result" value="failed"></property>
+    </properties>
+    <testcase name="smb2.notify.rec" classname="smbtorture/memory" time="0.040">
+      <failure message="unexpected_pass"></failure>
+    </testcase>
+  </testsuite>
+</testsuites>

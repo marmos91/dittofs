@@ -70,6 +70,7 @@ func TestLoadRules(t *testing.T) {
 		{"a placeholder's tests aren't timed by size", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', timeout: { test: size } }\n", "timeout.test: size needs the tests"},
 		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
 		{"a placeholder's tests aren't narrowed by a glob", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', select: { pr: 'a*' } }\n", "select.pr needs the tests"},
+		{"no matrix axis takes a key of where's own", ok + "suites:\n  a: { cmd: 'run {os}', matrix: { os: [linux] } }\n", `matrix axis "os": tier, option and os are where's own keys`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -145,6 +146,41 @@ func TestKnownPathRelativeToRoot(t *testing.T) {
 		"suites:\n  a: { cmd: true, known: known.yaml }\n"
 	if _, err := Parse(root, []byte(y)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A known file is read and checked as the registry loads, and its entries
+// kept by its path. Each entry keeps its own rules, and each key of its where
+// is a matrix axis of the suite or of an option that takes the file, tier,
+// option or os, with a value one of their cells has: a misspelt key or value
+// would leave the entry applying nowhere.
+func TestKnownFiles(t *testing.T) {
+	const y = "version: 1\ndefaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }\nsuites:\n" +
+		"  s:\n    cmd: run {nfs}\n    matrix: { nfs: ['3', '4'] }\n    known: k.yaml\n    options:\n      o: { cmd: 'run {minor}', matrix: { minor: ['1'] } }\n"
+	entry := func(where string) string {
+		return "- { test: a, status: fail, fix: wontfix, category: proto, reason: r, where: " + where + " }\n"
+	}
+	for _, c := range []struct {
+		name, known, want string
+	}{
+		{"where takes the suite's axes, an option's, tier, option and os", entry("{ nfs: ['3'], minor: ['1'], tier: [pr], option: [o], os: [macos] }"), ""},
+		{"a key that's none of those is refused", entry("{ nsf: ['3'] }"), "k.yaml:1: where nsf: not a matrix axis of the suite, tier, option or os"},
+		{"a value no cell has is refused", entry("{ nfs: ['4.1'] }"), `k.yaml:1: where nfs: no cell has the value "4.1"`},
+		{"an entry's own rules apply", "- { test: a, status: fail, category: proto, reason: r }\n", "k.yaml:1: fix is required"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "k.yaml"), []byte(c.known), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			r, err := Parse(root, []byte(y))
+			switch {
+			case c.want == "" && (err != nil || len(r.Known["k.yaml"]) != 1):
+				t.Fatalf("got %v, want the entry loaded", err)
+			case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+				t.Fatalf("got %v, want an error containing %q", err, c.want)
+			}
+		})
 	}
 }
 

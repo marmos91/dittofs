@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/test/harness/fixture"
+	"github.com/marmos91/dittofs/test/harness/known"
 	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
@@ -131,7 +132,6 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 				_, _ = fmt.Fprintln(o.Out, a)
 			}
 		}
-		ungraded(c.Unit, cell.Tests)
 		sum.Cells = append(sum.Cells, cell)
 		sum.Stop, sum.Exit = time.Now(), rep.Status()
 		// ponytail: the whole summary is rewritten after each cell: about
@@ -142,19 +142,6 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		write()
 	}
 	return rep, writeErr
-}
-
-// ungraded grades the skips of a suite without a known file: they're
-// reported and counted, and pass.
-func ungraded(u *registry.Suite, tests []report.Test) {
-	if u.Known != "" {
-		return
-	}
-	for i := range tests {
-		if tests[i].Status == report.Skipped {
-			tests[i].Grade = report.Ungraded
-		}
-	}
 }
 
 // runName names a run by its start time and commit, and a job's re-run by its
@@ -368,26 +355,26 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		start := time.Now()
 		r := t.run(test, each[i])
 		interrupted = interrupted || r.interrupted
+		if len(r.notRun) > 0 {
+			notRun = append(notRun, prefix+strings.Join(r.notRun, ", "))
+		}
 		switch {
 		case read == nil:
 			// exit: each test is a test case, or without tests each command.
-			switch r.result {
-			case Failed:
-				failed = append(failed, prefix+r.note)
-			case NotRun:
-				notRun = append(notRun, prefix+r.note)
-			}
 			if test == "" {
 				cases = append(cases, r.steps...)
 			} else if r.result != NotRun {
-				status := report.Passed
+				tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
 				if r.result == Failed {
-					status = report.Failed
+					tc.Status, tc.Message = report.Failed, r.note
 				}
-				cases = append(cases, report.Test{Name: test, Status: status, Duration: time.Since(start), Message: r.note})
+				if r.timedOut {
+					tc.Grade = report.New // a hang, which no entry excuses
+				}
+				cases = append(cases, tc)
 			}
 		case r.interrupted:
-			notRun = append(notRun, prefix+"interrupted")
+			// Its not-run note says so, and nothing it reported counts.
 		default:
 			got, err := read(report.Ran{Test: test, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Out: out})
 			if err != nil {
@@ -398,9 +385,6 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 				// the reader can only say which of its tests was open.
 				failed = append(failed, prefix+r.note)
 			}
-			if r.result == NotRun {
-				notRun = append(notRun, prefix+r.note)
-			}
 			cases = append(cases, got...)
 		}
 	}
@@ -408,27 +392,37 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		notRun = append(notRun, fmt.Sprintf("%d tests not started: %s", unstarted, stopped(cellCtx)))
 		interrupted = interrupted || errors.Is(cellCtx.Err(), context.Canceled)
 	}
-	if read != nil {
-		// The results decide, not the exit status: a failed result fails
-		// the cell, and a cell with none didn't run.
-		var names []string
-		for _, tc := range cases {
-			if tc.Status == report.Failed {
-				names = append(names, tc.Name)
-			}
-		}
-		if len(names) > 0 {
-			failed = append(failed, fmt.Sprintf("%d failed: %s", len(names), some(names)))
-		}
-		if len(cases) == 0 {
-			notRun = append(notRun, "no results")
-		}
+	if read != nil && len(cases) == 0 {
+		// The results decide, not the exit status: a cell with none didn't
+		// run.
+		notRun = append(notRun, "no results")
 	}
 	if interrupted {
 		// The cell didn't finish, and what its tests reported once
 		// interrupted can come from the interrupt itself.
 		cases = nil
 	}
+	// The grades decide how the cell went. A new failure fails it: the note
+	// gives an exit suite's failing tests, or its failing commands, each with
+	// why, and a reader's by name.
+	c.grade(cases)
+	var names []string
+	for _, tc := range cases {
+		switch {
+		case tc.Grade != report.New:
+		case read != nil:
+			names = append(names, tc.Name)
+		case c.Unit.Tests.Set():
+			failed = append(failed, tc.Name+": "+tc.Message)
+		default:
+			failed = append(failed, tc.Message)
+		}
+	}
+	if len(names) > 0 {
+		failed = append(failed, fmt.Sprintf("%d failed: %s", len(names), some(names)))
+	}
+	unexpected, lost := gradeNotes(cases)
+	failed, notRun = append(failed, unexpected...), append(notRun, lost...)
 	cell := report.Cell{Name: c.Name, Result: Passed, Log: logName, Tests: cases}
 	switch {
 	case len(failed) > 0:
@@ -437,6 +431,40 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		cell.Result, cell.Note = NotRun, strings.Join(notRun, "; ")
 	}
 	return cell
+}
+
+// grade grades the cell's results against its suite's known file, at the
+// cell's matrix values, its tier, its option and this machine's OS.
+func (c Cell) grade(cases []report.Test) {
+	at := map[string]string{"tier": c.Tier, "option": c.Option, "os": runtime.GOOS}
+	if at["os"] == "darwin" {
+		at["os"] = "macos" // as the platform need names it
+	}
+	maps.Copy(at, c.Matrix)
+	known.Grade(cases, c.Unit.Known != "", c.Known, at)
+}
+
+// gradeNotes names the results that fail their cell, or leave it not run, by
+// their grade alone: unexpected passes, then unexpected skips and incomplete
+// results.
+func gradeNotes(cases []report.Test) (failed, notRun []string) {
+	names := map[string][]string{}
+	for _, tc := range cases {
+		names[tc.Grade] = append(names[tc.Grade], tc.Name)
+	}
+	for _, g := range []struct {
+		grade, says string
+		to          *[]string
+	}{
+		{report.UnexpectedPass, "passed unexpectedly", &failed},
+		{report.UnexpectedSkip, "skipped unexpectedly", &notRun},
+		{report.Incomplete, "incomplete", &notRun},
+	} {
+		if n := names[g.grade]; len(n) > 0 {
+			*g.to = append(*g.to, fmt.Sprintf("%d %s: %s", len(n), g.says, some(n)))
+		}
+	}
+	return failed, notRun
 }
 
 // readers read the formats whose results a tool writes: every format but
@@ -464,11 +492,13 @@ type tester struct {
 
 // testRun is how one test's commands went.
 type testRun struct {
-	result, note string        // how the test went, and why
-	steps        []report.Test // each command that ran to a result, named by its first line
-	exit         int           // the first non-zero exit status
-	timedOut     bool          // stopped at the test's limit or the cell's
-	interrupted  bool          // stopped by an interrupt
+	result      string        // how the test went
+	note        string        // why it failed, when it did
+	notRun      []string      // why commands of it ran nothing, an interrupt included
+	steps       []report.Test // each command that ran to a result, named by its first line
+	exit        int           // the first non-zero exit status
+	timedOut    bool          // stopped at the test's limit or the cell's
+	interrupted bool          // stopped by an interrupt
 }
 
 // run runs every command for one test, all of them even after one fails, and
@@ -503,7 +533,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		var err error
 		if cmd != (registry.Command{}) {
 			if argv, err = fill(cmd, t.vals, t.lists); err != nil {
-				return testRun{result: NotRun, note: err.Error()}
+				return testRun{result: NotRun, notRun: []string{err.Error()}}
 			}
 		}
 		shown := cmp.Or(strings.Join(argv, " "), image)
@@ -513,7 +543,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		printed, container := shown, ""
 		if image != "" {
 			if argv, container, err = t.inImage(argv); err != nil {
-				return testRun{result: NotRun, note: err.Error()}
+				return testRun{result: NotRun, notRun: []string{err.Error()}}
 			}
 			printed = strings.Join(argv, " ")
 		}
@@ -540,11 +570,11 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		}
 		switch {
 		case ctx.Err() != nil && t.ctx.Err() == nil:
-			step.Message = fmt.Sprintf("timed out after %s", limit)
+			step.Message, step.Grade = fmt.Sprintf("timed out after %s", limit), report.New // a hang, which no entry excuses
 		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
-			step.Message = "stopped at the cell's limit"
+			step.Message, step.Grade = "stopped at the cell's limit", report.New
 		case t.ctx.Err() != nil:
-			r.result, r.note, r.interrupted = NotRun, "interrupted", true
+			r.result, r.notRun, r.interrupted = NotRun, []string{"interrupted"}, true
 			return r
 		case err != nil:
 			step.Message = fmt.Sprintf("`%s`: %v", firstLine(shown), err)
@@ -563,15 +593,16 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		}
 		r.steps = append(r.steps, step)
 		if ctx.Err() != nil { // the test, or the cell, ran out of time
-			r.result, r.note, r.timedOut = Failed, step.Message, true
+			r.result, r.note, r.notRun, r.timedOut = Failed, step.Message, notRun, true
 			return r
 		}
 	}
+	r.notRun = notRun
 	switch {
 	case len(failed) > 0:
-		r.result, r.note = Failed, strings.Join(append(failed, notRun...), ", ")
+		r.result, r.note = Failed, strings.Join(failed, ", ")
 	case len(notRun) > 0:
-		r.result, r.note = NotRun, strings.Join(notRun, ", ")
+		r.result = NotRun
 	default:
 		r.result = Passed
 	}

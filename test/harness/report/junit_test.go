@@ -16,10 +16,11 @@ import (
 
 // A test's CTRF status, which its grade decides, gives its JUnit one: a
 // pass; a failure; skipped with the entry's reason for a known failure, and
-// with the tool's for an ungraded skip; an error for an unexpected skip; and
-// a flaky pass is a pass with a flaky property. JUnit never reads the grade,
-// so grades that share a status share a row. Until grading, a failure isn't
-// graded, and is a failure all the same.
+// with the tool's for an ungraded skip; an error for an unexpected skip; a
+// failure with its grade as its message for an unexpected pass, which the
+// tool said nothing about; and a flaky pass is a pass with a flaky property.
+// JUnit reads the grade only for that message, so grades that share a status
+// share a row.
 func TestJUnitGrades(t *testing.T) {
 	pjdfstest, smbtorture, unit := "pjdfstest/badger-s3/4.1", "smbtorture/memory", "unit"
 	for _, c := range []struct {
@@ -27,9 +28,11 @@ func TestJUnitGrades(t *testing.T) {
 		test               Test
 	}{
 		{"passed", pjdfstest, "passed", Test{Name: "chmod/00.t", Status: Passed, Duration: 1500 * time.Millisecond}},
-		{"failed", "lint-repo", "failed", Test{Name: "false", Status: Failed, Duration: 2 * time.Millisecond, Message: "`false` exited 1"}},
-		{"known", pjdfstest, "passed", Test{Name: "unlink/14.t", Status: Skipped, Duration: 860 * time.Millisecond, Message: "not ok 3", Grade: "known",
+		{"failed", "lint-repo", "failed", Test{Name: "false", Status: Failed, Duration: 2 * time.Millisecond, Message: "`false` exited 1", Grade: New}},
+		{"known", pjdfstest, "passed", Test{Name: "unlink/14.t", Status: Skipped, RawStatus: Failed, Duration: 860 * time.Millisecond, Message: "not ok 3", Grade: Known,
 			Reason: "NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1"}},
+		{"unexpected_pass", smbtorture, "failed", Test{Name: "smb2.notify.rec", Status: Failed, RawStatus: Passed, Duration: 40 * time.Millisecond, Grade: UnexpectedPass,
+			Reason: "a buffered backlog arrives per operation", Issue: "#12"}},
 		{"unexpected_skip", smbtorture, "not run", Test{Name: "smb2.lock.rw", Status: Other, Message: "skip: no lock support", Grade: "unexpected_skip"}},
 		{"ungraded", unit, "passed", Test{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded}},
 		{"flaky", pjdfstest, "passed", Test{Name: "rename/09.t", Status: Passed, Duration: 3310 * time.Millisecond, Flaky: true}},

@@ -7,16 +7,18 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/marmos91/dittofs/test/harness/known"
 	"github.com/marmos91/dittofs/test/harness/plan"
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// Cell is a planned cell with the suite or option it runs and the tier it
-// runs at.
+// Cell is a planned cell with the suite or option it runs, the tier it runs
+// at, and the entries of the suite's known file.
 type Cell struct {
 	plan.Cell
-	Unit *registry.Suite
-	Tier string
+	Unit  *registry.Suite
+	Tier  string
+	Known []known.Entry
 }
 
 // Select returns the cells `dt run TARGET` runs. TARGET is a group, a suite,
@@ -62,7 +64,7 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			if path != "" && c.Name != want && !strings.HasPrefix(c.Name, want+"/") {
 				continue
 			}
-			cell := Cell{Cell: c, Unit: unit, Tier: at}
+			cell := Cell{Cell: c, Unit: unit, Tier: at, Known: r.Known[unit.Known]}
 			switch {
 			case len(tests) > 1 && goTests && slices.ContainsFunc(tests, func(n string) bool { return strings.Contains(n, "/") }):
 				// One -run pattern for several names would filter every

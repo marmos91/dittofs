@@ -1,7 +1,9 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/known"
 	"github.com/marmos91/dittofs/test/harness/needs"
 )
 
@@ -54,6 +57,7 @@ func (r *Registry) check(root string) []error {
 		fail("version %d: this dt reads version %d", r.Version, Version)
 	}
 	seen := map[string]bool{}
+	wheres := map[string]map[string][]string{} // what each known file's where may hold
 	for _, s := range r.Suites {
 		if !nameRE.MatchString(s.Name) {
 			fail("suite %q: a name is [a-z0-9-]+", s.Name)
@@ -77,7 +81,18 @@ func (r *Registry) check(root string) []error {
 			for _, err := range checkUnit(root, u) {
 				fail("%s: %v", u.Name, err)
 			}
+			if u.Known != "" {
+				addWhere(wheres, u)
+			}
 		}
+	}
+	r.Known = map[string][]known.Entry{}
+	for _, path := range slices.Sorted(maps.Keys(wheres)) {
+		entries, err := loadKnown(root, path, wheres[path])
+		if err != nil {
+			errs = append(errs, err)
+		}
+		r.Known[path] = entries
 	}
 	for g, members := range r.Groups {
 		if !nameRE.MatchString(g) {
@@ -200,6 +215,12 @@ func checkUnit(root string, u *Suite) []error {
 		if len(a.Values) == 0 {
 			fail("matrix axis %q has no values", a.Name)
 		}
+		// decision: an entry of a known file names where it applies by
+		// matrix axis, tier, option or os, so no axis takes one of the
+		// other three names, which would leave the entry's meaning open.
+		if _, own := whereKeys[a.Name]; own {
+			fail("matrix axis %q: tier, option and os are where's own keys in a known file", a.Name)
+		}
 		axes[a.Name] = true
 	}
 	// A template takes the same placeholders as a command.
@@ -283,6 +304,64 @@ func checkUnit(root string, u *Suite) []error {
 		}
 	}
 	return errs
+}
+
+// whereKeys are the keys a known entry's where takes besides the matrix
+// axes, each with its values: os is the platform need the machine meets.
+// option takes the names of the options that use the file.
+var whereKeys = map[string][]string{"tier": Tiers, "option": {}, "os": {"linux", "macos", "windows"}}
+
+// addWhere adds what a unit's cells can be to what the where of an entry in
+// its known file may hold: its matrix axes and their values, and its option.
+// A suite's options take its known file unless they name their own, so one
+// file can be named by units with different axes, and an entry may name the
+// axes of any of them.
+func addWhere(wheres map[string]map[string][]string, u *Suite) {
+	w := wheres[u.Known]
+	if w == nil {
+		w = maps.Clone(whereKeys)
+		wheres[u.Known] = w
+	}
+	for _, a := range u.Matrix {
+		for _, v := range a.Values {
+			if !slices.Contains(w[a.Name], v) {
+				w[a.Name] = append(slices.Clip(w[a.Name]), v)
+			}
+		}
+	}
+	if _, option, ok := strings.Cut(u.Name, "/"); ok {
+		w["option"] = append(slices.Clip(w["option"]), option)
+	}
+}
+
+// loadKnown reads and checks the known file at path: its entries, and that
+// each key and value of an entry's where is one where gives. A file that
+// doesn't exist is reported with the unit that names it.
+func loadKnown(root, path string, where map[string][]string) ([]known.Entry, error) {
+	data, err := os.ReadFile(filepath.Join(root, path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	entries, err := known.Parse(path, data)
+	errs := []error{err}
+	for _, e := range entries {
+		for _, k := range slices.Sorted(maps.Keys(e.Where)) {
+			values, ok := where[k]
+			if !ok {
+				errs = append(errs, fmt.Errorf("%s:%d: where %s: not a matrix axis of the suite, tier, option or os", path, e.Line, k))
+				continue
+			}
+			for _, v := range e.Where[k] {
+				if !slices.Contains(values, v) {
+					errs = append(errs, fmt.Errorf("%s:%d: where %s: no cell has the value %q", path, e.Line, k, v))
+				}
+			}
+		}
+	}
+	return entries, errors.Join(errs...)
 }
 
 // Placeholders returns the {name} placeholders in s, leaving out a shell
