@@ -14,12 +14,12 @@ import (
 	"time"
 )
 
-// Each grade gives the JUnit status its row of the grades table names: a
-// pass; a failure for a new failure and for an unexpected pass; skipped with
-// the entry's reason for a known failure and an expected skip, and with the
-// tool's for an ungraded skip; an error for an unexpected skip and for an
-// incomplete test; and a flaky pass is a pass with a flaky property. Until
-// grading, a failure isn't graded, and is a failure all the same.
+// A test's CTRF status, which its grade decides, gives its JUnit one: a
+// pass; a failure; skipped with the entry's reason for a known failure, and
+// with the tool's for an ungraded skip; an error for an unexpected skip; and
+// a flaky pass is a pass with a flaky property. JUnit never reads the grade,
+// so grades that share a status share a row. Until grading, a failure isn't
+// graded, and is a failure all the same.
 func TestJUnitGrades(t *testing.T) {
 	pjdfstest, smbtorture, unit := "pjdfstest/badger-s3/4.1", "smbtorture/memory", "unit"
 	for _, c := range []struct {
@@ -28,15 +28,10 @@ func TestJUnitGrades(t *testing.T) {
 	}{
 		{"passed", pjdfstest, "passed", Test{Name: "chmod/00.t", Status: Passed, Duration: 1500 * time.Millisecond}},
 		{"failed", "lint-repo", "failed", Test{Name: "false", Status: Failed, Duration: 2 * time.Millisecond, Message: "`false` exited 1"}},
-		{"new", pjdfstest, "failed", Test{Name: "chmod/12.t", Status: Failed, Duration: 2140 * time.Millisecond, Message: "not ok 7", Grade: "new"}},
 		{"known", pjdfstest, "passed", Test{Name: "unlink/14.t", Status: Skipped, Duration: 860 * time.Millisecond, Message: "not ok 3", Grade: "known",
 			Reason: "NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1"}},
-		{"unexpected_pass", pjdfstest, "failed", Test{Name: "utimensat/09.t", Status: Failed, Duration: 400 * time.Millisecond, Message: "passed, and its known entry says it fails", Grade: "unexpected_pass"}},
-		{"expected_skip", smbtorture, "passed", Test{Name: "smb2.durable-v2-open.reopen1a", Status: Skipped, Message: "skip: not supported", Grade: "expected_skip",
-			Reason: "durable handles v2 aren't implemented"}},
 		{"unexpected_skip", smbtorture, "not run", Test{Name: "smb2.lock.rw", Status: Other, Message: "skip: no lock support", Grade: "unexpected_skip"}},
 		{"ungraded", unit, "passed", Test{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded}},
-		{"incomplete", smbtorture, "not run", Test{Name: "smb2.notify.dir", Status: Other, Message: "its output stopped before its result", Grade: "incomplete"}},
 		{"flaky", pjdfstest, "passed", Test{Name: "rename/09.t", Status: Passed, Duration: 3310 * time.Millisecond, Flaky: true}},
 	} {
 		cell := Cell{Name: c.cell, Result: c.result, Took: 912 * time.Second, Tests: []Test{c.test}}
