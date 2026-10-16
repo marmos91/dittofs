@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.blue{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}.green{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.3}
+.grey{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}.amber{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+.red{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}.w{fill:#ffffff;stroke:#5b6472;stroke-width:1}
+.arr{stroke:#5b6472;stroke-width:1.4;fill:none;marker-end:url(#h)}
+.rt{font-size:11px;fill:#b04a4a}
+</style>
+<marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker></defs>
+<rect width="900" height="500" fill="#ffffff"/>
+<text x="16" y="26" class="t">A recovery import builds everything in a staging area, checks it, then publishes a new share at once.</text>
+
+<rect x="16" y="44" width="270" height="74" rx="5" class="blue"/>
+<text x="28" y="64" class="h">1 · operator on installation B</text>
+<text x="28" y="82" class="s">restore ns-photos from a backup alone,</text>
+<text x="28" y="98" class="s">stating that installation A is gone</text>
+<path d="M286 81 H314" class="arr"/>
+<rect x="316" y="44" width="300" height="74" rx="5" class="green"/>
+<text x="328" y="64" class="h">2 · take the namespace's claim</text>
+<text x="328" y="82" class="s">claim owned at the next epoch; wait out A's</text>
+<text x="328" y="98" class="s">claim checks, so a partitioned A has stopped deleting</text>
+<rect x="640" y="44" width="244" height="74" rx="5" class="grey"/>
+<text x="652" y="64" class="h">what it reads</text>
+<text x="652" y="82" class="s">the export; block headers in dfs-data;</text>
+<text x="652" y="98" class="s">keys objects at the bucket, every location</text>
+
+<path d="M466 118 V146" class="arr"/>
+<rect x="16" y="148" width="600" height="252" rx="6" class="amber"/>
+<text x="28" y="170" class="h">3 · staging area: no share serves it, no dedup lookup reads it</text>
+<text x="28" y="194" class="s">· check each location hint against the named block's header; find a stale chunk by listing the</text>
+<text x="38" y="210" class="s">namespace and reading headers; a chunk found nowhere fails the import</text>
+<text x="28" y="230" class="s">· key records: the union of the export's, the bucket's and every location's, over versions that authenticate</text>
+<text x="28" y="250" class="s">· re-derive the material census from the headers it resolved, not from the export</text>
+<text x="28" y="270" class="s">· recompute every count from the imported refs, and end with the audit</text>
+<text x="28" y="290" class="s">· import every other unexpired backup of the namespace it records as a detached, held snapshot</text>
+<text x="28" y="310" class="s">· write a backup record for every backup of the namespace found at a configured location</text>
+<text x="28" y="330" class="s">· rebuild each folder record's census and block count from that folder's mark set</text>
+<text x="28" y="350" class="s">· adopt the journals: record each, Restamp it, raise the tag counter above its tags,</text>
+<text x="38" y="366" class="s">before a tag is minted for any share</text>
+<text x="28" y="388" class="m">No block is copied: the refs name chunks still in dfs-data.</text>
+
+<path d="M616 200 H638" class="arr"/>
+<rect x="640" y="148" width="244" height="136" rx="5" class="green"/>
+<text x="652" y="170" class="h">4 · one publish transaction</text>
+<text x="652" y="190" class="s">share photos-restored becomes</text>
+<text x="652" y="206" class="s">active with new FileIDs; the</text>
+<text x="652" y="222" class="s">staging identity is retired.</text>
+<text x="652" y="242" class="s">The namespace's GC pause record</text>
+<text x="652" y="258" class="s">is written: the namespace deletes,</text>
+<text x="652" y="274" class="s">relocates and collects nothing.</text>
+<path d="M762 284 V302" class="arr"/>
+<rect x="640" y="304" width="244" height="96" rx="5" class="grey"/>
+<text x="652" y="324" class="h">5 · operator's statement</text>
+<text x="652" y="342" class="s">every share of ns-photos is</text>
+<text x="652" y="358" class="s">recovered or given up: only then</text>
+<text x="652" y="374" class="s">is the pause record deleted and</text>
+<text x="652" y="390" class="s">GC starts</text>
+
+<rect x="16" y="420" width="868" height="62" rx="5" class="red"/>
+<text x="28" y="440" class="h">Interrupted, torn or refused before step 4</text>
+<text x="28" y="458" class="s">Nothing is served and nothing published. Its staging records are removed by its failure path or, if interrupted,</text>
+<text x="28" y="474" class="s">at the next start. An import is never resumed from a partial staging area: a new one starts over from the export.</text>
+</svg>

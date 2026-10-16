@@ -111,24 +111,7 @@ the one that reached the primary later wins, byte by byte; a caching client
 sees the other's writes only through NFS close-to-open checks and SMB lease
 breaks.
 
-```text
- alice-pc (SMB)          second desktop (SMB)          build01 (NFS)
- open: read+write,       open: write, same file        READ, WRITE, LOCK
- deny write, lease L1         │                            │
-      └──────────────────────►│◄───────────────────────────┘
-                              ▼
-              filesystem service routes to the file's primary
-                              ▼
- ┌──── N1, primary: the table for ODFC_alice.vhdx (in memory) ────┐
- │ client alice-pc   open o1: read+write, deny write, persistent  │
- │ grant  L1: read+write+handle, epoch 3          locks: none     │
- │ second desktop's open vs o1's deny mode ──► sharing violation  │
- │ same app instance? ──► close o1 and its lease, then grant      │
- │ the same process runs the file's I/O: nothing lands between    │
- │ a conflict check and the write it admits                       │
- └────────────────────────────────────────────────────────────────┘
-   restart ──► grace: only reclaims until holders are back
-```
+![alice-pc and a second desktop over SMB and build01 over NFS all reach, through the filesystem service, one table for ODFC_alice.vhdx held in memory at N1, the file's primary: alice-pc's persistent open o1 with read+write and deny write, and lease L1 with read, write and handle caching at epoch 3, no locks; the second desktop's open meets o1's deny mode and gets a sharing violation, never a downgrade; an open with the same app instance and a higher version closes o1 and its lease first; the persistent open is the one record written to the metadata store, an ordinary open of a named file writes none; the same process runs the file's I/O; if N1 restarts the table is gone and a grace period admits only reclaims for one lease period](img/rfc14-table.svg)
 
 ### The words you need
 
@@ -291,6 +274,8 @@ This component **MUST NOT**:
 
 The entities below live in the metadata package ([RFC 16](rfc-16-metadata-store.md)). Signatures are
 indicative; the rules around them are normative.
+
+![The entities: a durable Client record, indexed by protocol and owner, whose Expires is volatile at its lease owner; an Unconfirmed record at the protocol node that answered SETCLIENTID or EXCHANGE_ID, whose confirm writes the Client; NFSv4.0 OwnerSeq at the owner's home shard primary; and, in the file's table at the primary of its shard, the Open, which names its CachingGrant for SMB only, and Lock, LockState, LockWaiter and Layout, which each name their Open (zero for an NLM lock or waiter), plus Copy in the destination file's table and Watch at its directory's shard primary; each names its Client, whose lease expiry or revoke releases all of it in one step](img/rfc14-entities.svg)
 
 ### 2.1 Client
 
@@ -1162,6 +1147,8 @@ Every open-state operation reaches the primary of the file's shard
 the rest of the cluster keeps granting. Only a failover loses state: a handover
 or a batch move of files hands the table over and runs no grace ([§10](#10.%20Shard%20placement)).
 
+![Grace per shard: N1, primary of shard A, dies and N2 takes A over; A runs a grace of at most 90 s while shard B keeps granting. The takeover transaction copies N2's incarnation into GraceInstance, so older stateids read stale; every client A's records name is told to reclaim — NFSv4.1 by RESTART_RECLAIM_NEEDED on SEQUENCE, NFSv4.0 by STALE_CLIENTID until it repeats SETCLIENTID, SMB by a broken connection, NLM by a raised NSM state number and a restart notification; reclaims are admitted and checked against the current ACL, new opens, locks, deny modes, grants, layouts and anonymous I/O are refused with ErrGrace; grace ends after one lease period or once every client has finished — NFSv4.1 by RECLAIM_COMPLETE for this instance, SMB when its persistent opens are reconnected or timed out, NFSv4.0 and NLM never](img/rfc14-grace.svg)
+
 **A grace period is an instance.** Each loss of a shard's open state — a restart
 of its primary, a failover, a handover whose old primary is lost before the new
 one holds the table — opens a new **grace instance**: the transaction that
@@ -1314,6 +1301,8 @@ shard) of each piece of its state it revoked — volatile with the client's othe
 state there; `FREE_STATEID` of a revoked stateid answers success and removes it,
 and the flag clears when the client's set is empty. A failover loses the set
 with the grants, and grace then signals the loss as a lost shard's state (§4.4).
+
+![A recall's timeline: build01 holds a write delegation on config.json; alice-pc opens it for writing over SMB; the primary recalls the delegation in build01's own protocol, starting a deadline of one lease period, 90 s, for an NFS delegation or 35 s for an SMB break, and answers alice-pc ErrDelay without holding a worker. If build01 acknowledges, it first sends its buffered writes as ordinary writes and alice-pc's open proceeds with nothing merged. If it never answers, an NFS delegation is revoked and its later writes refused with ErrRevoked, an SMB lease or oplock is downgraded to none with its opens kept, alice-pc's open proceeds, and build01 is offered no grants for 90 s](img/rfc14-recall.svg)
 
 **An administrator's revoke follows the same path** (RFC 8881 §8.2.4). It
 releases every open, lock, grant and layout the client holds, as an expiry does

@@ -86,15 +86,7 @@ of `photos` is `complete` ([RFC 12](rfc-12-snapshots.md)).
    into its block folder there, and the restore would re-encode them into a new
    namespace.
 
-```text
- snapshot 12 ──use record──► backup ──► location: export (sealed metadata)
-                                │
-                                └── copying backup only ──► location: block folder
-                                                            (blocks its base lacks)
-
- restore: export ──► staged import ──► one publish ──► new share
-          blocks read from the namespace's bucket, or from the block folder if it is gone
-```
+![Installation A holds share photos with snapshot 12 complete and a use record on it. A catalog backup writes only metadata, an export of kind backup holding the tree, refs, chunk records as location hints and wrapped key records, to the location same-bucket, a folder beside the namespaces in bucket dfs-data. A copying backup writes the same metadata as a backup-copy export with a manifest to the location vault in another bucket, and copies each block its base lacks, whole and as sealed bytes, from the namespace's blocks into the block folder blocks/ns-photos there. The catalog backup survives losing the metadata store but not the bucket; the copying backup survives losing both, and a stolen credential at an immutable location; neither survives losing the master key. Restore always makes a new share: from the catalog backup by a staged import whose refs name chunks still in dfs-data, from the copying backup by re-encoding the folder's blocks into a new namespace.](img/rfc26-overview.svg)
 
 **The words you need.**
 
@@ -463,6 +455,8 @@ its own blocks ([§2.4](#2.4%20Copying%20backups)); for a move, when B has publi
 the use record, not the backup location, so an unreachable location makes deletion
 fail closed.
 
+![Snapshot 12, complete, is held by a use record written in the transaction that starts its reader, with a deadline the reader renews. A deletion of snapshot 12 conflicts with the use record and is refused while one exists; it never reads the backup location, so an unreachable location makes it fail closed. A table gives when each reader's use record is deleted: a clone or restore at publish or on failure; a catalog backup at expiry or when a re-home of its share finishes, its completion only clearing the deadline; a copying backup at complete, since its blocks are then its own; a move when B has published or A has aborted, with no deadline; an abandoned reader past its deadline only after a still-writing backup with no export digest is marked failed, while one whose record names a digest is completed instead. While the use record lives, the snapshot's refs keep every block the backup names counted. Expiry runs in order: mark expired at the location and in the record, delete the use record, remove the export, delete the backup record.](img/rfc26-use-record.svg)
+
 So while a backup is being written, and until it expires or a re-home's parking
 takes over its blocks, its snapshot cannot be deleted
 ([RFC 12 §2.8](rfc-12-snapshots.md#2.8%20Deleting)), and the refs the snapshot sees keep every block the backup
@@ -693,6 +687,8 @@ Restore creates a new share. There are two sources:
     abort a move's past deadline triggers ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) never applies to it,
     and a scheduler finding no deadline **MUST NOT** treat it as past. Only the
     operator's statement deletes it.
+
+![A recovery import on installation B: the operator restores ns-photos from a backup alone, stating installation A is gone; B writes the namespace's claim owned at the next epoch and waits out A's claim checks. Everything is then built in a staging area that no share serves and no dedup lookup reads: location hints checked against block headers, key records unioned over authenticated versions from the export, the bucket and every location, the material census re-derived from headers, counts recomputed and audited, other unexpired backups imported as detached held snapshots, a backup record written for every backup found, folder records rebuilt from their mark sets, and journals adopted before any tag is minted. No block is copied. One publish transaction makes share photos-restored active with new FileIDs and writes the GC pause record; only the operator's statement that every share is recovered or given up deletes it. An import interrupted, torn or refused before the publish serves and publishes nothing, its staging is removed, and it is never resumed.](img/rfc26-recovery-import.svg)
 
 **Losing the metadata store is recovered this way, and only this way.** On a
 single node the embedded metadata store goes with its host
@@ -1395,6 +1391,8 @@ section* = type (1 byte, RFC 5 Appendix B.1) ‖ frame* ‖ section MAC ‖ reco
 frame    = length ‖ sealed records ‖ frame index      (frames of at most 4 MiB)
 trailer  = end marker ‖ trailer MAC
 ```
+
+![An export is one stream read front to back: a clear part with the clear MAC (magic, format version, kind, namespace ID, export salt, export-key and master-key IDs, key records); a sealed header with the header MAC (bound settings, per-share fold rule and entry hash key, share, snapshot, cuts, census material, incomplete files, digests of older-key exports, record counts); sealed sections in dependency order — namespace, tree, content, chunks and blocks, and in a backup-copy export the blocks manifest — each of type, frames of at most 4 MiB under AES-256-GCM-SIV, section MAC and record count; and a trailer whose MAC is the export's digest. At a backup location the stream is cut into parts, each at most the largest encoded block, listed in order by a head object that carries no MAC. The state version marking the backup complete names the export's digest, its manifest section's MAC and, at an immutable location, the head's version under the state MAC, and the backup record in the metadata store holds the same three; a reader accepts the stream only if its trailer digest matches the record's.](img/rfc26-export-format.svg)
 
 **Sealed and authenticated.** Everything after the clear part is sealed under
 keys derived from the namespace's export key and the export's own random salt,

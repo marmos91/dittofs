@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#1b1f24}.s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .g{font-size:11px;fill:#4c8a58;font-weight:600}.w{font-size:11px;fill:#b07a2a;font-weight:600}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .wn{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="470" fill="#ffffff"/>
+  <text x="16" y="26" class="t">An Update runs on one snapshot, retries a conflict, and returns success only once durable.</text>
+
+  <rect x="24" y="50" width="130" height="56" rx="6" class="sv"/>
+  <text x="36" y="74" class="m">Update(ctx, fn)</text><text x="36" y="92" class="s">ctx sets the deadline</text>
+  <rect x="174" y="50" width="150" height="56" rx="6" class="st"/>
+  <text x="186" y="74" class="h">snapshot</text><text x="186" y="92" class="s">Now() is store time</text>
+  <rect x="344" y="50" width="230" height="120" rx="6" class="st"/>
+  <text x="356" y="72" class="h">fn runs</text>
+  <text x="356" y="94" class="m">Get</text><text x="400" y="94" class="s">tracked</text>
+  <text x="356" y="114" class="m">Guard, GuardRange</text><text x="476" y="114" class="s">tracked claim</text>
+  <text x="356" y="134" class="m">Scan, Before</text><text x="450" y="134" class="s">untracked</text>
+  <text x="356" y="154" class="m">Set, Delete</text><text x="450" y="154" class="s">writes</text>
+  <rect x="594" y="50" width="130" height="56" rx="6" class="st"/>
+  <text x="606" y="74" class="h">commit check</text><text x="606" y="92" class="s">any conflict?</text>
+  <rect x="744" y="50" width="132" height="56" rx="6" class="st"/>
+  <text x="756" y="74" class="h">sync</text><text x="756" y="92" class="s">group commit</text>
+  <path d="M154,78 L170,78" class="ln"/><path d="M324,78 L340,78" class="ln"/>
+  <path d="M574,78 L590,78" class="ln"/><path d="M724,78 L740,78" class="ln"/>
+  <text x="728" y="96" class="s">no</text>
+
+  <path d="M810,106 L810,132" class="ln"/>
+  <rect x="744" y="134" width="132" height="50" rx="6" class="sv"/>
+  <text x="756" y="155" class="m">return nil</text><text x="756" y="173" class="s">now durable</text>
+
+  <rect x="744" y="200" width="132" height="62" rx="6" class="wn"/>
+  <text x="756" y="219" class="w">error returned</text>
+  <text x="756" y="235" class="s">may have committed:</text><text x="756" y="250" class="s">unknown, not refused</text>
+
+  <path d="M659,106 L659,198" class="ex"/><text x="666" y="160" class="e">yes</text>
+  <rect x="594" y="200" width="130" height="44" rx="6" class="rf"/>
+  <text x="606" y="219" class="h">abort</text><text x="606" y="236" class="s">then retry</text>
+  <path d="M594,222 L249,222 L249,110" class="ex"/>
+  <text x="262" y="214" class="e">retry: fresh snapshot, same deadline; fn may run again</text>
+
+  <text x="24" y="282" class="s">The check aborts when another transaction committed, after this snapshot, a write to a key this one wrote, read with Get or guarded,</text>
+  <text x="24" y="298" class="s">or to any key under a guarded prefix, present at the snapshot or not. Two tracked reads, and two guards, never conflict with each other.</text>
+
+  <rect x="24" y="314" width="276" height="140" rx="8" class="zone"/>
+  <text x="36" y="334" class="h">Two creates, one directory</text>
+  <text x="36" y="356" class="s">alice-pc and build01 each Guard(F‖d1)</text>
+  <text x="36" y="372" class="s">and write their own Entry and t delta</text>
+  <text x="36" y="394" class="g">both commit: guards never conflict</text>
+  <text x="36" y="416" class="s">d1's primary folds the deltas later,</text>
+  <text x="36" y="432" class="s">while no create there is in flight</text>
+
+  <rect x="312" y="314" width="276" height="140" rx="8" class="zone"/>
+  <text x="324" y="334" class="h">Report.docx and REPORT.DOCX</text>
+  <text x="324" y="356" class="s">the share's fold rule makes one key,</text>
+  <text x="324" y="372" class="s">report.docx; both write it</text>
+  <text x="324" y="394" class="e">write-write conflict: the second aborts</text>
+  <text x="324" y="416" class="s">its retry reads the winner's Entry</text>
+  <text x="324" y="432" class="s">and finds the name taken</text>
+
+  <rect x="600" y="314" width="276" height="140" rx="8" class="zone"/>
+  <text x="612" y="334" class="h">Guard G and writer W of key k</text>
+  <text x="612" y="356" class="s">W commits first, then G:</text><text x="748" y="356" class="e">G aborts</text>
+  <text x="612" y="372" class="s">G commits first:</text><text x="706" y="372" class="g">both commit,</text>
+  <text x="612" y="388" class="s">W ordered after G</text>
+  <text x="612" y="410" class="s">A rule that needs W to fail has W</text>
+  <text x="612" y="426" class="s">track a key G writes; a directory's</text>
+  <text x="612" y="442" class="s">removal GuardRanges its entries.</text>
+</svg>

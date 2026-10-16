@@ -3,7 +3,7 @@ module github.com/marmos91/dittofs/k8s/dittofs-operator
 go 1.26.0
 
 require (
-	github.com/onsi/ginkgo/v2 v2.33.0
+	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 	github.com/percona/percona-postgresql-operator/v2 v2.9.0
 	k8s.io/apimachinery v0.37.1

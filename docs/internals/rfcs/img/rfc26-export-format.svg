@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<defs><style>
+.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+.blue{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}.green{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.3}
+.grey{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}.amber{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+.red{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}.w{fill:#ffffff;stroke:#5b6472;stroke-width:1}
+.arr{stroke:#5b6472;stroke-width:1.4;fill:none;marker-end:url(#h)}
+.cut{stroke:#5b6472;stroke-width:1;stroke-dasharray:3 3}
+</style>
+<marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker></defs>
+<rect width="900" height="500" fill="#ffffff"/>
+<text x="16" y="26" class="t">An export is one sealed stream, stored as bounded parts that a head lists and a state version binds.</text>
+
+<text x="16" y="52" class="h">The stream, written and read front to back, never seeked</text>
+<rect x="16" y="62" width="170" height="40" class="grey"/>
+<text x="26" y="80" class="h">clear</text>
+<text x="26" y="95" class="s">clear MAC</text>
+<rect x="186" y="62" width="190" height="40" class="blue"/>
+<text x="196" y="80" class="h">header (sealed)</text>
+<text x="196" y="95" class="s">header MAC</text>
+<rect x="376" y="62" width="368" height="40" class="blue"/>
+<text x="386" y="80" class="h">section* (sealed)</text>
+<text x="386" y="95" class="s">each: type, frames, section MAC, record count</text>
+<rect x="744" y="62" width="140" height="40" class="green"/>
+<text x="754" y="80" class="h">trailer</text>
+<text x="754" y="95" class="s">end marker, trailer MAC</text>
+
+<text x="26" y="124" class="s">magic, format version, kind,</text>
+<text x="26" y="140" class="s">namespace ID, export salt,</text>
+<text x="26" y="156" class="s">export-key IDs (sealing,</text>
+<text x="26" y="172" class="s">current, older), master-key</text>
+<text x="26" y="188" class="s">IDs, the key records</text>
+<text x="196" y="124" class="s">prefix, key scope, bound</text>
+<text x="196" y="140" class="s">settings; per share fold rule</text>
+<text x="196" y="156" class="s">and entry hash key; share,</text>
+<text x="196" y="172" class="s">snapshot, cuts; census material;</text>
+<text x="196" y="188" class="s">incomplete files; digests of</text>
+<text x="196" y="204" class="s">older-key exports; counts</text>
+<rect x="386" y="112" width="70" height="24" rx="3" class="w"/>
+<text x="394" y="128" class="s">namespace</text>
+<rect x="462" y="112" width="40" height="24" rx="3" class="w"/>
+<text x="470" y="128" class="s">tree</text>
+<rect x="508" y="112" width="56" height="24" rx="3" class="w"/>
+<text x="516" y="128" class="s">content</text>
+<rect x="570" y="112" width="104" height="24" rx="3" class="w"/>
+<text x="578" y="128" class="s">chunks, blocks</text>
+<rect x="680" y="112" width="58" height="24" rx="3" class="amber"/>
+<text x="688" y="128" class="s">blocks</text>
+<text x="386" y="156" class="s">in dependency order, records in key order, so an importer</text>
+<text x="386" y="172" class="s">holds one frame and writes as it reads; frames of at most</text>
+<text x="386" y="188" class="s">4 MiB, AES-256-GCM-SIV, nonce the section and frame index.</text>
+<text x="386" y="204" class="s">Amber: the manifest, in a backup-copy export only.</text>
+<text x="754" y="124" class="s">the trailer MAC is</text>
+<text x="754" y="140" class="s">the export's identity,</text>
+<text x="754" y="156" class="s">its digest</text>
+
+<line x1="16" y1="222" x2="884" y2="222" stroke="#c3cad3" stroke-width="1"/>
+<text x="16" y="246" class="h">Stored at a backup location</text>
+<text x="16" y="262" class="s">the stream cut into consecutive byte ranges, each at most the largest encoded block</text>
+<rect x="16" y="272" width="96" height="40" rx="3" class="blue"/>
+<text x="26" y="296" class="m">part/0</text>
+<rect x="120" y="272" width="96" height="40" rx="3" class="blue"/>
+<text x="130" y="296" class="m">part/1</text>
+<rect x="224" y="272" width="96" height="40" rx="3" class="blue"/>
+<text x="234" y="296" class="m">part/2</text>
+<text x="336" y="296" class="s">…</text>
+<rect x="360" y="272" width="96" height="40" rx="3" class="blue"/>
+<text x="370" y="296" class="m">part/n</text>
+
+<path d="M236 352 V314" class="arr"/>
+<text x="244" y="344" class="s">lists, in order</text>
+<rect x="16" y="354" width="440" height="80" rx="5" class="amber"/>
+<text x="28" y="374" class="m">export</text>
+<text x="80" y="374" class="h">the head</text>
+<text x="28" y="392" class="s">every part's number, size and checksum (and stored version at an</text>
+<text x="28" y="408" class="s">immutable location), the total size, the manifest section's offset.</text>
+<text x="28" y="424" class="s">No MAC: a table of contents only. Too large: cut into head/&lt;n&gt;.</text>
+
+<rect x="496" y="272" width="388" height="92" rx="5" class="green"/>
+<text x="508" y="292" class="m">state</text>
+<text x="550" y="292" class="h">version marking the backup complete</text>
+<text x="508" y="312" class="s">names the export's digest, its manifest section's MAC</text>
+<text x="508" y="328" class="s">and, at an immutable location, the head's version,</text>
+<text x="508" y="344" class="s">all under the state MAC</text>
+<path d="M496 358 H458" class="arr"/>
+<text x="462" y="350" class="s">binds</text>
+<rect x="496" y="374" width="388" height="60" rx="5" class="grey"/>
+<text x="508" y="394" class="h">backup record, in the metadata store</text>
+<text x="508" y="412" class="s">holds the same three; restore, Verify and the sweep</text>
+<text x="508" y="428" class="s">read them from the record, never from the location</text>
+
+<text x="16" y="462" class="l">A reader gets the head, then each part, and accepts the stream only if its trailer digest equals the one</text>
+<text x="16" y="480" class="l">the backup record names (the state, for a recovery import with no record). A missing or changed part is a torn export.</text>
+</svg>

@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 432" width="900" height="432" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#1b1f24}.s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .pd{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="432" fill="#ffffff"/>
+  <text x="16" y="26" class="t">What a change does is a property of the setting: four binding classes.</text>
+
+  <rect x="24" y="44" width="200" height="300" rx="7" class="sv"/>
+  <text x="38" y="66" class="h">live</text>
+  <text x="38" y="86" class="l">next operation, every node</text>
+  <text x="38" y="110" class="s">atime policy · GC interval ·</text>
+  <text x="38" y="126" class="s">snapshot schedule</text>
+  <text x="38" y="156" class="s">the commit raises the</text>
+  <text x="38" y="172" class="s">settings generation; each</text>
+  <text x="38" y="188" class="s">node reads it every 1 s and</text>
+  <text x="38" y="204" class="s">re-reads the records that</text>
+  <text x="38" y="220" class="s">moved; it runs the change</text>
+  <text x="38" y="236" class="s">within 5 s of the commit</text>
+  <text x="38" y="266" class="s">nodes may run different</text>
+  <text x="38" y="282" class="s">generations meanwhile; each</text>
+  <text x="38" y="298" class="s">reports its own. One that</text>
+  <text x="38" y="314" class="s">lags past 5 s is unhealthy</text>
+
+  <rect x="240" y="44" width="200" height="300" rx="7" class="pr"/>
+  <text x="254" y="66" class="h">restart</text>
+  <text x="254" y="86" class="l">when the process next starts</text>
+  <text x="254" y="110" class="s">syncer pool sizes ·</text>
+  <text x="254" y="126" class="s">listen addresses</text>
+  <text x="254" y="156" class="s">a pool is sized once, when</text>
+  <text x="254" y="172" class="s">the process builds it</text>
+  <text x="254" y="202" class="s">a value nodes must agree on</text>
+  <text x="254" y="218" class="s">at every instant (a node</text>
+  <text x="254" y="234" class="s">lease, the drift bound) is</text>
+  <text x="254" y="250" class="s">restart, never live</text>
+  <text x="254" y="280" class="s">(cluster) the record holds both</text>
+  <text x="254" y="296" class="s">values until every node reports</text>
+  <text x="254" y="312" class="s">the new generation; meanwhile</text>
+  <text x="254" y="328" class="s">each runs the safer of the two</text>
+
+  <rect x="456" y="44" width="200" height="300" rx="7" class="pd"/>
+  <text x="470" y="66" class="h">next write</text>
+  <text x="470" y="86" class="l">content written from now on</text>
+  <text x="470" y="110" class="s">compression stage · storage</text>
+  <text x="470" y="126" class="s">class · block target · block</text>
+  <text x="470" y="142" class="s">format version · data and</text>
+  <text x="470" y="158" class="s">export keys</text>
+  <text x="470" y="188" class="s">recorded with the content it</text>
+  <text x="470" y="204" class="s">governed: the chain ID in</text>
+  <text x="470" y="220" class="s">every block name, the census</text>
+  <text x="470" y="236" class="s">in every block record</text>
+  <text x="470" y="266" class="s">old blocks keep what they</text>
+  <text x="470" y="282" class="s">were written with and stay</text>
+  <text x="470" y="298" class="s">readable: reading never</text>
+  <text x="470" y="314" class="s">consults configuration</text>
+
+  <rect x="672" y="44" width="204" height="300" rx="7" class="rf"/>
+  <text x="686" y="66" class="h">bound</text>
+  <text x="686" y="86" class="l">never, once content exists</text>
+  <text x="686" y="110" class="s">bucket · prefix · chunk-ID key ·</text>
+  <text x="686" y="126" class="s">chunking key · Target · whether</text>
+  <text x="686" y="142" class="s">the chain encrypts · case</text>
+  <text x="686" y="158" class="s">sensitivity · entry-digest key ·</text>
+  <text x="686" y="174" class="s">a backup location's mode</text>
+  <text x="686" y="204" class="s">recorded with the namespace at</text>
+  <text x="686" y="220" class="s">creation, compared at every</text>
+  <text x="686" y="236" class="s">open: a mismatch does not open</text>
+  <text x="686" y="266" class="e">a change is refused while</text>
+  <text x="686" y="282" class="e">content exists, naming the</text>
+  <text x="686" y="298" class="e">field and the rule; what the</text>
+  <text x="686" y="314" class="e">operator wants is a migration</text>
+  <text x="686" y="330" class="e">(RFC 27)</text>
+
+  <rect x="24" y="362" width="852" height="56" rx="6" class="st"/>
+  <text x="38" y="384" class="h">not a change (§5.2)</text>
+  <text x="170" y="384" class="s">a new endpoint for the same bucket, or a rotated credential, is allowed once proven: the store's</text>
+  <text x="170" y="402" class="s">check must find the old namespace claim there. Another claim, or none, is a different store: refused.</text>
+</svg>

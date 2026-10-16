@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 750" width="900" height="750" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .l{font-size:12px;fill:#1b1f24}.s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .g{font-size:11px;fill:#4c8a58;font-weight:600}.w{font-size:11px;fill:#b07a2a;font-weight:600}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .wn{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="750" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Removal: one commit makes a share gone to clients; recorded, resumable steps do the rest.</text>
+
+  <rect x="24" y="44" width="250" height="50" rx="6" class="sv"/>
+  <text x="36" y="66" class="m">DeleteShare(share, snapshots)</text>
+  <text x="36" y="84" class="s">disposition: refuse, delete, detach</text>
+  <path d="M274,69 L290,69" class="ex"/>
+  <rect x="294" y="44" width="582" height="90" rx="6" class="rf"/>
+  <text x="306" y="62" class="e" font-weight="700">refused, nothing changed</text>
+  <text x="306" y="80" class="s">a cut is running: ErrDelay · a GC pause on a namespace the share names: ErrMoving</text>
+  <text x="306" y="96" class="s">snapshots exist and the request neither deletes nor detaches them</text>
+  <text x="306" y="112" class="s">delete while a use record exists, or a snapshot is locked (ErrLocked)</text>
+  <text x="306" y="128" class="s">the share is already being removed or retired: ErrStale</text>
+  <path d="M149,94 L149,148" class="ln"/>
+
+  <rect x="24" y="150" width="576" height="66" rx="6" class="sv"/>
+  <text x="36" y="170" class="h">1  Mark: one transaction</text>
+  <text x="36" y="188" class="s">tracked reads of nsg, its namespaces' GC pauses and rh; GuardRange S‖id‖snap‖ and S‖id‖use‖</text>
+  <text x="36" y="204" class="s">state → being removed; delete NX‖share‖name and NP‖path; end a running re-home; raise SL</text>
+  <rect x="620" y="150" width="256" height="66" rx="6" class="sv"/>
+  <text x="632" y="170" class="h">DeleteShare returns here</text>
+  <text x="632" y="188" class="s">every call into the share: ErrStale</text>
+  <text x="632" y="204" class="s">a new share may take the name at once</text>
+  <path d="M560,216 L560,228" class="ln"/>
+
+  <rect x="24" y="230" width="576" height="52" rx="6" class="sv"/>
+  <text x="36" y="250" class="h">2  Snapshots</text>
+  <text x="36" y="268" class="s">delete: each through RFC 12's serial deletion · detach: nothing deleted yet</text>
+  <text x="632" y="260" class="m">progress: S‖id‖st</text>
+  <path d="M560,282 L560,324" class="ln"/>
+
+  <rect x="16" y="296" width="868" height="182" rx="8" class="zone"/>
+  <text x="28" y="314" class="s">steps 3 and 4 run on every shard of the share, each driven by that shard's primary</text>
+
+  <rect x="24" y="326" width="576" height="80" rx="6" class="sv"/>
+  <text x="36" y="346" class="h">3  Live state and journal</text>
+  <text x="36" y="364" class="s">join every call in flight; DropShare ends every open, lock and grant without a recall</text>
+  <text x="36" y="380" class="s">with detach, first offload what a kept snapshot's hold marks cover; then rm = offloaded</text>
+  <text x="36" y="396" class="s">once every shard is offloaded: replicated Forget of the share's tag; then rm = forgotten</text>
+  <text x="632" y="346" class="m">SH‖shard‖rm: offloaded,</text>
+  <text x="632" y="362" class="m">forgotten</text>
+  <text x="632" y="382" class="s">st enters its forget phase only once</text>
+  <text x="632" y="396" class="s">every shard's rm is offloaded</text>
+  <path d="M560,406 L560,416" class="ln"/>
+
+  <rect x="24" y="418" width="576" height="52" rx="6" class="sv"/>
+  <text x="36" y="438" class="h">4  Files</text>
+  <text x="36" y="456" class="s">drop every file under F‖ShareID in bounded batches, each ref by RFC 6's batched removal</text>
+  <text x="632" y="436" class="m">SH‖shard‖rm: step 4, done</text>
+  <text x="632" y="452" class="s">st passes step 4 only in the batch</text>
+  <text x="632" y="466" class="s">that finds the last shard done</text>
+  <path d="M560,470 L560,490" class="ln"/>
+
+  <rect x="24" y="492" width="576" height="52" rx="6" class="sv"/>
+  <text x="36" y="512" class="h">5  Server-wide rows that name the share</text>
+  <text x="36" y="530" class="s">grants and GR keys · share-scoped CFG, raising CFGGEN · CL‖client‖sh‖shard · MV; parked refs stay</text>
+  <text x="632" y="522" class="m">progress: S‖id‖st</text>
+  <path d="M560,544 L560,556" class="ln"/>
+
+  <rect x="24" y="558" width="576" height="80" rx="6" class="sv"/>
+  <text x="36" y="578" class="h">6  The share's own records, then its shards</text>
+  <text x="36" y="596" class="s">every S‖id‖* but st, then each SH‖shard with its rq, rqx, xh, hw, fw and rm rows</text>
+  <text x="36" y="612" class="s">last transaction: the root's shard record with st and nsg; raises SL, runs step 7's check</text>
+  <text x="36" y="628" class="s">with detach: st → retired, and what RFC 12 §2.8 still reads stays</text>
+  <text x="632" y="588" class="m">S‖id‖st deleted last,</text>
+  <text x="632" y="604" class="m">or retired with detach</text>
+  <path d="M560,638 L560,650" class="ln"/>
+
+  <rect x="24" y="652" width="576" height="52" rx="6" class="sv"/>
+  <text x="36" y="672" class="h">7  The namespace</text>
+  <text x="36" y="690" class="s">once nothing RFC 9 §7.6's drain gate reads names it: drain mark, then that section's steps 1–3</text>
+  <text x="632" y="682" class="m">NS‖ns‖drain</text>
+
+  <text x="16" y="728" class="s">Each step is idempotent. The coordinator, the primary of the shard holding the share's root, records steps 1, 2 and 5–7 in S‖id‖st; a crash</text>
+  <text x="16" y="743" class="s">or failover resumes each part where its record says it stopped. The coordinator advances st over the shard list S‖id‖shs in batches within K.</text>
+</svg>
