@@ -355,20 +355,20 @@ Go, and the build is cached after the first call. It doesn't use `go run`, which
 failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per job with
 `go build -o`.
 
-`dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one:
-the fixture's mounts and unmounts, letting the server bind port 445 for WPTS (§4.2), restarting
-`rpc.gssd`, and the commands of a suite whose own `needs` name `root`. Unless its format is
-`go-json`, such a suite runs each command as `sudo -n env NAME=value ... CMD`, as pjdfstest's
-`prove` must run; the needs a fixture implies (§4.2) don't make its commands run as root. A Go
-suite whose tests need root themselves, like e2e, which mounts from inside `go test`, runs with
-`go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs only each
-binary under `sudo -n`, in its package's directory and with the flags `go test` gives every
-binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test binary;
-run as root, those builds would write root's files into the user's Go caches, and fail on the
-modules only the binaries use. So before a root suite runs, `dt` builds both as the user into
+`dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one: the
+fixture's mounts and unmounts, starting the server with the one capability that binds port 445 for
+WPTS (§4.2), restarting `rpc.gssd`, and the commands of a suite whose own `needs` name `root`.
+Unless its format is `go-json`, such a suite runs each command as `sudo -n env NAME=value ... CMD`,
+as pjdfstest's `prove` must run; the needs a fixture implies (§4.2) don't make its commands run as
+root. A Go suite whose tests need root themselves, like e2e, which mounts from inside `go test`,
+runs with `go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs
+only each binary under `sudo -n`, in its package's directory and with the flags `go test` gives
+every binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test
+binary; run as root, those builds would write root's files into the user's Go caches, and fail on
+the modules only the binaries use. So before a root suite runs, `dt` builds both as the user into
 `{bin}` and passes it as `DITTOFS_E2E_BIN`, and the e2e helpers take the binaries from there rather
-than building them. Root never runs `go build`: the Go caches and the results stay the user's,
-and the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
+than building them. Root never runs `go build`: the Go caches and the results stay the user's, and
+the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
 
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
@@ -549,7 +549,7 @@ suites:
     needs: [linux, root, nfs-client]
   pynfs:
     format: junit                       # pynfs writes JUnit itself with --xml
-    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --maketree --xml {out}/junit.xml {names}"
+    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
     names: all                          # what {names} holds when a run names no tests
     matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
     select: { pr: { profile: [badger-s3] } }
@@ -648,7 +648,7 @@ suites:
 | `needs` | What the machine must offer (§4.5) | none |
 | `needs_by_test` | Extra needs for the tests matching a glob; `dt plan` puts those tests in cells of their own, on a place that meets them (§4.5) | none |
 | `paths` | On pull requests, run only when the change touches a path matching one of these globs (`dir/**` for a whole tree). Only for a narrow suite that changes elsewhere can't break, as `e2e --kerberos` | every pull request |
-| `tests` | A glob, one test per matching file; a list of names; or a `.txt` file of names, one per line, each with an optional timeout, and with `share=` and `prefix=` where smbtorture's list needs them (below). A glob holding a placeholder, such as `{tools}`, lists its tests when the cell runs, not when it's planned, and names each by its path below the glob's fixed directory (`chmod/00.t`), as the known-failure lists name them | none: the suite is one test, or finds its own |
+| `tests` | A glob, one test per matching file; a list of names; or a `.txt` file of names, one per line, each with an optional timeout, and with `share=` and `prefix=` where smbtorture's list needs them (below). A glob holding a placeholder, such as `{tools}`, lists its tests when the cell runs, not when it's planned, and names each by its path below the glob's fixed directory (`chmod/00.t`), as the known-failure lists name them. Nothing that needs the tests when the cell is planned works with such a glob: its suite can't set `shards`, `needs_by_test`, `timeout: { test: size }` or a `select` glob, and its cell's limit isn't raised to the sum of its tests' limits: it is `cell`, or one test's limit plus the fixture's 5 minutes if that is more | none: the suite is one test, or finds its own |
 | `exclude` | Globs of files `tests` matches that aren't tests | none |
 | `matrix` | Axes and their values; `dt plan` makes one cell per combination | one cell |
 | `select` | Per tier below the suite's widest: a narrower glob for `tests`, or the `matrix` values that tier runs | every match, every value |
@@ -656,7 +656,7 @@ suites:
 | `fixture` | The DittoFS server the tests run against (§4.2) | none: the suite starts what it needs itself |
 | `image` | A container image to run `cmd` in, on the network the fixture's server is on: the host's (`--network host`) on Linux, or `dtc`'s (`--network container:NAME`) when `dtc` runs on a bridge network, as on Docker Desktop | none: the host, or `dtc` |
 | `volumes` | Mounts into `image`, host path to container path | none |
-| `templates` | Files filled in with the placeholders into `{out}/config` before the first test: a tool's own configuration, such as WPTS's. They use the same `{x}` placeholders as commands, in place of the `${X}` that `envsubst` fills today | none |
+| `templates` | Files filled in with the placeholders into `{out}/config` before the first test: a tool's own configuration, such as WPTS's. They use the same `{x}` placeholders as commands, in place of the `${X}` that `envsubst` fills today. WPTS's become: `${DITTOFS_HOST}` and `${CLIENT_IP}`, `{server}`, since WPTS runs on the server's network and its own address is the server's, as both are loopback today; `${ADMIN_USER}`, `{user}`; `${TEST_USER}`, `{user2}`; `${TEST_PASSWORD}`, `{password}` | none |
 | `packages` | `{ tag: T }`: the Go packages whose tests the build tag `T` changes, found with `go list` | none |
 | `env` | Environment variables, for every tier, or per tier under the tier's name | none |
 | `args` | Text per tier, put where `{args}` appears | empty |
@@ -674,7 +674,7 @@ placeholder is a registry error (exit 3).
 |---|---|
 | each `matrix` key | the cell's value on that axis |
 | `{test}` | one test's file name or list entry |
-| `{names}` | the tests a run names, on `dt run`'s command line or for a retry, else the suite's `names`. Only the tests a run names are graded; pynfs lists the others as OMIT. A named test that doesn't run leaves the cell not run (exit 2), so a scoped pynfs run that skipped what it named isn't a pass (§3) |
+| `{names}` | the tests a run names, on `dt run`'s command line or for a retry, else the suite's `names`, which doesn't count as naming tests. A run that names no tests grades every test the tool reports. A run that names tests, on `dt run`'s command line or for a retry, grades only those: a named test that skipped because of a test it depends on is not run (exit 2), and any other skip is graded against the expected skips. pynfs runs with `--rundeps`, so a named test's dependencies run too, and it lists every other test as OMIT; neither is graded, and a scoped pynfs run that skipped what it named isn't a pass (§3) |
 | `{args}` | the tier's `args` |
 | `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. There is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
 | `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
@@ -686,8 +686,8 @@ placeholder is a registry error (exit 3).
 For the pynfs cell `badger-s3/1`, for example:
 
 ```text
-cmd:  {tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --maketree --xml {out}/junit.xml {names}
-runs: /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/tools/pynfs/bin/pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --uid 0 --gid 0 --maketree --xml /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
+cmd:  {tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}
+runs: /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/tools/pynfs/bin/pynfs-4.1 10.1.0.4:12049/export --minorversion 1 --security sys --uid 0 --gid 0 --rundeps --maketree --xml /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d8dbdd8/pynfs-badger-s3-1/junit.xml all
 ```
 
 **smbtorture's test list.** `tests.txt` holds what `smbtorture/run.sh` holds today: each test or
@@ -760,7 +760,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so for the run `dt` lowers the first unprivileged port of the server's network namespace to 445, `sudo -n sysctl net.ipv4.ip_unprivileged_port_start=445` (§3), and restores it on every exit path, an interrupt or a failure included, so no host is left changed. A file capability on `{bin}/dfs` would do it too, but puts the binary in secure mode, where Go prints no trace when the server panics; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
