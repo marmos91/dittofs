@@ -1,6 +1,9 @@
 package journalv2
 
-import "github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
+import (
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/core"
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
+)
 
 // The journal's clock, settings and descriptor budget, declared in
 // internal/core because the internal packages read them. Each one's contract
@@ -38,6 +41,15 @@ type Option struct {
 // clock fails at once instead of running on real time.
 func WithClock(c Clock) Option {
 	return Option{func(cfg *core.Config) { cfg.Clock = c }}
+}
+
+// WithStorage makes the journal reach its directory and files through fs
+// instead of the operating system's. Its parameter type is internal, so only
+// code inside the journal's tree, such as the crash-simulating seam its tests
+// use, can build a value to pass. Without it the journal uses the operating
+// system's files.
+func WithStorage(fs storage.FS) Option {
+	return Option{func(cfg *core.Config) { cfg.Storage = fs }}
 }
 
 // WithSettings sets the journal's settings. Without it every setting takes its

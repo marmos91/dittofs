@@ -97,6 +97,24 @@ var (
 	// share's handle named a file that belongs to another share. Nothing of
 	// the file is served, appended, changed or offered. It is never retried.
 	ErrOtherShare = errors.New("journal: file belongs to another share")
+
+	// ErrNoBarriers is returned by Init and Open for a filesystem on which no
+	// sync reaches the device, such as one mounted without cache flushes: a
+	// synced record would not survive a power loss. Nothing is created or
+	// opened. It is never retried on the same mount.
+	ErrNoBarriers = errors.New("journal: filesystem is mounted without cache flushes")
+
+	// ErrCopyOnWrite is returned by Init and Open for a directory on a
+	// copy-on-write filesystem that does not have copy-on-write disabled, so a
+	// write into allocated space could still need new space. Nothing is
+	// created or opened. It is never retried on the same directory.
+	ErrCopyOnWrite = errors.New("journal: copy-on-write is not disabled for the directory")
+
+	// ErrNotSubvolumeRoot is returned by Init and Open for a directory on a
+	// copy-on-write filesystem that is not the root of its own subvolume, so
+	// a snapshot of the volume around it would share its blocks. Nothing is
+	// created or opened. It is never retried on the same directory.
+	ErrNotSubvolumeRoot = errors.New("journal: directory is not a subvolume root")
 )
 
 // Limit names the limit that refused a reservation.
