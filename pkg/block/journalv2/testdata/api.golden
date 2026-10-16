@@ -1,6 +1,98 @@
 package github.com/marmos91/dittofs/pkg/block/journalv2
 
+const (
+	Bounded		= core.Bounded
+	Standard	= core.Standard
+)
+
+type Extent = core.Extent
+
+type FileID = core.FileID
+
+func NewFileID(id [16]byte) FileID
+
+type Held = core.Held
+
+type InstallationID = core.InstallationID
+
+type JournalID = core.JournalID
+
+type SegmentID = core.SegmentID
+
+type Seq = core.Seq
+
+type ShareID = core.ShareID
+
+type ShareTag = core.ShareTag
+
+type SnapshotCut = core.SnapshotCut
+
+type SyncPolicy = core.SyncPolicy
+
+type Version = core.Version
+
+func VersionFromBytes(b [16]byte) Version
+
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/core
+
+type Extent struct {
+	Off	int64
+	Len	int64
+}
+
+func (e Extent) End() int64
+
+func (e Extent) Overlaps(f Extent) bool
+
+type FileID struct {
+	// contains filtered or unexported fields
+}
+
+func NewFileID(id [16]byte) FileID
+
+func (f FileID) Bytes() [16]byte
+
+type Held struct {
+	Extent	Extent
+	Version	Version
+}
+
+type InstallationID [16]byte
+
+type JournalID [16]byte
+
+type SegmentID uint64
+
+type Seq uint64
+
+type ShareID [16]byte
+
+type ShareTag uint32
+
+type SnapshotCut uint64
+
+type SyncPolicy uint8
+
+const (
+	Bounded	SyncPolicy	= iota
+
+	Standard
+)
+
+type Version struct {
+	Epoch	uint64
+	Counter	uint64
+}
+
+func VersionFromBytes(b [16]byte) Version
+
+func (v Version) Bytes() [16]byte
+
+func (v Version) Compare(w Version) int
+
+func (v Version) IsZero() bool
+
+func (v Version) Less(w Version) bool
 
 package github.com/marmos91/dittofs/pkg/block/journalv2/internal/durability
 
