@@ -1,5 +1,10 @@
 package core
 
+import (
+	"cmp"
+	"encoding/binary"
+)
+
 // Version is the content version of a file's bytes: which bytes these are, and
 // which of two is newer. It is 128 bits, an epoch half then a counter half,
 // and two versions are compared as one unsigned 128-bit number, epoch first.
@@ -20,17 +25,10 @@ type Version struct {
 // Compare returns -1 if v precedes w, 0 if they are equal and +1 if v follows
 // w, comparing the two as unsigned 128-bit numbers, epoch half first.
 func (v Version) Compare(w Version) int {
-	return 0
-}
-
-// Less reports whether v precedes w; it is Compare(w) < 0.
-func (v Version) Less(w Version) bool {
-	return false
-}
-
-// IsZero reports whether both halves of v are zero.
-func (v Version) IsZero() bool {
-	return false
+	if c := cmp.Compare(v.Epoch, w.Epoch); c != 0 {
+		return c
+	}
+	return cmp.Compare(v.Counter, w.Counter)
 }
 
 // Bytes returns v as 16 bytes: the epoch half then the counter half, each
@@ -38,13 +36,18 @@ func (v Version) IsZero() bool {
 // Compare does. This is the encoding a version is stored under outside the
 // journal. The journal's own on-disk records encode integers little-endian,
 // and that encoding belongs to the format codecs, not to this method.
-func (v Version) Bytes() [16]byte {
-	return [16]byte{}
+func (v Version) Bytes() (b [16]byte) {
+	binary.BigEndian.PutUint64(b[:8], v.Epoch)
+	binary.BigEndian.PutUint64(b[8:], v.Counter)
+	return b
 }
 
 // VersionFromBytes is the inverse of Version.Bytes: for every v,
 // VersionFromBytes(v.Bytes()) == v. It accepts any 16 bytes; refusing a
 // non-zero epoch is the decoder's job, not this conversion's.
 func VersionFromBytes(b [16]byte) Version {
-	return Version{}
+	return Version{
+		Epoch:   binary.BigEndian.Uint64(b[:8]),
+		Counter: binary.BigEndian.Uint64(b[8:]),
+	}
 }

@@ -9,17 +9,6 @@ type Extent struct {
 	Len int64
 }
 
-// End returns the offset one past the extent's last byte, Off + Len.
-func (e Extent) End() int64 {
-	return 0
-}
-
-// Overlaps reports whether e and f share at least one byte. An extent with Len
-// zero overlaps nothing, itself included.
-func (e Extent) Overlaps(f Extent) bool {
-	return false
-}
-
 // Held names the content version of the bytes a read served for one extent.
 // Whether that version is current anywhere other than in the journal is the
 // caller's question.

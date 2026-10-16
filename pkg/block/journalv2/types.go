@@ -19,7 +19,6 @@ type (
 	JournalID      = core.JournalID
 	InstallationID = core.InstallationID
 	SegmentID      = core.SegmentID
-	Seq            = core.Seq
 )
 
 // The sync policies; see SyncPolicy.
