@@ -23,6 +23,16 @@ type clock struct {
 
 func (c *clock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 
+// storeTimeLead bounds how far store time runs ahead of a clock that does
+// not move: a nanosecond per transaction, so each one's time is later.
+const storeTimeLead = time.Microsecond
+
+// storeTimeAt reports whether got is the store time a transaction took when
+// the clock read want, plus any duration added to both.
+func storeTimeAt(got, want time.Time) bool {
+	return !got.Before(want) && got.Sub(want) < storeTimeLead
+}
+
 // cfix is one share with a namespace, on a store whose clock the test moves.
 type cfix struct {
 	t     *testing.T
@@ -319,7 +329,7 @@ func TestCommitSplitsAndCounts(t *testing.T) {
 		t.Errorf("A after replacement: %+v", rec)
 	}
 	blk, _ := f.block(k1)
-	if blk.State != entity.BlockRetired || !blk.NotBefore.Equal(f.clk.now().Add(trashRetention)) {
+	if blk.State != entity.BlockRetired || !storeTimeAt(blk.NotBefore, f.clk.now().Add(trashRetention)) {
 		t.Errorf("K1 after its last ref: %+v", blk)
 	}
 	f.checkCounts()
@@ -339,11 +349,11 @@ func TestSecondCarrierBornDead(t *testing.T) {
 		t.Errorf("X %+v: want owned by K1, counted twice", rec)
 	}
 	blk, _ := f.block(k2)
-	if blk.Live != 0 || blk.State != entity.BlockRetired || !blk.NotBefore.Equal(f.clk.now()) {
+	if blk.Live != 0 || blk.State != entity.BlockRetired || !storeTimeAt(blk.NotBefore, f.clk.now()) {
 		t.Errorf("K2 %+v: want born retired, due at once", blk)
 	}
 	var due []entity.BlockName
-	for n, err := range f.s.Blocks(f.ns).Due(context.Background(), f.clk.now()) {
+	for n, err := range f.s.Blocks(f.ns).Due(context.Background(), f.clk.now().Add(storeTimeLead)) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +443,7 @@ func TestDeleterLifecycle(t *testing.T) {
 	if errs := blocks.MarkDeleted(ctx, []entity.BlockName{k1}); errs[0] != nil {
 		t.Fatalf("MarkDeleted(K1): %v", errs[0])
 	}
-	if blk, _ := f.block(k1); blk.State != entity.BlockDeleted || !blk.MarkedAt.Equal(f.clk.now()) {
+	if blk, _ := f.block(k1); blk.State != entity.BlockDeleted || !storeTimeAt(blk.MarkedAt, f.clk.now()) {
 		t.Errorf("K1 after MarkDeleted: %+v, want deleted and marked at %v", blk, f.clk.now())
 	}
 	if err := blocks.Prune(ctx, []entity.BlockName{k1}); err == nil {
@@ -504,7 +514,7 @@ func TestIntents(t *testing.T) {
 		t.Errorf("commit after abandonment: %v", err)
 	}
 	blk, ok := f.block(name)
-	if !ok || blk.State != entity.BlockRetired || !blk.NotBefore.Equal(f.clk.now().Add(putBound)) || len(blk.Carried) != 0 {
+	if !ok || blk.State != entity.BlockRetired || !storeTimeAt(blk.NotBefore, f.clk.now().Add(putBound)) || len(blk.Carried) != 0 {
 		t.Errorf("abandoned name's record: %+v, %v", blk, ok)
 	}
 	var left []entity.BlockName

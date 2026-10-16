@@ -3,6 +3,7 @@ package kvstore_test
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/kv"
 	"github.com/marmos91/dittofs/pkg/metadata/kv/badgerkv"
@@ -26,6 +27,13 @@ func badger(opts badgerkv.Options) kvstoretest.Opener {
 
 func TestStoreConformance(t *testing.T) {
 	kvstoretest.Run(t, badger(badgerkv.Options{}))
+}
+
+// The suite under a clock that never moves, as a coarse clock looks to
+// commits that land within one of its ticks.
+func TestStoreConformanceFrozenClock(t *testing.T) {
+	frozen := time.Unix(1_800_000_000, 0)
+	kvstoretest.Run(t, badger(badgerkv.Options{Clock: func() time.Time { return frozen }}))
 }
 
 // The suite on disk, every commit synced: the backend as it ships.

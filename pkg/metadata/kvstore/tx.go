@@ -41,6 +41,8 @@ func raise(tx kv.Txn, key []byte) error {
 // the transaction's store time. Store time never goes back, so a record
 // deleted and created again starts above every version it had before, and a
 // cache keyed by version cannot serve the old record's decision for the new.
+// It also advances with every transaction, so two directory deltas written
+// one after the other, each above only the directory's record, still differ.
 func nextVersion(tx kv.Txn, old uint64) uint64 {
 	return max(old+1, uint64(tx.Now().UnixNano()))
 }

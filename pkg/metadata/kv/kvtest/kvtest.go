@@ -682,8 +682,8 @@ func testNow(t *testing.T, s kv.KV) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if now.Before(prev) {
-			t.Fatalf("Now ran backward across commits in order: %v after %v", now, prev)
+		if !now.After(prev) {
+			t.Fatalf("Now did not advance across commits in order: %v after %v", now, prev)
 		}
 		prev = now
 	}

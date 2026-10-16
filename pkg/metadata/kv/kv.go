@@ -85,9 +85,9 @@ type Txn interface {
 	// directory is empty") is made safe against a concurrent insert. Range
 	// guards are shared like point guards.
 	GuardRange(prefix []byte) error
-	// Now is store time for this transaction: monotonic across transactions
-	// that commit in order, within a stated bound of real time, and fixed for
-	// the transaction's life. Reading it writes no key.
+	// Now is store time for this transaction: strictly increasing across
+	// transactions that commit in order, within a stated bound of real time,
+	// and fixed for the transaction's life. Reading it writes no key.
 	Now() time.Time
 }
 

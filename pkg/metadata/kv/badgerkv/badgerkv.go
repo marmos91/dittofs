@@ -303,15 +303,22 @@ func (s *Store) snapshotPair() (w, r *badger.Txn) {
 	}
 }
 
-// now is the node clock clamped monotone: never below the last value handed
-// out and never past the ceiling. Its bound of real time is ceilingAhead ahead
-// after a restart, and behind by however long a ceiling raise stalls.
+// now is the node clock clamped strictly increasing: a nanosecond past the
+// last value handed out when the clock has not moved past it, as a coarse
+// clock does not between commits within one of its ticks, and never past the
+// ceiling. Its bound of real time is ceilingAhead ahead after a restart, and
+// behind by however long a ceiling raise stalls.
+//
+// decision: at the ceiling Now holds rather than pass it, so two
+// transactions there share one value. A version drawn from store time then
+// repeats; that takes the clock a full ceilingAhead past a stalled raise,
+// which stalls the store's commits too.
 func (s *Store) now() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.clock()
-	if t.Before(s.last) {
-		t = s.last
+	if !t.After(s.last) {
+		t = s.last.Add(time.Nanosecond)
 	}
 	if t.After(s.ceiling) {
 		t = s.ceiling

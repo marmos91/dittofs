@@ -67,7 +67,7 @@ Everything above the backend talks to `kv.KV` (`pkg/metadata/kv/kv.go`). It is o
 | `Set` / `Delete` | Write; two blind writers of one key conflict | Yes |
 | `Guard(key)` | A read that returns nothing, just for the conflict | Yes, and two guards never conflict |
 | `GuardRange(prefix)` | Guard every key under a prefix, present or not | Yes: an insert under it aborts this transaction |
-| `Now()` | Store time: monotone, survives a clock stepped back | — |
+| `Now()` | Store time: strictly increasing, survives a clock stepped back | — |
 
 > **The rule that shapes everything:** a scan is untracked. Any invariant over a range ("this directory is empty", "no share lives under this path", "no durable open names this file") must either guard the range or be restated as a point key every writer also writes. You will see both forms throughout.
 
