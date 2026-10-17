@@ -2,6 +2,7 @@ package run
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,16 +27,17 @@ import (
 const sudoGrace = 2 * time.Minute
 
 // goJSON runs a go-json cell's commands and grades the cell from their
-// events: a failed test, package or command fails it, as does the cell's
-// limit, a cell where no test ran or that was interrupted didn't run, and
-// skips are reported, not graded. names, when given, are the tests to run;
-// one that didn't run is named, and the cell didn't run unless it failed.
-// It also returns each result of each test and subtest, and each package that
-// failed outside any test. A test the cell's limit or go test's own timeout
-// stopped failed; one whose output stopped before its result otherwise, as
-// when its test binary crashed, is other, with that output; one that waited
-// in t.Parallel and never continued didn't run, and has none. A test left
-// open when its package ended is timed to that end.
+// events and the suite's known file: a new failure, an unexpected pass or a
+// failed command fails it, as does the cell's limit; a cell where no test ran,
+// that was interrupted, or with an unexpected skip didn't run. names, when
+// given, are the tests to run; one that didn't run is named, and the cell
+// didn't run unless it failed. It also returns each result of each test and
+// subtest, and each package that failed outside any test, graded. A test
+// whose output stopped before its result failed, whatever the known file
+// says: the cell's limit or go test's own timeout stopped it, or its test
+// binary crashed. One that waited in t.Parallel and never continued didn't
+// run, and has none. A test left open when its package ended is timed to that
+// end.
 func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
@@ -64,10 +66,12 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 		shown := strings.Join(argv, " ")
 		failed := res.failures()
 		code, err := t.goTest(argv, root, filepath.Join(t.vals["out"], fmt.Sprintf("go-test-%d.json", i+1)), &res)
-		switch {
-		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
+		if errors.Is(t.ctx.Err(), context.DeadlineExceeded) {
 			res.end("", time.Now(), atCellLimit)
-			return Failed, res.note(append(problems, atCellLimit)), res.cases
+			problems = append(problems, atCellLimit)
+			break
+		}
+		switch {
 		case t.ctx.Err() != nil:
 			// The cell didn't finish, and what its tests reported once
 			// interrupted can come from the interrupt itself.
@@ -79,12 +83,18 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 		}
 		res.end("", time.Now(), "")
 	}
-	var notRun []string
+	// decision: a go-json suite with a known file is graded as a whole, so
+	// every skip in every package it runs must be listed, and an unlisted one
+	// leaves the cell not run. Grade package by package once a suite needs
+	// only some of its packages listed.
+	t.cell.grade(res.cases)
+	unexpected, notRun := gradeNotes(res.cases)
+	problems = append(problems, unexpected...)
 	if missing := slices.DeleteFunc(slices.Clone(names), res.ran); len(missing) > 0 {
 		notRun = append(notRun, strings.Join(missing, ", ")+" didn't run")
 	}
 	switch {
-	case res.failures() > 0 || len(problems) > 0:
+	case slices.ContainsFunc(res.cases, func(tc report.Test) bool { return tc.Grade == report.New }) || len(problems) > 0:
 		return Failed, res.note(append(problems, notRun...)), res.cases
 	case len(notRun) > 0:
 		return NotRun, res.note(notRun), res.cases
@@ -260,13 +270,11 @@ const atCellLimit = "stopped at the cell's limit"
 // results are a go-json cell's tests, from their events.
 type results struct {
 	limit    time.Time           // the cell's limit; a package that ends after it, dt stopped
-	tests    map[string]string   // "package test" to fail once a command failed it, else its last pass, skip or other
+	tests    map[string]string   // "package test" to fail once a command failed it, else its last pass or skip
 	failedIn map[string]bool     // packages with a failed test
 	broken   []string            // packages that failed outside any test
 	cases    []report.Test       // each result of each test, and each package that failed outside any test
 	running  map[string]*started // "package test" for the tests started and not finished
-	timedOut map[string]bool     // packages go test's own timeout stopped
-	listed   map[string]bool     // "package test" for the tests that timeout lists as running
 }
 
 // started is a test that started, and its output so far.
@@ -275,9 +283,6 @@ type started struct {
 	output []string
 	paused bool // waiting in t.Parallel, not yet continued
 }
-
-// listedRunning matches a test go test's own timeout lists as running.
-var listedRunning = regexp.MustCompile(`^\t\t(\S+) \(\S+\)\n?$`)
 
 // statuses are the test2json actions that end a test, as results.
 var statuses = map[string]string{"pass": report.Passed, "fail": report.Failed, "skip": report.Skipped}
@@ -297,7 +302,6 @@ func (r *results) add(line []byte, w io.Writer) {
 	}
 	if r.tests == nil {
 		r.tests, r.failedIn, r.running = map[string]string{}, map[string]bool{}, map[string]*started{}
-		r.timedOut, r.listed = map[string]bool{}, map[string]bool{}
 	}
 	k := e.Package + " " + e.Test
 	switch {
@@ -305,14 +309,6 @@ func (r *results) add(line []byte, w io.Writer) {
 		_, _ = io.WriteString(w, e.Output)
 		if s := r.running[k]; s != nil {
 			s.output = append(s.output, e.Output)
-		}
-		if strings.HasPrefix(e.Output, "panic: test timed out after ") {
-			r.timedOut[e.Package] = true
-		}
-		if r.timedOut[e.Package] {
-			if m := listedRunning.FindStringSubmatch(e.Output); m != nil {
-				r.listed[e.Package+" "+m[1]] = true
-			}
 		}
 	case e.Test != "" && e.Action == "run":
 		r.running[k] = &started{at: e.Time}
@@ -349,7 +345,10 @@ func (r *results) add(line []byte, w io.Writer) {
 			}
 			r.broken = append(r.broken, e.Package+": "+why)
 			if !recorded {
-				r.cases = append(r.cases, report.Test{Name: e.Package, Status: report.Failed, Duration: seconds(e.Elapsed), Message: why})
+				// decision: a package's failure outside its tests, as a
+				// build that failed, is new whatever the known file says:
+				// an entry names tests, and none can stand for a package.
+				r.cases = append(r.cases, report.Test{Name: e.Package, Status: report.Failed, Grade: report.New, Duration: seconds(e.Elapsed), Message: why})
 			}
 		}
 	}
@@ -357,13 +356,12 @@ func (r *results) add(line []byte, w io.Writer) {
 
 // end records the tests still open in pkg, or in every package when pkg is
 // "", as ended when given, and forgets them. One still waiting in t.Parallel
-// never ran, so it has no result. Of the rest, those stopped says why they
-// were stopped, the cell's limit, failed; those go test's own timeout lists
-// as running failed, a parent blocked on its subtest among them; any other's
-// output stopped before its result, so it's other, as after a crash or for a
-// parent waiting on its parallel subtests. The last two keep their output as
-// their message. Each counts in the cell's note as a test that ran. end
-// reports whether it recorded any.
+// never ran, so it has no result. The rest failed, and are new whatever the
+// known file says: a crash or a hang is a regression until shown otherwise.
+// stopped says why when dt stopped them, at the cell's limit; otherwise their
+// test binary crashed or go test's own timeout stopped it, which leaves a
+// parent waiting on its subtests open too, and each keeps its output as its
+// message. end reports whether it recorded any.
 func (r *results) end(pkg string, when time.Time, stopped string) bool {
 	recorded := false
 	for _, k := range slices.Sorted(maps.Keys(r.running)) {
@@ -376,23 +374,11 @@ func (r *results) end(pkg string, when time.Time, stopped string) bool {
 		if s.paused {
 			continue
 		}
-		tc := report.Test{Name: test, Suite: []string{p}, Status: report.Other, Duration: when.Sub(s.at), Message: message(s.output)}
-		switch {
-		case stopped != "":
-			tc.Status, tc.Message = report.Failed, stopped
-		case r.listed[k]:
-			tc.Status = report.Failed
-		}
-		r.cases = append(r.cases, tc)
+		r.cases = append(r.cases, report.Test{Name: test, Suite: []string{p}, Status: report.Failed, Grade: report.New,
+			Duration: when.Sub(s.at), Message: cmp.Or(stopped, message(s.output))})
 		recorded = true
-		action := "other"
-		if tc.Status == report.Failed {
-			action = "fail"
-			r.failedIn[p] = true
-		}
-		if r.tests[k] != "fail" {
-			r.tests[k] = action
-		}
+		r.failedIn[p] = true
+		r.tests[k] = "fail"
 	}
 	return recorded
 }
@@ -440,12 +426,31 @@ func (r *results) failures() int {
 	return n
 }
 
-// note gives the counts, the failed tests, without a parent whose subtest
-// failed, the broken packages and the problems.
+// note gives the counts of the tests that passed, failed and skipped, a
+// failed test whose every failure is known counted apart; then the new
+// failures, without a parent whose subtest failed; then the broken packages
+// and the problems.
+//
+// decision: a test whose failures are all known is counted as known, not as
+// failed, so "N failed" counts only what fails the cell. A test with several
+// results, one of them new, is still counted as failed.
 func (r *results) note(problems []string) string {
+	grades := map[string]map[string]bool{} // "package test" to its results' grades
+	for _, tc := range r.cases {
+		if len(tc.Suite) > 0 {
+			k := tc.Suite[0] + " " + tc.Name
+			if grades[k] == nil {
+				grades[k] = map[string]bool{}
+			}
+			grades[k][tc.Grade] = true
+		}
+	}
 	count := map[string]int{}
 	var failed []string
 	for k, a := range r.tests {
+		if a == "fail" && grades[k][report.Known] && !grades[k][report.New] {
+			a = "known"
+		}
 		count[a]++
 		if a == "fail" {
 			failed = append(failed, k)
@@ -460,8 +465,8 @@ func (r *results) note(problems []string) string {
 		}
 	}
 	note := fmt.Sprintf("%d passed, %d failed, %d skipped", count["pass"], count["fail"], count["skip"])
-	if count["other"] > 0 {
-		note += fmt.Sprintf(", %d with no result", count["other"])
+	if count["known"] > 0 {
+		note += fmt.Sprintf(", %d known", count["known"])
 	}
 	if len(leaves) > 0 {
 		note += ": " + some(leaves)

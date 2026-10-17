@@ -27,26 +27,43 @@ const (
 	Other   = "other" // the test has no result: its output stopped before one
 )
 
-// Grades dt gives a result.
+// Grades dt gives a result. A passing result no entry stands against has
+// none. Grading sets a result's status too, so that CTRF and JUnit count as
+// failed only what fails its cell, and as other, an error in JUnit, only
+// what leaves it not run.
 const (
-	// New is a failure no known entry matches.
+	// New is a failure no known entry matches, or a crash or a hang, which
+	// no entry excuses: failed.
 	New = "new"
+	// Known is a failure a known-failure entry matches: skipped.
+	Known = "known"
+	// UnexpectedPass is a pass an entry still lists: failed.
+	UnexpectedPass = "unexpected_pass"
+	// ExpectedSkip is a skip an expected-skip entry matches: skipped.
+	ExpectedSkip = "expected_skip"
+	// UnexpectedSkip is a skip no expected-skip entry matches, in a suite
+	// with a known file: other.
+	UnexpectedSkip = "unexpected_skip"
 	// Ungraded is a skip in a suite without a known file: it's reported and
 	// counted, and passes.
 	Ungraded = "ungraded"
+	// Incomplete is a result whose output stopped before it: other.
+	Incomplete = "incomplete"
 )
 
 // Test is one result of one test. A test with several results in a cell has
 // one Test for each.
 type Test struct {
-	Name     string
-	Suite    []string // where the test sits within its cell, such as a Go test's package
-	Status   string   // passed, failed, skipped or other
-	Duration time.Duration
-	Message  string // what the tool said about the result
-	Grade    string // how dt graded the result, when it did
-	Reason   string // why the result was expected: the reason of the known entry that graded it
-	Flaky    bool   // it failed, then passed when run again
+	Name      string
+	Suite     []string // where the test sits within its cell, such as a Go test's package
+	Status    string   // passed, failed, skipped or other, once graded
+	RawStatus string   // the tool's status, when grading changed it
+	Duration  time.Duration
+	Message   string // what the tool said about the result
+	Grade     string // how dt graded the result, when it did
+	Reason    string // why the result was expected: the reason of the known entry that graded it
+	Issue     string // the issue that entry names
+	Flaky     bool   // it failed, then passed when run again
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -169,12 +186,12 @@ func Read(dir string) (Run, error) {
 		if in < 0 {
 			return Run{}, fmt.Errorf("%s: the test %q is in no cell", path, t.Name)
 		}
-		out := Test{Name: t.Name, Status: t.Status, Duration: time.Duration(t.Duration) * time.Millisecond, Message: t.Message, Flaky: t.Flaky}
+		out := Test{Name: t.Name, Status: t.Status, RawStatus: t.RawStatus, Duration: time.Duration(t.Duration) * time.Millisecond, Message: t.Message, Flaky: t.Flaky}
 		if own := t.Suite[len(at[in]):]; len(own) > 0 {
 			out.Suite = own
 		}
 		if t.Extra != nil {
-			out.Grade, out.Reason = t.Extra.Grade, t.Extra.Reason
+			out.Grade, out.Reason, out.Issue = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue
 		}
 		r.Cells[in].Tests = append(r.Cells[in].Tests, out)
 	}
@@ -220,8 +237,8 @@ func (r Run) JSON() ([]byte, error) {
 		res.Extra.Cells = append(res.Extra.Cells, cell{suite, name, c.Result, c.Note, int64(c.Took.Round(time.Second) / time.Second), c.Log, junitPath(c.Name)})
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
-			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, Duration: t.Duration.Milliseconds(), Message: t.Message, Flaky: t.Flaky}
-			if x := (testExtra{Grade: t.Grade, Reason: t.Reason}); x != (testExtra{}) {
+			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message, Flaky: t.Flaky}
+			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue}); x != (testExtra{}) {
 				out.Extra = &x
 			}
 			if t.Flaky {
@@ -278,18 +295,20 @@ type summary struct {
 }
 
 type test struct {
-	Name     string     `json:"name"`
-	Suite    []string   `json:"suite"`
-	Status   string     `json:"status"`
-	Duration int64      `json:"duration"`
-	Message  string     `json:"message,omitempty"`
-	Flaky    bool       `json:"flaky,omitempty"`
-	Extra    *testExtra `json:"extra,omitempty"`
+	Name      string     `json:"name"`
+	Suite     []string   `json:"suite"`
+	Status    string     `json:"status"`
+	RawStatus string     `json:"rawStatus,omitempty"`
+	Duration  int64      `json:"duration"`
+	Message   string     `json:"message,omitempty"`
+	Flaky     bool       `json:"flaky,omitempty"`
+	Extra     *testExtra `json:"extra,omitempty"`
 }
 
 type testExtra struct {
 	Grade  string `json:"grade,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	Issue  string `json:"issue,omitempty"`
 }
 
 type environment struct {
