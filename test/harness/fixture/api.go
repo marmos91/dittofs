@@ -11,11 +11,12 @@ import (
 )
 
 // configure sets the server up through its API: its stores on the fixture's
-// profile, the share, its squash, the users, and the NFS settings, all before
-// dt enables the NFS adapter, which reads them as it starts. The settings are
-// then read back. Users get password, and each UID in the fixture's users a
-// read-write grant on the share.
-func configure(c *apiclient.Client, f registry.Fixture, data, password string, nfsPort int) error {
+// profile, with the blocks of an S3 profile in b, the share, its squash, the
+// users, and the NFS settings, all before dt enables the NFS adapter, which
+// reads them as it starts. The settings are then read back. Users get
+// password, and each UID in the fixture's users a read-write grant on the
+// share.
+func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, password string, nfsPort int) error {
 	off, on := false, true
 	// decision: on a fresh database the server creates its NFS and SMB
 	// adapters enabled, on 12049 and 12445, and starts them; no setting stops
@@ -31,13 +32,17 @@ func configure(c *apiclient.Client, f registry.Fixture, data, password string, n
 		}
 	}
 	meta := map[string]any{"in_memory": true}
-	if f.Profile == "badger" {
+	if f.Profile != "memory" { // badger and badger-s3 keep it on disk
 		meta = map[string]any{"path": filepath.Join(data, "metadata")}
 	}
 	if _, err := c.CreateMetadataStore(&apiclient.CreateStoreRequest{Name: "default", Type: "badger", Config: meta}); err != nil {
 		return fmt.Errorf("the metadata store: %w", err)
 	}
-	if _, err := c.CreateBlockStore(&apiclient.CreateStoreRequest{Name: "default", Type: "memory"}); err != nil {
+	blocks := &apiclient.CreateStoreRequest{Name: "default", Type: "memory"}
+	if b != nil {
+		blocks.Type, blocks.Config = "s3", b.storeConfig()
+	}
+	if _, err := c.CreateBlockStore(blocks); err != nil {
 		return fmt.Errorf("the block store: %w", err)
 	}
 	if _, err := c.CreateShare(&apiclient.CreateShareRequest{Name: Share, MetadataStoreID: "default", BlockStore: "default"}); err != nil {
@@ -122,8 +127,9 @@ func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error)
 // check is the fixture's check before the first test that the server
 // answers: its readiness probe answers 200, and so does an authenticated
 // call, which shows NFS served on its port when the fixture asks for it, and
-// no adapter it doesn't ask for.
-func check(ctx context.Context, c *apiclient.Client, api string, nfsPort int) error {
+// no adapter it doesn't ask for. With an S3 profile's bucket b, the server's
+// own check of its block store must find it healthy too.
+func check(ctx context.Context, c *apiclient.Client, api string, b *bucket, nfsPort int) error {
 	if err := ready(ctx, api); err != nil {
 		return err
 	}
@@ -142,6 +148,16 @@ func check(ctx context.Context, c *apiclient.Client, api string, nfsPort int) er
 	}
 	if nfsPort > 0 && !served {
 		return fmt.Errorf("NFS isn't served on port %d", nfsPort)
+	}
+	if b == nil {
+		return nil
+	}
+	h, err := c.BlockStoreHealth("default")
+	if err != nil {
+		return fmt.Errorf("the block store's health: %w", err)
+	}
+	if !h.Healthy {
+		return fmt.Errorf("the server can't reach the bucket %s at %s: %s", bucketName, b.endpoint, h.Details)
 	}
 	return nil
 }
