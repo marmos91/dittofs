@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,10 +46,12 @@ func Unsupported(f *registry.Fixture) string {
 	switch {
 	case f.Server != "" && f.Server != "dfs" && fixed(f.Server):
 		return fmt.Sprintf("dt doesn't set up a %s fixture yet", f.Server)
-	case f.Profile != "memory" && f.Profile != "badger" && fixed(f.Profile):
+	case f.Profile != "memory" && f.Profile != "badger" && f.Profile != "badger-s3" && fixed(f.Profile):
 		return fmt.Sprintf("dt doesn't set up the %q profile yet", f.Profile)
-	case f.NFS.Version != "" && f.NFS.Version != "export" && fixed(f.NFS.Version):
-		return "dt doesn't mount NFS in fixtures yet"
+	case mounts(f.NFS.Version) && fixed(f.NFS.Version) && mountVers[f.NFS.Version] == "":
+		return fmt.Sprintf("dt doesn't mount NFS %s yet", f.NFS.Version)
+	case mounts(f.NFS.Version) && fixed(f.NFS.Version) && runtime.GOOS != "linux":
+		return "dt mounts NFS only on Linux yet"
 	case f.SMB.Enabled:
 		return "dt doesn't serve SMB from fixtures yet"
 	case f.Shares != "":
@@ -62,11 +65,15 @@ func Unsupported(f *registry.Fixture) string {
 }
 
 // Placeholders names what fixture f gives a cell's commands, besides {bin}:
-// {server}, {user} and {password}, and {nfs-port} when it serves NFS.
+// {server}, {user} and {password}, {nfs-port} when it serves NFS, and
+// {mount} when it mounts the share.
 func Placeholders(f registry.Fixture) []string {
 	names := []string{"server", "user", "password"}
 	if f.NFS.Version != "" {
 		names = append(names, "nfs-port")
+	}
+	if mounts(f.NFS.Version) {
+		names = append(names, "mount")
 	}
 	return names
 }
@@ -79,8 +86,10 @@ type Server struct {
 	err     error         // how dfs exited, once exited is closed
 	log     *os.File
 	data    string
-	api     string // the API's base URL
-	nfsPort int    // 0 when the fixture serves no NFS
+	api     string    // the API's base URL
+	nfsPort int       // 0 when the fixture serves no NFS
+	mount   string    // {mount}, once the fixture makes it
+	out     io.Writer // dt's lines on the setup and the teardown
 	stop    sync.Once
 	stopErr error
 }
@@ -90,19 +99,29 @@ func (s *Server) Placeholders() map[string]string { return s.vals }
 
 // Start starts dfs from bin with its data under out, in a directory it
 // removes when it stops, and its output in out/dfs.log, which it keeps. It
-// sets the server up as f asks and checks that it answers. It makes one
-// attempt: when a step fails, or ctx ends first, it stops the server and
-// returns why. w gets dt's lines on the setup, and never a credential.
-func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer) (*Server, error) {
+// sets the server up as f asks and checks that it answers. An S3 profile's
+// bucket is created first, at the endpoint services give: the variables of
+// the cell's services, as NAME=value. It makes one attempt: when a step
+// fails, or ctx ends first, it stops the server and returns why. w gets dt's
+// lines on the setup, and never a credential.
+func Start(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (*Server, error) {
 	server, err := address()
 	if err != nil {
 		return nil, err
+	}
+	// The bucket comes first, so when it fails there is no server to stop.
+	var b *bucket
+	if f.Profile == "badger-s3" {
+		if b, err = newBucket(ctx, services); err != nil {
+			return nil, err
+		}
+		_, _ = fmt.Fprintf(w, "[dt] fixture: blocks in the bucket %s at %s, under %s\n", bucketName, b.endpoint, b.prefix)
 	}
 	ports, err := freePorts(2)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{data: filepath.Join(out, "dfs"), api: "http://127.0.0.1:" + strconv.Itoa(ports[0]), exited: make(chan struct{})}
+	s := &Server{data: filepath.Join(out, "dfs"), api: "http://127.0.0.1:" + strconv.Itoa(ports[0]), exited: make(chan struct{}), out: w}
 	if f.NFS.Version != "" {
 		s.nfsPort = ports[1]
 	}
@@ -136,7 +155,7 @@ func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer
 	// The API client takes no context, so the setup runs aside: when ctx
 	// ends first, stopping the server ends the request in flight.
 	done := make(chan error, 1)
-	go func() { done <- s.setUp(ctx, f, admin, password) }()
+	go func() { done <- s.setUp(ctx, f, b, admin, password) }()
 	select {
 	case err = <-done:
 	case <-ctx.Done():
@@ -153,12 +172,20 @@ func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
 		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
 	}
+	if mounts(f.NFS.Version) {
+		if err := s.mountShare(ctx, server, f.NFS); err != nil {
+			_ = s.Stop()
+			return nil, err
+		}
+		s.vals["mount"] = s.mount
+		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS %s mounted at %s\n", mountVers[f.NFS.Version], s.mount)
+	}
 	return s, nil
 }
 
 // setUp waits for the server's API, logs in as its admin, configures it and
 // checks it.
-func (s *Server) setUp(ctx context.Context, f registry.Fixture, admin, password string) error {
+func (s *Server) setUp(ctx context.Context, f registry.Fixture, b *bucket, admin, password string) error {
 	if err := s.waitReady(ctx); err != nil {
 		return err
 	}
@@ -168,10 +195,10 @@ func (s *Server) setUp(ctx context.Context, f registry.Fixture, admin, password 
 		return fmt.Errorf("logging in as admin: %w", err)
 	}
 	c.SetToken(token.AccessToken)
-	if err := configure(c, f, s.data, password, s.nfsPort); err != nil {
+	if err := configure(c, f, b, s.data, password, s.nfsPort); err != nil {
 		return err
 	}
-	return check(ctx, c, s.api, s.nfsPort)
+	return check(ctx, c, s.api, b, s.nfsPort)
 }
 
 // waitReady waits until the API's readiness probe answers 200.
@@ -188,14 +215,18 @@ func (s *Server) waitReady(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the process group dt started dfs in, and nothing outside it,
-// then removes the server's data; its output stays. dfs gets SIGTERM and
-// stopGrace to exit before SIGKILL, also when the setup's limit stops it, so
-// a dfs that hangs there holds its cell up to stopGrace past that limit. It
-// returns an error when dfs had exited before Stop: the server ended before
-// its cell did.
+// Stop unmounts the share, then stops the process group dt started dfs in,
+// and nothing outside it, then removes the server's data; its output stays.
+// The share goes first, since an unmount waits on a server that is gone. dfs
+// gets SIGTERM and stopGrace to exit before SIGKILL, also when the setup's
+// limit stops it, so a dfs that hangs there holds its cell up to stopGrace
+// past that limit. It returns an error when dfs had exited before Stop: the
+// server ended before its cell did.
 func (s *Server) Stop() error {
 	s.stop.Do(func() {
+		if s.mount != "" {
+			s.unmount()
+		}
 		select {
 		case <-s.exited:
 			s.stopErr = fmt.Errorf("dfs exited before its cell ended (%v); its output is dfs.log in the cell's results", s.err)

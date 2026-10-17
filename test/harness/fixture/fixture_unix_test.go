@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/needs"
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
@@ -99,7 +100,7 @@ func TestSetupEnds(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		cancel()
 	}()
-	s, err := Start(ctx, registry.Fixture{Profile: "memory"}, bin, out, &bytes.Buffer{})
+	s, err := Start(ctx, registry.Fixture{Profile: "memory"}, nil, bin, out, &bytes.Buffer{})
 	if s != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("Start: %v, %v", s, err)
 	}
@@ -132,7 +133,7 @@ func TestSetupServerExits(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := t.TempDir()
-	_, err := Start(context.Background(), registry.Fixture{Profile: "memory"}, bin, out, &bytes.Buffer{})
+	_, err := Start(context.Background(), registry.Fixture{Profile: "memory"}, nil, bin, out, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "dfs exited before its API answered (exit status 2)") {
 		t.Errorf("Start: %v", err)
 	}
@@ -143,30 +144,27 @@ func TestSetupServerExits(t *testing.T) {
 
 // A real dfs, built from this checkout, starts on each profile, exports the
 // share over NFS at {server} on its own port, and stops; a "dfs start" dt
-// didn't start survives the stop.
+// didn't start survives the stop. badger-s3 runs where the S3 service it
+// needs answers, as dt services starts it.
 func TestRealServer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds and runs dfs")
-	}
-	if _, err := address(); err != nil {
-		t.Skipf("no address for {server} here: %v", err)
-	}
-	bin := t.TempDir()
-	build := exec.Command("go", "build", "-o", bin+string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl")
-	build.Dir = filepath.Join("..", "..", "..")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("dfs doesn't build here, so no real server runs: %v\n%s", err, out)
-	}
+	bin := realBin(t)
 	other := outsider(t)
 	no := false
-	for _, profile := range []string{"memory", "badger"} {
+	root, _ := filepath.Abs(filepath.Join("..", "..", ".."))
+	services := needs.ServiceEnv(root, []string{"service:localstack"})
+	for _, profile := range []string{"memory", "badger", "badger-s3"} {
 		t.Run(profile, func(t *testing.T) {
+			if profile == "badger-s3" {
+				if err := needs.Check(root, "service:localstack"); err != nil {
+					t.Skipf("service:localstack: %v", err)
+				}
+			}
 			out := t.TempDir()
 			var w bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			f := registry.Fixture{Profile: profile, NFS: registry.NFS{Version: "export"}, Squash: "root_to_admin", Users: []int{65532}, Delegations: &no, Lease: "30s"}
-			s, err := Start(ctx, f, bin, out, &w)
+			s, err := Start(ctx, f, services, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
 				t.Fatalf("Start: %v\n%s\ndfs.log:\n%s", err, w.String(), log)
@@ -196,4 +194,24 @@ func TestRealServer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// realBin builds dfs and dfsctl from this checkout into a new directory for a
+// real server, and skips the test under -short, where they don't build, or
+// where there is no address for {server}.
+func realBin(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("builds and runs dfs")
+	}
+	if _, err := address(); err != nil {
+		t.Skipf("no address for {server} here: %v", err)
+	}
+	bin := t.TempDir()
+	build := exec.Command("go", "build", "-o", bin+string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl")
+	build.Dir = filepath.Join("..", "..", "..")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Skipf("dfs doesn't build here, so no real server runs: %v\n%s", err, out)
+	}
+	return bin
 }

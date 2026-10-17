@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -16,14 +17,17 @@ import (
 )
 
 // fakeAPI answers the calls the fixture makes as the server would, and
-// records each, with an adapter's state and the NFS settings dt sets.
+// records each, with an adapter's state, the NFS settings dt sets and the
+// stores it creates.
 type fakeAPI struct {
 	mu       sync.Mutex
 	calls    []string
 	running  map[string]int // adapter type to the port it serves, when enabled
 	settings map[string]any
-	lease    int   // what reading the settings back reports, when not 0
-	deleg    *bool // the same for delegations, when not nil
+	lease    int                       // what reading the settings back reports, when not 0
+	deleg    *bool                     // the same for delegations, when not nil
+	stores   map[string]map[string]any // the config of each store, by its path
+	sick     string                    // when set, the block store's health check fails with it
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +66,14 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			list = append(list, apiclient.Adapter{Type: a, Port: f.running[a], Enabled: f.running[a] > 0, Running: f.running[a] > 0})
 		}
 		_ = json.NewEncoder(w).Encode(list)
+	case strings.HasPrefix(r.URL.Path, "/api/v1/store/") && r.Method == http.MethodPost:
+		var config map[string]any
+		_ = json.Unmarshal([]byte(fmt.Sprint(body["config"])), &config)
+		f.stores[r.URL.Path] = config
+		call += fmt.Sprintf(" %v", body["type"])
+		_, _ = w.Write([]byte("{}"))
+	case r.URL.Path == "/api/v1/store/block/default/health":
+		_ = json.NewEncoder(w).Encode(apiclient.BlockStoreHealthResult{Healthy: f.sick == "", Details: f.sick})
 	case r.URL.Path == "/api/v1/auth/login":
 		_, _ = w.Write([]byte(`{"access_token": "t"}`))
 	case strings.HasPrefix(r.URL.Path, "/api/v1/users"):
@@ -77,7 +89,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func newFakeAPI(t *testing.T) (*fakeAPI, *apiclient.Client, string) {
 	t.Helper()
-	f := &fakeAPI{running: map[string]int{"nfs": 12049, "smb": 12445}}
+	f := &fakeAPI{running: map[string]int{"nfs": 12049, "smb": 12445}, stores: map[string]map[string]any{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	c := apiclient.New(srv.URL)
@@ -93,17 +105,17 @@ func TestConfigureOrder(t *testing.T) {
 	f, c, url := newFakeAPI(t)
 	no := false
 	fx := registry.Fixture{Profile: "badger", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []int{65532, 1}, Delegations: &no, Lease: "30s"}
-	if err := configure(c, fx, "/data", "pw", 40001); err != nil {
+	if err := configure(c, fx, nil, "/data", "pw", 40001); err != nil {
 		t.Fatal(err)
 	}
-	if err := check(context.Background(), c, url, 40001); err != nil {
+	if err := check(context.Background(), c, url, nil, 40001); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
 		"PUT /api/v1/adapters/nfs off",
 		"PUT /api/v1/adapters/smb off",
-		"POST /api/v1/store/metadata",
-		"POST /api/v1/store/block",
+		"POST /api/v1/store/metadata badger",
+		"POST /api/v1/store/block memory",
 		"POST /api/v1/shares",
 		"PATCH /api/v1/shares/export/adapters/nfs/config",
 		"POST /api/v1/users dt-65532 uid=65532 gid=65532",
@@ -130,10 +142,10 @@ func TestConfigureOrder(t *testing.T) {
 // does a lease that isn't whole seconds.
 func TestConfigureSettings(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	if err := configure(c, registry.Fixture{Profile: "memory"}, "/data", "pw", 0); err != nil {
+	if err := configure(c, registry.Fixture{Profile: "memory"}, nil, "/data", "pw", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := check(context.Background(), c, url, 0); err != nil {
+	if err := check(context.Background(), c, url, nil, 0); err != nil {
 		t.Errorf("no adapter asked for: %v", err)
 	}
 	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.Contains(c, "settings") || strings.HasSuffix(c, " on") }) {
@@ -142,7 +154,7 @@ func TestConfigureSettings(t *testing.T) {
 
 	f, c, _ = newFakeAPI(t)
 	f.lease = 90
-	err := configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Lease: "30s"}, "/data", "pw", 40001)
+	err := configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Lease: "30s"}, nil, "/data", "pw", 40001)
 	if err == nil || !strings.Contains(err.Error(), "lease of 90s, not the 30s") {
 		t.Errorf("a lease that reads back wrong: %v", err)
 	}
@@ -150,13 +162,13 @@ func TestConfigureSettings(t *testing.T) {
 	f, c, _ = newFakeAPI(t)
 	yes, no := true, false
 	f.deleg = &yes
-	err = configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Delegations: &no}, "/data", "pw", 40001)
+	err = configure(c, registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Delegations: &no}, nil, "/data", "pw", 40001)
 	if err == nil || !strings.Contains(err.Error(), "delegations true, not the false") {
 		t.Errorf("delegations that read back wrong: %v", err)
 	}
 
 	_, c, _ = newFakeAPI(t)
-	if err := configure(c, registry.Fixture{Profile: "memory", Lease: "1.5s"}, "/data", "pw", 0); err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
+	if err := configure(c, registry.Fixture{Profile: "memory", Lease: "1.5s"}, nil, "/data", "pw", 0); err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
 		t.Errorf("a lease of 1.5s: %v", err)
 	}
 }
@@ -165,11 +177,36 @@ func TestConfigureSettings(t *testing.T) {
 // adapter it didn't ask for runs.
 func TestCheck(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	if err := check(context.Background(), c, url, 40001); err == nil || !strings.Contains(err.Error(), "smb adapter runs") {
+	if err := check(context.Background(), c, url, nil, 40001); err == nil || !strings.Contains(err.Error(), "smb adapter runs") {
 		t.Errorf("the server's own SMB adapter: %v", err)
 	}
 	delete(f.running, "smb")
-	if err := check(context.Background(), c, url, 40001); err == nil || !strings.Contains(err.Error(), "NFS isn't served on port 40001") {
+	if err := check(context.Background(), c, url, nil, 40001); err == nil || !strings.Contains(err.Error(), "NFS isn't served on port 40001") {
 		t.Errorf("NFS on 12049: %v", err)
+	}
+}
+
+// The badger-s3 profile keeps its metadata on disk and its blocks in the
+// fixture's bucket, under its own prefix; the check then fails when the
+// server's own check of that block store doesn't find it healthy.
+func TestConfigureS3(t *testing.T) {
+	f, c, url := newFakeAPI(t)
+	b := &bucket{endpoint: "http://10.0.0.5:4566", prefix: "dt-0123456789abcdef/"}
+	if err := configure(c, registry.Fixture{Profile: "badger-s3"}, b, "/data", "pw", 0); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.calls, "POST /api/v1/store/block s3") {
+		t.Errorf("calls %q", f.calls)
+	}
+	blocks, meta := f.stores["/api/v1/store/block"], f.stores["/api/v1/store/metadata"]
+	if blocks["bucket"] != bucketName || blocks["prefix"] != b.prefix || blocks["endpoint"] != b.endpoint || meta["path"] != filepath.Join("/data", "metadata") {
+		t.Errorf("block store %v, metadata store %v", blocks, meta)
+	}
+	if err := check(context.Background(), c, url, b, 0); err != nil {
+		t.Errorf("a healthy block store: %v", err)
+	}
+	f.sick = "S3 health check failed: NotFound"
+	if err := check(context.Background(), c, url, b, 0); err == nil || !strings.Contains(err.Error(), "can't reach the bucket dittofs-dt at http://10.0.0.5:4566: S3 health check failed: NotFound") {
+		t.Errorf("an unhealthy block store: %v", err)
 	}
 }

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,14 +16,20 @@ import (
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// fakeServer is a started fixture that gives fixed placeholders.
+// fakeServer is a started fixture that gives fixed placeholders, and
+// {mount} when mount is set.
 type fakeServer struct {
 	stops int
 	err   error // what Stop reports
+	mount string
 }
 
 func (f *fakeServer) Placeholders() map[string]string {
-	return map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "user": "dt-user", "password": "s3cret"}
+	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "user": "dt-user", "password": "s3cret"}
+	if f.mount != "" {
+		vals["mount"] = f.mount
+	}
+	return vals
 }
 
 func (f *fakeServer) Stop() error {
@@ -28,44 +37,59 @@ func (f *fakeServer) Stop() error {
 	return f.err
 }
 
+// asked is a fixture startFixture was asked for, with the services'
+// variables it was given.
+type asked struct {
+	registry.Fixture
+	services []string
+}
+
 // fakeFixture makes startFixture call start, and returns the fixtures it was
 // asked for.
-func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, error)) *[]registry.Fixture {
+func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, error)) *[]asked {
 	t.Helper()
-	var asked []registry.Fixture
+	var list []asked
 	real := startFixture
-	startFixture = func(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer) (fixtureServer, error) {
-		asked = append(asked, f)
+	startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+		list = append(list, asked{f, services})
 		return start(ctx)
 	}
 	t.Cleanup(func() { startFixture = real })
-	return &asked
+	return &list
 }
 
 const fixtureSuite = `suites:
   f:
     cmd: ["echo {server}:{nfs-port} {user}", "test {password} = s3cret"]
-    matrix: { p: [memory, badger-s3] }
+    matrix: { p: [memory, badger-s3, postgres-s3] }
     fixture: { profile: "{p}", nfs: export, lease: 30s }
 `
 
 // A cell with a fixture has {bin} built, its server started with the cell's
 // values before its first test, its placeholders filled, and its server
-// stopped after its last test; {password} never reaches the log. A cell whose
-// fixture dt can't set up yet doesn't run, and starts nothing.
+// stopped after its last test; {password} never reaches the log. An S3
+// profile's fixture is given the variables of the S3 service it needs. A
+// cell whose fixture dt can't set up yet doesn't run, and starts nothing.
 func TestFixtureCell(t *testing.T) {
+	s3 := httptest.NewServer(http.NotFoundHandler()) // what the need's check dials
+	t.Cleanup(s3.Close)
+	t.Setenv("LOCALSTACK_ENDPOINT", s3.URL)
 	server := &fakeServer{}
 	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, fixtureSuite, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
 	rep, out := runTarget(t, root, r, "f", false)
-	if len(rep.Outcomes) != 2 || rep.Outcomes[0].Result != Passed {
+	if len(rep.Outcomes) != 3 || rep.Outcomes[0].Result != Passed || rep.Outcomes[1].Result != Passed {
 		t.Fatalf("outcomes %+v\n%s", rep.Outcomes, out)
 	}
-	if o := rep.Outcomes[1]; o.Result != NotRun || o.Note != `dt doesn't set up the "badger-s3" profile yet` {
-		t.Errorf("badger-s3: %+v", o)
+	if o := rep.Outcomes[2]; o.Result != NotRun || o.Note != `dt doesn't set up the "postgres-s3" profile yet` {
+		t.Errorf("postgres-s3: %+v", o)
 	}
-	if len(*asked) != 1 || (*asked)[0].Profile != "memory" || (*asked)[0].Lease != "30s" || server.stops != 1 {
-		t.Errorf("fixtures asked for %+v, stopped %d times", *asked, server.stops)
+	a := *asked
+	if len(a) != 2 || a[0].Profile != "memory" || a[0].Lease != "30s" || a[1].Profile != "badger-s3" || server.stops != 2 {
+		t.Errorf("fixtures asked for %+v, stopped %d times", a, server.stops)
+	}
+	if len(a) == 2 && !slices.Contains(a[1].services, "LOCALSTACK_ENDPOINT="+s3.URL) {
+		t.Errorf("badger-s3's fixture was given %q", a[1].services)
 	}
 	for _, bin := range []string{"dfs", "dfsctl"} {
 		if _, err := os.Stat(filepath.Join(rep.Dir, "bin", bin)); err != nil {

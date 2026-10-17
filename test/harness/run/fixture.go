@@ -23,8 +23,8 @@ type fixtureServer interface {
 }
 
 // startFixture starts a cell's server; the tests replace it.
-var startFixture = func(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer) (fixtureServer, error) {
-	s, err := fixture.Start(ctx, f, bin, out, w)
+var startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+	s, err := fixture.Start(ctx, f, services, bin, out, w)
 	if err != nil {
 		return nil, err
 	}
@@ -32,10 +32,10 @@ var startFixture = func(ctx context.Context, f registry.Fixture, bin, out string
 }
 
 // setUpFixture builds {bin} and starts the cell's server, within the
-// fixture's own limit. It makes one attempt: the server starts inside the
-// fixture, so a retry could hide its flakiness. It returns the server, or why
-// the cell doesn't run.
-func setUpFixture(ctx context.Context, f registry.Fixture, root, bin, out string, w io.Writer) (fixtureServer, string) {
+// fixture's own limit, with the variables of the services the cell needs. It
+// makes one attempt: the server starts inside the fixture, so a retry could
+// hide its flakiness. It returns the server, or why the cell doesn't run.
+func setUpFixture(ctx context.Context, f registry.Fixture, services []string, root, bin, out string, w io.Writer) (fixtureServer, string) {
 	// decision: building {bin} is one of the fixture's own steps, as a
 	// package install is, so a stalled module download leaves the cell not
 	// run within the limit instead of using up the cell's.
@@ -53,7 +53,7 @@ func setUpFixture(ctx context.Context, f registry.Fixture, root, bin, out string
 	if err := buildBin(setup, root, bin, os.Environ(), w); err != nil {
 		return nil, why(fmt.Errorf("dfs and dfsctl didn't build: %w", err))
 	}
-	server, err := startFixture(setup, f, bin, out, w)
+	server, err := startFixture(setup, f, services, bin, out, w)
 	if err != nil {
 		return nil, why(err)
 	}

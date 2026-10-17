@@ -372,11 +372,12 @@ the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
 
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
-the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the fixture's
-variables (`KRB5CCNAME`, the server's address and ports), the variables of the services the suite
-needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its `service:` need found rather
-than starting its own), `DITTOFS_E2E_BIN` and `PATH`. Today's e2e job does the same by hand, with
-`sudo -E env "PATH=$PATH" ...`.
+the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the variables of
+the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its
+`service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. Today's e2e job
+does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A fixture sets no variables: it gives
+its values as placeholders (§4.2), and a suite that needs one in a variable puts it in its `env`,
+as `fio-verify` puts `{mount}` in `BENCH_DIR`.
 
 ## 4. Design
 
@@ -639,7 +640,7 @@ suites:
 | Field | Meaning | Default |
 |---|---|---|
 | `cmd` | A command, or a list of commands, from the repository root or inside `image`. Every command of a list runs, in order, and the cell fails if any of them failed, so one run reports every problem, as the lint jobs do today. A command is a string, split into arguments at spaces, and never passes through a shell; `{ sh: "..." }` runs one through `sh -c` (Git Bash on Windows) when it needs pipes or `$(...)`. Its placeholders are below | required, unless the image provides one |
-| `dir` | The directory the commands run in, such as `{mount}` | the repository root |
+| `dir` | The directory the commands run in, such as `{mount}`. With `image`, the commands run in the container, so `dir` is a directory inside it, given to `docker run -w` | the repository root; with `image`, the image's own working directory |
 | `format` | How each test's result is read: `exit`, `go-json`, `junit`, `tap`, `subunit`, `trx` (§4.6) | `exit` |
 | `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json` (§4.6) | none |
 | `tier` | The smallest tier that runs the suite (§4.3) | `merge` |
@@ -665,10 +666,12 @@ suites:
 | `shards` | Split `tests` over this many CI jobs | `1` |
 | `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name. `unit` and `integration` keep theirs only until the ruleset requires the gate (§4.8) | none: a matrix cell |
 
-**Placeholders.** `dt` fills them once per cell, before the command runs. Each value is one
-argument, never split again, except `{packages}`, `{args}` and `{names}`, which hold lists and
-become one argument per item. Inside `{ sh: "..." }`, each value is shell-quoted. An unknown
-placeholder is a registry error (exit 3).
+**Placeholders.** `dt` fills them once per cell, before the first test, and `{test}` again for
+each test. Each value is one argument, never split again, except `{packages}`, `{args}` and
+`{names}`, which hold lists and become one argument per item. Inside `{ sh: "..." }`, each value is
+shell-quoted. An unknown placeholder is a registry error (exit 3), and so is `{test}` anywhere but
+`cmd` and `volumes`: `env`, `dir`, the templates and the fixture are filled before the first test,
+when `{test}` has no value.
 
 | Placeholder | Value |
 |---|---|
@@ -714,7 +717,9 @@ Rules `dt` enforces when it loads the file:
 - unknown fields are refused, so a misspelt field fails rather than being ignored;
 - a `version` newer than `dt` knows is refused;
 - every `known`, `shares` and `templates` path exists;
-- every `{test}` has a `tests`;
+- every `{test}` has a `tests`, and is in `cmd` or `volumes`;
+- every `dfs` fixture names its `profile`, since a fixture without one is a mistake in the file,
+  not an environment problem;
 - every group names existing suites;
 - a `go-json` command begins with `go test`, so `dt` can add `-json -count=1` after it, and
   `-exec` to run each test binary under `sudo` when it needs root (§4.6);
@@ -734,10 +739,12 @@ output. `dt plan --json` gives them the same, from YAML.
 
 `suites.json` goes with `run.sh`: its profiles become `matrix`, its PR lists `select.pr`, and its
 known-failure paths `known`. `test/conformance/check-docs.sh`, which renders the documentation's
-tables from it, becomes `dt docs --check`. Its other reader, `ci-health.yml`, takes from it only the
-names of the workflows it watches. Those are workflows, not suites, so the registry doesn't hold
-them. When `suites.json` goes in step 3 (§8), the list moves into `ci-health.yml` itself, whose
-trigger already repeats it, and names `tests.yml` and any workflow still outside it (§4.8).
+tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance suites move: the
+tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
+other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
+workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8),
+the list moves into `ci-health.yml` itself, whose trigger already repeats it, and names `tests.yml`
+and any workflow still outside it (§4.8).
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -758,7 +765,7 @@ carry a script that builds it.
 | Field | Meaning |
 |---|---|
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
-| `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
+| `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
 | `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
@@ -793,7 +800,10 @@ share is the default `{share}`.
 In a `shares` file, `{user}` owns each share's root and holds the `admin` grant on it, as
 `wpts-admin` does today: ownership lets it write at the root, and `admin` lets `smb2.acls` take
 ownership. `{user2}` has a uid of its own, the same password and no grant: WPTS's non-admin user,
-and the restricted principal of `smb2.acls.ACCESSBASED`.
+and the restricted principal of `smb2.acls.ACCESSBASED`. On the default share, `/export`, `{user}`
+has a uid of its own and no grant, as `{user2}` does. No suite uses `{user}` there yet; the first
+that does, `clients` with its SMB mount (§8 step 4), adds what it needs with its own change to this
+RFC.
 
 **Settings.** A fixture sets only settings the server has. The storage RFCs (#2894) ask that
 fixtures use only the settings RFC 13, 14 and 16 define, which fix the NFSv4 lease at 90 seconds
@@ -846,16 +856,18 @@ never a pass (R10):
 The silent passes in §1 are each a case of a missing check: the bucket, the NFS module, the
 Kerberos upcall.
 
-The fixture's own steps (package installs, image pulls, the server's start) have a short timeout of
-their own, 5 minutes by default. A stalled package mirror then fails the cell as "not run" within
-minutes, instead of using up the cell's whole timeout, as one did for 15 jobs on 2026-10-07 (#2977).
+The fixture's own steps (package installs, image pulls, building `{bin}`, the server's start)
+share one short timeout of their own, 5 minutes by default: the fixture's 5 minutes that a cell's
+limit counts (§4.1). A stalled package mirror then fails the cell as "not run" within minutes,
+instead of using up the cell's whole timeout, as one did for 15 jobs on 2026-10-07 (#2977).
 A failed fixture step is never retried (§9): DittoFS starts inside the fixture, so a retry could
 hide its flakiness. The cell is reported as not run, and someone re-runs it by hand. A test is
 never retried on a pull request (§4.7).
 
 `dt` stops only the processes it started. Today `teardown-posix.sh` kills every `dfs start` on the
 machine, a developer's own server included. Each cell's results go to its `{out}`, the same layout
-for every suite, where today five workflow steps look for the newest directory with `ls -td`.
+for every suite, where today five workflow steps look for the newest directory with `ls -td`, and
+its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 
 ### 4.3 Tiers
 
@@ -973,7 +985,7 @@ first version is narrow, so it can't flood the tracker as #1705's alarm did:
 
 | Flag | Effect |
 |---|---|
-| `--ci` | non-interactive; GitHub annotations for new failures; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
+| `--ci` | non-interactive; GitHub annotations for new failures and unexpected passes, each by name, and for a cell that failed or didn't run with no test to name, once, with its note; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
 | `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on develop and the schedule, never on pull requests, §4.7) |
 | `--in host\|container\|auto` | where to run; `auto` uses `dtc` when the host lacks a need the container provides |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
@@ -1057,7 +1069,13 @@ test/harness/results/20261007T201500Z-d0efaa75/
   junit/*.xml         one file per cell, generated from summary.json
   report.md           what `dt report --format md` prints
   logs/*.log          one per cell, with the command, commit, exit status and duration
+  CELL/               each cell's {out}: what its tool writes, and dfs.log, its server's output
 ```
+
+A fixture's `dfs` writes its output to `dfs.log` in its cell's `{out}`, beside the cell's results,
+and `dt` keeps it after the server stops, whatever the cell's result. So the server's own log is
+one file per cell, apart from `dt`'s log of the cell in `logs/`, and a check of what the server
+logged, such as a search of its lines for a planted secret, reads it there.
 
 ```json
 {
@@ -1128,12 +1146,17 @@ grader:
 
 A crash of the code under test is a failure, exit 1, as a hang is (§4.4): a Go test binary that
 panics or dies on a signal fails the test it was running, and the fixture's server exiting during a
-test fails that test. Otherwise a test whose output stopped before its result is graded
-`incomplete`, exit 2: its client, such as smbtorture or pynfs, died or never reached the server. No
-known-failure entry excuses either. A cell whose tool wrote no results, or results with no test in them, is not run,
-exit 2, and so is one whose container didn't start (`docker run` exits 125 to 127). A name with
-several results in one cell is graded at each of them: smbtorture reports four subcases as
-`smb2.charset.Testing`, and three pass where one fails.
+test fails that test. Until `dt` names that test, the server's exit fails the cell as a whole,
+exit 1, with a note that the server exited, and it always does when no test was running, as when
+the server exits between two tests. Otherwise a test whose output stopped before its result is
+graded `incomplete`, exit 2: its client, such as smbtorture or pynfs, died or never reached the
+server. No known-failure entry excuses either. A cell whose tool wrote no results, or results with
+no test in them, is not run, exit 2, and so is one whose container didn't start (`docker run`
+exits 125 to 127). docker passes a command's own exit status through, so a command in an image
+that exits 126 or 127 itself is not run too: by the shell's convention, a command it called
+couldn't run or wasn't found, which is lost coverage, not a regression. A name with several results
+in one cell is graded at each of them: smbtorture reports four subcases as `smb2.charset.Testing`,
+and three pass where one fails.
 
 The `system` suite is `exit` per scenario file. When another run holds its lock, `setup.sh` runs
 nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as not run, exit 2, and
@@ -1151,12 +1174,17 @@ and never grade a run on their own (§4.10).
 |---|---|---|---|---|
 | none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
 | `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
-| `known` | failed, and a known-failure entry matches it | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
 | `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
 | `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
 | `ungraded` | skipped, in a suite without a `known` file: a Go suite until it opts in (§4.7) | `skipped`, with the tool's reason | `<skipped>` | passes |
 | `incomplete` | its output stopped before its result, and the code under test didn't crash (§4.6) | `other` | `<error>` | exits 2 |
+
+A Go test fails whenever one of its subtests fails, so an entry that names only a subtest excuses
+its parent too: a parent with no entry of its own is `known` when every subtest that failed under
+it is `known`. A subtest that crashed or hung is `new`, and so is its parent. go test reports a
+parent that also failed on its own assertion the same way, so that failure is excused as well.
 
 A test that failed and then passed on retry is `passed` with `flaky: true` and its `retries`, and a
 pass with a `flaky` property in JUnit. A quarantined test is shown as a known failure, with the
@@ -1549,10 +1577,10 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
 - #3027: the SMB Kerberos e2e mounts run, and a failed Kerberos mount fails instead of skipping
   (#2989, #3029).
 
-1. **Registry and runner.** `test/suites.yaml` with groups and options, and `dt list`, `plan`,
-   `run` and `docs` in Go, for the `exit` and `go-json` formats. `lint.yml`'s steps become the
-   command lists of the lint suites, and its jobs run them with `dt run NAME --tier T --ci` under
-   their names until step 3 moves them into `tests.yml`. Every suite is registered, and the commands
+1. **Registry and runner.** `test/suites.yaml` with groups and options, and `dt list`, `plan` and
+   `run` in Go, for the `exit` and `go-json` formats. `lint.yml`'s steps become the command lists
+   of the lint suites, and its jobs run them with `dt run NAME --tier T --ci` under their names
+   until step 3 moves them into `tests.yml`. Every suite is registered, and the commands
    people use today become aliases.
    *Exit:* `dt plan --tier pr --json` yields today's PR cells, less the `memory` and `badger`
    conformance cells (§4.3).
@@ -1590,6 +1618,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - The suites move in parallel. Each old job runs beside its `dt` cells until their results
      match on 5 consecutive runs (for the conformance suites, step 2's), and the PR that removes
      the old job deletes that suite's scripts.
+   - `dt docs` replaces `check-docs.sh` as the conformance suites move, and not before, so the
+     documentation's suite tables always describe what CI runs (§4.1).
    - `run.sh`, `suites.json`, the NFS `sec=krb5` job and the Makefile's `test-*` targets go with
      the last of them.
    - `dt known baseline` replaces the nightly job that pushes smbtorture's baseline file to
