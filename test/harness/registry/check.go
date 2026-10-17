@@ -166,6 +166,9 @@ func checkUnit(root string, u *Suite) []error {
 	}
 
 	if f := u.Fixture; f != nil {
+		if f.Profile == "" && (f.Server == "" || f.Server == "dfs") {
+			fail("fixture: a dfs fixture names its profile")
+		}
 		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
 		// squash decides, not a user to create, and the fixture's own test
 		// user takes the first UID above that range, so none shares it.
@@ -191,7 +194,8 @@ func checkUnit(root string, u *Suite) []error {
 		}
 	}
 
-	// Placeholders: each is known, {test} needs tests, and each axis is used.
+	// Placeholders: each is known, {test} is in cmd or volumes and needs tests,
+	// and each axis is used.
 	axes := map[string]bool{}
 	for _, a := range u.Matrix {
 		if !nameRE.MatchString(a.Name) {
@@ -212,8 +216,6 @@ func checkUnit(root string, u *Suite) []error {
 		for _, p := range Placeholders(string(data)) {
 			switch {
 			case p == "test":
-				// decision: refused, since a template is filled in before
-				// the first test, when {test} has no value.
 				fail("template %s: {test} has no value before the first test, when templates are filled in", filepath.Base(f))
 			case !placeholders[p] && !axes[p]:
 				fail("template %s: unknown placeholder {%s}", filepath.Base(f), p)
@@ -238,6 +240,17 @@ func checkUnit(root string, u *Suite) []error {
 			} else {
 				fail("{tools}/%s: no such tool; {tools} holds %s", name, known)
 			}
+		}
+	}
+	// dt fills {test} again for each test only in cmd and volumes, and
+	// everything else before the first test, when it has no value.
+	fields := u.fields()
+	for _, field := range slices.Sorted(maps.Keys(fields)) {
+		if field == "cmd" || field == "volumes" {
+			continue
+		}
+		if slices.ContainsFunc(fields[field], func(s string) bool { return slices.Contains(Placeholders(s), "test") }) {
+			fail("%s holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test", field)
 		}
 	}
 	if used["test"] && !u.Tests.Set() {
@@ -346,16 +359,40 @@ func checkNeed(n string) error {
 	return fmt.Errorf("unknown need %q", n)
 }
 
-// allStrings returns every string the suite's fields hold.
-func (u *Suite) allStrings() []string {
-	out := u.cellStrings()
-	out = append(out, u.Dir, u.Image, u.Templates, u.Tests.Glob, u.Tests.File)
-	out = append(out, u.Tests.Names...)
+// fields returns the strings each field that takes placeholders holds, by
+// the field's name.
+func (u *Suite) fields() map[string][]string {
+	m := map[string][]string{"dir": {u.Dir}, "image": {u.Image}, "templates": {u.Templates}}
+	for _, c := range u.Cmd {
+		m["cmd"] = append(m["cmd"], c.Line, c.Sh)
+	}
+	if f := u.Fixture; f != nil {
+		m["fixture"] = []string{f.Server, f.Profile, f.NFS.Version, f.NFS.Options, f.SMB.Encryption, f.Shares, f.Squash, f.Lease, f.Reset}
+	}
+	for _, v := range u.Env.All {
+		m["env"] = append(m["env"], v)
+	}
+	for _, vars := range u.Env.ByTier {
+		for _, v := range vars {
+			m["env"] = append(m["env"], v)
+		}
+	}
+	m["tests"] = append([]string{u.Tests.Glob, u.Tests.File}, u.Tests.Names...)
 	for k, v := range u.Volumes {
-		out = append(out, k, v)
+		m["volumes"] = append(m["volumes"], k, v)
 	}
 	for _, v := range u.Args {
-		out = append(out, v)
+		m["args"] = append(m["args"], v)
+	}
+	return m
+}
+
+// allStrings returns every string the suite's fields hold.
+func (u *Suite) allStrings() []string {
+	fields := u.fields()
+	var out []string
+	for _, field := range slices.Sorted(maps.Keys(fields)) {
+		out = append(out, fields[field]...)
 	}
 	return out
 }
@@ -363,22 +400,8 @@ func (u *Suite) allStrings() []string {
 // cellStrings returns the strings of the command, the fixture and the env:
 // what a matrix axis has to appear in.
 func (u *Suite) cellStrings() []string {
-	var out []string
-	for _, c := range u.Cmd {
-		out = append(out, c.Line, c.Sh)
-	}
-	if f := u.Fixture; f != nil {
-		out = append(out, f.Server, f.Profile, f.NFS.Version, f.NFS.Options, f.SMB.Encryption, f.Shares, f.Squash, f.Lease, f.Reset)
-	}
-	for _, v := range u.Env.All {
-		out = append(out, v)
-	}
-	for _, vars := range u.Env.ByTier {
-		for _, v := range vars {
-			out = append(out, v)
-		}
-	}
-	return out
+	f := u.fields()
+	return slices.Concat(f["cmd"], f["fixture"], f["env"])
 }
 
 func (m Matrix) values(axis string) []string {
