@@ -41,7 +41,7 @@ shift
 while :; do
 	case "$1" in
 	--rm) shift ;;
-	--name|--network|-v) shift 2 ;;
+	--name|--network|-v|-w) shift 2 ;;
 	-e) echo "env $2=$(printenv "$2")"; shift 2 ;;
 	*) break ;;
 	esac
@@ -76,16 +76,19 @@ func calls(t *testing.T, log string) [][]string {
 
 // The cell pulls a missing image once, before its first test. Then a
 // command in an image runs as docker run --rm, with a name of its own, on
-// the host's network, with -e naming each of the suite's variables, whose
-// values reach the container through docker's environment, and -v for each
-// volume, its host path from the repository root unless it's absolute. An
-// sh command runs through sh -c in the image, and an image without a cmd runs
-// its own command.
+// the host's network, in dir as a directory inside the container (-w), with
+// -e naming each of the suite's variables, whose values reach the container
+// through docker's environment, and -v for each volume, its host path from
+// the repository root unless it's absolute. The docker client itself runs
+// from the repository root, since dir needn't exist on the host. An sh
+// command runs through sh -c in the image, and an image without a cmd runs
+// its own command, in the image's own working directory.
 func TestImageDockerArgs(t *testing.T) {
 	root, r := repo(t, `suites:
   img:
     image: example.com/tool:1
     cmd: [ "echo ran {p} {out}", { sh: "echo $Usage {p}" } ]
+    dir: "/in/{p}"
     env: { Usage: RunTestCases, Filter: "TestCategory=BVT" }
     matrix: { p: [a] }
     volumes: { "{out}/config": /data/fileserver, "rel/dir": /data/rel }
@@ -195,14 +198,14 @@ func TestOnlyAKilledContainerIsRemoved(t *testing.T) {
 	}
 }
 
-// The image is pulled before the first test, under a limit of its own, and
+// The image is pulled before the first test, under the fixture's limit, and
 // only when docker doesn't have it. A pull that fails or stalls leaves the
 // cell not run, and runs no test.
 func TestImagePull(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { image: x, cmd: "true", timeout: { test: 10s } }
 `, nil)
-	t.Cleanup(func() { pullLimit = 5 * time.Minute })
+	t.Cleanup(func() { fixtureSetup = 5 * time.Minute })
 	for _, c := range []struct {
 		image, result, note, calls string
 		limit                      time.Duration
@@ -210,9 +213,9 @@ func TestImagePull(t *testing.T) {
 		{"", Passed, "", "image run", time.Minute},
 		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull", time.Minute},
 		// Only a pull that stalls waits out its limit; the fake never ends one.
-		{"stall", NotRun, "the image: `docker pull x` took over 2s", "image pull", 2 * time.Second},
+		{"stall", NotRun, "the fixture wasn't set up within 2s, and isn't retried", "image pull", 2 * time.Second},
 	} {
-		pullLimit = c.limit
+		fixtureSetup = c.limit
 		log := fakeDocker(t)
 		t.Setenv("FAKE_IMAGE", c.image)
 		rep, out := runTarget(t, root, r, "s", false)

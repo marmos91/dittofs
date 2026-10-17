@@ -70,6 +70,12 @@ func TestLoadRules(t *testing.T) {
 		{"a placeholder's tests aren't timed by size", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', timeout: { test: size } }\n", "timeout.test: size needs the tests"},
 		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
 		{"a placeholder's tests aren't narrowed by a glob", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', select: { pr: 'a*' } }\n", "select.pr needs the tests"},
+		{"{test} is only in cmd and volumes", ok + "suites:\n  a: { cmd: 'run {test}', tests: [t], dir: '{test}', env: { T: '{test}' }, fixture: { profile: memory, lease: '{test}' } }\n",
+			"a: dir holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test\n" +
+				"a: env holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test\n" +
+				"a: fixture holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test"},
+		{"a dfs fixture names its profile", ok + "suites:\n  a: { cmd: true, fixture: { server: dfs, nfs: export } }\n  b: { cmd: true, fixture: { nfs: export } }\n",
+			"a: fixture: a dfs fixture names its profile\nb: fixture: a dfs fixture names its profile"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -78,6 +84,15 @@ func TestLoadRules(t *testing.T) {
 				t.Fatalf("got %v, want an error containing %q", err, c.want)
 			}
 		})
+	}
+}
+
+// {test} has a value in cmd and volumes, which dt fills again for each test.
+func TestTestPlaceholderInCmdAndVolumes(t *testing.T) {
+	y := "version: 1\ndefaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }\n" +
+		"suites:\n  a: { image: x, cmd: 'run {test}', tests: [t], volumes: { '{out}/{test}': /data } }\n"
+	if _, err := Parse(t.TempDir(), []byte(y)); err != nil {
+		t.Fatal(err)
 	}
 }
 

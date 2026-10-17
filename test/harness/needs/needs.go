@@ -4,10 +4,12 @@ package needs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -152,15 +154,18 @@ func Check(root, n string) error {
 // services say, per service, the prefix of the variables its tests read, the
 // one holding its address, and the one that must be 1 to enable them, if
 // any. When the address isn't set, the values are the local service's, as
-// dt services starts it: written here, or in a file it writes.
+// dt services starts it: written here, or in a file it writes. answers, when
+// set, asks the service itself at the address's value; without it, a
+// connection to the address is enough.
 var services = map[string]struct {
 	prefix, address, enabled string
 	local                    []string
 	localFile                string
 	parse                    func(string) (string, error)
+	answers                  func(string) error
 }{
 	"localstack": {prefix: "LOCALSTACK_ENDPOINT", address: "LOCALSTACK_ENDPOINT",
-		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}, parse: urlAddress},
+		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}, parse: urlAddress, answers: localstackS3},
 	"postgres": {prefix: "DITTOFS_TEST_POSTGRES_DSN", address: "DITTOFS_TEST_POSTGRES_DSN",
 		local: []string{"DITTOFS_TEST_POSTGRES_DSN=host=localhost port=15432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"}, parse: dsnAddress},
 	"kmip": {prefix: "DITTOFS_TEST_KMIP", address: "DITTOFS_TEST_KMIP_ENDPOINT", enabled: "DITTOFS_TEST_KMIP",
@@ -229,11 +234,45 @@ func checkService(root, name string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", s.address, err)
 	}
+	if s.answers != nil {
+		return s.answers(value(s.address))
+	}
+	// decision: a service without answers is met by a connection to its
+	// port, which dtc's port forwarder accepts whether or not the service
+	// runs. Give it answers, a request in its own protocol, once a cell
+	// passes its need with the service down.
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return fmt.Errorf("nothing answers at %s", addr)
 	}
 	return conn.Close()
+}
+
+// localstackS3 asks Localstack's health check at endpoint, as dt services
+// does when it starts Localstack: S3 must be available or running.
+func localstackS3(endpoint string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	health := strings.TrimSuffix(endpoint, "/") + "/_localstack/health"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, health, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("nothing answers at %s", health)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var answer struct {
+		Services map[string]string `json:"services"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&answer) != nil {
+		return fmt.Errorf("%s answered %d, not with Localstack's health", health, resp.StatusCode)
+	}
+	if s3 := answer.Services["s3"]; s3 != "available" && s3 != "running" {
+		return fmt.Errorf("%s says S3 is %q, not available or running", health, s3)
+	}
+	return nil
 }
 
 // ServiceEnv returns the variables of the services among list, as
