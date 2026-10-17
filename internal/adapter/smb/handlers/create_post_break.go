@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -56,6 +57,12 @@ type createDraft struct {
 	// Used by the ErrLeaseKeyInUse rollback to decide whether to also
 	// remove the base file.
 	adsBaseCreatedByUs bool
+	// sdOwnerUID, sdOwnerGID and sdACL hold the SMB2_CREATE_SD_BUFFER parsed in
+	// the pre-break CREATE path, applied by completeCreateAfterBreak when the
+	// file is newly created. All nil when the request carried no descriptor.
+	sdOwnerUID *uint32
+	sdOwnerGID *uint32
+	sdACL      *acl.ACL
 }
 
 // finalize computes the opaque file handle for the existing file (if any) and
