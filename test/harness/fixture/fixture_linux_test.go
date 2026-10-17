@@ -61,7 +61,7 @@ func TestRealMount(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: v, Options: "noac,sync,lookupcache=none"}, Squash: "none", Users: []int{65534}}
-			s, err := Start(ctx, f, bin, out, &w)
+			s, err := Start(ctx, f, nil, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
 				t.Fatalf("Start: %v\n%s\ndfs.log:\n%s", err, w.String(), log)
