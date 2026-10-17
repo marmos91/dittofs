@@ -60,7 +60,7 @@ func TestRealMount(t *testing.T) {
 			var w bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: v, Options: "noac,sync,lookupcache=none"}, Squash: "none"}
+			f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: v, Options: "noac,sync,lookupcache=none"}, Squash: "none", Users: []int{65534}}
 			s, err := Start(ctx, f, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
@@ -69,6 +69,12 @@ func TestRealMount(t *testing.T) {
 			mount := s.Placeholders()["mount"]
 			if _, err := os.ReadDir(mount); err != nil {
 				t.Errorf("reading {mount}: %v", err)
+			}
+			// A suite's users reach the share through {mount}: the
+			// directory under the mount is private to the user dt runs as.
+			nobody := exec.Command("setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "ls", mount)
+			if out, err := nobody.CombinedOutput(); err != nil {
+				t.Errorf("a user other than root lists {mount}: %v\n%s", err, out)
 			}
 			if err := s.Stop(); err != nil {
 				t.Errorf("Stop: %v", err)

@@ -104,9 +104,8 @@ func TestMountShare(t *testing.T) {
 			if got := calls(); len(got) != 2 || got[0] != "sudo -n "+mount || got[1] != mount {
 				t.Errorf("calls %q, want %q", got, mount)
 			}
-			info, err := os.Stat(s.mount)
-			if err != nil || filepath.Dir(s.mount) != "/tmp" || len(s.mount) > len("/tmp/dittofs-test") || info.Mode().Perm() != 0o755 {
-				t.Errorf("{mount} %s: %v, %v", s.mount, info.Mode(), err)
+			if _, err := os.Stat(s.mount); err != nil || filepath.Dir(s.mount) != "/tmp" || len(s.mount) > len("/tmp/dittofs-test") {
+				t.Errorf("{mount} %s: %v", s.mount, err)
 			}
 		})
 	}

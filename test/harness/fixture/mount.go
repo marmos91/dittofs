@@ -42,16 +42,13 @@ func (s *Server) mountShare(ctx context.Context, server string, nfs registry.NFS
 	// {mount} is no longer than the posix setup's /tmp/dittofs-test, so a
 	// test of path length measures the server rather than the mount point.
 	// decision: it is under /tmp, not the temporary directory the
-	// environment names, which can be long and private to its owner, and
-	// open to every user, so a suite's users reach the share through it.
+	// environment names, which can be long and sit under a directory
+	// private to its owner, so a suite's users couldn't walk to the share.
 	dir, err := os.MkdirTemp("/tmp", "dt")
 	if err != nil {
 		return err
 	}
 	s.mount = dir
-	if err := os.Chmod(dir, 0o755); err != nil {
-		return err
-	}
 	source := server + ":" + Share
 	argv := asRoot("mount", "-t", "nfs", "-o", mountOptions(nfs.Version, s.nfsPort, nfs.Options), source, dir)
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
