@@ -718,6 +718,8 @@ Rules `dt` enforces when it loads the file:
 - a `version` newer than `dt` knows is refused;
 - every `known`, `shares` and `templates` path exists;
 - every `{test}` has a `tests`, and is in `cmd` or `volumes`;
+- every `dfs` fixture names its `profile`, since a fixture without one is a mistake in the file,
+  not an environment problem;
 - every group names existing suites;
 - a `go-json` command begins with `go test`, so `dt` can add `-json -count=1` after it, and
   `-exec` to run each test binary under `sudo` when it needs root (§4.6);
@@ -740,8 +742,9 @@ known-failure paths `known`. `test/conformance/check-docs.sh`, which renders the
 tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance suites move: the
 tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
-workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8), the list moves into `ci-health.yml` itself, whose
-trigger already repeats it, and names `tests.yml` and any workflow still outside it (§4.8).
+workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8),
+the list moves into `ci-health.yml` itself, whose trigger already repeats it, and names `tests.yml`
+and any workflow still outside it (§4.8).
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -762,7 +765,7 @@ carry a script that builds it.
 | Field | Meaning |
 |---|---|
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
-| `profile` | The store profile: `memory`, `badger` or `badger-s3`. For an S3 profile `dt` creates the bucket |
+| `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
 | `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
@@ -797,7 +800,10 @@ share is the default `{share}`.
 In a `shares` file, `{user}` owns each share's root and holds the `admin` grant on it, as
 `wpts-admin` does today: ownership lets it write at the root, and `admin` lets `smb2.acls` take
 ownership. `{user2}` has a uid of its own, the same password and no grant: WPTS's non-admin user,
-and the restricted principal of `smb2.acls.ACCESSBASED`.
+and the restricted principal of `smb2.acls.ACCESSBASED`. On the default share, `/export`, `{user}`
+has a uid of its own and no grant, as `{user2}` does. No suite uses `{user}` there yet; the first
+that does, `clients` with its SMB mount (§8 step 4), adds what it needs with its own change to this
+RFC.
 
 **Settings.** A fixture sets only settings the server has. The storage RFCs (#2894) ask that
 fixtures use only the settings RFC 13, 14 and 16 define, which fix the NFSv4 lease at 90 seconds
@@ -979,7 +985,7 @@ first version is narrow, so it can't flood the tracker as #1705's alarm did:
 
 | Flag | Effect |
 |---|---|
-| `--ci` | non-interactive; GitHub annotations for new failures; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
+| `--ci` | non-interactive; GitHub annotations for new failures and unexpected passes, each by name, and for a cell that failed or didn't run with no test to name, once, with its note; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
 | `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on develop and the schedule, never on pull requests, §4.7) |
 | `--in host\|container\|auto` | where to run; `auto` uses `dtc` when the host lacks a need the container provides |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
@@ -1168,12 +1174,17 @@ and never grade a run on their own (§4.10).
 |---|---|---|---|---|
 | none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
 | `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
-| `known` | failed, and a known-failure entry matches it | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
 | `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
 | `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
 | `ungraded` | skipped, in a suite without a `known` file: a Go suite until it opts in (§4.7) | `skipped`, with the tool's reason | `<skipped>` | passes |
 | `incomplete` | its output stopped before its result, and the code under test didn't crash (§4.6) | `other` | `<error>` | exits 2 |
+
+A Go test fails whenever one of its subtests fails, so an entry that names only a subtest excuses
+its parent too: a parent with no entry of its own is `known` when every subtest that failed under
+it is `known`. A subtest that crashed or hung is `new`, and so is its parent. go test reports a
+parent that also failed on its own assertion the same way, so that failure is excused as well.
 
 A test that failed and then passed on retry is `passed` with `flaky: true` and its `retries`, and a
 pass with a `flaky` property in JUnit. A quarantined test is shown as a known failure, with the
