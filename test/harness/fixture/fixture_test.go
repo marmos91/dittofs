@@ -2,6 +2,7 @@ package fixture
 
 import (
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -43,6 +44,10 @@ var realInterfaces = interfaces
 
 // What dt sets up in fixtures, and what it doesn't yet.
 func TestUnsupported(t *testing.T) {
+	mountsHere := "only on Linux"
+	if runtime.GOOS == "linux" {
+		mountsHere = ""
+	}
 	for _, tc := range []struct {
 		f    registry.Fixture
 		want string
@@ -52,7 +57,8 @@ func TestUnsupported(t *testing.T) {
 		{registry.Fixture{Profile: "badger-s3"}, ""},
 		{registry.Fixture{Profile: "postgres-s3"}, `the "postgres-s3" profile`},
 		{registry.Fixture{Profile: "memory", Server: "knfsd"}, "knfsd fixture"},
-		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.1"}}, "mount NFS"},
+		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.1"}}, mountsHere},
+		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.2"}}, "mount NFS 4.2"},
 		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}}, "SMB"},
 		{registry.Fixture{Profile: "memory", Shares: "s.yaml"}, "shares file"},
 		{registry.Fixture{Profile: "memory", Kerberos: true}, "Kerberos"},

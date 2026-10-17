@@ -147,18 +147,7 @@ func TestSetupServerExits(t *testing.T) {
 // didn't start survives the stop. badger-s3 runs where the S3 service it
 // needs answers, as dt services starts it.
 func TestRealServer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds and runs dfs")
-	}
-	if _, err := address(); err != nil {
-		t.Skipf("no address for {server} here: %v", err)
-	}
-	bin := t.TempDir()
-	build := exec.Command("go", "build", "-o", bin+string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl")
-	build.Dir = filepath.Join("..", "..", "..")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("dfs doesn't build here, so no real server runs: %v\n%s", err, out)
-	}
+	bin := realBin(t)
 	other := outsider(t)
 	no := false
 	root, _ := filepath.Abs(filepath.Join("..", "..", ".."))
@@ -205,4 +194,24 @@ func TestRealServer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// realBin builds dfs and dfsctl from this checkout into a new directory for a
+// real server, and skips the test under -short, where they don't build, or
+// where there is no address for {server}.
+func realBin(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("builds and runs dfs")
+	}
+	if _, err := address(); err != nil {
+		t.Skipf("no address for {server} here: %v", err)
+	}
+	bin := t.TempDir()
+	build := exec.Command("go", "build", "-o", bin+string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl")
+	build.Dir = filepath.Join("..", "..", "..")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Skipf("dfs doesn't build here, so no real server runs: %v\n%s", err, out)
+	}
+	return bin
 }
