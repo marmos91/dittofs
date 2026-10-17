@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -42,6 +41,11 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 	// the user (DT_FIX_OWNER). Pass --user once a suite's image is known to
 	// run as any user.
 	docker = []string{"docker", "run", "--rm", "--name", name, "--network", network()}
+	// decision: dir is given to docker as it fills, so a relative one is
+	// docker's to refuse: it exits 125, and the cell is not run.
+	if t.inside != "" {
+		docker = append(docker, "-w", t.inside)
+	}
 	// decision: -e names each variable without its value, which docker takes
 	// from its own environment, so values stay out of the arguments dt prints
 	// and the process table shows.
@@ -78,33 +82,21 @@ func network() string {
 	return "host"
 }
 
-// pullLimit is an image pull's limit: a pull is one of the fixture's own
-// steps, which have 5 minutes. A variable, so the tests can shorten it.
-//
-// decision: the pull has the 5 minutes to itself rather than sharing them
-// with the fixture's other steps.
-var pullLimit = 5 * time.Minute
-
 // pull pulls image unless docker has it, before the cell's first test, so
 // neither the pull's time nor a stalled registry counts against a test. It's
-// never retried.
+// one of the fixture's own steps, which share ctx's limit, and it's never
+// retried.
 func pull(ctx context.Context, image, dir string, env []string, w io.Writer) error {
-	limited, cancel := context.WithTimeout(ctx, pullLimit)
-	defer cancel()
 	// decision: an image docker already has isn't pulled again, as docker
 	// run pulls only a missing one, so a machine without the registry still
 	// runs the image it has.
-	if code, err := execute(limited, []string{"docker", "image", "inspect", image}, dir, env, io.Discard); err == nil && code == 0 {
+	if code, err := execute(ctx, []string{"docker", "image", "inspect", image}, dir, env, io.Discard); err == nil && code == 0 {
 		return nil
 	}
 	shown := "docker pull " + image
 	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", shown)
-	code, err := execute(limited, []string{"docker", "pull", image}, dir, env, w)
+	code, err := execute(ctx, []string{"docker", "pull", image}, dir, env, w)
 	switch {
-	case ctx.Err() != nil:
-		return errors.New(stopped(ctx))
-	case limited.Err() != nil:
-		return fmt.Errorf("`%s` took over %s", shown, pullLimit)
 	case err != nil:
 		return err
 	case code != 0:

@@ -77,7 +77,7 @@ func (r Report) Status() int {
 type Options struct {
 	Root    string    // the repository
 	Results string    // where runs are written, each in a directory of its own
-	CI      bool      // --ci: an unmet need is an error, not a skip, and new failures are annotated
+	CI      bool      // --ci: an unmet need is an error, not a skip, and new failures and unexpected passes are annotated
 	Out     io.Writer // where the commands' output passes through
 	Tier    string    // the tier the run was asked for, recorded in its results
 }
@@ -154,18 +154,23 @@ func runName(start time.Time, commit string) string {
 	return name
 }
 
+// unexpectedPass is the grade of a pass that a known entry still lists.
+const unexpectedPass = "unexpected_pass"
+
 // annotations are a cell's error annotations: one for each new failure, with
-// its message.
-//
-// decision: a cell that failed or didn't run with no new failure to name, as
+// its message, and one for each unexpected pass, so a fix knows which known
+// entry to remove. A cell that failed or didn't run with no test to name, as
 // one stopped before any test or one whose results it couldn't read, is
 // annotated as itself, with its note, so every cell that turns a run red has
 // an annotation.
 func annotations(c report.Cell) []string {
 	var out []string
 	for _, t := range c.Tests {
-		if t.NewFailure() {
+		switch {
+		case t.NewFailure():
 			out = append(out, annotation("dt "+c.Name+": "+t.Title(), cmp.Or(t.Message, "failed")))
+		case t.Grade == unexpectedPass:
+			out = append(out, annotation("dt "+c.Name+": "+t.Title(), "passed unexpectedly: remove its known entry ("+t.Reason+")"))
 		}
 	}
 	if len(out) == 0 && (c.Result == Failed || c.Result == NotRun) {
@@ -288,10 +293,24 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun(err.Error())
 		}
 	}
+	// The fixture's own steps share one limit: building {bin}, starting the
+	// server and pulling the image. Each is tried once: the server starts
+	// inside the fixture, so a retry could hide its flakiness.
+	setup, setupDone := context.WithTimeout(cellCtx, fixtureSetup)
+	defer setupDone()
+	setupFailed := func(step string, err error) report.Cell {
+		switch {
+		case cellCtx.Err() != nil:
+			return didntRun(stopped(cellCtx))
+		case setup.Err() != nil:
+			return didntRun(fmt.Sprintf("the fixture wasn't set up within %s, and isn't retried", fixtureSetup))
+		}
+		return didntRun(step + ": " + err.Error())
+	}
 	if c.Unit.Fixture != nil {
-		server, why := setUpFixture(cellCtx, spec, needs.ServiceEnv(o.Root, c.Needs), o.Root, vals["bin"], out, w)
-		if why != "" {
-			return didntRun(why)
+		server, err := setUpFixture(setup, spec, needs.ServiceEnv(o.Root, c.Needs), o.Root, vals["bin"], out, w)
+		if err != nil {
+			return setupFailed("the fixture", err)
 		}
 		defer func() {
 			// The code under test crashing fails its cell, unless an
@@ -307,14 +326,20 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	if err != nil {
 		return didntRun(err.Error())
 	}
-	workdir := o.Root
+	// With an image, dir is a directory in the container, and the docker
+	// client runs from the repository root.
+	workdir, inside := o.Root, ""
 	if c.Unit.Dir != "" {
 		d, err := replace(c.Unit.Dir, vals, lists, nil)
 		if err != nil {
 			return didntRun(err.Error())
 		}
-		workdir = d
-		if !filepath.IsAbs(d) {
+		switch {
+		case c.Unit.Image != "":
+			inside = d
+		case filepath.IsAbs(d):
+			workdir = d
+		default:
 			workdir = filepath.Join(o.Root, d)
 		}
 	}
@@ -326,11 +351,12 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 	}
 	if c.Unit.Image != "" {
-		if err := pull(cellCtx, c.Unit.Image, workdir, os.Environ(), w); err != nil {
-			return didntRun("the image: " + err.Error())
+		if err := pull(setup, c.Unit.Image, o.Root, os.Environ(), w); err != nil {
+			return setupFailed("the image", err)
 		}
 	}
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
+	setupDone()
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		result, note, tests := t.goJSON(c.Tests)
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
@@ -479,8 +505,9 @@ const exitNotRun = 75
 type tester struct {
 	cell     Cell
 	ctx      context.Context
-	root     string // the repository
-	dir      string
+	root     string   // the repository
+	dir      string   // where the commands run, or the docker client for an image
+	inside   string   // where the commands run in the image, when dir sets it
 	env      []string // dt's environment and the suite's
 	own      []string // the suite's alone
 	vals     map[string]string

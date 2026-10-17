@@ -71,7 +71,9 @@ const fixtureSuite = `suites:
 // profile's fixture is given the variables of the S3 service it needs. A
 // cell whose fixture dt can't set up yet doesn't run, and starts nothing.
 func TestFixtureCell(t *testing.T) {
-	s3 := httptest.NewServer(http.NotFoundHandler()) // what the need's check dials
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { // what the need's check asks
+		_, _ = io.WriteString(w, `{"services": {"s3": "running"}}`)
+	}))
 	t.Cleanup(s3.Close)
 	t.Setenv("LOCALSTACK_ENDPOINT", s3.URL)
 	server := &fakeServer{}
@@ -136,5 +138,30 @@ func TestFixtureServerEnds(t *testing.T) {
 	rep, _ := runTarget(t, root, r, "f/memory", false)
 	if o := rep.Outcomes[0]; o.Result != Failed || o.Note != "the fixture: dfs exited before its cell ended: exit status 2" {
 		t.Errorf("outcome %+v", o)
+	}
+}
+
+// The fixture's own steps share one limit: an image pulled after the server
+// started has only what the start left of it, not a limit of its own.
+func TestFixtureStepsShareTheLimit(t *testing.T) {
+	fixtureSetup = 3 * time.Second
+	t.Cleanup(func() { fixtureSetup = 5 * time.Minute })
+	var deadline time.Time
+	fakeFixture(t, func(ctx context.Context) (fixtureServer, error) {
+		deadline, _ = ctx.Deadline()
+		time.Sleep(time.Until(deadline) - time.Second) // a slow start leaves the pull a second
+		return &fakeServer{}, nil
+	})
+	root, r := repo(t, `suites:
+  f: { image: x, cmd: "true", fixture: { profile: memory } }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
+	fakeDocker(t)
+	t.Setenv("FAKE_IMAGE", "stall")
+	rep, out := runTarget(t, root, r, "f", false)
+	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != "the fixture wasn't set up within 3s, and isn't retried" {
+		t.Errorf("outcome %+v\n%s", o, out)
+	}
+	if late := time.Since(deadline); late > time.Second {
+		t.Errorf("the pull ran %s past the fixture's limit", late.Round(time.Millisecond))
 	}
 }
