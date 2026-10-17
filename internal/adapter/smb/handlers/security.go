@@ -884,7 +884,9 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 // returning the ACEs as NFSv4 ACEs. The DACL and SACL share an identical
 // on-wire layout (MS-DTYP §2.4.5 + §2.4.4.2); the only difference is the ACE
 // types they carry (allow/deny for DACL, audit/alarm for SACL), both handled
-// by windowsToNFSACEType. ACEs of unrecognized type are skipped.
+// by windowsToNFSACEType. An ACE of any other type (object, callback, label,
+// ...) fails the whole parse: dropping a deny would grant what it denied and
+// dropping an allow would withdraw a grant, both while the set reports success.
 func parseACEs(data []byte) ([]acl.ACE, error) {
 	if len(data) < aclHeaderSize {
 		return nil, fmt.Errorf("ACL too short: %d bytes", len(data))
@@ -921,21 +923,23 @@ func parseACEs(data []byte) ([]acl.ACE, error) {
 			return nil, fmt.Errorf("ACE %d header parse error: %w", i, aceR.Err())
 		}
 
+		if aceSize < aceHeaderSize {
+			return nil, fmt.Errorf("ACE %d size %d is smaller than its header", i, aceSize)
+		}
 		if offset+int(aceSize) > len(data) {
 			return nil, fmt.Errorf("ACE %d size %d extends beyond ACL data", i, aceSize)
+		}
+
+		// Map Windows ACE type to NFSv4 ACE type
+		nfsACEType, ok := windowsToNFSACEType(aceType)
+		if !ok {
+			return nil, fmt.Errorf("ACE %d has unsupported type 0x%02x", i, aceType)
 		}
 
 		// Parse SID from remaining ACE data
 		s, _, err := sid.DecodeSID(data[offset+aceHeaderSize : offset+int(aceSize)])
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode SID in ACE %d: %w", i, err)
-		}
-
-		// Map Windows ACE type to NFSv4 ACE type
-		nfsACEType, ok := windowsToNFSACEType(aceType)
-		if !ok {
-			offset += int(aceSize)
-			continue
 		}
 
 		// Convert SID to NFSv4 principal
