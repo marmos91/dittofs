@@ -42,6 +42,8 @@ func (c Cell) JUnit() ([]byte, error) {
 	}
 	for _, t := range c.Tests {
 		tc := junitCase{Name: t.Name, Classname: strings.Join(append([]string{c.Name}, t.Suite...), "/"), Time: seconds(t.Duration)}
+		// decision: a failure or an error the tool said nothing about gets its
+		// grade as its message, so an unexpected pass isn't a blank failure.
 		switch t.Status {
 		case Failed:
 			s.Failures++

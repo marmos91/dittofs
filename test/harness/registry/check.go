@@ -309,6 +309,11 @@ func checkUnit(root string, u *Suite) []error {
 // whereKeys are the keys a known entry's where takes besides the matrix
 // axes, each with its values: os is the platform need the machine meets.
 // option takes the names of the options that use the file.
+//
+// decision: os takes only the platform needs' names, linux, macos and
+// windows, and a cell's os is the machine's, darwin read as macos. Another
+// system's name is refused rather than left to apply nowhere; add it here and
+// to the platform needs when a suite runs on one.
 var whereKeys = map[string][]string{"tier": Tiers, "option": {}, "os": {"linux", "macos", "windows"}}
 
 // addWhere adds what a unit's cells can be to what the where of an entry in
@@ -316,6 +321,12 @@ var whereKeys = map[string][]string{"tier": Tiers, "option": {}, "os": {"linux",
 // A suite's options take its known file unless they name their own, so one
 // file can be named by units with different axes, and an entry may name the
 // axes of any of them.
+//
+// decision: the axes and values of every unit that takes the file are
+// accepted, not only those of the unit whose cell is graded, since one entry
+// can serve the suite and its options. An entry naming an axis a cell lacks
+// doesn't apply to that cell. Check per unit if a file ever needs an entry
+// whose where must hold for every unit that takes it.
 func addWhere(wheres map[string]map[string][]string, u *Suite) {
 	w := wheres[u.Known]
 	if w == nil {
@@ -354,6 +365,9 @@ func loadKnown(root, path string, where map[string][]string) ([]known.Entry, err
 				errs = append(errs, fmt.Errorf("%s:%d: where %s: not a matrix axis of the suite, tier, option or os", path, e.Line, k))
 				continue
 			}
+			// decision: a value no cell has is refused, since a misspelt
+			// value would make the entry apply nowhere and its test fail as
+			// new with nothing pointing at the typo.
 			for _, v := range e.Where[k] {
 				if !slices.Contains(values, v) {
 					errs = append(errs, fmt.Errorf("%s:%d: where %s: no cell has the value %q", path, e.Line, k, v))

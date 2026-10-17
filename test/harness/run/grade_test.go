@@ -162,10 +162,25 @@ func TestGoJSONGraded(t *testing.T) {
 {"Action":"output","Package":"p","Test":"TestKnown","Output":"panic: boom\n"}
 {"Action":"fail","Package":"p"}
 `, "1", Failed, "0 passed, 1 failed, 0 skipped: TestKnown"},
+		{"a parent that failed only through its known subtest", `{"Action":"run","Package":"p","Test":"TestP"}
+{"Action":"run","Package":"p","Test":"TestP/bad"}
+{"Action":"fail","Package":"p","Test":"TestP/bad"}
+{"Action":"fail","Package":"p","Test":"TestP"}
+{"Action":"fail","Package":"p"}
+`, "1", Passed, "0 passed, 0 failed, 0 skipped, 2 known"},
+		{"a parent with a new subtest beside its known one", `{"Action":"run","Package":"p","Test":"TestP"}
+{"Action":"run","Package":"p","Test":"TestP/bad"}
+{"Action":"fail","Package":"p","Test":"TestP/bad"}
+{"Action":"run","Package":"p","Test":"TestP/worse"}
+{"Action":"fail","Package":"p","Test":"TestP/worse"}
+{"Action":"fail","Package":"p","Test":"TestP"}
+{"Action":"fail","Package":"p"}
+`, "1", Failed, "0 passed, 2 failed, 0 skipped, 1 known: TestP/worse"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			root, r := repo(t, "suites:\n  g: { cmd: go test ./..., format: go-json, known: k.yaml }\n",
-				map[string]string{"k.yaml": "- { test: TestKnown, status: fail, fix: wontfix, category: env, reason: the clock steps }\n"})
+				map[string]string{"k.yaml": "- { test: TestKnown, status: fail, fix: wontfix, category: env, reason: the clock steps }\n" +
+					"- { test: TestP/bad, status: fail, fix: wontfix, category: env, reason: the disk fills }\n"})
 			fakeGoExits(t, c.events, c.code)
 			if o := runIn(t, root, r, "g").Outcomes[0]; o.Result != c.result || o.Note != c.note {
 				t.Errorf("%s %q, want %s %q", o.Result, o.Note, c.result, c.note)

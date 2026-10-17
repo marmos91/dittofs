@@ -43,6 +43,9 @@ func shown(tests []report.Test) []string {
 // noFile stands for a suite without a known file.
 const noFile = "no file"
 
+// throughSubtests is the reason a parent graded from its subtests gets.
+const throughSubtests = "only its subtests failed, and they are known failures"
+
 // One case per rule of the grades table and of the unexpected-pass rule:
 // how each result is graded against the entries that apply where its cell
 // runs, and the status its grade gives it.
@@ -101,6 +104,17 @@ func TestGrade(t *testing.T) {
 		{"a crash or a hang keeps its grade, and still counts against its entry",
 			"- { test: a*, status: fail, " + wontfix + ", reason: no locks }\n", nil,
 			results("a1 failed new", "a2 passed"), []string{"a1: failed [new]", "a2: passed"}},
+		{"a parent that failed only through known subtests is known, at every level",
+			"- { test: TestP/a/b, status: fail, " + wontfix + ", reason: no locks }\n", nil,
+			results("TestP/a/b failed", "TestP/a failed", "TestP failed"),
+			[]string{"TestP/a/b: skipped (failed) [known] no locks", "TestP/a: skipped (failed) [known] " + throughSubtests, "TestP: skipped (failed) [known] " + throughSubtests}},
+		{"a parent of a subtest that crashed stays new",
+			"- { test: TestP/a, status: fail, " + wontfix + ", reason: no locks }\n", nil,
+			results("TestP/a failed new", "TestP failed"), []string{"TestP/a: failed [new]", "TestP: failed [new]"}},
+		{"a subtest in another package doesn't excuse a test of the same name",
+			"- { test: TestP/a, status: fail, " + wontfix + ", reason: no locks }\n", nil,
+			[]report.Test{{Name: "TestP/a", Suite: []string{"q"}, Status: report.Failed}, {Name: "TestP", Suite: []string{"p"}, Status: report.Failed}},
+			[]string{"TestP/a: skipped (failed) [known] no locks", "TestP: failed [new]"}},
 		{"an entry applies at the values its where lists",
 			"- { test: a, status: fail, " + wontfix + ", reason: v3 only, where: { nfs: ['3'] } }\n", map[string]string{"nfs": "3"},
 			results("a failed"), []string{"a: skipped (failed) [known] v3 only"}},

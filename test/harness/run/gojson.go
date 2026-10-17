@@ -83,6 +83,10 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 		}
 		res.end("", time.Now(), "")
 	}
+	// decision: a go-json suite with a known file is graded as a whole, so
+	// every skip in every package it runs must be listed, and an unlisted one
+	// leaves the cell not run. Grade package by package once a suite needs
+	// only some of its packages listed.
 	t.cell.grade(res.cases)
 	unexpected, notRun := gradeNotes(res.cases)
 	problems = append(problems, unexpected...)
@@ -426,6 +430,10 @@ func (r *results) failures() int {
 // failed test whose every failure is known counted apart; then the new
 // failures, without a parent whose subtest failed; then the broken packages
 // and the problems.
+//
+// decision: a test whose failures are all known is counted as known, not as
+// failed, so "N failed" counts only what fails the cell. A test with several
+// results, one of them new, is still counted as failed.
 func (r *results) note(problems []string) string {
 	grades := map[string]map[string]bool{} // "package test" to its results' grades
 	for _, tc := range r.cases {
