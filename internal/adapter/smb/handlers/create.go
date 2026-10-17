@@ -1191,6 +1191,26 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		excludeOwner = &lock.LockOwner{ExcludeLeaseKey: openerLeaseKey}
 	}
 
+	// Parse an SMB2_CREATE_SD_BUFFER before anything is created, so a
+	// descriptor this server cannot hold refuses the whole CREATE and leaves no
+	// entry behind (Samba unmarshals SecD before the open for the same reason).
+	// Creating the file without the client's ACL would drop any deny it asked
+	// for. The descriptor is validated for every disposition, and applied only
+	// when the file is newly created.
+	var sdOwnerUID, sdOwnerGID *uint32
+	var sdACL *acl.ACL
+	if sdCtx := FindCreateContext(req.CreateContexts, SDBufferCreateContextTag); sdCtx != nil && len(sdCtx.Data) > 0 {
+		var parseErr error
+		sdOwnerUID, sdOwnerGID, sdACL, parseErr = ParseSecurityDescriptorWithOptions(sdCtx.Data, h.parseSDOptsForShare(tree.ShareName))
+		if parseErr == nil {
+			parseErr = acl.ValidateACL(sdACL)
+		}
+		if parseErr != nil {
+			logger.Debug("CREATE: failed to parse SD_BUFFER", "path", filename, "error", parseErr)
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		}
+	}
+
 	// ========================================================================
 	// Step 5: Check if file exists
 	// ========================================================================
@@ -1499,6 +1519,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		appInstanceId:        appInstanceId,
 		adsBaseFileName:      adsBaseFileName,
 		adsBaseCreatedByUs:   adsBaseCreatedByUs,
+		sdOwnerUID:           sdOwnerUID,
+		sdOwnerGID:           sdOwnerGID,
+		sdACL:                sdACL,
 	}).finalize()
 
 	// SMB3 replay protection (MS-SMB2 §3.3.5.9): reserve the DH2Q CreateGuid for

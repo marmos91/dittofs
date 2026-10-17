@@ -302,7 +302,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 	}
 	if c.Unit.Fixture != nil {
-		server, why := setUpFixture(cellCtx, spec, o.Root, vals["bin"], out, w)
+		server, why := setUpFixture(cellCtx, spec, needs.ServiceEnv(o.Root, c.Needs), o.Root, vals["bin"], out, w)
 		if why != "" {
 			return didntRun(why)
 		}

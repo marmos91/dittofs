@@ -54,7 +54,8 @@ func TestUnsupported(t *testing.T) {
 	}{
 		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []int{1}, Lease: "30s"}, ""},
 		{registry.Fixture{Profile: "{profile}", NFS: registry.NFS{Version: "{nfs}"}}, ""},
-		{registry.Fixture{Profile: "badger-s3"}, `the "badger-s3" profile`},
+		{registry.Fixture{Profile: "badger-s3"}, ""},
+		{registry.Fixture{Profile: "postgres-s3"}, `the "postgres-s3" profile`},
 		{registry.Fixture{Profile: "memory", Server: "knfsd"}, "knfsd fixture"},
 		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.1"}}, mountsHere},
 		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.2"}}, "mount NFS 4.2"},

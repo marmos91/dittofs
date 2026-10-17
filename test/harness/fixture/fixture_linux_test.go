@@ -21,7 +21,7 @@ import (
 func TestDfsEndsWithDT(t *testing.T) {
 	if bin := os.Getenv("DT_FIXTURE_TEST_BIN"); bin != "" {
 		// The dt the test kills: its fixture never answers.
-		_, _ = Start(context.Background(), registry.Fixture{Profile: "memory"}, bin, os.Getenv("DT_FIXTURE_TEST_OUT"), io.Discard)
+		_, _ = Start(context.Background(), registry.Fixture{Profile: "memory"}, nil, bin, os.Getenv("DT_FIXTURE_TEST_OUT"), io.Discard)
 		return
 	}
 	bin, starts := fakeDFS(t)

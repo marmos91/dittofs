@@ -46,7 +46,7 @@ func Unsupported(f *registry.Fixture) string {
 	switch {
 	case f.Server != "" && f.Server != "dfs" && fixed(f.Server):
 		return fmt.Sprintf("dt doesn't set up a %s fixture yet", f.Server)
-	case f.Profile != "memory" && f.Profile != "badger" && fixed(f.Profile):
+	case f.Profile != "memory" && f.Profile != "badger" && f.Profile != "badger-s3" && fixed(f.Profile):
 		return fmt.Sprintf("dt doesn't set up the %q profile yet", f.Profile)
 	case mounts(f.NFS.Version) && fixed(f.NFS.Version) && mountVers[f.NFS.Version] == "":
 		return fmt.Sprintf("dt doesn't mount NFS %s yet", f.NFS.Version)
@@ -99,13 +99,23 @@ func (s *Server) Placeholders() map[string]string { return s.vals }
 
 // Start starts dfs from bin with its data under out, in a directory it
 // removes when it stops, and its output in out/dfs.log, which it keeps. It
-// sets the server up as f asks and checks that it answers. It makes one
-// attempt: when a step fails, or ctx ends first, it stops the server and
-// returns why. w gets dt's lines on the setup, and never a credential.
-func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer) (*Server, error) {
+// sets the server up as f asks and checks that it answers. An S3 profile's
+// bucket is created first, at the endpoint services give: the variables of
+// the cell's services, as NAME=value. It makes one attempt: when a step
+// fails, or ctx ends first, it stops the server and returns why. w gets dt's
+// lines on the setup, and never a credential.
+func Start(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (*Server, error) {
 	server, err := address()
 	if err != nil {
 		return nil, err
+	}
+	// The bucket comes first, so when it fails there is no server to stop.
+	var b *bucket
+	if f.Profile == "badger-s3" {
+		if b, err = newBucket(ctx, services); err != nil {
+			return nil, err
+		}
+		_, _ = fmt.Fprintf(w, "[dt] fixture: blocks in the bucket %s at %s, under %s\n", bucketName, b.endpoint, b.prefix)
 	}
 	ports, err := freePorts(2)
 	if err != nil {
@@ -145,7 +155,7 @@ func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer
 	// The API client takes no context, so the setup runs aside: when ctx
 	// ends first, stopping the server ends the request in flight.
 	done := make(chan error, 1)
-	go func() { done <- s.setUp(ctx, f, admin, password) }()
+	go func() { done <- s.setUp(ctx, f, b, admin, password) }()
 	select {
 	case err = <-done:
 	case <-ctx.Done():
@@ -175,7 +185,7 @@ func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer
 
 // setUp waits for the server's API, logs in as its admin, configures it and
 // checks it.
-func (s *Server) setUp(ctx context.Context, f registry.Fixture, admin, password string) error {
+func (s *Server) setUp(ctx context.Context, f registry.Fixture, b *bucket, admin, password string) error {
 	if err := s.waitReady(ctx); err != nil {
 		return err
 	}
@@ -185,10 +195,10 @@ func (s *Server) setUp(ctx context.Context, f registry.Fixture, admin, password 
 		return fmt.Errorf("logging in as admin: %w", err)
 	}
 	c.SetToken(token.AccessToken)
-	if err := configure(c, f, s.data, password, s.nfsPort); err != nil {
+	if err := configure(c, f, b, s.data, password, s.nfsPort); err != nil {
 		return err
 	}
-	return check(ctx, c, s.api, s.nfsPort)
+	return check(ctx, c, s.api, b, s.nfsPort)
 }
 
 // waitReady waits until the API's readiness probe answers 200.

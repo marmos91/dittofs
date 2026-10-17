@@ -262,9 +262,11 @@ fi
 log "AD-DC ready: realm=$REALM users=[$USER_ALICE,$USER_BOB] groups=[engineering,devs(nested)]"
 
 # Stop the backgrounded samba and re-exec it in the foreground as PID 1's child
-# so the container stays alive and signals propagate.
+# so the container stays alive and signals propagate. The name must match
+# exactly: a test may already be running samba-tool against the ready DC, and a
+# substring match would kill it too.
 samba-tool processes >/dev/null 2>&1 || true
-pkill -TERM samba 2>/dev/null || true
+pkill -TERM -x samba 2>/dev/null || true
 sleep 2
 
 log "Starting samba in foreground..."
