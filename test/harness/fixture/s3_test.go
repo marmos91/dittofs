@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // fakeS3 is an S3 service holding its buckets and objects in memory, which
@@ -87,5 +90,20 @@ func TestBucket(t *testing.T) {
 				t.Errorf("bucket %+v, calls %q", b, fake.calls)
 			}
 		})
+	}
+}
+
+// The block store configuration the fixture sends is one the server's own
+// validator accepts, so a misspelt or dropped key shows here, where no S3
+// service is needed, rather than as every S3 cell not running. The endpoint
+// is on loopback, as the S3 service dt services starts is.
+func TestStoreConfigValidates(t *testing.T) {
+	b := &bucket{endpoint: "http://127.0.0.1:4566", prefix: "dt-0123456789abcdef/"}
+	cfg := &models.BlockStoreConfig{Type: "s3"}
+	if err := cfg.SetConfig(b.storeConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ValidateBlockStoreConfig("s3", cfg); err != nil {
+		t.Fatalf("the server refuses the fixture's S3 configuration: %v", err)
 	}
 }

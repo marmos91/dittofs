@@ -15,7 +15,9 @@ import (
 // decision: every fixture uses this one bucket, each under a key prefix of
 // its own, so fixtures side by side or one after another never see each
 // other's blocks. The service keeps the bucket once the first fixture creates
-// it, and a later fixture finds it there.
+// it, and a later fixture finds it there. Nothing under a fixture's prefix is
+// deleted when it stops, which holds while the S3 service lives no longer
+// than a run; delete the prefix on Stop once a fixture uses one that does.
 const bucketName = "dittofs-dt"
 
 // bucket is where an S3 profile's server keeps its blocks: bucketName at the
