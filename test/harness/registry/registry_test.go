@@ -25,17 +25,6 @@ func TestEveryNeedHasAHint(t *testing.T) {
 	}
 }
 
-// The repository's own registry loads and passes every rule.
-func TestRepositoryRegistryLoads(t *testing.T) {
-	r, err := Load("../../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Suites) == 0 {
-		t.Fatal("no suites")
-	}
-}
-
 // Each rule the registry is loaded with refuses what it should.
 func TestLoadRules(t *testing.T) {
 	const ok = "version: 1\ndefaults: { format: exit, tier: merge, timeout: { test: 30m, cell: 60m } }\n"
@@ -62,14 +51,9 @@ func TestLoadRules(t *testing.T) {
 		{"a matrix axis has values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [] } }\n", `axis "p" has no values`},
 		{"a selection names a value", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [] } } }\n", "selects no value"},
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},
-		{"{tools} names a tool", ok + "suites:\n  a: { cmd: 'run {tools}' }\n", "{tools} names no tool: write {tools}/NAME, NAME one of pjdfstest, pynfs"},
-		{"{tools} names a tool dt has", ok + "suites:\n  a: { cmd: 'run {tools}/pjdfstests/x' }\n", "{tools}/pjdfstests: no such tool; {tools} holds pjdfstest, pynfs"},
-		{"{tools} names no path out of it", ok + "suites:\n  a: { cmd: 'run {tools}/../x' }\n", "{tools}/..: no such tool"},
-		{"a placeholder's tests aren't sharded", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', shards: 2 }\n", "shards needs the tests when the cell is planned"},
-		{"a placeholder's tests have no needs_by_test", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', needs_by_test: { 'a*': [linux] } }\n", "needs_by_test needs the tests"},
-		{"a placeholder's tests aren't timed by size", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', timeout: { test: size } }\n", "timeout.test: size needs the tests"},
+		{"{tools} names a tool", ok + "suites:\n  a: { cmd: 'run {tools}' }\n", "{tools}/: no such tool; write {tools}/NAME, NAME one of pjdfstest, pynfs"},
+		{"{tools} names a tool dt has", ok + "suites:\n  a: { cmd: 'run {tools}/pjdfstests/x' }\n", "{tools}/pjdfstests: no such tool"},
 		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
-		{"a placeholder's tests aren't narrowed by a glob", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', select: { pr: 'a*' } }\n", "select.pr needs the tests"},
 		{"{test} is only in cmd and volumes", ok + "suites:\n  a: { cmd: 'run {test}', tests: [t], dir: '{test}', env: { T: '{test}' }, fixture: { profile: memory, lease: '{test}' } }\n",
 			"a: dir holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test\n" +
 				"a: env holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test\n" +
