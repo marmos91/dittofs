@@ -26,14 +26,14 @@ import (
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// Share is the fixture's share, the default one when no shares file is given.
-const Share = "/export"
+// share is the fixture's share, the default one when no shares file is given.
+const share = "/export"
 
-// User is {user}: the test user every fixture creates, with {password} and
-// UserUID as its UID and GID.
+// user is {user}: the test user every fixture creates, with {password} and
+// userUID as its UID and GID.
 const (
-	User    = "dt-user"
-	UserUID = uint32(65535)
+	user    = "dt-user"
+	userUID = uint32(65535)
 )
 
 // stopGrace is how long dfs has to shut down before its group is killed.
@@ -167,10 +167,10 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		_ = s.Stop()
 		return nil, err
 	}
-	s.vals = map[string]string{"server": server, "user": User, "password": password}
+	s.vals = map[string]string{"server": server, "user": user, "password": password}
 	if s.nfsPort > 0 {
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
-		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
+		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", share, server, s.nfsPort)
 	}
 	if mounts(f.NFS.Version) {
 		if err := s.mountShare(ctx, server, f.NFS); err != nil {
@@ -198,7 +198,7 @@ func (s *Server) setUp(ctx context.Context, f registry.Fixture, b *bucket, admin
 	if err := configure(c, f, b, s.data, password, s.nfsPort); err != nil {
 		return err
 	}
-	return check(ctx, c, s.api, b, s.nfsPort)
+	return check(c, b, s.nfsPort)
 }
 
 // waitReady waits until the API's readiness probe answers 200.

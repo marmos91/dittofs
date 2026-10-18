@@ -49,7 +49,7 @@ func (s *Server) mountShare(ctx context.Context, server string, nfs registry.NFS
 		return err
 	}
 	s.mount = dir
-	source := server + ":" + Share
+	source := server + ":" + share
 	argv := asRoot("mount", "-t", "nfs", "-o", mountOptions(nfs.Version, s.nfsPort, nfs.Options), source, dir)
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
 	if err := runFor(ctx, 0, argv); err != nil {

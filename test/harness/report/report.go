@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// SpecVersion is the one CTRF version dt writes, whatever CTRF publishes later.
-const SpecVersion = "0.1.0"
+// specVersion is the one CTRF version dt writes, whatever CTRF publishes later.
+const specVersion = "0.1.0"
 
 // A test's status, in CTRF's words.
 const (
@@ -63,7 +63,6 @@ type Test struct {
 	Grade     string // how dt graded the result, when it did
 	Reason    string // why the result was expected: the reason of the known entry that graded it
 	Issue     string // the issue that entry names
-	Flaky     bool   // it failed, then passed when run again
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -128,7 +127,7 @@ func (r Run) Write(dir string) error {
 		return err
 	}
 	for _, c := range r.Cells {
-		x, err := c.JUnit()
+		x, err := c.junit()
 		if err != nil {
 			return err
 		}
@@ -143,7 +142,7 @@ func (r Run) Write(dir string) error {
 	if err := replace(filepath.Join(dir, "report.md"), md.Bytes()); err != nil {
 		return err
 	}
-	data, err := r.JSON()
+	data, err := r.json()
 	if err != nil {
 		return err
 	}
@@ -186,7 +185,7 @@ func Read(dir string) (Run, error) {
 		if in < 0 {
 			return Run{}, fmt.Errorf("%s: the test %q is in no cell", path, t.Name)
 		}
-		out := Test{Name: t.Name, Status: t.Status, RawStatus: t.RawStatus, Duration: time.Duration(t.Duration) * time.Millisecond, Message: t.Message, Flaky: t.Flaky}
+		out := Test{Name: t.Name, Status: t.Status, RawStatus: t.RawStatus, Duration: time.Duration(t.Duration) * time.Millisecond, Message: t.Message}
 		if own := t.Suite[len(at[in]):]; len(own) > 0 {
 			out.Suite = own
 		}
@@ -221,10 +220,10 @@ func replace(path string, data []byte) error {
 	return err
 }
 
-// JSON is the run as a CTRF document: each test's suite is its cell's name,
+// json is the run as a CTRF document: each test's suite is its cell's name,
 // split at /, then its own suite, and dt's own fields go in extra.
-func (r Run) JSON() ([]byte, error) {
-	doc := document{ReportFormat: "CTRF", SpecVersion: SpecVersion, GeneratedBy: "dt"}
+func (r Run) json() ([]byte, error) {
+	doc := document{ReportFormat: "CTRF", SpecVersion: specVersion, GeneratedBy: "dt"}
 	res := &doc.Results
 	res.Tool.Name = "dt"
 	res.Tests = []test{}
@@ -237,12 +236,9 @@ func (r Run) JSON() ([]byte, error) {
 		res.Extra.Cells = append(res.Extra.Cells, cell{suite, name, c.Result, c.Note, int64(c.Took.Round(time.Second) / time.Second), c.Log, junitPath(c.Name)})
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
-			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message, Flaky: t.Flaky}
+			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message}
 			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue}); x != (testExtra{}) {
 				out.Extra = &x
-			}
-			if t.Flaky {
-				sum.Flaky++
 			}
 			res.Tests = append(res.Tests, out)
 			switch t.Status {
@@ -289,7 +285,6 @@ type summary struct {
 	Skipped int   `json:"skipped"`
 	Pending int   `json:"pending"`
 	Other   int   `json:"other"`
-	Flaky   int   `json:"flaky"`
 	Start   int64 `json:"start"`
 	Stop    int64 `json:"stop"`
 }
@@ -301,7 +296,6 @@ type test struct {
 	RawStatus string     `json:"rawStatus,omitempty"`
 	Duration  int64      `json:"duration"`
 	Message   string     `json:"message,omitempty"`
-	Flaky     bool       `json:"flaky,omitempty"`
 	Extra     *testExtra `json:"extra,omitempty"`
 }
 

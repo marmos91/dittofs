@@ -7,13 +7,12 @@
       "name": "dt"
     },
     "summary": {
-      "tests": 9,
-      "passed": 3,
+      "tests": 8,
+      "passed": 2,
       "failed": 2,
       "skipped": 3,
       "pending": 0,
       "other": 1,
-      "flaky": 1,
       "start": 1791460800000,
       "stop": 1791460912000
     },
@@ -87,17 +86,6 @@
           "reason": "the clock has a one-second step",
           "issue": "#12"
         }
-      },
-      {
-        "name": "TestFlaky",
-        "suite": [
-          "unit",
-          "windows",
-          "example.com/m/a"
-        ],
-        "status": "passed",
-        "duration": 70,
-        "flaky": true
       },
       {
         "name": "TestCrash",

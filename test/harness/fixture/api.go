@@ -1,7 +1,6 @@
 package fixture
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -13,9 +12,9 @@ import (
 // configure sets the server up through its API: its stores on the fixture's
 // profile, with the blocks of an S3 profile in b, the share, its squash, the
 // users, and the NFS settings, all before dt enables the NFS adapter, which
-// reads them as it starts. The settings are then read back. Users get
-// password, and each UID in the fixture's users a read-write grant on the
-// share.
+// reads them as it starts. The server's answer to the settings must hold
+// them as set. Users get password, and each UID in the fixture's users a
+// read-write grant on the share.
 func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, password string, nfsPort int) error {
 	off, on := false, true
 	// decision: on a fresh database the server creates its NFS and SMB
@@ -45,11 +44,11 @@ func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, passwor
 	if _, err := c.CreateBlockStore(blocks); err != nil {
 		return fmt.Errorf("the block store: %w", err)
 	}
-	if _, err := c.CreateShare(&apiclient.CreateShareRequest{Name: Share, MetadataStoreID: "default", BlockStore: "default"}); err != nil {
-		return fmt.Errorf("the share %s: %w", Share, err)
+	if _, err := c.CreateShare(&apiclient.CreateShareRequest{Name: share, MetadataStoreID: "default", BlockStore: "default"}); err != nil {
+		return fmt.Errorf("the share %s: %w", share, err)
 	}
 	if f.Squash != "" {
-		if _, err := c.PatchShareNFSConfig(Share, &apiclient.PatchShareNFSConfigRequest{Squash: &f.Squash}); err != nil {
+		if _, err := c.PatchShareNFSConfig(share, &apiclient.PatchShareNFSConfigRequest{Squash: &f.Squash}); err != nil {
 			return fmt.Errorf("squash %s: %w", f.Squash, err)
 		}
 	}
@@ -60,7 +59,7 @@ func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, passwor
 		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: name, Password: password, UID: &id, GID: &id}); err != nil {
 			return fmt.Errorf("user %d: %w", uid, err)
 		}
-		if err := c.SetUserSharePermission(Share, name, "read-write"); err != nil {
+		if err := c.SetUserSharePermission(share, name, "read-write"); err != nil {
 			return fmt.Errorf("user %d's grant: %w", uid, err)
 		}
 	}
@@ -69,8 +68,8 @@ func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, passwor
 	// users entry or the developer may hold. It has no grant on the default
 	// share: the shares-file rules give it the admin grant and the root on a
 	// shares file's shares, and nothing on the default one yet.
-	id := UserUID
-	if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: User, Password: password, UID: &id, GID: &id}); err != nil {
+	id := userUID
+	if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: user, Password: password, UID: &id, GID: &id}); err != nil {
 		return fmt.Errorf("the test user: %w", err)
 	}
 	settings, err := nfsSettings(f)
@@ -78,31 +77,21 @@ func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, passwor
 		return err
 	}
 	if settings != nil {
-		if _, err := c.PatchNFSSettings(settings); err != nil {
+		got, err := c.PatchNFSSettings(settings)
+		if err != nil {
 			return fmt.Errorf("the NFS settings: %w", err)
+		}
+		if l := settings.LeaseTime; l != nil && got.LeaseTime != *l {
+			return fmt.Errorf("the server reports a lease of %ds, not the %ds dt set", got.LeaseTime, *l)
+		}
+		if d := settings.DelegationsEnabled; d != nil && got.DelegationsEnabled != *d {
+			return fmt.Errorf("the server reports delegations %t, not the %t dt set", got.DelegationsEnabled, *d)
 		}
 	}
 	if nfsPort > 0 {
-		a, err := c.UpdateAdapter("nfs", &apiclient.UpdateAdapterRequest{Port: &nfsPort, Enabled: &on})
-		if err != nil {
+		if _, err := c.UpdateAdapter("nfs", &apiclient.UpdateAdapterRequest{Port: &nfsPort, Enabled: &on}); err != nil {
 			return fmt.Errorf("enabling NFS on port %d: %w", nfsPort, err)
 		}
-		if !a.Running {
-			return fmt.Errorf("NFS is enabled on port %d, but its listener isn't running", nfsPort)
-		}
-	}
-	if settings == nil {
-		return nil
-	}
-	got, err := c.GetNFSSettings()
-	if err != nil {
-		return fmt.Errorf("reading the NFS settings back: %w", err)
-	}
-	if l := settings.LeaseTime; l != nil && got.LeaseTime != *l {
-		return fmt.Errorf("the server reports a lease of %ds, not the %ds dt set", got.LeaseTime, *l)
-	}
-	if d := settings.DelegationsEnabled; d != nil && got.DelegationsEnabled != *d {
-		return fmt.Errorf("the server reports delegations %t, not the %t dt set", got.DelegationsEnabled, *d)
 	}
 	return nil
 }
@@ -125,14 +114,11 @@ func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error)
 }
 
 // check is the fixture's check before the first test that the server
-// answers: its readiness probe answers 200, and so does an authenticated
-// call, which shows NFS served on its port when the fixture asks for it, and
-// no adapter it doesn't ask for. With an S3 profile's bucket b, the server's
-// own check of its block store must find it healthy too.
-func check(ctx context.Context, c *apiclient.Client, api string, b *bucket, nfsPort int) error {
-	if err := ready(ctx, api); err != nil {
-		return err
-	}
+// answers: an authenticated call answers, and shows NFS served on its port
+// when the fixture asks for it, and no adapter it doesn't ask for. With an S3
+// profile's bucket b, the server's own check of its block store must find it
+// healthy too.
+func check(c *apiclient.Client, b *bucket, nfsPort int) error {
 	adapters, err := c.ListAdapters()
 	if err != nil {
 		return fmt.Errorf("an authenticated call: %w", err)
