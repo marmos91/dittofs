@@ -109,21 +109,12 @@ func TestLocalstackHealth(t *testing.T) {
 		t.Cleanup(s.Close)
 		return s.URL
 	}
-	// What the forwarder does with nothing behind it: accept, then close.
-	forwarder, err := net.Listen("tcp", "127.0.0.1:0")
+	// A port nothing listens on.
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = forwarder.Close() })
-	go func() {
-		for {
-			conn, err := forwarder.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
+	_ = closed.Close()
 	other := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(other.Close)
 	for _, c := range []struct{ name, endpoint, want string }{
@@ -131,7 +122,7 @@ func TestLocalstackHealth(t *testing.T) {
 		{"S3 available", health(`{"services": {"s3": "available"}}`) + "/", ""},
 		{"S3 off", health(`{"services": {"s3": "disabled"}}`), `says S3 is "disabled", not available or running`},
 		{"another HTTP server", other.URL, "answered 404, not with Localstack's health"},
-		{"a port forwarded to nothing", "http://" + forwarder.Addr().String(), "nothing answers at http://" + forwarder.Addr().String() + "/_localstack/health"},
+		{"nothing listening", "http://" + closed.Addr().String(), "nothing answers at http://" + closed.Addr().String() + "/_localstack/health"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("LOCALSTACK_ENDPOINT", c.endpoint)

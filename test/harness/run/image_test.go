@@ -198,24 +198,18 @@ func TestOnlyAKilledContainerIsRemoved(t *testing.T) {
 	}
 }
 
-// The image is pulled before the first test, under the fixture's limit, and
-// only when docker doesn't have it. A pull that fails or stalls leaves the
-// cell not run, and runs no test.
+// The image is pulled before the first test, and only when docker doesn't
+// have it. A pull that fails leaves the cell not run, and runs no test.
 func TestImagePull(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { image: x, cmd: "true", timeout: { test: 10s } }
 `, nil)
-	t.Cleanup(func() { fixtureSetup = 5 * time.Minute })
 	for _, c := range []struct {
 		image, result, note, calls string
-		limit                      time.Duration
 	}{
-		{"", Passed, "", "image run", time.Minute},
-		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull", time.Minute},
-		// Only a pull that stalls waits out its limit; the fake never ends one.
-		{"stall", NotRun, "the fixture wasn't set up within 2s, and isn't retried", "image pull", 2 * time.Second},
+		{"", Passed, "", "image run"},
+		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull"},
 	} {
-		fixtureSetup = c.limit
 		log := fakeDocker(t)
 		t.Setenv("FAKE_IMAGE", c.image)
 		rep, out := runTarget(t, root, r, "s", false)

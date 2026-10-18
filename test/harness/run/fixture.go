@@ -2,9 +2,7 @@ package run
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"os"
 
 	"github.com/marmos91/dittofs/test/harness/fixture"
 	"github.com/marmos91/dittofs/test/harness/plan"
@@ -30,17 +28,6 @@ var startFixture = func(ctx context.Context, f registry.Fixture, services []stri
 		return nil, err
 	}
 	return s, nil
-}
-
-// setUpFixture builds {bin} and starts the cell's server, with the variables
-// of the services the cell needs, within ctx, which holds the fixture's own
-// limit. Building {bin} is one of the fixture's steps, so a stalled module
-// download leaves the cell not run within it instead of using up the cell's.
-func setUpFixture(ctx context.Context, f registry.Fixture, services []string, root, bin, out string, w io.Writer) (fixtureServer, error) {
-	if err := buildBin(ctx, root, bin, os.Environ(), w); err != nil {
-		return nil, fmt.Errorf("dfs and dfsctl didn't build: %w", err)
-	}
-	return startFixture(ctx, f, services, bin, out, w)
 }
 
 // cellFixture is fixture f with a cell's matrix values filled in.

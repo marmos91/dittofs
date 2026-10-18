@@ -294,8 +294,10 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 	}
 	// The fixture's own steps share one limit: building {bin}, starting the
-	// server and pulling the image. Each is tried once: the server starts
-	// inside the fixture, so a retry could hide its flakiness.
+	// server and pulling the image, so a stalled module download or pull
+	// leaves the cell not run instead of using up its limit. Each is tried
+	// once: the server starts inside the fixture, so a retry could hide its
+	// flakiness.
 	setup, setupDone := context.WithTimeout(cellCtx, fixtureSetup)
 	defer setupDone()
 	setupFailed := func(step string, err error) report.Cell {
@@ -308,7 +310,10 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		return didntRun(step + ": " + err.Error())
 	}
 	if c.Unit.Fixture != nil {
-		server, err := setUpFixture(setup, spec, needs.ServiceEnv(o.Root, c.Needs), o.Root, vals["bin"], out, w)
+		if err := buildBin(setup, o.Root, vals["bin"], os.Environ(), w); err != nil {
+			return setupFailed("the fixture", fmt.Errorf("dfs and dfsctl didn't build: %w", err))
+		}
+		server, err := startFixture(setup, spec, needs.ServiceEnv(o.Root, c.Needs), vals["bin"], out, w)
 		if err != nil {
 			return setupFailed("the fixture", err)
 		}
