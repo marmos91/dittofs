@@ -15,8 +15,8 @@ type FS interface {
 	// opened with sharing that permits it to be removed while open.
 	Open(name string) (File, error)
 
-	// Rename renames oldName to newName, replacing newName if it exists, so
-	// a crash leaves either the old file or the new one under newName.
+	// Rename renames oldName to newName, replacing newName if it exists. The
+	// rename is atomic, but a crash before SyncDir may undo it.
 	Rename(oldName, newName string) error
 
 	// Remove unlinks name.
