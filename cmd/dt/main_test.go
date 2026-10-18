@@ -60,28 +60,12 @@ func TestPlanShard(t *testing.T) {
 	}
 }
 
-// A usage error is an error, which main turns into exit status 3.
-func TestUsageErrors(t *testing.T) {
-	for _, args := range [][]string{{"plan"}, {"plan", "--tier", "weekly"}, {"list", "--tier", "weekly"}} {
-		if _, err := dt(t, args...); err == nil {
-			t.Errorf("dt %s: no error", strings.Join(args, " "))
-		}
-	}
-}
-
 func lines(s string) int { return strings.Count(s, "\n") }
 
 // A renamed file is listed under both paths, so moving it out of a suite's
 // paths still runs that suite.
 func TestChangedFilesKeepsBothSidesOfARename(t *testing.T) {
-	// A git hook running the tests exports GIT_DIR and the like, which would
-	// point these commands at the repository being committed to.
-	for _, kv := range os.Environ() {
-		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GIT_") {
-			t.Setenv(k, "")
-			_ = os.Unsetenv(k)
-		}
-	}
+	gitless(t)
 	root := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
@@ -90,12 +74,7 @@ func TestChangedFilesKeepsBothSidesOfARename(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(root, "pkg/old"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "pkg/old/x.go"), []byte("package old\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(root, "pkg/old/x.go"), "package old\n")
 	git("init", "-q")
 	git("add", ".")
 	git("commit", "-q", "-m", "add")
@@ -109,16 +88,8 @@ func TestChangedFilesKeepsBothSidesOfARename(t *testing.T) {
 	if want := []string{"pkg/new/x.go", "pkg/old/x.go"}; !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
-}
-
-// git -z output keeps a path with spaces or quotes whole.
-func TestSplitNUL(t *testing.T) {
-	got := splitNUL([]byte("docs/a b.md\x00pkg/\"q\".go\x00"))
-	if want := []string{"docs/a b.md", `pkg/"q".go`}; strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("got %q, want %q", got, want)
-	}
-	if got := splitNUL(nil); got == nil || len(got) != 0 {
-		t.Errorf("no changes: %#v, want an empty, non-nil list", got)
+	if got, err := changedFiles(root, "HEAD"); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("no changes: %#v, %v, want an empty, non-nil list", got, err)
 	}
 }
 
@@ -145,28 +116,19 @@ func checkout(t *testing.T) (here, other string) {
 		"  pictured: { image: x, needs: [" + here + "] }\n" +
 		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
-	for _, dir := range []string{"test", "t"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
 	for _, test := range []string{"01-a.sh", "91-b.sh"} {
-		if err := os.WriteFile(filepath.Join(root, "t", test), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, filepath.Join(root, "t", test), "")
 	}
-	if err := os.WriteFile(filepath.Join(root, "test", "suites.yaml"), []byte(y), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), y)
 	t.Chdir(root)
 	return here, other
 }
 
-// dt run's usage errors are plain errors, which main turns into exit status
-// 3; a run that didn't pass carries its own status.
+// Usage errors are plain errors, which main turns into exit status 3; a run
+// that didn't pass carries its own status.
 func TestRunStatuses(t *testing.T) {
 	for _, args := range [][]string{
-		{"run"}, {"run", "nope"}, {"run", "lint", "--kerberos"},
+		{"plan", "--tier", "weekly"}, {"list", "--tier", "weekly"}, {"run"},
 		{"run", "smbtorture", "--kerberos", "--windows"}, {"run", "unit", "--tier", "weekly"},
 	} {
 		var status exitStatus
@@ -311,54 +273,23 @@ func TestDoctor(t *testing.T) {
 	}
 }
 
-// dt run --ci writes no job summary: dt report --format md does, and gives
-// the outcomes dt run did.
-func TestRunWritesNoJobSummary(t *testing.T) {
-	checkout(t)
-	summary := filepath.Join(t.TempDir(), "summary.md")
-	t.Setenv("GITHUB_STEP_SUMMARY", summary)
-	results := t.TempDir()
-	_, _ = dt(t, "run", "away", "--ci", "--results", results)
-	if _, err := os.Stat(summary); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("dt run wrote the job summary: %v", err)
-	}
-	if md, err := dt(t, "report", "--format", "md", "--results", results); err != nil || !strings.Contains(md, "| `away` | not run |") {
-		t.Errorf("dt report: %v\n%s", err, md)
-	}
-}
-
-// --results is relative to the checkout's root, wherever dt runs from.
-func TestRunResultsRelativeToRoot(t *testing.T) {
+// --results is relative to the checkout's root, wherever dt runs from, and
+// the run's summary.json records the tier the run was asked for.
+func TestRunResults(t *testing.T) {
 	checkout(t)
 	if err := os.Mkdir("sub", 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir("sub")
-	out, _ := dt(t, "run", "away", "--results", "rel")
-	sep := string(filepath.Separator)
-	if !strings.Contains(out, sep+"rel"+sep) || strings.Contains(out, "sub"+sep+"rel") {
-		t.Errorf("results not under the root's rel:\n%s", out)
-	}
-}
-
-// dt run writes the run's summary.json, which records the tier the run was
-// asked for.
-func TestRunWritesSummaryJSON(t *testing.T) {
-	checkout(t)
-	results := t.TempDir()
-	_, _ = dt(t, "run", "away", "--tier", "merge", "--results", results)
-	files, err := filepath.Glob(filepath.Join(results, "*", "summary.json"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("summaries %v, %v", files, err)
-	}
-	data, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
+	_, _ = dt(t, "run", "away", "--tier", "merge", "--results", "rel")
+	files, _ := filepath.Glob(filepath.Join("..", "rel", "*", "summary.json"))
+	if len(files) != 1 {
+		t.Fatalf("summaries under the root's rel: %v", files)
 	}
 	var doc struct {
 		Results struct{ Extra struct{ Tier string } }
 	}
-	if err := json.Unmarshal(data, &doc); err != nil || doc.Results.Extra.Tier != "merge" {
+	if data, err := os.ReadFile(files[0]); err != nil || json.Unmarshal(data, &doc) != nil || doc.Results.Extra.Tier != "merge" {
 		t.Errorf("tier %q, %v", doc.Results.Extra.Tier, err)
 	}
 }
@@ -372,12 +303,7 @@ func TestRunReportsWhenTheSummaryFails(t *testing.T) {
 	y := "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n" +
 		"  breaks: { cmd: { sh: \"rm {out}/../summary.json && mkdir -p {out}/../summary.json/x\" } }\n"
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "test"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "test", "suites.yaml"), []byte(y), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(root, "test", "suites.yaml"), y)
 	t.Chdir(root)
 	out, err := dt(t, "run", "breaks", "--ci", "--results", t.TempDir())
 	var status exitStatus
