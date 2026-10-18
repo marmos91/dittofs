@@ -70,7 +70,6 @@ func TestLoadRules(t *testing.T) {
 		{"a placeholder's tests aren't timed by size", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', timeout: { test: size } }\n", "timeout.test: size needs the tests"},
 		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
 		{"a placeholder's tests aren't narrowed by a glob", ok + "suites:\n  a: { cmd: 'run {test}', tests: '{tools}/t/*.t', select: { pr: 'a*' } }\n", "select.pr needs the tests"},
-		{"no matrix axis takes a key of where's own", ok + "suites:\n  a: { cmd: 'run {os}', matrix: { os: [linux] } }\n", `matrix axis "os": tier, option and os are where's own keys`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

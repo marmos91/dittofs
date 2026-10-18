@@ -10,24 +10,15 @@ import (
 // Grade grades each result of one cell in place, setting its grade and the
 // status the grade gives it. entries are the suite's known file's; only those
 // that apply where the cell runs, at, count. listed says the suite has a
-// known file, so its skips are graded rather than reported ungraded. A
-// result already graded keeps its grade: one its reader graded itself, or a
-// crash or a hang, which no entry excuses.
-//
-//   - A failure is known when a known-failure entry matches it, or when it
-//     failed only because of subtests that are known failures; else new.
-//   - A skip is an expected skip when an expected-skip entry matches it, else
-//     an unexpected one; in a suite without a known file it's ungraded.
-//   - A test whose output stopped before its result is incomplete, whatever
-//     the entries say.
-//   - A pass is unexpected when the entry that matches it, of either kind,
-//     isn't intermittent and every result in the cell it matches passed: a
-//     pattern one of whose tests still fails, or a name with one failing
-//     result among several, still says what the server does.
+// known file, so its skips are graded rather than reported ungraded. A pass
+// is unexpected when its entry, of either kind, isn't intermittent and every
+// result in the cell it matches passed: a pattern one of whose tests still
+// fails, or a name with one failing result among several, still says what
+// the server does.
 func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]string) {
 	var apply []Entry
 	for _, e := range entries {
-		if e.Applies(at) {
+		if e.applies(at) {
 			apply = append(apply, e)
 		}
 	}

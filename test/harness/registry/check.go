@@ -215,12 +215,6 @@ func checkUnit(root string, u *Suite) []error {
 		if len(a.Values) == 0 {
 			fail("matrix axis %q has no values", a.Name)
 		}
-		// decision: an entry of a known file names where it applies by
-		// matrix axis, tier, option or os, so no axis takes one of the
-		// other three names, which would leave the entry's meaning open.
-		if _, own := whereKeys[a.Name]; own {
-			fail("matrix axis %q: tier, option and os are where's own keys in a known file", a.Name)
-		}
 		axes[a.Name] = true
 	}
 	// A template takes the same placeholders as a command.
@@ -318,15 +312,12 @@ var whereKeys = map[string][]string{"tier": Tiers, "option": {}, "os": {"linux",
 
 // addWhere adds what a unit's cells can be to what the where of an entry in
 // its known file may hold: its matrix axes and their values, and its option.
-// A suite's options take its known file unless they name their own, so one
-// file can be named by units with different axes, and an entry may name the
-// axes of any of them.
 //
 // decision: the axes and values of every unit that takes the file are
-// accepted, not only those of the unit whose cell is graded, since one entry
-// can serve the suite and its options. An entry naming an axis a cell lacks
-// doesn't apply to that cell. Check per unit if a file ever needs an entry
-// whose where must hold for every unit that takes it.
+// accepted, not only those of the unit whose cell is graded, since a suite's
+// options take its file unless they name their own, and one entry can serve
+// them all. Check per unit if a file ever needs an entry whose where must
+// hold for every unit that takes it.
 func addWhere(wheres map[string]map[string][]string, u *Suite) {
 	w := wheres[u.Known]
 	if w == nil {

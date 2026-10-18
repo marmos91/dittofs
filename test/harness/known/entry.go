@@ -116,7 +116,7 @@ func parseEntry(n *yaml.Node) (Entry, []string) {
 	return e, problems
 }
 
-// Applies reports whether the entry applies where a cell runs: at gives the
+// applies reports whether the entry applies where a cell runs: at gives the
 // cell's value for each key where may hold, and each key the entry names
 // must have one of the values it lists. A key the cell has no value for, such
 // as an axis of another option's matrix, has none of them.
@@ -125,7 +125,7 @@ func parseEntry(n *yaml.Node) (Entry, []string) {
 // so an entry written for one option's matrix never excuses a result in a
 // cell that has no such axis. Revisit if a file needs an entry for every
 // unit that takes it whatever their axes.
-func (e Entry) Applies(at map[string]string) bool {
+func (e Entry) applies(at map[string]string) bool {
 	for k, values := range e.Where {
 		if !slices.Contains(values, at[k]) {
 			return false

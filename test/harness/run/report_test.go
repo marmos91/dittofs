@@ -206,12 +206,12 @@ func TestPanicky(t *testing.T) {
 	}
 }
 
-// fakeGo puts a go on the PATH that prints script's lines as go test -json
-// would, then sleeps, so a cell's limit stops it with a test running.
-func fakeGo(t *testing.T, events string) {
+// fakeGo puts a go on the PATH that prints events as go test -json would,
+// then runs then: an exit, or a sleep the cell's limit stops.
+func fakeGo(t *testing.T, events, then string) {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\ncat <<'EOF'\n" + events + "EOF\nexec sleep 30\n"
+	script := "#!/bin/sh\ncat <<'EOF'\n" + events + "EOF\n" + then + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestGoJSONCellLimitResults(t *testing.T) {
 {`+now+`"Action":"pass","Package":"p","Test":"TestDone","Elapsed":0.5}
 {`+now+`"Action":"run","Package":"p","Test":"TestWait"}
 {`+now+`"Action":"output","Package":"p","Test":"TestWait","Output":"=== RUN   TestWait\n"}
-`)
+`, "exec sleep 30")
 	rep := runIn(t, root, r, "g")
 	want := []string{"g p > TestDone: passed", "g p > TestWait: failed [new] | stopped at the cell's limit"}
 	if got := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(got, want) || rep.Outcomes[0].Result != Failed {
@@ -541,7 +541,7 @@ func TestGoJSONInterruptedCellHasNoResults(t *testing.T) {
 {`+now+`"Action":"pass","Package":"p","Test":"TestDone","Elapsed":0.5}
 {`+now+`"Action":"run","Package":"p","Test":"TestWait"}
 {`+now+`"Action":"output","Package":"p","Test":"TestWait","Output":"=== RUN   TestWait\n"}
-`)
+`, "exec sleep 30")
 	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)

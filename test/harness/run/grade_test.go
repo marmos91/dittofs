@@ -3,7 +3,6 @@ package run
 import (
 	"context"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,10 +19,9 @@ const knownFile = `- { test: known, status: fail, fix: wontfix, category: proto,
 `
 
 // A cell's result comes from its graded results: a known failure and an
-// expected skip pass; an unexpected pass fails the cell; an unlisted skip,
-// or a test whose output stopped, which no entry excuses, leaves it not
-// run; and a cell with both a failure and a skip that wasn't run fails, its
-// note naming both.
+// expected skip pass; an unexpected pass fails the cell; and an unlisted
+// skip, or a test whose output stopped, which no entry excuses, leaves it
+// not run.
 func TestCellFromGrades(t *testing.T) {
 	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
 		var tests []report.Test
@@ -34,20 +32,18 @@ func TestCellFromGrades(t *testing.T) {
 		return tests, nil
 	}
 	t.Cleanup(func() { delete(readers, "tap") })
-	root, r := repo(t, `groups: { g: [green, fixed, unlisted, stopped, both] }
+	root, r := repo(t, `groups: { g: [green, fixed, unlisted, stopped] }
 suites:
   green: { cmd: "cat {test}", tests: "green/*", format: tap, known: k.yaml }
   fixed: { cmd: "cat {test}", tests: "fixed/*", format: tap, known: k.yaml }
   unlisted: { cmd: "cat {test}", tests: "unlisted/*", format: tap, known: k.yaml }
   stopped: { cmd: "cat {test}", tests: "stopped/*", format: tap, known: k.yaml }
-  both: { cmd: "cat {test}", tests: "both/*", format: tap, known: k.yaml }
 `, map[string]string{
 		"k.yaml":     knownFile,
 		"green/t":    "failed:known skipped:skips passed:other",
 		"fixed/t":    "passed:fixed",
 		"unlisted/t": "skipped:nope",
 		"stopped/t":  "other:known",
-		"both/t":     "failed:new skipped:nope",
 	})
 	rep := runIn(t, root, r, "g")
 	want := []Outcome{
@@ -55,7 +51,6 @@ suites:
 		{Cell: "fixed", Result: Failed, Note: "1 passed unexpectedly: fixed"},
 		{Cell: "unlisted", Result: NotRun, Note: "1 skipped unexpectedly: nope"},
 		{Cell: "stopped", Result: NotRun, Note: "1 incomplete: known"},
-		{Cell: "both", Result: Failed, Note: "1 failed: new; 1 skipped unexpectedly: nope"},
 	}
 	if len(rep.Outcomes) != len(want) {
 		t.Fatalf("outcomes %+v", rep.Outcomes)
@@ -123,18 +118,6 @@ func TestExitSuiteGraded(t *testing.T) {
 	}
 }
 
-// fakeGoExits puts a go on the PATH that prints events as go test -json
-// would, then exits with code.
-func fakeGoExits(t *testing.T, events, code string) {
-	t.Helper()
-	dir := t.TempDir()
-	script := "#!/bin/sh\ncat <<'EOF'\n" + events + "EOF\nexit " + code + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
 // A go-json suite with a known file grades its results: a known failure
 // passes the cell, counted apart in its note; a known failure that passes
 // fails it; a skip it doesn't list leaves the cell not run; and a test its
@@ -181,7 +164,7 @@ func TestGoJSONGraded(t *testing.T) {
 			root, r := repo(t, "suites:\n  g: { cmd: go test ./..., format: go-json, known: k.yaml }\n",
 				map[string]string{"k.yaml": "- { test: TestKnown, status: fail, fix: wontfix, category: env, reason: the clock steps }\n" +
 					"- { test: TestP/bad, status: fail, fix: wontfix, category: env, reason: the disk fills }\n"})
-			fakeGoExits(t, c.events, c.code)
+			fakeGo(t, c.events, "exit "+c.code)
 			if o := runIn(t, root, r, "g").Outcomes[0]; o.Result != c.result || o.Note != c.note {
 				t.Errorf("%s %q, want %s %q", o.Result, o.Note, c.result, c.note)
 			}

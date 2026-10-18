@@ -22,9 +22,7 @@ func junitPath(cell string) string {
 // CTRF status, which its grade decides, gives its JUnit one, so a reader of
 // either counts the same: failed is a failure, other an error, and skipped is
 // skipped, with the grade's reason, else the tool's. Each carries the tool's
-// message in its body; a failure or an error the tool said nothing about, as
-// an unexpected pass, has its grade as its message. A flaky pass is a pass
-// with a flaky property.
+// message in its body. A flaky pass is a pass with a flaky property.
 //
 // decision: a testcase's classname is the test's suite in summary.json,
 // joined with /, so it names the cell and, for a Go test, its package. The

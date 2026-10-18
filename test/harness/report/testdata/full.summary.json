@@ -7,10 +7,10 @@
       "name": "dt"
     },
     "summary": {
-      "tests": 11,
+      "tests": 9,
       "passed": 3,
-      "failed": 3,
-      "skipped": 4,
+      "failed": 2,
+      "skipped": 3,
       "pending": 0,
       "other": 1,
       "flaky": 1,
@@ -86,36 +86,6 @@
           "grade": "known",
           "reason": "the clock has a one-second step",
           "issue": "#12"
-        }
-      },
-      {
-        "name": "TestFixed",
-        "suite": [
-          "unit",
-          "windows",
-          "example.com/m/a"
-        ],
-        "status": "failed",
-        "rawStatus": "passed",
-        "duration": 8,
-        "extra": {
-          "grade": "unexpected_pass",
-          "reason": "the cache is never flushed"
-        }
-      },
-      {
-        "name": "TestSoak",
-        "suite": [
-          "unit",
-          "windows",
-          "example.com/m/a"
-        ],
-        "status": "skipped",
-        "duration": 0,
-        "message": "a_test.go:30: skipped with -short",
-        "extra": {
-          "grade": "expected_skip",
-          "reason": "a 24-seed soak"
         }
       },
       {

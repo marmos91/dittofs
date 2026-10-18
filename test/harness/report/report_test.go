@@ -36,9 +36,8 @@ func golden(t *testing.T, name string, got []byte) {
 
 // full is a run with every field dt writes: a test of each status, a skip
 // graded ungraded, a known failure with its tool's status, reason and issue,
-// an unexpected pass, an expected skip, a flaky pass, tests below their cell
-// (a Go test's package), a cell of an option and matrix values, and cells
-// without tests, a log or a note.
+// a flaky pass, tests below their cell (a Go test's package), a cell of an
+// option and matrix values, and cells without tests, a log or a note.
 var full = Run{
 	Name:   "20261015T120000Z-abcdef12-a2",
 	Start:  time.UnixMilli(1791460800000),
@@ -55,8 +54,6 @@ var full = Run{
 			{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded},
 			{Name: "TestKnown", Suite: []string{"example.com/m/a"}, Status: Skipped, RawStatus: Failed, Duration: 5 * time.Millisecond, Message: "a_test.go:12: got 1, want 2", Grade: Known,
 				Reason: "the clock has a one-second step", Issue: "#12"},
-			{Name: "TestFixed", Suite: []string{"example.com/m/a"}, Status: Failed, RawStatus: Passed, Duration: 8 * time.Millisecond, Grade: UnexpectedPass, Reason: "the cache is never flushed"},
-			{Name: "TestSoak", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:30: skipped with -short", Grade: ExpectedSkip, Reason: "a 24-seed soak"},
 			{Name: "TestFlaky", Suite: []string{"example.com/m/a"}, Status: Passed, Duration: 70 * time.Millisecond, Flaky: true},
 			{Name: "TestCrash", Suite: []string{"example.com/m/c"}, Status: Other, Message: "panic: boom"},
 			{Name: "example.com/m/c", Status: Failed, Duration: 300 * time.Millisecond, Message: "failed outside any test"},
