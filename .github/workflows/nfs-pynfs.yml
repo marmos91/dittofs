@@ -63,6 +63,10 @@ concurrency:
   # single running + single pending slot GitHub keeps per group.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # The tier the parity jobs' dt runs at: a dispatch, like the scripts', as after a merge.
+  TIER: ${{ github.event_name == 'schedule' && 'nightly' || 'merge' }}
+
 jobs:
   # pynfs still has its own workflow while its tree is being reworked, but its
   # profiles, minor versions and tiering come from the same manifest as every
@@ -169,11 +173,12 @@ jobs:
       # run-pynfs.sh provisions the server through setup-posix.sh --no-mount,
       # which builds both binaries from the checkout; no prebuilt artifact is
       # needed. It then runs and grades the suite, exiting with the number of
-      # NEW failures.
+      # NEW failures. pynfs reaches the server at the host's address, as dt's
+      # does, so the parity job below compares the same callbacks.
       - name: Run pynfs
         id: pynfs
         run: |
-          ./test/conformance/run.sh \
+          PYNFS_SERVER="$(hostname -I | cut -d' ' -f1):12049" ./test/conformance/run.sh \
             --suite pynfs \
             --profile "${{ matrix.profile }}" \
             --variant "${{ matrix.variant }}"
@@ -206,8 +211,150 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pynfs-v${{ matrix.variant }}-${{ matrix.profile }}-results
-          path: test/nfs-conformance/pynfs/results/
+          path: |
+            test/nfs-conformance/pynfs/results/
+            test/conformance/results/
           retention-days: 30
+
+  # Parity: the same cells through dt, beside the scripts' job, until the two
+  # give the same results on 5 consecutive runs
+  # (docs/internals/rfcs/rfc-29-test-harness.md). Never blocking: a red cell
+  # or a difference fails its own job, and never the workflow run. They go
+  # when pynfs moves into tests.yml.
+  dt-plan:
+    name: dt plan
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Plan the cells
+        id: plan
+        run: |
+          set -o pipefail
+          cells="$(go run ./cmd/dt plan --tier "$TIER" --json | jq -c '[.cells[] | select(.suite == "pynfs")]')"
+          echo "$cells" | jq .
+          echo "cells=${cells}" >> "$GITHUB_OUTPUT"
+
+  dt:
+    name: dt ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: dt-plan
+    if: needs.dt-plan.outputs.cells != '[]'
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.dt-plan.outputs.cells) }}
+
+    services:
+      localstack:
+        image: ${{ contains(matrix.needs, 'service:localstack') && 'localstack/localstack:4.13.1' || '' }}
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+
+      # dt builds pynfs from flake.lock with nix, as the scripts' job does.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: ./.github/actions/nix-cache
+
+      # And the cell's name as one path element, for its artifact's name.
+      - name: Build dt
+        id: build
+        env:
+          CELL: ${{ matrix.name }}
+        run: |
+          go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+          echo "SLUG=${CELL//\//-}" >> "$GITHUB_ENV"
+
+      - name: Run ${{ matrix.name }}
+        env:
+          CELL: ${{ matrix.name }}
+        run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci'
+
+      - name: Report
+        if: always() && steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/dt" report --format md >> "$GITHUB_STEP_SUMMARY"'
+
+      # One artifact per cell, replaced by a re-run, so the last job compares
+      # each cell's latest run. Without the binaries dt built and the tools it
+      # linked, about 90 MB a cell.
+      - name: Upload results
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dt-results-${{ env.SLUG }}
+          path: |
+            test/harness/results/
+            !test/harness/results/*/bin/
+            !test/harness/results/*/tools/
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 30
+
+  # Compares each cell's results through dt with its results through the
+  # scripts. Its result is what the 5 consecutive runs count.
+  parity:
+    name: dt and the scripts, cell by cell
+    runs-on: ubuntu-latest
+    needs: [dt, pynfs]
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Download the results
+        uses: actions/download-artifact@v7
+        with:
+          path: ${{ runner.temp }}/results
+
+      - name: Compare
+        run: |
+          set -o pipefail
+          go run ./test/conformance/parity "$RUNNER_TEMP/results" pynfs | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The evidence behind every `suite` row in KNOWN_FAILURES: which tests the
   # Linux kernel server fails too. Never gates — it measures a third-party

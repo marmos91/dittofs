@@ -154,3 +154,13 @@ kf_reason() {
     done
     printf 'unknown'
 }
+
+# kf_record WORD VALUE: adds a line to the grades file in the common runner's
+# results directory, when the grader runs under it: "known NAME" or "new NAME"
+# for each failure, then "ran N", the number of tests that passed or failed.
+# The conformance workflows compare it with dt's results for the same cell.
+kf_record() {
+    if [[ -n "${DITTOFS_RESULTS_DIR:-}" ]]; then
+        echo "$1 $2" >>"${DITTOFS_RESULTS_DIR}/grades"
+    fi
+}

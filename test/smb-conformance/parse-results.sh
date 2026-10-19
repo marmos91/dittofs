@@ -159,9 +159,11 @@ while IFS='|' read -r test_name outcome; do
                     printf "  ${YELLOW}%-78s KNOWN${NC}\n" "$local_display"
                 fi
                 KNOWN_HITS=$((KNOWN_HITS + 1))
+                kf_record known "$test_name"
             else
                 printf "  ${RED}%-78s FAIL${NC}\n" "$local_display"
                 NEW_FAILURES=$((NEW_FAILURES + 1))
+                kf_record new "$test_name"
             fi
             ;;
         NotExecuted)
@@ -176,6 +178,7 @@ while IFS='|' read -r test_name outcome; do
             ;;
     esac
 done <<< "$RESULTS"
+kf_record ran "$((PASS_COUNT + KNOWN_HITS + NEW_FAILURES))"
 
 # --------------------------------------------------------------------------
 # Summary
