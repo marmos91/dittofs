@@ -19,10 +19,10 @@ type Entry struct {
 	Fix          string              `yaml:"fix"`      // planned or wontfix
 	Category     string              `yaml:"category"` // bug, feature, env, proto or permanent
 	Reason       string              `yaml:"reason"`
-	Issue        string              `yaml:"issue"`        // its issue, as "#N"; a planned entry names one
-	Where        map[string][]string `yaml:"where"`        // where it applies; everywhere when empty
-	Intermittent bool                `yaml:"intermittent"` // it fails on some runs only, so a pass isn't unexpected
-	Line         int                 `yaml:"-"`            // its line in the file
+	Issue        string              `yaml:"issue,omitempty"`        // its issue, as "#N"; a planned entry names one
+	Where        map[string][]string `yaml:"where,omitempty"`        // where it applies; everywhere when empty
+	Intermittent bool                `yaml:"intermittent,omitempty"` // it fails on some runs only, so a pass isn't unexpected
+	Line         int                 `yaml:"-"`                      // its line in the file
 }
 
 // The values an entry's fields take.

@@ -1,0 +1,195 @@
+- test: BVT_ApplySnapshot
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared VHD snapshot apply: block-level VHD storage not implemented'
+- test: BVT_ChangeTracking
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD block change tracking: block-level VHD storage not implemented'
+- test: BVT_Convert_VHDFile_to_VHDSetFile
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD → VHDSet conversion: block-level VHD storage not implemented'
+- test: BVT_Create_Delete_Checkpoint
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD checkpoint lifecycle: block-level VHD storage not implemented'
+- test: BVT_Extract_VHDSet
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet extraction: block-level VHD storage not implemented'
+- test: BVT_OpenCloseSharedVHD_V1
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD v1 shared-VHD open/close: block-level VHD storage not implemented'
+- test: BVT_OpenCloseSharedVHD_V2
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD v2 shared-VHD open/close: block-level VHD storage not implemented'
+- test: BVT_OpenSharedVHDSetByTargetSpecifier
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet target-specifier open: block-level VHD storage not implemented'
+- test: BVT_Optimize
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD optimize: block-level VHD storage not implemented'
+- test: BVT_QuerySharedVirtualDiskSupport
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared-VHD support query: block-level VHD storage not implemented'
+- test: BVT_QueryVirtualDiskChanges
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD changed-block tracking: block-level VHD storage not implemented'
+- test: BVT_Query_VHDSet_FileInfo_SnapshotEntry
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet snapshot entry query: block-level VHD storage not implemented'
+- test: BVT_Query_VHDSet_FileInfo_SnapshotList
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHDSet snapshot list query: block-level VHD storage not implemented'
+- test: BVT_ReadSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared-VHD read: block-level VHD storage not implemented'
+- test: BVT_Resize
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD VHD resize: block-level VHD storage not implemented'
+- test: BVT_TunnelCheckConnectionStatusToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelGetDiskInfoToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelGetFileInfoToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_Preempt
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_RegisterAndReserve
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_ReserveAndRelease
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIPersistentReserve_ReserveConflict
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI persistent reserve: block-level VHD storage not implemented'
+- test: BVT_TunnelSCSIToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelSRBStatusToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI SRB status tunnel: block-level VHD storage not implemented'
+- test: BVT_TunnelValidateDiskToSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD SCSI disk validation tunnel: block-level VHD storage not implemented'
+- test: BVT_WriteSharedVHD
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'RSVD shared-VHD write: block-level VHD storage not implemented'
+- test: BVT_SWNGetInterfaceList_ClusterSingleNode
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_SWNGetInterfaceList_ScaleOutSingleNode
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_SWN_CheckProtocolVersion
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_WitnessrRegister_SWNAsyncNotification_ClientMove
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_WitnessrRegisterEx_SWNAsyncNotification_ClientMove
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_WitnessrRegisterEx_SWNAsyncNotification_IPChange
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Service Witness Protocol: requires multi-node clustered file server'
+- test: BVT_Sqos_ProbePolicy
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Storage QoS: requires Hyper-V QoS integration on the storage layer'
+- test: BVT_Sqos_SetPolicy
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Storage QoS: requires Hyper-V QoS integration on the storage layer'
+- test: BVT_Sqos_UpdateCounters
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'Storage QoS: requires Hyper-V QoS integration on the storage layer'
+- test: BVT_RootAndLinkReferralDomainV4ToDFSServer
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'DFS namespace referrals: AD-integrated namespace not implemented'
+- test: BVT_RootAndLinkReferralStandaloneV4ToDFSServer
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: 'DFS namespace referrals: AD-integrated namespace not implemented'
+- test: BVT_FileAccess_OpenNamedPipe
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: WPTS FSA-adapter SSH transport requirement, not a named-pipe-implementation gap (DittoFS implements IPC$ pipes via handlePipeCreate)
+- test: BVT_FileAccess_OpenNamedPipe_InvalidPathName
+  status: fail
+  fix: wontfix
+  category: permanent
+  reason: WPTS FSA-adapter SSH transport requirement, not a named-pipe-implementation gap (DittoFS implements IPC$ pipes via handlePipeCreate)

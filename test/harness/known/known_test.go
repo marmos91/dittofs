@@ -124,8 +124,11 @@ func TestLoadMerges(t *testing.T) {
 			t.Fatalf("%q: %v", path, err)
 		}
 	}
-	want := []Row{{"b", "base b"}, {"a", "overlay a"}, {"c", "overlay c"}}
-	if got := l.Rows(); !slices.Equal(got, want) {
+	var got []string
+	for _, r := range l.Rows() {
+		got = append(got, r.Name+"\t"+r.Reason)
+	}
+	if want := []string{"b\tbase b", "a\toverlay a", "c\toverlay c"}; !slices.Equal(got, want) {
 		t.Errorf("rows %q, want %q", got, want)
 	}
 }

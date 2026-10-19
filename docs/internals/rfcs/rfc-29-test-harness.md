@@ -926,7 +926,8 @@ dt report [RUN] --failures [--post]            only the new failures; --post ope
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE                           remove entries that matched no failing or skipping test in recent runs
-dt known import FILE.md [--where AXIS=V,...]   convert a Markdown known-failure list to the YAML format, once
+dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure list into a known file, once;
+   [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
 dt docs [--check]                              write the documentation's suite tables, or check them
 ```
@@ -1275,7 +1276,7 @@ converts the old lists once.
   | pynfs's `suite`: a check a conformant server needn't pass | `proto` | `wontfix` |
   | in WPTS's or smbtorture's "Permanently Unimplementable" appendix | `permanent` | `wontfix` |
   | above smbtorture's appendix, where its policy requires an issue | `bug` | `planned`, with the row's issue |
-  | of those, the two upstream known-fails that fail against Samba too (`smb2.charset.Testing`, `smb2.session.reauth5`) | `proto` | `wontfix` |
+  | of those, the upstream known-fails that fail against Samba too (`smb2.charset.Testing`, `smb2.session.reauth5`, and the Kerberos list's `smb2.reauth5`) | `proto` | `wontfix` |
 - **Every entry has a reason**, which says why it fails or skips, and a category. A reason helps
   whoever fixes a planned entry too, and no list today has an entry without one. The `where`
   field replaces today's separate lists per NFS version. Besides matrix values it takes `tier`,
@@ -1284,19 +1285,24 @@ converts the old lists once.
 - **A planned entry names its issue, as `issue: "#1234"`; a won't-fix entry needn't.** Today most
   rows have no issue: 19 of 19 and 13 of 13 in the POSIX lists, 4 of pynfs's 8, and the WPTS list
   has no issue column.
-- **Importing the old lists.** `dt known import FILE.md --where AXIS=V,...` converts one Markdown
-  list into the suite's `known.yaml`, with `where` set from the flag. A suite's lists per version
-  are imported one by one (`KNOWN_FAILURES.md` with `--where nfs=3`, `KNOWN_FAILURES_V4.md` with
-  `--where nfs=4,4.1`), and entries that differ only in `where` merge into one. Rows that can't name
-  a test, such as a changelog table's rows or WPTS's status legend, are reported and left out. So is
-  a row that matched tests, all of which passed in the runs the first lists are written from; it
-  leaves the Markdown list in the same change. A row whose tests skipped in those runs is imported
-  as an expected skip.
+- **Importing the old lists.** `dt known import FILE.md KNOWN.yaml --where AXIS=V,...` converts one
+  Markdown list into a suite's known file, adding to the entries it holds, with `where` set from the
+  flag; the file is written only if every entry is valid. A suite's lists per version are imported
+  one by one into its one file (`KNOWN_FAILURES.md` with `--where nfs=3`, `KNOWN_FAILURES_V4.md`
+  with `--where nfs=4,4.1`), and entries that differ only in `where` merge into one. An entry takes
+  its row's issue, the first `#N` in the Issue column, whatever its `fix`. Rows that can't name a
+  test, those of a table whose first column isn't headed `Test Name`, such as a changelog table's
+  rows or WPTS's status legend, are reported and left out. So is a row that matched tests, all of
+  which passed in the runs the first lists are written from, and it leaves the Markdown list in the
+  same change; a row whose tests skipped in those runs becomes an expected skip, and its row stays.
+  Both are edits to the imported file, made from the per-test verdicts of the suite's latest runs
+  on develop, in every cell, which `dt known import` doesn't read.
 - **Markdown and YAML side by side.** A suite's scripts read its Markdown list until step 3
   deletes them (§8), so both lists exist until then. A Go test of `dt` fails when a row of a
-  Markdown list has no entry in its `known.yaml`, or a known failure in `known.yaml` has no row in
-  the Markdown list, so a change to one is made to both; expected skips exist only in YAML. The
-  hand-written Markdown lists go with the scripts.
+  Markdown list's tables of tests has no entry in its `known.yaml` that applies where the list does,
+  or a known failure in `known.yaml` that applies there has no row in the list, so a change to one
+  is made to both; an expected skip needs no row. An entry applies there unless its `where` gives
+  the list's axis other values. The hand-written Markdown lists go with the scripts.
 - **One matcher.** An entry's `test` matches as a row of today's lists does: an exact name; a
   trailing `.*`, which matches every name that starts with what comes before it (`smb2.lock.*`
   matches `smb2.lock.rw` and also `smb2.locking`); a shell glob (`flock/*`, `utimensat/0?.t`); and
