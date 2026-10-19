@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
@@ -22,7 +23,9 @@ import (
 //     and nothing else;
 //   - each share's usage, folded totals and unfolded deltas, equals what its
 //     files' Charged and count say, for the share, every principal and
-//     every project.
+//     every project;
+//   - every durable open has exactly one entry in its share's durable-open
+//     index, in whichever shard, and every entry names an open.
 //
 // Tests end with it, and so can a crash-recovery check.
 //
@@ -41,6 +44,11 @@ func (s *Store) Check(ctx context.Context) error {
 		nss := map[entity.ShareID]shareNamespaces{}
 		floor := map[entity.ShareID]map[string]bool{}
 		files := map[entity.ShareID]*usageDelta{}
+		type openAt struct {
+			file entity.FileID
+			id   uint64
+		}
+		opens := map[entity.ShareID]map[openAt]bool{}
 		for row, err := range r.Scan([]byte{keys.KindF}, nil) {
 			if err != nil {
 				return err
@@ -51,7 +59,7 @@ func (s *Store) Check(ctx context.Context) error {
 			}
 			share, id, sub := entity.ShareID(k[:keys.IDLen]), entity.FileID(k[keys.IDLen:2*keys.IDLen]), k[2*keys.IDLen:]
 			if floor[share] == nil {
-				floor[share], files[share] = map[string]bool{}, &usageDelta{}
+				floor[share], files[share], opens[share] = map[string]bool{}, &usageDelta{}, map[openAt]bool{}
 			}
 			switch {
 			case len(sub) == 0:
@@ -75,6 +83,8 @@ func (s *Store) Check(ctx context.Context) error {
 				if m, err := decodeRemoval(v, row.Value); err == nil && m.Kind == entity.RemoveRelease {
 					floor[share][string(floorKey(share, id, m.FileVersion))] = true
 				}
+			case len(sub) == 9 && sub[0] == keys.FOp: // an open, not a lock beneath it
+				opens[share][openAt{id, binary.BigEndian.Uint64(sub[1:])}] = true
 			case len(sub) == 9 && sub[0] == keys.FRef:
 				c, err := decodeRef(id, 0, row.Value)
 				if err != nil {
@@ -154,6 +164,30 @@ func (s *Store) Check(ctx context.Context) error {
 			}
 			if got != len(want) {
 				report("share %s: %d version-index entries, want %d", share, got, len(want))
+			}
+		}
+
+		for share, want := range opens {
+			pre := shareKey(share, keys.SDo)
+			seen := map[openAt]int{}
+			for row, err := range r.Scan(pre, nil) {
+				if err != nil {
+					return err
+				}
+				k := row.Key[len(pre):]
+				if len(k) != 8+keys.IDLen+8 {
+					return fmt.Errorf("%w: durable-open index key %x", errMalformed, row.Key)
+				}
+				at := openAt{entity.FileID(k[8 : 8+keys.IDLen]), binary.BigEndian.Uint64(k[8+keys.IDLen:])}
+				seen[at]++
+				if !want[at] {
+					report("share %s: durable-open index names open %d of %s, which has no record", share, at.id, at.file)
+				}
+			}
+			for at := range want {
+				if n := seen[at]; n != 1 {
+					report("share %s: open %d of %s has %d durable-open index entries, want 1", share, at.id, at.file, n)
+				}
 			}
 		}
 
