@@ -29,7 +29,7 @@ flowchart TB
   subgraph kv["pkg/metadata/kv — the backend contract"]
     direction LR
     kvi["KV interface<br/>Update · View · Limits"] --> badger["badgerkv<br/>(embedded, group commit)"]
-    kvi -.-> fdb["FoundationDB<br/>(blocked on cgo)"]
+    kvi -.-> cl["cluster backend<br/>(not chosen yet)"]
   end
   vfs --> pr & fi & ns & cp & ca
   eng --> ex & co
@@ -555,7 +555,7 @@ A throwaway benchmark, not committed, ran the same operations through both on 13
 
 |  | Today (`store/badger` and the metadata service) | New (`kv` and `kvstore`) |
 |---|---|---|
-| Storage engine | Badger only, used directly | A small KV interface: Badger now, FoundationDB later |
+| Storage engine | Badger only, used directly | A small KV interface: Badger now, a cluster backend later |
 | Keys | Text prefixes such as `f:<uuid>` and `c:<parent>:<name>` | Binary keys, with a key budget per transaction |
 | Durability | A sync per commit, or relaxed with a bounded lag | Group commit: a commit is acknowledged after a sync that covers it |
 | File handles | `"shareName:uuid"` | Binary, with a numeric file ID per share |
@@ -565,7 +565,7 @@ A throwaway benchmark, not committed, ran the same operations through both on 13
 | Control plane | A separate GORM database | Users, groups, grants, netgroups and shares inside the store |
 | Permission checks | In the service layer | Inside the store's own calls |
 | Source size | About 10k lines of store, plus 12.8k of service | 10.1k of store, 2.5k of KV layer, 2.8k of entity types |
-| Tests | About 6.6k lines, plus the shared `storetest` suite of 14.5k | About 3.9k lines: a KV conformance suite, a store conformance suite, internal checks of the main invariants, and benchmarks |
+| Tests | About 6.6k lines, plus the shared `storetest` suite of 14.5k | About 10k lines: a KV conformance suite, a store conformance suite, a model-based fuzz target, a concurrent stress test, pinned key counts, internal checks of the main invariants, and benchmarks |
 
 ### What the new store doesn't have yet
 
@@ -579,7 +579,7 @@ A throwaway benchmark, not committed, ran the same operations through both on 13
 | Trash | Yes | No |
 | The block engine's model: payload rows, synced hashes, block records | Yes | Replaced by refs, chunks and blocks; the engine is not ported yet (RFC 8) |
 | Oplocks, leases, delegations, share reservations | Yes | No: the open-state service (RFC 14) |
-| Migration of existing stores | — | None: handles change from `"shareName:uuid"` to binary, and nothing converts the old layout, so existing NFS handles would go stale |
+| Migration of existing stores | — | None by design: new installations only, and a start on v1 state is refused |
 | Credentials: password and NT hashes, roles | Yes, in the GORM database | No: `User.Secret` references a sealed credential that nothing stores or verifies yet, and there is no global admin role |
 | SMB named streams | Yes, with xattrs spilling into streams | No: `Create` refuses a stream; xattrs are capped at 64 KiB a value and 128 a file |
 | Case folding | Per call: NFS case-sensitive, SMB folding, on one share | Per share |
@@ -590,5 +590,5 @@ A throwaway benchmark, not committed, ran the same operations through both on 13
 
 ### Next
 
-1. **Developer aids from the review:** export `newFS` and the held store for other packages' tests, an invariant checker `Check`, a key decoder, and errors that carry their operation.
-2. **The filesystem service's call shapes (RFC 17),** such as `Unlink` and the xattr calls taking an `OpenGrant`, with step 9.
+1. **The open-state service (RFC 14),** stage 1 of wiring the store in: opens, locks and grants held in memory at the file's primary, over the durable records above.
+2. **The filesystem service (RFC 17),** stage 2: its call shapes, such as `Unlink` and the xattr calls taking an `OpenGrant`, and the engine interface agreed with the journal v2 work before stage 3.
