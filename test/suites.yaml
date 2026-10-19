@@ -190,7 +190,8 @@ suites:
     timeout: { test: 5m }
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
-    fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
+    # smb2.multichannel.bugs.bug_15346 opens its extra connections to 445, whatever -p says.
+    fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
     needs: [linux, docker]
