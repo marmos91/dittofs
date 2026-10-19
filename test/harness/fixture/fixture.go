@@ -260,8 +260,7 @@ func (s *Server) login() (*apiclient.Client, error) {
 }
 
 // Reset removes {share}, the first share, and creates it again with its
-// settings and grants. The share's files stay: a share created again under
-// its name finds the root its metadata store kept.
+// settings and grants, as the conformance runner's reset does.
 func (s *Server) Reset() error {
 	c, err := s.login()
 	if err != nil {

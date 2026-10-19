@@ -377,7 +377,9 @@ the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Lo
 `service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. Today's e2e job
 does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A fixture sets no variables: it gives
 its values as placeholders (§4.2), and a suite that needs one in a variable puts it in its `env`,
-as `fio-verify` puts `{mount}` in `BENCH_DIR`.
+as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes on a command line, where any
+user can read it while the process runs: the server started under `sudo` for port 445 gets the
+admin's password from `dt`'s environment, through `sudo -n --preserve-env=NAME`.
 
 ## 4. Design
 
@@ -772,7 +774,7 @@ carry a script that builds it.
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
 | `kerberos` | `true` starts the KDC service, writes the keytabs, restarts `rpc.gssd` once the keytab is in place, puts a test user's ticket where the kernel's upcall reads it, and turns Kerberos on |
-| `reset` | `each`: recreate a test's share before it runs, as smbtorture's runner does today |
+| `reset` | `each`: remove a test's share and create it again, with its settings and grants, before the test runs, as smbtorture's runner does today. A test whose share fails to reset doesn't run; like every fixture step, the reset isn't retried |
 | `client` | `namespace`: the cell's mounts and commands run on a client in a network namespace of its own, with its own rpcbind, `rpc.statd`, hostname and NFS client identifier, joined to the host by a bridge. A client on the server's own stack loses NLM, since its lockd takes the server's registration, and its traffic can't be told from the server's |
 | `clients` | `2` adds a second namespaced client at `{client2}`, which the user `dt` runs as can reach over ssh, for suites that drive two clients, such as nfstest's cache and delegation tests. Its traffic is copied into the first client's interface, as on a shared segment |
 | `rpcbind` | `host`: the server registers MOUNT and NLM with the host's rpcbind, so an NFSv3 client on another network stack can lock |
@@ -865,7 +867,9 @@ hide its flakiness. The cell is reported as not run, and someone re-runs it by h
 never retried on a pull request (§4.7).
 
 `dt` stops only the processes it started. Today `teardown-posix.sh` kills every `dfs start` on the
-machine, a developer's own server included. Each cell's results go to its `{out}`, the same layout
+machine, a developer's own server included. A server started under `sudo` (port 445) outlives a
+`dt` that is killed, since the signal that ends a child with its parent doesn't cross `sudo`; it
+holds the port until it is stopped by hand. Each cell's results go to its `{out}`, the same layout
 for every suite, where today five workflow steps look for the newest directory with `ls -td`, and
 its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 
@@ -1009,7 +1013,9 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **container engines:** `docker`, `podman`;
 - **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`,
   `nfs4-acl-tools`, `kerberos`, `dm-flakey`;
-- **resources:** `disk:<GB>`, `port:<n>` (free to bind);
+- **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
+  user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
+  it);
 - **hosts:** `host:dedicated`, met only by the dedicated test host;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
   `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
