@@ -1580,7 +1580,7 @@ location is written and swept as if nothing had changed.
   such transaction whose snapshot predates it and that has not committed when
   the pause commits.
 - **One already committed is not undone, and need not be.** The pause binds only
-  the transactions that read it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): a relocation or `MarkDeleted` that
+  the transactions that read it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): a relocation or `MarkDue` that
   commits before the pause is ordered before it, and the pause's writer decides
   nothing from what that transaction wrote. Its records — the relocation's new
   refs, the name's `deleted` record — are in every snapshot taken after the
@@ -1759,120 +1759,167 @@ A drain that stops resumes from the drain mark.
 ## 8. API surface
 
 Signatures are indicative; the obligations above are normative. GC declares an
-interface for each dependency, named for the need ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+interface for each component it calls, named for the need and holding exactly the
+methods it calls ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)); the composition root passes each component's
+concrete type ([§2.5](#2.5%20Composition%20and%20lifecycle)).
 
 ```go
-// Blocks is what GC needs from block metadata (RFC 6 §7). GC holds one per
-// namespace, and every call reads and writes only that namespace's partition.
-// Retirement and resurrection are not here: block metadata makes them inside
-// the transactions that change counts (§2.2, §3.3).
+package gc // internal/gc
+
+// Deps is everything GC is built from (§2.5). The composition root fills it;
+// the runtime then drives Start, Add, Remove, Drain and Close (RFC 23 §2.2).
+type Deps struct {
+	Sched    *sched.Scheduler           // RFC 8 §6.1.1: GC's own instance, one per process
+	Syncer   Syncer                     // RFC 3 §1.3, through the root's adapter
+	Settings func(NamespaceID) Settings // live namespace gc.* settings (RFC 13 App. B), read at each pass
+	Clock    clock.Clock                // RFC 8 §2.1
+	Health   health.Reporter            // RFC 25 §3.1 conditions; the type is RFC 25's to declare
+	Metrics  *metrics.Registry
+	Logger   *slog.Logger
+}
+
+type Settings struct {
+	TrashRetention time.Duration // §3.7, default 48 h
+	SpaceAmpTarget float64       // §4.4, 0 turns compaction off
+	AuditPeriod    time.Duration // §6.1
+	ForwardPeriod  time.Duration // §6.1
+}
+
+// View is one namespace's dependencies, handed by the runtime at Add.
+type View struct {
+	Blocks Blocks  // RFC 6 §10.1 satisfies it, scoped to the namespace's partition
+	Remote Remote  // the namespace's one remote store (§3.6), ref-counted per config by the root
+	Store  StoreID // that store's syncer registration, for OpenFlow and SetDrift
+	Keys   Keys    // RFC 5 Appendix B.2: the keys-object read-back each Recheck runs
+}
+
+// New validates d, refusing a nil field by name, and starts nothing.
+func New(d Deps) (*GC, error)
+
+func (g *GC) Start(ctx context.Context) error // registers the sources; no delete before a passed Recheck
+func (g *GC) Drain(ctx context.Context) error // stops posting; in-flight batches commit or abort
+func (g *GC) Close() error                    // releases leases (epochs kept), closes its flows; closes nothing it was handed
+
+// Add and Remove are the runtime's (RFC 23 §2.1): a namespace with a remote store is
+// a context, as a share is in the engine (RFC 8 §2.3).
+func (g *GC) Add(ctx context.Context, ns NamespaceID, v View) error
+func (g *GC) Remove(ctx context.Context, ns NamespaceID) error
+
+// Blocks is what GC needs from block metadata. Retirement, resurrection, the §3.5
+// verification and the hold and pause gates live inside its transactions; none is a call.
 type Blocks interface {
-	// Due yields retired blocks in a prefix range whose notBefore is at or
-	// before store time, in notBefore order.
-	Due(ctx context.Context, part Partition) iter.Seq2[BlockName, error]
-	// MarkDeleted moves each still-retired, due block to deleted after the
-	// verification of §3.5, in one transaction per batch. One result per name:
-	// nil, ErrNotDue, ErrHeld, or ErrReferenced (the block was resurrected).
-	MarkDeleted(ctx context.Context, bs []BlockName) []error
-	// Deleting yields deleted blocks in a prefix range, with the store time
-	// their delete succeeded, zero if not yet.
-	Deleting(ctx context.Context, part Partition) iter.Seq2[Deleting, error]
-	// Deleted records the success of each name's object delete.
-	Deleted(ctx context.Context, bs []BlockName) error
-	// Prune deletes deleted records whose delete succeeded before `before`,
-	// with the chunk records that still name them (§3.1 step 5).
-	Prune(ctx context.Context, bs []BlockName, before time.Time) error
-	// Intend durably records put intents for freshly minted targets (§3.4).
-	Intend(ctx context.Context, intents []Intent) error
-	// AbandonedIntents yields superseded intents: a shard's whose (node, node
-	// epoch) is no longer its primary, a partition's whose epoch moved on, or
-	// any whose domain is gone (§3.4).
-	AbandonedIntents(ctx context.Context, part Partition) iter.Seq2[BlockName, error]
-	// Abandon deletes an intent and writes its name's record retired, due after
-	// the put-bound wait, conflicting with a commit that consumes it (§3.4).
-	Abandon(ctx context.Context, names []BlockName) error
-	// Unrecorded writes a retired record, due now, for a listed name only if
-	// neither a block record nor an intent names it (§5.4).
-	Unrecorded(ctx context.Context, names []BlockName) []error
-	// Names yields block records and intents in name order from after, for
-	// the listing merge-join (§5.2).
-	Names(ctx context.Context, after BlockName) iter.Seq2[NameState, error]
-	// LiveChunks yields b's chunks whose records name it with a nonzero
-	// refcount, from its carried list.
-	LiveChunks(ctx context.Context, b BlockName) iter.Seq2[ChunkLoc, error]
-	// Holders yields the reverse index keys of one hash (§4.5, §6.2).
-	Holders(ctx context.Context, h Hash) iter.Seq2[Holder, error]
-	// CompactionCandidates yields blocks from the compaction index, highest
-	// bucket first, with the fields the score needs (§4.4).
+	deleterBlocks
+	compactorBlocks
+	collectorBlocks
+	auditorBlocks
+	namespaceBlocks
+}
+
+type deleterBlocks interface {
+	// MarkDue moves to deleted, in K-bounded batches, each retired block of part whose
+	// not_before (read from the record) is at or before store time and whose §3.5
+	// verification passes; a refused block is resurrected and listed in Refused.
+	// ErrHeld or ErrPaused (read with a tracked Get) fails the remaining batches.
+	MarkDue(ctx context.Context, part Partition) (MarkResult, error)
+	Marked(ctx context.Context, part Partition) iter.Seq2[MarkedBlock, error]
+	MarkGone(ctx context.Context, names []BlockName) error // one batch: each name's delete succeeded
+	// Prune removes deleted records whose success precedes the started time of the
+	// last passed Recheck, that record read with tracking in the same transaction.
+	Prune(ctx context.Context, part Partition) error
+}
+
+type compactorBlocks interface {
+	// CompactionCandidates yields first the blocks the retirement walk finds naming
+	// retiring material (RFC 5 §5.3, resumable by cursor), then the index, highest bucket first.
 	CompactionCandidates(ctx context.Context, part Partition) iter.Seq2[Candidate, error]
-	// Relocate consumes dst's intent, moves chunk records from srcs to dst,
-	// moves live and retires emptied sources, in one transaction (§4.2).
+	LiveChunks(ctx context.Context, b BlockName) iter.Seq2[ChunkLoc, error] // carries Died (§4.5)
+	Intend(ctx context.Context, intents []Intent) error
 	Relocate(ctx context.Context, srcs []BlockName, dst NewBlock) error
-	// Audit merges chunk records with the reverse index over a hash range and
-	// walks block records over a name range, correcting and yielding every
-	// mismatch (§6).
+	Abandon(ctx context.Context, names []BlockName) error // a writer giving up, or a draining namespace
+}
+
+type collectorBlocks interface {
+	AbandonSuperseded(ctx context.Context, part Partition) error            // §3.4
+	Names(ctx context.Context, after BlockName) iter.Seq2[NameState, error] // §5.2 merge-join
+	RetireUnrecorded(ctx context.Context, names []BlockName) []error        // §5.4
+}
+
+type auditorBlocks interface {
 	Audit(ctx context.Context, part Partition) iter.Seq2[Mismatch, error]
-	// Recount recounts one chunk from its reverse index, by the max rule (§6.2).
-	Recount(ctx context.Context, h Hash) error
-	// RebuildIndex rewrites the derived keys; RebuildReverse rewrites one
-	// share's reverse index under the hold. check writes nothing (§7.4).
-	RebuildIndex(ctx context.Context, check bool) iter.Seq2[Mismatch, error]
-	RebuildReverse(ctx context.Context, share ShareID, check bool) iter.Seq2[Mismatch, error]
-	// Hold sets or clears one reason on the namespace's hold (§6.4).
-	Hold(ctx context.Context, reason string, on bool) error
+	Recount(ctx context.Context, h Hash) error  // targeted recount by the max rule (§6.2)
+	SetHold(ctx context.Context, on bool) error // the §6.4 trip reason only
 }
 
-// Remote is the part of the remote store GC calls directly (RFC 4 §4.1).
+type namespaceBlocks interface {
+	// Lease acquires or renews (on) or releases (!on) part's lease; acquisition
+	// raises the epoch, release never lowers it (§7.3).
+	Lease(ctx context.Context, part Partition, on bool) (epoch uint64, held bool, err error)
+	State(ctx context.Context) (NamespaceState, error) // one snapshot
+	// RecordRecheck is called twice per pass: before the claim put, recording the
+	// intended nonce and stamping started in store time; after it, recording the
+	// written nonce and the result (§7.5).
+	RecordRecheck(ctx context.Context, r RecheckRecord) error
+}
+
+type MarkResult struct{ Deleted, Refused []BlockName }
+
+type MarkedBlock struct {
+	Name     BlockName
+	MarkedAt time.Time // store time of the move to deleted (§3.1 step 3)
+	GoneAt   time.Time // store time the delete succeeded; zero if not yet
+}
+
+type NamespaceState struct {
+	StoreTime time.Time
+	Paused    bool          // §7.5
+	Held      bool          // §6.4, any reason
+	Draining  bool          // §7.6
+	Recheck   RecheckRecord // last: started (store time), finished, passed, drift
+	Nonce     NonceRecord   // last written and intended claim nonce (§7.5)
+}
+
+// Remote is the part of RFC 4 §4.1's Store GC calls; deletes and listing go direct (§3.1).
 type Remote interface {
-	Delete(ctx context.Context, names []BlockName) []error         // one result per name
-	DeleteVersions(ctx context.Context, names []BlockName) []error // after versioning drift only
-	// List reads one page of at most n blocks after the given name, with one
-	// request (RFC 4 §4.6); collection walks the store page by page.
-	List(ctx context.Context, after BlockName, n int) (page []Info, next BlockName, done bool, err error) // collection only
-	// Recheck's setting reads and version-walk pages each run as one small
-	// call through GC's flow (§7.5); deletes and listings go direct (§3.1).
-	Recheck(ctx context.Context) error
-	Claim(ctx context.Context) (Claim, error)
+	Delete(ctx context.Context, names []BlockName) []error
+	DeleteVersions(ctx context.Context, names []BlockName) []error
+	List(ctx context.Context, after BlockName, n int) (page []Info, next BlockName, done bool, err error)
+	Settings() []Setting
+	RecheckSetting(ctx context.Context, s Setting) (drifted bool, err error)
+	VersionsPage(ctx context.Context, after VersionMarker, n int) (noncurrent int, next VersionMarker, err error)
+	GetControl(ctx context.Context, r Role) (body []byte, v Version, err error) // claim, repair
+	PutControl(ctx context.Context, r Role, body []byte) error
 }
 
-// Transfers is the syncer flow GC opens for the compactor (RFC 3 §1.3).
-type Transfers interface {
+// Syncer is RFC 3's syncer as GC uses it; the root adapts *syncer.Flow to Flow.
+type Syncer interface {
+	OpenFlow(store StoreID, background bool) (Flow, error) // GC opens one per namespace it holds a partition of
+	SetDrift(store StoreID, err error)                      // GC is the store's one Recheck caller
+}
+
+type Flow interface {
 	Fetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
 	Upload(ctx context.Context, name BlockName, size int64, src func() iter.Seq2[Chunk, error]) (Stored, error)
+	Small(ctx context.Context, d Direction, call func(context.Context) error) error // each Recheck call
+	Close() error
 }
 
-// Lease is one partition's GC lease, a metadata-store record (§7.3). Hold returns
-// the epoch this acquisition raised the partition to.
-type Lease interface {
-	Hold(ctx context.Context, ns NamespaceID, part Partition) (epoch uint64, held bool, err error)
+// Keys is the transform layer's keys-object read-back, run under its own key lock.
+type Keys interface {
+	Repair(ctx context.Context) error
 }
-
-// Config is GC's own configuration (§7.3, RFC 13).
-type Config struct {
-	Interval       time.Duration // between compaction and collection passes
-	TrashRetention time.Duration // default 48 h (§3.7)
-	SpaceAmpTarget float64       // proposed 1.25; 0 turns compaction off (§4.4)
-	AuditPeriod    time.Duration // proposal 7 days (§6.1)
-	HoldThreshold  int           // low-count mismatches per audit period that set the hold; proposal 16 (§6.4)
-	ForwardPeriod  time.Duration // full forward pass; proposed 90 days (§6.1)
-}
-
-func New(b Blocks, r Remote, t Transfers, l Lease, s *sched.Scheduler, cfg Config) (*GC, error)
-
-func (g *GC) Drain(ctx context.Context) (DeleteReport, error)
-// Compact merges each group of sources into one target (§4.2).
-func (g *GC) Compact(ctx context.Context, groups iter.Seq[[]BlockName], reason Reason) (CompactReport, error)
-func (g *GC) Collect(ctx context.Context, domain []StoreID) (CollectReport, error)
-func (g *GC) Audit(ctx context.Context) (AuditReport, error)
-// Restore recounts every hash in b's carried list whose record names it (§3.7).
-func (g *GC) Restore(ctx context.Context, b BlockName) error
-func (g *GC) RebuildIndex(ctx context.Context, check bool) (IndexReport, error)
-func (g *GC) RebuildReverse(ctx context.Context, share ShareID, check bool) (IndexReport, error)
 ```
 
-The partition count, lease duration, `Recheck` period and clock skew limit
-are constants of the implementation, not settings; the trip threshold is the
-setting `gc.hold_threshold`, within the range [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) states.
+The runtime adds a namespace's context when its records name a remote store, and
+removes it once its `NS‖ns` records are gone ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3). The two index
+rebuilds are block-metadata operations that [RFC 23](rfc-index.md)'s operation runner calls
+directly. GC is not on that path ([§7.4](#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)).
+
+The batch-level errors `ErrHeld` and `ErrPaused` are declared in RFC 6's `var`
+block ([RFC 6 §10.1](rfc-6-block-metadata.md#10.1%20Interface)); `ErrReferenced` stays for the per-block refusal, which
+`MarkResult.Refused` reports. Not due is a skip, not an error. The partition
+count, the lease duration, the `Recheck` period, the clock skew limit, the pass
+interval and the trip threshold are constants of the implementation, not
+settings, each with its `decision:` where it is set.
 
 ## 9. Invariants
 
@@ -1941,10 +1988,10 @@ the implementation, not by timing.
 
 | Requirement | Check |
 | --- | --- |
-| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter | Interleave an adopting clone batch, restore batch and re-home switch — and, once dedup returns, an adopting offload commit — with `MarkDeleted` on one retired block, at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the clone or restore fails and is undone (an offload re-offer uploads the chunk). Assert no ref ever names a chunk whose object is gone. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection against the deleter | Interleave an adopting clone batch, restore batch and re-home switch — and, once dedup returns, an adopting offload commit — with `MarkDue` on one retired block, at every step boundary, in both orders. Assert either the block is `live` with the new ref and no delete is issued, or the block is `deleted`, the adopting ref is refused, and the clone or restore fails and is undone (an offload re-offer uploads the chunk). Assert no ref ever names a chunk whose object is gone. |
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) serialisation | Make the adoption's and the deleter's reads of the block record untracked, with neither writing it. Assert the check fails, so the rig can see the race it guards. |
 | [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) resurrection counts every chunk | Release a file so its block retires, then clone a file naming two of the block's chunks in one batch. Assert the block's `live` is 2 and that dropping one of the two refs leaves it `live`. |
-| [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDeleted` is in flight, the ref committing first and then the `MarkDeleted` committing first, both from snapshots taken before either commit; assert in each order that the later one aborts — on the chunk-record guard in the first, on `B‖B` in the second. |
+| [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) verification | Decrement a refcount without dropping its ref, let the block retire, run the deleter. Assert it refuses, resurrects the block, raises the count and counts the refusal. Commit a ref to a chunk of a due block while `MarkDue` is in flight, the ref committing first and then the `MarkDue` committing first, both from snapshots taken before either commit; assert in each order that the later one aborts — on the chunk-record guard in the first, on `B‖B` in the second. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) intents | For each writer (an offload, a compaction) and each abandoner (shard primary changed, partition epoch moved on, domain deleted, the writer itself), run the intent write, the put, the abandonment, the delete and the commit in every order. Assert no `live` block record ever names a deleted object and a commit whose intent was abandoned fails. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) late put | Abandon an intent while its put is in flight and land the put before the put-bound wait ends. Assert the object is deleted with no listing. Land it after the delete; assert only the backstop finds it. |
 | [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete) epoch domain | Run offload intents under a shard at epoch 41 while the GC partition is at epoch 50. Assert no offload intent is abandoned. Raise the shard's epoch under its live primary (a replica joins): assert none is abandoned; take the shard over on another node: assert all are. Restart a compactor on the same partition; assert its earlier intents are abandoned. |
@@ -1952,9 +1999,9 @@ the implementation, not by timing.
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) two holders | Run two deleters and two compactors on one partition from two processes that both believe they hold the lease, with adopting offloads in a third. Assert no referenced block is deleted. |
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) time never permits | Set the retention to zero and stall an adopting commit past it. Assert the adoption resurrects or is refused; the clock changes only when the object goes. Skew a deleter's clock past the bound; assert it stops. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) drift | Turn versioning on between two deletes. Assert the next batch waits for `Recheck`, the noncurrent versions of the deleted names are deleted by version ID, nothing is pruned before, and puts and deletes resume after, with no operator action. Change the claim to another installation; assert no further delete. |
-| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) move without a clock | Hold a deleter's batch between its read of the claim and its `MarkDeleted`; write the GC pause record; release the batch with its clock frozen so the self-fence never fires. Assert `MarkDeleted` aborts on the pause, no delete is issued for any name not `deleted` before the pause, and a listing pass after the pause retires nothing. |
-| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) pause in both commit orders | For a relocation commit, a `MarkDeleted` and a listing retirement, each from a snapshot taken before the pause, commit it (a) after the pause and (b) before the pause; then (c) begin it after the pause commits. Assert (a) aborts and its retry refuses; (b) commits, its records are in the `move-base` export and its delete is for a name `deleted` before the pause, which the new installation neither adopts nor mints; (c) reads the pause and refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits, so the rig can see the gap. |
-| [§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter) hold in both commit orders | Set the hold while a `MarkDeleted` from an earlier snapshot is in flight, and commit the `MarkDeleted` (a) after and (b) before the hold; then (c) begin one after the hold commits. Assert (a) aborts and its retry refuses, (b) commits with its verification intact, and (c) refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits. |
+| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) move without a clock | Hold a deleter's batch between its read of the claim and its `MarkDue`; write the GC pause record; release the batch with its clock frozen so the self-fence never fires. Assert `MarkDue` aborts on the pause, no delete is issued for any name not `deleted` before the pause, and a listing pass after the pause retires nothing. |
+| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) pause in both commit orders | For a relocation commit, a `MarkDue` and a listing retirement, each from a snapshot taken before the pause, commit it (a) after the pause and (b) before the pause; then (c) begin it after the pause commits. Assert (a) aborts and its retry refuses; (b) commits, its records are in the `move-base` export and its delete is for a name `deleted` before the pause, which the new installation neither adopts nor mints; (c) reads the pause and refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits, so the rig can see the gap. |
+| [§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter) hold in both commit orders | Set the hold while a `MarkDue` from an earlier snapshot is in flight, and commit the `MarkDue` (a) after and (b) before the hold; then (c) begin one after the hold commits. Assert (a) aborts and its retry refuses, (b) commits with its verification intact, and (c) refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) stale image | Copy an installation's disks, let the original run several `Recheck` periods and commit new blocks, then start the stale copy on a platform that reports no machine-generation change. Assert the copy's first `Recheck` reads the claim, finds a nonce its records do not hold, writes nothing and deletes nothing, while the original keeps serving. Kill the original between recording an intended nonce and its put, restart it: assert it accepts its own nonce. A `Recheck` that rewrites before reading lets the copy win and delete the original's blocks. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) folder store drift | Turn versioning on at a backup location's folder store mid-run. Assert the next copy and the next sweep wait for a `Recheck` and the store's drift condition is raised; restore the setting, assert both resume. A build that checks the folder store only when it registers copies into the drifted store. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) slow clock | Run the old installation's GC with its clock 5 % slow, partition it from the claim and take the claim over. Assert its last delete precedes the new installation's first put, adoption or delete. A wait of *T* plus an offset, with no rate stretch, overlaps them. |
