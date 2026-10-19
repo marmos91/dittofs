@@ -869,6 +869,11 @@ namespace, and a GC pass **MUST** act only on its own namespace's records: a pas
 that deletes a record's object through another store is told "absent", drops the
 record, and leaks the real object for good.
 
+> decision: an absent object is a successful delete because a namespace has
+> exactly one remote store and the deleter deletes only through it. Overturn it
+> the day a namespace may span two stores: absent then proves nothing, and the
+> deleter must delete through the store the record names.
+
 A failure in one block **MUST NOT** stop the deleter for others. No failure in
 this table requires an operator to clear it.
 
@@ -1044,6 +1049,10 @@ issued until its reservation is granted, and its put releases it. The spill is
 cleared at every start: no compaction resumes from it, a crash re-plans (the
 table below).
 
+> ponytail: no compaction resumes from its spill; a crash re-plans and re-reads
+> the live chunks. Resume from the spill when compaction re-reads show as a
+> significant share of remote get traffic after restarts in the soak.
+
 **Example.** Three 4 MiB blocks, *B1*, *B2* and *B3*, of twelve chunks each, hold
 two, two and three live chunks: about 1.7 MiB live of 12 MiB stored.
 
@@ -1135,6 +1144,11 @@ candidate. GC **MUST** measure bytes, not chunks, because chunk sizes vary
 several-fold ([RFC 2 §3](rfc-2-carver.md#3.%20The%20boundary%20function)). A target of 0 turns compaction off, stated in the
 namespace's configuration; such a namespace keeps every block with one live chunk
 indefinitely.
+
+> decision: the pass interval is a constant, not a setting: it sets only how soon
+> a still-dying block becomes a candidate and how old an intent is before
+> `gc_intents_stale` counts it, and neither changes what is safe. Its value is
+> unmeasured; set it from the space-amplification benchmark ([§11.6](#11.6%20Benchmarks%2C%20scale%20and%20soak)).
 
 > ponytail: the score takes age from the last increase of `dead`, one timestamp
 > per block. Replace it with a decayed death rate when the space-amplification
@@ -1285,11 +1299,11 @@ its intent, not its age:
   time, in a transaction that finds neither record nor intent for the name; the
   deleter then deletes it.
 
-A listed object's modification time is not consulted, not even as an efficiency
-filter: a put is always preceded by a durable intent, so an object found with
-neither intent nor record can never be committed, however long a stalled writer
-takes ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)), and one whose commit is about to land is still named by its
-intent.
+> decision: a listed object's modification time is not consulted, not even as an
+> efficiency filter: a put is always preceded by a durable intent, so an object
+> found with neither intent nor record can never be committed, however long a
+> stalled writer takes ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)), and one whose commit is about to land is
+> still named by its intent. Overturn it if any put path can ever skip its intent.
 
 ## 6. Audit
 
@@ -1337,7 +1351,16 @@ over `gc.audit.forward_period`. At 2 PB, with [RFC 16 §7.4](rfc-16-metadata-sto
 2.6×10⁹ history refs, a full pass every week is 1.1×10¹⁰ reads, about 18,500
 per second; with 1% of bytes rewritten a day the incremental passes read about
 1.2×10⁹ refs a week (a new ref and a history move per rewritten chunk), about
-2,000 per second, and the 90-day full pass about 1,450 per second more.
+2,000 per second, and the 90-day full pass about 1,450 per second more. The
+block walk point-reads every chunk record a block carries: about 8.6×10⁹ reads
+per pass at 2 PB, about 14,000 per second over the 7-day period.
+
+> ponytail: the block walk runs every `gc.audit.period`. Running it at
+> `gc.audit.forward_period` instead is a proposal, unmeasured: a wrong `live` or
+> `dead` from it is a leak or a wasted compaction, never a delete, since the
+> deleter's verification re-reads the chunk records and the reverse index
+> ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)). Take it, amending §6.1's coverage rule, G13 and [RFC 13](rfc-13-configuration.md), when the
+> block walk shows in the audit's profile at scale.
 
 > ponytail: the full pass still point-reads every ref, and the lowering it gates
 > waits for a full pass that starts after the suspect count, so a count left
@@ -1433,13 +1456,18 @@ would only add a stuck removal.
 
 Suspending one block per mismatch is right for one defect. Many low counts in one
 namespace mean a defect in a path, and every retirement that path made is
-suspect. So when more than `gc.hold_threshold` low-count mismatches (proposal: 16)
+suspect. So when more than the **trip threshold** of low-count mismatches (a constant; proposal: 16)
 — from the audit or from refused verifications — accumulate within one audit
 period, GC **MUST** set the namespace's hold key `NS‖ns‖gc‖hold` and raise a
 health condition. While the hold is set the deleter moves nothing to `deleted`
 ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)); retirements and resurrections continue, and the trash grows. The hold
 clears itself once a full audit period completes under the threshold, so no
 operator action is needed to leave it ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)).
+
+> decision: the trip threshold is a constant, not a setting: the only evidence
+> that could set it, an audit run on a real store ([§12](#12.%20Open%20questions) item 3), is the same
+> evidence that would change a constant, and a lower or higher value only holds
+> the deleter sooner or later, never deletes. 16 is unmeasured.
 
 The hold is a durable record; every deleter's transaction **MUST** read it with a tracked
 `Get` ([§2.1](#2.1%20References%20are%20the%20only%20authority)), so two GC holders see the same hold. A deleter whose snapshot already
@@ -1558,6 +1586,18 @@ transaction on a record; removing the lease **MUST NOT** make GC unsafe.
 > step is a conditional transaction. The lease's epoch is an input, as the supersession test for
 > compactor intents, and is safe because a commit consumes its intent atomically ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)).
 > Overturn it if a GC step ever acts outside a transaction.
+
+> ponytail: a fixed partition count per namespace, so a lease never splits.
+> At 10⁴ namespaces × *P* partitions the lease records and renewals are
+> 10⁴ × *P* / (*L*/3) writes per second — 8,000/s at *P* = 16, *L* = 60 s, where
+> *P* = 16 is an assumption, not a decision ([§12](#12.%20Open%20questions) item 6). Make *P*
+> per-namespace, sized from the namespace's block count, when renewals show in
+> the metadata store's profile or one partition's deleter falls behind §11.6's target.
+
+> decision: the lease duration *L* is a constant (proposal: 60 s, renewed at a
+> third). It bounds only how long a crashed holder's partitions wait for a
+> successor, which costs latency, never safety, because holding a lease is not a
+> safety input. Shorten it if that wait shows in the backlog-drain benchmark.
 
 GC **MUST NOT** require quiescence. Writes, offloads, clones, snapshots and
 reads continue while it runs, and [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block), [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete), [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) and [§4.6](#4.6%20What%20compaction%20races) are what make that
@@ -1734,7 +1774,9 @@ continue into such a store once it drifts.
 > takeover's wait and the drift window are all derived from it, and a longer one
 > only widens them. 5 min is unmeasured: one `Recheck` costs a few service
 > reads per store, so it can shrink if the per-store cost at 10⁴ namespaces
-> allows, and should grow only if that cost is measured to matter.
+> allows, and should grow only if that cost is measured to matter. At 10⁴
+> namespaces one `Recheck` per store per period is about 33 claim puts per
+> second installation-wide, plus each profile's setting reads.
 
 ### 7.6 A namespace no share names is drained
 
@@ -2182,6 +2224,7 @@ where a row names the scale tier.
 | Compaction under load | offload MB/s and client p99 with the compactor at its share, against neither running | within 10% of offload's fair share; p99 within 20% |
 | Space amplification | stored over referenced bytes under a churn workload, per target, and bytes rewritten to hold it | report; feeds [§12](#12.%20Open%20questions) item 1 |
 | Audit coverage at scale | projected time to merge 2 PB's chunk records and reverse keys at measured throughput | ≤ `gc.audit.period` |
+| Audit coverage at scale: block walk | projected time to point-read 2 PB's carried chunk records (about 8.6×10⁹) at measured throughput | ≤ `gc.audit.period` |
 | Partition scaling | deleter and audit throughput with 1, 4 and 16 storage nodes | report; near linear |
 | Index rebuild | seconds per 10⁶ block records | report |
 | Soak | 72 h of mixed writes, releases, snapshots, compaction and audit, with Group B's invariants checked hourly and Group C's faults on | zero invariant failures; memory and backlog flat |
@@ -2197,7 +2240,7 @@ where a row names the scale tier.
    full pass runs every `gc.audit.forward_period`; 90 days, about 1,450 per
    second, is proposed and wants confirming against how long a leaked count may
    hold its block.
-3. **The trip threshold** ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)). `gc.hold_threshold` of 16 low counts per period is proposed; it wants a
+3. **The trip threshold** ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)). A trip threshold of 16 low counts per period is proposed; it wants a
    decision once the audit has run on a real store.
 4. *Withdrawn: a namespace has exactly one remote store ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)); the key scope is
    [RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)'s to settle. The number is kept for citations.*
