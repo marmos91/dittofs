@@ -213,7 +213,7 @@ jobs:
   baseline:
     name: knfsd baseline
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || inputs.baseline
+    if: inputs.baseline
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -223,8 +223,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       # Read-only. This job measures a third-party server, so what it realizes
-      # is nothing the cache should ever serve back, and a scheduled run has no
-      # business writing to it.
+      # is nothing the cache should ever serve back.
       - name: Setup Nix cache
         uses: ./.github/actions/nix-cache
 
