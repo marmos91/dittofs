@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 const head = "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\n"
@@ -450,6 +451,20 @@ suites:
 	}
 	if _, out := runTarget(t, root, r, "g", false); strings.Contains(out, "::error") {
 		t.Errorf("annotated without --ci:\n%s", out)
+	}
+}
+
+// An unexpected pass is annotated by name, with the reason of the known entry
+// that still lists it, so the fix knows which entry to remove. A known
+// failure isn't annotated, and the cell, having a test to name, isn't either.
+func TestUnexpectedPassAnnotation(t *testing.T) {
+	cell := report.Cell{Name: "s/x", Result: Failed, Note: "1 passed unexpectedly: b", Tests: []report.Test{
+		{Name: "a", Status: report.Skipped, Grade: report.Known, Reason: "r1"},
+		{Name: "b", Status: report.Failed, Grade: report.UnexpectedPass, Reason: "r2"},
+	}}
+	want := []string{"::error title=dt s/x%3A b::passed unexpectedly: remove its known entry (r2)"}
+	if got := annotations(cell); !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

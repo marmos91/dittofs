@@ -4,10 +4,12 @@ package needs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -229,11 +231,39 @@ func checkService(root, name string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", s.address, err)
 	}
+	if name == "localstack" {
+		return localstackS3(value(s.address))
+	}
+	// decision: every other service is met by a connection to its port,
+	// which dtc's port forwarder accepts whether or not the service runs.
+	// Ask it in its own protocol, as localstack is asked, once a cell passes
+	// its need with the service down.
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return fmt.Errorf("nothing answers at %s", addr)
 	}
 	return conn.Close()
+}
+
+// localstackS3 asks Localstack's health check at endpoint, as dt services
+// does when it starts Localstack: S3 must be available or running.
+func localstackS3(endpoint string) error {
+	health := strings.TrimSuffix(endpoint, "/") + "/_localstack/health"
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(health)
+	if err != nil {
+		return fmt.Errorf("nothing answers at %s", health)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var answer struct {
+		Services map[string]string `json:"services"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&answer) != nil {
+		return fmt.Errorf("%s answered %d, not with Localstack's health", health, resp.StatusCode)
+	}
+	if s3 := answer.Services["s3"]; s3 != "available" && s3 != "running" {
+		return fmt.Errorf("%s says S3 is %q, not available or running", health, s3)
+	}
+	return nil
 }
 
 // ServiceEnv returns the variables of the services among list, as

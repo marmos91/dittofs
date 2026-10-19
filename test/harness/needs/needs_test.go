@@ -2,7 +2,10 @@ package needs
 
 import (
 	"cmp"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -69,14 +72,12 @@ func TestServices(t *testing.T) {
 	}
 	defer func() { _ = l.Close() }()
 	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
-	t.Setenv("LOCALSTACK_ENDPOINT", "http://127.0.0.1:"+port)
 	t.Setenv("DITTOFS_TEST_POSTGRES_DSN", "host=127.0.0.1 port="+port+" dbname=x")
 	t.Setenv("DITTOFS_TEST_KMIP", "")
 	t.Setenv("DITTOFS_TEST_KMIP_ENDPOINT", "127.0.0.1:"+port)
 	for need, want := range map[string]string{
-		"service:localstack": "",
-		"service:postgres":   "",
-		"service:kmip":       "DITTOFS_TEST_KMIP isn't 1",
+		"service:postgres": "",
+		"service:kmip":     "DITTOFS_TEST_KMIP isn't 1",
 	} {
 		if err := Check("", need); (err == nil) != (want == "") || err != nil && err.Error() != want {
 			t.Errorf("%s: %v, want %q", need, err, want)
@@ -89,6 +90,47 @@ func TestServices(t *testing.T) {
 	env := ServiceEnv("", []string{"linux", "service:kmip"})
 	if !slices.Contains(env, "DITTOFS_TEST_KMIP_ENDPOINT=127.0.0.1:"+port) || slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "DITTOFS_TEST_POSTGRES") }) {
 		t.Errorf("service env %q", env)
+	}
+}
+
+// service:localstack is met only when Localstack's own health check says its
+// S3 is up, as dt services waits for when it starts Localstack. A port that
+// takes a connection isn't enough: dtc forwards Localstack's port, and its
+// forwarder accepts a connection whether or not Localstack runs.
+func TestLocalstackHealth(t *testing.T) {
+	health := func(body string) string {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/_localstack/health" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = io.WriteString(w, body)
+		}))
+		t.Cleanup(s.Close)
+		return s.URL
+	}
+	// A port nothing listens on.
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = closed.Close()
+	other := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(other.Close)
+	for _, c := range []struct{ name, endpoint, want string }{
+		{"S3 running", health(`{"services": {"s3": "running", "sqs": "disabled"}}`), ""},
+		{"S3 available", health(`{"services": {"s3": "available"}}`) + "/", ""},
+		{"S3 off", health(`{"services": {"s3": "disabled"}}`), `says S3 is "disabled", not available or running`},
+		{"another HTTP server", other.URL, "answered 404, not with Localstack's health"},
+		{"nothing listening", "http://" + closed.Addr().String(), "nothing answers at http://" + closed.Addr().String() + "/_localstack/health"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("LOCALSTACK_ENDPOINT", c.endpoint)
+			err := Check("", "service:localstack")
+			if (err == nil) != (c.want == "") || err != nil && !strings.Contains(err.Error(), c.want) {
+				t.Errorf("got %v, want %q", err, c.want)
+			}
+		})
 	}
 }
 

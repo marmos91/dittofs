@@ -385,12 +385,18 @@ seam — the journal's storage seam, the fake store, the fault transport, the
 fault-injecting metadata store — implements `Fault`. A component with a private
 clock cannot take part in a check that skews time across components.
 
+**The clock is written in standard-library types only.** Each component declares
+the clock it reads in its own package ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)), as the subset of these
+methods it uses, so the node's one clock satisfies every such declaration as it
+is, and no component needs an adapter to take it. A type of this package in a
+signature would make that impossible for a component that may import nothing
+but the standard library, such as the journal ([RFC 1 §1.1](rfc-1-journal.md#1.1%20Non-goals)).
+
 ```go
 // Clock is the node's one source of time.
 type Clock interface {
     Now() time.Time                          // wall time: record stamps, the store's Now on a store without its own
-    Since(start Mono) time.Duration          // elapsed on the monotonic clock; every wait is sized on it
-    Mono() Mono                              // a monotonic reading, never persisted
+    Elapsed() time.Duration                  // monotonic time since an origin the clock chose, never persisted; every wait is sized on differences of it
     After(d time.Duration) <-chan struct{}   // fires after d on the monotonic clock
 }
 

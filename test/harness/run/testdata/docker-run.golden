@@ -11,6 +11,8 @@ run
 dt-img-a-NAME
 --network
 host
+-w
+/in/a
 -e
 Filter
 -e
@@ -31,6 +33,8 @@ run
 dt-img-a-NAME
 --network
 host
+-w
+/in/a
 -e
 Filter
 -e
