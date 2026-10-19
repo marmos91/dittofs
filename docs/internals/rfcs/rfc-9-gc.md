@@ -330,6 +330,13 @@ delete is permitted:
 - any state held in process memory, a lock or a lease. Two deleters in two
   processes **MUST** be as safe as two in one.
 
+**A gate record is read with a tracked `Get`.** Every namespace-wide gate GC
+honours — the hold ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)) and the pause ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) — is read inside the
+transaction it gates with a tracked `Get`, never a `Guard`, which returns no
+value, so a transaction whose snapshot already holds the gate would commit past
+it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)). Writing the gate aborts every such transaction whose snapshot
+predates it and that has not committed when the gate commits.
+
 A second liveness mechanism fails open. Every path that decides liveness has to
 remember it, the one that forgets deletes held content, and the audit reports
 nothing wrong because by the counts nothing was.
@@ -573,11 +580,17 @@ block's refusal does not fail the others.
    nonce ([§3.7](#3.7%20Trash)). The store splits the call as its service needs, and
    each name's result is its own; a name missing from the service's reply is a
    failure ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)). For each success, one batched transaction records the
-   store time of the success in the name's `BD` value.
+   store time of the success in the name's `BD` value. The deleter compares each
+   `MarkedBlock.MarkedAt` with the `started` of the last passed `Recheck`, both
+   read from block metadata (`State`). `started` is store time, stamped by the
+   transaction that records the intended nonce, and the claim put follows that
+   commit, so `MarkedAt` < `started` implies that the put came after the mark.
 5. **Prune.** A `deleted` record whose delete succeeded before the start of a
    later `Recheck` that passed is pruned, in batches: one transaction deletes
    the block record, conditional on state `deleted`, every chunk record in its
-   carried list that still names it, and its `BD` key. Waiting for the later
+   carried list that still names it, and its `BD` key. `Prune` reads the
+   `Recheck` record inside that transaction, with tracking, rather than taking
+   a time from its caller. Waiting for the later
    `Recheck` is what lets a versioning drift be repaired by version ID
    ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)).
 
@@ -819,9 +832,8 @@ deleter ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%2
 snapshot, is not stopped by it. That order is closed by the block record, which
 the deleter writes (`retired` → `deleted`) and which every ref to a chunk of a
 retired block reads and writes, since such a ref is an adoption
-([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)): the later of the two aborts on `B‖B`. The transaction also reads the
-namespace's hold key `NS‖ns‖gc‖hold` with a tracked `Get` — not a `Guard`, which
-returns no value — and refuses while it is set ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)).
+([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)): the later of the two aborts on `B‖B`. The transaction also **MUST** read the
+namespace's hold key `NS‖ns‖gc‖hold` with a tracked `Get` ([§2.1](#2.1%20References%20are%20the%20only%20authority)) and refuse while it is set ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)).
 
 **A ref found is a count defect, and the block is resurrected.** If any prefix is
 nonempty, the transaction does not mark *B* deleted. Instead it raises each
@@ -922,6 +934,11 @@ last served, since every later claim put recorded its nonce first, and settles a
 that finds another installation's nonce fences itself as
 [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) says.
 
+The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), run by the start-time
+claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) for each namespace whose claim carries a nonce this
+store never recorded. That check runs before any share context serves or GC
+starts ([RFC 23](rfc-index.md) §2.2 step 4).
+
 **An object is deleted only after a claim rewrite later than its `deleted`
 mark** ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 4). The nonce changes once per `Recheck`, so detection is
 only as fine as one period: a state captured after the last rewrite carries the
@@ -971,8 +988,8 @@ stops the deleter while its clock reads far from the store's.
 **Restoring is recounting.** There is no restore that rebuilds a block from its
 header. A `retired` block comes back to `live` exactly when some chunk it still
 owns gains a count: an adoption, the audit's correction of a low count
-([§6.2](#6.2%20Corrections)), a refused verification ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)), or an operator's targeted recount of the
-block's hashes. A block whose chunks no ref names stays retired, because there is
+([§6.2](#6.2%20Corrections)), or the deleter's refused verification, which is that recount
+([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)). A block whose chunks no ref names stays retired, because there is
 nothing to restore it for. Every path is one metadata transaction, needs no remote
 read and no key material, and conflicts with the deleter on the block record.
 
@@ -1431,8 +1448,8 @@ health condition. While the hold is set the deleter moves nothing to `deleted`
 clears itself once a full audit period completes under the threshold, so no
 operator action is needed to leave it ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)).
 
-The hold is a durable record, read by every deleter's transaction with a tracked
-`Get`, so two GC holders see the same hold. A deleter whose snapshot already
+The hold is a durable record; every deleter's transaction **MUST** read it with a tracked
+`Get` ([§2.1](#2.1%20References%20are%20the%20only%20authority)), so two GC holders see the same hold. A deleter whose snapshot already
 holds the hold reads it and refuses; one whose snapshot predates it and commits
 after it aborts on the conflict. One that commits **before** the hold is ordered
 before it and commits ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): the hold stops deletes decided after it,
@@ -1522,7 +1539,9 @@ engine: one namespace can hold the blocks of many shares, and GC covers all of
 them. Its work is split into a fixed number of **partitions** by prefix — a partition
 covers a range of block names for the deleter, collection and the compactor's
 sources, and the same range of chunk hashes for the audit; names and hashes are
-both uniform, so partitions are even. Each partition has a **lease**, a record in the
+both uniform, so partitions are even. The forward walk is not partitioned: the holder of the first
+partition runs it, as it runs `Recheck`, with one cursor per share. `NS‖ns‖gc‖forward` keeps its
+single started/completed pair. Each partition has a **lease**, a record in the
 metadata store (`NS‖ns‖gc‖lease‖partition`), held by a node with the `storage` role
 ([RFC 15](rfc-15-topology.md)) and spread across them; on one node every lease is local. Cadence,
 the trash retention, the space target and the audit period are GC's own
@@ -1538,6 +1557,11 @@ The lease is for efficiency, not safety. A holder can pause past its lease while
 a successor runs, so GC **MUST** be correct with two holders of one partition at
 once, from one process or two ([§2.1](#2.1%20References%20are%20the%20only%20authority)). Every decision GC makes is a conditional
 transaction on a record; removing the lease **MUST NOT** make GC unsafe.
+
+> decision: holding a partition lease is not a safety input. Two holders are safe because every GC
+> step is a conditional transaction. The lease's epoch is an input, as the supersession test for
+> compactor intents, and is safe because a commit consumes its intent atomically ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)).
+> Overturn it if a GC step ever acts outside a transaction.
 
 GC **MUST NOT** require quiescence. Writes, offloads, clones, snapshots and
 reads continue while it runs, and [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block), [§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete), [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) and [§4.6](#4.6%20What%20compaction%20races) are what make that
@@ -1573,7 +1597,9 @@ the same walk and writes nothing.
 deleter's verification trusts its absence: a missing `CR` key would let a
 referenced block be deleted. So a `CR` rebuild — for a share whose index is
 suspected damaged — **MUST** set the hold ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)) before it starts and keep it until it
-completes; it writes every missing key from a walk of the share's refs and
+completes. Block metadata's reverse rebuild sets the hold's `reverse` reason in its first
+transaction and clears it in its last. A resumed rebuild finds it set, and RFC 23's operation
+runner resumes it, so no crash leaves the hold set for good. The rebuild writes every missing key from a walk of the share's refs and
 history before deleting any key without a ref, and each batch guards the refs'
 file fences so a concurrent ref change serialises with it.
 
@@ -1587,7 +1613,8 @@ Some service settings can drift after a store opens: versioning, object lock,
 lifecycle rules ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). GC runs `Recheck` on every store of the namespace on
 a fixed short period (proposal: 5 min), independent of any other GC work, and
 also reads the namespace claim ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)). The holder of the first partition runs
-it and records `NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
+it and records it through `RecordRecheck`, before the claim put and after it:
+`NS‖ns‖gc‖recheck` = {started, finished, passed, drift}.
 
 **`Recheck` is a sequence of small calls, not one.** Each setting is read by
 its own call, and a version walk under the prefix runs one page per call
@@ -1656,11 +1683,7 @@ location is written and swept as if nothing had changed.
   ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) and kept across a restart — GC **MUST** read it before every
   pass and before every batch, and start neither. Each relocation commit, each
   move to `deleted` ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) step 3) and each listing retirement ([§5.4](#5.4%20Age%20is%20not%20the%20guard))
-  **MUST** read it with a tracked `Get` and refuse while it exists. A `Guard`
-  alone does not meet this: it returns no value, so a transaction whose snapshot
-  already holds the pause would commit past it. Writing the pause aborts every
-  such transaction whose snapshot predates it and that has not committed when
-  the pause commits.
+  **MUST** read it with a tracked `Get` ([§2.1](#2.1%20References%20are%20the%20only%20authority)) and refuse while it exists.
 - **One already committed is not undone, and need not be.** The pause binds only
   the transactions that read it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)): a relocation or `MarkDue` that
   commits before the pause is ordered before it, and the pause's writer decides
@@ -2024,6 +2047,7 @@ settings, each with its `decision:` where it is set.
 | G15 | On a single node, every start abandons the put intents of the node's own shards before its first offload. |
 | G16 | No move to `deleted`, relocation or listing retirement commits after a namespace's GC pause record; a cooperative move between installations depends on no clock. A compaction source waits the full trash retention. |
 | G17 | A metadata store opened at a state older than the one last served moves every retired block past its `not_before` to `deleted` before it serves or runs any adoption or GC pass. |
+| G18 | Holding a GC lease is not a safety input. Its epoch only supersedes intents. |
 
 ## 10. Observability
 
