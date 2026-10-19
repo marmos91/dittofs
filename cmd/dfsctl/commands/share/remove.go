@@ -14,10 +14,13 @@ var removeCmd = &cobra.Command{
 	Short: "Remove a share",
 	Long: `Permanently remove a share from the DittoFS server.
 
-Removing a share removes its configuration from the control plane. The
-underlying block and metadata stores are NOT deleted — only the share record
-that ties them together. This operation is irreversible: you will be prompted
-for confirmation unless --force is specified. Disable the share first
+Removing a share deletes its configuration, its records in its metadata store
+and its local journal, so a share created again under the same name starts
+empty. Blocks already synced to a remote block store are left to garbage
+collection, and the metadata and block stores themselves are kept. If the
+share's data cannot be deleted, the removal fails and keeps the share, so it
+can be repeated. This operation is irreversible: you will be prompted for
+confirmation unless --force is specified. Disable the share first
 ('dfsctl share disable') if you want to drain active clients before removing.
 
 Examples:

@@ -1162,10 +1162,13 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 	// Tear down all file metadata on the active txn, identical to the pool
 	// path — deleting only the share key would orphan every file/parent/
 	// linkcount/child/payload-index entry (store.go:161 contract).
-	quotaFreed, err := tx.store.deleteShareFiles(tx.txn, shareName)
+	quotaFreed, deleted, err := tx.store.deleteShareFiles(tx.txn, shareName)
 	if err != nil {
 		return err
 	}
+	// A deleted file must stop resolving through the read caches too, or a
+	// handle into the removed share keeps serving it.
+	tx.dirtyFiles = append(tx.dirtyFiles, deleted...)
 	// Accumulate into the tx delta; applied once after a successful commit so a
 	// conflict-retry never double-counts.
 	for k, d := range quotaFreed {
