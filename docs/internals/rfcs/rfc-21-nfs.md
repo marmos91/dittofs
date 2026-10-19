@@ -1011,8 +1011,8 @@ and later, none to NFSv4.0, and no directory ones.
 - **While the recall runs, the request is told to retry, never refused.** An
   NFSv4 `LOCK` or `LOCKT` is `NFS4ERR_DELAY` (`ErrDelay`) and leaves no
   waiter; a blocking NLM lock is `NLM4_BLOCKED` (`ErrBlocked`) with a waiter,
-  granted by `NLM4_GRANTED` once the recall ends and nothing then conflicts; a
-  non-blocking NLM lock or `NLM4_TEST` is `NLM4_DENIED_GRACE_PERIOD`, which NLM
+  granted by `NLMPROC4_GRANTED` once the recall ends and nothing then conflicts; a
+  non-blocking NLM lock or `NLMPROC4_TEST` is `NLM4_DENIED_GRACE_PERIOD`, which NLM
   clients retry
   ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)). `NFS4ERR_DENIED`
   or `NLM4_DENIED` would tell the client the range is held when it may be free,
@@ -1157,7 +1157,7 @@ protocol's own ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)).
   and a reply carrying an over-long owner fails to decode, so the client fails
   the call instead of seeing a conflict.
 
-**`LOCK`, `LOCKU`, `NLM4_LOCK` and `NLM4_UNLOCK` each name one range**, passed
+**`LOCK`, `LOCKU`, `NLMPROC4_LOCK` and `NLMPROC4_UNLOCK` each name one range**, passed
 to the service as a one-element list
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)). A `LOCKU` of a range the owner
 holds only part of, or none of, releases what it holds there and succeeds, as a
@@ -1210,8 +1210,8 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrWrongSecurity` — the share's policy does not admit the call's flavour ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) | `NFS4ERR_WRONGSEC` | the RPC is rejected `AUTH_TOOWEAK` (§10) |
 | `ErrBadSeqID` | `NFS4ERR_BAD_SEQID` | — |
 | `ErrLocked` | `NFS4ERR_DENIED` for `LOCK` / `LOCKT`; `NFS4ERR_LOCKED` for I/O | `NFS3ERR_ACCES`; NLM: `NLM4_DENIED` |
-| `ErrRangeNotLocked` | never answered: an NFSv4 lock-owner's locks merge and split ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)), so a `LOCKU` releases what the owner holds of its range and succeeds on a range it holds none of, as a POSIX unlock does. RFC 8881 §18.12.4 and RFC 7530 §16.12.4 let a server answer `NFS4ERR_LOCK_RANGE` there; this one does not, so a client never has to split its unlock into the ranges it holds | NLM: never answered; `NLM4_UNLOCK` likewise succeeds, `NLM4_GRANTED` |
-| `ErrShareViolation` | `NFS4ERR_SHARE_DENIED` for `OPEN`; `NFS4ERR_LOCKED` for I/O; `NFS4ERR_FILE_OPEN` for a `REMOVE` or `RENAME` of a file an SMB open denies delete to (RFC 8881 §18.25.3) | `NFS3ERR_ACCES`, for I/O, `REMOVE` and `RENAME` alike; NLM: `NLM4_DENIED` for `NLM4_SHARE` |
+| `ErrRangeNotLocked` | never answered: an NFSv4 lock-owner's locks merge and split ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)), so a `LOCKU` releases what the owner holds of its range and succeeds on a range it holds none of, as a POSIX unlock does. RFC 8881 §18.12.4 and RFC 7530 §16.12.5 let a server answer `NFS4ERR_LOCK_RANGE` there; this one does not, so a client never has to split its unlock into the ranges it holds | NLM: never answered; `NLMPROC4_UNLOCK` likewise succeeds, `NLMPROC4_GRANTED` |
+| `ErrShareViolation` | `NFS4ERR_SHARE_DENIED` for `OPEN`; `NFS4ERR_LOCKED` for I/O; `NFS4ERR_FILE_OPEN` for a `REMOVE` or `RENAME` of a file an SMB open denies delete to (RFC 8881 §18.25.3) | `NFS3ERR_ACCES`, for I/O, `REMOVE` and `RENAME` alike; NLM: `NLM4_DENIED` for `NLMPROC4_SHARE` |
 | `ErrDeletePending` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrBadLayout` | `NFS4ERR_BADLAYOUT` | — |
 | `ErrNoCopy` | `NFS4ERR_BAD_STATEID` (§9.4) | — |
@@ -1263,11 +1263,11 @@ client, are RFC 14's.
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), its `ClientID` is minted
   as any client's is, and the host's NSM state number is its `Verifier`. A request naming that
   `caller_name` from another address is another client, and can neither test,
-  unlock nor free the first host's locks. `NLM4_FREE_ALL` and NSM's
+  unlock nor free the first host's locks. `NLMPROC4_FREE_ALL` and NSM's
   `SM_NOTIFY` for a host release its locks only when they arrive from the
   address its record holds.
 - **Replies leave from the address the client used.** Callbacks to the host —
-  `NLM4_GRANTED`, `NLM4_GRANTED_MSG`, the `*_RES` replies — **MUST** be sent
+  `NLMPROC4_GRANTED`, `NLMPROC4_GRANTED_MSG`, the `NLMPROC4_*_RES` replies — **MUST** be sent
   from the floating address the host's requests arrived on, never from a
   node's own address, because clients match a callback against the server
   they sent the lock to and drop one from any other address.
@@ -1290,14 +1290,14 @@ client, are RFC 14's.
 > Withdraw only for a deployment whose NLM hosts authenticate, which NLM
 > cannot express.
 
-- **Blocking locks.** A lock request that may wait (`NLM4_LOCK` with `block`
+- **Blocking locks.** A lock request that may wait (`NLMPROC4_LOCK` with `block`
   set) and conflicts, or meets a recall (§5.3), returns `NLM4_BLOCKED`
   (`ErrBlocked`). The primary keeps the waiter, and on grant the `protocol`
-  node holding the client's registration sends `NLM4_GRANTED_MSG` /
-  `NLM4_GRANTED`. No worker waits
+  node holding the client's registration sends `NLMPROC4_GRANTED_MSG` /
+  `NLMPROC4_GRANTED`. No worker waits
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)).
 - **A waiter has RFC 14's one lifetime.** It ends when granted, on
-  `NLM4_CANCEL`, when the host's restart notification or `NLM4_FREE_ALL`
+  `NLMPROC4_CANCEL`, when the host's restart notification or `NLMPROC4_FREE_ALL`
   expires the client, when the client is revoked, or when `DropShare` ends it
   for the share's removal or its namespace's move (§7.4)
   ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)). The adapter
@@ -1311,15 +1311,15 @@ client, are RFC 14's.
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); NLM has no message that
   withdraws a `NLM4_BLOCKED`, so the adapter sends nothing, and the host's next
   request on the share's handles is `NLM4_STALE_FH` (§5.6).
-- **A cancel is answered only after the waiter is gone.** `NLM4_CANCEL` **MUST**
+- **A cancel is answered only after the waiter is gone.** `NLMPROC4_CANCEL` **MUST**
   call `CancelLock` and answer only once it returns. If it reports that the lock
-  was granted first, the lock stands and `NLM4_GRANTED` is sent as for any
+  was granted first, the lock stands and `NLMPROC4_GRANTED` is sent as for any
   grant; otherwise no lock is granted for that request afterwards
   ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)). Answering first
   would leave a lock granted after its request was cancelled, held by no client
   that knows it.
-- **The grant is resent until the host answers.** `NLM4_GRANTED` (or
-  `NLM4_GRANTED_MSG` and its `NLM4_GRANTED_RES`) is sent, and resent on a 1 s
+- **The grant is resent until the host answers.** `NLMPROC4_GRANTED` (or
+  `NLMPROC4_GRANTED_MSG` and its `NLMPROC4_GRANTED_RES`) is sent, and resent on a 1 s
   backoff growing to 30 s, until the host acknowledges it, refuses it
   (`NLM4_DENIED` or another error in the reply), cancels the lock or restarts,
   or the lock is released by an administrator's revoke or by `DropShare`
@@ -1337,15 +1337,15 @@ client, are RFC 14's.
   has no completion signal, so a shard in which any NLM host held locks runs
   its whole grace period
   ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)).
-- **Share reservations** (`NLM4_SHARE`), which DOS-era clients use, map to an
+- **Share reservations** (`NLMPROC4_SHARE`), which DOS-era clients use, map to an
   open with a deny mode, so they conflict with SMB and NFSv4 deny modes like
   any other.
 - **Who holds a conflict.** An NLM lock refusing an NFSv4 `LOCK` or `LOCKT`
   is reported with client ID 0 and an empty owner (§5.5). In the other
-  direction, an `NLM4_TEST` refused by an NFSv4 or SMB lock reports a holder
+  direction, an `NLMPROC4_TEST` refused by an NFSv4 or SMB lock reports a holder
   with `svid` 0 and an empty `oh`, for the same reason: an internal owner
   never reaches the wire.
-- `NLM4_FREE_ALL` from the host's own address expires the client.
+- `NLMPROC4_FREE_ALL` from the host's own address expires the client.
 - The asynchronous procedures (`*_MSG` / `*_RES`) are accepted over TCP and
   answered on the client's NLM callback service, from the floating address.
 - An NLM lock request from another host on a file under a delegation recalls
@@ -1904,9 +1904,11 @@ Authentication and principal mapping are
   created it, and is not shared or stored. After a `protocol` node loss, the
   client's next call on the old handle is answered `RPCSEC_GSS_CREDPROBLEM`,
   and it establishes a new context;
-- the sequence window is 128. A call whose sequence number falls outside the
-  window is dropped unanswered, and one whose verifier checksum fails is
-  rejected with `RPCSEC_GSS_CREDPROBLEM` (RFC 2203 §5.3.3.1); neither runs;
+- the sequence window is 128. A call whose sequence number is below the
+  window, or already seen within it, is dropped unanswered (RFC 2203
+  §5.3.3.1); one above it advances the window. One whose verifier checksum
+  fails is rejected with `RPCSEC_GSS_CREDPROBLEM` (RFC 2203 §5.3.3.4.2).
+  Neither dropped nor rejected call runs;
 - `krb5` (authentication), `krb5i` (plus integrity) and `krb5p` (plus privacy,
   i.e. encryption) are served; the share's minimum level is
   [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)'s
@@ -1951,7 +1953,7 @@ Authentication and principal mapping are
 | N18 | The owner string, verifier, creating principal, state protection, back-channel node, session holders and last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `OwnerSeq`. |
 | N19 | A directory's `change_info4` is never reported atomic, and NFSv3 pre-operation attributes are returned only when read from the File and its overlay in the hold of the file's accept lock that accepts the operation, never for a directory. |
 | N20 | A single node advertises no pNFS role and answers every layout operation `NFS4ERR_NOTSUPP`. |
-| N21 | An NLM waiter ends only as RFC 14's lifetime ends it; no adapter timer drops it, and no cancel is answered before `CancelLock` returns; an `NLM4_GRANTED` is resent until the host answers, and a granted lock is never released for a silence. |
+| N21 | An NLM waiter ends only as RFC 14's lifetime ends it; no adapter timer drops it, and no cancel is answered before `CancelLock` returns; an `NLMPROC4_GRANTED` is resent until the host answers, and a granted lock is never released for a silence. |
 | N22 | A `COPY` or `CLONE` of overlapping ranges of one file, or a `CLONE` over `clone_max_len`, is `NFS4ERR_INVAL` and changes nothing; one across namespaces is `NFS4ERR_XDEV`; a `CLONE` is atomic and answered when done; a `COPY` runs in bounded chunks and may answer a short count; I/O into a running clone's or chunk's ranges is held until it ends, and `NFS4ERR_DELAY` only past its own deadline. |
 | N23 | A loss of unstable writes reaches the next `COMMIT` as a changed verifier, never as a success under the old one. |
 | N24 | A stateid whose record is gone is `NFS4ERR_STALE_STATEID` when its bits name an earlier grace instance or its shard is in grace, and `NFS4ERR_BAD_STATEID` otherwise; an administrator's revoke keeps the client and its sessions, answers each revoked stateid `NFS4ERR_ADMIN_REVOKED` until it is freed, and outlives a restart, so the revoked state is never reclaimed. |
@@ -2003,13 +2005,13 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.4 single-node restart | On one node: a client mounts, sending `RECLAIM_COMPLETE`, and takes a lock; restart the node. Assert the shard's incarnation rose, the client's reclaim of the lock is granted rather than `NFS4ERR_NO_GRACE`, and a second client's conflicting lock is refused until the reclaim. | an incarnation raised only when a journal begins serving, so the grace instance repeats |
 | §5.4 NFSv4.0 signal | An NFSv4.0 client holds an open in a shard that fails over. Assert its `RENEW` is `NFS4ERR_STALE_CLIENTID`, a `READ` under the open's stateid `NFS4ERR_STALE_STATEID`, and after it repeats `SETCLIENTID` and the confirm, the client ID unchanged and its reclaim granted. A Linux client completes recovery without looping. | `NFS4ERR_STALE_STATEID` with a valid client ID as the only signal |
 | §5.6 full journal | Fill the journal with offload stalled and the remote reachable; assert a write is answered `NFS4ERR_DELAY` (v4) and `NFS3ERR_JUKEBOX` (v3), not `NFS4ERR_NOSPC`, and succeeds on retry once offload resumes. Fill one share's journal limit the same way: assert `NFS4ERR_DELAY` too, and success once offload drains it. Fill the journal with the store unreachable for 2 minutes, past the caller's deadline: assert every retry is `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, never `NOSPC`, and the writes succeed once the store returns. Make the store deny puts; assert `NFS4ERR_NOSPC` at once. Exceed a user quota; assert `NFS4ERR_DQUOT` at once. Exceed a project quota, then a share-wide one; assert `NFS4ERR_NOSPC` at once for each. | a share's journal limit answered "no space" at once, a transient refusal turned into "no space" at its deadline, or a quota answered "retry" |
-| §5.3 lock recall | Client A holds a write delegation; client B sends an NLM lock and, separately, an NFSv4 `LOCK` over a range A locked locally. Assert `CB_RECALL` before B's answer and A's lock sent to the server; once the recall ends, B's NFSv4 `LOCK` is `NFS4ERR_DENIED`, a non-blocking NLM lock `NLM4_DENIED`, and a blocking NLM lock stays `NLM4_BLOCKED` behind A's lock and is sent `NLM4_GRANTED` when A unlocks. Repeat with A holding a read delegation and no local lock; assert `CB_RECALL` before B is granted. While A delays its `DELEGRETURN`, assert B's NFSv4 `LOCK` answered `NFS4ERR_DELAY`, a blocking NLM lock `NLM4_BLOCKED` and then `NLM4_GRANTED` once A returns, and a non-blocking one `NLM4_DENIED_GRACE_PERIOD` — never `NFS4ERR_DENIED` or `NLM4_DENIED`. | a lock request that does not recall, recalls write delegations only, or is answered "held" or "blocked" with no waiter while the recall runs |
+| §5.3 lock recall | Client A holds a write delegation; client B sends an NLM lock and, separately, an NFSv4 `LOCK` over a range A locked locally. Assert `CB_RECALL` before B's answer and A's lock sent to the server; once the recall ends, B's NFSv4 `LOCK` is `NFS4ERR_DENIED`, a non-blocking NLM lock `NLM4_DENIED`, and a blocking NLM lock stays `NLM4_BLOCKED` behind A's lock and is sent `NLMPROC4_GRANTED` when A unlocks. Repeat with A holding a read delegation and no local lock; assert `CB_RECALL` before B is granted. While A delays its `DELEGRETURN`, assert B's NFSv4 `LOCK` answered `NFS4ERR_DELAY`, a blocking NLM lock `NLM4_BLOCKED` and then `NLMPROC4_GRANTED` once A returns, and a non-blocking one `NLM4_DENIED_GRACE_PERIOD` — never `NFS4ERR_DENIED` or `NLM4_DENIED`. | a lock request that does not recall, recalls write delegations only, or is answered "held" or "blocked" with no waiter while the recall runs |
 | §5.3 handle-cached deny mode | An SMB client opens with deny-write under an RWH lease and closes its handle locally. An NFSv4 client opens for write, and an NFSv3 client writes: assert each `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX` while the break runs, then succeeds. Repeat with the SMB handle still in use: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES` only after the break. | an NFS request refused by a deny mode only a handle cache held |
-| §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLM4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |
-| §6.1 host binding | Host A locks a range. From another address, send `NLM4_FREE_ALL` and `NLM4_UNLOCK` naming A's `caller_name`; assert A's lock still held. Block a lock of A's, release it, and capture `NLM4_GRANTED`: assert its source is the floating address A used. Block a lock of A's again, close the connection that carried it, then release: assert `NLM4_GRANTED` still arrives, on a connection the server opened to A's NLM port. | a host identified by its name alone, callbacks from a node address, or a grant sent only on the request's connection |
-| §6.1 waiter lifetime | Host B blocks on host A's lock; hold A's lock for 5 minutes, then release; assert B is sent `NLM4_GRANTED`. Block again and send `NLM4_CANCEL` racing A's unlock, 10^3 times; assert every time either the cancel answered with no lock held by B afterwards, or B granted and told. Drop B's acknowledgements of `NLM4_GRANTED` for 5 minutes; assert it is resent throughout, B still holds the lock and host C's conflicting lock stays `NLM4_BLOCKED`; then let an acknowledgement through and assert the resending stops. Have B refuse the grant; assert the lock released and C granted. Remove the share while C waits; assert C's waiter gone and its next request `NLM4_STALE_FH`. | a waiter dropped on an adapter timer, a cancel answered before the waiter is gone, or a grant released for a silence |
+| §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLMPROC4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |
+| §6.1 host binding | Host A locks a range. From another address, send `NLMPROC4_FREE_ALL` and `NLMPROC4_UNLOCK` naming A's `caller_name`; assert A's lock still held. Block a lock of A's, release it, and capture `NLMPROC4_GRANTED`: assert its source is the floating address A used. Block a lock of A's again, close the connection that carried it, then release: assert `NLMPROC4_GRANTED` still arrives, on a connection the server opened to A's NLM port. | a host identified by its name alone, callbacks from a node address, or a grant sent only on the request's connection |
+| §6.1 waiter lifetime | Host B blocks on host A's lock; hold A's lock for 5 minutes, then release; assert B is sent `NLMPROC4_GRANTED`. Block again and send `NLMPROC4_CANCEL` racing A's unlock, 10^3 times; assert every time either the cancel answered with no lock held by B afterwards, or B granted and told. Drop B's acknowledgements of `NLMPROC4_GRANTED` for 5 minutes; assert it is resent throughout, B still holds the lock and host C's conflicting lock stays `NLM4_BLOCKED`; then let an acknowledgement through and assert the resending stops. Have B refuse the grant; assert the lock released and C granted. Remove the share while C waits; assert C's waiter gone and its next request `NLM4_STALE_FH`. | a waiter dropped on an adapter timer, a cancel answered before the waiter is gone, or a grant released for a silence |
 | §6.1 NLM grace | Fail over a shard in which one NLM host and one NFSv4.1 client held locks; the NFSv4.1 client sends `RECLAIM_COMPLETE`. Assert grace runs its whole lease period. | an NLM host counted finished by a guess |
-| §5.5, §6.1 conflict holder | Hold a range by NLM, then by an SMB byte-range lock; from an NFSv4 client send `LOCK` and `LOCKT` over it. Decode the reply bytes: `NFS4ERR_DENIED`, client ID 0, owner length 0, for all four. Then `NLM4_TEST` against an NFSv4 lock: `svid` 0, `oh` length 0. | an internal owner identity encoded as the holder |
+| §5.5, §6.1 conflict holder | Hold a range by NLM, then by an SMB byte-range lock; from an NFSv4 client send `LOCK` and `LOCKT` over it. Decode the reply bytes: `NFS4ERR_DENIED`, client ID 0, owner length 0, for all four. Then `NLMPROC4_TEST` against an NFSv4 lock: `svid` 0, `oh` length 0. | an internal owner identity encoded as the holder |
 | §7.2 cookies | List a 10^5-entry directory from one node, resume each page on another node, while a third client creates and removes. Assert every untouched entry exactly once, and the same cookie verifier on every page. With the share's hash key fixed so two names collide, list with a `maxcount` that ends a page between them; assert the page ends before the pair and the next holds both. | positional or node-local cookies, a verifier that changes on mutation, or a page ending inside a chain |
 | §8 attributes | pynfs attribute tests (`supported_attrs`, `GETATTR`, `SETATTR`); assert every REQUIRED attribute in `supported_attrs`, `named_attr` among them and false, `sec_label` absent, and `fs_charset_cap` set by the share's name rule. | a REQUIRED attribute dropped from `supported_attrs` |
 | App. B directory link count *(1 node)* | In a new directory, assert `numlinks` 2 over NFSv4 and `nlink` 2 over NFSv3; `MKDIR` two subdirectories and create a file: assert 4; `RENAME` one subdirectory into the other: assert the parent 3 and the other subdirectory 3; `RMDIR` the moved one: assert its new parent back to 2 and the top directory unchanged at 3. The share's root reports 2 plus its subdirectories. `nfstest_cache`'s directory checks pass. | a directory reporting 1, or a count that moves on a file's create |

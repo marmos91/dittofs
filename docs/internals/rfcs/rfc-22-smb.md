@@ -66,11 +66,6 @@ connect to them are [RFC 17](rfc-17-vfs.md)'s. Behind the service, writes land
 in a local journal and move to an object store in the background
 ([RFC 0](rfc-0-data-lifecycle.md)); SMB sees none of that.
 
-Picture a cloakroom. The attendant at the counter, the adapter, knows who you
-are while you stand there. Your coat hangs on a rack out back, at the file's
-primary. If the attendant changes, you come back with your ticket within the
-time allowed and get the same coat.
-
 **The problem, with one example.** Take the cluster: `protocol` nodes **P1**
 and **P2** hold client connections, and storage node **S1** is the primary for
 `profiles/alice/` — the one node that orders every change to those files. alice
@@ -99,19 +94,9 @@ disk must not be.
    it. The open does not go away: it lives at S1, which is still up, and it is
    durable, kept for its timeout — 60 s unless the client asked for more, at
    most 300 s. Every write S1 acknowledged is still in S1's journal.
-5. **Reconnect.** alice-pc sets up a new session, tree connects again and sends
-   a reconnect `CREATE` naming the old FileId. It succeeds only if the user, the
-   share, the client's identifiers and the lease key all match the open. They
-   do, and alice-pc has its open back. Without a durable handle the open would
-   have ended with the connection, and the disk with it.
-6. **A second sign-in.** alice signs in on a second desktop while alice-pc still
-   holds the disk. Its `CREATE` conflicts with alice-pc's handle caching. The
-   adapter answers `STATUS_PENDING` at once and frees its worker; S1 sends
-   alice-pc a lease break. alice-pc acknowledges, still using the file; the
-   request is re-run, alice-pc's deny mode refuses it, and the second sign-in
-   fails cleanly instead of opening the same disk twice. Had alice-pc not
-   answered, at the break's 35 s deadline its lease would have been downgraded
-   to no caching; its open, and the disk, stay open.
+5. **Reconnect.** alice-pc reconnects its durable open on a new session, and
+   the rest of her day — a second sign-in, a node lost, sign-out — is walked in
+   [§2](#2.%20A%20profile%20container%2C%20end%20to%20end).
 
 If S1, not the network, had failed, the durable open would have gone with S1's
 memory, and with it any write S1 had acknowledged but not yet synced. SMB has no
@@ -174,21 +159,6 @@ walks the same day with alice-pc asking for a persistent handle instead.
   spelling; it is hidden.
 
 ### Scenarios
-
-**P1 fails in the middle of the day.**
-
-1. alice-pc holds the VHDX through a durable or persistent handle on P1. The
-   floating address moves to P2, and Witness tells alice-pc so
-   ([§14](#14.%20Witness)).
-2. alice-pc's session, tree connect and the volatile half of its FileId went
-   with P1 ([§4.3](#4.3%20Reconnect%20after%20a%20node%20is%20lost)).
-3. No open state was on P1, so no grace period runs
-   ([§4.3](#4.3%20Reconnect%20after%20a%20node%20is%20lost)).
-4. alice-pc signs in on P2, tree connects and reconnects its handle; the
-   reconnect is routed by the FileId's persistent half to S1
-   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)).
-
-Outcome: the disk stays attached through a new session; nothing at S1 changed.
 
 **build01 opens a file over NFS that alice-pc keeps handle-cached.**
 
@@ -1314,8 +1284,8 @@ that against every protocol; this section maps the SMB request.
     answered `STATUS_RANGE_NOT_LOCKED`; the ranges unlocked before it stay
     unlocked (MS-SMB2 3.3.5.14.1);
   - a lock list of more than one element in which any element lacks
-    `FAIL_IMMEDIATELY` is `STATUS_INVALID_PARAMETER` (MS-SMB2 3.3.5.14.2), so
-    only a single-element `LOCK` ever waits.
+    `FAIL_IMMEDIATELY` is `STATUS_INVALID_PARAMETER`, as MS-SMB2 3.3.5.14.2
+    recommends, so only a single-element `LOCK` ever waits.
 
 - A conflicting lock asked to fail at once (`FAIL_IMMEDIATELY`) is
   `STATUS_LOCK_NOT_GRANTED`. Without that flag the request goes async, as a

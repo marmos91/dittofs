@@ -26,8 +26,8 @@
   <path d="M310,126 C300,160 390,160 380,126" class="ln"/><text x="296" y="170" class="s">reconfigure: add or drop a listener</text>
 
   <text x="40" y="146" class="s">settings checked;</text><text x="40" y="160" class="s">no socket open</text>
-  <text x="500" y="146" class="s">no new connection, no new request read;</text>
-  <text x="500" y="160" class="s">admitted requests answered</text>
+  <text x="500" y="146" class="s">no new connection; acks and flushes</text>
+  <text x="500" y="160" class="s">served, others moved; admitted answered</text>
   <text x="730" y="146" class="s">state dropped;</text><text x="730" y="160" class="s">Disconnect per session</text>
 
   <line x1="40" y1="196" x2="860" y2="196" stroke="#d0d5db" stroke-width="1"/>
