@@ -2,11 +2,11 @@
 
 **Parent plan:** [rfc-1-journal-plan.md](rfc-1-journal-plan.md), epic 1.
 **Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §1, §3, §4, §6 and §7.2;
-[RFC 28](../rfcs/rfc-28-journal-format.md) §2 and Appendix A;
-[RFC 8 §2.1](../rfcs/rfc-8-engine.md) for the shared clock and fault interfaces;
+[RFC 8 §2.1](../rfcs/rfc-8-engine.md) for the shared clock;
 [RFC 29](../rfcs/rfc-29-test-harness.md) for the test harness the guard tests feed.
-**Owners:** A and B, with the split given per subtask.
-**Estimate:** 10 subtasks.
+**Owners:** track A (@viquitorreis) and track B (@didimelli), with the split given per
+subtask; @simonebaracchi coordinates (plan §3.4).
+**Estimate:** 9 subtasks.
 **Blocks:** every other epic. The end of this epic is sync point **S1, interfaces
 frozen**.
 
@@ -18,7 +18,7 @@ This epic declares **only interfaces**:
 
 - the directory tree;
 - every exported symbol and its signature;
-- the internal seams between epics 3–9;
+- the storage seam, the one internal interface with callers before any implementation;
 - how dependencies are injected.
 
 It implements no behaviour. Every function body is a stub. At the end of the epic:
@@ -26,20 +26,22 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
 - `go build ./...` and `go vet ./...` pass;
 - epic 2 can write its whole test suite against these signatures, and the tests compile
   and fail on their assertions;
-- epics 3–9 can each start on their own side of a seam without waiting for another
-  epic's implementation.
+- epics 3–9 can each start against the frozen public surface, declaring their own
+  internal package with its first symbol (§2, rule 12).
 
 ### 1.1 In scope
 
 - the `pkg/block/journalv2` public package, with every symbol of RFC 1 §3, §4.3, §4.4 and
   §7.2;
-- the value types, the error set and the observability contract (`Stats`, `Hooks`);
-- the internal seam interfaces: storage, platform, format, index, segment, durability,
-  recovery, reclaim;
+- the value types, the error set and the observability contract (`Stats`, `Tracer`, the
+  logger option);
+- the storage seam (`storage.FS`, `storage.File`) and `WithStorage`. Format and platform
+  land with epic 3; the index, segments, durability, recovery and reclaim land as concrete
+  types with epics 4–9, each with its first caller (§2, rule 12);
 - the journal's `Clock`: the subset of the set's clock (RFC 8 §2.1) that it uses;
 - the test packages epic 2 fills (`journalv2test`, `conformance`), created only when their
-  first symbol lands (plan §1.5, rule 12);
-- the tests that can fail (plan §1.5, rule 10): the import rule, the RFC signature compile
+  first symbol lands (§2, rule 12);
+- the tests that can fail (§2, rule 10): the import rule, the RFC signature compile
   check, typed errors matching their sentinels, and `Version`'s byte order.
 
 ### 1.2 Out of scope
@@ -48,7 +50,7 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
   components store and compare (1.2), and the `Is` relation of the typed errors (1.3).
 - The test components themselves: the crash seam, the reference model, the
   known-failure list and the profiler all belong to epic 2.
-- Wiring v2 into DittoFS, configuration keys and exporters. Those are epic 10.
+- Wiring v2 into DittoFS, configuration keys and exporters. Those are epics 10 and 11.
 - Cluster-only surface (RFC 10): no extension kinds, no non-zero epoch, no
   `ErrForgotten`.
 
@@ -56,9 +58,61 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
 
 ## 2. General rules for each epic
 
-The general rules are in [§1.5 of the plan](rfc-1-journal-plan.md#15-general-rules-for-each-epic).
-They are linked rather than copied, so they keep one source. Every subtask states how it
-meets each rule that applies to it; a rule that does not apply is named with the reason.
+Every subtask states how it meets each rule that applies to it; a rule that does not apply
+is named with the reason.
+
+1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
+   epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
+   an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
+   to fake (rule 12).
+2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
+   bytes the journal did not just write: records, segment headers, seal markers, catalogs,
+   trailers, the `format` file. Also fuzz-drive operation sequences against the reference
+   model. The property is that any input is either accepted as valid or rejected: never a
+   panic, and never an extent the bytes do not contain.
+3. **Metrics, and tracing where relevant.** Every counter and gauge RFC 1 §3.7 and §3.9
+   assigns to the epic's area is maintained, and exposed through `Stats` (served from
+   maintained counters, never a walk). Spans go through epic 1's standard-library
+   `Tracer` and logs through the injected `*slog.Logger`, never a metrics or tracing
+   library. Operations worth a span:
+   open and recovery, sync, offload pass, repack pass, fill, and a refused reservation.
+4. **Profiling.** Tests and benchmarks run under epic 2's profiling harness and fail on
+   goroutine, descriptor or memory leaks and on anomalous resource growth. Hot paths
+   (`WriteAt`, `ReadAt`, `Stats`, `report`, index lookup and insert) carry
+   allocations-per-op assertions and the counted checks of RFC 1 §9.7. Allocation and
+   heap assertions run outside `-race` only, because `-race` changes both.
+5. **Public interface and internals.** Tests cover the epic's internal package API and the
+   public v2 interface behaviour it enables, including concurrency under `-race`. Per the
+   project rules, test at the layer that **consumes** a value, not the one that produces
+   it. A regression test is validated by reverting the fix and watching it fail **on its
+   assertion**.
+6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
+   known-failure list in the same change. The runner fails if a listed test passes.
+7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
+   `pkg/block/journal`. The import test enforces it. v1 code is neither ported nor
+   bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
+   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   v1's format.
+8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
+   about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
+   stand-ins are allowed only for pure logic (index, codecs).
+9. **Code comment conventions** (`CLAUDE.md`). No epic, issue or plan IDs in source
+   comments. Use `ponytail:` for knowingly-simple implementations and `decision:` for
+   deliberate behaviour. Where the RFC already carries a ponytail or decision note, its
+   marker goes at the code site that implements it.
+10. **A test must be able to fail.** Every test is code maintained for the life of the
+    project. Keep a test only if a plausible change would make it fail and nothing else
+    would catch that change: not the compiler, not the PR diff, not a later epic's tests.
+    A test that checks two `errors.New` values differ, that the standard library's
+    `errors.As` works, or that a stub returns zero does not qualify. A test that a
+    little-endian `Version.Bytes` would fail does. Review rules that no test can check
+    (for example, stubs never panic) stay review rules.
+11. **A symbol is exported only if RFC 1 §3 uses it.** Everything exported is frozen at
+    S1, so a helper exported for convenience becomes a contract. Helpers the internal
+    packages need (`Less`, `IsZero`, `End`, `Overlaps`, `Seq`, the proposed constants)
+    stay in `internal/core`.
+12. **Each subtask creates only what it declares.** No empty package and no stub without
+    a caller. A package, an option or a test helper lands with its first consumer.
 
 ### 2.1 How the rules apply to this epic
 
@@ -66,7 +120,7 @@ meets each rule that applies to it; a rule that does not apply is named with the
 | --- | --- |
 | 1. Unit tests | **Applies.** Epic 1 keeps exactly the tests that can fail (rule 10): the import rule, `rfc_signatures_test.go`, `TestTypedErrorsMatchTheirSentinel` and `TestVersionBytesOrder`. |
 | 2. Fuzz | **Does not apply.** No parser is implemented here. The fuzz targets belong to epic 3 (codecs) and epic 4 (operation sequences). |
-| 3. Metrics and tracing | **Applies as declarations.** Every field of RFC 1 §3.7 and every counter of §3.9 is declared in `Stats`. The `Hooks` contract and its span and event names are fixed. Nothing is maintained yet. |
+| 3. Metrics and tracing | **Applies as declarations.** Every field of RFC 1 §3.7 and every counter of §3.9 is declared in `Stats`. The `Tracer` contract and its span names are fixed. Nothing is maintained yet. |
 | 4. Profiling | **Does not apply.** There are no hot paths yet, and the profiler is epic 2's. |
 | 5. Public and internals | **Applies.** The import rule covers every package; the signature check covers the public package. |
 | 6. Known failures | **Does not apply.** No e2e test exists yet. The list is created in epic 2. |
@@ -75,20 +129,21 @@ meets each rule that applies to it; a rule that does not apply is named with the
 | 9. Comments | **Applies.** Doc comments state contracts in terms of the code, with no RFC or epic numbers. The symbol-to-RFC map is in §6 of this file. Decisions taken here carry `decision:` markers at their declaration. |
 | 10. Tests must be able to fail | **Applies.** See rule 1. The surface test and the API golden file are not kept. |
 | 11. Export only what RFC 1 §3 uses | **Applies.** `Seq`, `Version.Less`/`IsZero`, `Extent.End`/`Overlaps` and the proposed constants are not exported. |
-| 12. Create only what is declared | **Applies.** No empty package and no stub without a caller. |
+| 12. Create only what is declared | **Applies.** No empty package and no stub without a caller. Format, platform and the other internal packages land with the epics that implement them; the storage seam stays because `WithStorage` and epic 2's crash seam both consume it. |
 
 ---
 
 ## 3. Decisions this epic takes
 
 Each decision below is recorded at its code site with a `decision:` marker and is
-reviewed at the freeze (subtask 1.10).
+reviewed at the freeze (subtask 1.9).
 
 **D1. Package location and name: `pkg/block/journalv2`. The `v2` suffix stays in Go
 package and import paths only.**
-v1 keeps `pkg/block/journal` until epic 10 retires it. A sibling package lets v2 be built while v1
-keeps serving. Epic 10 then moves the callers over with no configuration key between them,
-and retiring v1 becomes a plain directory delete. Renaming the package afterwards is out of scope.
+v1 keeps `pkg/block/journal` until the cutover deletes it with the rest of v1 (stage 7 of
+#3119). A sibling package lets v2 be built while v1 is still in the tree. v2's caller is the
+stage-3 engine (epic 11), so no v1 caller is ported, and v1 and v2 never run in one binary.
+Renaming the package afterwards is out of scope.
 
 - *Why the suffix stops at the package:* renaming a Go package later is cheap, because it
   touches only import paths inside this repository. Names users see are not. Metric
@@ -96,13 +151,11 @@ and retiring v1 becomes a plain directory delete. Renaming the package afterward
   and alerts, and dropping a suffix from them later breaks those.
 - *The rule:* every name visible outside the Go code says `journal`, never `journalv2`.
   This covers metric names and labels, span and event names, `slog` attribute keys, and
-  dashboard titles, UIDs and queries. Where the journal version matters to a consumer, it
-  is exposed as a `version` label (`v1` or `v2`) or attribute, never encoded in a name.
-- *Applies in this epic to:* the `SpanOp` and `EventKind` string values and the `slog`
-  attribute keys in `hooks.go`. None of them carries a version. The `Stats` field names
-  carry none either, so epic 10's exporters can name metrics from them directly.
-- *What would overturn it:* v1 and v2 needing metrics with the same name but
-  incompatible meanings, where a label cannot tell them apart.
+  dashboard titles, UIDs and queries. There is no `version` label either: v1 and v2 never
+  share a binary, so it would always read `v2`.
+- *Applies in this epic to:* the `SpanOp` string values in `trace.go` and the `slog`
+  attribute keys. None of them carries a version. The `Stats` field names carry none
+  either, so epic 11's exporters can name metrics from them directly.
 
 **D2. Value types live in a leaf package, `internal/core`, and the public package
 re-exports them as type aliases.**
@@ -131,14 +184,16 @@ type Clock interface {
   need to.
 - *What `Now` is not for:* mtimes. `WriteAt` takes the mtime from its caller, which stamps
   it with store time, so the journal never reads the clock for one.
-- *Where the production and test clocks live* is decided with #3162, not here. The journal
-  depends on neither package.
+- *Where the clocks live:* `pkg/clock` holds `Clock` and `System`, and lands with its
+  first caller, the stage-3 composition root (epic 11). `pkg/sim` holds `TestClock`, which
+  lands with epic 2; `Fault` joins it with the crash seam. The journal imports neither.
 
 **D4. The journal takes no `Fault` interface.**
 Faults are injected by the storage seam implementation, which epic 2 writes in
 `journalv2test` and which consults the set's fault schedule. The journal only ever sees
-`storage.FS`. The fault interface lands with epic 2's seam, its first consumer, and RFC 8
-lists `FaultAction`'s kinds without declaring the type, so declaring it is epic 2's.
+`storage.FS`. The fault interface lands in `pkg/sim` with epic 2's seam, its first
+consumer, and RFC 8 lists `FaultAction`'s kinds without declaring the type, so declaring it
+is epic 2's.
 
 **D5. Dependencies are injected through variadic options appended to RFC 1's
 signatures.**
@@ -152,8 +207,9 @@ code inside the journal's tree can write one. The options are:
   take none;
 - `WithSettings`. Without it every setting takes its default;
 - `WithDescriptorBudget`. Without it the journal gets a budget of its own;
-- `WithStorage(storage.FS)`, declared in 1.8, and `WithHooks`, declared in 1.7, each with
-  the subtask that declares its type.
+- `WithStorage(storage.FS)`, declared in 1.8, and `WithTracer(Tracer)` and
+  `WithLogger(*slog.Logger)`, declared in 1.7, each with the subtask that declares its
+  type. A missing tracer or logger is a no-op.
 
 **D6. `golang.org/x/sys` is allowed in `internal/platform` only.**
 Everywhere else the rule is standard library only.
@@ -161,7 +217,8 @@ Everywhere else the rule is standard library only.
 - *Why:* `fdatasync`, `fallocate`, `F_FULLFSYNC` and `O_DIRECT` are the "operating
   system's file interface" RFC 1 §1.1 allows. The `syscall` package covers them
   incompletely and is frozen.
-- *How it is held:* the import test enforces the split per package.
+- *How it is held:* the import test enforces the split per package. The `decision:`
+  marker sits at `internal/platform`, which epic 3 creates with its first symbol.
 
 **D7. Spans take no request context.**
 RFC 1's operations carry no `context.Context`, so journal spans are roots. They are
@@ -177,7 +234,7 @@ Every stub returns the zero value with `ErrNotImplemented`, or an empty iterator
 - *Why:* a panic aborts the test binary, and every later test in it then reports as not
   run, not as failing on its assertion. Epic 2 needs every test to fail on its own
   assertion.
-- *Why not a test:* a test that calls stubs returning zero cannot fail (plan §1.5,
+- *Why not a test:* a test that calls stubs returning zero cannot fail (§2,
   rule 10).
 - *What it requires of tests:* a test that expects a refusal asserts the **specific**
   error, through `errors.Is` with the named sentinel or `errors.As` with its type. A test
@@ -187,7 +244,7 @@ Every stub returns the zero value with `ErrNotImplemented`, or an empty iterator
 RFC 0 §3 requires a type that cannot be reached by conversion.
 
 - *Limit:* the journal cannot import the metadata store's ID type. The constructor
-  therefore takes the UUID bytes, and epic 10 calls it in exactly one place, from the
+  therefore takes the UUID bytes, and epic 11 calls it in exactly one place, from the
   metadata file ID.
 - *Ceiling:* any 16 bytes are accepted, the all-zero ID included, because `FileID{}`
   exists anyway. Recorded with a `decision:` marker.
@@ -201,7 +258,7 @@ RFC 0 §3 requires a type that cannot be reached by conversion.
   `ExtentLimit`, `HeadroomRecords`, `IdleSealBytes`, `SpareTarget`.
 - The segment cap is **not** a setting, and epic 1 declares no way to override it. The
   override lands with the first test that needs a journal of many segments in a
-  temporary directory (plan §1.5, rule 12).
+  temporary directory (§2, rule 12).
 
 **D11. `SyncPolicy`'s zero value is `Bounded`**, which RFC 1 §5.2 names as the default.
 
@@ -215,8 +272,8 @@ journal built without a budget gets a private one at the default limit.
 ## 4. Target tree
 
 The tree at the end of the epic. Each package appears with the subtask that declares its
-first symbol, never as an empty placeholder (plan §1.5, rule 12). Where the set's
-production clock and test clock live is decided with #3162; the journal imports neither.
+first symbol, never as an empty placeholder (§2, rule 12). The set's clocks live in
+`pkg/clock` and `pkg/sim` (D3); the journal imports neither.
 
 ```text
 pkg/block/journalv2/
@@ -231,24 +288,19 @@ pkg/block/journalv2/
   types.go          aliases to internal/core
   errors.go         error set
   stats.go          Stats, ShareStats, Counters, LossEvent, Histogram, RecoveryStats, SyncFailure
-  hooks.go          Hooks, SpanOp, EventKind, Event
+  trace.go          Tracer, SpanOp
   inspect.go        Inspector, IndexEntry, SegmentInfo, VerifyReport
-  options.go        Option, WithClock, WithSettings, WithDescriptorBudget, WithStorage, WithHooks, SyncBound
+  options.go        Option, WithClock, WithSettings, WithDescriptorBudget, WithStorage, WithTracer, WithLogger, SyncBound
   imports_test.go          import rule for every package under journalv2
   rfc_signatures_test.go   calls written exactly as RFC 1 writes them; a drifted signature stops the build
   errors_test.go           every typed error Is its own sentinel
   internal/core/        value types, Clock, Config, Settings, DescriptorBudget, limits.go (private constants)
   internal/storage/     FS, File
-  internal/platform/    OS storage.FS, Probe
-  internal/format/      sizes, kinds, structures, codecs, CRC, Scanner
-  internal/index/       Index, FileIndex
-  internal/segment/     Store, Stream, Guard, Accounting
-  internal/durability/  Coordinator, Window
-  internal/recovery/    Rebuild, Sink, Verify
-  internal/reclaim/     Repacker
 ```
 
-`journalv2test` and `conformance` are created by epic 2, with their first symbol.
+`journalv2test` and `conformance` are created by epic 2, `internal/format` and
+`internal/platform` by epic 3, and `internal/index`, `segment`, `durability`, `recovery`
+and `reclaim` by epics 4–9, each with its first symbol.
 
 ---
 
@@ -279,7 +331,8 @@ rule, not where the rule came from.
     - the standard library and the module's own `pkg/block/journalv2/...` packages,
       everywhere;
     - `golang.org/x/sys`, in `internal/platform` only (D6);
-    - the set's clock and test-clock packages, in `journalv2test` only.
+    - `pkg/clock` and `pkg/sim`, in the test packages `journalv2test` and `conformance`
+      only.
 
     It forbids `pkg/block/journal` everywhere.
 - **Done when:**
@@ -375,7 +428,7 @@ rule, not where the rule came from.
 
 ### 1.4 Lifecycle, injection and the clock
 
-- **Owner:** A. **Depends on:** 1.2.
+- **Owner:** B. **Depends on:** 1.2.
 - **Deliverables:**
   - `journal.go`:
     - `Init(dir string, install InstallationID, opts ...Option) (JournalID, error)`;
@@ -480,7 +533,7 @@ rule, not where the rule came from.
   - that `Repack`'s `freed` is reported only once durable;
   - that no lock is held across `fn`.
 - **Rules:**
-  - 3: the span names `offload_pass` and `repack_pass` are referenced from `hooks.go`.
+  - 3: the span names `offload_pass` and `repack_pass` are referenced from `trace.go`.
 
 ### 1.7 Observability and inspection contract
 
@@ -509,16 +562,24 @@ rule, not where the rule came from.
 
     `Stats`'s doc comment states the three guaranteed inequalities and that `Stats` is not
     a consistent snapshot.
-  - **`hooks.go`:**
-    - `Hooks{Span func(op SpanOp, attrs ...slog.Attr) (end func(err error)); Event func(Event); Logger *slog.Logger}`;
+  - **`trace.go`:**
+    - `type Tracer func(op SpanOp, attrs ...slog.Attr) (end func(err error))`;
     - the `SpanOp` constants: `open`, `recovery_phase`, `sync`, `offload_pass`,
-      `repack_pass`, `fill`, `reserve_refused`, `seal`, `retire`;
-    - the `EventKind` constants: `loss`, `double_retire`, `sync_failed`, `window_failed`,
-      `thin_provisioned`, `foreign_segment`, `damaged_segment`.
+      `repack_pass`, `fill`, `reserve_refused`, `seal`, `retire`.
 
-    The contract: a nil field is a no-op. A hook is called with no journal lock held, must
-    not block, and must not call back into the journal. `WithHooks(Hooks)` is added to
-    `options.go` here, with the type it takes (D5).
+    The contract, in `Tracer`'s doc comment: a missing option is a no-op. The tracer is
+    called with no journal lock held, must not block, and must not call back into the
+    journal. `WithTracer(Tracer)` and `WithLogger(*slog.Logger)` are added to `options.go`
+    here (D5).
+
+    There is no event callback. Every condition one would carry is already a `Stats`
+    field, and the `Losses` ring numbers each loss so a poller knows what it missed, which a
+    callback that must not block cannot promise: `loss` → `Losses`, `double_retire` →
+    `DoubleRetires`, `sync_failed` → `SyncFailures`/`LastSyncError`, `window_failed` →
+    `LossGeneration`, `foreign_segment` → `RejectedSegments`, `damaged_segment` →
+    `DamagedSegments`. A thin-provisioned device is a `Warn` log line. An event callback is
+    added only when push alerts faster than polling are needed, with a definition of what
+    it holds, and with RFC 1 §3.8's "calls out to nothing" reworded in the same change.
   - **`inspect.go`:**
     - `(*Journal) Inspect() Inspector`;
     - `Inspector`, with `File(id) ([]IndexEntry, error)`,
@@ -533,14 +594,14 @@ rule, not where the rule came from.
 - **Done when:**
   - every row of the RFC 1 §3.7 and §3.9 tables maps to exactly one field. The map is
     filled into §6 of this file;
-  - epic 12 can name its metric set from these fields alone.
+  - epic 11's exporters can name the metric set from these fields alone.
 - **Rules:**
   - 3: this subtask *is* the metrics and tracing contract.
-  - 9: the D7 `decision:` marker sits on `Hooks`.
+  - 9: the D7 `decision:` marker sits on `Tracer`.
 
-### 1.8 Storage, platform and format seams
+### 1.8 The storage seam
 
-- **Owner:** A. **Depends on:** 1.2.
+- **Owner:** A. **Depends on:** 1.2, 1.4 (it adds an option to `options.go`).
 - **Deliverables:**
   - **`internal/storage`:** the narrow seam of RFC 1 §1.3.
     - `FS`, with `Create(name) (File, error)`, which fails if the file exists;
@@ -551,103 +612,38 @@ rule, not where the rule came from.
       platform requires one); `Truncate`; `Size`; `Close`; and `Name`.
 
     Every call is one that a crash-simulating implementation can record and discard. The
-    doc comment says so. `WithStorage(storage.FS)` is added to `options.go` here, with the
-    type it takes (D5).
-  - **`internal/platform`:**
-    - `OS(dir string) (storage.FS, error)`;
-    - `Probe(dir string) (Report, error)`, where
-      `Report{Barriers bool; CopyOnWrite bool; NoCoWSet bool; BtrfsSubvolumeRoot bool; ThinProvisioned bool}`;
-    - `Check(Report) error`, which gives the refusals of RFC 28 Appendix A.
-  - **`internal/format`:**
-    - size constants: 56, 48, 32, 96, 72 and 32 bytes, and 8-byte alignment;
-    - magics: `DJF1`, `DJH1`, `DJS1`, `DJR1` and `DJT1`;
-    - `Kind`, with constants 1–14 and the reserved ranges;
-    - structs `FormatFile`, `SegmentHeader`, `SealMarker`, `RecordHeader`,
-      `CatalogEntry` and `Trailer`, with fields exactly as RFC 28 §2;
-    - the per-kind payload structs: write mtime, loss, clone-target spec and cut;
-    - `Encode*` and `Decode*` functions, each taking the seed explicitly;
-    - `Checksum(seed *core.JournalID, parts ...[]byte) uint32`;
-    - `Scanner`, built with `NewScanner(r io.ReaderAt, size int64, seed core.JournalID)`,
-      whose `Next() (Slot, error)` returns
-      `Slot{Kind SlotKind; Offset int64; Header RecordHeader; Seal SealMarker}`. `SlotKind`
-      is record, seal, zero or damage.
+    doc comment says so.
+  - **`options.go`:** `WithStorage(storage.FS)`, with the type it takes (D5).
+- **Not here:** format and platform land with epic 3, their first caller. The index,
+  segments, durability, recovery and reclaim land as concrete types with epics 4–9. Each
+  of their interfaces would have exactly one implementation, so declaring them now would
+  be a stub with no caller, and the index is pure in-memory code that epics 7–9 can test
+  against directly (§2, rules 1 and 12).
 - **Done when:**
-  - field order and widths in the doc comments match RFC 28 byte for byte, so epic 3 can
-    write golden vectors from the comments alone;
-  - every decode function documents the error each malformed input yields.
+  - every call's doc comment states what a crash-simulating implementation records and
+    may discard.
 - **Rules:**
-  - 2: the decoders' contract (accept or reject, never panic) is written into their doc
-    comments, ready for epic 3's fuzz targets.
-  - 7 and 8: the D6 marker sits at the platform package.
+  - 8: the seam is what lets epic 2 crash on real storage rather than in memory.
+  - 12: `storage.FS` has two consumers, `WithStorage` and epic 2's crash seam.
 
-### 1.9 Internal seams: index, segment, durability, recovery, reclaim
+### 1.9 Review and freeze
 
-- **Owner:** B for `internal/index`, A for the rest. **Depends on:** 1.8.
-- **Deliverables:** one interface per package, plus a `New…` constructor stub. Each
-  method is listed with the query or bound from RFC 1 §4.1 that it must meet:
-
-  - **`internal/index` (implemented by E4; consumed by E7, E8, E9):**
-    - `Index`, with `File(id) FileIndex`, `Drop(id)`, `Counters() *Counters`, the
-      `Buckets` floor table, `ExtentCount()`, `SegmentLive(seg) (held, retained int64)`
-      and `FileSegments(id) iter.Seq[SegmentRanges]`;
-    - `FileIndex`, with `Lookup(off)`, `Span(off, n) (held []Entry, gaps []Extent)`,
-      `Apply(rec Placement) (superseded []Entry)`, `Retain`, `Unretain`, `Mark(ext, lo, hi)`,
-      `Unmark`, `Markers()`, `Settle(v)`, `All()` and `ChangeVersion()`;
-    - `Counters`, with `NextSeq`, `NextVersion`, `SetLimit`, `Raise(floor)` and `Left()`;
-    - `Entry{Extent; Version; Seq; Loc; Offloaded; Kind}`, and `Loc{Segment; Offset; Length}`.
-  - **`internal/segment` (E5; consumed by E6, E7, E8, E9):**
-    - `Store`, with `Stream(n) Stream`, `Read(loc, p) error` (taking the guard shared),
-      `ReadVerified(loc) ([]byte, error)`, `Retire(seg, recycle bool) (freed int64, error)`
-      (idempotent), `Guard(seg) Guard`, `Accounting() *Accounting`, `Segments()` and
-      `TakeSpare(class SpareClass)`;
-    - `Stream`, with `Append(hdr format.RecordHeader, payload []byte) (Loc, error)`,
-      `Roll()`, `Seal()`, `Active() SegmentID` and `Failed() bool`;
-    - `Guard`, with `RLock`, `RUnlock` and `Exclusive(func())`;
-    - `SpareClass`: content, headroom or repack.
-  - **`internal/durability` (E6; consumed by E8, E9):**
-    - `Coordinator`, with `Track(file, loc, rec)`, `Sync(ids...) error`,
-      `SetPolicy(tag, p)`, `Window(seg) *Window` and `LossGeneration() uint64`;
-    - `Window`, with `Reappend() error` and `Fail() []LossRecord`;
-    - `LossLog`, which is the ring.
-  - **`internal/recovery` (E7; consumed by `journalv2.Open`):**
-    - `Rebuild(fs storage.FS, seed core.JournalID, floor core.Version, sink Sink) (Result, error)`;
-    - `Sink`, the callbacks through which records land in index and segment state;
-    - `Result{BySegmentCatalog, ByScan int; Duration time.Duration; Rejected, Damaged []core.SegmentID; TornTails, Resyncs int}`;
-    - `Verify(...) (VerifyReport, error)`.
-  - **`internal/reclaim` (E9; consumed by `journalv2.Repack` and auto-retire):**
-    - `Repacker`, with `Pass(budget int64, scope Scope) (freed int64, err error)` and
-      `Candidates(scope) []SegmentID`.
-
-  The package doc of each internal package names the lock domain(s) it owns (RFC 1 §8.2)
-  and states the acquisition order a caller must respect.
-- **Done when:**
-  - every row of RFC 1 §4.1's table is a method with its bound in its doc comment;
-  - every lock domain of §8.2 is owned by exactly one package;
-  - a dependency diagram is drawn in §7 below, and it has no cycle.
-- **Rules:**
-  - 1 and 5: each seam can be faked behind its interface, so each epic tests on its own
-    (rule 1).
-  - 4: the counted checks of RFC 1 §9.7 are named on the methods that must expose
-    comparison counts (`Lookup`, `Apply`, `Mark`).
-
-### 1.10 Review and freeze
-
-- **Owner:** A + B. **Depends on:** 1.1–1.9.
+- **Owner:** the team. **Depends on:** 1.1–1.8.
 - **Deliverables:**
   - **§6 of this file:** the symbol-to-RFC map, completed.
-  - **The joint review.** Both engineers walk through §6 row by row against RFC 1 §3–§4,
-    §7.2 and RFC 28 §2, and check the review rules: no stub panics (D8), nothing exported
+  - **The joint review.** The team walks through §6 row by row against RFC 1 §3–§4 and
+    §7.2, and checks the review rules: no stub panics (D8), nothing exported
     that RFC 1 §3 does not use (rule 11), no empty package or uncalled stub (rule 12).
 - **Done when:**
   - `go test ./pkg/block/journalv2/...` is green;
   - `go vet` is clean;
-  - both engineers have approved;
+  - the team has approved;
   - the parent plan records S1, with the date.
 - **Rules:**
   - 10: no test is added here; the review checks that every kept test can fail.
   - 6: the known-failure list starts in epic 2, from this frozen surface.
 
-**Changes after the freeze.** A frozen signature changes only with both engineers
+**Changes after the freeze.** A frozen signature changes only with the team
 agreeing. The change updates `rfc_signatures_test.go` in the same commit, and a line is added to
 §8 of this file.
 
@@ -655,7 +651,7 @@ agreeing. The change updates `rfc_signatures_test.go` in the same commit, and a 
 
 ## 6. Symbol → RFC map
 
-Subtask 1.10 completes this table, and it stays the traceability source after the
+Subtask 1.9 completes this table, and it stays the traceability source after the
 freeze.
 
 | Symbol | Source | Subtask |
@@ -683,16 +679,9 @@ freeze.
 | `ErrOtherShare`, `OtherShareError`, `TagConflicts` | RFC 1 §3, §3.7 | 1.3, 1.7 |
 | `ErrNoClock`, `ErrInvalidSetting` | RFC 8 §2.1; this epic (D5, D10) | 1.3, 1.4 |
 | `FileID` | RFC 0 §3; RFC 1 §2 | 1.2 |
-| `storage.FS`, `storage.File` | RFC 1 §1.3 | 1.8 |
-| `platform.Probe`, `platform.Check` | RFC 28 Appendix A | 1.8 |
-| `format.*` | RFC 28 §2.1–§2.5 | 1.8 |
-| `index.*` | RFC 1 §4.1, §4.2, §3.4 (floor buckets), §7.2 (drop ranges) | 1.9 |
-| `segment.*` | RFC 28 §2.2, §2.4; RFC 1 §7.3, §7.4, §8.5 | 1.9 |
-| `durability.*` | RFC 1 §5, §3.8 | 1.9 |
-| `recovery.*` | RFC 28 §3 | 1.9 |
-| `reclaim.*` | RFC 1 §7.1, §7.2 | 1.9 |
+| `storage.FS`, `storage.File`, `WithStorage` | RFC 1 §1.3 | 1.8 |
 | `Clock` | RFC 8 §2.1 (the subset the journal uses) | 1.4 |
-| `Hooks`, `SpanOp`, `Event` | this plan (general rule 3) | 1.7 |
+| `Tracer`, `SpanOp`, `WithTracer`, `WithLogger` | this epic (§2, rule 3) | 1.7 |
 
 ---
 
@@ -700,18 +689,24 @@ freeze.
 
 ```text
 1.1 skeleton ─┬─► 1.2 types ─┬─► 1.3 errors ─► 1.5 data path ─► 1.6 offload/repack ─┐
-  (A)         │    (B)       ├─► 1.4 lifecycle (A) ─────────────┘                    │
-              │              ├─► 1.7 observability (A)                               ├─► 1.10 freeze (A+B)
-              │              └─► 1.8 storage/platform/format (A) ─► 1.9 seams (A+B) ──┘
+  (A)         │    (B)       ├─► 1.4 lifecycle (B) ─► 1.8 storage seam (A) ──────────┤
+              │              └─► 1.7 observability (A) ───────────────────────────────┴─► 1.9 freeze (team)
 ```
 
-**Parallelism.** A runs 1.1 → 1.4 → 1.7 → 1.8 → 1.9 (all but the index). B runs 1.2 →
-1.3 → 1.5 → 1.6 → 1.9 (index). They meet at 1.10.
+**Parallelism.** Track A runs 1.1 → 1.7 → 1.8. Track B runs 1.2 → 1.3 → 1.4 → 1.5 → 1.6.
+They meet at 1.9.
 
 **Allowed package imports.** Arrows point at the imported package. There is no cycle.
+The first block is what epic 1 creates; the second is the rule the packages of epics 3–9
+follow when they land.
 
 ```text
-journalv2 ──► internal/{core, storage, format, index, segment, durability, recovery, reclaim}
+journalv2     ──► internal/core, internal/storage
+core          ──► storage                          (Config holds the storage.FS)
+journalv2test ──► journalv2, internal/storage, pkg/clock, pkg/sim (epic 2)
+conformance   ──► journalv2, journalv2test, pkg/sim               (epic 2)
+
+journalv2  ──► internal/{format, index, segment, durability, recovery, reclaim}
 reclaim    ──► index, segment, durability, core
 recovery   ──► format, storage, core          (lands records through Sink, not into index directly)
 durability ──► segment, core
@@ -719,7 +714,6 @@ segment    ──► format, storage, core
 index      ──► core
 format     ──► core
 platform   ──► storage, core, x/sys
-journalv2test ──► journalv2, internal/storage, the set's clock and test-clock packages (epic 2)
 ```
 
 ---
