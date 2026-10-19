@@ -144,3 +144,6 @@ usual time, so a lasting slowdown stays slow; to accept a new usual time, delete
 record in `times/`. The pass back at normal speed replies in its thread. A run of
 several scenarios (`setup.sh all`) posts one message instead and puts all of these in its thread,
 then ends with a summary there (passed, slow, failed, how long) that shows in the channel too.
+The summary also charts the failures per run of the last 30 days, one character per 12 hours,
+from the fewest (`▁`) to the most (`█`). It reads them from `runs.tsv` in the cache, where each
+such run adds a row: when it started, how many failed and how many ran.

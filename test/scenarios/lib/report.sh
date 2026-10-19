@@ -11,6 +11,9 @@
 # its lines took more than twice its usual time (the median of its last 10 normal passes; slow
 # ones do not count) and at least 10 s more.
 #
+# Runs: a run of several scenarios adds one row to CACHE/runs.tsv: when it started (epoch seconds),
+# how many failed and how many ran. Its summary charts the failures of the last 30 days from it.
+#
 # Slack: with a bot token (scope chat:write) in SLACK_DIR/slack-token and a channel ID in
 # SLACK_DIR/slack-channel. SLACK_DIR is ~/.config/dittofs-scenarios, outside the cache, so no
 # container sees them:
@@ -18,12 +21,13 @@
 #     thread, and the pass that ends it replies there and shows in the channel too;
 #   - its first slow pass is a message, and the pass back at normal speed replies in its thread;
 #   - a run of several scenarios (setup.sh all) posts one message instead, puts all of the above in
-#     its thread, and ends with a summary there that shows in the channel too.
+#     its thread, and ends with a summary there, with the chart, that shows in the channel too.
 # SCENARIO_HOST names the machine in messages (default: the short hostname, or uname -n where there
 # is no hostname command).
 
 SLACK_DIR="${SLACK_DIR:-$HOME/.config/dittofs-scenarios}"
 TIMES="$CACHE/times"
+RUNS="$CACHE/runs.tsv"
 COMMIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 # A run of several scenarios: its thread, how many have been reported, which failed, how many were slow.
@@ -106,6 +110,25 @@ record() {
         '{ print when, commit, result, $0 }' "$CACHE/run/times" >>"$FILE"
 }
 
+# chart: the failures of the last 30 days' runs on a time axis, one character per 12 hours holding
+# the last run in them: ▁ the fewest up to █ the most, blank no run. Prints "<fewest><tab><most><tab>
+# <first run, epoch seconds><tab><characters><tab><chart>".
+chart() {
+    awk -F'\t' -v now="$(date +%s)" '
+        $1 > now - 30 * 86400 {
+            if (first == "") { first = $1; fewest = $2 }
+            failed[int((now - $1) / 43200)] = $2
+            if ($2 < fewest) fewest = $2
+            if ($2 > most) most = $2
+        }
+        END {
+            split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █", bar, " ")
+            for (s = int((now - first) / 43200); s >= 0; s--)
+                out = out (s in failed ? bar[1 + int((failed[s] - fewest) * 7 / (most > fewest ? most - fewest : 1))] : " ")
+            printf "%d\t%d\t%d\t%d\t%s\n", fewest, most, first, int((now - first) / 43200) + 1, out
+        }' "$RUNS"
+}
+
 # slack TEXT [THREAD] [BROADCAST]: posts TEXT and prints the new message's ts. The first line is the
 # message, the rest a colored attachment: red failing, yellow slow, green passing. With THREAD it is
 # a reply there; BROADCAST=yes shows the reply in the channel too. Does nothing without a token and
@@ -133,6 +156,7 @@ slack() {
 report() {
     local S="$1" RESULT="$2" LOG="$CACHE/run/run.log" FAILDIR="$CACHE/failed/$1" SLOWDIR="$CACHE/slow/$1"
     local TOOK SLOW="" FAIL_TS FAIL_AT SLOW_TS CONTEXT LAST LINE RAN OUT WHERE CHECK DETAILS T="" BROADCAST=yes
+    local FEWEST MOST FIRST WIDTH BARS FROM
     # The run has just ended, so its last command ended now.
     times "$S" "${EPOCHREALTIME/,/.}" >"$CACHE/run/times"
     TOOK="$(awk -F'\t' '$2 == "scenario" { printf "%d", $1 }' "$CACHE/run/times")"
@@ -217,6 +241,14 @@ $CONTEXT" "${T:-$FAIL_TS}" "$BROADCAST" >/dev/null
     DETAILS="*Passed:* $((RUN_DONE - ${#RUN_FAILED[@]} - RUN_SLOW)), *slow:* $RUN_SLOW, *failed:* ${#RUN_FAILED[@]}, in $((TOOK / 60)) min $((TOOK % 60)) s"
     test "${#RUN_FAILED[@]}" -eq 0 || DETAILS="$DETAILS
 *Failed:* ${RUN_FAILED[*]}"
+    printf '%s\t%s\t%s\n' "$RUN_START" "${#RUN_FAILED[@]}" "$RUN_DONE" >>"$RUNS"
+    IFS=$'\t' read -r FEWEST MOST FIRST WIDTH BARS < <(chart)
+    FROM="$(date -d "@$FIRST" '+%-d %b')"
+    # The first run's date under the chart's start, today's under its end.
+    DETAILS="$DETAILS
+*Failed per run* (▁ $FEWEST to █ $MOST, now ${#RUN_FAILED[@]})
+\`\`\`$BARS
+$FROM$(printf '%*s' $((WIDTH > ${#FROM} + 7 ? WIDTH - ${#FROM} : 7)) "$(date '+%-d %b')")\`\`\`"
     slack "$LINE
 $DETAILS
 $CONTEXT" "$T" yes >/dev/null
