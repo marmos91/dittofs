@@ -1078,7 +1078,7 @@ type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) 
   operation the service cannot express in one call is a missing service
   operation ([RFC 17 §4.1](rfc-17-vfs.md#4.1%20The%20operation%20set%20is%20the%20union%2C%20not%20the%20intersection)), never a sequence in the handler.
   An SMB `LOCK` of several elements is the case in point: it is one `Lock`
-  call whose `LockReq` carries every element's range, or one `Unlock`, and the
+  call whose `LockReq` carries every element's range and mode, or one `Unlock`, and the
   service — not the handler — releases the ranges it took when a later one fails
   ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)).
 - It **MAY** make further read-only calls only to fill fields the reply

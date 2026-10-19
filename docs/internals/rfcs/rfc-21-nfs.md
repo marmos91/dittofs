@@ -2254,9 +2254,9 @@ method then calls below is
 
 | Operation | Method | Notes |
 | --- | --- | --- |
-| `SETCLIENTID`, `EXCHANGE_ID` | none (adapter only) | an unconfirmed proposal, no state ([§3.5](#3.5%20Confirming%20a%20client)) |
-| `SETCLIENTID_CONFIRM` | `Connect` | |
-| `CREATE_SESSION` | `Connect` once, then `CreateSession` | |
+| `SETCLIENTID`, `EXCHANGE_ID` | `Propose` | an unconfirmed proposal, no state ([§3.5](#3.5%20Confirming%20a%20client)) |
+| `SETCLIENTID_CONFIRM` | `Connect`, naming the `Proposal` | |
+| `CREATE_SESSION` | the first `Connect`, naming the `Proposal`, then `CreateSession` | |
 | `SEQUENCE` | `Renew`, at most once per renewal interval | the slot table is the adapter's |
 | `RENEW` | `Renew` | |
 | `DESTROY_SESSION` | none (adapter only) | |

@@ -270,7 +270,7 @@ test of §8 rather than by an interface between them.
 | Who | Holds | Never |
 | --- | --- | --- |
 | **adapter** ([RFC 20](rfc-20-adapters.md)) | the wire form of a waiting lock: the request to answer, the NLM host to call back | decides a conflict |
-| **front** (protocol node) | each client's lease record and callback channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease), [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)); relays recalls and grants to the connection | any of the open-state table: it routes `Lock`, `Open`, `Close` and the rest to the file's primary |
+| **front** (protocol node) | each NFSv4 client's unconfirmed proposal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)), each client's lease record and callback channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease), [RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)); relays recalls and grants to the connection | any of the open-state table: it routes `Lock`, `Open`, `Close` and the rest to the file's primary |
 | **per-file part** (the file's primary) | [RFC 14](rfc-14-open-state.md)'s open-state table — opens, deny modes, byte-range locks of NLM, NFSv4 and SMB alike, delete pending, caching grants, watches, lock waiters, and in a cluster layouts — as the concrete `*openstate.Table` in the service's `Deps`; runs the conflict check and the I/O it admits under the file's accept lock with nothing between ([§4.8](#4.8%20One%20primary%20per%20file), V7) | — |
 | **metadata store** ([RFC 16](rfc-16-metadata-store.md)) | only what must survive a restart: client records, persistent SMB opens, the durable open records that keep an unlinked file alive | an ordinary lock |
 
@@ -502,7 +502,7 @@ holds.
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
-| `ClientInfo`, `ClientStatus` | what `Connect` registers — protocol, owner, verifier, principal, NSM monitor name; what `Renew` reports (§3.1) |
+| `ClientInfo`, `ClientStatus` | what `Propose` and `Connect` register — protocol, owner, verifier, principal, NSM monitor name, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1) |
 
 The rest carry no meaning beyond their shape:
 
@@ -518,9 +518,12 @@ type CreateKind uint8 // Dir, Symlink, Fifo, Socket, Char, Block, Regular
 
 type CreateArgs struct { Kind CreateKind; Attrs Attrs; Verifier *[8]byte; Target []byte; Dev uint64 }
 type WriteResult struct { N int; Verifier Verifier; WCC WCC }
-type CopyArgs struct { Src, Dst OpenRef; SrcOff, DstOff, Len int64 }
+type Extent struct { SrcOff, DstOff, Len int64 }
+type CopyArgs struct { Src, Dst OpenRef; Extents []Extent } // Copy: in order, as copychunk's chunks; Clone: exactly one
 type CopyResult struct { N int64; WCC WCC }
-type LockReq struct { Ranges []ByteRange; Exclusive, Wait, Reclaim bool; Owner LockOwner; Seq *LockSequence } // §5.11
+type LockRange struct { ByteRange; Exclusive bool } // an SMB LOCK may mix shared and exclusive elements
+type LockReq struct { Ranges []LockRange; Wait, Reclaim bool; Owner LockOwner; Seq *LockSequence } // §5.11
+type Proposal struct { Client ClientID; Confirm [8]byte; Sequence uint32 } // what Propose answers and Connect confirms
 type WatchSpec struct { Dir Handle; Recursive bool; Filter ChangeMask }
 ```
 
@@ -546,6 +549,7 @@ type Service interface {
 // Clients (RFC 14). The lease owner is the front of the node holding the
 // client's sessions (§2.2).
 type Clients interface {
+	Propose(ctx context.Context, id Identity, c ClientInfo) (Proposal, error) // SETCLIENTID, EXCHANGE_ID: RFC 14 §2.9's Unconfirmed record, held by this front; changes no state
 	Connect(ctx context.Context, id Identity, c ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB NEGOTIATE, an NLM host's first call; again on another node to re-register the callback path: the latest wins (RFC 14 Rebind)
 	CreateSession(ctx context.Context, id Identity, c ClientID, seq uint32, reply []byte) ([]byte, error) // a replay returns the cached reply, seq+1 records this one, any other StateError SeqMisordered
 	Renew(ctx context.Context, id Identity, c ClientID) (ClientStatus, error)
@@ -642,6 +646,17 @@ types of §3.0 (`CreateResult`, `UnlinkResult`, `RenameResult`, `WriteResult`,
 ([RFC 21 §9.2](rfc-21-nfs.md#9.2%20Close-to-open%2C%20and%20what%20the%20server%20guarantees)).
 So no handler follows a mutation with a `GetAttr`
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
+
+**Which calls change state.** These change nothing — no file, open state,
+client record or lease — and a handler may make any number of them:
+`Propose`, `TestState`, `Lookup`, `ReadDir`, `GetAttr`, `GetACL`, `Xattrs`,
+`Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
+`ListShares`, `StatFS`, `Quota` and `Snapshots`. Every other method may change
+state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
+it, so `vfstest.Record` and the adapters' one-call test read it from one place.
+`Propose` is on the list because its record is volatile and nothing reads it
+but the confirm. `Read` is on it although the store may advance access time;
+that is a side effect of serving the read, never a second call.
 
 > decision: the attributes are always returned, and atomic when present:
 > `After` always, `Before` only as [§5.7](#5.7%20GetAttr) says. Rejected: a separate `GetAttr`, which is not atomic with the change and lets
@@ -932,6 +947,7 @@ and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%
 
 | Method | Metadata calls (RFC 7, RFC 6, RFC 14, RFC 16, RFC 12) | Engine calls (RFC 8) | Runs at |
 | --- | --- | --- | --- |
+| `Propose` | `Clients.Get` by (protocol, owner): an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)) | — | any node; the front holds the `Unconfirmed` record in memory, so the confirm must reach the same node |
 | `Connect`, `CreateSession`, `Renew`, `Destroy` | `OpenState.Connect` (and `Rebind`), `CreateSession`, `Renew`, `Destroy` | — | the lease owner's node; the front keeps the callback registry |
 | `Disconnect`, `ReclaimComplete`, `FreeRevoked`, `HostRestarted` | `OpenState.Disconnect`, `ReclaimComplete`, `FreeRevoked`, `HostRestarted` | — | each primary holding the client's state |
 | `TestState`, `ReleaseLockOwner` | gap: RFC 14 declares no call that tests a stateid, drops a lock owner, or frees one lock stateid | — | primary |
@@ -1782,8 +1798,10 @@ carved refs adopted, all resolved at one point in the source's history.
 - **`Copy` is not atomic.** The engine's `Copy` runs bounded chunks, each a
   small atomic clone, and returns the bytes copied; at the caller's deadline it
   stops after its current chunk and answers a short count, from which the
-  client continues. A chunk refused after others are done answers the same
-  short count; only a refusal of the first chunk returns its error. Between
+  client continues. A copychunk's chunks are one call's `Extents`, run in
+  order, and the count is the bytes copied across them, so the adapter derives
+  chunks and bytes written from it. A chunk refused after others are done
+  answers the same short count; only a refusal of the first chunk returns its error. Between
   shards the front copies the bytes itself, reading at the source's primary and
   writing at the destination's in bounded chunks, so no adapter composes a copy
   (§4.1). A copy is always synchronous, as copychunk and NFSv4.2 `COPY` are
@@ -1793,8 +1811,8 @@ carved refs adopted, all resolved at one point in the source's history.
 
 1. admit and route both handles, and authorise read on the source and write on
    the destination, as §5.1 steps 1–3 do for each;
-2. refuse with `ErrInvalid` a copy or clone whose source and destination are one
-   file and whose extents overlap, as Linux and RFC 7862 refuse it; with
+2. refuse with `ErrInvalid` a clone of other than one extent, and a copy or
+   clone any of whose extents, with source and destination one file, overlap, as Linux and RFC 7862 refuse it; with
    `ErrCross` (`CrossNamespace`) one RFC 8 §9.1's admission rule refuses, since
    no chunk can be adopted across namespaces; with `ErrIncomplete` one whose
    source is `Incomplete`, before anything changes;
@@ -1943,12 +1961,12 @@ func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) e
 		// when waiting), the NFSv4.0 owner's sequence (StateError BadSeqID), checked
 		// and advanced at the owner's home primary as RFC 14 §2.8 says — this node
 		// on a single node; (cluster) the front sequences the home and the file's primary.
-		err := s.open.Lock(ctx, c.Client, fileOf(ref.Handle), r.Owner, ref.Open, rg, r.Exclusive, r.Wait, r.Reclaim, r.Seq)
+		err := s.open.Lock(ctx, c.Client, fileOf(ref.Handle), r.Owner, ref.Open, rg.ByteRange, rg.Exclusive, r.Wait, r.Reclaim, r.Seq)
 		if err != nil {
 			s.unlock(ctx, c, ref, r.Owner, taken) // all or nothing: release what this call took
 			return err                            // ErrBlocked: a waiter is registered; LockWaitOver answers it
 		}
-		taken = append(taken, rg)
+		taken = append(taken, rg.ByteRange)
 	}
 	return nil
 }

@@ -2149,7 +2149,7 @@ maximum component length 255; and the file system name `NTFS`
 | `SET_ZERO_DATA` | `Deallocate` | sparse or not |
 | `QUERY_ALLOCATED_RANGES` | `Seek` | data ranges, by `SEEK_DATA` / `SEEK_HOLE`; a zero ref under a newer overwrite record is data ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) |
 | `SRV_REQUEST_RESUME_KEY` | the open | the key names the open in this node's table |
-| `SRV_COPYCHUNK`, `SRV_COPYCHUNK_WRITE` | `Copy`, in bounded chunks, not atomic | 256 chunks, 1 MiB each, 16 MiB per request; may report fewer bytes written than asked; a key from another node is `STATUS_OBJECT_NAME_NOT_FOUND`; across namespaces `STATUS_NOT_SUPPORTED` ([§10](#10.%20Control%20codes)) |
+| `SRV_COPYCHUNK`, `SRV_COPYCHUNK_WRITE` | one `Copy`, the request's chunks as its `Extents`, not atomic | 256 chunks, 1 MiB each, 16 MiB per request; may report fewer bytes written than asked; a key from another node is `STATUS_OBJECT_NAME_NOT_FOUND`; across namespaces `STATUS_NOT_SUPPORTED` ([§10](#10.%20Control%20codes)) |
 | `DUPLICATE_EXTENTS_TO_FILE` (and `_EX`) | `Clone`, one atomic clone | any alignment; over `clone_max_len` or overlapping ranges of one file `STATUS_INVALID_PARAMETER`; across namespaces `STATUS_NOT_SUPPORTED` ([§10](#10.%20Control%20codes)) |
 | `GET_REPARSE_POINT`, `SET_REPARSE_POINT`, `DELETE_REPARSE_POINT` | symlinks and junctions ([§12.4](#12.4%20Reparse%20points)) | other tags refused ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) |
 | `CREATE_OR_GET_OBJECT_ID`, `GET_OBJECT_ID` | the derived 128-bit file id ([§9.1](#9.1%20What%20is%20reported)), never the `FileID` | read-only; set and delete refused |
