@@ -459,8 +459,8 @@ suites:
 // failure isn't annotated, and the cell, having a test to name, isn't either.
 func TestUnexpectedPassAnnotation(t *testing.T) {
 	cell := report.Cell{Name: "s/x", Result: Failed, Note: "1 passed unexpectedly: b", Tests: []report.Test{
-		{Name: "a", Status: report.Skipped, Grade: "known", Reason: "r1"},
-		{Name: "b", Status: report.Failed, Grade: "unexpected_pass", Reason: "r2"},
+		{Name: "a", Status: report.Skipped, Grade: report.Known, Reason: "r1"},
+		{Name: "b", Status: report.Failed, Grade: report.UnexpectedPass, Reason: "r2"},
 	}}
 	want := []string{"::error title=dt s/x%3A b::passed unexpectedly: remove its known entry (r2)"}
 	if got := annotations(cell); !slices.Equal(got, want) {

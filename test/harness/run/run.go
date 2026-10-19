@@ -154,9 +154,6 @@ func runName(start time.Time, commit string) string {
 	return name
 }
 
-// unexpectedPass is the grade of a pass that a known entry still lists.
-const unexpectedPass = "unexpected_pass"
-
 // annotations are a cell's error annotations: one for each new failure, with
 // its message, and one for each unexpected pass, so a fix knows which known
 // entry to remove. A cell that failed or didn't run with no test to name, as
@@ -169,7 +166,7 @@ func annotations(c report.Cell) []string {
 		switch {
 		case t.NewFailure():
 			out = append(out, annotation("dt "+c.Name+": "+t.Title(), cmp.Or(t.Message, "failed")))
-		case t.Grade == unexpectedPass:
+		case t.Grade == report.UnexpectedPass:
 			out = append(out, annotation("dt "+c.Name+": "+t.Title(), "passed unexpectedly: remove its known entry ("+t.Reason+")"))
 		}
 	}
