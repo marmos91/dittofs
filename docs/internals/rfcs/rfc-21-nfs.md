@@ -1002,7 +1002,7 @@ and later, none to NFSv4.0, and no directory ones.
   `GrantID`, after which `Renew` reports a grant revoked at its recall
   deadline in `ClientStatus` and the
   answering node sets the flag on the client's next `SEQUENCE` until the client
-  frees the stateid, and `ErrRevoked` on a later use of the stateid, which is answered
+  frees the stateid, and `ErrState` (`Revoked`) on a later use of the stateid, which is answered
   `NFS4ERR_DELEG_REVOKED`, never the `NFS4ERR_BAD_STATEID` of `ErrState` (`NotYours`)
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). That client is offered no delegation
   for 90 s after the revocation, each further revocation restarting the period,
@@ -1215,7 +1215,7 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrState` (`NoReclaim`) | `NFS4ERR_RECLAIM_BAD` in grace, `NFS4ERR_NO_GRACE` outside it | NLM: `NLM4_DENIED_GRACE_PERIOD` in grace, else `NLM4_DENIED` |
 | `ErrState` (`ReclaimRevoked`) — a reclaim in a shard where an administrator revoked the client's state, before it took state there again (§5.1, [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) | `NFS4ERR_NO_GRACE`, in or out of grace | — (NFSv4 only: an NLM reclaim after a revoke is `ErrState` (`NoReclaim`), §5.1) |
 | `ErrState` (`StaleClient`) — a client that expired, or is marked by a shard's loss ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_STALE_CLIENTID` for an operation naming a client ID, `RENEW` included, and for an NFSv4.0 client a loss awaits (§5.4). A stateid of an expired client is never answered `NFS4ERR_STALE_CLIENTID`, which is not a legal answer to `READ`, `WRITE` and the other stateid operations of RFC 8881: RFC 14 released its record with the client's other state, so it resolves to nothing and is `ErrState` (`BadState`), below. `NFS4ERR_EXPIRED` is never answered, since no expired client's record is kept (§5.1). A stateid of a live client whose state was lost is `ErrState` (`StaleState`), below | NLM: `NLM4_DENIED` |
-| `ErrRevoked` (`ErrState` kind `Revoked`, `Admin` naming the cause) — a stateid in its client's revoked set, not yet freed, its client still live: a grant revoked at its recall deadline, or any state an administrator revoked (§5.1, [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); state lost with a shard stays `ErrState` (`StaleState`) | by the revocation's cause: `NFS4ERR_ADMIN_REVOKED` for any stateid an administrator revoked (§5.1); `NFS4ERR_DELEG_REVOKED` for a delegation's or layout's revoked at its recall deadline (§5.3) | — |
+| `ErrState` (`Revoked`, `Admin` naming the cause) — a stateid in its client's revoked set, not yet freed, its client still live: a grant revoked at its recall deadline, or any state an administrator revoked (§5.1, [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); state lost with a shard stays `ErrState` (`StaleState`) | by the revocation's cause: `NFS4ERR_ADMIN_REVOKED` for any stateid an administrator revoked (§5.1); `NFS4ERR_DELEG_REVOKED` for a delegation's or layout's revoked at its recall deadline (§5.3) | — |
 | `ErrState` (`BadState`) — a stateid whose record is gone, minted under the shard's current grace instance outside grace: an expired client's, one freed, a removed share's, or one never issued (§5.2 rule 1) | `NFS4ERR_BAD_STATEID` | — |
 | `ErrState` (`ClientBusy`) — `Destroy` found the client still holding state (§5.1) | `NFS4ERR_CLIENTID_BUSY` | — |
 | `ErrState` (`StaleState`) — a stateid whose state was lost with its shard's open state ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)): its record is gone and its bits name an earlier grace instance, or its shard is in grace (§5.2 rule 1) | `NFS4ERR_STALE_STATEID` (§5.4) | — |
@@ -1337,8 +1337,8 @@ client, are RFC 14's.
   (`NLM4_DENIED` or another error in the reply), cancels the lock or restarts,
   or the lock is released by an administrator's revoke or by `DropShare`
   ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)). Each send is one
-  `LockWaitOver` call, which returns the host's answer — `WaitAcked` or
-  `WaitRefused` — or an error when the host said nothing by the call's deadline,
+  `LockWaitOver` call, which returns the host's answer — `refused` false for an
+  acknowledgement, true for a refusal — or an error when the host said nothing by the call's deadline,
   after which the service calls again and the lock stays granted
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). A refusal releases the lock
   as an unlock would, and the next waiter is considered. The lock is never
