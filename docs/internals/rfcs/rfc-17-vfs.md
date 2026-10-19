@@ -1959,27 +1959,23 @@ waiter does ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)).
 
 ## 6. Invariants, and the test of each
 
-Every test runs in the service suite (§8) unless it names another layer.
+Every test runs in the service suite (§8) unless it names another layer. A row is here only if its test can fail against a plausible wrong service; what a type, the compiler or another RFC's suite already checks is not repeated (adapter imports: [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites); held requests: [RFC 20 §7.4](rfc-20-adapters.md#7.4%20Cross-protocol%2C%20through%20both%20adapters); revoked and stale state: [RFC 14](rfc-14-open-state.md)). Numbers of removed rows are not reused.
 
 | # | Invariant | Test |
 | --- | --- | --- |
-| V1 | Adapters hold only `vfs.Service`; no adapter holds a metadata view, an engine, open state or a component. | [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s import test. |
-| V2 | Every operation that needs authorisation reaches `Files.Authorize` and `Granted` through the `authz` package alone. | The import and call-site test of §8 fails a call of either outside `authz`. |
 | V3 | Every cross-component order is the one in §5, in every protocol. | Each order is tested by what it prevents, through each protocol's `Identity`: a write refused at step 3 holds no reservation, stages no byte and clears no setuid bit; one refused at step 5 holds no reservation; a create refused add-file charges no inode and adds no entry, and is refused `ErrAccess` before a delete-pending parent could answer `ErrDeletePending`. |
 | V4 | A routing refusal never reaches an adapter. | **(cluster)** Move a shard's primary between a call's routing and its arrival; assert the call succeeds. |
-| V5 | The service persists nothing and imports no adapter; the front's files call no store, open state or engine. | The import and call-site test of §8. |
 | V6 | A recall not acknowledged by its deadline revokes the grant; no worker waits on a recall. | A conflicting operation returns `ErrDelay` while its recall is pending, with no goroutine blocked; a recall that misses its deadline delivers `RevokedGrant` naming the grant, `Renew` reports `RecallableRevoked`, a write under its stateid returns `ErrState` (`Revoked`), not `NotYours`, and the client's next open is offered no grant while the revoked one is unfreed. |
 | V7 | The conflict check and the I/O it admits run at one primary, and no conflicting state is granted between them. | A model test interleaves a lock and a write: the lock is ordered wholly before or after the write. |
 | V8 | Every open-state call names its `ClientID`, and an ID the client does not hold is refused. | An `OpenID`, `GrantID` or `WatchID` presented by another client returns `NotYours`. |
 | V9 | The share grant is evaluated on every call. | A client removed from a share grant is refused on its next call with a handle it already holds; an SMB `MAXIMUM_ALLOWED` open whose parent grants delete-child includes `DELETE`, and after the parent's group changes so it no longer does, a cached delete-child decision is not reused. |
 | V10 | Quota is enforced only by the service, and overshoot stays within §5.6's bound. | Writers on one primary never pass a hard limit by more than what commits concurrently add; **(cluster)** writers through `k` primaries overshoot by no more than the bound, counted per run, on a 1 GiB project quota as on a 1 TiB one; a write refused by a share-wide, project, user and group quota in turn returns a `*QuotaError` naming each scope, and with two exceeded the first in §4.3's order; `StatFS` inside a project tighter than its share reports the project's, and the share's once the project's quota is deleted. |
 | V11 | (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) A forwarded mutation retried after a lost reply returns its original result and applies once. | Loopback layer: a forwarded write retried after a dropped reply, with another write between, applies once. |
-| V12 | Every call that names a handle or an open is admitted — state, flavour, client rules, resolution — whatever path the handle arrived by. | For each of lock, unlock, test-lock and watch, reached by a handle presented directly and by a walk from the pseudo-root: a quiesced share returns `ErrDelay`, a share refusing the flavour `ErrWrongSecurity`, a client outside its rules `ErrAccess`; a compound crossing from a share squashing root into one that does not acts as root only in the second; a caller admitted and cached, then disabled, is refused on its next call. |
+| V12 | Every call that names a handle or an open is admitted — state, flavour, client rules, resolution — whatever path the handle arrived by. | For each of lock, unlock, test-lock and watch, reached by a handle presented directly, by `Root` with a path, by `Root` with a name, and by the zero `ShareRef` then a walk from the pseudo-root: a quiesced share returns `ErrDelay`, a share refusing the flavour `ErrWrongSecurity`, a client outside its rules `ErrAccess`; a compound crossing from a share squashing root into one that does not acts as root only in the second; a caller admitted and cached, then disabled, is refused on its next call. |
 | V13 | No mount, tree connect or session is stored; a reconnecting client is admitted afresh. | A renamed share keeps serving held handles and established tree connects, and a new `Root` needs the new name. |
 | V14 | Every node builds the same pseudo-filesystem from the same share list. | Pure unit: two fronts built from one share list return byte-identical pseudo handles, numeric ids and change attributes, and a share added on one is seen on the other with a raised change attribute. |
-| V15 | No adapter resolves a share, admits a call, or builds any part of the pseudo-filesystem. | `Root`, `SecInfo`, `ListShares` and pseudo handles are driven in the service suite with no adapter; every case of V12 runs once per entry (`Root` with a path, with a name, and the zero `ShareRef` then `Lookup`). |
 | V16 | The `Version` `GetAttr` returns advances on every accepted write and never moves backward. | Client A reads `Version`, B writes and is acknowledged, A's next `GetAttr` is greater before any existence commit and not lower after it; 16 readers `GetAttr` while writes commit in a loop and none sees a `Version` lower than one it saw; a `chmod` drawn below a write committed or staged at a higher version is redrawn above it. |
-| V17 | Every release is run by the service at the file's primary, at the four moments of §5.3. | An unlinked file whose last open closes is released, and so, after a restart, is a file whose pending release was written before the crash; a shard that never calls `Release` leaks both. |
+| V17 | Every release is run by the service at the file's primary, at the four moments of §5.3. | An unlinked file whose last open closes is released, and so, after a restart, is a file whose pending release was written before the crash. |
 | V18 | An open's grant authorises a call only for the principal it was granted to. | bob presents alice's open to write a file alice may write and bob may not, then one both may write: `NotYours` both times and alice's open intact. A service that trusts the open's grant for any presenter accepts the first; one that re-authorises bob afresh accepts the second. |
 | V19 | A write through a persistent open, or any open on a continuously available share, is stable; a stable write waits for the sync and, overwriting committed content, its existence commit. | A write on a persistent open, asked unstable, survives a crash injected after its reply; a stable append's reply waits for no metadata transaction, counted by the store's transaction counter; a stable overwrite stalls with the store and answers `ErrDelay` at the deadline, never success. |
 | V20 | A journal-limit or capacity refusal is `ErrDelay` while space can be freed, never `ErrNoSpace` for a deadline; `ErrNoSpace` and `ErrQuota` are answered at once. | With the journal full of dirty bytes and the remote reachable, a write returns `ErrDelay(DelayCapacity)` and succeeds on retry once offload frees space; with the store unreachable past the deadline, still `ErrDelay`; with the store refusing puts as denied, `ErrNoSpace` at once. |
@@ -1989,12 +1985,11 @@ Every test runs in the service suite (§8) unless it names another layer.
 | V24 | I/O under a delegation is served only to the client holding it and authorised for the caller's own principal. | An NFSv4.1 client with a write delegation writes as a second principal that may write the file, then a third that may not: the first accepted, the second `ErrAccess`; another client presenting the stateid gets `NotYours`. |
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush across a loss fails once with `ErrLost`. | A `Commit` that waits on a failed sync window returns a verifier other than its writes'; the verifier changes after an unstable write is dropped as lost in the same process and epoch, and when a shard is handed away and back, and not across a shard-epoch raise that moves nothing; an SMB flush through each of two opens of such a file fails once, then succeeds. |
 | V26 | Copy and clone refuse overlap, a clone over `clone_max_len`, a namespace or (cluster) shard crossing and an `Incomplete` source, each changing nothing; a copy across shards is the service's; a Lost source run is copied as Lost; a clone is atomic, a copy may be short. | Each refusal returns its error and leaves the destination unchanged and readable; a `COPY` whose deadline passes partway answers a short count and the destination holds exactly that many bytes; a clone of a source with a Lost run reads Lost there at the destination. |
-| V27 | A request held after `ErrGrace` or `DelayFrozen` outlives the grace or freeze, bounded as §3.2 says. | Through the SMB adapter ([RFC 20 §7.4](rfc-20-adapters.md#7.4%20Cross-protocol%2C%20through%20both%20adapters)), an open held through a full grace and a write held through a two-minute freeze complete when they end. |
 | V28 | A create — an `Open` that creates included —, link or rename into a directory marked delete on close is refused, over every protocol. | With a directory marked over SMB, a create, a creating `Open`, a link and a rename into it, over SMB and over NFS, are each refused. |
 | V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
 | V30 | The service waits inside a call only behind a running clone or copy chunk, and at most the call's `WithHold`. | An NFSv3 write into a cloning extent with `WithHold(10s)` is held and completes when the clone ends; with `WithHold(0)` it returns `DelayClone` at once. |
 | V31 | Every mutating call returns the `WCC` of each object it changed, from one hold of its accept lock. | For each mutating method, a concurrent write between the call and a later `GetAttr` does not appear in the returned `WCC`; a directory's `Before` is nil over NFSv3. |
-| V32 | Within the service, the engine, the metadata write views and open state are called only from the per-file functions. | The call-site test of §8. |
+| V32 | The service imports no adapter; within it the engine, the metadata write views and open state are called only from the per-file functions, and `Authorize` and `Granted` only from `authz`. | The call-site test of §8, which must report its seeded violation. |
 | V33 | `Start` is all or nothing, `New` starts nothing, and `Close` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Close`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. |
 | V34 | `Drain` joins every admitted call and admits none after. | With 64 writes in flight, `Drain` returns only once each has answered; a call made after `Drain` begins returns `ErrUnavailable`; a lease break pending at `Drain` is neither forced nor revoked. |
 | V35 | After `Start`, a call that needs or conflicts with reclaimable state answers `ErrGrace` until the shard's grace ends, and pending releases run only after it. | Restart with a pending release and a reclaimable lock: a conflicting lock answers `ErrGrace` and the file's content is still held; advancing the fake clock past grace grants the lock and runs the release. |
@@ -2004,13 +1999,10 @@ Every test runs in the service suite (§8) unless it names another layer.
 | V39 | Admission runs before the handle is resolved. | A client outside a share's netgroup presents a live handle and the handle of a removed file: `ErrAccess` for both. |
 | V40 | A share's removal joins every call admitted before its mark. | A create is held between admission and its commit while the share is removed: step 3 waits for it; a call counted after the mark is refused `ErrStale`, its record never committed. |
 | §3.2 | A callback path moves; notifications honour traverse; a break that times out leaves its opens usable. | A recursive watch reports nothing below a directory its holder cannot traverse; an SMB lease whose break times out leaves its open usable for the holder's next write. |
-| §3.2 | Revoked state is reported and freed by cause. | An administrator revokes a client holding an open, a lock and a delegation: each stateid answers `ErrState` (`Revoked`) with `Admin` set, `Renew` reports `AdminRevoked` only, its record and sessions remain, and after `FreeRevoked` of each it opens afresh under the same client ID. |
 | §3.2 | A removed or moved share ends its state with `RevokedShare`. | With a waiting lock and an outstanding watch on a share, remove it, then repeat with a move naming an address: the recording `Callbacks` receive `RevokedShare` naming it, with `Addr` set for the move; the share's opens and deny modes are gone; the removal's step 3 waits for a create admitted before the mark. |
-| §4.3 | Every `ErrDelay` carries its cause; grace and lost state answer as RFC 14 says. | Each `ErrDelay` the service returns carries its `DelayCause`, a freeze's its bound; restart with an NFSv4.0 client holding a lock: its stateid answers `StaleState` during grace and is reclaimed, and after grace a freed one answers `BadState`. |
 | §4.6 | A privileged handle is privileged for every request through it. | A backup-intent handle sets owner, group and DACL on a file whose DACL excludes the caller, as `robocopy /B /SECFIX` does; without backup intent each is refused; a rename through a handle opened with `DELETE` succeeds without delete-child. |
 | §5.3 | A delete on close runs at the last close, through the marking open. | A backup-intent open with delete on close of a file whose DACL excludes its caller, and an EA set through it, succeed; with the parent made immutable before the close, the deferred unlink is refused, counted in `vfs_deferred_unlink_refusals_total`, and the file keeps its name. |
 | §5.9 | An `Incomplete` source refuses before anything changes. | Copy and clone from a file a restored snapshot lists as incomplete into an existing 2 GiB file: `ErrIncomplete` each, the destination unchanged. |
-| §3.1 | SMB multichannel loses state only with the session's last channel. | Losing one channel leaves the session's opens; losing its last disconnects only that session's opens. |
 
 ## 7. Observability
 
@@ -2050,10 +2042,11 @@ something the ones above it cannot.
 
 | Layer | Proves | How | Runs |
 | --- | --- | --- | --- |
-| pure units | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs round-trip and refuse malformed bytes; `vfs.Errors()` lists every declared error | table tests in `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over a fake of the few reads it declares | per change |
+| pure units | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs decode RFC 21's and RFC 22's golden bytes and refuse malformed ones; `vfs.Errors()` lists every declared error | table tests in `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over a fake of the few reads it declares | per change |
 | service suite | §5's orders, admission on every entry path, the cross-protocol rules and the V-rows of §6 | `suite.Run` over `vfs.New` with the in-memory store, a real engine on a temporary journal, real open state and a fake clock (§2.3) | per change |
 | fault injection | stalls, conflicts, a full journal, Lost content, a client that never acknowledges, a callback that fails, time | below the real components, not in place of them, since the service holds them as concrete types (§2.3): a fault-injecting key-value store under the metadata store ([RFC 16](rfc-16-metadata-store.md)'s `KV`), a fault-injecting remote tier and a small journal under the engine ([RFC 8](rfc-8-engine.md)), `RecordingCallbacks` that stall or fail, and the fake clock | per change |
 | model | lock, write, open and unlink interleaved against a sequential model, under `-race` | property tests | short per change; 10⁴ interleavings nightly |
+| fuzz | no client-held byte or name panics, over-allocates or reaches another file, directory or share | Go fuzz targets, below | seeds per change; each target 10 minutes nightly |
 | loopback | **(cluster)** the same suite with the front calling the per-file part over a loopback node channel: the route envelope, dedup (V11), cursor safety | `suite.Run` with the remote factory | after merge, gated on the remote primary shipping |
 | adapter side | translation only | `vfstest.Record` and `vfstest.Null` ([RFC 20 §7.2](rfc-20-adapters.md#7.2%20Handlers%20against%20a%20recording%20service)) | per change |
 
@@ -2072,6 +2065,25 @@ service is tested end to end before any adapter calls it. `Record`, `Null` and
 every method explicitly, embedding nothing, so a method added to `Service`
 fails to compile until `Record` records it.
 
+**Fuzzing.** Every input a client chooses has a `testing.F` target, seeded
+with the golden vectors and the suite's own values:
+
+- **IDs** (`pkg/vfs`): each codec of §3.4 decodes any bytes without panicking
+  or allocating more than the encoded size, and an accepted value re-encodes to
+  the same bytes;
+- **cursors**: a `ReadDir` cursor from arbitrary bytes, or from another
+  directory, is refused or resumes inside the directory it names, never
+  repeats or skips an entry of a directory left unchanged, and never yields one
+  from elsewhere;
+- **handles**: arbitrary handle bytes are refused before resolution or admitted
+  for their own share only (§4.9, V39); a pseudo handle decodes to a node of the
+  pseudo-filesystem or is refused;
+- **names**: arbitrary names to `Create`, `Lookup`, `Link` and `Rename` are each
+  refused with nothing changed (`ErrNameTooLong`, `ErrInvalid`) or, accepted,
+  found once by `Lookup` and once by `ReadDir`;
+- **sequences**: the model layer's operations are decoded from the fuzz input,
+  so a failing interleaving is saved to the corpus and replays per change.
+
 **Import and call sites.** Beside [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s
 test, which covers adapters, a test parses `internal/vfs` and fails, naming the
 function, on: an exported `Service` method that calls the engine, a metadata
@@ -2079,7 +2091,7 @@ write view or open state directly rather than through its unexported `…At`
 method; a call of `Authorize` or `Granted` outside `authz`; and any store,
 engine or open-state import in `admit`, `pseudofs` or `lockorder`, which reach
 the store only through the narrow reads they declare, satisfied by `New`
-(V2, V5, V32). It, and §9's allowlist test, is seeded with one deliberate
+(V32). It, and §9's allowlist test, is seeded with one deliberate
 violation in its own test data and must report it.
 
 **Benchmarks.** Driven by the same factory, so a protocol benchmark minus a
