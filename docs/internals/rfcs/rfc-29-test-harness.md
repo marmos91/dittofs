@@ -585,7 +585,8 @@ suites:
     format: subunit                     # smbtorture's test:, success: and failure: lines
     image: quay.io/samba.org/samba-toolbox:v0.8
     cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}%{password} {test}"
-    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's timeout, share and name prefix
+    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's share and name prefix
+    timeout: { test: 5m }               # run.sh's one limit for each test of its list
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
@@ -596,6 +597,7 @@ suites:
       kerberos:                         # dt run smbtorture --kerberos
         cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
         tests: [smb2.session, smb2.read, smb2.lock]
+        timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}                      # one cell: it pins its profile
         fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
@@ -696,12 +698,15 @@ runs: /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d
 ```
 
 **smbtorture's test list.** `tests.txt` holds what `smbtorture/run.sh` holds today: each test or
-sub-suite and its timeout; `share=` when it runs on a share other than the first, as
-`smb2.acls_non_canonical` runs on `smbnoncanon`; and `prefix=` for the part of a name smbtorture
-leaves off what it reports. Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the
-`smb2.` the reader puts before a name that lacks it, as today's grader does, make that
-`smb2.oplock.batch1`, the name the known list uses. The comments on why some tests aren't run
-stay in the file.
+sub-suite; `share=` when it runs on a share other than the first, as `smb2.acls_non_canonical`
+runs on `smbnoncanon`; and `prefix=` for the part of a name smbtorture leaves off what it reports.
+Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the `smb2.` the reader puts before
+a name that lacks it, as today's grader does, make that `smb2.oplock.batch1`, the name the known
+list uses. `run.sh` gives every test of its list one limit, 5 minutes, so the suite's
+`timeout.test` holds it, and a line gives its own only to differ. A line is a name and then, in
+any order, a timeout, `share=` and `prefix=`, as `smb2.acls_non_canonical share=smbnoncanon
+prefix=acls_non_canonical`; anything else on it is an error, and a line that starts with `#` is a
+comment. The comments on why some tests aren't run stay in the file.
 
 **Scenario timeouts.** A scenario's size class is in its file name (`test/scenarios/README.md`):
 `xs` under 10 s, `s` under 1 min, `m` under 5, `l` under 15, `xl` under 1 h. With `test: size`, its
@@ -1147,7 +1152,8 @@ grader:
   its exit; the test it left open is incomplete. A failure in the client's own connection setup,
   which the connection-failure filter finds, is incomplete too: there is no server result. The
   self-contradictory `smb2.replay.channel-sequence` draw (`CSN 0x7fff`) is an expected skip the
-  reader grades itself.
+  reader grades itself. An entry that reports no test at all, as smbtorture does for a name it
+  doesn't know, didn't run, so a test the image's smbtorture lacks is lost coverage (exit 2).
 - `trx`: `Passed` passes; `Failed`, `Error`, `Timeout` and `Aborted` fail; `NotExecuted` and any
   other outcome skip, with the outcome kept as `rawStatus`.
 

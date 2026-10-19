@@ -258,7 +258,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun("the test tools: " + err.Error())
 		}
 	}
-	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
+	tests, lines, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
 		return didntRun(err.Error())
 	}
@@ -358,6 +358,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	var failed, notRun []string
 	var cases []report.Test
 	unstarted, interrupted := 0, false
+	first := vals["share"] // the fixture's first share, which a test's share= replaces
 	for _, test := range tests {
 		if cellCtx.Err() != nil {
 			unstarted++
@@ -367,11 +368,14 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if test != "" {
 			prefix = test + ": "
 		}
+		if first != "" {
+			vals["share"] = cmp.Or(lines[test].Share, first)
+		}
 		if spec.Reset == "each" {
 			// decision: a test whose share wasn't reset doesn't run, since it
 			// would run on what the test before it left there. The reset is
 			// one of the fixture's steps, so it isn't retried.
-			if err := server.Reset(); err != nil {
+			if err := server.Reset(vals["share"]); err != nil {
 				notRun = append(notRun, prefix+"its share wasn't reset: "+err.Error())
 				continue
 			}
@@ -381,7 +385,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			t.capture = &output
 		}
 		start := time.Now()
-		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, limits))
+		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, lines))
 		interrupted = interrupted || r.interrupted
 		if len(r.notRun) > 0 {
 			notRun = append(notRun, prefix+strings.Join(r.notRun, ", "))
@@ -404,7 +408,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		case r.interrupted:
 			// Its not-run note says so, and nothing it reported counts.
 		default:
-			got, err := read(report.Ran{Test: test, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Out: out})
+			got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Out: out})
 			if err != nil {
 				notRun = append(notRun, prefix+err.Error())
 			}
@@ -497,7 +501,7 @@ func gradeNotes(cases []report.Test) (failed, notRun []string) {
 
 // readers read the formats whose results a tool writes: every format but
 // exit and go-json, which dt reads itself.
-var readers = map[string]report.Reader{}
+var readers = map[string]report.Reader{"subunit": readSubunit}
 
 // exitNotRun is the exit status of a command that ran nothing, as the
 // scenarios' setup gives when another run holds their lock.

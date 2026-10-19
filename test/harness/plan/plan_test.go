@@ -245,10 +245,12 @@ func TestChangedPaths(t *testing.T) {
 	}
 }
 
-// A .txt test list may give a test its own limit, which the cell covers.
+// A .txt test list may give a test its own limit, which the cell covers, and
+// the share it runs on and the prefix of the names it reports, in any order.
+// Anything else on a line is an error.
 func TestTestListLimits(t *testing.T) {
 	root := t.TempDir()
-	list := "# a comment\nslow 40m\nquick\n"
+	list := "# a comment\nslow 40m\nquick prefix=q share=two\n"
 	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(list), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -272,12 +274,18 @@ suites:
 	if cells[0].TimeoutMinutes != 45 || cells[1].TimeoutMinutes != 30 {
 		t.Errorf("limits %d and %d minutes, want 45 and 30", cells[0].TimeoutMinutes, cells[1].TimeoutMinutes)
 	}
-
-	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte("slow forty\n"), 0o644); err != nil {
-		t.Fatal(err)
+	_, lines, err := ListTests(root, r.Units(r.Suite("s"))[0], "")
+	if err != nil || lines["quick"] != (Line{Share: "two", Prefix: "q"}) || lines["slow"] != (Line{Limit: 40 * time.Minute}) {
+		t.Errorf("lines %+v, %v", lines, err)
 	}
-	if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1") {
-		t.Errorf("a bad limit: %v", err)
+
+	for _, bad := range []string{"slow forty", "slow 0s", "slow 1m 2m", "slow shard=x", "slow share"} {
+		if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(bad+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1") {
+			t.Errorf("%q: %v", bad, err)
+		}
 	}
 }
 

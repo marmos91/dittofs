@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,10 +69,11 @@ func Unsupported(f *registry.Fixture) string {
 }
 
 // Placeholders names what fixture f gives a cell's commands, besides {bin}:
-// {server}, {user}, {user2} and {password}, {nfs-port} when it serves NFS,
-// {smb-port} when it serves SMB, and {mount} when it mounts the share.
+// {server}, {share}, {user}, {user2} and {password}, {nfs-port} when it
+// serves NFS, {smb-port} when it serves SMB, and {mount} when it mounts the
+// share.
 func Placeholders(f registry.Fixture) []string {
-	names := []string{"server", "user", "user2", "password"}
+	names := []string{"server", "share", "user", "user2", "password"}
 	if f.NFS.Version != "" {
 		names = append(names, "nfs-port")
 	}
@@ -104,7 +106,8 @@ type Server struct {
 	stopErr error
 }
 
-// Placeholders returns what the server gives a cell's commands, by name.
+// Placeholders returns what the server gives a cell's commands, by name. Its
+// {share} is its first share, without the leading /.
 func (s *Server) Placeholders() map[string]string { return s.vals }
 
 // Start starts dfs from bin with its data under out, in a directory it
@@ -208,7 +211,7 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		_ = s.Stop()
 		return nil, err
 	}
-	s.vals = map[string]string{"server": server, "user": User, "user2": User2, "password": password}
+	s.vals = map[string]string{"server": server, "share": strings.TrimPrefix(shares[0].Name, "/"), "user": User, "user2": User2, "password": password}
 	if s.nfsPort > 0 {
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
 		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
@@ -259,14 +262,18 @@ func (s *Server) login() (*apiclient.Client, error) {
 	return c, nil
 }
 
-// Reset removes {share}, the first share, and creates it again with its
-// settings and grants, as the conformance runner's reset does.
-func (s *Server) Reset() error {
+// Reset removes the share a test runs on, its {share}, and creates it again
+// with its settings and grants, as the conformance runner's reset does.
+func (s *Server) Reset(name string) error {
+	i := slices.IndexFunc(s.shares, func(r apiclient.CreateShareRequest) bool { return strings.TrimPrefix(r.Name, "/") == name })
+	if i < 0 {
+		return fmt.Errorf("the fixture has no share %s", name)
+	}
 	c, err := s.login()
 	if err != nil {
 		return err
 	}
-	share := s.shares[0]
+	share := s.shares[i]
 	if err := c.RemoveShare(share.Name); err != nil {
 		return fmt.Errorf("removing the share %s: %w", share.Name, err)
 	}

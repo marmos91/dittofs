@@ -99,6 +99,7 @@ func Slug(cell string) string {
 // suite lists no tests, so the commands ran once for the whole cell.
 type Ran struct {
 	Test     string
+	Prefix   string // the test's prefix= in a .txt list: what the names the tool reports leave off
 	Output   []byte // what the commands printed
 	Exit     int    // the first non-zero exit status among them, else 0
 	TimedOut bool   // they were stopped at the test's limit or the cell's

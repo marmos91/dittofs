@@ -134,7 +134,7 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 	if allValues {
 		values = nil
 	}
-	groups, limits, err := testGroups(root, u, sel.Glob)
+	groups, lines, err := testGroups(root, u, sel.Glob)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 				if partial {
 					c.Tests = tests
 				}
-				if err := c.setTimeout(u.Timeout, tests, limits); err != nil {
+				if err := c.setTimeout(u.Timeout, tests, lines); err != nil {
 					return nil, err
 				}
 				cells = append(cells, c)
@@ -231,14 +231,14 @@ func NeedsByTest(root string, u *registry.Suite, tier string) (map[string][]stri
 }
 
 // testGroups splits the unit's tests into the ones its needs cover and, per
-// needs_by_test entry, the ones that need more, and returns the tests that
-// carry their own limit. Tests are listed only when something needs them: a
-// split, shards, a narrowing glob, size timeouts or a list with limits.
-func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[string]time.Duration, error) {
+// needs_by_test entry, the ones that need more, and returns what a .txt
+// list's lines give its tests. Tests are listed only when something needs
+// them: a split, shards, a narrowing glob, size timeouts or a list.
+func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[string]Line, error) {
 	if len(u.NeedsByTest) == 0 && u.Shards <= 1 && narrow == "" && u.Timeout.Test != "size" && u.Tests.File == "" {
 		return []group{{}}, nil, nil
 	}
-	tests, limits, err := ListTests(root, u, narrow)
+	tests, lines, err := ListTests(root, u, narrow)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -283,16 +283,23 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 			out = append(out, *g)
 		}
 	}
-	return out, limits, nil
+	return out, lines, nil
+}
+
+// Line is what a .txt list's line gives its test besides its name.
+type Line struct {
+	Limit  time.Duration // its own limit; 0 when the line gives none
+	Share  string        // share=: the share it runs on, in place of the fixture's first
+	Prefix string        // prefix=: what the names the tool reports for it leave off
 }
 
 // ListTests expands the unit's tests: a glob relative to root, a list of
-// names, or a .txt file of names, each line a name and optionally its own
-// limit. A glob holding a placeholder is resolved only when the cell runs, so
-// it lists nothing here.
-func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[string]time.Duration, error) {
+// names, or a .txt file of names, each line a name and then, in any order, its
+// own limit, share= and prefix=. A glob holding a placeholder is resolved only
+// when the cell runs, so it lists nothing here.
+func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[string]Line, error) {
 	var tests []string
-	limits := map[string]time.Duration{}
+	lines := map[string]Line{}
 	switch {
 	case u.Tests.Glob != "" && !u.Tests.Deferred():
 		var err error
@@ -306,25 +313,34 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 		if err != nil {
 			return nil, nil, err
 		}
-		for i, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
+		for i, text := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(text)
 			if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 				continue
 			}
-			tests = append(tests, fields[0])
-			if len(fields) > 1 {
-				limit, err := time.ParseDuration(fields[1])
-				if err != nil {
-					return nil, nil, fmt.Errorf("%s:%d: %q is not a duration", u.Tests.File, i+1, fields[1])
+			var l Line
+			for _, f := range fields[1:] {
+				key, value, isKey := strings.Cut(f, "=")
+				limit, err := time.ParseDuration(f)
+				switch {
+				case isKey && key == "share":
+					l.Share = value
+				case isKey && key == "prefix":
+					l.Prefix = value
+				case err == nil && limit > 0 && l.Limit == 0:
+					l.Limit = limit
+				default:
+					return nil, nil, fmt.Errorf("%s:%d: %q is not a limit above zero, share= or prefix=", u.Tests.File, i+1, f)
 				}
-				limits[fields[0]] = limit
 			}
+			tests = append(tests, fields[0])
+			lines[fields[0]] = l
 		}
 	}
 	if narrow != "" {
 		tests = slices.DeleteFunc(slices.Clone(tests), func(t string) bool { return !match(narrow, t) })
 	}
-	return tests, limits, nil
+	return tests, lines, nil
 }
 
 // Glob returns the files pattern matches, each named by its path below dir
@@ -442,7 +458,7 @@ func blocking(b registry.Blocking, tier string) bool {
 // fixture's setup time; when that raises it, a note says so. A test's limit is
 // its own from the list, else its size class's or the suite's, and a test
 // with no bound counts as the cell's own limit.
-func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]time.Duration) error {
+func (c *Cell) setTimeout(t registry.Timeout, tests []string, lines map[string]Line) error {
 	cell, err := time.ParseDuration(t.Cell)
 	if err != nil {
 		return err
@@ -452,7 +468,7 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 	if len(tests) > 0 {
 		total = 0
 		for _, name := range tests {
-			limit := TestLimit(t, name, limits)
+			limit := TestLimit(t, name, lines)
 			if limit == 0 {
 				limit = cell
 			}
@@ -471,8 +487,8 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 
 // TestLimit is a test's limit: its own from a .txt list, else its size
 // class's or the suite's. Zero means no bound.
-func TestLimit(t registry.Timeout, name string, limits map[string]time.Duration) time.Duration {
-	if limit, own := limits[name]; own {
+func TestLimit(t registry.Timeout, name string, lines map[string]Line) time.Duration {
+	if limit := lines[name].Limit; limit > 0 {
 		return limit
 	}
 	if t.Test == "size" {
