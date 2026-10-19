@@ -50,21 +50,27 @@ func TestReconcileAuthenticatedState_Refusals(t *testing.T) {
 	}
 	r := setupAuthReconciler(t, ds, credSecret)
 
-	allowed := false
+	mode := "forbid"
 	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
 		"GET /api/v1/adapters": func(w http.ResponseWriter, _ *http.Request) {
 			_ = json.NewEncoder(w).Encode([]AdapterInfo{{Type: "nfs", Enabled: true, Running: true, Port: 12049}})
 		},
 		"GET /api/v1/adapters/nfs/settings": func(w http.ResponseWriter, _ *http.Request) {
-			if !allowed {
+			switch mode {
+			case "forbid":
 				forbidden(w)
-				return
+			case "fail":
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				_, _ = w.Write([]byte(`{"portmapper_enabled":true}`))
 			}
-			_, _ = w.Write([]byte(`{"portmapper_enabled":true}`))
 		},
 		"PUT /api/v1/shares/{share}/snapshot-policy": func(w http.ResponseWriter, _ *http.Request) {
-			if !allowed {
+			switch mode {
+			case "forbid":
 				forbidden(w)
+			case "fail":
+				w.WriteHeader(http.StatusInternalServerError)
 			}
 		},
 	})
@@ -112,12 +118,25 @@ func TestReconcileAuthenticatedState_Refusals(t *testing.T) {
 		t.Errorf("refused calls: the NFS Service publishes 111 with the portmapper unseen: %v", servicePortNames(ports))
 	}
 
-	allowed = true
+	// A call that fails otherwise decides nothing: the last answer stands.
+	mode = "fail"
+	c, ports = reconcile()
+	if c == nil || c.Status != metav1.ConditionFalse || publishes111(ports) {
+		t.Errorf("failures after refusals: Authorized = %+v, 111 published = %v; want False and not published", c, publishes111(ports))
+	}
+
+	mode = "allow"
 	c, ports = reconcile()
 	if c == nil || c.Status != metav1.ConditionTrue {
 		t.Errorf("allowed calls: Authorized = %+v, want True", c)
 	}
 	if !publishes111(ports) {
 		t.Errorf("allowed calls: the NFS Service doesn't publish 111 with the portmapper on: %v", servicePortNames(ports))
+	}
+
+	mode = "fail"
+	c, ports = reconcile()
+	if c == nil || c.Status != metav1.ConditionTrue || !publishes111(ports) {
+		t.Errorf("failures after allowed calls: Authorized = %+v, 111 published = %v; want True and published", c, publishes111(ports))
 	}
 }

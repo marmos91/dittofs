@@ -567,13 +567,17 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 }
 
 // setAuthorizedCondition sets the Authorized condition: False, naming the calls
-// the DittoFS API refused with 403, else True. It runs on every adapter poll, so
-// it writes only on a change.
-func (r *DittoServerReconciler) setAuthorizedCondition(ctx context.Context, ds *dittoiov1alpha1.DittoServer, refused error) {
+// the DittoFS API refused with 403, and True once every call got its answer. A
+// call that failed otherwise says nothing, so the last answer stands. It runs
+// on every adapter poll, so it writes only on a change.
+func (r *DittoServerReconciler) setAuthorizedCondition(ctx context.Context, ds *dittoiov1alpha1.DittoServer, answered answers) {
 	status, reason, message := metav1.ConditionTrue, "Allowed", "The DittoFS API refused none of the operator's calls"
-	if refused != nil {
+	switch {
+	case len(answered.refused) > 0:
 		status, reason = metav1.ConditionFalse, "Forbidden"
-		message = "The DittoFS API refused the operator's account: " + strings.ReplaceAll(refused.Error(), "\n", "; ")
+		message = "The DittoFS API refused the operator's account: " + strings.Join(answered.refused, "; ")
+	case answered.unanswered:
+		return
 	}
 	if c := meta.FindStatusCondition(ds.Status.Conditions, conditions.ConditionAuthorized); c != nil && c.Status == status && c.Message == message {
 		return

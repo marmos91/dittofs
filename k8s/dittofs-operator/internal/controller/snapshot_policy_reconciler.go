@@ -38,7 +38,7 @@ import (
 func (r *DittoServerReconciler) reconcileAuthenticatedState(ctx context.Context, ds *dittoiov1alpha1.DittoServer) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
-	adapterResult, adaptersRefused := r.reconcileAdapters(ctx, ds)
+	adapterResult, adapterAnswers := r.reconcileAdapters(ctx, ds)
 
 	// Service reconciliation: sync adapter Services based on discovered state.
 	if err := r.reconcileAdapterServices(ctx, ds); err != nil {
@@ -60,12 +60,12 @@ func (r *DittoServerReconciler) reconcileAuthenticatedState(ctx context.Context,
 	// Snapshot policy reconciliation: push declared per-share policies.
 	// Best-effort — a share that does not exist yet is skipped and retried on
 	// the next reconcile; failures must not block the loop.
-	retry, policiesRefused := r.reconcileSnapshotPolicies(ctx, ds)
+	retry, policyAnswers := r.reconcileSnapshotPolicies(ctx, ds)
 	if retry && adapterResult.RequeueAfter == 0 {
 		adapterResult.RequeueAfter = 30 * time.Second
 	}
 
-	r.setAuthorizedCondition(ctx, ds, errors.Join(adaptersRefused, policiesRefused))
+	r.setAuthorizedCondition(ctx, ds, adapterAnswers.and(policyAnswers))
 	return adapterResult, nil
 }
 
@@ -78,22 +78,21 @@ func (r *DittoServerReconciler) reconcileAuthenticatedState(ctx context.Context,
 // preserved.
 //
 // Returns true when at least one policy could not be applied because its share
-// was missing, so the caller can schedule a retry, and the policies the API
-// refused with 403.
-func (r *DittoServerReconciler) reconcileSnapshotPolicies(ctx context.Context, ds *dittoiov1alpha1.DittoServer) (bool, error) {
+// was missing, so the caller can schedule a retry, and the API's answers.
+func (r *DittoServerReconciler) reconcileSnapshotPolicies(ctx context.Context, ds *dittoiov1alpha1.DittoServer) (bool, answers) {
 	logger := logf.FromContext(ctx)
 	if len(ds.Spec.SnapshotPolicies) == 0 {
-		return false, nil
+		return false, answers{}
 	}
 
 	apiClient, err := r.getAuthenticatedClient(ctx, ds)
 	if err != nil {
 		logger.Info("Snapshot policy reconcile: no authenticated client, skipping", "error", err.Error())
-		return false, nil
+		return false, answers{unanswered: true}
 	}
 
 	retry := false
-	var refused []error
+	var answered answers
 	for _, p := range ds.Spec.SnapshotPolicies {
 		req := UpsertSnapshotPolicyRequest{
 			Interval:   p.Interval,
@@ -116,10 +115,10 @@ func (r *DittoServerReconciler) reconcileSnapshotPolicies(ctx context.Context, d
 			logger.Error(err, "Snapshot policy reconcile failed", "share", p.Share)
 			r.Recorder.Eventf(ds, corev1.EventTypeWarning, "SnapshotPolicyFailed",
 				"Failed to apply snapshot policy for share %s: %v", p.Share, err)
-			refused = append(refused, refusal("snapshot policy for "+p.Share, err))
+			answered.note("snapshot policy for "+p.Share, err)
 			continue
 		}
 		logger.V(1).Info("Snapshot policy applied", "share", p.Share)
 	}
-	return retry, errors.Join(refused...)
+	return retry, answered
 }

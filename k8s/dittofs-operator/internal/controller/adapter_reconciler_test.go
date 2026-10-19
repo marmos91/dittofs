@@ -69,10 +69,7 @@ func TestReconcileAdapters_Success(t *testing.T) {
 		t.Fatalf("Failed to update credentials secret with server URL: %v", err)
 	}
 
-	result, err := r.reconcileAdapters(context.Background(), ds)
-	if err != nil {
-		t.Fatalf("reconcileAdapters returned error: %v", err)
-	}
+	result, _ := r.reconcileAdapters(context.Background(), ds)
 
 	// Verify RequeueAfter is the default polling interval (30s)
 	if result.RequeueAfter != 30*time.Second {
@@ -136,9 +133,9 @@ func TestReconcileAdapters_APIError_PreservesState(t *testing.T) {
 		t.Fatalf("Failed to update credentials secret: %v", err)
 	}
 
-	result, err := r.reconcileAdapters(context.Background(), ds)
-	if err != nil {
-		t.Fatalf("reconcileAdapters should not return error on API failure, got: %v", err)
+	result, answered := r.reconcileAdapters(context.Background(), ds)
+	if !answered.unanswered {
+		t.Error("a failed poll answered the portmapper calls")
 	}
 
 	// Should still requeue
@@ -189,10 +186,7 @@ func TestReconcileAdapters_EmptyResponse_StoresEmpty(t *testing.T) {
 		t.Fatalf("Failed to update credentials secret: %v", err)
 	}
 
-	result, err := r.reconcileAdapters(context.Background(), ds)
-	if err != nil {
-		t.Fatalf("reconcileAdapters returned error: %v", err)
-	}
+	result, _ := r.reconcileAdapters(context.Background(), ds)
 
 	if result.RequeueAfter != 30*time.Second {
 		t.Errorf("Expected RequeueAfter = 30s, got %v", result.RequeueAfter)
@@ -214,9 +208,9 @@ func TestReconcileAdapters_NoCredentials_PreservesState(t *testing.T) {
 	// No credentials Secret created
 	r := setupAuthReconciler(t, ds)
 
-	result, err := r.reconcileAdapters(context.Background(), ds)
-	if err != nil {
-		t.Fatalf("reconcileAdapters should not return error when no credentials, got: %v", err)
+	result, answered := r.reconcileAdapters(context.Background(), ds)
+	if !answered.unanswered {
+		t.Error("a poll without credentials answered the portmapper calls")
 	}
 
 	// Should still requeue
@@ -267,10 +261,7 @@ func TestReconcileAdapters_CustomPollingInterval(t *testing.T) {
 		t.Fatalf("Failed to update credentials secret: %v", err)
 	}
 
-	result, err := r.reconcileAdapters(context.Background(), ds)
-	if err != nil {
-		t.Fatalf("reconcileAdapters returned error: %v", err)
-	}
+	result, _ := r.reconcileAdapters(context.Background(), ds)
 
 	// Verify custom polling interval (1m = 60s)
 	if result.RequeueAfter != 60*time.Second {
@@ -413,8 +404,8 @@ func TestEnsurePortmapperEnabled_EnablesWhenDisabled(t *testing.T) {
 		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
 	}
 
-	if err := r.ensurePortmapperEnabled(context.Background(), apiClient, adapters); err != nil {
-		t.Fatalf("ensurePortmapperEnabled: %v", err)
+	if a := r.ensurePortmapperEnabled(context.Background(), apiClient, adapters, false); len(a.refused) > 0 || a.unanswered {
+		t.Fatalf("ensurePortmapperEnabled: %+v", a)
 	}
 
 	if !patchCalled {
@@ -425,15 +416,15 @@ func TestEnsurePortmapperEnabled_EnablesWhenDisabled(t *testing.T) {
 	}
 }
 
-// Only a 403 is returned, to show on the DittoServer; other failures are retried
-// quietly on the next poll.
-func TestEnsurePortmapperEnabled_ReturnsOnlyARefusal(t *testing.T) {
+// A 403 is a refusal, to show on the DittoServer. Any other failure answers
+// nothing, and the portmapper stays as it was last seen.
+func TestEnsurePortmapperEnabled_Answers(t *testing.T) {
 	for _, tc := range []struct {
-		status  int
-		refused bool
+		status            int
+		refused, answered bool
 	}{
-		{http.StatusForbidden, true},
-		{http.StatusInternalServerError, false},
+		{http.StatusForbidden, true, true},
+		{http.StatusInternalServerError, false, false},
 	} {
 		r := setupAuthReconciler(t, newTestDittoServer("test-server", "default"))
 		server := mockDittoFSServer(t, map[string]http.HandlerFunc{
@@ -443,12 +434,12 @@ func TestEnsurePortmapperEnabled_ReturnsOnlyARefusal(t *testing.T) {
 		})
 		adapters := []AdapterInfo{{Type: "nfs", Enabled: true, Running: true, Port: 12049}}
 
-		err := r.ensurePortmapperEnabled(context.Background(), NewDittoFSClient(server.URL), adapters)
-		if (err != nil) != tc.refused {
-			t.Errorf("status %d: got error %v, want one: %v", tc.status, err, tc.refused)
+		a := r.ensurePortmapperEnabled(context.Background(), NewDittoFSClient(server.URL), adapters, true)
+		if (len(a.refused) > 0) != tc.refused || a.unanswered == tc.answered {
+			t.Errorf("status %d: answers %+v, want refused %v, answered %v", tc.status, a, tc.refused, tc.answered)
 		}
-		if adapters[0].Portmapper {
-			t.Errorf("status %d: the adapter is marked with the portmapper on", tc.status)
+		if !adapters[0].Portmapper {
+			t.Errorf("status %d: the portmapper seen on is no longer marked", tc.status)
 		}
 	}
 }
@@ -474,7 +465,7 @@ func TestEnsurePortmapperEnabled_SkipsWhenAlreadyEnabled(t *testing.T) {
 		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
 	}
 
-	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters)
+	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters, false)
 
 	if patchCalled {
 		t.Error("PATCH should NOT be called when portmapper is already enabled")
@@ -497,7 +488,7 @@ func TestEnsurePortmapperEnabled_SkipsWhenNoNFSAdapter(t *testing.T) {
 		{Type: "smb", Enabled: true, Running: true, Port: 12445},
 	}
 
-	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters)
+	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters, false)
 
 	if getCalled {
 		t.Error("GET /api/v1/adapters/nfs/settings should NOT be called when no NFS adapter is active")

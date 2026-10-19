@@ -202,14 +202,29 @@ func (e *DittoFSAPIError) IsNotFound() bool {
 	return e.StatusCode == 404
 }
 
-// refusal returns err, naming what was refused, when the API refused the call
-// with 403, and nil for any other error.
-func refusal(what string, err error) error {
+// answers is what the API said to the operator's calls that its role may be
+// refused: the calls it refused with 403, and whether one failed otherwise,
+// which says nothing either way.
+type answers struct {
+	refused    []string
+	unanswered bool
+}
+
+// note records how the call named what ended.
+func (a *answers) note(what string, err error) {
 	var apiErr *DittoFSAPIError
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%s: %w", what, err)
+	switch {
+	case err == nil:
+	case errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden:
+		a.refused = append(a.refused, what+": "+err.Error())
+	default:
+		a.unanswered = true
 	}
-	return nil
+}
+
+// and is a and b together.
+func (a answers) and(b answers) answers {
+	return answers{append(a.refused, b.refused...), a.unanswered || b.unanswered}
 }
 
 // LoginRequest represents a login request to the DittoFS API.
