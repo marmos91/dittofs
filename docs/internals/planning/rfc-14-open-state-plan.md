@@ -29,8 +29,11 @@ of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through tha
 ## 2. Decisions to settle
 
 **D1. Package `pkg/openstate`.** RFC 14's errors are named `openstate: …`. It imports `entity`
-and `kvstore`, never an adapter or the filesystem service; callbacks go up through an interface
-(D5).
+and `kvstore`, never an adapter or the filesystem service; recalls and lock grants go up through
+an interface of its own (D5). Adapters never import it (RFC 20 §2.3): only the filesystem service
+calls it, and the service maps each `openstate` error once to RFC 17 §4.3's neutral errors. So every
+`ErrDelay` carries its cause (RFC 17 §4.3's `Delay…` values), or the mapping is not total and an
+adapter answers it as a server fault (RFC 20 §7.3).
 
 **D2. Single node first, cluster rules behind seams.** Every rule RFC 14 marks "(cluster)" is out of
 stage 1: one lease owner per client (§4.1), handover and batch moves (§10), layouts (§2.6), a
@@ -55,12 +58,17 @@ file's table; each table has its own mutex, the "open-state step" of RFC 14 §11
 several files takes their steps in `FileID` order, then fold admission, then accept locks, as
 RFC 17 §5.1 orders every call. No call waits on a recall or a client while holding a step: a
 conflict with a caching grant starts the recall and returns `ErrDelay` at once (RFC 17 §3.2,
-"no worker waits on a recall").
+"no worker waits on a recall"). The recall is handed up after the step is released and before the
+call returns `ErrDelay`, so the break is queued ahead of the reply that triggered it (RFC 20 §6.2).
 
-**D5. Callbacks as RFC 17 §3.2 declares them**, `RecallGrant`, `Notify`, `Revoked`,
-`LockWaitOver`, registered per client at `Connect`. Stage 1 declares the interface in
-`openstate`; stage 2 decides whether RFC 17's package re-exports it. A callback failure or
-timeout counts as the client not answering.
+**D5. Open state reports to the service, not to clients.** RFC 17 §3.2's `Callbacks`
+(`RecallGrant`, `Notify`, `Revoked`, `LockWaitOver`) are implemented by adapters, which may not
+import `openstate` (RFC 20 §2.3), so the interface lives in `pkg/vfs`, and the service keeps the
+per-client registry: `Rebind(c, cb)` is already an RFC 17 call, and RFC 14's `Connect` takes no
+callbacks. `openstate` declares a small sink of its own, keyed by `ClientID`, with the same four
+events; the service implements it and routes each event to the client's latest `Callbacks`. The
+sink never blocks: it queues and returns, failing when the client has no live channel (RFC 20
+§3.3), and a failure or a missed deadline counts as the client not answering.
 
 **D6. Time through a declared clock.** Leases (90 s), grace, recall deadlines (35 s for an SMB
 break, one lease for NFS) and NFSv4 waiter polls all run on a clock the service declares with
@@ -82,7 +90,7 @@ Each piece lands as one or two PRs into `feat/storage-v2`, with its rows of the 
 | 1 | **Skeleton** | §3, §11 | the `OpenState` interface, errors, the per-file table and step, the clock, `CheckIO` and `CheckChange` with nothing to conflict yet | one table, client check |
 | 2 | **Clients and leases** | §2.1, §2.9, §4.1, §4.3 | `Connect`, `CreateSession`, `Renew`, `Expire`, `Revoke`, `FreeRevoked`, `Destroy`, `Rebind`; NFSv4.0 unconfirmed clients | lease expiry, server owner, client check |
 | 3 | **Opens and deny modes** | §2.2, §6, §7, §9 | `Open`, `Close`, `SetDisposition`, `SuspendTimes`, `Flushed`; deny modes at open; open-unlinked kept alive; delete on close; open children refuse an SMB rename or delete of their directory | no downgrade, anonymous I/O, cross-protocol, open-unlinked (and across protocols), lazy, delete pending, remove against deny-delete |
-| 4 | **Byte-range locks and waiters** | §2.3, §2.8, §2.10, §4.5 | `Lock`, `Unlock`, `TestLock`, `CancelLock`; FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM and `HostRestarted` | owners, NLM restart, the waiter rows |
+| 4 | **Byte-range locks and waiters** | §2.3, §2.8, §2.10, §4.5 | `Lock` and `Unlock` over a list of ranges, all or nothing, each range shared or exclusive (an SMB LOCK of several elements is one call, RFC 20 §4.3); `TestLock`, `CancelLock`; FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM and `HostRestarted` | owners, NLM restart, the waiter rows |
 | 5 | **Caching grants and recalls** | §2.4, §5 | grants offered at open, `Return`, `AckBreak`; recalls through `RecallGrant` with deadlines; revocation into the revoked set; no more grants to a client after one revoke; the per-client budget | recall deadline, flush on recall, no blocked worker, lease key, no write grant on a setuid file |
 | 6 | **Grace and reclaim** | §4.2, §4.4, §8, §9.2 | grace per shard after a restart, reclaims only, `ReclaimComplete`, early end; durable opens rebuilt from `Opens.Durable`; a new primary releases nothing before grace ends | grace, reclaim needs a record, reclaim grants no more, grace per shard, reclaim scoped, I/O in grace, early end, new primary, durable open prefix |
 | 7 | **SMB durable and persistent opens** | §8.1 | `Reconnect`, `Disconnect`, timeouts, create and lock replay, app instance, channel sequence | reconnect matching, timeout, create replay, lock replay, app instance, persistent |
@@ -95,7 +103,7 @@ Layouts (§2.6) and every "(cluster)" row wait for the cluster stages.
 `pkg/openstate/openstatetest`, built like `kvstoretest`: `Run(t, open)` runs every case against a
 service opened by the caller, over a fresh store, with:
 - a virtual clock the cases advance;
-- a recording `Callbacks` that can answer, refuse or stay silent, to drive recalls to their deadlines;
+- a recording sink (D5) that can answer, refuse or stay silent, to drive recalls to their deadlines;
 - `Check`, run after every case: no state held against a file with no table, no lock under a
   closed open, every durable open matching its record, every revoked stateid in its client's set.
 
@@ -119,8 +127,9 @@ The §13.3 benchmarks come with the pieces they measure.
 ## 6. Open questions
 
 1. **D2:** is single node first, with the cluster rules behind seams, the right cut?
-2. **D5:** where does the `Callbacks` interface live once stage 2 exists: in `openstate`, with RFC 17's
-   package using it, or in RFC 17's package with `openstate` importing it?
+2. **Multi-range `Lock`:** RFC 14 §11 still takes one range. This plan follows the `LockRange`
+   shape of the RFC 14 changes in review (a range plus its own `Exclusive`), since a single
+   `exclusive` flag cannot carry an SMB LOCK that mixes shared and exclusive elements.
 3. **SMB deadlock refusal:** smbtorture's open-brlock-deadlock expects one. Port `deadlock.go`, or
    record it as a known failure?
 4. **NFSv4 state today:** `internal/adapter/nfs/v4/state` (about 33k lines with tests) holds today's
