@@ -2098,6 +2098,14 @@ The set's test rules apply ([Test tiers](rfc-index.md#Test%20tiers)). Every chec
 runs against every metadata backend, and every Group A check runs against a
 remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite)).
 
+### 11.0 Where the checks live
+
+GC's safety is in block metadata's transactions, so Group A's rows on `MarkDue`,
+adoption, `Relocate`, `Abandon` and the gates are `Blocks` conformance cases in
+RFC 6's store suite (`pkg/metadata/storetest`), run against every backend. GC's
+own package tests its sources over `gctest`'s in-memory fakes ([§2.6](#2.6%20Package%20layout)).
+`arch_test.go` asserts that GC imports no component of the set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+
 ### 11.1 Group A — adversarial interleavings
 
 Each row **MUST** assert that the interleaving it names happened, by a hook in
@@ -2117,8 +2125,7 @@ the implementation, not by timing.
 | [§2.1](#2.1%20References%20are%20the%20only%20authority) time never permits | Set the retention to zero and stall an adopting commit past it. Assert the adoption resurrects or is refused; the clock changes only when the object goes. Skew a deleter's clock past the bound; assert it stops. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) drift | Turn versioning on between two deletes. Assert the next batch waits for `Recheck`, the noncurrent versions of the deleted names are deleted by version ID, nothing is pruned before, and puts and deletes resume after, with no operator action. Change the claim to another installation; assert no further delete. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) move without a clock | Hold a deleter's batch between its read of the claim and its `MarkDue`; write the GC pause record; release the batch with its clock frozen so the self-fence never fires. Assert `MarkDue` aborts on the pause, no delete is issued for any name not `deleted` before the pause, and a listing pass after the pause retires nothing. |
-| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) pause in both commit orders | For a relocation commit, a `MarkDue` and a listing retirement, each from a snapshot taken before the pause, commit it (a) after the pause and (b) before the pause; then (c) begin it after the pause commits. Assert (a) aborts and its retry refuses; (b) commits, its records are in the `move-base` export and its delete is for a name `deleted` before the pause, which the new installation neither adopts nor mints; (c) reads the pause and refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits, so the rig can see the gap. |
-| [§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter) hold in both commit orders | Set the hold while a `MarkDue` from an earlier snapshot is in flight, and commit the `MarkDue` (a) after and (b) before the hold; then (c) begin one after the hold commits. Assert (a) aborts and its retry refuses, (b) commits with its verification intact, and (c) refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits. |
+| [§2.1](#2.1%20References%20are%20the%20only%20authority) gates in both commit orders | Table-driven over each gate and the transactions it gates — the hold: `MarkDue`; the pause: `MarkDue`, a relocation commit (`Relocate`) and a listing retirement (`RetireUnrecorded`). For each, from a snapshot taken before the gate is written, commit the transaction (a) after the gate and (b) before it; then (c) begin one after the gate commits. Assert (a) aborts and its retry refuses; (b) commits — with its verification intact for the hold, and for the pause with its records in the `move-base` export and its delete only for a name `deleted` before the pause, which the new installation neither adopts nor mints; (c) reads the gate and refuses. Replace the tracked `Get` with a `Guard`: assert (c) commits, so the rig can see the gap. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) stale image | Copy an installation's disks, let the original run several `Recheck` periods and commit new blocks, then start the stale copy on a platform that reports no machine-generation change. Assert the copy's first `Recheck` reads the claim, finds a nonce its records do not hold, writes nothing and deletes nothing, while the original keeps serving. Kill the original between recording an intended nonce and its put, restart it: assert it accepts its own nonce. A `Recheck` that rewrites before reading lets the copy win and delete the original's blocks. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) folder store drift | Turn versioning on at a backup location's folder store mid-run. Assert the next copy and the next sweep wait for a `Recheck` and the store's drift condition is raised; restore the setting, assert both resume. A build that checks the folder store only when it registers copies into the drifted store. |
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) slow clock | Run the old installation's GC with its clock 5 % slow, partition it from the claim and take the claim over. Assert its last delete precedes the new installation's first put, adoption or delete. A wait of *T* plus an offset, with no rate stretch, overlaps them. |
@@ -2133,6 +2140,9 @@ the implementation, not by timing.
 | [§6.2](#6.2%20Corrections) a running pass does not count | Write a ref without its reverse key and raise its chunk's count by one. Start a full forward pass and let it pass the ref's file; then run the first index walk, which records the suspect; let that pass complete; run the second walk. Assert no lowering, and that a pass started after the suspect, once complete, writes the key. A rule that waits only for the last completed pass number lowers the count and retires a block the ref still reads. |
 | [§6.2](#6.2%20Corrections) lowering needs the forward walk | Write a ref without its reverse key and raise its chunk's count by one. Run two index walks with no forward walk between them; assert no lowering. Delete the key of a second ref written before the last completed pass, so no incremental pass reads it, and run two index walks with only an incremental pass between them; assert no lowering. Let a full forward walk complete; assert it writes the key, and the second walk then finds the count right and lowers nothing. A lowering on two index walks alone retires a block the ref still reads. |
 | [§6.1](#6.1%20Coverage) orphan refs | Leave a history ref no live cut sees, and a live ref of a file with no `File` record and no removal. Run the audit. Assert the history ref is dropped and counted down, the live ref dropped by a release removal, and both reported. |
+| [§2.5](#2.5%20Composition%20and%20lifecycle) lifecycle | `New` with every `Deps` field: assert no goroutine and no flow open. `Add` a namespace: assert no delete is issued before its first `Recheck` passes. `Drain` during a delete batch: assert the records stay `deleted` and the next `Start` and `Add` delete them. `Drain` mid-compaction after the intent: assert the intent is abandoned. `Close`: assert the leases are released with their epochs unchanged and a second node acquires at once, raising them. |
+| [§2.5](#2.5%20Composition%20and%20lifecycle) namespace churn | Drain a namespace while its deleter has a batch in flight, then `Remove` it; assert the batch commits nothing after `NS‖ns` is gone and GC holds no lease, flow or source for it. `Add` a namespace while others run; assert its sources start without a restart. |
+| [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) scheduler drop | Drop every posted GC item at random with probability ½; assert every due block is still deleted within its source's bound, re-derived from its index keys and cursors. |
 
 ### 11.2 Group B — model-based, with crashes
 
@@ -2181,7 +2191,7 @@ The emulator of [RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite) in
 | --- | --- |
 | [§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero) no scan | Grow the store with no garbage and run every GC source. Assert records read per pass do not grow with the store. |
 | [§2.2](#2.2%20Retirement%20is%20decided%20where%20the%20count%20reaches%20zero) born dead | Through the real carver, not hand-built records: write content that repeats one chunk, write one file from two writers, release a file while its pass is in flight. Delete everything. Assert every block is deleted and remote bytes return to zero, and that fully adopted blocks skip the trash. |
-| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) atomic save (once dedup returns) | Save a file by writing a temporary copy and renaming it over the original, 1,000 times. Assert uploads equal the changed chunks, not the file, and resurrections count the rest. |
+| [§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block) atomic save (deferred with dedup; not in the first-release gate) | Save a file by writing a temporary copy and renaming it over the original, 1,000 times. Assert uploads equal the changed chunks, not the file, and resurrections count the rest. |
 | [§5.2](#5.2%20Collection%20is%20housekeeping) intents collect crashes | Crash offloads and compactions after their puts, many times, with listing disabled. Assert every orphan is deleted from its abandoned intent. |
 | [§3.6](#3.6%20Failures%20resolve%20on%20their%20own) no intervention | Fail every delete until the backlog is reported, then restore the remote; trip the hold, then let a clean period pass. Assert both clear with no operator action. |
 | [§4.4](#4.4%20When%20to%20compact%20is%20policy) default | With default configuration, churn files until amplification passes the target. Assert it returns under the target with no configuration change, and small blocks are merged. |
@@ -2210,24 +2220,33 @@ The emulator of [RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite) in
 
 Run on the reference box ([Test tiers](rfc-index.md#Test%20tiers)), against a
 local emulator of the remote service and the reference metadata backend, except
-where a row names the scale tier.
+where a row names the scale tier. Rows marked `report` gate nothing; every other
+row fails the run.
 
 | Benchmark | Measures | Target |
 | --- | --- | --- |
-| Deleter throughput | objects verified, deleted and pruned per second, batches of 1,000 names | ≥ 1,000/s per partition |
+| Deleter throughput | objects verified, deleted and pruned per second, remote batches of 1,000 names over K-bounded `MarkDue` transactions | ≥ 1,000/s per partition, reporting transactions per second |
 | Verification cost | reads per delete, against chunks per block | ≤ 2 per carried chunk |
 | GC cost against store size | records read per pass, fixed garbage, 10⁵ to 10⁸ recorded blocks | flat within 10% |
 | Backlog drain | time to empty 10⁶ due deletions after the remote returns | ≤ 10⁶ / deleter throughput, with no operator action |
 | Pass memory | peak memory, 10⁵ to 10⁸ recorded blocks | flat within 10% |
 | Deletion storm | client p99 while 10⁶ files are released and their blocks deleted, against the same load idle | within 20% of idle |
-| Resurrection | uploads saved per 10⁶ commits of an atomic-save workload | report |
+| Resurrection (deferred with dedup; not in the first-release gate) | uploads saved per 10⁶ commits of an atomic-save workload | report |
 | Compaction under load | offload MB/s and client p99 with the compactor at its share, against neither running | within 10% of offload's fair share; p99 within 20% |
 | Space amplification | stored over referenced bytes under a churn workload, per target, and bytes rewritten to hold it | report; feeds [§12](#12.%20Open%20questions) item 1 |
 | Audit coverage at scale | projected time to merge 2 PB's chunk records and reverse keys at measured throughput | ≤ `gc.audit.period` |
 | Audit coverage at scale: block walk | projected time to point-read 2 PB's carried chunk records (about 8.6×10⁹) at measured throughput | ≤ `gc.audit.period` |
-| Partition scaling | deleter and audit throughput with 1, 4 and 16 storage nodes | report; near linear |
+| Partition scaling | deleter and audit throughput with 1, 4 and 16 storage nodes | ≥ 0.7 × linear at 16 nodes (proposal, unmeasured) |
 | Index rebuild | seconds per 10⁶ block records | report |
 | Soak | 72 h of mixed writes, releases, snapshots, compaction and audit, with Group B's invariants checked hourly and Group C's faults on | zero invariant failures; memory and backlog flat |
+
+### 11.7 Fuzz targets
+
+| Target | Property |
+| --- | --- |
+| listing merge-join ([§5.2](#5.2%20Collection%20is%20housekeeping)) | for random interleaved `List`, `B‖` and `I‖` streams, no name present in `B` or `I` is ever passed to `RetireUnrecorded` |
+| bucket and score ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | the bucket is monotone in dead ratio, `small` only for fully live blocks under a quarter of the target; the score never divides by zero |
+| `Recheck` drift rules ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | over random sequences of read, transient and drifted results, drift is raised only on a drifted read or two unread periods in a row |
 
 ## 12. Open questions
 
