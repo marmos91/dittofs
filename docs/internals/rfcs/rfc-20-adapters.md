@@ -431,7 +431,7 @@ flowchart TB
 
 - **`pkg/`** holds contracts several components build against: `pkg/vfs`, the
   service interface and its value types (RFC 17), and `pkg/vfs/vfstest`, its
-  generated recording fake and null service and the service's conformance
+  hand-written recording fake and null service and the service's conformance
   suite (§7.2, §6.10, [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Nothing adapter-
   specific is in `pkg/`.
 - **`internal/adapter/`** holds every line of adapter code. Only the
@@ -1356,8 +1356,9 @@ it holds — the service counts nothing about holds:
   a fresh 30 s attempt deadline inside the hold's bound (§6.4) —
   the same decoded arguments, the wire IDs resolved again, so an open closed
   meanwhile is seen;
-- how long a request is held is [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)'s
-  table, applied by the pipeline from `Delay.Hold()`; a handler never chooses;
+- how long a request is held is the protocol's bound for the delay's cause
+  ([RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)),
+  applied by the pipeline from the `Delay`'s cause; a handler never chooses;
 - a client `CANCEL` or a closed connection ends the hold, and for a waiting lock
   calls `CancelLock` before answering ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)).
 
@@ -1949,7 +1950,7 @@ are the protocol RFCs' ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20ca
 
 | Limit | Applies to | On expiry |
 | --- | --- | --- |
-| request deadline | each attempt of every service call: a fixed 30 s from arrival, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A held request (§4.6) is bounded in total by its hold class — `smb_pending_deadline` on a recall, `smb_pending_cap` for a transient refusal — and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
+| request deadline | each attempt of every service call: a fixed 30 s from arrival, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A held request (§4.6) is bounded in total by its cause's hold bound — `smb_pending_deadline` on a recall, `smb_pending_cap` for a transient refusal — and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
 | frame deadline | the rest of a request once its first byte has arrived | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
 | idle timeout | a connection with no request and no held state | closed |
 | write deadline | the writer, per message | connection closed |
@@ -2259,7 +2260,7 @@ the service's suite ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
 
 ```go
 func TestWrite3(t *testing.T) {
-	svc := vfstest.Record(t)                          // generated from the interface
+	svc := vfstest.Record(t)                          // records every Service method
 	h := &v3.Handlers{svc: svc}                       // what nfs.New would build (§4.7)
 	svc.Expect("Write").Args(anyCtx, ident, vfs.Anonymous(fh), int64(8192), data4k, vfs.FileSync).
 		Return(vfs.WriteResult{N: 4096, Verifier: verf, WCC: wcc}, nil) // the mutating call, pinned with its arguments

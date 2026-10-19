@@ -1203,6 +1203,8 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrIncomplete` — a read, through a snapshot or a copy made from one, of a file the snapshot's cut lists as incomplete ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), or a `COPY` or `CLONE` from such a file, refused before anything changes ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_NOSPC` for a share-wide or project quota, `NFS4ERR_DQUOT` for a user or group one | `NFS3ERR_NOSPC` and `NFS3ERR_DQUOT` likewise |
 | `ErrInvalid` — a `COPY` or `CLONE` of overlapping ranges of one file, or a `CLONE` longer than `clone_max_len` (§9.3) | `NFS4ERR_INVAL` | — |
+| `ErrReadOnly` — a mutation where only reading is admitted ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_ROFS` | `NFS3ERR_ROFS` |
+| `ErrNameTooLong` — a name past the share's length limit | `NFS4ERR_NAMETOOLONG` | `NFS3ERR_NAMETOOLONG` |
 | `ErrCross` (`CrossNamespace`) — a `COPY` or `CLONE` between shares in different namespaces (§9.3) | `NFS4ERR_XDEV` | — |
 | `ErrCross` (`CrossShard`) — **(cluster)** a `CLONE` whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `COPY`: never reaches the adapter; the service copies the bytes server-side, reading at the source and writing at the destination, and the adapter answers success with the count ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). `CLONE`: `NFS4ERR_XDEV`, and the client copies. Never `NFS4ERR_NOTSUPP`, which Linux records as the operation missing for the whole mount | — |
 | `ErrInconsistent` — a store invariant the server's own state breaks, such as a constraint or a file's link count below zero, never a directory's subdirectory count, which RFC 7 recounts and reads as 0 meanwhile (App. B) ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the service raises a health condition | `NFS4ERR_IO` | `NFS3ERR_IO` |
@@ -1368,8 +1370,10 @@ client, are RFC 14's.
 
 ### 6.2 NSM
 
-The server monitors clients as its peers expect: a client statd's request to be
-monitored (`SM_MON`) is recorded with the client, as its `Notify`
+The server monitors clients as its peers expect: a host's first NLM call
+registers it for restart notification, its `caller_name` recorded with the
+client as its `Notify`; `SM_MON` and `SM_UNMON` are calls a server makes to its
+own monitor, never requests a peer sends it
 ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)).
 
 - After a shard in which any NLM host held locks fails over or its primary
@@ -2203,3 +2207,89 @@ Not supported:
 | `IO_ADVISE`, `WRITE_SAME`, `LAYOUTERROR`, `LAYOUTSTATS` | `NFS4ERR_NOTSUPP` | |
 | `GETDEVICEINFO`, `GETDEVICELIST`, `LAYOUTGET`, `LAYOUTCOMMIT`, `LAYOUTRETURN` (NFSv4.1) | `NFS4ERR_NOTSUPP` on a single node; (cluster) [RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS) | §3.3 |
 
+## Appendix D — requests and the service calls they make
+
+Every request the NFS adapter serves, the [RFC 17](rfc-17-vfs.md) service
+method it becomes, and what the adapter answers without the service. What each
+method then calls below is
+[RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s.
+
+**NFSv3 and its auxiliary services.**
+
+| Request | Method | Notes |
+| --- | --- | --- |
+| `NULL` | none (adapter only) | |
+| `GETATTR` | `GetAttr` | |
+| `SETATTR` | `SetAttr` | the ctime guard is `AttrChange.Guard`; returns `wcc_data` |
+| `LOOKUP` | `Lookup` | `..` at a share root answers the root ([RFC 17 §5.10](rfc-17-vfs.md#5.10%20Lookup%20and%20create)) |
+| `ACCESS` | `Access` | |
+| `READLINK` | `GetAttr` | the stored target, `File.Target` |
+| `READ` | `Read` on `vfs.Anonymous(h)` | |
+| `WRITE` | `Write` on `vfs.Anonymous(h)` | `WriteResult` gives count, verifier and `wcc_data` |
+| `CREATE`, `MKDIR`, `SYMLINK`, `MKNOD` | `Create` | `EXCLUSIVE` carries `CreateArgs.Verifier` |
+| `REMOVE` | `Unlink` | |
+| `RMDIR` | `Rmdir` | |
+| `RENAME` | `Rename` | |
+| `LINK` | `Link` | |
+| `READDIR`, `READDIRPLUS` | `ReadDir` | `want` asks for attributes and handles for `READDIRPLUS` |
+| `FSSTAT` | `StatFS` | |
+| `FSINFO`, `PATHCONF` | none (adapter only) | constants of the adapter and the share ([§2.3](#2.3%20Transfer%20sizes)) |
+| `COMMIT` | `Commit` | |
+| MOUNT `MNT` | `Root` with the path | |
+| MOUNT `EXPORT` | `ListShares` | |
+| MOUNT `UMNT`, `UMNTALL`, `DUMP` | none (adapter only) | no mount table ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
+| NLM `TEST` | `TestLock` on an anonymous open | |
+| NLM `LOCK` | `Lock` | `Wait` for a blocking lock; `Reclaim` in grace ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| NLM `CANCEL` | `CancelLock` | answered only once it returns |
+| NLM `UNLOCK` | `Unlock` | |
+| NLM `GRANTED` (to the host) | the `LockWaitOver` callback | |
+| NLM `SHARE`, `UNSHARE` | `Open`, `Close` of an anonymous-owner open with a deny mode | |
+| NLM `FREE_ALL` | `HostRestarted` | from the host's own address only |
+| NLM `*_MSG`, `*_RES` | as their synchronous forms | answered on the host's callback service |
+| NSM `SM_NOTIFY` (received) | `HostRestarted` | |
+| NSM `SM_MON`, `SM_UNMON` | none (adapter only) | sent by the server to its own monitor, never received from a peer; a host is registered for restart notification by its first NLM call, which is `Connect` with its `caller_name` as monitor name (§6.2) |
+| rquota `GETQUOTA` | `Quota` | |
+
+**NFSv4.0, 4.1 and 4.2.** `COMPOUND` runs its operations as sequences of these.
+
+| Operation | Method | Notes |
+| --- | --- | --- |
+| `SETCLIENTID`, `EXCHANGE_ID` | none (adapter only) | an unconfirmed proposal, no state ([§3.5](#3.5%20Confirming%20a%20client)) |
+| `SETCLIENTID_CONFIRM` | `Connect` | |
+| `CREATE_SESSION` | `Connect` once, then `CreateSession` | |
+| `SEQUENCE` | `Renew`, at most once per renewal interval | the slot table is the adapter's |
+| `RENEW` | `Renew` | |
+| `DESTROY_SESSION` | none (adapter only) | |
+| `DESTROY_CLIENTID` | `Destroy` | |
+| `BIND_CONN_TO_SESSION`, `BACKCHANNEL_CTL` | `Connect` when the back channel moves | |
+| `RECLAIM_COMPLETE` | `ReclaimComplete` | |
+| `PUTROOTFH`, `PUTPUBFH` | `Root` with the zero `ShareRef` | |
+| `PUTFH`, `GETFH`, `SAVEFH`, `RESTOREFH` | none (adapter only) | the next operation's call admits the handle |
+| `LOOKUP`, `LOOKUPP` | `Lookup` (`..` for `LOOKUPP`) | |
+| `GETATTR`, `VERIFY`, `NVERIFY` | `GetAttr` (and `GetACL` for the `acl` attribute) | the comparison is the adapter's |
+| `SETATTR` | `SetAttr` (and `SetACL` for `acl`) | |
+| `ACCESS` | `Access` | |
+| `CREATE` | `Create` | |
+| `LINK`, `REMOVE`, `RENAME` | `Link`, `Unlink`, `Rename` | `change_info4` from the `WCC` |
+| `READDIR` | `ReadDir` | |
+| `READLINK` | `GetAttr` | |
+| `OPEN` | `Open` | create, claim types and reclaim are `OpenRequest` fields ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| `OPEN_CONFIRM` | `ConfirmOpen` | NFSv4.0 |
+| `OPEN_DOWNGRADE` | `Downgrade` | |
+| `CLOSE` | `Close` | |
+| `READ`, `WRITE`, `COMMIT` | `Read`, `Write`, `Commit` | |
+| `LOCK`, `LOCKT`, `LOCKU` | `Lock`, `TestLock`, `Unlock` | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| `RELEASE_LOCKOWNER` | `ReleaseLockOwner` | |
+| `DELEGRETURN` | `AckBreak` to `GrantNone` | |
+| `DELEGPURGE`, `WANT_DELEGATION`, `GET_DIR_DELEGATION`, `OPENATTR`, `SET_SSV` | not supported, answered as this RFC says of each | |
+| `TEST_STATEID` | `TestState` | |
+| `FREE_STATEID` | `FreeRevoked` for a revoked stateid | a lock stateid holding no locks is freed alone, never its owner's other lock state (RFC 8881 §18.38): gap, RFC 14 declares no call for it ([RFC 17 §10](rfc-17-vfs.md#10.%20Open%20questions)) |
+| `SECINFO`, `SECINFO_NO_NAME` | `SecInfo` | |
+| `ALLOCATE` | not supported ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)) | |
+| `DEALLOCATE`, `SEEK` | `Deallocate`, `Seek` | |
+| `READ_PLUS` | `Read` and `Seek` | |
+| `COPY` | `Copy` | always answered synchronously, short at the deadline ([§9.4](#9.4%20Async%20COPY)) |
+| `OFFLOAD_STATUS`, `OFFLOAD_CANCEL` | none (adapter only) | no copy stateid is ever issued; answered as one naming nothing |
+| `CLONE` | `Clone` | |
+| `GETXATTR`, `LISTXATTRS`, `SETXATTR`, `REMOVEXATTR` | `Xattrs`, `SetXattr`, `RemoveXattr` | |
+| `COPY_NOTIFY`, `IO_ADVISE`, `WRITE_SAME`, `LAYOUT*`, `GETDEVICE*` | not supported ([Appendix C](#Appendix%20C%20%E2%80%94%20NFSv4.2%20operations)) | |

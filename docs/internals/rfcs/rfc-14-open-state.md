@@ -996,9 +996,10 @@ where the other adapter cannot see it: a lock one protocol grants and the other
 does not observe is not a lock. Every adapter reaches the table through the
 filesystem service ([RFC 17](rfc-17-vfs.md)), which routes to the primary.
 
-**Who owns the table.** It is built and owned by the shard half of the
-filesystem service at the primary — RFC 17's shard package, handed the table
-in its `Deps` — and it is the only lock manager in the system. The service's
+**Who owns the table.** It is built at the primary and owned by the
+filesystem service's per-file part there, handed to it in the service's `Deps`
+([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), and it is the
+only lock manager in the system. The service's
 front on the protocol node and the adapters hold none of it; only this RFC's
 durable pieces, client records and persistent opens, reach the metadata store
 ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)).

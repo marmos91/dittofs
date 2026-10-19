@@ -1196,17 +1196,17 @@ backoff of §6.3, and the final answer by the request's deadline:
 end plus 35 s, at most `migration.freeze_timeout` plus 35 s, for a quiesced or
 frozen share; `smb_pending_cap` for a transient capacity refusal, a stalled
 metadata store or a store conflict (`DelayConflict`); grace's end plus 35 s for `ErrGrace`; none for `ErrBlocked`
-(§6.3). The deadlines are [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)'s and the
-two settings [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s.
+(§6.3). These bounds are this section's, held to the two inequalities
+[RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks) states, and the two settings
+[RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s.
 
 **The hold follows the delay's cause.** `ErrDelay` arrives as a `Delay`
 carrying its `DelayCause` and, for a freeze, its bound in `Until` —
 `DelayRecall`, `DelayClone`, `DelayConflict`, `DelayFrozen` (with `Moved` once
 the namespace has gone), `DelayCapacity`, `DelayCommit`, `DelayResources`
-([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) — and
-its hold class, `Delay.Hold()`, whose bound is
-[RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)'s table; the rows below give the
-final status. It is
+([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the
+paragraph above gives each cause's hold bound and the rows below the final
+status. It is
 `errors.Is` still matches it as `ErrDelay`; grace is its own error,
 `ErrGrace`. A moved `DelayFrozen` is not held: the moved share's trees end (§6.3). The adapter chooses the row below
 from that cause, never from the operation it was answering: a write delayed by
@@ -1231,6 +1231,8 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_DISK_FULL` at once for a share-wide or project quota, the volume the client sees; `STATUS_DISK_QUOTA_EXCEEDED` at once for a user or group one |
 | `ErrGrace` — a new open or lock in a shard in grace | held pending until grace ends, then re-run; at grace's end plus 35 s, `STATUS_FILE_NOT_AVAILABLE` |
 | `ErrInvalid` — a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_INVALID_PARAMETER` at once |
+| `ErrReadOnly` — a mutation where only reading is admitted ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_MEDIA_WRITE_PROTECTED` at once |
+| `ErrNameTooLong` — a name past the share's length limit | `STATUS_OBJECT_NAME_INVALID` at once |
 | `ErrCross` (`CrossShard`) — **(cluster)** a by-reference copy or clone whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | copychunk: never reaches the adapter; the service copies the bytes server-side and the adapter reports them written ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). Duplicate-extents: `STATUS_NOT_SAME_DEVICE` at once, and the client copies |
 | `ErrInconsistent` — a store invariant the server's own state breaks ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the service raises a health condition | `STATUS_UNEXPECTED_IO_ERROR` at once |
 | `ErrCross` (`CrossProject`) — a rename or link across tree quotas ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_NOT_SAME_DEVICE` at once; Explorer copies and deletes instead |
@@ -2158,3 +2160,55 @@ maximum component length 255; and the file system name `NTFS`
 | `PIPE_TRANSCEIVE`, `PIPE_WAIT`, `PIPE_PEEK` | IPC$ | [§5.2](#5.2%20IPC%24%20and%20the%20RPC%20services) |
 | `OFFLOAD_READ`, `OFFLOAD_WRITE` (ODX) | `STATUS_NOT_SUPPORTED` | [§10](#10.%20Control%20codes) |
 | `LMR_REQUEST_RESILIENCY`, `SET_COMPRESSION`, `FILE_LEVEL_TRIM`, `GET/SET_INTEGRITY_INFORMATION`, `SVHDX_*` | `STATUS_NOT_SUPPORTED` | |
+
+## Appendix G — commands and the service calls they make
+
+Every command and RPC the SMB adapter serves, the [RFC 17](rfc-17-vfs.md)
+service method it becomes, and what the adapter answers without the service.
+What each method then calls below is
+[RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s.
+
+**SMB 2 and 3.**
+
+| Command | Method | Notes |
+| --- | --- | --- |
+| `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
+| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` | |
+| `LOGOFF` | `Disconnect` | |
+| `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
+| `TREE_DISCONNECT` | none (adapter only) | |
+| `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `MxAc`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |
+| `CLOSE` | `Close` | |
+| `FLUSH` | `Commit` | |
+| `READ`, `WRITE` | `Read`, `Write` | |
+| `LOCK` | `Lock` or `Unlock`, every element in one call | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| `IOCTL` `SRV_COPYCHUNK`, `_WRITE` | `Copy` | `SRV_REQUEST_RESUME_KEY`: none (adapter only) |
+| `IOCTL` `DUPLICATE_EXTENTS_TO_FILE` | `Clone` | |
+| `IOCTL` `SET_ZERO_DATA` | `Deallocate` | |
+| `IOCTL` `QUERY_ALLOCATED_RANGES` | `Seek` | |
+| `IOCTL` `SET_SPARSE` | `SetAttr` | |
+| `IOCTL` `GET_REPARSE_POINT` | `GetAttr` | |
+| `IOCTL` `SET_REPARSE_POINT`, `DELETE_REPARSE_POINT` | `Create` of a symlink; `Unlink` | gap: RFC 7 has no call that turns an existing empty file into a symlink |
+| `IOCTL` `GET_OBJECT_ID`, `CREATE_OR_GET_OBJECT_ID` | `GetAttr` | derived ids |
+| `IOCTL` `SRV_ENUMERATE_SNAPSHOTS` | `Snapshots` | |
+| `IOCTL` `QUERY_NETWORK_INTERFACE_INFO`, `VALIDATE_NEGOTIATE_INFO`, `PIPE_*` | none (adapter only) | |
+| `IOCTL` ODX, integrity, compression, `SVHDX_*`, resiliency | not supported ([Appendix F](#Appendix%20F%20%E2%80%94%20control%20codes)) | |
+| `QUERY_DIRECTORY` | `ReadDir` | |
+| `CHANGE_NOTIFY` | `Watch` | |
+| `QUERY_INFO` file classes | `GetAttr`; `Streams` for `Stream`; `Xattrs` for `Ea`, `FullEa`; `Access` for `Access` | |
+| `QUERY_INFO` file system classes | `StatFS` | |
+| `QUERY_INFO` security | `GetACL` | |
+| `QUERY_INFO` quota | `Quota` | |
+| `SET_INFO` `Basic`, `EndOfFile`, `Allocation`, `Mode` | `SetAttr` | timestamp suspension is `AttrChange.Suspend`; an allocation below the end of file is a size change (§9.3) |
+| `SET_INFO` `Disposition`, `DispositionEx` | `SetAttr` with `DeleteOnClose` through the open | |
+| `SET_INFO` `Rename` | `Rename` with the open as `from.Open` | |
+| `SET_INFO` `Link` | `Link` | |
+| `SET_INFO` `FullEa` | `SetXattr`, `RemoveXattr` | |
+| `SET_INFO` security | `SetACL` | |
+| `OPLOCK_BREAK` (lease or oplock acknowledgement) | `AckBreak` | |
+| `CANCEL` | `CancelLock` for a waiting lock, `Unwatch` for a notification; otherwise none | |
+| `ECHO` | none (adapter only) | |
+| srvsvc `NetShareEnumAll` | `ListShares` | |
+| srvsvc `NetShareGetInfo` | `ListShares`, filtered by name | |
+| srvsvc `NetSrvGetInfo`, wkssvc `NetWkstaGetInfo` | none (adapter only) | |
+| lsarpc `LookupSids2/3`, `LookupNames3/4` | none: `vfs.Identities`' `Spell`, `Find` ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)) | |
