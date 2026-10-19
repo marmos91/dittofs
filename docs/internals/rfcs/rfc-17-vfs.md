@@ -2020,7 +2020,9 @@ Metric names are shown without the deployment's prefix.
 | --- | --- | --- |
 | How fast is each operation, per protocol? | `vfs_op_seconds{op, protocol, outcome}` | histogram |
 | How often are clients told to retry, and why? | `vfs_delayed_total{op, cause}` | counter |
-| How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{kind}`, `vfs_quota_reserved_bytes` | counter, gauge |
+| How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{scope}`, `vfs_quota_reserved_bytes` | counter, gauge |
+| How often is a call refused admission, and by which check (§4.9)? | `vfs_admission_refusals_total{check}`: `state`, `flavor`, `client_rules`, `resolution` | counter |
+| How many calls are admitted and not yet answered — what a drain or a share removal waits for (§2.5, §4.9)? | `vfs_inflight_calls` | gauge |
 | Are callbacks failing? | `vfs_callback_errors_total{kind}` | counter |
 | Are events being lost? | `vfs_events_dropped_total{stream}` | counter |
 | How long do calls wait behind a running clone (§5.9)? | `vfs_clone_wait_seconds{outcome}` | histogram |
@@ -2030,9 +2032,15 @@ Operation latency and quota metrics are owned here and nowhere else. Held
 requests are the adapters' ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics));
 forwarding and epoch refusals are RFC 15's; recalls are RFC 14's.
 
-Each service call opens a trace span that parents the metadata
-store's and the engine's spans. No share label on per-operation metrics
-([RFC 16 §8.1](rfc-16-metadata-store.md#8.1%20Metrics)).
+**Spans.** Each `Service` call opens one span, `vfs.<Op>`, carrying `op`,
+`protocol`, `outcome`, and the `DelayCause` or `StateError` kind when it ends
+in one; share and file IDs are span attributes, never metric labels
+([RFC 16 §8.1](rfc-16-metadata-store.md#8.1%20Metrics)). It parents the
+metadata store's and the engine's spans. Waits inside the call are span events,
+not child spans: the lock order's waits with what was waited for (§5.0), a
+wait behind a clone (§5.9), a redraw after `ErrVersionBehind` (§5.1).
+**(cluster)** A forwarded call carries the span's context in the route
+envelope, so the primary's work is a child of the front's span.
 
 ## 8. Conformance
 
@@ -2044,7 +2052,7 @@ something the ones above it cannot.
 | --- | --- | --- | --- |
 | pure units | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs round-trip and refuse malformed bytes; `vfs.Errors()` lists every declared error | table tests in `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over a fake of the few reads it declares | per change |
 | service suite | §5's orders, admission on every entry path, the cross-protocol rules and the V-rows of §6 | `suite.Run` over `vfs.New` with the in-memory store, a real engine on a temporary journal, real open state and a fake clock (§2.3) | per change |
-| fault injection | stalls, conflicts, a full journal, Lost content, a client that never acknowledges, a callback that fails, time | fakes at the metadata views, the engine and `Callbacks`, and the clock | per change |
+| fault injection | stalls, conflicts, a full journal, Lost content, a client that never acknowledges, a callback that fails, time | below the real components, not in place of them, since the service holds them as concrete types (§2.3): a fault-injecting key-value store under the metadata store ([RFC 16](rfc-16-metadata-store.md)'s `KV`), a fault-injecting remote tier and a small journal under the engine ([RFC 8](rfc-8-engine.md)), `RecordingCallbacks` that stall or fail, and the fake clock | per change |
 | model | lock, write, open and unlink interleaved against a sequential model, under `-race` | property tests | short per change; 10⁴ interleavings nightly |
 | loopback | **(cluster)** the same suite with the front calling the per-file part over a loopback node channel: the route envelope, dedup (V11), cursor safety | `suite.Run` with the remote factory | after merge, gated on the remote primary shipping |
 | adapter side | translation only | `vfstest.Record` and `vfstest.Null` ([RFC 20 §7.2](rfc-20-adapters.md#7.2%20Handlers%20against%20a%20recording%20service)) | per change |
@@ -2079,12 +2087,15 @@ service benchmark is the adapter's own cost:
 
 - per operation, ns and allocations: `GetAttr`, `Lookup`, `Read` and `Write` of
   4 KiB and 1 MiB, `Open`, a `ReadDir` page; **0 allocations** on the data path;
-- service overhead against the direct store or engine call, collocated and over
-  loopback;
-- contention: N writers on one file, N openers on one file, quota reservation
-  under `k` primaries;
-- recall latency: a conflicting write to its acknowledgement, and to a forced
-  break at 35 s.
+- service overhead against the direct store or engine call, collocated, and
+  **(cluster)** over loopback;
+- contention: N writers on one file, N openers on one file, N creates in one
+  directory (the lock order and fold admission), and **(cluster)** quota
+  reservation under `k` primaries;
+- admission: a cached and an uncached admission, so the cache's key is shown to
+  cost less than the checks it saves;
+- recall latency: a conflicting write to its acknowledgement, and, on the fake
+  clock, to a forced break at the break deadline.
 
 | Tier ([RFC 29 §4.3](rfc-29-test-harness.md#4.3%20Tiers), [§4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | What |
 | --- | --- |
