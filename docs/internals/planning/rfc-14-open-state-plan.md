@@ -162,9 +162,27 @@ Behaviours today's code has and RFC 14 does not state, to raise against RFC 14: 
 callback path down, a stateid naming an unknown shard, and no re-delegation for a while after a
 recall.
 
-## 8. Size
+## 8. Size and what sets the pace
 
-The largest stage so far, comparable to the store: pieces 1–3 about a week each, 4–6 a week or
-more each, 7–8 a week together. About six to eight weeks, landing as twelve or so PRs. The survey
-(§7) holds piece 2 at a week only once open question 3 is settled, and puts piece 6 at the high end:
-nothing of today's grace ports.
+Writing a piece is not what takes the time; review is. Stage 1 lands as about twelve PRs, each read
+by its author and reviewed in two or three rounds, so it takes about as long as twelve review cycles.
+Rough size per piece, code and tests together, so reviewers can plan:
+
+| # | Piece | PRs | Lines, roughly |
+|---|---|---|---|
+| 1 | Skeleton and stateids | 1 | 1,500 |
+| 2 | Clients and leases | 1–2 | 2,000 |
+| 3 | Opens and deny modes | 2 | 2,500 |
+| 4 | Byte-range locks and waiters | 2 | 3,000 |
+| 5 | Caching grants and recalls | 2 | 2,500 |
+| 6 | Grace and reclaim | 1–2 | 2,000 |
+| 7 | SMB durable and persistent opens | 1 | 2,000 |
+| 8 | The rest | 1 | 1,500 |
+
+What blocks what:
+- open question 4 (finding an unconfirmed client) before piece 2;
+- piece 1's stateid layout before piece 2, whose `Revoke` needs it;
+- the RFC 14 `LockRange` change merged before piece 4 freezes `Lock`;
+- RFC 20 merged before piece 5 fixes the sink, which mirrors its `Callbacks`.
+
+For teams planning against stage 2, the useful answer is these merges and decisions, not a date.
