@@ -222,10 +222,10 @@ the primary:
 | **front** | the protocol node holding the connection | admission ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)); resolving and routing a handle ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)); `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem; work that spans two primaries — a rename or link across two, a listing whose entries live under several, a copy between two; client leases and the callback registry ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)) | the admission cache, the pseudo-filesystem, the clients it is lease owner of; nothing about files |
 | **per-file part** | the file's primary | every call to the engine and to the metadata write views; the orchestration of §5, one coarse operation per file; the chokepoint call; quota reservations; the count of admitted calls a share removal joins; grace; the lock order | quota reservations, admitted-call counts, open state ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 
-On a single node both parts are one process and **one package**: the front's
-files make no store, open-state or engine call, and the per-file files are the
-only ones that do, enforced by the import and call-site test of §8 rather than
-by an interface between them.
+On a single node both parts are one process and **one package**, one file per
+operation: the front's functions make no store, open-state or engine call, and
+the per-file functions are the only ones that do, enforced by the call-site
+test of §8 rather than by an interface between them.
 
 > decision: no interface between the front and the per-file part while every
 > primary is local. Each per-file operation is a method taking the resolved
@@ -258,7 +258,7 @@ by an interface between them.
 > decision: the service is a new layer, not a grown metadata store. The
 > metadata store shrinks to store operations beneath it, and RFC 16's store stays
 > swappable under the service; the orchestration of §5 lives in the service, and
-> only its per-file files import the store and the engine. Rejected: growing
+> only its per-file functions call the store and the engine. Rejected: growing
 > today's `pkg/metadata.Service` into the service, which keeps orchestration and
 > storage in one package a second backend would have to reimplement; and
 > rewriting both in one go, which no reviewer can follow (§9). Overturned if a
@@ -366,20 +366,22 @@ pkg/vfs/                     the contract adapters build against
   events.go                  Events, an alias of RFC 7's sink, and QuotaEvent (§3.3)
   vfstest/                   Record, Null and RecordingCallbacks, hand-written (§8)
     suite/                   suite.Run: the conformance suite, one file per area (§8)
-internal/vfs/                the service: admit → route → run at the primary
-  service.go                 New(Deps), Start, Drain, Close; the Service methods
-  crossprimary.go            calls that touch two primaries — rename, link, listing, copy — run as
-                             RFC 15 §4.2's coordinator; on one node, a direct call (§4.8)
-  write.go read.go           the per-file part (§5), the only files that call the
-  open.go namespace.go       engine and the metadata write views: §5.1–§5.4,
-  attr.go copy.go lock.go    §5.5, §5.9–§5.11, the four moments of release, grace
-  release.go grace.go        and the recovery of pending releases
-  admit/                     the four admission checks, the admission cache, the in-flight count (§4.9)
-  pseudofs/                  the pseudo-filesystem, a pure function of the share list
-  clients/                   client leases and the callback registry
-  authz/                     the only caller of Files.Authorize and Granted
-  lockorder/                 the lock order (§5.0): acquisition only, no store or engine call
-  quota/                     reservations (§5.6), over a narrow read of the store's counters
+internal/vfs/                the service: one file per operation, each admit → route → run at the primary
+  server.go                  New(Deps), Start, Drain, Close (§2.5)
+  clients.go                 Connect, CreateSession, Renew, Disconnect, Destroy, … (§3.1)
+  lookup.go readdir.go       Lookup (§5.10); ReadDir, its overlay fanned out per primary
+  create.go link.go          Create (§5.10); Link
+  unlink.go rename.go        Unlink and Rmdir; Rename (§5.4)
+  getattr.go setattr.go      GetAttr (§5.7); SetAttr, size changes included (§5.5)
+  acl.go xattr.go            GetACL, SetACL; Xattrs, SetXattr, RemoveXattr, Streams
+  access.go                  Access
+  open.go close.go           Open, Downgrade, ConfirmOpen (§5.3); Close and delete on close
+  read.go write.go           Read, Seek (§5.2); Write (§5.1)
+  commit.go                  Commit, and the write verifier (§5.8)
+  deallocate.go copy.go      Deallocate; Copy and Clone (§5.9)
+  lock.go grant.go watch.go  Lock, CancelLock, TestLock, Unlock (§5.11); AckBreak; Watch, Unwatch
+  shares.go                  Root, SecInfo, ListShares, StatFS, Quota, Snapshots (§4.9)
+  release.go grace.go        the four moments of release (§5.3); grace and pending-release recovery
   arch_test.go               imports and call sites (§8)
 ```
 
@@ -388,9 +390,19 @@ internal/vfs/                the service: admit → route → run at the primary
   `pseudofs`, `lockorder` and `quota` are packages so their tests import
   nothing but a narrow fake. Each declares the few reads it needs beside its own
   code.
-- **The per-file operations stay one package, a file per concern.** They call
-  each other — a rename needs the lock order, the release and quota — and one
-  package has no import cycles to manage.
+- **One file per operation, both parts in it.** `rename.go` holds `Rename`
+  as the adapter calls it — admit, route, and the two-primary path when its
+  directories sit at two primaries (RFC 15 §4.2) — and `renameAt` with its
+  helpers, the per-file part that runs at the primary. A reader finds an operation in one
+  file. The operations call each other — a rename needs the lock order, the
+  release and quota — so they stay one package, with no import cycles to
+  manage.
+- **The boundary between the two parts is per function, not per file.** An
+  exported `Service` method admits, routes and calls an unexported `…At`
+  method; only unexported functions call the engine, the metadata write views
+  or open state. §8's call-site test checks it by
+  function, so the boundary that becomes the network later is the one the
+  code already keeps.
 - **Who calls the store and the engine** is fixed by §8's import and call-site
   test.
 
@@ -1529,8 +1541,8 @@ and the service runs it (§5.3). A crash between the unlink and the release leak
 nothing. A rename that replaces a target applies the same rule to the target.
 
 ```go
-// unlink serves Unlink and Rmdir (rmdir set).
-func (s *Server) unlink(ctx context.Context, c Caller, dir Target, name []byte, rmdir bool) (UnlinkResult, error) {
+// unlinkAt serves Unlink and Rmdir (rmdir set).
+func (s *Server) unlinkAt(ctx context.Context, c Caller, dir Target, name []byte, rmdir bool) (UnlinkResult, error) {
 	for {
 		seen, err := s.lookup(ctx, c, dir.H, name) // unlocked: learns which steps to take; ErrNotFound
 		if err != nil {
@@ -1584,7 +1596,7 @@ func (s *Server) unlinkLocked(ctx context.Context, c Caller, dir Target, name []
 exists, for the target:
 
 ```go
-func (s *Server) rename(ctx context.Context, c Caller, from Target, fromName []byte, to Handle, toName []byte, noReplace bool) (RenameResult, error) {
+func (s *Server) renameAt(ctx context.Context, c Caller, from Target, fromName []byte, to Handle, toName []byte, noReplace bool) (RenameResult, error) {
 	src, err := s.lookup(ctx, c, from.H, fromName) // ErrNotFound
 	if err != nil {
 		return RenameResult{}, err
@@ -1873,7 +1885,7 @@ func (s *Server) Lookup(ctx context.Context, id Identity, dir Handle, name []byt
 same steps under the steps it holds:
 
 ```go
-func (s *Server) create(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs) (CreateResult, error) {
+func (s *Server) createAt(ctx context.Context, c Caller, dir Handle, name []byte, a CreateArgs) (CreateResult, error) {
 	unlock := s.order.OpenState(fileOf(dir))
 	defer unlock()
 	return s.createLocked(ctx, c, dir, name, a)
@@ -1917,7 +1929,7 @@ func (s *Server) createLocked(ctx context.Context, c Caller, dir Handle, name []
 ### 5.11 Locks
 
 ```go
-func (s *Server) lock(ctx context.Context, c Caller, ref OpenRef, r LockReq) error {
+func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) error {
 	if r.Wait && len(r.Ranges) != 1 {
 		return ErrInvalid // only a single range may wait (RFC 22 §7)
 	}
@@ -1982,7 +1994,7 @@ Every test runs in the service suite (§8) unless it names another layer.
 | V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
 | V30 | The service waits inside a call only behind a running clone or copy chunk, and at most the call's `WithHold`. | An NFSv3 write into a cloning extent with `WithHold(10s)` is held and completes when the clone ends; with `WithHold(0)` it returns `DelayClone` at once. |
 | V31 | Every mutating call returns the `WCC` of each object it changed, from one hold of its accept lock. | For each mutating method, a concurrent write between the call and a later `GetAttr` does not appear in the returned `WCC`; a directory's `Before` is nil over NFSv3. |
-| V32 | Within the service, the engine and the metadata write views are called only from the per-file files. | The call-site test of §8. |
+| V32 | Within the service, the engine, the metadata write views and open state are called only from the per-file functions. | The call-site test of §8. |
 | V33 | `Start` is all or nothing, `New` starts nothing, and `Close` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Close`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. |
 | V34 | `Drain` joins every admitted call and admits none after. | With 64 writes in flight, `Drain` returns only once each has answered; a call made after `Drain` begins returns `ErrUnavailable`; a lease break pending at `Drain` is neither forced nor revoked. |
 | V35 | After `Start`, a call that needs or conflicts with reclaimable state answers `ErrGrace` until the shard's grace ends, and pending releases run only after it. | Restart with a pending release and a reclaimable lock: a conflicting lock answers `ErrGrace` and the file's content is still held; advancing the fake clock past grace grants the lock and runs the release. |
@@ -2053,14 +2065,12 @@ every method explicitly, embedding nothing, so a method added to `Service`
 fails to compile until `Record` records it.
 
 **Import and call sites.** Beside [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s
-test, which covers adapters, a test walks `internal/vfs` and fails, naming the
-file, on: a call of the engine or a metadata write view outside the per-file
-files — `write.go`, `read.go`, `open.go`, `namespace.go`, `attr.go`,
-`copy.go`, `lock.go`, `release.go`, `grace.go`; a metadata read view outside
-those, `authz` and `quota`; a call of `Authorize` or `Granted` outside `authz`;
-an open-state call outside the per-file files and `clients`; and any of these
-from `service.go`, `crossprimary.go`, `admit`, `pseudofs` or `lockorder`, which
-reach the store only through the narrow reads they declare, satisfied by `New`
+test, which covers adapters, a test parses `internal/vfs` and fails, naming the
+function, on: an exported `Service` method that calls the engine, a metadata
+write view or open state directly rather than through its unexported `…At`
+method; a call of `Authorize` or `Granted` outside `authz`; and any store,
+engine or open-state import in `admit`, `pseudofs` or `lockorder`, which reach
+the store only through the narrow reads they declare, satisfied by `New`
 (V2, V5, V32). It, and §9's allowlist test, is seeded with one deliberate
 violation in its own test data and must report it.
 
@@ -2121,8 +2131,8 @@ tree working:
   on a stale one, so the list only shrinks and each PR shows its deletions. At
   empty it is
   replaced by [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s
-  import test and §8's, which also checks that only the service's per-file files
-  call the store and the engine.
+  import test and §8's, which also checks that only the service's per-file
+  functions call the store and the engine.
 
 > decision: slices, each with its RFC edit, and a shrinking allowlist.
 > Rejected: one up-front amendment of every RFC before code, which goes stale
