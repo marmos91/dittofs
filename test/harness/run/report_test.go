@@ -124,7 +124,7 @@ func TestExitResultsPerTest(t *testing.T) {
 	root, r := repo(t, `suites:
   s: { cmd: "sh {test}", tests: "t/*.sh", timeout: { test: 1s } }
 `, map[string]string{"t/a.sh": "exit 0\n", "t/b.sh": "exit 3\n", "t/c.sh": "sleep 30\n", "t/d.sh": "exit 75\n"})
-	rep := runIn(t, root, r, "s")
+	rep, _ := runTarget(t, root, r, "s", false)
 	want := []string{
 		"s > t/a.sh: passed",
 		"s > t/b.sh: failed [new] | `sh t/b.sh` exited 3",
@@ -149,7 +149,7 @@ suites:
   lint: { cmd: [ "true", "true {out}", "false", "no-such-check {base}", { sh: "exit 75" }, { sh: "echo two\n# more" } ] }
   listed: { cmd: "no-such-check {base}", known: known.yaml }
 `, map[string]string{"known.yaml": "[]\n"})
-	rep := runIn(t, root, r, "g")
+	rep, _ := runTarget(t, root, r, "g", false)
 	want := []string{
 		"lint > true: passed",
 		"lint > true {out}: passed",
@@ -295,12 +295,12 @@ suites:
   none: { cmd: "sh {test}", tests: "n/*.sh", format: tap }
   slow: { cmd: "sh {test}", tests: "s/*.sh", format: tap, timeout: { test: 1s } }
 `, map[string]string{"p/a.sh": "echo ok one; exit 1\n", "f/a.sh": "echo not ok two\n", "n/a.sh": "true\n", "s/a.sh": "echo ok three; sleep 30\n"})
-	rep := runIn(t, root, r, "g")
+	rep, _ := runTarget(t, root, r, "g", false)
 	results := []string{Passed, Failed, NotRun, Failed}
 	notes := []string{"", "1 failed: two", "no results", "s/a.sh: timed out after 1s"}
 	for i, o := range rep.Outcomes {
 		if o.Result != results[i] || o.Note != notes[i] {
-			t.Errorf("%s: %+v, want %s with %q", o.Cell, o, results[i], notes[i])
+			t.Errorf("%s: %+v, want %s with %q", o.Name, o, results[i], notes[i])
 		}
 	}
 	if len(got) != 4 || got[0].Test != "p/a.sh" || got[0].Exit != 1 || string(got[0].Output) != "ok one\n" || got[0].Out != filepath.Join(rep.Dir, "pass") || got[0].TimedOut || !got[3].TimedOut {
@@ -380,8 +380,8 @@ func TestGitState(t *testing.T) {
 	}
 }
 
-// lines lists results as "package > name: status, duration", with the grade
-// in brackets and the message's first line after a |.
+// caseLines lists results as "package > name: status, duration", with the
+// grade in brackets and the message's first line after a |.
 func caseLines(tests []report.Test) []string {
 	var out []string
 	for _, tc := range tests {

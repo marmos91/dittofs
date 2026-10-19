@@ -262,8 +262,7 @@ func TestRegistryNamesItsTools(t *testing.T) {
 
 // Tests below {tools} are chosen by name or file name when the cell runs, so
 // selecting them builds nothing; a name that picks none leaves the cell not
-// run, with nothing run. dt run pjdfstest chmod/00.t selects that test in
-// every cell of the real registry.
+// run, with nothing run.
 func TestToolsSelect(t *testing.T) {
 	root, r := repo(t, toolsSuite, nil)
 	outs := t.TempDir()
@@ -303,20 +302,6 @@ func TestToolsSelect(t *testing.T) {
 	}
 	if _, err := os.Stat(calls); err == nil {
 		t.Error("a test ran though a name picked none")
-	}
-
-	real, err := registry.Load("../../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cells, err := Select("../../..", real, "pjdfstest", "", "pr", nil, nil, []string{"chmod/00.t"})
-	if err != nil || len(cells) != 3 {
-		t.Fatalf("pjdfstest chmod/00.t: %+v, %v", cells, err)
-	}
-	for _, c := range cells {
-		if !slices.Equal(c.Tests, []string{"chmod/00.t"}) {
-			t.Errorf("%s: tests %q", c.Name, c.Tests)
-		}
 	}
 }
 

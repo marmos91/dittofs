@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -39,18 +40,10 @@ const (
 	Skipped = "skipped" // without --ci, this machine doesn't meet its needs
 )
 
-// Outcome is how one cell went.
-type Outcome struct {
-	Cell   string
-	Result string
-	Note   string
-	Took   time.Duration
-}
-
 // Report is a whole run.
 type Report struct {
 	Dir      string // the run's results directory
-	Outcomes []Outcome
+	Outcomes []report.Cell
 }
 
 // Status is the run's exit status: 1 when a cell failed, else 2 when one
@@ -125,7 +118,7 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		start := time.Now()
 		cell := runCell(ctx, c, o, rep.Dir, commit)
 		cell.Took = time.Since(start).Round(time.Second)
-		rep.Outcomes = append(rep.Outcomes, Outcome{c.Name, cell.Result, cell.Note, cell.Took})
+		rep.Outcomes = append(rep.Outcomes, cell)
 		_, _ = fmt.Fprintf(o.Out, "[dt] %s: %s %s\n", c.Name, cell.Result, cell.Note)
 		if o.CI {
 			for _, a := range annotations(cell) {
@@ -284,12 +277,6 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	if len(tests) == 0 {
 		return didntRun("no tests found")
 	}
-	each := make([]time.Duration, len(tests))
-	for i, test := range tests {
-		if each[i], err = plan.TestLimit(c.Unit.Timeout, test, limits); err != nil {
-			return didntRun(err.Error())
-		}
-	}
 	// The fixture's own steps share one limit: building {bin}, starting the
 	// server and pulling the image, so a stalled module download or pull
 	// leaves the cell not run instead of using up its limit. Each is tried
@@ -367,7 +354,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	var failed, notRun []string
 	var cases []report.Test
 	unstarted, interrupted := 0, false
-	for i, test := range tests {
+	for _, test := range tests {
 		if cellCtx.Err() != nil {
 			unstarted++
 			continue
@@ -381,7 +368,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			t.capture = &output
 		}
 		start := time.Now()
-		r := t.run(test, each[i])
+		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, limits))
 		interrupted = interrupted || r.interrupted
 		if len(r.notRun) > 0 {
 			notRun = append(notRun, prefix+strings.Join(r.notRun, ", "))
@@ -552,7 +539,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 	}
 	for _, cmd := range cmds {
 		step := report.Test{Name: cmp.Or(cmdName(cmd), image), Status: report.Failed}
-		if t.vals["base"] == "" && uses(cmd, "base") {
+		if t.vals["base"] == "" && slices.Contains(registry.Placeholders(cmd.Line+" "+cmd.Sh), "base") {
 			_, _ = fmt.Fprintf(t.out, "[dt] skipped, no change to check: %s%s\n", cmd.Line, cmd.Sh)
 			step.Status, step.Message = report.Skipped, "no change to check"
 			r.steps = append(r.steps, step)

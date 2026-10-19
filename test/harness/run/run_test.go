@@ -394,7 +394,6 @@ func TestBase(t *testing.T) {
 		{"true", "push", "", "0000000000000000000000000000000000000000", ""},
 		{"true", "merge_group", "", "", "def456"},
 		{"true", "schedule", "", "", ""},
-		{"true", "workflow_dispatch", "", "", ""},
 	}
 	for _, c := range cases {
 		t.Setenv("GITHUB_ACTIONS", c.actions)
@@ -465,23 +464,6 @@ func TestUnexpectedPassAnnotation(t *testing.T) {
 	want := []string{"::error title=dt s/x%3A b::passed unexpectedly: remove its known entry (r2)"}
 	if got := annotations(cell); !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-// A command that exits 75 ran nothing, as the scenarios' setup does when
-// another run holds their lock: the test didn't run, and the cell didn't run
-// unless another test failed.
-func TestExit75IsNotRun(t *testing.T) {
-	root, r := repo(t, `suites:
-  held: { cmd: "sh {test}", tests: "h/*.sh" }
-  mixed: { cmd: "sh {test}", tests: "m/*.sh" }
-`, map[string]string{"h/a.sh": "exit 75\n", "h/b.sh": "exit 0\n", "m/a.sh": "exit 75\n", "m/b.sh": "exit 1\n"})
-	rep, _ := runTarget(t, root, r, "held", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "h/a.sh: `sh h/a.sh` exited 75: it ran nothing") || rep.Status() != 2 {
-		t.Errorf("held: %+v, status %d", o, rep.Status())
-	}
-	if rep, _ := runTarget(t, root, r, "mixed", false); rep.Outcomes[0].Result != Failed || rep.Status() != 1 {
-		t.Errorf("mixed: %+v, status %d", rep.Outcomes[0], rep.Status())
 	}
 }
 

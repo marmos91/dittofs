@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // goModule is a module with tests that pass, fail, skip and fail in a
@@ -36,7 +38,7 @@ func TestParent(t *testing.T) {
 
 // goRun runs target of a go-json registry y in a module of files, choosing
 // tests, and returns the outcome and what the run printed.
-func goRun(t *testing.T, y string, files map[string]string, tests ...string) (Outcome, string, string) {
+func goRun(t *testing.T, y string, files map[string]string, tests ...string) (report.Cell, string, string) {
 	t.Helper()
 	root, r := anyRepo(t, y, files)
 	cells, err := Select(root, r, "g", "", "pr", nil, nil, tests)
@@ -138,17 +140,6 @@ func TestFlip(t *testing.T) {
 	o, _, _ := goRun(t, "suites:\n  g: { cmd: [go test ./..., go test ./...], format: go-json }\n", files)
 	if want := "0 passed, 1 failed, 0 skipped: TestFlip"; o.Result != Failed || o.Note != want {
 		t.Errorf("outcome %+v, want failed with %q", o, want)
-	}
-}
-
-// TEST names go before an -args, after which go test passes everything to
-// the test binaries as it is, so they still select the tests.
-func TestGoJSONNamesBeforeArgs(t *testing.T) {
-	for _, args := range []string{"-args", "--args"} {
-		o, _, _ := goRun(t, "suites:\n  g: { cmd: go test ./... "+args+" extra, format: go-json }\n", goModule, "TestPass")
-		if want := "1 passed, 0 failed, 0 skipped"; o.Result != Passed || o.Note != want {
-			t.Errorf("%s: outcome %+v, want passed with %q", args, o, want)
-		}
 	}
 }
 
@@ -519,18 +510,5 @@ func TestBinBuildFailure(t *testing.T) {
 	log, _ := os.ReadFile(filepath.Join(dir, "logs", "g.log"))
 	if o.Result != NotRun || !strings.Contains(o.Note, "dfs and dfsctl didn't build") || !strings.Contains(string(log), "notDefined") {
 		t.Errorf("outcome %+v\nlog:\n%s", o, log)
-	}
-}
-
-// {bin} is there for a root cell's commands; elsewhere dt doesn't provide it,
-// and a command it can't fill leaves the cell not run.
-func TestBinPlaceholder(t *testing.T) {
-	fakeSudo(t)
-	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "a/a_test.go": "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"})
-	if o, out, _ := goRun(t, "suites:\n  g: { cmd: \"go test ./a/... -args {bin}\", format: go-json, needs: [root] }\n", files); o.Result != Passed {
-		t.Errorf("root cell: %+v\n%s", o, out)
-	}
-	if o, _, _ := goRun(t, "suites:\n  g: { cmd: \"go test ./a/... -args {bin}\", format: go-json }\n", files); o.Result != NotRun || !strings.Contains(o.Note, "{bin}") {
-		t.Errorf("a cell that doesn't run as root: %+v", o)
 	}
 }

@@ -55,13 +55,7 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 			return NotRun, err.Error(), nil
 		}
 		if len(names) > 0 {
-			// go test passes everything after -args to the test binaries as
-			// it is, so -run goes before it.
-			at := slices.IndexFunc(argv, func(a string) bool { return a == "-args" || a == "--args" })
-			if at < 0 {
-				at = len(argv)
-			}
-			argv = slices.Insert(argv, at, "-run", runPattern(names))
+			argv = append(argv, "-run", runPattern(names))
 		}
 		shown := strings.Join(argv, " ")
 		failed := res.failures()
@@ -211,9 +205,7 @@ func followed(cmd *exec.Cmd, events string, res *results, w io.Writer) (int, err
 	read := make(chan error, 1)
 	go func() { read <- follow(events, done, func(line []byte) { res.add(line, w) }) }()
 	err = cmd.Run()
-	if cmd.Process != nil {
-		killLeftovers(cmd)
-	}
+	killLeftovers(cmd)
 	code, err := exitCode(err)
 	close(done)
 	if rerr := <-read; err == nil {

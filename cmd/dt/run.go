@@ -54,7 +54,7 @@ func newRun() *cobra.Command {
 			}
 			rows := [][]string{{"CELL", "RESULT", "TIME", "NOTE"}}
 			for _, o := range rep.Outcomes {
-				rows = append(rows, []string{o.Cell, o.Result, o.Took.String(), o.Note})
+				rows = append(rows, []string{o.Name, o.Result, o.Took.String(), o.Note})
 			}
 			if err := table(cmd.OutOrStdout(), rows); err != nil {
 				return err

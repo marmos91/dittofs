@@ -445,17 +445,11 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 		return err
 	}
 	// A suite whose tests aren't listed counts as one test.
-	total, err := TestLimit(t, "", nil)
-	if err != nil {
-		return err
-	}
+	total := TestLimit(t, "", nil)
 	if len(tests) > 0 {
 		total = 0
 		for _, name := range tests {
-			limit, err := TestLimit(t, name, limits)
-			if err != nil {
-				return err
-			}
+			limit := TestLimit(t, name, limits)
 			if limit == 0 {
 				limit = cell
 			}
@@ -474,14 +468,15 @@ func (c *Cell) setTimeout(t registry.Timeout, tests []string, limits map[string]
 
 // TestLimit is a test's limit: its own from a .txt list, else its size
 // class's or the suite's. Zero means no bound.
-func TestLimit(t registry.Timeout, name string, limits map[string]time.Duration) (time.Duration, error) {
+func TestLimit(t registry.Timeout, name string, limits map[string]time.Duration) time.Duration {
 	if limit, own := limits[name]; own {
-		return limit, nil
+		return limit
 	}
 	if t.Test == "size" {
-		return sizeLimit(name), nil
+		return sizeLimit(name)
 	}
-	return time.ParseDuration(t.Test)
+	limit, _ := time.ParseDuration(t.Test) // the registry checks it parses when it loads
+	return limit
 }
 
 // sizeLimit is a scenario's limit from the size class in its file name: twice

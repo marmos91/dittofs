@@ -46,18 +46,18 @@ suites:
 		"stopped/t":  "other:known",
 	})
 	rep := runIn(t, root, r, "g")
-	want := []Outcome{
-		{Cell: "green", Result: Passed},
-		{Cell: "fixed", Result: Failed, Note: "1 passed unexpectedly: fixed"},
-		{Cell: "unlisted", Result: NotRun, Note: "1 skipped unexpectedly: nope"},
-		{Cell: "stopped", Result: NotRun, Note: "1 incomplete: known"},
+	want := []report.Cell{
+		{Name: "green", Result: Passed},
+		{Name: "fixed", Result: Failed, Note: "1 passed unexpectedly: fixed"},
+		{Name: "unlisted", Result: NotRun, Note: "1 skipped unexpectedly: nope"},
+		{Name: "stopped", Result: NotRun, Note: "1 incomplete: known"},
 	}
 	if len(rep.Outcomes) != len(want) {
 		t.Fatalf("outcomes %+v", rep.Outcomes)
 	}
 	for i, o := range rep.Outcomes {
 		if o.Result != want[i].Result || o.Note != want[i].Note {
-			t.Errorf("%s: %s %q, want %s %q", o.Cell, o.Result, o.Note, want[i].Result, want[i].Note)
+			t.Errorf("%s: %s %q, want %s %q", o.Name, o.Result, o.Note, want[i].Result, want[i].Note)
 		}
 	}
 	if rep.Status() != 1 {
@@ -103,17 +103,17 @@ func TestExitSuiteGraded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Outcome{
-		{Cell: "s/a", Result: Failed, Note: "t/hangs.sh: timed out after 1s"},
-		{Cell: "s/b", Result: Failed, Note: "t/fails.sh: `sh t/fails.sh b` exited 1"},
-		{Cell: "s/o/c", Result: Passed},
+	want := []report.Cell{
+		{Name: "s/a", Result: Failed, Note: "t/hangs.sh: timed out after 1s"},
+		{Name: "s/b", Result: Failed, Note: "t/fails.sh: `sh t/fails.sh b` exited 1"},
+		{Name: "s/o/c", Result: Passed},
 	}
 	if len(rep.Outcomes) != len(want) {
 		t.Fatalf("outcomes %+v", rep.Outcomes)
 	}
 	for i, o := range rep.Outcomes {
-		if o.Cell != want[i].Cell || o.Result != want[i].Result || o.Note != want[i].Note {
-			t.Errorf("got %s %s %q, want %s %s %q", o.Cell, o.Result, o.Note, want[i].Cell, want[i].Result, want[i].Note)
+		if o.Name != want[i].Name || o.Result != want[i].Result || o.Note != want[i].Note {
+			t.Errorf("got %s %s %q, want %s %s %q", o.Name, o.Result, o.Note, want[i].Name, want[i].Result, want[i].Note)
 		}
 	}
 }
