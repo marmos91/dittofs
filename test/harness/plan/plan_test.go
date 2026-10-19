@@ -144,8 +144,8 @@ suites:
 }
 
 // A fixture adds to each cell's needs what its fields imply there: a service
-// for an S3 profile, and root and the client for a mount, but nothing for an
-// export without one.
+// for an S3 profile, root and the client for a mount, but nothing for an
+// export without one, and root and the port for SMB on a set port.
 func TestFixtureNeeds(t *testing.T) {
 	root := t.TempDir()
 	y := `version: 1
@@ -157,6 +157,7 @@ suites:
     fixture: { profile: "{profile}", nfs: "{nfs}" }
     needs: [linux, root]
   b: { cmd: "true", fixture: { profile: memory, smb: { mount: true } } }
+  c: { cmd: "true", fixture: { profile: memory, smb: { port: 445 } }, needs: [linux] }
 `
 	r, err := registry.Parse(root, []byte(y))
 	if err != nil {
@@ -172,6 +173,7 @@ suites:
 		"a/badger-s3/export": {"linux", "root", "service:localstack"},
 		"a/badger-s3/4.1":    {"linux", "root", "service:localstack", "nfs-client"},
 		"b":                  {"root", "smb-client"},
+		"c":                  {"linux", "root", "port:445"},
 	}
 	for _, c := range cells {
 		if !slices.Equal(c.Needs, want[c.Name]) {

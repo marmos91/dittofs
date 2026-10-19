@@ -21,6 +21,9 @@ import (
 	"time"
 )
 
+// listen opens a listener; the tests replace it.
+var listen = net.Listen
+
 // platforms maps a platform need to Go's name for it.
 var platforms = map[string]string{"linux": "linux", "windows": "windows", "macos": "darwin"}
 
@@ -127,7 +130,19 @@ func Check(root, n string) error {
 		// Every address and loopback alone: some systems let the first bind
 		// while something listens on the second.
 		for _, addr := range []string{":" + arg, "127.0.0.1:" + arg} {
-			l, err := net.Listen("tcp", addr)
+			l, err := listen("tcp", addr)
+			if errors.Is(err, os.ErrPermission) {
+				// decision: a port below those an ordinary user may bind is
+				// checked by connecting to it on loopback, so something that
+				// listens only on another address goes unseen, and the
+				// fixture that binds it then fails to start.
+				conn, err := net.DialTimeout("tcp", "127.0.0.1:"+arg, time.Second)
+				if err != nil {
+					return nil
+				}
+				_ = conn.Close()
+				return errors.New("the port is in use")
+			}
 			if err != nil {
 				return errors.New("the port is in use")
 			}
