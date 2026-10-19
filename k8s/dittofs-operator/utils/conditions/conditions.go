@@ -25,6 +25,10 @@ const (
 
 	// ConditionAuthenticated indicates the operator has authenticated with the DittoFS API
 	ConditionAuthenticated = "Authenticated"
+
+	// ConditionAuthorized indicates the DittoFS API accepted the operator's calls;
+	// False names the ones it refused with 403
+	ConditionAuthorized = "Authorized"
 )
 
 // ConditionType is a constraint for types that can be used as condition types

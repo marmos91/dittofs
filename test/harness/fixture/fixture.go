@@ -5,6 +5,7 @@
 package fixture
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -26,14 +27,16 @@ import (
 	"github.com/marmos91/dittofs/test/harness/registry"
 )
 
-// share is the fixture's share, the default one when no shares file is given.
-const share = "/export"
+// Share is the fixture's share, the default one when no shares file is given.
+const Share = "/export"
 
-// user is {user}: the test user every fixture creates, with {password} and
-// userUID as its UID and GID.
+// User is {user} and User2 is {user2}: the test users every fixture creates,
+// with {password}, each with its UID as its GID too.
 const (
-	user    = "dt-user"
-	userUID = uint32(65535)
+	User     = "dt-user"
+	UserUID  = uint32(65535)
+	User2    = "dt-user2"
+	User2UID = uint32(65536)
 )
 
 // stopGrace is how long dfs has to shut down before its group is killed.
@@ -52,25 +55,28 @@ func Unsupported(f *registry.Fixture) string {
 		return fmt.Sprintf("dt doesn't mount NFS %s yet", f.NFS.Version)
 	case mounts(f.NFS.Version) && fixed(f.NFS.Version) && runtime.GOOS != "linux":
 		return "dt mounts NFS only on Linux yet"
-	case f.SMB.Enabled:
-		return "dt doesn't serve SMB from fixtures yet"
-	case f.Shares != "":
-		return "dt doesn't create a shares file's shares yet"
+	case f.SMB.Encryption != "" && f.SMB.Encryption != "preferred" && fixed(f.SMB.Encryption):
+		return fmt.Sprintf("dt doesn't set SMB encryption %q", f.SMB.Encryption)
+	case f.SMB.Mount:
+		return "dt doesn't mount SMB yet"
 	case f.Kerberos:
 		return "dt doesn't set up Kerberos in fixtures yet"
-	case f.Reset != "":
-		return "dt doesn't reset shares yet"
+	case f.Reset != "" && f.Reset != "each" && fixed(f.Reset):
+		return fmt.Sprintf("dt doesn't reset shares %q", f.Reset)
 	}
 	return ""
 }
 
 // Placeholders names what fixture f gives a cell's commands, besides {bin}:
-// {server}, {user} and {password}, {nfs-port} when it serves NFS, and
-// {mount} when it mounts the share.
+// {server}, {user}, {user2} and {password}, {nfs-port} when it serves NFS,
+// {smb-port} when it serves SMB, and {mount} when it mounts the share.
 func Placeholders(f registry.Fixture) []string {
-	names := []string{"server", "user", "password"}
+	names := []string{"server", "user", "user2", "password"}
 	if f.NFS.Version != "" {
 		names = append(names, "nfs-port")
+	}
+	if f.SMB.Enabled {
+		names = append(names, "smb-port")
 	}
 	if mounts(f.NFS.Version) {
 		names = append(names, "mount")
@@ -86,10 +92,14 @@ type Server struct {
 	err     error         // how dfs exited, once exited is closed
 	log     *os.File
 	data    string
-	api     string    // the API's base URL
-	nfsPort int       // 0 when the fixture serves no NFS
-	mount   string    // {mount}, once the fixture makes it
-	out     io.Writer // dt's lines on the setup and the teardown
+	api     string // the API's base URL
+	admin   string // the admin's password
+	f       registry.Fixture
+	shares  []apiclient.CreateShareRequest // the first is {share}
+	nfsPort int                            // 0 when the fixture serves no NFS
+	smbPort int                            // 0 when the fixture serves no SMB
+	mount   string                         // {mount}, once the fixture makes it
+	out     io.Writer                      // dt's lines on the setup and the teardown
 	stop    sync.Once
 	stopErr error
 }
@@ -109,6 +119,10 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	if err != nil {
 		return nil, err
 	}
+	shares, err := loadShares(f.Shares)
+	if err != nil {
+		return nil, err
+	}
 	// The bucket comes first, so when it fails there is no server to stop.
 	var b *bucket
 	if f.Profile == "badger-s3" {
@@ -117,13 +131,16 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		}
 		_, _ = fmt.Fprintf(w, "[dt] fixture: blocks in the bucket %s at %s, under %s\n", bucketName, b.endpoint, b.prefix)
 	}
-	ports, err := freePorts(2)
+	ports, err := freePorts(3)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{data: filepath.Join(out, "dfs"), api: "http://127.0.0.1:" + strconv.Itoa(ports[0]), exited: make(chan struct{}), out: w}
+	s := &Server{data: filepath.Join(out, "dfs"), api: "http://127.0.0.1:" + strconv.Itoa(ports[0]), f: f, shares: shares, exited: make(chan struct{}), out: w}
 	if f.NFS.Version != "" {
 		s.nfsPort = ports[1]
+	}
+	if f.SMB.Enabled {
+		s.smbPort = cmp.Or(f.SMB.Port, ports[2])
 	}
 	// decision: the server's output stays with its cell as dfs.log in {out},
 	// since the run's logs directory holds one log per cell.
@@ -131,12 +148,36 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		return nil, err
 	}
 	// decision: {password} is generated per fixture, so it changes with
-	// every run and no two servers share one.
-	admin, password := secret(), secret()
+	// every run and no two servers share one. It is hex, so it needs no
+	// escaping in the XML of a tool's configuration.
+	password := secret()
+	s.admin = secret()
 	config, err := writeConfig(s.data, ports[0])
 	if err == nil {
-		s.cmd = exec.Command(filepath.Join(bin, "dfs"), "start", "--foreground", "--config", config)
-		s.cmd.Env = append(serverEnv(), "DITTOFS_ADMIN_INITIAL_PASSWORD="+admin)
+		argv := []string{filepath.Join(bin, "dfs"), "start", "--foreground", "--config", config}
+		if f.SMB.Port != 0 {
+			// A set port is one a user may not bind, as 445: dfs runs as dt's
+			// user with one capability, CAP_NET_BIND_SERVICE, held as an
+			// ambient one. A file capability would put dfs in secure mode,
+			// where Go prints no trace when it panics.
+			//
+			// decision: sudo resets the environment, so it is told to keep
+			// the admin's password, which then never shows on its command
+			// line, where any user could read it while the server runs.
+			//
+			// ponytail: a dfs started through sudo outlives a dt that is
+			// killed, since the parent-death signal doesn't reach it, and
+			// holds the port until it is stopped by hand. Have dt stop such a
+			// server before it starts the next if that shows up.
+			priv := []string{"setpriv", "--reuid=" + strconv.Itoa(os.Getuid()), "--regid=" + strconv.Itoa(os.Getgid()), "--init-groups", "--inh-caps=+net_bind_service", "--ambient-caps=+net_bind_service", "--"}
+			if geteuid() != 0 {
+				priv = append([]string{"sudo", "-n", "--preserve-env=DITTOFS_ADMIN_INITIAL_PASSWORD"}, priv...)
+			}
+			argv = append(priv, argv...)
+			_, _ = fmt.Fprintf(w, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
+		}
+		s.cmd = exec.Command(argv[0], argv[1:]...)
+		s.cmd.Env = append(serverEnv(), "DITTOFS_ADMIN_INITIAL_PASSWORD="+s.admin)
 		s.cmd.Stdout, s.cmd.Stderr = s.log, s.log
 		ownGroup(s.cmd)
 		err = s.cmd.Start()
@@ -155,7 +196,7 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	// The API client takes no context, so the setup runs aside: when ctx
 	// ends first, stopping the server ends the request in flight.
 	done := make(chan error, 1)
-	go func() { done <- s.setUp(ctx, f, b, admin, password) }()
+	go func() { done <- s.setUp(ctx, b, password) }()
 	select {
 	case err = <-done:
 	case <-ctx.Done():
@@ -167,10 +208,18 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		_ = s.Stop()
 		return nil, err
 	}
-	s.vals = map[string]string{"server": server, "user": user, "password": password}
+	s.vals = map[string]string{"server": server, "user": User, "user2": User2, "password": password}
 	if s.nfsPort > 0 {
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
-		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", share, server, s.nfsPort)
+		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
+	}
+	if s.smbPort > 0 {
+		s.vals["smb-port"] = strconv.Itoa(s.smbPort)
+		names := make([]string, len(shares))
+		for i, share := range shares {
+			names[i] = share.Name
+		}
+		_, _ = fmt.Fprintf(w, "[dt] fixture: SMB serves %s at %s:%d\n", strings.Join(names, " "), server, s.smbPort)
 	}
 	if mounts(f.NFS.Version) {
 		if err := s.mountShare(ctx, server, f.NFS); err != nil {
@@ -185,20 +234,47 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 
 // setUp waits for the server's API, logs in as its admin, configures it and
 // checks it.
-func (s *Server) setUp(ctx context.Context, f registry.Fixture, b *bucket, admin, password string) error {
+func (s *Server) setUp(ctx context.Context, b *bucket, password string) error {
 	if err := s.waitReady(ctx); err != nil {
 		return err
 	}
-	c := apiclient.New(s.api)
-	token, err := c.Login("admin", admin)
+	c, err := s.login()
 	if err != nil {
-		return fmt.Errorf("logging in as admin: %w", err)
-	}
-	c.SetToken(token.AccessToken)
-	if err := configure(c, f, b, s.data, password, s.nfsPort); err != nil {
 		return err
 	}
-	return check(c, b, s.nfsPort)
+	if err := s.configure(c, b, password); err != nil {
+		return err
+	}
+	return s.check(c, b)
+}
+
+// login is an API client logged in as the server's admin.
+func (s *Server) login() (*apiclient.Client, error) {
+	c := apiclient.New(s.api)
+	token, err := c.Login("admin", s.admin)
+	if err != nil {
+		return nil, fmt.Errorf("logging in as admin: %w", err)
+	}
+	c.SetToken(token.AccessToken)
+	return c, nil
+}
+
+// Reset removes {share}, the first share, and creates it again with its
+// settings and grants, as the conformance runner's reset does.
+func (s *Server) Reset() error {
+	c, err := s.login()
+	if err != nil {
+		return err
+	}
+	share := s.shares[0]
+	if err := c.RemoveShare(share.Name); err != nil {
+		return fmt.Errorf("removing the share %s: %w", share.Name, err)
+	}
+	if err := addShare(c, s.f, share); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(s.out, "[dt] fixture: the share %s recreated\n", share.Name)
+	return nil
 }
 
 // waitReady waits until the API's readiness probe answers 200.

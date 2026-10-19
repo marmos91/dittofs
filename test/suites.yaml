@@ -161,7 +161,8 @@ suites:
     select: { pr: { profile: [badger-s3] } }
     fixture:
       profile: "{profile}"
-      smb: { encryption: preferred }
+      smb: { encryption: preferred, port: 445 }
+      shares: test/smb-conformance/shares.yaml
     templates: test/smb-conformance/ptfconfig/*.template
     volumes: { "{out}/config": /data/fileserver }
     tier: pr
@@ -171,18 +172,18 @@ suites:
     image: quay.io/samba.org/samba-toolbox:v0.8
     # Its test list, with each test's limit and the shards that split it on pull requests, is
     # still built by smb-conformance/smbtorture/run.sh; it comes here as a file of its own.
-    cmd: "smbtorture //{server}/smbbasic -U{user}%{password}"
+    cmd: "smbtorture //{server}/smbbasic -p {smb-port} -U{user}%{password}"
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
-    fixture: { profile: "{profile}", smb: true, reset: each }
+    fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
     tier: pr
     needs: [linux, docker]
     options:
       kerberos:
-        cmd: "smbtorture //{server}/smbbasic -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        cmd: "smbtorture //{server}/smbbasic -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
         tests: [smb2.session, smb2.read, smb2.lock]
         matrix: {}
-        fixture: { profile: memory, smb: true, kerberos: true }
+        fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         tier: merge
 
   # Each OS's own clients mount the fixture's share, and the workloads run over the mount.

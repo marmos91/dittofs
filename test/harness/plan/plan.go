@@ -184,8 +184,8 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 }
 
 // fixtureNeeds are the needs fixture f implies at one point of its matrix,
-// for its own steps: a service for an S3 profile, and root and the client for
-// a mount.
+// for its own steps: a service for an S3 profile, root and the client for a
+// mount, and root and the port for SMB on a set port.
 func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 	if f == nil {
 		return nil
@@ -207,6 +207,9 @@ func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 	}
 	if f.SMB.Mount {
 		out = union(out, []string{"root", "smb-client"})
+	}
+	if f.SMB.Port != 0 {
+		out = union(out, []string{"root", "port:" + strconv.Itoa(f.SMB.Port)})
 	}
 	return out
 }

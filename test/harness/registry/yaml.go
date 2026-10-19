@@ -68,10 +68,12 @@ type NFS struct {
 	Options string `yaml:"options"`
 }
 
-// SMB enables the SMB adapter, optionally with encryption or a mount.
+// SMB enables the SMB adapter, optionally with encryption, on a set port, or
+// with a mount.
 type SMB struct {
 	Enabled    bool   `yaml:"-"`
 	Encryption string `yaml:"encryption"`
+	Port       int    `yaml:"port"`
 	Mount      bool   `yaml:"mount"`
 }
 

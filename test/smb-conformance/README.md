@@ -404,6 +404,7 @@ test/smb-conformance/
 ├── docker-compose.yml        # Service definitions (DittoFS, WPTS, Localstack, KDC)
 ├── Dockerfile.dittofs        # DittoFS image with dfs + dfsctl
 ├── bootstrap.sh              # DittoFS provisioning (stores, shares, users, SMB adapter)
+├── shares.yaml               # The same shares as data, for dt's fixture
 ├── configs/                  # DittoFS config files per profile
 │   ├── memory.yaml
 │   ├── badger.yaml

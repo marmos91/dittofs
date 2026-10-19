@@ -3,6 +3,7 @@ package fixture
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/apiclient"
@@ -10,12 +11,12 @@ import (
 )
 
 // configure sets the server up through its API: its stores on the fixture's
-// profile, with the blocks of an S3 profile in b, the share, its squash, the
-// users, and the NFS settings, all before dt enables the NFS adapter, which
-// reads them as it starts. The server's answer to the settings must hold
-// them as set. Users get password, and each UID in the fixture's users a
-// read-write grant on the share.
-func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, password string, nfsPort int) error {
+// profile, with the blocks of an S3 profile in b, the users, the shares with
+// their settings and grants, and the adapter settings, all before dt enables
+// the adapters, which read them as they start. The server's answer to the NFS
+// settings must hold them as set. Users get password.
+func (s *Server) configure(c *apiclient.Client, b *bucket, password string) error {
+	f := s.f
 	off, on := false, true
 	// decision: on a fresh database the server creates its NFS and SMB
 	// adapters enabled, on 12049 and 12445, and starts them; no setting stops
@@ -32,7 +33,7 @@ func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, passwor
 	}
 	meta := map[string]any{"in_memory": true}
 	if f.Profile != "memory" { // badger and badger-s3 keep it on disk
-		meta = map[string]any{"path": filepath.Join(data, "metadata")}
+		meta = map[string]any{"path": filepath.Join(s.data, "metadata")}
 	}
 	if _, err := c.CreateMetadataStore(&apiclient.CreateStoreRequest{Name: "default", Type: "badger", Config: meta}); err != nil {
 		return fmt.Errorf("the metadata store: %w", err)
@@ -44,33 +45,31 @@ func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, passwor
 	if _, err := c.CreateBlockStore(blocks); err != nil {
 		return fmt.Errorf("the block store: %w", err)
 	}
-	if _, err := c.CreateShare(&apiclient.CreateShareRequest{Name: share, MetadataStoreID: "default", BlockStore: "default"}); err != nil {
-		return fmt.Errorf("the share %s: %w", share, err)
-	}
-	if f.Squash != "" {
-		if _, err := c.PatchShareNFSConfig(share, &apiclient.PatchShareNFSConfigRequest{Squash: &f.Squash}); err != nil {
-			return fmt.Errorf("squash %s: %w", f.Squash, err)
-		}
-	}
+	// The users come before the shares, since {user} owns a shares file's
+	// shares.
 	for _, uid := range f.Users {
 		// decision: each user's GID is its UID, as the suites' scripts set
 		// them up today.
-		id, name := uint32(uid), fmt.Sprintf("dt-%d", uid)
-		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: name, Password: password, UID: &id, GID: &id}); err != nil {
+		id := uint32(uid)
+		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: fmt.Sprintf("dt-%d", uid), Password: password, UID: &id, GID: &id}); err != nil {
 			return fmt.Errorf("user %d: %w", uid, err)
 		}
-		if err := c.SetUserSharePermission(share, name, "read-write"); err != nil {
-			return fmt.Errorf("user %d's grant: %w", uid, err)
+	}
+	// decision: {user} and {user2} have UIDs and GIDs of their own, the first
+	// two above the range users may name, since a user without one maps to
+	// 1000, which a users entry or the developer may hold.
+	for _, u := range []struct {
+		name string
+		id   uint32
+	}{{User, UserUID}, {User2, User2UID}} {
+		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: u.name, Password: password, UID: &u.id, GID: &u.id}); err != nil {
+			return fmt.Errorf("the test user %s: %w", u.name, err)
 		}
 	}
-	// decision: {user} has a UID and GID of its own, the first above the
-	// range users may name, since a user without one maps to 1000, which a
-	// users entry or the developer may hold. It has no grant on the default
-	// share: the shares-file rules give it the admin grant and the root on a
-	// shares file's shares, and nothing on the default one yet.
-	id := userUID
-	if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: user, Password: password, UID: &id, GID: &id}); err != nil {
-		return fmt.Errorf("the test user: %w", err)
+	for _, share := range s.shares {
+		if err := addShare(c, f, share); err != nil {
+			return err
+		}
 	}
 	settings, err := nfsSettings(f)
 	if err != nil {
@@ -88,9 +87,55 @@ func configure(c *apiclient.Client, f registry.Fixture, b *bucket, data, passwor
 			return fmt.Errorf("the server reports delegations %t, not the %t dt set", got.DelegationsEnabled, *d)
 		}
 	}
-	if nfsPort > 0 {
-		if _, err := c.UpdateAdapter("nfs", &apiclient.UpdateAdapterRequest{Port: &nfsPort, Enabled: &on}); err != nil {
-			return fmt.Errorf("enabling NFS on port %d: %w", nfsPort, err)
+	if f.SMB.Encryption == "preferred" {
+		if _, err := c.PatchSMBSettings(&apiclient.PatchSMBSettingsRequest{EnableEncryption: &on}); err != nil {
+			return fmt.Errorf("the SMB settings: %w", err)
+		}
+	}
+	for _, a := range []struct {
+		name string
+		port int
+	}{{"nfs", s.nfsPort}, {"smb", s.smbPort}} {
+		if a.port == 0 {
+			continue
+		}
+		ad, err := c.UpdateAdapter(a.name, &apiclient.UpdateAdapterRequest{Port: &a.port, Enabled: &on})
+		if err != nil {
+			return fmt.Errorf("enabling %s on port %d: %w", strings.ToUpper(a.name), a.port, err)
+		}
+		if !ad.Running {
+			return fmt.Errorf("%s is enabled on port %d, but its listener isn't running", strings.ToUpper(a.name), a.port)
+		}
+	}
+	return nil
+}
+
+// addShare creates share on the default stores, with fixture f's squash
+// and each of its users' read-write grant. A shares file's share has its root
+// owned by {user}, who holds the admin grant on it: ownership lets {user}
+// write at the root, and admin lets it take ownership of a file. On the
+// default share {user} has no grant.
+func addShare(c *apiclient.Client, f registry.Fixture, share apiclient.CreateShareRequest) error {
+	share.MetadataStoreID, share.BlockStore = "default", "default"
+	if f.Shares != "" {
+		share.Owner = User
+	}
+	if _, err := c.CreateShare(&share); err != nil {
+		return fmt.Errorf("the share %s: %w", share.Name, err)
+	}
+	if f.Shares != "" {
+		if err := c.SetUserSharePermission(share.Name, User, "admin"); err != nil {
+			return fmt.Errorf("%s's grant on %s: %w", User, share.Name, err)
+		}
+	}
+	if f.Squash != "" {
+		if _, err := c.PatchShareNFSConfig(share.Name, &apiclient.PatchShareNFSConfigRequest{Squash: &f.Squash}); err != nil {
+			return fmt.Errorf("squash %s on %s: %w", f.Squash, share.Name, err)
+		}
+	}
+	for _, uid := range f.Users {
+		if err := c.SetUserSharePermission(share.Name, fmt.Sprintf("dt-%d", uid), "read-write"); err != nil {
+			return fmt.Errorf("user %d's grant on %s: %w", uid, share.Name, err)
 		}
 	}
 	return nil
@@ -114,26 +159,29 @@ func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error)
 }
 
 // check is the fixture's check before the first test that the server
-// answers: an authenticated call answers, and shows NFS served on its port
-// when the fixture asks for it, and no adapter it doesn't ask for. With an S3
-// profile's bucket b, the server's own check of its block store must find it
-// healthy too.
-func check(c *apiclient.Client, b *bucket, nfsPort int) error {
+// answers: an authenticated call answers, and shows NFS and SMB each served
+// on its port when the fixture asks for it, and no adapter it doesn't ask for.
+// With an S3 profile's bucket b, the server's own check of its block store
+// must find it healthy too.
+func (s *Server) check(c *apiclient.Client, b *bucket) error {
 	adapters, err := c.ListAdapters()
 	if err != nil {
 		return fmt.Errorf("an authenticated call: %w", err)
 	}
-	served := false
+	ports := map[string]int{"nfs": s.nfsPort, "smb": s.smbPort}
+	served := map[string]bool{}
 	for _, a := range adapters {
 		switch {
-		case a.Type == "nfs" && nfsPort > 0:
-			served = a.Running && a.Port == nfsPort
+		case ports[a.Type] > 0:
+			served[a.Type] = a.Running && a.Port == ports[a.Type]
 		case a.Running:
 			return fmt.Errorf("the %s adapter runs, which the fixture doesn't ask for", a.Type)
 		}
 	}
-	if nfsPort > 0 && !served {
-		return fmt.Errorf("NFS isn't served on port %d", nfsPort)
+	for _, a := range []string{"nfs", "smb"} {
+		if ports[a] > 0 && !served[a] {
+			return fmt.Errorf("%s isn't served on port %d", strings.ToUpper(a), ports[a])
+		}
 	}
 	if b == nil {
 		return nil

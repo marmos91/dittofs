@@ -274,18 +274,25 @@ develop → main. v0.18.0 / v0.19.0 broke this by tagging develop-only and never
 
 Steps (X.Y.Z):
 
-1. Confirm `develop` is clean and synced with `origin/develop`.
-2. Bump `flake.nix` `version = "X.Y.Z"` — the single source of truth, only line that changes.
-3. Commit **flake only**: `chore(release): vX.Y.Z` on develop (signed). Push develop.
-4. **Fast-forward `main` to that commit** (the easily-forgotten step):
-   `git branch -f main <commit> && git push origin main:main`.
-5. Signed annotated tag on that same commit: `git tag -s vX.Y.Z <commit> -m "vX.Y.Z"`,
-   then `git push origin vX.Y.Z`. The tag push triggers `release.yml`; non-rc tags push
-   docker `:latest`.
+1. **Changelog first, as its own PR:** `docs(changelog): describe X.Y.Z` adds a
+   `## [X.Y.Z] — YYYY-MM-DD` section to `CHANGELOG.md`, covering user-visible changes
+   since the last tag (`git log vPREV..origin/develop`) in the file's existing style.
+   Leave out test harness, CI, docs and dependency bumps. `release.yml` puts this section
+   at the top of the GitHub release notes (`scripts/release-notes.py`). Without it, the
+   notes quietly fall back to the commit list, which is how the file lapsed after 0.13.0.
+2. On an up-to-date `develop`, run `scripts/release.sh X.Y.Z`. It refuses unless the tree
+   is clean and synced, `main` is an ancestor, the tag is new and the changelog section
+   exists (rc versions are exempt from that last check), and it lists any CI run on the
+   commit that isn't green. Then it bumps `flake.nix` `version =` (the single source of
+   truth; the commit touches flake only), makes the signed `chore(release): vX.Y.Z`
+   commit and signed tag, and asks before pushing develop, **fast-forwarding `main`**
+   (the step that used to be forgotten) and pushing the tag. The tag push triggers
+   `release.yml`; non-rc tags push docker `:latest`.
 
 Notes:
-- SSH signing failing with `Couldn't get agent socket` → use the key explicitly:
-  `git -c user.signingkey=$HOME/.ssh/id_rsa.pub commit -S` (same for `tag -s`).
+- SSH signing failing with `Couldn't get agent socket` → use the key explicitly, through
+  git's env config so the script picks it up:
+  `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.signingkey GIT_CONFIG_VALUE_0=$HOME/.ssh/id_rsa.pub scripts/release.sh X.Y.Z`.
 - `develop` and `main` are protected; admin bypass lets release pushes through (old unsigned
   commits in the catch-up range show as harmless "violations").
 - A flaky SMB-conformance run does not block cutting a tag.

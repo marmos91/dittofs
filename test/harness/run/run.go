@@ -293,11 +293,15 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		return didntRun(step + ": " + err.Error())
 	}
+	var server fixtureServer
 	if c.Unit.Fixture != nil {
 		if err := buildBin(setup, o.Root, vals["bin"], os.Environ(), w); err != nil {
 			return setupFailed("the fixture", fmt.Errorf("dfs and dfsctl didn't build: %w", err))
 		}
-		server, err := startFixture(setup, spec, needs.ServiceEnv(o.Root, c.Needs), vals["bin"], out, w)
+		if spec.Shares != "" {
+			spec.Shares = filepath.Join(o.Root, spec.Shares)
+		}
+		server, err = startFixture(setup, spec, needs.ServiceEnv(o.Root, c.Needs), vals["bin"], out, w)
 		if err != nil {
 			return setupFailed("the fixture", err)
 		}
@@ -362,6 +366,15 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		prefix := ""
 		if test != "" {
 			prefix = test + ": "
+		}
+		if spec.Reset == "each" {
+			// decision: a test whose share wasn't reset doesn't run, since it
+			// would run on what the test before it left there. The reset is
+			// one of the fixture's steps, so it isn't retried.
+			if err := server.Reset(); err != nil {
+				notRun = append(notRun, prefix+"its share wasn't reset: "+err.Error())
+				continue
+			}
 		}
 		var output bytes.Buffer
 		if read != nil {

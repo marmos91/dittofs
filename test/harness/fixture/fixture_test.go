@@ -59,10 +59,12 @@ func TestUnsupported(t *testing.T) {
 		{registry.Fixture{Profile: "memory", Server: "knfsd"}, "knfsd fixture"},
 		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.1"}}, mountsHere},
 		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "4.2"}}, "mount NFS 4.2"},
-		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}}, "SMB"},
-		{registry.Fixture{Profile: "memory", Shares: "s.yaml"}, "shares file"},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "preferred", Port: 445}, Shares: "s.yaml", Reset: "each"}, ""},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "{enc}"}, Reset: "{reset}"}, ""},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "required"}}, `SMB encryption "required"`},
+		{registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Mount: true}}, "mount SMB"},
 		{registry.Fixture{Profile: "memory", Kerberos: true}, "Kerberos"},
-		{registry.Fixture{Profile: "memory", Reset: "each"}, "reset"},
+		{registry.Fixture{Profile: "memory", Reset: "once"}, `reset shares "once"`},
 	} {
 		if got := Unsupported(&tc.f); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("%+v: %q, want %q", tc.f, got, tc.want)

@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,19 +18,28 @@ import (
 )
 
 // fakeServer is a started fixture that gives fixed placeholders, and
-// {mount} when mount is set.
+// {mount} when mount is set. Each reset says so in the cell's output.
 type fakeServer struct {
-	stops int
-	err   error // what Stop reports
-	mount string
+	stops    int
+	resets   int
+	err      error // what Stop reports
+	resetErr error // what Reset reports
+	mount    string
+	out      io.Writer // the cell's output
 }
 
 func (f *fakeServer) Placeholders() map[string]string {
-	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "user": "dt-user", "password": "s3cret"}
+	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": "40002", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
 	if f.mount != "" {
 		vals["mount"] = f.mount
 	}
 	return vals
+}
+
+func (f *fakeServer) Reset() error {
+	f.resets++
+	_, _ = fmt.Fprintln(f.out, "[dt] fake reset")
+	return f.resetErr
 }
 
 func (f *fakeServer) Stop() error {
@@ -52,7 +62,11 @@ func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, e
 	real := startFixture
 	startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
 		list = append(list, asked{f, services})
-		return start(ctx)
+		s, err := start(ctx)
+		if fake, ok := s.(*fakeServer); ok {
+			fake.out = w
+		}
+		return s, err
 	}
 	t.Cleanup(func() { startFixture = real })
 	return &list
@@ -87,8 +101,8 @@ func TestFixtureCell(t *testing.T) {
 		t.Errorf("postgres-s3: %+v", o)
 	}
 	a := *asked
-	if len(a) != 2 || a[0].Profile != "memory" || a[0].Lease != "30s" || a[1].Profile != "badger-s3" || server.stops != 2 {
-		t.Errorf("fixtures asked for %+v, stopped %d times", a, server.stops)
+	if len(a) != 2 || a[0].Profile != "memory" || a[0].Lease != "30s" || a[1].Profile != "badger-s3" || server.stops != 2 || server.resets != 0 {
+		t.Errorf("fixtures asked for %+v, stopped %d times, reset %d times", a, server.stops, server.resets)
 	}
 	if len(a) == 2 && !slices.Contains(a[1].services, "LOCALSTACK_ENDPOINT="+s3.URL) {
 		t.Errorf("badger-s3's fixture was given %q", a[1].services)
@@ -163,5 +177,40 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 	}
 	if late := time.Since(deadline); late > time.Second {
 		t.Errorf("the pull ran %s past the fixture's limit", late.Round(time.Millisecond))
+	}
+}
+
+// A fixture with reset: each has its share reset before each test of its
+// cell, and a test whose reset fails doesn't run. The fixture finds its
+// shares file from the repository's root, and the commands get {smb-port}
+// and {user2}.
+func TestFixtureResetEach(t *testing.T) {
+	server := &fakeServer{}
+	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
+	root, r := repo(t, `suites:
+  r:
+    cmd: "echo {test} {smb-port} {user2}"
+    tests: [a, b]
+    fixture: { profile: memory, smb: true, shares: smb/shares.yaml, reset: each }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"], "smb/shares.yaml": "- name: /s\n"}))
+	rep, out := runTarget(t, root, r, "r", false)
+	var steps []string
+	for _, line := range strings.Split(out, "\n") {
+		if line == "[dt] fake reset" || strings.HasPrefix(line, "[dt] $ echo") {
+			steps = append(steps, line)
+		}
+	}
+	want := []string{"[dt] fake reset", "[dt] $ echo a 40002 dt-user2", "[dt] fake reset", "[dt] $ echo b 40002 dt-user2"}
+	if o := rep.Outcomes[0]; o.Result != Passed || !slices.Equal(steps, want) {
+		t.Errorf("outcome %+v, steps:\n%s\nwant:\n%s", o, strings.Join(steps, "\n"), strings.Join(want, "\n"))
+	}
+	if a := *asked; a[0].Shares != filepath.Join(root, "smb", "shares.yaml") {
+		t.Errorf("the fixture's shares file: %s", a[0].Shares)
+	}
+
+	server.resetErr = errors.New("the API answered 500")
+	rep, out = runTarget(t, root, r, "r", false)
+	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != "a: its share wasn't reset: the API answered 500; b: its share wasn't reset: the API answered 500" || strings.Contains(out, "[dt] $ echo") {
+		t.Errorf("a failed reset: %+v\n%s", o, out)
 	}
 }
