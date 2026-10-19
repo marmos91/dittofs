@@ -1155,7 +1155,7 @@ const (
 	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away
 	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
 	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or quota slack spent (RFC 8 §11.2, §5.6)
-	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool (RFC 24)
+	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
 )
 ```
 
