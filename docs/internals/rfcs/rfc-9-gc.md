@@ -442,6 +442,88 @@ not see. Making that safe needs a second mechanism for adoptions made after the
 mark began, which [§2.1](#2.1%20References%20are%20the%20only%20authority) forbids. The trace survives as the audit ([§6](#6.%20Audit)), which
 checks the counts and never deletes.
 
+### 2.5 Composition and lifecycle
+
+**One GC per storage node; a namespace is a context.** The composition root builds
+one `*gc.GC` from `Deps` ([§8](#8.%20API%20surface)) on every node with the `storage` role, as it
+builds one engine per node and a share is a context there
+([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)). The runtime adds and removes contexts ([RFC 23](rfc-index.md) §2.1): a
+context is one namespace with a remote store, holding that namespace's `View`.
+GC runs five sources — deleter, compactor, collector, auditor, recheck — on its
+one scheduler instance, whose tenants are the (namespace, partition) pairs this
+node leases ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)). GC holds no state a restart needs: every source rebuilds
+from its index keys and cursors.
+
+| Component | Made of | Depends on | Injected how | Owned by | Lifecycle |
+| --- | --- | --- | --- | --- | --- |
+| `*gc.GC`, one per storage node | namespace contexts, five sources, the lease keeper | everything below | `New(Deps)` | the composition root; the runtime drives it | `New` starts nothing; `Start` after the share contexts; `Drain` and `Close` before they are joined |
+| namespace context | a `View` and the partitions this node holds | `Blocks`, `Remote`, `Keys`, its store's flow | `Add(ns, View)` | GC, one per namespace with a remote store | added when the namespace's records name a remote store; removed once its `NS‖ns` records are gone ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3), or at `Close` |
+| deleter, compactor, collector, auditor, recheck | one scheduler source each | the context's `Blocks`, `Remote` and flow; `Clock` | registered by `Start` | GC | run while a partition of the context is leased; `Recheck` by the holder of the first partition |
+| lease keeper | acquire, renew at a third of the lease, release | `Blocks.Lease`, `Clock` | internal | GC | acquires at `Add`, releases at `Remove` and `Close`, never lowering an epoch |
+| `Blocks` | block metadata's transactions over the shared metadata store ([RFC 6](rfc-6-block-metadata.md), [RFC 16](rfc-16-metadata-store.md)) | — | `View.Blocks` | the root; shared process-wide | opened before GC starts, closed after it closes |
+| `Remote` | the namespace's one remote store ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)) | — | `View.Remote` | the root, ref-counted per store configuration | never closed by GC |
+| syncer flow | one background flow per namespace store ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | `Deps.Syncer` | opened by GC through `OpenFlow` | GC; the syncer is shared | closed at `Remove` and `Close` |
+| `Keys` | the transform layer's keys-object read-back ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) | RFC 5's key lock | `View.Keys` | the root | called once per `Recheck` |
+| work scheduler | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)'s library, GC's own instance | — | `Deps.Sched` | the root; shared by every context | started by `Start`, drained by `Drain` |
+| clock, health, metrics, logger | the node's | — | `Deps` | the root, shared | — |
+
+The engine is not a dependency: GC reaches neither its share contexts nor its
+queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
+
+**Start.** The runtime starts GC after the content subsystem, whose syncer GC's
+flows need, and after the share contexts ([RFC 23](rfc-index.md) §2.2 step 4). `New`
+starts nothing and opens nothing. `Start` registers the sources. Contexts arrive
+by `Add`. For each, GC acquires the partitions it can, posts `BD` and then `BR`
+up to store time, and runs a first `Recheck`. No delete is issued until that
+`Recheck` passes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), so starting needs no other gate.
+
+**Namespaces come and go while GC runs.** The runtime adds and removes contexts
+([RFC 23](rfc-index.md) §2.1). A namespace whose drain deletes its `NS‖ns` records
+([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3) is removed. Its sources stop, and every transaction they still
+have in flight is conditional on records that are gone, so a late one does
+nothing. A share's removal changes nothing here: its refs drop through RFC 6, and
+its blocks retire like any others.
+
+**Drain.** The runtime drains GC before the share contexts are joined and the
+content subsystem stops. GC stops posting, lets each in-flight batch commit or
+abort, and cancels remote deletes at the context's deadline. A cancelled delete
+leaves its record `deleted`, and the next start resumes it. A compaction
+cancelled after its intent abandons that intent at once ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)), and an
+abandoned intent is final.
+
+**Close.** Releases its leases without lowering their epochs, so that a
+successor need not wait a lease out, and closes the flows it opened. It closes
+nothing it was handed. A crash is a skipped `Close`, which is safe because holding
+a lease is not a safety input ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
+
+> decision: GC is one per node, not one per namespace; a namespace is a context
+> of it. The reason is §7.1's for one scheduler instance per process: the bounds
+> are per process and fairness is between namespaces ([§7.1](#7.1%20GC%20bounds%20its%20own%20work)). Overturn
+> this if a namespace needs isolation the scheduler's per-tenant weight cannot
+> give.
+
+### 2.6 Package layout
+
+```text
+internal/gc/
+  gc.go          New(Deps), View, Start, Drain, Close, Add, Remove; namespace contexts (§2.5)
+  deps.go        Blocks and its areas, Remote, Syncer, Flow, Keys (§8)
+  lease.go       the lease keeper (§7.3)
+  deleter.go     MarkDue → claim check → Delete → MarkGone → Prune (§3)
+  compactor.go   plan, fetch, assemble, intend, put, relocate (§4.2)
+  score.go       bucket and score (§4.4), placement (§4.5)
+  collector.go   AbandonSuperseded, listing merge-join (§5)
+  auditor.go     audit scheduling, trip (§6)
+  recheck.go     settings, claim nonce, keys read-back, drift (§7.5)
+  metrics.go     §10
+  gctest/        in-memory Blocks, Remote, Syncer, Flow and Keys fakes
+  arch_test.go   imports (§11.0)
+```
+
+One file per source. The transactional half lives in block metadata, so this
+package holds no transaction code. Today's `pkg/block/gc` is deleted, not
+refactored: Appendix A's D2, D5, D13 and D14 are its design, not its bugs.
+
 ## 3. A block's life
 
 ### 3.1 Retire the records, then delete the object
@@ -2171,3 +2253,5 @@ amending the requirement.
 | D22 | Verify before delete ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)) | none; the count alone decides |
 | D23 | Space-amplification target and cost-benefit ranking ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | relocation is run by an operator, per block |
 | D24 | `Recheck` on its own period, gating deletes and prunes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | bucket settings are checked only when the store opens |
+| D25 | One GC per node, built from `Deps`, with `Start`, `Drain` and `Close`, and a context per namespace added by the runtime ([§2.5](#2.5%20Composition%20and%20lifecycle)) | `CollectGarbage` (`pkg/block/gc/gc.go`) is a free function the runtime calls per remote with an options struct; there is no lifecycle, and jobs live in an in-memory registry |
+| D26 | Settings read live per namespace at each pass ([§8](#8.%20API%20surface)) | `GCConfig` (`pkg/config/config.go`) is read once at start |
