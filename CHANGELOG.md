@@ -12,6 +12,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > that actually shipped them. Nothing here has been reconstructed after the
 > fact.
 
+## [0.36.0] — 2026-10-19
+
+0.36.0 is a fix release, mostly for SMB. Before upgrading, check any SMB
+adapter config you have set by hand: **the SMB adapter now refuses an
+`encryption` object it cannot apply**, both when the config is stored and at
+boot. A stored row that 0.35.0 accepted can keep the SMB adapter down after the
+upgrade. See Changed below. No on-disk format changes in this release.
+
+### Changed
+
+- **The SMB adapter refuses an `encryption` setting that it would otherwise
+  ignore.** `encryption` must be an object holding only `encryption_mode` and
+  `allowed_ciphers`, and `encryption_mode` must be a string. Before, a
+  non-object `encryption`, a non-string mode or a misspelt key such as `mode`
+  was read as no mode at all. The adapter stayed on `preferred` and `dfsctl`
+  reported success, so an operator who asked for `required` still served
+  unencrypted SMB 2.x.
+
+- **`allowed_ciphers` can no longer be set; the SMB cipher set is fixed.** The
+  key was accepted with any value and never applied: NEGOTIATE kept offering
+  every cipher while `dfsctl adapter edit smb --config` reported success. A
+  non-empty value is now refused with `allowed_ciphers cannot be configured: the
+  SMB cipher set is fixed`. An absent key, `null` and `[]` are still accepted.
+  Negotiation itself is unchanged.
+
+  Both checks run when the config is stored and when the server boots. A stored
+  row that fails them leaves the SMB adapter down with `Adapter failed to start;
+  continuing without it`, while the server, the API and NFS keep running. To
+  recover, store the config again without the offending key, for example
+  `dfsctl adapter edit smb --config '{"encryption":{"encryption_mode":"required"}}'`.
+  The adapter then starts without a server restart. Adapters seeded by default
+  carry no config and are not affected.
+
+### Security
+
+- **`encryption.encryption_mode` in the SMB adapter config now takes effect.**
+  `dfs start` read `bind_address` and `signing` out of the adapter config but
+  skipped `encryption_mode`, so the process stayed on the `preferred` default and
+  `required` could not be selected from the adapter config at all.
+
+- **SMB refuses a security descriptor holding an ACE type it cannot store,
+  instead of dropping that ACE.** Object ACEs, callback ACEs, mandatory labels and
+  other types the server does not model were skipped, the rest of the DACL was
+  stored, and the request succeeded. A skipped deny granted what the client had
+  denied; a skipped allow silently withdrew a grant. SET_INFO now answers
+  `STATUS_INVALID_PARAMETER` and leaves the stored ACL as it was. A CREATE whose
+  security descriptor fails to parse or validate is answered the same way and
+  creates nothing, where it used to create the file without the descriptor. A
+  SACL is parsed whenever one is present, so a SACL carrying anything other than
+  audit or alarm ACEs, a mandatory label for instance, now fails the request too,
+  even when the client did not ask for the SACL to be set.
+
+- **SMB TREE_CONNECT is refused when the user's share permission cannot be
+  resolved.** A store error used to fall back to the share's default permission,
+  which can be above a user's explicit grant, or above an explicit `none`. Since
+  a tree keeps the permission it was connected with until a control-plane change
+  re-checks it, the fallback outlived the failure. TREE_CONNECT now answers
+  `STATUS_ACCESS_DENIED`, as NFS already refuses, and the client can retry once
+  the store answers. A failed lookup of a principal's SID grants refuses as well.
+
+### Fixed
+
+- **Truncating two files down to the same content no longer fails forever on
+  the second one.** The second truncate was refused on every retry, as
+  `NFS4ERR_DELAY` over NFS and `STATUS_INSUFFICIENT_RESOURCES` over SMB. Truncate
+  gave each file an identifier derived from its remaining content, which the
+  Badger store kept unique, although nothing read it any more. That identifier
+  and its index are now removed. The on-disk format stays compatible: stores and
+  backups written by older versions still open, a file record drops the old field
+  the next time it is written, and the leftover index keys are deleted when a
+  store is first opened or right after a restore, with a log line
+  (`badger: dropped the retired ObjectID index`). On a store with a million such
+  keys this takes about 12 seconds. Rolling back to an older version can hit the
+  bug again.
+
+- **Opening an existing file for append over NFSv3 no longer empties it.** A
+  CREATE in UNCHECKED mode that named an existing file truncated it to zero and
+  applied the request's mode and ownership to it. Linux clients send that CREATE
+  for `open(O_CREAT)`, so on some kernels `echo x >> file` lost the file's
+  contents and wrote at offset 0. Now, as on the Linux kernel server, only a size
+  the request carries is applied; without one the file is left alone. On a
+  read-only share such a CREATE fails with `NFS3ERR_ROFS`, so a client opening the
+  file for writing learns at open rather than at its first write. An existing
+  directory or symlink named without a size is answered with its own handle and
+  attributes. NFSv4 was not affected.
+
+- **A Windows client can open an encrypted share when the session does not
+  require encryption.** In `preferred` mode the server encrypted the
+  TREE_CONNECT response for a share that requires encryption, but the client
+  learns that from the flag inside that response and was not decrypting yet.
+  Windows retried and dropped the connection. TREE_CONNECT is now sent in the
+  clear in that case; later commands on the tree are still encrypted, and a
+  session that already requires encryption still encrypts TREE_CONNECT.
+
+- **SMB Kerberos accepts a ticket whose addresses are NetBIOS names only.**
+  Windows often lists the workstation's NetBIOS name and no IP in a ticket's
+  addresses, and comparing those to the connection's IP failed session setup with
+  `KRB_AP_ERR_BADADDR`. Non-IP addresses no longer constrain the peer. A ticket
+  that lists any IP still has to match the connection's IP. Verify failures now
+  log `client_address` and `ticket_addresses`. NFS is unchanged.
+
+- **A whole-share warm no longer holds memory in proportion to the share while
+  its progress reporting is stalled.** Each finished block queued one progress
+  event until the reporter caught up; pending progress is now two counters.
+  Progress calls may therefore jump by more than one block, and a successful warm
+  still ends with done equal to total.
+
+- **The operator now shows when the DittoFS API refuses its own account.**
+  Applying `spec.snapshotPolicies` and turning on the NFS portmapper both need
+  the admin role, so the operator's account (role `operator`) got 403 on each,
+  and that showed only in a verbose log line. A new `Authorized` condition on
+  the DittoServer is False and names each refused call. It turns True once
+  every call gets its answer, and a transient API error leaves it as it was. The
+  NFS adapter's Service now publishes port 111 only once the operator has seen
+  the portmapper on, so it no longer points at a port nothing listens on. The
+  operator still cannot apply these settings without the admin role.
+
 ## [0.35.0] — 2026-10-12
 
 The main change in 0.35.0 is that **BadgerDB is now the only metadata
