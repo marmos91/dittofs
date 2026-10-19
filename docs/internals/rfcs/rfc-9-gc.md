@@ -1448,7 +1448,7 @@ without waiting for the audit.
 
 **Dropping a Lost ref never wedges.** A removal, release or snapshot deletion
 that drops a ref whose chunk record is absent drops the ref and its reverse key,
-changes no count, and counts the drop in `gc_lost_dropped_total`
+changes no count, and counts the drop in `gc_lost_refs_dropped_total`
 ([RFC 6 §6.3](rfc-6-block-metadata.md#6.3%20Underflow%20is%20corruption%2C%20not%20a%20boundary)). The file's content there was already lost; refusing to release it
 would only add a stuck removal.
 
@@ -2076,15 +2076,37 @@ lines.
 | blocks due or `deleted` and not yet pruned, and the age past `not_before` of the oldest | `gc_pending_deletions`, `gc_pending_deletion_oldest_seconds` | gauge |
 | delete results per name, labelled `result` = `ok` or the error of [RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set) | `gc_deletes_total` | counter |
 | compactions, labelled `reason` = `space`, `small` or `retirement` and `result` = `moved`, `born_dead`, `corrupt` or `no_intent` | `gc_compactions_total` | counter |
-| encoded bytes read and written by the compactor | `gc_compacted_bytes_total` | counter |
+| encoded bytes the compactor read or wrote, labelled `direction` = `read` or `write` | `gc_compacted_bytes_total` | counter |
 | space amplification: stored bytes of live blocks over their referenced bytes | `gc_space_amplification_ratio` | gauge |
-| audit mismatches, labelled `check` (the rows of [§6.1](#6.1%20Coverage)) and `direction` = `high`, `low` or `lost`. Any `low` or `lost` is an alert | `gc_audit_mismatches_total` | counter |
-| refs dropped whose chunk record was absent | `gc_lost_dropped_total` | counter |
+| audit mismatches, labelled `kind` (the rows of [§6.1](#6.1%20Coverage)) and `direction` = `high`, `low` or `lost`. Any `low` or `lost` is an alert | `gc_audit_mismatches_total` | counter |
+| refs dropped whose chunk record was absent | `gc_lost_refs_dropped_total` | counter |
 | time since each hash range was last audited | `gc_audit_coverage_age_seconds` | gauge |
-| index keys missing, extra or in the wrong state, labelled `source` = `audit` or `check` | `gc_index_mismatches_total` | counter |
-| collection outcomes, labelled `source` = `intent` or `listing` and `result` = `retired` or `refused` | `gc_collection_total` | counter |
+| index keys missing, extra or in the wrong state, labelled `cause` = `audit` or `check` | `gc_index_mismatches_total` | counter |
+| collection outcomes, labelled `cause` = `intent` or `listing` and `result` = `retired` or `refused` | `gc_collection_total` | counter |
 | put intents older than one pass interval; one that only grows means abandonment stopped | `gc_intents_stale` | gauge |
-| pass duration, labelled `op` = `delete`, `compact`, `collect` or `audit` | `gc_pass_seconds` | histogram |
+| pass duration, labelled `op` = `delete`, `compact`, `collect`, `audit` or `recheck` | `gc_pass_seconds` | histogram |
+| time since the namespace's last passed `Recheck` | `gc_recheck_age_seconds` | gauge |
+| lease partitions this node holds | `gc_partitions_held` | gauge |
+
+`gc_verify_refusals_total`, `gc_audit_mismatches_total` with `direction` = `low`
+or `lost`, and `gc_lost_refs_dropped_total` are exported at zero from start, so an
+alert on any nonzero value has a series to watch ([RFC 25](rfc-index.md) §2.3).
+
+**Spans.** Each pass opens a root span named `gc.delete`, `gc.compact`,
+`gc.collect`, `gc.audit` or `gc.recheck`, with the namespace, partition, batch size
+and outcome as attributes; its log lines carry `component=gc` and the pass's
+trace ID.
+
+**Health conditions.** GC raises these through `Deps.Health`; each is registered in
+[RFC 25](rfc-index.md) §3.9.
+
+| Condition | Scope | Raised when | Cleared when |
+| --- | --- | --- | --- |
+| `gc_hold` | namespace | the hold has any reason: a §6.4 trip or a reverse rebuild ([§7.4](#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) | its last reason clears |
+| `gc_deletion_backlog` | namespace | the due and `deleted` count has not decreased over six `Recheck` periods (proposal, unmeasured) ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | it decreases |
+| `gc_clock_skew` | node | the local clock differs from store time by more than the clock skew limit ([§3.7](#3.7%20Trash)); a distinct quantity from [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock bound | it is back within the limit |
+| `gc_audit_behind` | namespace | a hash range was not covered within its period, or the derived rate is above the scheduler's cap ([§6.1](#6.1%20Coverage)) | every range is covered within its period and the rate is under the cap |
+| `gc_lost_refs` | namespace | derived: any Lost ref is recorded and not yet dropped ([§6.3](#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)); it pages | the last such ref is dropped; never by an operator's acknowledgement |
 
 Logs: a verification refusal, a low count or a Lost ref logs the block or file at
 `Error`. The hold, a deletion backlog that stops draining and a clock outside the
