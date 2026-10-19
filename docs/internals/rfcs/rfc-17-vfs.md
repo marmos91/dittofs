@@ -149,7 +149,8 @@ package layout. §3 is the interface — value types, operations, callbacks,
 events, ID encodings, and every wire request with the calls it makes. §4 holds
 the rules, with §4.9 on shares and the pseudo-filesystem. §5, the order of each
 operation, is the core. §6 is the invariants with the test of each; §7
-metrics; §8 the test layers and benchmarks; §9 open questions.
+metrics; §8 the test layers and benchmarks; §9 how the code gets there; §10
+open questions.
 
 ### Scenarios
 
@@ -261,6 +262,16 @@ identity resolution — it reads through the shard package's **catalog**, the
 store-wide reads that belong to no shard, served on every node
 ([RFC 15 §4](rfc-15-topology.md#4.%20Where%20each%20call%20runs)'s "any node"
 row). Per-file work goes through `Shard`, routed to the file's primary.
+
+> decision: the service is a new layer, not a grown metadata store. The
+> metadata store shrinks to store operations beneath it, and RFC 16's store stays
+> swappable under the shard half; the orchestration of §5 lives in the shard,
+> and only the shard imports the store and the engine. Rejected: growing
+> today's `pkg/metadata.Service` into the service, which keeps orchestration and
+> storage in one package a second backend would have to reimplement; and
+> rewriting both in one go, which no reviewer can follow (§9). Overturned if a
+> second store backend is dropped from the plan, so nothing below the shard
+> needs to stay swappable.
 
 > decision: one component calls the metadata store and the engine, so a
 > transaction boundary, a retry, a fence and a cache key are each decided in
@@ -493,7 +504,7 @@ holds.
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `LockReq` | `{Ranges []ByteRange; Exclusive, Wait, Reclaim bool; Owner LockOwner; Seq *LockSequence}` (§5.11) |
 | `RenameOpts` | `{NoReplace bool}` |
-| `CopyArgs`, `CopyResult` | `{Src, Dst OpenRef; SrcOff, DstOff, Len int64; Async bool}`; `{N int64; Copy CopyID; WCC WCC}` |
+| `CopyArgs`, `CopyResult` | `{Src, Dst OpenRef; SrcOff, DstOff, Len int64}`; `{N int64; WCC WCC}` |
 | `SeekWhat` | `Data`, `Hole` |
 | `GrantKind` | `None`, `Read`, `ReadWrite`, `ReadHandle`, `ReadWriteHandle`, and an NFS delegation's read or write |
 | `WatchSpec` | `{Dir Handle; Recursive bool; Filter ChangeMask}` |
@@ -554,10 +565,8 @@ type Service interface {
 	Commit(ctx context.Context, id Identity, ref OpenRef, off, length int64) (Verifier, error) // NFS COMMIT, SMB FLUSH
 	Deallocate(ctx context.Context, id Identity, ref OpenRef, off, length int64) (WCC, error)
 	Seek(ctx context.Context, id Identity, ref OpenRef, off int64, what SeekWhat) (int64, error)
-	Copy(ctx context.Context, id Identity, a CopyArgs) (CopyResult, error) // COPY, copychunk: bounded chunks, may be short, may run async
+	Copy(ctx context.Context, id Identity, a CopyArgs) (CopyResult, error) // COPY, copychunk: bounded chunks, synchronous, may be short
 	Clone(ctx context.Context, id Identity, a CopyArgs) (WCC, error)        // CLONE, duplicate-extents: atomic
-	CopyStatus(ctx context.Context, id Identity, c ClientID, cp CopyID) (CopyState, error)
-	CopyCancel(ctx context.Context, id Identity, c ClientID, cp CopyID) error
 
 	// ── Locks, grants, watches (RFC 14).
 	Lock(ctx context.Context, id Identity, ref OpenRef, r LockReq) error
@@ -598,9 +607,20 @@ parent's. An NFSv4 `change_info4` is the adapter's, derived from a directory
 So no handler follows a mutation with a `GetAttr`
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 
+> decision: the attributes are always returned, and atomic when present.
+> `After` is always set; `Before` only when captured in the same accept-lock
+> hold as the change, so it is absent for a write that waited on a recall, for a
+> call forwarded to another primary, for a contended lock, and always for a
+> directory over NFSv3 ([RFC 21 §11](rfc-21-nfs.md#11.%20Invariants)'s N19).
+> Rejected: a separate `GetAttr`, which is not atomic with the change and lets
+> another client's write appear as this one's; and an optional flag asking for
+> them, which every mutating handler would set. Overturned if returning `After`
+> is measured costing a mutation-heavy workload more than the `GetAttr` it
+> replaces.
+
 **Every open-state call names the client it acts for**, and the service **MUST**
-refuse, with `StateError` `NotYours`, an `OpenID`, `GrantID`, `WatchID`, `CopyID`
-or lock owner the named client does not hold. A leaked or forged ID then reaches
+refuse, with `StateError` `NotYours`, an `OpenID`, `GrantID`, `WatchID` or lock
+owner the named client does not hold. A leaked or forged ID then reaches
 nothing, and a client whose lease expires releases its watches with the rest of
 its state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)).
 
@@ -641,10 +661,15 @@ modes held. The delegation lends no access.
 
 > decision: no pre-warm and no layouts. Fetching a tree ahead of its readers is
 > an operator's action, one of [RFC 23](rfc-23-control-plane.md)'s management
-> operations over the engine's `PreWarm`, not a client's. pNFS layouts are not
-> a parity requirement: a single node answers every layout operation not
-> supported ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)). A separate
-> `Layouts` interface joins the service when a pNFS RFC lands (§9).
+> operations over the engine's `PreWarm`, not a client's. pNFS layouts are out
+> of `vfs.Service` until a pNFS design is scheduled: a single node advertises
+> none, so every NFSv4.1 layout operation is answered `NFS4ERR_NOTSUPP` from the
+> adapter's table with no service call
+> ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)), and RFC 14's layout
+> calls are reserved for a cluster. Rejected: layout operations in the service
+> now, for a design that does not exist; and an adapter-side protocol over the
+> data calls, since a layout is open state at the primary. A separate `Layouts`
+> interface joins the service when a pNFS RFC lands (§10).
 
 ### 3.2 Callbacks
 
@@ -656,7 +681,6 @@ type Callbacks interface {
 	Notify(ctx context.Context, w WatchID, changes []Change) error      // SMB CHANGE_NOTIFY, NFS directory notifications
 	Revoked(ctx context.Context, what Revocation)                       // state ended without the client asking: the adapter answers what it holds pending on it
 	LockWaitOver(ctx context.Context, w LockWaiter, granted bool) (WaitAnswer, error) // NLM_GRANTED, SMB lock completion (granted); NFSv4.1 CB_NOTIFY_LOCK, optional
-	CopyDone(ctx context.Context, cp CopyID, n int64, err error) error  // NFSv4.2 CB_OFFLOAD for an async copy
 }
 
 // Revocation names state the service ended without the client asking. Share
@@ -721,6 +745,16 @@ the SMB adapter holds the request and re-drives it itself, a mechanism of its
 request pipeline ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)).
 The service's one wait inside a call is behind a running clone or copy chunk,
 bounded by the hold the adapter allows (`vfs.WithHold`, [§5.9](#5.9%20Copy%20and%20clone)).
+
+> decision: the service classifies and the adapter holds. The service names a
+> delay's class (`Delay.Hold()`) and bounds only its own wait behind a clone;
+> the adapter's pipeline (`core/hold.go`) holds and re-drives — `STATUS_PENDING`,
+> a timer, no worker, the resolve and call run again, never in a handler — and
+> RFC 24's hold pool bounds the bytes held. Rejected: the service parking wire
+> requests, which cannot send `STATUS_PENDING`; per-handler re-drive, which is
+> today's and drifts per command; and a hold-policy hook in the context, which
+> made the service count what only the adapter holds. Overturned if a protocol
+> needs a hold the service alone can see the end of.
 
 **How long a delayed request may be held.** Every `ErrDelay` is a `*Delay` whose
 `Hold()` names its class; an adapter that holds requests chooses the bound by
@@ -841,13 +875,24 @@ func DecodeFileID(persistent uint64) (OpenRef, error)
 | `ClientID` | a client | RFC 14, from the client record | 8 bytes, unique and never reused, not random ([RFC 21 §5.1](rfc-21-nfs.md#5.1%20Client%20ID%2C%20lease%20time%2C%20expiry)) | yes | the lease owner: `StaleClient` |
 | `SessionRef` | an SMB session | the protocol node | (node, node epoch, session ID) ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) | no: a new session after a restart | — |
 | `GrantID`, lease key | a caching grant | RFC 14 / the client (lease key) | RFC 14's ID; an SMB lease is named by its client-chosen 16-byte key | yes | the primary: `BadState` |
-| `WatchID`, `LockWaiter`, `CopyID` | a watch, a waiting lock, an async copy | RFC 14 | RFC 14's IDs, carried in a stateid where the protocol names one | no: volatile, lost with the primary | the primary: `BadState`, `NoCopy` |
+| `WatchID`, `LockWaiter` | a watch, a waiting lock | RFC 14 | RFC 14's IDs | no: volatile, lost with the primary | the primary: `BadState` |
 | NLM owner, cookie | a lock owner; a reply's match | the client | `(svid, oh)` and the host's `caller_name` plus address ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM)); the cookie is echoed, never decoded | — | — |
+
+> decision: an ID is self-describing wherever the protocol allows it — an
+> NFSv4 stateid, whose `other` carries unguessable random bits, a `READDIR`
+> cookie, and the persistent half of an SMB `FileId`, since a durable
+> reconnect may land on another node — and kept in a table only where the
+> protocol scopes it to a session or connection: an SMB tree ID, session ID and
+> the `FileId`'s volatile half. One codec per ID, in `pkg/vfs`, shared by both
+> adapters; decoding never trusts, and stale against bad is the service's answer
+> on use. Rejected: tables for everything, whose state dies with the connection
+> while the client still holds the name. Overturned if a protocol is found whose
+> client-held name has no room for what decoding needs.
 
 > ponytail: RFC 21 §5.2 gives the stateid's `other` 24 bits of shard number,
 > while RFC 22 §6.1 says only that the `FileId`'s persistent half "names the
 > open's shard" in 8 bytes beside the `OpenID`. The two need one shard-number
-> width and one `OpenID` width; this table does not choose (§9).
+> width and one `OpenID` width; this table does not choose (§10).
 
 ### 3.5 Operations, by wire request
 
@@ -855,7 +900,7 @@ Every request both protocols serve, the service method it becomes, and what
 that method calls below. "Catalog" means the store-wide reads of
 [§2.1](#2.1%20What%20runs%20where), served on any node; "shard" means the file's
 primary; "front" means the protocol node routes or coordinates and makes no
-store call. Gaps in the layers below are rows of §9's last question.
+store call. Gaps in the layers below are rows of §10's last question.
 
 **By service method.**
 
@@ -879,8 +924,7 @@ store call. Gaps in the layers below are rows of §9's last question.
 | `Write` | `OpenState.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; catalog `Capacity.Usage` for quota | `Draw`, `Write`, `Overlay`, `Commit` when stable | shard |
 | `Commit` | `OpenState.Flushed` through an SMB open | `Commit` | shard |
 | `Deallocate`, `Seek` | `OpenState.CheckIO` | `Deallocate`; `Allocation` | shard |
-| `Copy`, `Clone` | `OpenState.CheckIO` on both; `CopyBegin`, `CopyProgress` when async | `Copy`, `Clone`; across shards `Read` and `Write` | shard; front runs a copy across shards |
-| `CopyStatus`, `CopyCancel` | `OpenState.CopyStatus`, `CopyCancel` | — | shard of the destination |
+| `Copy`, `Clone` | `OpenState.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | shard; front runs a copy across shards |
 | `Lock`, `CancelLock`, `TestLock`, `Unlock` | `OpenState.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | shard ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `AckBreak` | `OpenState.AckBreak`, or `Return` for `GrantNone` | — | shard |
 | `Watch`, `Unwatch` | `OpenState.Watch`, `Unwatch` | — | shard of the directory |
@@ -963,8 +1007,8 @@ store call. Gaps in the layers below are rows of §9's last question.
 | `ALLOCATE` | not supported ([§3.1](#3.1%20Operations)) | |
 | `DEALLOCATE`, `SEEK` | `Deallocate`, `Seek` | |
 | `READ_PLUS` | `Read` and `Seek` | |
-| `COPY` | `Copy` | `Async` past one chunk ([RFC 21 §9.4](rfc-21-nfs.md#9.4%20Async%20COPY)) |
-| `OFFLOAD_STATUS`, `OFFLOAD_CANCEL`, `CB_OFFLOAD` | `CopyStatus`, `CopyCancel`, the `CopyDone` callback | |
+| `COPY` | `Copy` | always answered synchronously, short at the deadline ([RFC 21 §9.4](rfc-21-nfs.md#9.4%20Async%20COPY)) |
+| `OFFLOAD_STATUS`, `OFFLOAD_CANCEL` | none (adapter only) | no copy stateid is ever issued; answered as one naming nothing |
 | `CLONE` | `Clone` | |
 | `GETXATTR`, `LISTXATTRS`, `SETXATTR`, `REMOVEXATTR` | `Xattrs`, `SetXattr`, `RemoveXattr` | |
 | `COPY_NOTIFY`, `IO_ADVISE`, `WRITE_SAME`, `LAYOUT*`, `GETDEVICE*` | not supported ([RFC 21 Appendix C](rfc-21-nfs.md#Appendix%20C%20%E2%80%94%20NFSv4.2%20operations)) | |
@@ -1090,8 +1134,7 @@ other stateid or `FileId` whose record is missing — expired, freed, a removed 
 moved share's, never issued), `NoReclaim`, `ReclaimRevoked` (an NFSv4 reclaim
 in a shard where an administrator revoked the client's state), `BadSeqID` (an
 NFSv4.0 owner sequence out of order), `NotYours` (state another client or
-principal holds, §3.1), `NoCopy` (an async copy unknown or lost,
-[RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)) and `Revoked`.
+principal holds, §3.1) and `Revoked`.
 
 ```go
 type Delay struct {
@@ -1133,18 +1176,26 @@ the front re-routes and retries within the caller's deadline
 > which is the protocol RFC's per cause. Add a class only when a cause needs a
 > hold bound no class gives.
 
-An operation that arrives with no deadline is given one of 30 s from its
-arrival at the service — a request an adapter holds runs on its class's bound
-(§3.2), and a lock answered `ErrBlocked` on none — fixed rather than a setting,
-so every wait below it ends ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)).
+**Every call carries its deadline; the service sets none.** The adapter's
+pipeline gives each attempt a fixed 30 s from its arrival, carried in the
+context ([RFC 20 §6.4](rfc-20-adapters.md#6.4%20Deadlines%20and%20limits)). A
+request an adapter holds is bounded in total by its class (§3.2) —
+`smb_pending_deadline`, 60 s, on a recall, `smb_pending_cap` for a transient
+refusal, none for a waiting lock and `CHANGE_NOTIFY` — and each re-drive is a
+fresh 30 s attempt inside that bound; a drain or a closed connection cancels it.
+So every wait below the service ends
+([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)).
 
-> decision: the default deadline is fixed at 30 s, not measured. It is a
-> backstop for calls that name no deadline of their own, and every internal wait
-> is sized below it, so a setting would let an operator break bounds other RFCs
-> derive from it (the single-node self-fence of
+> decision: the attempt deadline is fixed at 30 s, set by the pipeline, not
+> measured and not a setting. Every internal wait is sized below it, so a
+> setting would let an operator break bounds other RFCs derive from it (the
+> single-node self-fence of
 > [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) is
-> one). Revisit it if a measured operation class completes correctly but past
-> 30 s under load, or if a client is shown to give up on a call sooner.
+> one). Rejected: the service setting it on entry, as today's 30 s at the
+> block-store calls does as a workaround for requests that carry none; and a
+> setting per protocol. Revisit it if a measured operation class completes
+> correctly but past 30 s under load, or if a client is shown to give up on a
+> call sooner.
 
 ### 4.4 Handles are opaque
 
@@ -1772,9 +1823,10 @@ carved refs adopted, all resolved at one point in the source's history.
   short count; only a refusal of the first chunk returns its error. Between
   shards the front copies the bytes itself, reading at the source's primary and
   writing at the destination's in bounded chunks, so no adapter composes a copy
-  (§4.1). With `Async`, the destination's primary records the copy in open
-  state and reports completion through `CopyDone`
-  ([RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)).
+  (§4.1). A copy is always synchronous, as copychunk and NFSv4.2 `COPY` are
+  served today; RFC 14's asynchronous copy state
+  ([RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)) is unused until a client is
+  shown to need offload (§9).
 
 1. admit and route both handles, and authorise read on the source and write on
    the destination, as §5.1 steps 1–3 do for each;
@@ -1902,7 +1954,7 @@ func (l *Local) Create(ctx context.Context, c Caller, dir Handle, name []byte, a
 
 RFC 7's `Attrs` carries no exclusive-create verifier field, though
 [RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create) stores one;
-that is a gap of §9.
+that is a gap of §10.
 
 ### 5.11 Locks
 
@@ -2059,11 +2111,50 @@ service benchmark is the adapter's own cost:
 | nightly, dedicated host | tracked and not blocking at first; three nights below the 7-day median adds a note to the develop-status issue |
 | manual | contention sweeps and long model runs |
 
-## 9. Open questions
+## 9. Migration
 
-1. **Compound batching.** Adapters run compounds as sequences of calls. Whether
-   a batch call (a `LOOKUP`-`GETATTR`-`OPEN` chain in one service call) pays for
-   itself under a split deployment is unmeasured.
+The service is introduced in slices, each one PR or a few, each leaving the
+tree working:
+
+| Slice | What moves | What is deleted |
+| --- | --- | --- |
+| 0 | `vfs.Service`, with the shard half delegating to today's `metadata.Service`; `vfstest`'s recording fake and null service | nothing |
+| 1 | shares, identity and admission: `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem into the service; a cross-protocol test that a quiesced or netgroup-restricted share is refused on every entry path | `v4/pseudofs`, `shareEntryStatus`, the NFSv3 permission cache. An adapter's own admission check stays until every operation on its path calls the service: removed earlier, it fails open |
+| 2 | the write path — the four copies of the write sequence become §5.1, returning `WCC` | the adapters' copies |
+| 3 on | open and close, locks, the namespace, the rest | each adapter's copy as its last caller moves |
+
+- **The RFC moves with the code.** A slice that needs a signature change edits
+  this RFC in the same PR, and a reviewer rejects code that disagrees with it.
+- **Copy stays synchronous**, with a short count at the deadline, as copychunk
+  and NFSv4.2 `COPY` are today; RFC 14's `CopyBegin` and `CopyStatus` are unused
+  until a client is shown to need offload.
+- **The chokepoint shrinks visibly.** A test lists every adapter import of the
+  metadata store, the block store and the lock manager, and every direct
+  `Authorize` call, against a checked-in allowlist. It fails on a new entry and
+  on a stale one, so the list only shrinks and each PR shows its deletions; it
+  is seeded with one deliberate violation in its test data. At empty it is
+  replaced by [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s
+  import test and §8's, which also checks that only the shard imports the store
+  and the engine.
+
+> decision: slices, each with its RFC edit, and a shrinking allowlist.
+> Rejected: one up-front amendment of every RFC before code, which goes stale
+> before the first slice lands; leaving the signatures to the implementing
+> issue, where no reviewer reads them; and code review alone, or the final
+> import test alone, neither of which shows progress or stops a new leak in
+> the meantime. Overturned if two slices are found to need landing together.
+
+## 10. Open questions
+
+1. **Compound batching.** Adapters run compounds as sequences of calls. A batch
+   call (a `LOOKUP`-`GETATTR`-`OPEN` chain in one service call) pays only across
+   the network, since collocated calls are function calls.
+
+   > decision: no batch call now. Rejected: a batch call before it is
+   > measured; an adapter cache of service answers, which
+   > [RFC 20 §2.2](rfc-20-adapters.md#2.2%20What%20an%20adapter%20may%20hold)
+   > forbids. Overturned by §8's service-overhead benchmark over the loopback
+   > remote shard showing compound round trips limiting a split deployment.
 2. **pNFS layouts.** Not a parity requirement, and not in the service
    (§3.1). When a pNFS RFC lands, a separate `Layouts` interface joins the
    service, its calls over RFC 14's layout state; a layout is bound to the

@@ -56,7 +56,7 @@
   <text x="712" y="63" class="h">Callbacks</text>
   <text x="712" y="80" class="s">implemented by adapters:</text>
   <text x="712" y="96" class="s">RecallGrant, Notify,</text>
-  <text x="712" y="111" class="s">Revoked, LockWaitOver, CopyDone</text>
+  <text x="712" y="111" class="s">Revoked, LockWaitOver</text>
   <text x="712" y="127" class="s">no adapter is imported</text>
   <path d="M676,160 L788,160 L788,142" class="cb"/>
   <path d="M700,68 L678,68" class="cb"/>
