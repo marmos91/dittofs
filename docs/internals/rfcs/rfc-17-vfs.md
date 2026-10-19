@@ -368,7 +368,8 @@ pkg/vfs/                     the contract adapters build against
     suite/                   suite.Run: the conformance suite, one file per area (§8)
 internal/vfs/                the service: admit → route → run at the primary
   service.go                 New(Deps), Start, Drain, Close; the Service methods
-  coordinate.go              work across two primaries: rename, link, listings, copy (§4.8)
+  crossprimary.go            calls that touch two primaries — rename, link, listing, copy — run as
+                             RFC 15 §4.2's coordinator; on one node, a direct call (§4.8)
   write.go read.go           the per-file part (§5), the only files that call the
   open.go namespace.go       engine and the metadata write views: §5.1–§5.4,
   attr.go copy.go lock.go    §5.5, §5.9–§5.11, the four moments of release, grace
@@ -2058,7 +2059,7 @@ files — `write.go`, `read.go`, `open.go`, `namespace.go`, `attr.go`,
 `copy.go`, `lock.go`, `release.go`, `grace.go`; a metadata read view outside
 those, `authz` and `quota`; a call of `Authorize` or `Granted` outside `authz`;
 an open-state call outside the per-file files and `clients`; and any of these
-from `service.go`, `coordinate.go`, `admit`, `pseudofs` or `lockorder`, which
+from `service.go`, `crossprimary.go`, `admit`, `pseudofs` or `lockorder`, which
 reach the store only through the narrow reads they declare, satisfied by `New`
 (V2, V5, V32). It, and §9's allowlist test, is seeded with one deliberate
 violation in its own test data and must report it.
