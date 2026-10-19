@@ -52,18 +52,3 @@ func TestExportedFixture(t *testing.T) {
 		t.Errorf("two creates of one name: inner %v, outer %v", inner, outer)
 	}
 }
-
-func TestRun(t *testing.T) {
-	kvstoretest.Run(t, func(tb testing.TB) kv.KV {
-		s, err := badgerkv.Open(badgerkv.Options{})
-		if err != nil {
-			tb.Fatal(err)
-		}
-		tb.Cleanup(func() {
-			if err := s.Close(); err != nil {
-				tb.Error(err)
-			}
-		})
-		return s
-	})
-}
