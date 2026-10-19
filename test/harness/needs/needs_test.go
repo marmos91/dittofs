@@ -2,6 +2,7 @@ package needs
 
 import (
 	"cmp"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -40,6 +41,26 @@ func TestPort(t *testing.T) {
 		if err := Check("", "port:"+port); err != nil {
 			t.Errorf("a free port: %v", err)
 		}
+	}
+}
+
+// A port this user may not bind is met while nothing on loopback accepts a
+// connection on it, and unmet once something does.
+func TestPortNotBindable(t *testing.T) {
+	realListen := listen
+	t.Cleanup(func() { listen = realListen })
+	listen = func(string, string) (net.Listener, error) { return nil, fmt.Errorf("bind: %w", os.ErrPermission) }
+	l, err := realListen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	if err := Check("", "port:"+port); err == nil {
+		t.Error("a port something accepts on is met")
+	}
+	_ = l.Close()
+	if err := Check("", "port:"+port); err != nil {
+		t.Errorf("a port nothing accepts on: %v", err)
 	}
 }
 

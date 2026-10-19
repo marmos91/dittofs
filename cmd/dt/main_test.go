@@ -141,7 +141,7 @@ func checkout(t *testing.T) (here, other string) {
 		"  s: { cmd: \"true\", options: { o: { cmd: \"true\" } } }\n" +
 		"  fails: { cmd: \"false\" }\n" +
 		"  away: { cmd: \"true\", needs: [" + other + "] }\n" +
-		"  fixed: { cmd: \"true\", fixture: { profile: memory, smb: true } }\n" +
+		"  fixed: { cmd: \"true\", fixture: { profile: memory, smb: { mount: true } } }\n" +
 		"  pictured: { image: x, needs: [" + here + "] }\n" +
 		"  partly: { cmd: \"run {test}\", tests: \"t/*.sh\", select: { merge: \"0?-*.sh\" }, needs: [" + here + "], needs_by_test: { \"9?-*.sh\": [\"host:dedicated\", " + here + "] } }\n"
 	root := t.TempDir()
@@ -255,7 +255,7 @@ func TestListRunsHere(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	fixtures := "dt doesn't serve SMB from fixtures yet"
+	fixtures := "dt doesn't mount SMB yet"
 	want := map[string]suite{
 		"s":        {RunsHere: true},
 		"s/o":      {RunsHere: true},

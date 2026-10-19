@@ -14,10 +14,12 @@ import (
 // so the tests can shorten it.
 var fixtureSetup = plan.FixtureSetup
 
-// fixtureServer is a running fixture: what it gives the commands, and its
-// stop, which reports the server ending before its cell did.
+// fixtureServer is a running fixture: what it gives the commands, the reset
+// of its first share, and its stop, which reports the server ending before
+// its cell did.
 type fixtureServer interface {
 	Placeholders() map[string]string
+	Reset() error
 	Stop() error
 }
 
