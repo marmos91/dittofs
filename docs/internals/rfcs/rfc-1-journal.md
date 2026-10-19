@@ -668,23 +668,61 @@ a `missing` extent passes it back to `Fill`.
 ### 3.3 Offload
 
 ```go
-Offload(id FileID, limit, widen int64, fn func(o Offer, report func(offloaded []Extent) error) error) error
+Offload(id FileID, through Version, limit, widen int64, fn func(o Offer, report func(offloaded []Extent) error) error) error
 
-OffloadMany(ids []FileID, limit, widen int64, fn func(offers []Offer, report func(id FileID, offloaded []Extent) error) error) error
+OffloadMany(files []Capture, limit, widen int64, fn func(offers []Offer, report func(id FileID, offloaded []Extent) error) error) error
+
+type Capture struct {
+    ID      FileID
+    Through Version // the version the caller's existence commit covered; nothing above it is offered
+}
 
 type Offer struct {
     ID         FileID
-    Dirty      []Extent
-    Neighbours []Extent    // offloaded held extents offered on request (widen); see below
-    Superseded []Held      // superseded versions the journal still retains for offload (§3.11)
-    Oldest     Version     // the oldest content version among the offered records, neighbours included
-    Newest     Version     // the newest
-    Offered    io.ReaderAt // the bytes as offered; see below
+    Dirty      []OfferedExtent // the extents offered, each with its version and stamp
+    Neighbours []Held          // offloaded held extents offered on request (widen); see below
+    Superseded []OfferedExtent // superseded versions the journal still retains for offload (§3.11)
+    Oldest     Version         // the oldest content version among the offered records, neighbours included
+    Newest     Version         // the newest
+    Offered    io.ReaderAt     // the bytes as offered; see below
+}
+
+type OfferedExtent struct {
+    Extent  Extent
+    Version Version
+    Cut     SnapshotCut // the cut its existence commit read (§3.11); valid only when Stamped
+    Stamped bool        // false: the stamp was lost; the offload commit rebuilds born (§3.11)
 }
 ```
 
-Offers held extents of `id` whose offloaded bit is unset, and marks exactly the
-extents reported offloaded through `report`.
+Offers held extents of `id` whose offloaded bit is unset and whose version is
+at or below `through`, and marks exactly the extents reported offloaded through
+`report`.
+
+**An offer stops at the caller's existence commit.** `through` is the version
+the caller's own existence commit covered for the file, the commit that precedes
+the offer ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)). An extent whose version is above it is not offered,
+stays dirty, and is offered by a later call. A version whose existence has not
+committed has no stamp, and nothing correct can be written as its `born`
+([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)): its commit will read a cut that may not exist yet. Writes take
+no lock the offer holds, so without the bound a write landing between the
+caller's commit and the offer would be offered. Where a version above it
+overwrote one at or below it, the older one is still offered, retained, in
+`Dirty` as the file's live content ([§3.11](#3.11%20Snapshot%20holds)), and the newer waits for a
+later call. The caller passes the bound
+rather than the journal deriving it from its stamps, because a stamp can be
+lost ([§3.11](#3.11%20Snapshot%20holds)).
+
+**Each offered extent carries its version and its stamp.** One offer can hold
+several versions of one file side by side — `[0, 4)` MiB at v10 with `[1, 2)`
+MiB overwritten at v12 — and the two rules that set a ref's `born` work per
+extent: a ref takes the highest `born` of its versions, and a run splits at a
+live hold mark ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). `Oldest` and `Newest` bound the whole offer and
+cannot say which bytes are which. So `Dirty` and `Superseded` carry, per extent,
+the content version and the cut its existence commit read, from the file's
+stamps ([§3.11](#3.11%20Snapshot%20holds)); `Stamped` is false only for a version whose stamp was
+lost, which is offered all the same. A neighbour carries its version only: its
+`born` is the one the ref it re-tiles already carries ([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)).
 
 **Offload is how dirty content becomes evictable.** The journal uploads nothing.
 It hands the engine a frozen view of a file's dirty content, the **offer**; the
@@ -697,7 +735,7 @@ serves ([RFC 0 §5.2](rfc-0-data-lifecycle.md#5.2%20Offload)).
 **What an offer is.** A snapshot of one file's dirty content, taken when the call
 starts:
 
-- `Dirty`: the extents offered;
+- `Dirty`: the extents offered, each with its version and stamp;
 - `Oldest`, `Newest`: the range of their content versions;
 - `Offered`: a reader that returns exactly those bytes for as long as `fn` runs.
 
@@ -797,13 +835,14 @@ need.
 
 `OffloadMany` is the same offer over several files in one callback, so the engine
 can pack chunks of several files into one block ([RFC 2 §5.3](rfc-2-carver.md#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)). Every rule of this section
-holds per file within it, and `limit` bounds the total across the files. The
+holds per file within it, each file bounded by its own `Through`, and `limit`
+bounds the total across the files. The
 segment bounds apply to the call as one offer, not per file: "the first extent
 always fits" holds for the call's first extent only, and every later file's
 first extent counts against the bounds like any other. Read per file, a call
 over a thousand small files would pin a thousand segments.
-`Offload(id, …)` is `OffloadMany` with one file, and an implementation **SHOULD**
-build it that way.
+`Offload(id, through, …)` is `OffloadMany` with one `Capture{id, through}`, and an
+implementation **SHOULD** build it that way.
 
 The journal **MUST** mark exactly the reported extents and **MUST NOT** mark an
 extent for which no report was received, including when `fn` returns an error
@@ -1298,8 +1337,8 @@ committed up to.
 `Stamp(id, through, cut)` records the cut an existence commit read, for every
 version of `id` it covered up to `through`. It is stored with those versions, not
 with each write record: a version's cut is the cut of the commit that made it
-exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each version with its
-stamp, and the offload commit copies it into the ref as `born`
+exist, not of its append ([RFC 12 §2.2](rfc-12-snapshots.md#2.2%20A%20snapshot%20is%20counted%20content%20and%20a%20frozen%20tree)). `Offload` offers each extent with its
+version's stamp, as `OfferedExtent.Cut` ([§3.3](#3.3%20Offload)), and the offload commit copies it into the ref as `born`
 ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A `Stamp` that cannot append its record — refused below half the headroom
 ([§6](#6.%20Capacity)), or a failed write — returns the error and records nothing; it carries
 `through`, a version already issued, so the version limit never refuses it, and the caller treats it as the lost stamp below
@@ -1313,6 +1352,17 @@ whose `applied` covers the version carries the same cut as its `born`. A version
 that record the rebuild needs can have been dropped only if no live cut lies
 between the two candidate cuts, and then either gives the same visibility
 ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)).
+
+**A version whose stamp was lost is offered, not skipped.** An offer carries it,
+at or below its `through` like any other, with `Stamped` false, and the offload
+commit rebuilds its `born` by the same rule recovery uses, above, from the file's
+record. An offer that skipped it would never offload it, so never let its bytes
+be released, and the headroom whose exhaustion refused the stamp would never come
+back: the file would wedge under exactly the pressure offloading relieves.
+Re-stamping before the offer is no way out, since it is refused by that same
+pressure. The rebuild writes no key, so the commit stays within its key budget
+`K`; what it reads is bounded by [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed). Lost stamps arise only below half
+the headroom or from a failed write, so the cost lands only under pressure.
 
 - **An existence-committed version is superseded only once its successor's
   existence commits.** Until then it **MUST NOT** be released, dropped by repack or
@@ -2554,6 +2604,8 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | --- | --- |
 | [§3.2](#3.2%20Read) no zero-fill | Fill `p` with a sentinel pattern, then read a never-written extent and an explicitly released extent; both report `missing`, the sentinel is untouched in both, and the two are indistinguishable to the journal. |
 | [§3.3](#3.3%20Offload) write during offload | Write to an offered extent mid-callback, report it offloaded, assert the extent's bit stays unset and `Release` refuses it. |
+| [§3.3](#3.3%20Offload) offer stops at `through`, per-extent stamps | Write `[0, 4)` MiB at v10 and stamp it at cut 3; write `[1, 2)` MiB at v12 and stamp it at cut 4; write `[8, 9)` MiB at v13; offload with `through` v12. Assert v13 is not offered and stays dirty, `[0, 1)` and `[2, 4)` are offered at v10 with cut 3, and `[1, 2)` at v12 with cut 4. |
+| [§3.11](#3.11%20Snapshot%20holds) lost stamp is offered | Draw the headroom below half, existence-commit a version, and have its `Stamp` refused. Assert the next offer carries the version with `Stamped` false rather than skipping it, and that once reported and released the headroom recovers. |
 | [§3.4](#3.4%20Fill) fill safety | Hold a `Fill` at the storage seam after it has found the extent absent, `WriteAt` the same extent, then let the fill continue; assert the written bytes survive. |
 | [§3.4](#3.4%20Fill) fill sets the bit | Fill an absent extent; assert `Release` then permits it. `WriteAt` the same extent; assert `Release` refuses it again. |
 | [§3.5](#3.5%20Release) refusal | Ask to release an extent with no offloaded bit; assert refusal and no partial progress. |
