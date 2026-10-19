@@ -1,7 +1,6 @@
 package fixture
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -14,8 +13,8 @@ import (
 // configure sets the server up through its API: its stores on the fixture's
 // profile, with the blocks of an S3 profile in b, the users, the shares with
 // their settings and grants, and the adapter settings, all before dt enables
-// the adapters, which read them as they start. The NFS settings are then read
-// back. Users get password.
+// the adapters, which read them as they start. The server's answer to the NFS
+// settings must hold them as set. Users get password.
 func (s *Server) configure(c *apiclient.Client, b *bucket, password string) error {
 	f := s.f
 	off, on := false, true
@@ -77,8 +76,15 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 		return err
 	}
 	if settings != nil {
-		if _, err := c.PatchNFSSettings(settings); err != nil {
+		got, err := c.PatchNFSSettings(settings)
+		if err != nil {
 			return fmt.Errorf("the NFS settings: %w", err)
+		}
+		if l := settings.LeaseTime; l != nil && got.LeaseTime != *l {
+			return fmt.Errorf("the server reports a lease of %ds, not the %ds dt set", got.LeaseTime, *l)
+		}
+		if d := settings.DelegationsEnabled; d != nil && got.DelegationsEnabled != *d {
+			return fmt.Errorf("the server reports delegations %t, not the %t dt set", got.DelegationsEnabled, *d)
 		}
 	}
 	if f.SMB.Encryption == "preferred" {
@@ -100,19 +106,6 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 		if !ad.Running {
 			return fmt.Errorf("%s is enabled on port %d, but its listener isn't running", strings.ToUpper(a.name), a.port)
 		}
-	}
-	if settings == nil {
-		return nil
-	}
-	got, err := c.GetNFSSettings()
-	if err != nil {
-		return fmt.Errorf("reading the NFS settings back: %w", err)
-	}
-	if l := settings.LeaseTime; l != nil && got.LeaseTime != *l {
-		return fmt.Errorf("the server reports a lease of %ds, not the %ds dt set", got.LeaseTime, *l)
-	}
-	if d := settings.DelegationsEnabled; d != nil && got.DelegationsEnabled != *d {
-		return fmt.Errorf("the server reports delegations %t, not the %t dt set", got.DelegationsEnabled, *d)
 	}
 	return nil
 }
@@ -166,14 +159,11 @@ func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error)
 }
 
 // check is the fixture's check before the first test that the server
-// answers: its readiness probe answers 200, and so does an authenticated
-// call, which shows NFS and SMB each served on its port when the fixture asks
-// for it, and no adapter it doesn't ask for. With an S3 profile's bucket b,
-// the server's own check of its block store must find it healthy too.
-func (s *Server) check(ctx context.Context, c *apiclient.Client, b *bucket) error {
-	if err := ready(ctx, s.api); err != nil {
-		return err
-	}
+// answers: an authenticated call answers, and shows NFS and SMB each served
+// on its port when the fixture asks for it, and no adapter it doesn't ask for.
+// With an S3 profile's bucket b, the server's own check of its block store
+// must find it healthy too.
+func (s *Server) check(c *apiclient.Client, b *bucket) error {
 	adapters, err := c.ListAdapters()
 	if err != nil {
 		return fmt.Errorf("an authenticated call: %w", err)

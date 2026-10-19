@@ -140,7 +140,7 @@ func TestKillRemovesContainer(t *testing.T) {
   cell: { image: x, cmd: "sleep 30", timeout: { test: 10s, cell: 1m } }
   stop: { image: x, cmd: "sleep 30" }
 `, nil)
-	minute = 500 * time.Millisecond
+	minute = 200 * time.Millisecond
 	t.Cleanup(func() { minute = time.Minute })
 	for _, suite := range []string{"slow", "cell", "stop"} {
 		t.Run(suite, func(t *testing.T) {

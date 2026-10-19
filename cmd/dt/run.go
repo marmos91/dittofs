@@ -29,7 +29,7 @@ func newRun() *cobra.Command {
 		Short: "Run suites and write their results and logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := load()
+			root, r, err := load()
 			if err != nil {
 				return err
 			}
@@ -42,7 +42,6 @@ func newRun() *cobra.Command {
 			if len(option) > 1 {
 				return fmt.Errorf("one option at a time, not --%s and --%s", option[0], option[1])
 			}
-			root, _ := repoRoot()
 			cells, err := run.Select(root, r, args[0], first(option), tier, only, skip, args[1:])
 			if err != nil {
 				return err
@@ -55,7 +54,7 @@ func newRun() *cobra.Command {
 			}
 			rows := [][]string{{"CELL", "RESULT", "TIME", "NOTE"}}
 			for _, o := range rep.Outcomes {
-				rows = append(rows, []string{o.Cell, o.Result, o.Took.String(), o.Note})
+				rows = append(rows, []string{o.Name, o.Result, o.Took.String(), o.Note})
 			}
 			if err := table(cmd.OutOrStdout(), rows); err != nil {
 				return err
@@ -76,7 +75,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and new failures are annotated")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
-	if r, err := load(); err == nil {
+	if _, r, err := load(); err == nil {
 		for _, s := range r.Suites {
 			for _, o := range s.Options {
 				if cmd.Flags().Lookup(o.Name) == nil {

@@ -27,7 +27,8 @@ var (
 	// Placeholders every cell may use; a cell's matrix axes add their own.
 	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "user", "user2", "password", "realm")
 
-	// runFlags are dt run's own flags, which no option may share a name with.
+	// runFlags are dt run's flags, the planned ones included, which no option
+	// may share a name with.
 	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "help")
 
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -53,8 +54,8 @@ func (r *Registry) check(root string) []error {
 	var errs []error
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
 
-	if r.Version < 1 || r.Version > Version {
-		fail("version %d: this dt reads version %d", r.Version, Version)
+	if r.Version < 1 || r.Version > version {
+		fail("version %d: this dt reads version %d", r.Version, version)
 	}
 	seen := map[string]bool{}
 	wheres := map[string]map[string][]string{} // what each known file's where may hold
@@ -164,11 +165,10 @@ func checkUnit(root string, u *Suite) []error {
 			}
 		}
 	}
-	for _, m := range []map[string]bool{tierKeys(u.Select), tierKeys(u.Args), tierKeys(u.Env.ByTier), tierKeys(u.Blocking.ByTier)} {
-		for t := range m {
-			if !isTier(t) {
-				fail("%q is not a tier", t)
-			}
+	// Env's own decoding refuses a mapping under a name that isn't a tier.
+	for _, t := range slices.Concat(slices.Collect(maps.Keys(u.Select)), slices.Collect(maps.Keys(u.Args)), slices.Collect(maps.Keys(u.Blocking.ByTier))) {
+		if !isTier(t) {
+			fail("%q is not a tier", t)
 		}
 	}
 	for _, g := range u.Paths {
@@ -176,10 +176,9 @@ func checkUnit(root string, u *Suite) []error {
 			fail("paths %q: %v", g, err)
 		}
 	}
-	if u.Shards < 0 {
-		fail("shards is at least 1")
-	}
 
+	// Paths the suite reads must exist.
+	paths := []string{u.Known}
 	if f := u.Fixture; f != nil {
 		if f.Profile == "" && (f.Server == "" || f.Server == "dfs") {
 			fail("fixture: a dfs fixture names its profile")
@@ -192,10 +191,9 @@ func checkUnit(root string, u *Suite) []error {
 				fail("fixture users: %d is not a UID from 1 to 65534", uid)
 			}
 		}
+		paths = append(paths, f.Shares)
 	}
-
-	// Paths the suite reads must exist.
-	for _, p := range []string{u.Known, fixtureShares(u.Fixture)} {
+	for _, p := range paths {
 		if p != "" {
 			if _, err := os.Stat(filepath.Join(root, p)); err != nil {
 				fail("%s does not exist", p)
@@ -246,14 +244,8 @@ func checkUnit(root string, u *Suite) []error {
 			}
 		}
 		for _, name := range toolRefs(s) {
-			if _, ok := ToolDirs[name]; ok {
-				continue
-			}
-			known := strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", ")
-			if name == "" {
-				fail("{tools} names no tool: write {tools}/NAME, NAME one of %s", known)
-			} else {
-				fail("{tools}/%s: no such tool; {tools} holds %s", name, known)
+			if _, ok := ToolDirs[name]; !ok {
+				fail("{tools}/%s: no such tool; write {tools}/NAME, NAME one of %s", name, strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", "))
 			}
 		}
 	}
@@ -270,19 +262,6 @@ func checkUnit(root string, u *Suite) []error {
 	}
 	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
-	}
-	// Only a running cell finds the tests of a glob holding a placeholder, so
-	// nothing that needs them when the cell is planned can have them.
-	if u.Tests.Deferred() {
-		planned := map[string]bool{"shards": u.Shards > 1, "needs_by_test": len(u.NeedsByTest) > 0, "timeout.test: size": u.Timeout.Test == "size"}
-		for t, sel := range u.Select {
-			planned["select."+t] = sel.Glob != ""
-		}
-		for _, field := range slices.Sorted(maps.Keys(planned)) {
-			if planned[field] {
-				fail("%s needs the tests when the cell is planned, but tests %s holds a placeholder, which only a running cell fills", field, u.Tests.Glob)
-			}
-		}
 	}
 	inCell := map[string]bool{}
 	for _, s := range u.cellStrings() {
@@ -427,9 +406,9 @@ func toolRefs(s string) []string {
 }
 
 func checkNeed(n string) error {
-	kind, arg, hasArg := strings.Cut(n, ":")
+	kind, arg, _ := strings.Cut(n, ":")
 	switch {
-	case !hasArg && plainNeeds[n], n == "host:dedicated":
+	case plainNeeds[n]:
 		return nil
 	case kind == "disk" || kind == "port":
 		if _, err := strconv.Atoi(arg); err == nil {
@@ -495,19 +474,4 @@ func (m Matrix) values(axis string) []string {
 		}
 	}
 	return nil
-}
-
-func fixtureShares(f *Fixture) string {
-	if f == nil {
-		return ""
-	}
-	return f.Shares
-}
-
-func tierKeys[V any](m map[string]V) map[string]bool {
-	out := map[string]bool{}
-	for k := range m {
-		out[k] = true
-	}
-	return out
 }

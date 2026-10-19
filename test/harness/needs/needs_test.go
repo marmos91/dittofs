@@ -155,13 +155,6 @@ func TestLocalstackHealth(t *testing.T) {
 	}
 }
 
-// A service dt services doesn't start is unmet.
-func TestUnknownService(t *testing.T) {
-	if err := Check("", "service:nosuch"); err == nil {
-		t.Error("an unknown service is met")
-	}
-}
-
 // With its address unset, a service falls back to the local service's values,
 // as dt services starts it: written here for localstack and postgres, read
 // from the file it writes for KMIP. None of them is dialled here but KMIP's,

@@ -21,11 +21,10 @@ func newDoctor() *cobra.Command {
 		Short: "Which needs this machine meets, and how to meet the rest",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			r, err := load()
+			root, r, err := load()
 			if err != nil {
 				return err
 			}
-			root, _ := repoRoot()
 			var lists [][]string
 			for _, s := range r.Suites {
 				for _, u := range r.Units(s) {

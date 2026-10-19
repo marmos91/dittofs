@@ -54,7 +54,10 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			}
 			return nil, fmt.Errorf("%s has no tests to choose from", unit.Name)
 		}
-		at := wider(tier, unit.Tier)
+		at := tier
+		if !plan.RunsIn(unit.Tier, tier) {
+			at = unit.Tier
+		}
 		planned, err := plan.UnitCells(root, unit, at, path != "")
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", unit.Name, err)
@@ -152,14 +155,6 @@ func unitOf(r *registry.Registry, suite, option, path string) (*registry.Suite, 
 		return u, rest, nil
 	}
 	return units[0], path, nil
-}
-
-// wider returns the wider of two tiers.
-func wider(a, b string) string {
-	if slices.Index(registry.Tiers, b) > slices.Index(registry.Tiers, a) {
-		return b
-	}
-	return a
 }
 
 // chosen returns the cell's tests that the names pick, by path or file name,

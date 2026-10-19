@@ -1,7 +1,6 @@
 package known
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,30 +20,6 @@ func rows(l *List) []string {
 	}
 	slices.Sort(out)
 	return out
-}
-
-// differ says how got differs from want, or returns "" when it doesn't. Both
-// are sorted rows: as the shell test compares its text, a want that isn't
-// sorted bytewise, or repeats a row, differs.
-func differ(got, want []string) string {
-	if slices.Equal(got, want) {
-		return ""
-	}
-	var b strings.Builder
-	for _, r := range want {
-		if !slices.Contains(got, r) {
-			fmt.Fprintf(&b, "\n  missing %q", r)
-		}
-	}
-	for _, r := range got {
-		if !slices.Contains(want, r) {
-			fmt.Fprintf(&b, "\n  extra   %q", r)
-		}
-	}
-	if b.Len() == 0 {
-		b.WriteString("\n  the same rows, but want isn't sorted bytewise or repeats one")
-	}
-	return b.String()
 }
 
 // lines returns the file's lines, without their newlines; none for an empty
@@ -80,9 +55,9 @@ func TestTables(t *testing.T) {
 		if err := l.Load(table); err != nil {
 			t.Fatal(err)
 		}
-		want := lines(t, strings.TrimSuffix(table, ".md")+".want")
-		if d := differ(rows(&l), want); d != "" {
-			t.Errorf("%s:%s", filepath.Base(table), d)
+		got, want := rows(&l), lines(t, strings.TrimSuffix(table, ".md")+".want")
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: got %q, want %q", filepath.Base(table), got, want)
 		}
 	}
 }
@@ -126,8 +101,8 @@ func TestLineEnds(t *testing.T) {
 		if err := l.Load(write(t, filepath.Join(t.TempDir(), "list.md"), c.table)); err != nil {
 			t.Fatal(err)
 		}
-		if d := differ(rows(&l), c.want); d != "" {
-			t.Errorf("%s:%s", c.name, d)
+		if got := rows(&l); !slices.Equal(got, c.want) {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }

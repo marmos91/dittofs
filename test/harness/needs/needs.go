@@ -99,7 +99,8 @@ func Hint(n string) string {
 	return hint
 }
 
-// Check returns why the machine doesn't meet need n, or nil when it does.
+// Check returns why the machine doesn't meet need n, one the registry
+// accepts, or nil when it does.
 // root is the checkout, whose local services' values a service need falls
 // back to.
 func Check(root, n string) error {
@@ -223,10 +224,7 @@ func serviceVars(root, name string) ([]string, error) {
 // checkService meets a service need when its variables are there and its
 // address answers, so the tests can't skip it unseen.
 func checkService(root, name string) error {
-	s, ok := services[name]
-	if !ok {
-		return errors.New("no such service")
-	}
+	s := services[name]
 	vars, err := serviceVars(root, name)
 	if err != nil {
 		return err

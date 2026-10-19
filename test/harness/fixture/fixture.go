@@ -245,7 +245,7 @@ func (s *Server) setUp(ctx context.Context, b *bucket, password string) error {
 	if err := s.configure(c, b, password); err != nil {
 		return err
 	}
-	return s.check(ctx, c, b)
+	return s.check(c, b)
 }
 
 // login is an API client logged in as the server's admin.

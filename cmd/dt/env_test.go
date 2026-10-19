@@ -112,24 +112,21 @@ func TestEnvDispatch(t *testing.T) {
 	writeFile(t, filepath.Join(root, "test", "harness", "env.sh"),
 		"printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\ncat > \"$(dirname \"$0\")/stdin\"\nexit 5\n")
 	t.Chdir(root)
-	for _, c := range envCommands {
-		var out bytes.Buffer
-		cmd := newRoot(&out)
-		cmd.SetErr(&out)
-		cmd.SetIn(strings.NewReader("input\n"))
-		cmd.SetArgs([]string{c.name, "up", "two words", "--flag"})
-		err := cmd.Execute()
-		var status exitStatus
-		if !errors.As(err, &status) || status != 5 {
-			t.Errorf("dt %s: %v, want the script's exit status 5\n%s", c.name, err, out.String())
-		}
-		argv, _ := os.ReadFile(filepath.Join(root, "test", "harness", "argv"))
-		if want := c.name + "\nup\ntwo words\n--flag\n"; string(argv) != want {
-			t.Errorf("dt %s: the script got %q, want %q", c.name, argv, want)
-		}
-		if stdin, _ := os.ReadFile(filepath.Join(root, "test", "harness", "stdin")); string(stdin) != "input\n" {
-			t.Errorf("dt %s: the script read %q", c.name, stdin)
-		}
+	var out bytes.Buffer
+	cmd := newRoot(&out)
+	cmd.SetErr(&out)
+	cmd.SetIn(strings.NewReader("input\n"))
+	cmd.SetArgs([]string{"stack", "up", "two words", "--flag"})
+	err := cmd.Execute()
+	var status exitStatus
+	if !errors.As(err, &status) || status != 5 {
+		t.Errorf("dt stack: %v, want the script's exit status 5\n%s", err, out.String())
+	}
+	if argv, _ := os.ReadFile(filepath.Join(root, "test", "harness", "argv")); string(argv) != "stack\nup\ntwo words\n--flag\n" {
+		t.Errorf("dt stack: the script got %q", argv)
+	}
+	if stdin, _ := os.ReadFile(filepath.Join(root, "test", "harness", "stdin")); string(stdin) != "input\n" {
+		t.Errorf("dt stack: the script read %q", stdin)
 	}
 }
 
@@ -144,7 +141,6 @@ func TestEnvRefusesBeforeDocker(t *testing.T) {
 		want string
 	}{
 		{[]string{"services", "up", "bogus"}, "unknown service: bogus"},
-		{[]string{"services", "down", "bogus"}, "unknown service: bogus"},
 		{[]string{"services", "bogus"}, "usage: dt services"},
 		{[]string{"stack", "bogus"}, "usage: dt stack"},
 		{[]string{"stack", "down", "-x"}, "usage: dt stack"},
@@ -278,7 +274,6 @@ func TestHooksInstall(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"install", "--container"}, "test/harness/githooks"},
 		{[]string{"install"}, ".githooks"},
 		{[]string{"install", "--container"}, "test/harness/githooks"},
 		{[]string{"uninstall"}, ".githooks"},

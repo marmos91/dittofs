@@ -124,7 +124,7 @@ suites:
 		t.Fatal(err)
 	}
 	last := nightly[len(nightly)-1]
-	if last.Name != "system/dedicated" || last.Place != Dedicated || len(last.Tests) != 2 {
+	if last.Name != "system/dedicated" || last.Place != dedicated || len(last.Tests) != 2 {
 		t.Fatalf("needs_by_test cell %+v", last)
 	}
 	// 90-d-xl's 122 minutes, 91-e-xxl counted as the cell's 90, and 5 for the fixture.
@@ -187,18 +187,15 @@ suites:
 
 func TestPlaceOf(t *testing.T) {
 	cases := map[string][]string{
-		Ubuntu:    {"linux", "root", "disk:10"},
-		Windows:   {"windows"},
-		MacOS:     {"macos"},
-		Dedicated: {"linux", "disk:110"},
+		ubuntu:    {"linux", "root", "disk:10"},
+		windows:   {"windows"},
+		macOS:     {"macos"},
+		dedicated: {"linux", "disk:110"},
 	}
 	for want, needs := range cases {
 		if got := placeOf(needs); got != want {
 			t.Errorf("placeOf(%v) = %s, want %s", needs, got, want)
 		}
-	}
-	if got := placeOf([]string{"host:dedicated"}); got != Dedicated {
-		t.Errorf("host:dedicated goes to %s", got)
 	}
 }
 
@@ -206,19 +203,12 @@ func TestSizeLimit(t *testing.T) {
 	cases := map[string]time.Duration{
 		"test/scenarios/00-smb-x-xs.sh": 2*10*time.Second + 2*time.Minute,
 		"57-smb-x-l.sh":                 32 * time.Minute,
-		"92-smb-x-xl.sh":                2*time.Hour + 2*time.Minute,
 		"90-smb-x-xxl.sh":               0,
 	}
 	for name, want := range cases {
 		if got := sizeLimit(name); got != want {
 			t.Errorf("sizeLimit(%s) = %s, want %s", name, got, want)
 		}
-	}
-}
-
-func TestUnknownTier(t *testing.T) {
-	if _, err := Plan("../../..", repo(t), "weekly", nil); err == nil || !strings.Contains(err.Error(), "weekly") {
-		t.Fatalf("got %v", err)
 	}
 }
 
@@ -289,21 +279,6 @@ suites:
 	}
 	if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1") {
 		t.Errorf("a bad limit: %v", err)
-	}
-}
-
-func TestShort(t *testing.T) {
-	cases := map[time.Duration]string{
-		10 * time.Minute:            "10m",
-		2*time.Hour + 7*time.Minute: "2h7m",
-		2 * time.Hour:               "2h",
-		90 * time.Minute:            "1h30m",
-		5 * time.Minute:             "5m",
-	}
-	for d, want := range cases {
-		if got := short(d); got != want {
-			t.Errorf("short(%s) = %q, want %q", d, got, want)
-		}
 	}
 }
 

@@ -14,8 +14,8 @@ import (
 	"github.com/marmos91/dittofs/test/harness/known"
 )
 
-// Version is the newest registry format this package reads.
-const Version = 1
+// version is the newest registry format this package reads.
+const version = 1
 
 // Path is the registry's location, relative to the repository root.
 const Path = "test/suites.yaml"

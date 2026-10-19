@@ -1,7 +1,6 @@
 package fixture
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,9 +48,6 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			call += " off"
 		}
 		_ = json.NewEncoder(w).Encode(apiclient.Adapter{Type: adapter, Port: f.running[adapter], Enabled: f.running[adapter] > 0, Running: f.running[adapter] > 0})
-	case r.URL.Path == "/api/v1/adapters/nfs/settings" && r.Method == http.MethodPatch:
-		f.settings = body
-		_, _ = w.Write([]byte("{}"))
 	case r.URL.Path == "/api/v1/adapters/smb/settings":
 		call += fmt.Sprintf(" %v", body)
 		_, _ = w.Write([]byte("{}"))
@@ -60,6 +56,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		call += fmt.Sprintf(" %v owner=%v", body["name"], body["owner"])
 		_, _ = w.Write([]byte("{}"))
 	case r.URL.Path == "/api/v1/adapters/nfs/settings":
+		f.settings = body
 		lease, _ := f.settings["lease_time"].(float64)
 		if f.lease != 0 {
 			lease = float64(f.lease)
@@ -124,7 +121,7 @@ func TestConfigureOrder(t *testing.T) {
 	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.check(context.Background(), c, nil); err != nil {
+	if err := s.check(c, nil); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -142,8 +139,6 @@ func TestConfigureOrder(t *testing.T) {
 		"PUT /api/v1/shares/export/permissions/users/dt-1 read-write",
 		"PATCH /api/v1/adapters/nfs/settings",
 		"PUT /api/v1/adapters/nfs on",
-		"GET /api/v1/adapters/nfs/settings",
-		"GET /health/ready",
 		"GET /api/v1/adapters",
 	}
 	if !slices.Equal(f.calls, want) {
@@ -166,7 +161,7 @@ func TestConfigureSMB(t *testing.T) {
 	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.check(context.Background(), c, nil); err != nil {
+	if err := s.check(c, nil); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -182,7 +177,6 @@ func TestConfigureSMB(t *testing.T) {
 		"PUT /api/v1/shares/b/permissions/users/dt-user admin",
 		"PATCH /api/v1/adapters/smb/settings map[enable_encryption:true]",
 		"PUT /api/v1/adapters/smb on",
-		"GET /health/ready",
 		"GET /api/v1/adapters",
 	}
 	if !slices.Equal(f.calls, want) {
@@ -226,7 +220,7 @@ func TestConfigureSettings(t *testing.T) {
 	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.check(context.Background(), c, nil); err != nil {
+	if err := s.check(c, nil); err != nil {
 		t.Errorf("no adapter asked for: %v", err)
 	}
 	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.Contains(c, "settings") || strings.HasSuffix(c, " on") }) {
@@ -258,16 +252,16 @@ func TestConfigureSettings(t *testing.T) {
 // when an adapter it didn't ask for runs.
 func TestCheck(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	if err := testServer(registry.Fixture{}, url, 40001, 0).check(context.Background(), c, nil); err == nil || !strings.Contains(err.Error(), "smb adapter runs") {
+	if err := testServer(registry.Fixture{}, url, 40001, 0).check(c, nil); err == nil || !strings.Contains(err.Error(), "smb adapter runs") {
 		t.Errorf("the server's own SMB adapter: %v", err)
 	}
 	delete(f.running, "smb")
-	if err := testServer(registry.Fixture{}, url, 40001, 0).check(context.Background(), c, nil); err == nil || !strings.Contains(err.Error(), "NFS isn't served on port 40001") {
+	if err := testServer(registry.Fixture{}, url, 40001, 0).check(c, nil); err == nil || !strings.Contains(err.Error(), "NFS isn't served on port 40001") {
 		t.Errorf("NFS on 12049: %v", err)
 	}
 	f.running["smb"] = 12445
 	delete(f.running, "nfs")
-	if err := testServer(registry.Fixture{}, url, 0, 40002).check(context.Background(), c, nil); err == nil || !strings.Contains(err.Error(), "SMB isn't served on port 40002") {
+	if err := testServer(registry.Fixture{}, url, 0, 40002).check(c, nil); err == nil || !strings.Contains(err.Error(), "SMB isn't served on port 40002") {
 		t.Errorf("SMB on 12445: %v", err)
 	}
 }
@@ -289,11 +283,11 @@ func TestConfigureS3(t *testing.T) {
 	if blocks["bucket"] != bucketName || blocks["prefix"] != b.prefix || blocks["endpoint"] != b.endpoint || meta["path"] != filepath.Join("/data", "metadata") {
 		t.Errorf("block store %v, metadata store %v", blocks, meta)
 	}
-	if err := s.check(context.Background(), c, b); err != nil {
+	if err := s.check(c, b); err != nil {
 		t.Errorf("a healthy block store: %v", err)
 	}
 	f.sick = "S3 health check failed: NotFound"
-	if err := s.check(context.Background(), c, b); err == nil || !strings.Contains(err.Error(), "can't reach the bucket dittofs-dt at http://10.0.0.5:4566: S3 health check failed: NotFound") {
+	if err := s.check(c, b); err == nil || !strings.Contains(err.Error(), "can't reach the bucket dittofs-dt at http://10.0.0.5:4566: S3 health check failed: NotFound") {
 		t.Errorf("an unhealthy block store: %v", err)
 	}
 }

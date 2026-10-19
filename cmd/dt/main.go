@@ -60,7 +60,7 @@ func newList() *cobra.Command {
 		Short: "Suites, options and groups, with their tier, format and needs, and whether they can run here",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			r, err := load()
+			root, r, err := load()
 			if err != nil {
 				return err
 			}
@@ -72,7 +72,6 @@ func newList() *cobra.Command {
 				Tier   string   `json:"tier"`
 				Format string   `json:"format"`
 				Needs  []string `json:"needs,omitempty"`
-				Job    string   `json:"job,omitempty"`
 				// RunsHere is whether dt run would run the suite's cells here,
 				// as dt run decides it: Unsupported names what dt doesn't do
 				// yet, and Unmet the needs this machine doesn't meet.
@@ -83,7 +82,6 @@ func newList() *cobra.Command {
 				Unmet       []string            `json:"unmet,omitempty"`
 				UnmetByTest map[string][]string `json:"unmet_by_test,omitempty"`
 			}
-			root, _ := repoRoot()
 			var listed []*registry.Suite
 			byTest := map[*registry.Suite]map[string][]string{}
 			var lists [][]string
@@ -104,7 +102,7 @@ func newList() *cobra.Command {
 			var suites []entry
 			for _, u := range listed {
 				why, unmet := run.Blocked(u, u.Needs, check)
-				e := entry{Name: u.Name, Tier: u.Tier, Format: u.Format, Needs: u.Needs, Job: u.Job,
+				e := entry{Name: u.Name, Tier: u.Tier, Format: u.Format, Needs: u.Needs,
 					RunsHere: why == "", Unmet: unmet, UnmetByTest: map[string][]string{}}
 				if why != "" && len(unmet) == 0 {
 					e.Unsupported = why
@@ -150,11 +148,10 @@ func newPlan() *cobra.Command {
 		Short: "The cells a tier runs, each with its place",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			r, err := load()
+			root, r, err := load()
 			if err != nil {
 				return err
 			}
-			root, _ := repoRoot()
 			var changed []string
 			if base != "" {
 				if changed, err = changedFiles(root, base); err != nil {
@@ -211,26 +208,17 @@ func changedFiles(root, base string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git diff %s...HEAD: %w", base, err)
 	}
-	return splitNUL(out), nil
+	// Never nil: an empty change plans nothing, where nil plans every cell.
+	return slices.DeleteFunc(strings.Split(string(out), "\x00"), func(p string) bool { return p == "" }), nil
 }
 
-// splitNUL splits git's -z output, where a path may hold spaces or quotes.
-func splitNUL(out []byte) []string {
-	paths := []string{}
-	for _, p := range strings.Split(string(out), "\x00") {
-		if p != "" {
-			paths = append(paths, p)
-		}
-	}
-	return paths
-}
-
-func load() (*registry.Registry, error) {
+func load() (string, *registry.Registry, error) {
 	root, err := repoRoot()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return registry.Load(root)
+	r, err := registry.Load(root)
+	return root, r, err
 }
 
 // repoRoot finds the checkout by walking up to the directory holding the registry.
