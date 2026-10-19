@@ -1,3 +1,7 @@
+---
+applyTo: "**"
+---
+
 # DittoFS Copilot Reviewer Instructions
 
 You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3, NFSv4, and SMB2 protocols with pluggable metadata and block stores.
@@ -168,6 +172,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ Use table-driven tests for multiple cases
 - ✅ Avoid Mocks if possible. We want to test behavior, not implementation
 - ✅ Cleanup test resources (temp files, connections)
+- ✅ Every test can fail: a test that would still pass with the change reverted, or that only asserts what it just set up, costs CI time and maintenance and protects nothing. Prefer a compile-time assertion when one is possible. Otherwise leave a **suggestion** comment asking to remove or rewrite it.
 
 ### 9. Documentation
 
@@ -284,6 +289,11 @@ Use this template for comprehensive reviews:
 - Praise good implementations
 - Ask clarifying questions when intent is unclear
 - Prioritize correctness > performance > style
+
+## Writing comments and discussions
+
+Write every comment, review body and reply following
+[`pr-writing.instructions.md`](pr-writing.instructions.md).
 
 ## Output Format
 
