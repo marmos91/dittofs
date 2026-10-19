@@ -47,7 +47,7 @@ order: each part builds on the ones before it.
 | RFC 18 | identity and authentication | planned | principals, authentication flavours, identity mapping, squashing |
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
-| [RFC 20](rfc-20-adapters.md) | adapter model | draft | what an adapter may hold and import, the common lifecycle, the dispatch pipeline, codecs, connection concurrency, boundary tests and wire tests against reference servers |
+| [RFC 20](rfc-20-adapters.md) | adapter model | draft | what an adapter may hold and import, the adapter and sidecar interfaces, the common lifecycle, live settings, health and probes, the dispatch pipeline, one auth package for both protocols, reaching a share, codecs, NFS over TLS, connection concurrency, metrics and spans, boundary tests and wire tests against reference servers |
 | [RFC 21](rfc-21-nfs.md) | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
 | [RFC 22](rfc-22-smb.md) | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |

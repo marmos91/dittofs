@@ -104,8 +104,7 @@ With this RFC:
   (§3.1).
 - **sidecar** — something run beside one or more adapters that reaches no
   service and holds no client state: it helps clients find an adapter or tells
-  them something happened — discovery, the port mapper, NSM's restart notice
-  (§3.5).
+  them where an adapter is — discovery, the port mapper (§3.5).
 - **reference server** — a widely deployed implementation of the protocol whose
   wire behaviour this one is compared against (§8).
 
@@ -160,8 +159,8 @@ node for an upgrade.
 
 Outcome: `tar` pauses while the client retries, then carries on against the
 next node, and no acknowledged write is lost. A request abandoned at the drain
-deadline may be applied twice over NFSv4.1 or SMB, as after a node loss
-(§3.1).
+deadline may be applied twice — over NFSv4.1 or SMB, and over NFSv3 on a
+single node — as after a node loss (§3.1).
 
 **A Windows client sends a reply-size edge the spec leaves vague.**
 
@@ -421,7 +420,7 @@ flowchart TB
   root -- "nfs.New / smb.New (Deps)" --> core
   root --> cp
   cp -- "Start · Reconfigure · Stop" --> core
-  side["internal/sidecar<br/>mDNS · WS-Discovery · port mapper<br/>rpcbind · NSM notify"]
+  side["internal/sidecar<br/>mDNS · WS-Discovery · port mapper<br/>rpcbind"]
   cp -- "Sync(serving adapters)" --> side
   core -- "calls stages · looks up rows" --> proto
   proto -- "service calls · handshakes" --> below
@@ -468,7 +467,8 @@ internal/adapter/
     v3/                     Handlers, table, errors; one file per procedure
     v4/                     Handlers, table, errors; one file per operation
     v4/session/             sessions, slots (flow), reply cache (replay)
-    mount/ nlm/ nsm/        auxiliary services: each its Handlers and an OpTable on rpc's Protocol
+    mount/ nlm/ nsm/        auxiliary services: each its Handlers and an OpTable on rpc's Protocol;
+                            nsm/ also sends SM_NOTIFY, per shard grace (§3.1)
     callbacks.go            Callbacks for NFSv4.1 and NLM (§3.3)
   smb/
     smb.go                  New
@@ -477,7 +477,7 @@ internal/adapter/
     handlers/               Handlers, table, errors; one file per command; ioctl/ one file per control code
     dcerpc/                 DCE/RPC over IPC$ pipes: NDR codecs, srvsvc, lsarpc; imports no SMB package (§3.1)
     callbacks.go
-internal/sidecar/           mdns/ wsd/ portmap/ rpcbind/ nsmnotify/: one package each (§3.5)
+internal/sidecar/           mdns/ wsd/ portmap/ rpcbind/: one package each (§3.5)
 ```
 
 **Files are small.** One wire operation per file, its handler and nothing
@@ -554,10 +554,11 @@ A request still running at the drain deadline is abandoned: its context is
 cancelled, its reply is not sent, and the client retries as after a lost reply.
 The adapter **MUST NOT** answer it with an error the client would treat as
 final, since the service may still apply it. An NFSv3 or NFSv4.0 retry
-carries the same request ID and meets the service's dedup
-([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)); an
-NFSv4.1 or SMB retry carries a new one, so exactly-once is lost for abandoned
-requests, as on a node loss
+carries the same request ID, but meets the service's dedup
+([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)) only
+where the call was forwarded, in a cluster; on one node exactly-once is lost
+for it, as for an NFSv4.1 or SMB retry, which carries a new ID. Exactly-once
+is lost for abandoned requests as on a node loss
 ([RFC 21 §3.2](rfc-21-nfs.md#3.2%20The%20reply%20cache%20is%20per%20session%2C%20in%20memory)),
 except where [RFC 22 §6.5](rfc-22-smb.md#6.5%20Replay)'s open-state replay
 rules apply.
@@ -611,7 +612,10 @@ so it stays under the SMB adapter, behind two seams:
 > not change.
 
 What runs beside an adapter but reaches no service and holds no client
-state — discovery, the port mapper, a restart notice — is a sidecar (§3.5).
+state — discovery, the port mapper — is a sidecar (§3.5). NSM's restart notice
+is not: it reads client state, the hosts that held locks, and is sent per
+shard grace ([RFC 21 §6.2](rfc-21-nfs.md#6.2%20NSM)), so it stays with the NFS
+adapter.
 
 **Health** is §3.7's. **Which settings are live** is §3.6's.
 
@@ -798,7 +802,6 @@ a file. Each is tied to the adapters it serves:
 | WS-Discovery responder | `smb` is serving | answers Windows network-browse probes |
 | port mapper | `nfs` is serving, on a host without its own rpcbind | answers `GETPORT` over UDP and TCP with the ports of NFS and its auxiliary services |
 | system rpcbind registration | `nfs` is serving, on a host that runs its own rpcbind | registers the NFS auxiliary services' ports, and unregisters them before the adapter drains |
-| NSM restart notice | `nfs` becomes serving | sends `SM_NOTIFY` to every monitored host, so NLM clients reclaim their locks ([RFC 21 §6.2](rfc-21-nfs.md#6.2%20NSM)) |
 
 The control-plane runtime runs sidecars, not an adapter: it already knows
 which adapters are serving, and a sidecar that serves both protocols belongs to
@@ -809,7 +812,7 @@ package runtime // pkg/controlplane/runtime
 
 // Sidecar runs beside adapters, reaches no service and holds no client state.
 type Sidecar interface {
-	Name() string       // "mdns", "wsd", "portmap", "rpcbind", "nsm-notify": for logs and health
+	Name() string       // "mdns", "wsd", "portmap", "rpcbind": for logs and health
 	Adapters() []string // the adapters it serves: {"nfs"}, {"smb"}, {"nfs", "smb"}
 	// Sync is called with those of Adapters now serving, whenever that set or
 	// their listeners change, and with none to stop. It returns once the
@@ -848,7 +851,7 @@ type Serving struct {
 | Runs through | the adapter's pipeline, stages and operation tables | its own code |
 | Serves | its one adapter | one adapter or several |
 | If it fails | the adapter fails to start | it alone, `sidecar_failed` (§3.7) |
-| Today | MOUNT, NLM, NSM | mDNS, WS-Discovery, port mapper, rpcbind registration, NSM restart notice |
+| Today | MOUNT, NLM, NSM | mDNS, WS-Discovery, port mapper, rpcbind registration |
 
 > decision: two kinds, not one. Folded into one "companion", every rule above
 > becomes a flag whose two values behave oppositely — who builds it, whether its
@@ -883,13 +886,26 @@ sequenceDiagram
   R->>M: node status: G applied, or refused with the error
 ```
 
-Three kinds of change, and only two reach the adapter:
+Four kinds of change, and only two reach the adapter:
 
 | Kind | Examples | Takes effect | By |
 | --- | --- | --- | --- |
-| share policy | a share's encryption requirement, its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
-| live adapter setting | listen addresses, signing required, dialect range, idle timeout, connection limit, a sidecar enabled | listeners at once; connections and sessions set up afterwards | `Reconfigure` |
+| share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
+| share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
+| live adapter setting | dialect range, idle timeout, connection limit, a sidecar enabled | connections and sessions set up afterwards | `Reconfigure` |
 | restart-class adapter setting | what [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table marks restart-only | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+
+> decision: a share's encryption requirement is read at tree connect and held
+> for the tree's life. Unwrap enforces it per tree (§5.5); reading the share
+> policy on every message would put a service read on the request path. A
+> tree connected before the change keeps its flag until it disconnects.
+
+**Listen addresses are not adapter settings.** A host's listen addresses are
+bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+`Reconfigure` still adds and removes listeners, for two callers only: a
+namespace move's release of an address
+([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)),
+and a floating-address takeover, which adds the address the node took over.
 
 **Inside the adapter, settings are one immutable snapshot.**
 
@@ -1382,7 +1398,9 @@ router on a table of versions (§7).
 several channels, an NFSv4.1 session bound to several connections: a
 `Protocol` owns one session registry and hands it to every connection's stages
 at `NewConn`. A connection's `OnClose` drops its reference to each session it
-carried; the last drop calls `Disconnect`, and the per-session cleanup wait of
+carried; for an SMB session the last drop calls `Disconnect` — an NFSv4.1
+session outlives its connections, and ends by `DESTROY_SESSION` or its lease —
+and the per-session cleanup wait of
 §3.2 lives in the registry. ID tables that belong to a session — `FileId`s,
 stateids — live with the session, not the connection.
 
@@ -1587,6 +1605,7 @@ adapter each entry point is one handler and one call:
 | NFSv3 `showmount -e` | MOUNT `EXPORT`: `nfs/mount/export.go` | `ListShares` | nothing |
 | NFSv3 `umount` | MOUNT `UMNT`, `UMNTALL`, `DUMP`: `nfs/mount/umnt.go`, `dump.go` | none: answered success, or an empty list | nothing — no mount table ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | NFSv4 mount | `PUTROOTFH`: `nfs/v4/putrootfh.go`; then `LOOKUP`s | `PseudoRoot`, then `Lookup` | the compound's current filehandle (§2.2) |
+| NFSv4 public filehandle | `PUTPUBFH`: `nfs/v4/putpubfh.go`; the public handle is the pseudo-root | `PseudoRoot` | the compound's current filehandle (§2.2) |
 | NFSv4 crossing into a share | `LOOKUP` from a pseudo directory: `nfs/v4/lookup.go` | `Lookup`, as any other | the handle it returns |
 | NFSv4 `SECINFO`, `SECINFO_NO_NAME` | `nfs/v4/secinfo.go` | `SecInfo` | nothing |
 | SMB `net use` | `TREE_CONNECT`: `smb/handlers/tree_connect.go` | `TreeConnect(name)` → root handle, share info | tree ID → root handle, in the session (§4.7) |
@@ -1736,8 +1755,8 @@ encrypted SMB message, the inner one. A connection with no transform has no
 
 - **What the client chose, the adapter checks.** Whether a message must be
   encrypted or signed — the session's or share's requirement — is decided by
-  the protocol RFCs and checked in unwrap; a plain message where one is
-  required is refused there, with the protocol's status, before the replay
+  the protocol RFCs and checked in unwrap, against the requirement the tree
+  connected with (§3.6); a plain message where one is required is refused there, with the protocol's status, before the replay
   check.
 - **Unwrap runs on the reader**, because SMB's credit charge (admit) is in the
   inner header. **Wrap runs on the worker**, before the reply is queued: both
@@ -1894,8 +1913,9 @@ protocol RFCs' ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%2
 | accept failure | an `Accept` error the listener can recover from, such as no file descriptor left | retried after a backoff from 10 ms doubling to 1 s; failing for 60 s raises `adapter_listener_lost` (§3.7) |
 | drain deadline | draining (§3.1) | remaining requests abandoned |
 
-The deadlines are settings in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
-the same for every protocol; the connection limit is
+The deadlines but one are settings in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
+the same for every protocol; the request deadline is fixed
+([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the connection limit is
 [RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)'s, and the accept backoff
 is fixed. A connection holding state the client relies on — an NFSv4.1
 back channel, an SMB session with durable opens — is not idle while that
@@ -2099,9 +2119,9 @@ Three, each per protocol:
 
 | Benchmark | Measures | Runs | Gate |
 | --- | --- | --- | --- |
-| **codec micro** — `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in the unit suite | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
-| **pipeline micro** — the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, with no storage underneath | per change | allocations per request asserted ≤ a checked-in number that may only fall |
-| **end to end** — the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median opens an issue (RFC 29 §4.10) |
+| **codec micro** — `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | nightly, in `unit --nonrace`: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
+| **pipeline micro** — the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, with no storage underneath | nightly, as above | allocations per request asserted ≤ a checked-in number that may only fall |
+| **end to end** — the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median adds a note to the develop-status issue (RFC 29 §4.10) |
 
 How the load is made:
 
@@ -2127,7 +2147,7 @@ the ones above it cannot, and none stands in for another:
 | handler | translation: the right service call with the right arguments, and the right reply for each answer | a recording service (§7.2) | per change |
 | boundary | imports, error-table totality, one mutating call | §7.1, §7.2, §7.3 | per change |
 | in-process | an adapter on the real service and in-memory stores, driven by §8.2's scripted client over loopback; no root, no kernel client | Go tests | per change |
-| conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §12](rfc-21-nfs.md#12.%20Conformance), [RFC 22 §17](rfc-22-smb.md#17.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, nightly on all |
+| conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §12](rfc-21-nfs.md#12.%20Conformance), [RFC 22 §17](rfc-22-smb.md#17.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, after merge on every profile |
 | end to end | the scenarios of this RFC with kernel clients on a composed node (§7.5) | `test/e2e` | after merge and nightly |
 | wire diff | field-by-field agreement with reference servers | §8 | nightly |
 
@@ -2525,7 +2545,7 @@ which.
 | §2.4, RFC 17 §4.9 | admission is the service's | share admission runs in four places — NFSv3 dispatch, the NFSv4 auth-context builder, MOUNT, SMB tree connect — and share-permission policy is written twice |
 | §2.3 | one shared translation | ACL translation, access-mask conversion and attribute conversion are each written per protocol, access masks twice within NFS |
 | §3.1 | one lifecycle | one accept-and-drain shell is shared; each protocol's stop sequence and auxiliary listeners are hand-ordered per adapter |
-| §3.5 | sidecars run by the control plane, each declaring its adapters | each adapter runs its own sidecar group: NFS the port mapper, system rpcbind registration and NSM notify, SMB mDNS and WS-Discovery; mDNS is wired separately in each adapter; the port mapper is already a sidecar that fails soft, as §3.5 has it |
+| §3.5 | sidecars run by the control plane, each declaring its adapters | each adapter runs its own sidecar group: NFS the port mapper, system rpcbind registration and NSM notify (which stays with the NFS adapter as an auxiliary service), SMB mDNS and WS-Discovery; mDNS is wired separately in each adapter; the port mapper is already a sidecar that fails soft, as §3.5 has it |
 | §2.5 | `wire/` pure codecs in both protocols | NFS codecs under `xdr/` and the RPC layer mixed with dispatch; SMB codecs split between `smbenc`, `header` and handlers |
 | §4.2 | a crashed handler is answered server fault | recovered and logged per connection; the slot is freed, no reply is sent, nothing is counted — **replace** with the recovery middleware |
 | §3.1 | draining lets requests finish | stop cancels every request's context at once and sets a 100 ms read deadline on every connection — **replace** |
