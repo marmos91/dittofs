@@ -2010,16 +2010,32 @@ service benchmark is the adapter's own cost:
 The service is introduced in slices, each one PR or a few, each leaving the
 tree working:
 
-| Slice | What moves | What is deleted |
+| Slice | What moves | What is deleted or closed |
 | --- | --- | --- |
-| 0 | `vfs.Service`, with the shard half delegating to today's `metadata.Service`; `vfstest`'s recording fake and null service | nothing |
-| 1 | shares, identity and admission: `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem into the service; a cross-protocol test that a quiesced or netgroup-restricted share is refused on every entry path | `v4/pseudofs`, `shareEntryStatus`, the NFSv3 permission cache. An adapter's own admission check stays until every operation on its path calls the service: removed earlier, it fails open |
-| 2 | the write path — the four copies of the write sequence become §5.1, returning `WCC` | the adapters' copies |
-| 3 on | open and close, locks, the namespace, the rest | each adapter's copy as its last caller moves |
+| 0 | the neutral value types (§3.0) and errors out of `pkg/metadata` into `pkg/vfs`; the allowlist test below, seeded with every adapter file importing `pkg/metadata` (112 today) | nothing yet: the list only shrinks from here |
+| 1 | `vfs.Service`, with the shard half delegating to today's `metadata.Service`; `vfstest`'s recording fake, null service and fake `Callbacks` | nothing: this is the harness every later slice tests against |
+| 2 | shares, identity and admission: `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem into the service; a cross-protocol test that a quiesced or netgroup-restricted share is refused on every entry path | the four admission paths and three auth-context builders, `v4/pseudofs`, `shareEntryStatus`, the NFSv3 permission cache; closes #3040 and E-01. An adapter's own admission check stays until every operation on its path calls the service: removed earlier, it fails open |
+| 3 | `Write`, `Read` and `Commit`, with the attempt deadline and the write verifier — the four copies of the write sequence become §5.1, returning `WCC` | the adapters' copies and the payload-scope call sites |
+| 4 | `Open` and `Close`: deny modes, delete on close, releases | the six deny-mode sites; closes E-08 and #2927 |
+| 5 | range-list `Lock` and `Unlock`, then `Copy` and `Clone` | the copychunk loops, `common/clone.go` |
+| 6 on | the namespace, attributes and the rest; then [RFC 20](rfc-20-adapters.md)'s shared pipeline and error tables | each adapter's copy as its last caller moves; the per-protocol request plumbing |
 
 - **The RFC moves with the code.** A slice that needs a signature change edits
   this RFC in the same PR, and a reviewer rejects code that disagrees with it.
 - **Copy stays synchronous** ([§5.9](#5.9%20Copy%20and%20clone)).
+- **Each slice lands with its tests.** Its §8 service-suite cases, and a
+  system scenario for the cross-protocol rule it moves, turning green in the
+  same PR.
+- **Drift bugs that lose data or open access are fixed now**, in today's code:
+  #3040, #2927 and the write verifier. Each fix's test is written against the
+  behaviour, not the handler, so it is reused as a service case when its slice
+  lands. The structural ones (deny modes across protocols, change notify across
+  protocols, case-insensitive create) are fixed by their slice.
+- **Cross-protocol tests run on every PR that can break them.** The
+  cross-protocol e2e group and the scenarios of the slices landed so far run
+  in [RFC 29](rfc-29-test-harness.md#4.3%20Tiers)'s `pr` tier, with `paths`
+  naming the adapters, `internal/vfs`, `pkg/vfs` and `pkg/metadata`; after
+  merge or nightly alone, a red one waits days for a reader.
 - **The chokepoint shrinks visibly.** A test lists every adapter import of the
   metadata store, the block store and the lock manager, and every direct
   `Authorize` call, against a checked-in allowlist. It fails on a new entry and
@@ -2035,6 +2051,11 @@ tree working:
 > issue, where no reviewer reads them; and code review alone, or the final
 > import test alone, neither of which shows progress or stops a new leak in
 > the meantime. Overturned if two slices are found to need landing together.
+>
+> decision: fix the drift bugs that lose data or open access now, the rest with
+> their slice. Rejected: fixing every drift bug now, which patches the copies
+> the migration deletes; and fixing none until the service, which leaves a
+> known data-loss bug open for the length of the migration.
 
 ## 10. Open questions
 
