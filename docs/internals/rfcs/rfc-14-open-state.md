@@ -2063,7 +2063,9 @@ type OpenState interface {
 	HostRestarted(ctx context.Context, host []byte, state uint32) error
 	DropShare(ctx context.Context, share ShareID, why DropReason) error // why is removed or moved. Ends every open, lock, lock waiter (NLM ones included), grant, watch, layout and copy under the share, and every copy reading from it, without a recall or a wait for the holder: for a share being removed (RFC 16 §2.3.2), and at a namespace move's release for each moved share (RFC 27 §2.2), whose FileIDs a move back would meet again; each is reported to its adapter through Revoked as RevokedShare, the move's address set for a moved share (RFC 17 §3.2), and its records go with it, so a later stateid of the share resolves to nothing and is answered bad stateid with no revoked-state flag left for the client to clear (RFC 21 answers it so); so a blocked lock or a pending change notification is answered rather than left waiting; it starts no §5.3 no-grant period for the client, and runs whether or not the shard is in grace
 
-	// Asynchronous copies (§2.7). The filesystem service runs the copy and
+	// Asynchronous copies (§2.7): unused until a client is shown to need
+	// offload; the filesystem service answers every copy synchronously (RFC 17 §9).
+	// The filesystem service runs the copy and
 	// reports progress; Status and Cancel answer ErrNoCopy for a lost copy.
 	CopyBegin(ctx context.Context, c ClientID, cp Copy) (CopyID, error)
 	CopyProgress(ctx context.Context, id CopyID, done int64, s CopyState) error
@@ -2074,8 +2076,9 @@ type OpenState interface {
 	Return(ctx context.Context, c ClientID, g GrantID) error
 	AckBreak(ctx context.Context, c ClientID, g GrantID, to GrantKind) error
 
-	// Layouts (§2.6): called by a future Layouts interface of the filesystem
-	// service (RFC 17 §9); the service declares none today.
+	// Layouts (§2.6): reserved, cluster only. The filesystem service declares
+	// no layout call until a pNFS design is scheduled (RFC 17 §3.1, §10); a
+	// single node answers every layout operation not supported.
 	LayoutGet(ctx context.Context, c ClientID, o OpenID, r ByteRange, write, reclaim bool) (Layout, error)
 	LayoutCommit(ctx context.Context, c ClientID, l LayoutID, end int64, mtime time.Time) error // ErrBadLayout on a stale epoch
 	LayoutReturn(ctx context.Context, c ClientID, l LayoutID) error

@@ -2114,7 +2114,7 @@ ones in flight have committed or aborted, and admits the queued ones once the
 fold has committed. **A change that needs admission at several directories** —
 a rename between two, and a rename that moves a directory, which is admitted at
 that directory too — takes them in `FileID` order, the one lock order of
-[RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write), within the request's deadline; across two primaries the
+[RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order), within the request's deadline; across two primaries the
 cross-primary call of [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) asks each in that order. It keeps those
 it holds while it waits at the next, which is safe because every change takes
 them in the same order: a rename A→B and one B→A, or two crossing moves — one
@@ -2126,7 +2126,7 @@ while it waits. A change that cannot take every admission by its deadline
 releases all it holds and answers `ErrDelay` with the cause `DelayConflict`
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A change queued for admission holds no
 accept lock: fold admission comes before the accept locks in the one lock order
-of [RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write) — the open-state serialisation of every file touched, in
+of [RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order) — the open-state serialisation of every file touched, in
 `FileID` order, then fold admission, then the accept locks, in `FileID` order —
 so a create queued behind its directory's fold cannot hold what the fold's
 admitted changes wait for. Waiting for a moment with nothing in flight would starve the
@@ -2231,7 +2231,7 @@ that moves backward, or repeats, keeps a stale cache alive.
   journal, and takes their accept locks in `FileID` order, the order [§9.2](#9.2%20Timestamps)
   admits two directories in, so two renames in opposite directions never
   deadlock; the accept locks come last in the one lock order of
-  [RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write), after the open-state serialisation and fold admission. Across
+  [RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order), after the open-state serialisation and fold admission. Across
   two primaries the cross-primary call of [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) draws each at its own
   primary. A create draws twice: the parent's version from the parent's journal,
   and the new File's from the journal of the primary that will serve the new

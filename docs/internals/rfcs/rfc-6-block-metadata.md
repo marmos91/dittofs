@@ -2076,7 +2076,7 @@ adoption**, run as the batched pattern of [§6.2](#6.2%20Truncation%20and%20deal
 **A clone fails only before it changes anything.** Every failure the design
 admits — an overlapping extent, an over-length clone, a clone across namespaces
 (which includes a clone by reference into a share whose re-home is `closing`,
-refused with `ErrCrossNamespace` though the share still lists both namespaces,
+refused with `ErrCross` (`CrossNamespace`) though the share still lists both namespaces,
 since the finish never reads a ref written at the old generation then,
 [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)),
 a source a restored snapshot lists as incomplete (`ErrIncomplete`,
@@ -2123,7 +2123,7 @@ carries, and the removal drops what that pass would have committed there.
 namespace the source ref's `nsgen` names, and the engine admits a clone only
 when the destination's share lists every namespace the source's share lists, so
 the cloned ref carries the generation it has there. Between namespaces a clone or
-copy is refused with `ErrCrossNamespace`, and the client copies the bytes itself
+copy is refused with `ErrCross` (`CrossNamespace`), and the client copies the bytes itself
 ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
 A clone **MUST NOT** record the destination extent as existing unless its bytes

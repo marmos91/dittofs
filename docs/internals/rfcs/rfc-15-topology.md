@@ -347,13 +347,19 @@ roles. No other component builds components; each is handed what it needs.
 3. With `storage`: **shard placement** ([RFC 11](rfc-11-ownership.md)), then the **content subsystem** —
    engine, journals and their replication, carver, syncer, GC — in the order
    [RFC 8 §2](rfc-8-engine.md#2.%20Composition) gives, then **namespace** and **open state** for the shards
-   this node acquires, then **(cluster)** the pNFS data server, and the
+   this node acquires, the filesystem service's **shard half** over them
+   ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), then **(cluster)** the pNFS data server, and the
    management API. A single node composes no data server and advertises no
    pNFS role ([§5.1](#5.1%20pNFS), [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
-4. With `protocol`: the **router** ([§6](#6.%20Learning%20primaries)), the **filesystem service** over a local
-   view of what this node owns and a remote view of everything else, the
+4. With `protocol`: the node's memory **pools** ([RFC 24](rfc-24-resources.md)), the
+   **authenticator** ([RFC 18](rfc-18-identity.md)), the **router** ([§6](#6.%20Learning%20primaries)), the
+   **filesystem service**'s front over the router, which returns the local shard
+   half for what this node owns and the shard service's client for the rest
+   ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), the
    **client-address agent**, and last the **adapters**, which start accepting
-   clients only when everything under them is serving.
+   clients only when everything under them is serving. The control-plane
+   runtime then runs the **sidecars**, synced only once the adapters serve and
+   stopped before they drain ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)).
 
 Stop runs in reverse: adapters first, so no client call arrives at a component
 already closed; a `storage` node then hands its shards over ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries))
@@ -379,15 +385,17 @@ crossing below is a function call.
 
 | Tier | Composes | Holds | Reaches |
 | --- | --- | --- | --- |
-| **protocol** | the NFS and SMB adapters; authentication; the filesystem service ([RFC 17](rfc-17-vfs.md)); the router and its cache of shard records ([§6](#6.%20Learning%20primaries)); sessions, the NFSv4.1 slot tables and reply caches, SMB tree connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); a client's lease owner and its back channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)); floating addresses and SMB Witness ([§5.3](#5.3%20Client%20addressing)); **(cluster)** the pNFS metadata-server endpoint ([§5.1](#5.1%20pNFS)) | connections and session state, in memory only; no file state | clients; the metadata store, for reads and the few records below; storage nodes, through the shard service |
-| **storage** | shard primary and replica ([RFC 11](rfc-11-ownership.md)); open state, locks, caching grants and layouts ([RFC 14](rfc-14-open-state.md)); the namespace transactions ([RFC 7](rfc-7-namespace-metadata.md)) and block-metadata commits ([RFC 6](rfc-6-block-metadata.md)); the journal ([RFC 1](rfc-1-journal.md), [RFC 28](rfc-28-journal-format.md)) and its replication ([RFC 10](rfc-10-journal-replication.md)); the engine ([RFC 8](rfc-8-engine.md)), carver ([RFC 2](rfc-2-carver.md)), syncer ([RFC 3](rfc-3-syncer.md)), transforms ([RFC 5](rfc-5-transforms.md)) and remote tier ([RFC 4](rfc-4-remote-tier.md)); GC ([RFC 9](rfc-9-gc.md)); each shard's snapshot cut gate ([RFC 12](rfc-12-snapshots.md)); the repair scheduler ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)); the control plane and management API ([RFC 13](rfc-13-configuration.md)), catalog backups ([RFC 26](rfc-26-catalog-backups.md)) and namespace migration ([RFC 27](rfc-27-namespace-migration.md)); **(cluster)** the pNFS data server | journal devices; the un-offloaded tail of the shards it serves; open state in memory; the `storage` wrapping key | protocol nodes, through the shard service; other storage nodes, for replication and cross-shard prepares ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)); the metadata store, as a writer; the remote tier |
+| **protocol** | the NFS and SMB adapters; authentication; the filesystem service's front, and its catalog of store reads ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)); the router and its cache of shard records ([§6](#6.%20Learning%20primaries)); sessions, the NFSv4.1 slot tables and reply caches, SMB tree connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); a client's lease owner and its back channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)); floating addresses and SMB Witness ([§5.3](#5.3%20Client%20addressing)); **(cluster)** the pNFS metadata-server endpoint ([§5.1](#5.1%20pNFS)) | connections and session state, in memory only; no file state | clients; the metadata store, for reads and the few records below; storage nodes, through the shard service |
+| **storage** | shard primary and replica ([RFC 11](rfc-11-ownership.md)); the filesystem service's shard half ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)); open state, locks, caching grants and layouts ([RFC 14](rfc-14-open-state.md)); the namespace transactions ([RFC 7](rfc-7-namespace-metadata.md)) and block-metadata commits ([RFC 6](rfc-6-block-metadata.md)); the journal ([RFC 1](rfc-1-journal.md), [RFC 28](rfc-28-journal-format.md)) and its replication ([RFC 10](rfc-10-journal-replication.md)); the engine ([RFC 8](rfc-8-engine.md)), carver ([RFC 2](rfc-2-carver.md)), syncer ([RFC 3](rfc-3-syncer.md)), transforms ([RFC 5](rfc-5-transforms.md)) and remote tier ([RFC 4](rfc-4-remote-tier.md)); GC ([RFC 9](rfc-9-gc.md)); each shard's snapshot cut gate ([RFC 12](rfc-12-snapshots.md)); the repair scheduler ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)); the control plane and management API ([RFC 13](rfc-13-configuration.md)), catalog backups ([RFC 26](rfc-26-catalog-backups.md)) and namespace migration ([RFC 27](rfc-27-namespace-migration.md)); **(cluster)** the pNFS data server | journal devices; the un-offloaded tail of the shards it serves; open state in memory; the `storage` wrapping key | protocol nodes, through the shard service; other storage nodes, for replication and cross-shard prepares ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)); the metadata store, as a writer; the remote tier |
 | **metadata store** | none of DittoFS: it stores and orders the records the two tiers above read and write — files, refs, blocks, shares, principals, settings, shard records, node leases, the slot table, client records, durable opens, request records ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)) | every durable fact except file content | nothing; it is called |
 
 **Metadata logic runs on storage nodes; metadata lives in the store.** RFC 6 and
 RFC 7 define records and the transactions that change them. A shard's primary
 runs those transactions; the store only keeps and orders them. A protocol node
 reads the store — `Lookup`, `Entries`, `ACL`, `Authorize` and the other calls
-§4 serves at any node — and writes only node records — its own lease, and the
+§4 serves at any node — only through the filesystem service's catalog, part of
+its shard package, never from the front or an adapter
+([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)), and writes only node records — its own lease, and the
 lapsed mark on a lost protocol node before taking its addresses ([§5.3](#5.3%20Client%20addressing)) —
 the health condition of a primary it cannot reach
 ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)), and the client records it is lease owner of
@@ -395,7 +403,9 @@ the health condition of a primary it cannot reach
 a directory's, a shard's or a share's record, nor any control-plane record: each
 of those is written by a storage node.
 
-**The shard service is the one seam.** The calls §4 serves at a shard's primary,
+**The shard service is the one seam.** The filesystem service's `Shard`
+operations — the calls §4 serves at a shard's primary, composed into one coarse
+operation per file ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) —
 `ControlPlane.*` and the cross-shard prepares together form the **shard
 service**, the only interface that crosses from a protocol node to a storage
 node. Below it sits everything that holds file state; above it, nothing does.
@@ -409,8 +419,11 @@ spans shards — a path walk from a share's root into a per-child shard, a
 compound or an SMB session over many files — so something above the shards
 must split it by shard. Placed on the storage nodes, that splitting would move
 into the adapters, which would then have to know shards; [RFC 17](rfc-17-vfs.md) keeps the
-topology invisible to them. The service holds nothing past a call
-([RFC 17 §1.1](rfc-17-vfs.md#1.1%20Non-goals)), so it costs nothing to run where the connections are.
+topology invisible to them. Only the service's front runs there, and it holds
+nothing about files past a call, so it costs nothing to run where the
+connections are; what must outlive a call — quota reservations, the count of
+calls admitted to a share, grace, open state — is the shard half's, at the
+primary ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)).
 
 > decision: catalog backups ([RFC 26](rfc-26-catalog-backups.md)) and namespace migration
 > ([RFC 27](rfc-27-namespace-migration.md)) run on storage nodes, as control-plane work: both write
@@ -458,7 +471,7 @@ filesystem service ([RFC 17](rfc-17-vfs.md)) routes each call; adapters never se
 
 | Served by | Calls |
 | --- | --- |
-| **any node** (store reads) | `Lookup`, `Entries`, `EntriesPlus`, `Files.Get` (the committed part), `ACL`, `Xattrs`, `Streams`, `Authorize`, `Resolve`, `Capacity.*`, `Principals.*` |
+| **any node** (store reads, made by the filesystem service's catalog) | `Lookup`, `Entries`, `EntriesPlus`, `Files.Get` (the committed part), `ACL`, `Xattrs`, `Streams`, `Authorize`, `Resolve`, `Capacity.*`, `Principals.*` |
 | **any `storage` node** (store transactions, no shard's primary) | `ControlPlane.*` |
 | **the shard's primary** | `Create`, `Link`, `Unlink`, `Rename`, `SetAttrs`, `SetACL`, `SetXattr`, `RemoveXattr`, `OpenState.*`, `Existence.*`, the size and times overlay of `Files.Get`, reads and writes |
 | **`storage` nodes, by sweep assignment** | `Blocks.*` ([RFC 9](rfc-9-gc.md)) |
@@ -535,14 +548,14 @@ source extent until the clone ends, and that registration is rebuilt after a
 failover only from the source's clone-kind open record, which names the
 destination and the clone's version ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A
 by-reference clone or copy whose source and destination are in different
-shards **MUST** therefore be refused at admission with `ErrCrossShard`
+shards **MUST** therefore be refused at admission with `ErrCross` (`CrossShard`)
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), whatever their primaries are then: two shards
 that share a primary at admission can be split by the next failover or
 handover mid-clone. A clone admitted within one shard is not split by a batch
 move either: a batch skips a file that is the source or destination of an
 unfinished clone until the clone is done
 ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). On
-`ErrCrossShard` the adapters fall back without telling the client the
+`ErrCross` (`CrossShard`) the adapters fall back without telling the client the
 operation is missing: an NFSv4.2 `COPY` and an SMB copychunk become a
 server-side byte copy, reads at the source's primary and writes at the
 destination's; an NFSv4.2 `CLONE` answers `NFS4ERR_XDEV`, never
@@ -678,7 +691,9 @@ Collocated, a node channel is a function call and none of this applies.
 ### 5.1 pNFS
 
 pNFS clients get layouts from the `protocol` node's metadata-server endpoint,
-which forwards `LAYOUTGET` to the primary of the file's shard; the primary grants and
+which forwards `LAYOUTGET` to the primary of the file's shard, through a future
+`Layouts` interface of the filesystem service
+([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)); the primary grants and
 holds the layout as open state ([RFC 14](rfc-14-open-state.md)). Clients then send `READ` and `WRITE`
 to the data servers the layout names.
 

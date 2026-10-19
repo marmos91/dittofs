@@ -578,7 +578,7 @@ and **MUST** report a change to them as a migration rather than apply it
    > over 30 s) and 1.07 × the last minute's peak (32 s of it over 30 s) spends
    > the headroom before the fence: 500 000 a second after a minute at 100 000
    > is refused retry-later about 13 s before the fence would. The cost is
-   > `ErrDelay` with `DelayVersionLimit`, a retry, never a failure. Raise by a larger
+   > `ErrDelay` with `DelayCommit`, a retry, never a failure. Raise by a larger
    > block, or size the margin from the device's peak IOPS rather than the
    > last minute, when [§15.2](#15.2%20Group%20B%20%E2%80%94%20wedging)'s burst check is refused at a rate a
    > deployment reaches.
@@ -810,7 +810,7 @@ state.
   rename, link or unlink, with both directories, the moved file and a replaced
   target — draws one version per file it changes, each from that file's
   journal, taking their accept locks in file-ID order, in the one lock order
-  [RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write) states; across two primaries it is coordinated as
+  [RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order) states; across two primaries it is coordinated as
   [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) orders it. A create draws the parent's version from the
   parent's journal and the new file's from the new file's own, through the
   cross-primary call when the new file lands in another shard, as a rename
@@ -2812,7 +2812,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join | Close with an offload parked in a stalled put. Assert no component is closed while the pass runs. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) self-fence threshold | Stall the store for 10 s: assert writes are still acknowledged. Stall it for 31 s: assert writes and stability points answer `ErrDelay`, reads are served, a condition names the store, and once a write commits, writes resume with the verifier unchanged. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) version limit under sustained load | Write at the measured peak version rate (4 KiB writes at the device's peak IOPS) and stall the store just as a raise falls due, its last commit one existence age before the stall. Assert writes are acknowledged for the first 10 s and until the self-fence trips at 30 s, never refused by the version limit first. Hold the rate below the trigger, then raise it in one step: assert the raise is due on the next draw, not on a timer. A limit raised only below half a block of 2²⁰ refuses within seconds. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) burst at a stall's start | With a block of 2²⁴, write at 100 000 versions a second for a minute, then stall the store and raise the rate in one step. At 250 000 a second assert no write is refused by the version limit before the self-fence trips. At 500 000 a second assert the refusals are `ErrDelay` with `DelayVersionLimit`, never `ErrNoSpace`, and begin no sooner than the ponytail's bound, about 13 s before the fence; once the store returns and the raise commits, writes are acknowledged again. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) burst at a stall's start | With a block of 2²⁴, write at 100 000 versions a second for a minute, then stall the store and raise the rate in one step. At 250 000 a second assert no write is refused by the version limit before the self-fence trips. At 500 000 a second assert the refusals are `ErrDelay` with `DelayCommit`, never `ErrNoSpace`, and begin no sooner than the ponytail's bound, about 13 s before the fence; once the store returns and the raise commits, writes are acknowledged again. |
 | [§2.1](#2.1%20Content%20composition) one clock | Run the node with two `TestClock`s — one for the embedded metadata store's `Now`, whose clamped wall clock is otherwise the node's own ([§2.1](#2.1%20Content%20composition)), and one, 5 % fast, for every other component — and run [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock-bound check through it: assert every wait on another clock's timeout ends no sooner than its bound by the slow clock. A component that reads a private clock does not skew, and the check names it. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) self-fence on an erroring store | Make every write transaction fail at once while reads succeed: assert the engine fences after 30 s and resumes once a write commits. Leave the node idle with no write for 60 s: assert it does not fence. A trigger on "no transaction completed" never fires on the first. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) metadata store lost | Delete the single node's metadata store and start. Assert no share is served until the recovery import runs, files then read as of the last catalog backup, and GC waits for the operator. |
