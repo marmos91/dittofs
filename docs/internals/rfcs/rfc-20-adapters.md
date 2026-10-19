@@ -455,11 +455,12 @@ internal/adapter/
     errors.go               ErrorTable and its totality check (§4.5)
     buf.go                  reference-counted buffers over RFC 24's pools (§6.8)
   translate/                ACL, access-mask, time and attribute translation: neutral types only
+  auth/                     Kerberos, NTLM and SPNEGO mechanisms, exchanges, per-request Identity (§4.4); test initiators
   adaptertest/              toy protocol, import test, golden-vector and capture helpers (§7)
   nfs/
     nfs.go                  New: builds the stages, handler sets and operation tables; returns a *core.Server
     wire/                   pure codecs, generated from the XDR: the RPC header and credentials, one file per program
-    rpc/                    the ONC RPC Protocol and its stages: record-mark framer, router by (program, version), AUTH_SYS, RPCSEC_GSS
+    rpc/                    the ONC RPC Protocol and its stages: record-mark framer, router by (program, version), the RPCSEC_GSS context table
     v3/                     Handlers, table, errors; one file per procedure
     v4/                     Handlers, table, errors; one file per operation
     v4/session/             sessions, slots (flow), reply cache (replay)
@@ -1143,6 +1144,130 @@ An `Identity` **MUST** be built afresh for each request from the connection's
 security context. Any cache keyed on identity carries every field the
 `Identity` has, so two principals that share numeric IDs never share an entry.
 
+**Kerberos, Active Directory and LDAP, split between the two.** The adapter
+speaks the protocol's security messages; RFC 18's authenticator holds every
+secret and talks to every directory. Nothing in an adapter opens a connection
+to a KDC, a domain controller or an LDAP server, or reads a keytab.
+
+| Piece | Where | Why there |
+| --- | --- | --- |
+| SPNEGO, NTLM and Kerberos messages, the exchange | `auth`, shared by both adapters (below) | wire format, no secret |
+| NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | authenticator, `VerifyNTLM` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | needs the NT hash or the machine account's secure channel |
+| Kerberos AP-REQ acceptance, keytab, PAC verification | authenticator, `AcceptKerberos` ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos), [§3.4](rfc-18-identity.md#3.4%20The%20PAC)) | needs the keytab; its rotation is RFC 18's |
+| SMB signing and encryption keys from the session key | SMB adapter, `smb/session` | MS-SMB2's key derivation; the key arrives in the `Proof` |
+| `RPCSEC_GSS` control procedures (`INIT`, `CONTINUE_INIT`, `DESTROY`) | NFS adapter: routed by the RPC router to `auth.Exchanges` | the framing is RPC's; the exchange is `auth`'s |
+| GSS context table and sequence window | NFS adapter, `nfs/rpc`, owned by the RPC `Protocol` like sessions (§4.7); in memory only ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) | RPCSEC_GSS's own state |
+| MIC and wrap tokens for `krb5i` and `krb5p` | `auth.Context`, called from NFS's `Security` stage (§5.5) | RFC 4121, the Kerberos mechanism's |
+| User and group lookups, ID mapping, SIDs — the LDAP directory | the service, through RFC 18's resolution per share ([§6](rfc-18-identity.md#6.%20Resolution%20per%20share)) | per share, cached with every key field ([RFC 18 §7](rfc-18-identity.md#7.%20Caches)) |
+| Windows name and SID lookups over `IPC$` (lsarpc) | SMB adapter's `dcerpc` handlers (§3.1), each one call to the identity interface | DCE/RPC is the adapter's; the answer is the directory's |
+
+**One authentication layer for both adapters.** NFS and SMB authenticate the
+same way three times over — a multi-leg token exchange, a security context it
+leaves behind, an `Identity` built from that context on every request — and
+today each adapter has its own copy of all three: NFS in `rpc/gss`, SMB in
+`smb/auth` and its `SESSION_SETUP` handler, both decoding Kerberos messages
+themselves. They become one package, `internal/adapter/auth`, that both
+protocols drive:
+
+```go
+package auth
+
+// Mechanism is one GSS mechanism: Kerberos, NTLM, or SPNEGO, which negotiates
+// one of the others and delegates to it. Each Step consumes the peer's token
+// and returns the next, until done.
+type Mechanism interface {
+	Step(ctx context.Context, in []byte) (out []byte, done bool, err error)
+	Context() *Context // once done
+}
+
+// Context is what a finished exchange leaves: what it proved, the session key,
+// and the per-message operations the mechanism defines.
+type Context struct {
+	Proof   identity.Proof // RFC 18 §3.1: principal, SIDs, expiry
+	Key     []byte          // for SMB's key derivation; never in an Identity
+	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
+	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
+	Unwrap  func(tok []byte) ([]byte, error)
+}
+
+// Exchanges holds exchanges in progress, keyed by the protocol's handle for
+// one — an SMB session ID, an RPCSEC_GSS context handle — each bounded by the
+// handshake deadline (§6.4) and the connection-state pool.
+type Exchanges struct{ /* … */ }
+
+func (x *Exchanges) Step(ctx context.Context, key Key, newMech func() Mechanism, in []byte) (out []byte, done *Context, err error)
+
+// Identity builds a request's Identity from a context, or from an AUTH_SYS
+// credential, which proves nothing (RFC 18 §3.2). It is the one place either
+// protocol builds one (§4.4).
+func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vfs.Identity, error)
+```
+
+| Shared, in `auth` | Called by NFS | Called by SMB |
+| --- | --- | --- |
+| Kerberos mechanism: AP-REQ through `Authenticator.AcceptKerberos`, AP-REP, subkey | `RPCSEC_GSS` `INIT` / `CONTINUE_INIT` | inside SPNEGO in `SESSION_SETUP` |
+| NTLM mechanism: challenge, then `Authenticator.VerifyNTLM` | — | inside SPNEGO |
+| SPNEGO, which composes the two | — | `SESSION_SETUP` |
+| `Exchanges`: multi-leg state, deadline, cleanup | GSS context handle | session ID |
+| RFC 4121 per-message tokens | the `Security` stage for `krb5i`, `krb5p` and the verifier (§5.5) | — (SMB derives its own keys from `Key`) |
+| `Identity`, expiry | the RPC `Router` stage | the SMB `Router` stage |
+| failure handling: every error a logon failure, never guest | GSS `CREDPROBLEM` | `STATUS_LOGON_FAILURE` |
+
+What stays in each protocol is only what its wire makes it: NFS routes the
+`RPCSEC_GSS` control procedures to `Exchanges.Step` and keeps the context table
+and sequence window; SMB carries SPNEGO in `SESSION_SETUP`, derives signing and
+encryption keys from `Context.Key`, and binds a session to a channel.
+
+**Where it runs is the pipeline, as for any other cross-cutting work.** The
+exchange is not a middleware, since it spans several requests; what runs on
+every request is:
+
+1. the **Router** stage asks `auth.Identity` for the request's `Identity` from
+   the session's or GSS context's `auth.Context` — one function for both;
+2. the pipeline's check (§4.7) refuses, with the protocol's expired-credential
+   answer, a request whose `Proof` has expired, and, with its
+   not-authenticated answer, a request with no context to an operation whose
+   `Before` column does not allow one (§4.2);
+3. the `Security` stage verifies and wraps through the context's
+   per-message operations (§5.5).
+
+None is in a handler: a handler reads `r.Identity` and nothing else.
+
+**Tested without a domain.** The package carries the initiator side of each
+mechanism, used only by tests, so every exchange runs in-process:
+
+- **Kerberos** with no KDC: the test mints a service ticket for a test
+  principal, encrypted with the test keytab's own key, and the initiator turns
+  it into an AP-REQ. Acceptance, AP-REP, subkeys, PAC parsing, expiry and
+  replay detection run against real Kerberos messages, deterministically.
+- **NTLM** from a test user's password, against a fake `Authenticator` that
+  holds its NT hash; pass-through is the same fake answering as a domain
+  controller would.
+- **SPNEGO** over both, including the mechanism-list MIC and a client that
+  offers Kerberos first and falls back to NTLM.
+- **RFC 4121 tokens** against the RFC's and MIT's published test vectors.
+- **Each protocol's handshake** end to end over loopback: the NFS and SMB
+  handlers driven by the same initiators, asserting the session's `Identity`,
+  the derived keys on the SMB signing test vectors, and that every
+  authenticator error becomes the logon failure and never a guest session.
+
+All of these run per change with no network and no container. Interoperability
+with real directories — MIT Kerberos, Samba as an Active Directory domain
+controller, Windows clients — runs in the harness's containers after merge
+([RFC 29](rfc-29-test-harness.md#4.3%20Tiers)) and in §7.6.
+
+**What else could authenticate a client, and where it would go.** The adapter
+layer offers what NFS and SMB clients can present, and no more:
+
+| Candidate | Decision |
+| --- | --- |
+| OIDC, OAuth bearer tokens | no NFS or SMB client sends one. A future auxiliary service over HTTP that does (§3.1) adds a `VerifyToken` to RFC 18's authenticator returning a `Proof`; `auth.Identity`, the pipeline and every handler stay as they are. Operators' sign-in to the management API is RFC 23's, not an adapter's |
+| client certificates over TLS | prove the host, not the user (§5.5's decision) |
+| guest and anonymous sessions | allowed only where RFC 18 allows them ([§3.6](rfc-18-identity.md#3.6%20Anonymous%20and%20guest%20sessions)), only when the client asks for one, and decided once, in `auth`; never the result of a failure |
+| channel binding of Kerberos to TLS | not offered; SMB 3.1.1's pre-authentication integrity already binds its exchange to the connection, and is SMB's |
+| throttling repeated logon failures | not the adapter's: the authenticator sees every attempt with the client's address and is where a limit would be kept, and a domain account's lockout is the domain's |
+| logon audit events | emitted by the authenticator, not the adapter, so a logon over either protocol appears once ([RFC 25 §4](rfc-25-observability.md#4.%20Event%20streams)) |
+
 ### 4.5 One error table per protocol
 
 Each adapter maps the service's neutral errors
@@ -1463,6 +1588,69 @@ A handler asks `r.Caps.Leases`, not `dialect >= 0x0300`. Adding a dialect is
 then one function from dialect and negotiate contexts to `Caps`, tested on its
 own, and no handler changes. NFSv4 does the same for what a minor version adds:
 sessions (4.1) are a `Flow` and `Replay` stage, not a check in each handler.
+
+### 4.10 Reaching a share
+
+How a client reaches a share — mounting, the NFSv4 pseudo-filesystem, tree
+connects, share lists — is the service's, written once for every protocol
+([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)). In the
+adapter each entry point is one handler and one call:
+
+| Client does | Handler, in its file | Service call | Adapter keeps |
+| --- | --- | --- | --- |
+| NFSv3 `mount` | MOUNT `MNT`, an auxiliary service (§3.1): `nfs/mount/mnt.go` | `Mount(path)` → root handle, flavours | nothing |
+| NFSv3 `showmount -e` | MOUNT `EXPORT`: `nfs/mount/export.go` | `ListShares` | nothing |
+| NFSv3 `umount` | MOUNT `UMNT`, `UMNTALL`, `DUMP`: `nfs/mount/umnt.go`, `dump.go` | none: answered success, or an empty list | nothing — no mount table ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
+| NFSv4 mount | `PUTROOTFH`: `nfs/v4/putrootfh.go`; then `LOOKUP`s | `PseudoRoot`, then `Lookup` | the compound's current filehandle (§2.2) |
+| NFSv4 crossing into a share | `LOOKUP` from a pseudo directory: `nfs/v4/lookup.go` | `Lookup`, as any other | the handle it returns |
+| NFSv4 `SECINFO`, `SECINFO_NO_NAME` | `nfs/v4/secinfo.go` | `SecInfo` | nothing |
+| SMB `net use` | `TREE_CONNECT`: `smb/handlers/tree_connect.go` | `TreeConnect(name)` → root handle, share info | tree ID → root handle, in the session (§4.7) |
+| SMB share list | srvsvc `NetShareEnum` over `IPC$` (§3.1): `smb/dcerpc/srvsvc/netshareenum.go` | `ListShares` | nothing |
+
+**Finding it in the code.** Each entry is a file named after its wire
+operation, and the `Shares` methods — `Mount`, `PseudoRoot`, `TreeConnect`,
+`SecInfo`, `ListShares` — are called from those files and nowhere else in an
+adapter. So "what runs when a client mounts" is one search for the method,
+which lands on one handler, whose one call leads into the service's `Shares`
+implementation ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
+where resolution, admission and the pseudo-filesystem are. The import test
+(§7.1) keeps it so: it lists every call of a `Shares` method from adapter code
+and fails on one outside the files above, so a second path to a share — how
+admission came to be written four times (Appendix B) — cannot reappear
+unnoticed.
+
+What follows from the service owning it:
+
+- **The adapter cannot tell a pseudo handle from a share's.** Both are opaque
+  handles ([RFC 17 §4.4](rfc-17-vfs.md#4.4%20Handles%20are%20opaque)), and every
+  `Names` and `Attributes` call answers for either. No handler branches on
+  "is this the pseudo-filesystem", and there is no pseudo-filesystem code in
+  the adapter.
+- **No gate at the point of entry.** `PUTFH`, a `LOOKUP` across a junction and a
+  `TREE_CONNECT` are not where a share is admitted: every service call naming
+  a handle or an open is admitted ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
+  So a handle presented through any entry path meets the same checks — share
+  state, flavour, client rules, squashing — including the operations that
+  build no other context (`LOCK`, `LOCKT`, `LOCKU`). The adapter's job at entry
+  is to make the call and map its error.
+- **`PUTFH` makes no call.** It sets the current filehandle; the next
+  operation's call admits it. A stale or refused handle is reported on that
+  operation, with the status the error table gives — as RFC 8881 allows,
+  since a server need not validate a handle until it is used.
+- **Mount-crossing attributes are formatted, not computed.** `fsid`,
+  `mounted_on_fileid` and the pseudo directory's change attribute come back
+  in the `metadata.File` the service returns; the attribute encoder writes
+  them.
+- **No share list in the adapter.** A share added, removed or re-pathed reaches
+  every protocol through the service's next call, with nothing to refresh,
+  subscribe to or invalidate here.
+
+Tests: each entry handler is tested against the recording service (§7.2),
+which proves it makes its one call and maps each error; that a share is
+refused on every path — `PUTFH` of a held handle, a walk from `PUTROOTFH`, a
+lock naming only an open, a `TREE_CONNECT` — is a cross-protocol row (§7.5),
+since it is the service's rule and the adapters' only duty is not to go round
+it.
 
 ## 5. Encoding and decoding
 
@@ -2038,13 +2226,15 @@ free to fetch attributes once rather than twice does not break its test.
 
 These boundary checks run per change:
 
-### 7.1 Imports
+### 7.1 Imports and call sites
 
 A test walks the import graph of every adapter package and fails, naming the
 package and the import, on anything §2.3 forbids. It is seeded with one
 deliberate violation in its own test data and must report it, so a check that
 silently matches nothing is caught. The same test lists adapter files over 800
-lines and fails on one not in its allowlist (§2.5).
+lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
+imports anything but the standard library and `core`'s buffers (§2.5), and
+fails a call of a `vfs.Shares` method outside the entry handlers of §4.10.
 
 ### 7.2 Handlers against a recording service
 
@@ -2101,7 +2291,10 @@ answering from adapter state — is caught too.
 The cross-protocol rows of RFC 17 §8 are driven once more through both adapters
 on the composed node ([index](rfc-index.md#Test%20harness)): an NFS write against
 an SMB deny mode, an NFS lock against an SMB lease, a rename over NFS of a
-directory marked delete on close over SMB. The service suite proves the rule;
+directory marked delete on close over SMB; a quiesced share and a
+netgroup-restricted one refused on every entry path — `PUTFH` of a held
+handle, a walk from `PUTROOTFH`, `LOCK` naming only an open, `MNT`,
+`TREE_CONNECT` (§4.10). The service suite proves the rule;
 these prove neither adapter routes around it.
 
 ### 7.6 End to end
@@ -2122,6 +2315,7 @@ needs a real client's retries, caching or socket:
 | §3.1 reconfigure | Remove one of two listen addresses. Assert its connections close and the other address's clients see no error. | a reconfigure that restarts the adapter |
 | §6.7 Nagle off | 10^4 sequential `GETATTR`s from the scripted client over a real network interface. Assert p99 under 10 ms. | small replies held for a delayed acknowledgement |
 
+| §4.4 Kerberos and AD | Against the test domain controller: mount NFSv4.1 with `sec=krb5`, `krb5i` and `krb5p`, and connect SMB with Kerberos and with NTLM pass-through for a domain user with no local account. Assert each session's principal and SIDs, `krb5p` traffic unreadable in a capture, and a wrong password a logon failure, never a guest session. Rotate the keytab and assert a new mount succeeds while the first stays mounted. | a directory call left in an adapter, or a failed handshake that falls back to guest |
 | §5.5 TLS | Mount NFSv4.1 with `xprtsec=tls`; capture the connection and assert no RPC is readable after the `AUTH_TLS` probe. With `mode: require`, assert a plaintext mount fails. Replace the certificate files and assert a new mount presents the new certificate while the first stays mounted. | TLS dropped in the move, or a certificate change that needs a restart |
 
 The drain, limit and reconfigure checks run after every merge; the rest nightly.
@@ -2444,9 +2638,12 @@ which.
 | §4.2 | operations switched off by a setting, answered as absent | an NFS per-adapter block list, checked in the dispatchers — **replace** |
 | §5.5 | TLS below the pipeline | NFS over TLS with opportunistic and required modes, mutual TLS and certificate reload — **keep**, through `Conn.StartTLS` |
 | §7 | the recording service and toy protocol | shared fixtures in `internal/adapter/testruntime` build real stores — **replace**; the fixture is where the recording service starts |
+| §4.10 | no pseudo-filesystem and no entry gate in the adapter | the NFSv4 adapter builds the pseudo-filesystem itself (`v4/pseudofs`, about 900 lines, used from 33 files) and gates share entry at `PUTFH` and a junction-crossing `LOOKUP` (`shareEntryStatus`), which checks share state and netgroups but not the flavour policy, so `LOCK`, `LOCKT`, `LOCKU` reach a Kerberos-only share over AUTH_SYS — **delete** both; the service's per-call admission covers every path |
 | §4.1 | one pipeline | two dispatch stacks with nothing shared above the socket; the connection loops are near-identical copies |
 | §4.2 | precondition columns | SMB's table carries needs-session and needs-tree; NFSv4 looks operations up in three per-version maps with a per-share block list; NFSv3 gates in its dispatcher |
 | §4.3 | reply budget before each operation | the NFSv4.1 compound enforces the reply size; the per-compound cap is 128 operations |
+| §4.4 | one `auth` package for both adapters | NFS (`rpc/gss`) and SMB (`smb/auth`, `kerberos_auth.go`) each decode Kerberos with their own code over a shared `internal/auth/kerberos` service; SPNEGO and NTLM are SMB's alone — **replace** with `auth`, keeping the mechanism code |
+| §4.4 | the authenticator holds every secret and directory connection | the SMB `SESSION_SETUP` handler runs NETLOGON pass-through to the domain controller itself (`tryNetlogonFallback`, `tryNetlogonBind`); NFS's GSS layer holds and hot-swaps the keytab verifier — **replace** with `VerifyNTLM` and `AcceptKerberos`; SPNEGO, NTLM message handling and the GSS per-message code (`smb/auth`, `nfs/rpc/gss`) **keep**, moved to `smb/wire` and `nfs/rpc` |
 | §4.4 | no identity mapping in adapters | squashing and identity mapping run in the NFS adapter; SMB resolves SIDs through its own paths |
 | §4.5 | one total table per protocol | three status tables (NFSv3, NFSv4, SMB), no totality test |
 | §5.1 | codecs from one place | NFS codecs are hand-written, with a reflection-based XDR library still used for the RPC envelope and MOUNT; SMB uses one encoder in most handlers and raw byte order in a few |
