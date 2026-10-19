@@ -2114,7 +2114,7 @@ Logs: a verification refusal, a low count or a Lost ref logs the block or file a
 `Error`. The hold, a deletion backlog that stops draining and a clock outside the
 clock skew limit each raise a health condition and log once at `Warn` on entry and on exit.
 A collection refused because a store was not enumerated logs that store at `Warn`.
-Taking or losing a lease partition, an operator restore and a rebuild log at `Info`.
+Taking or losing a lease partition and a rebuild log at `Info`.
 
 ## 11. Test plan and benchmarks
 
