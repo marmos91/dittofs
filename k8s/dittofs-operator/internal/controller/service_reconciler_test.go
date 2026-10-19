@@ -168,7 +168,7 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 
 	// Set adapters: NFS and SMB both enabled+running.
 	r.setLastKnownAdapters(ds, []AdapterInfo{
-		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
+		{Type: "nfs", Enabled: true, Running: true, Port: 12049, Portmapper: true},
 		{Type: "smb", Enabled: true, Running: true, Port: 12445},
 	})
 
@@ -288,7 +288,7 @@ func TestReconcileAdapterServices_UpdatePortChange(t *testing.T) {
 
 	// Set adapters with NFS port changed to 2049.
 	r.setLastKnownAdapters(ds, []AdapterInfo{
-		{Type: "nfs", Enabled: true, Running: true, Port: 2049},
+		{Type: "nfs", Enabled: true, Running: true, Port: 2049, Portmapper: true},
 	})
 
 	err := r.reconcileAdapterServices(context.Background(), ds)
@@ -1019,7 +1019,7 @@ func TestSyncManagedAnnotations_ClearsAll(t *testing.T) {
 }
 
 func TestBuildAdapterServicePorts_NFS(t *testing.T) {
-	ports := buildAdapterServicePorts("nfs", AdapterInfo{Port: 12049})
+	ports := buildAdapterServicePorts("nfs", AdapterInfo{Port: 12049, Portmapper: true})
 	// NFS TCP + portmapper TCP + portmapper UDP + NFS data port UDP + mDNS (#1609).
 	if len(ports) != 5 {
 		t.Fatalf("Expected 5 ports for NFS, got %d: %v", len(ports), servicePortNames(ports))

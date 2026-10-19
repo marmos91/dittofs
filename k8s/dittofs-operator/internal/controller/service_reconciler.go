@@ -163,8 +163,8 @@ func isSMBAdapter(adapterType string) bool {
 }
 
 // buildAdapterServicePorts returns the Service ports for an adapter.
-// NFS adapters get 4 ports (NFS TCP, portmapper TCP + UDP 111→10111, and the
-// NFS data port over UDP for NLM/NSM/MOUNT); all others get 1.
+// NFS adapters also get the NFS data port over UDP for NLM/NSM/MOUNT and, once
+// the portmapper is seen on, the portmapper over TCP and UDP (111→10111).
 func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.ServicePort {
 	portName := adapterPortName(adapterType)
 	ports := []corev1.ServicePort{
@@ -176,19 +176,28 @@ func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.Ser
 		},
 	}
 	if isNFSAdapter(adapterType) {
+		// decision: 111 is published only once the operator has seen the
+		// portmapper on, so it never leads to a port nothing listens on. The
+		// operator's account can't read the NFS settings yet, so a portmapper
+		// an admin turned on by hand stays unpublished until the operator
+		// renders the provisioning file.
+		if info.Portmapper {
+			ports = append(ports,
+				corev1.ServicePort{
+					Name:       portmapperPortName,
+					Port:       portmapperServicePort,
+					TargetPort: intstr.FromInt32(portmapperContainerPort),
+					Protocol:   corev1.ProtocolTCP,
+				},
+				corev1.ServicePort{
+					Name:       portmapperUDPPortName,
+					Port:       portmapperServicePort,
+					TargetPort: intstr.FromInt32(portmapperContainerPort),
+					Protocol:   corev1.ProtocolUDP,
+				},
+			)
+		}
 		ports = append(ports,
-			corev1.ServicePort{
-				Name:       portmapperPortName,
-				Port:       portmapperServicePort,
-				TargetPort: intstr.FromInt32(portmapperContainerPort),
-				Protocol:   corev1.ProtocolTCP,
-			},
-			corev1.ServicePort{
-				Name:       portmapperUDPPortName,
-				Port:       portmapperServicePort,
-				TargetPort: intstr.FromInt32(portmapperContainerPort),
-				Protocol:   corev1.ProtocolUDP,
-			},
 			// NLM/NSM/MOUNT are served over UDP on the NFS data port when the
 			// UDP transport is enabled; expose that port over UDP so BSD/macOS
 			// NFSv3 lock clients can reach rpc.lockd/rpc.statd (issue #1353).

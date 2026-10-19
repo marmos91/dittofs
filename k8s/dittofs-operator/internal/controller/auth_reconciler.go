@@ -31,6 +31,7 @@ import (
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -252,7 +253,7 @@ func (r *DittoServerReconciler) reconcileAuth(ctx context.Context, dittoServer *
 			}
 
 			// Set Authenticated condition to False
-			r.setAuthCondition(ctx, dittoServer, metav1.ConditionFalse, "APIUnreachable",
+			r.setCondition(ctx, dittoServer, conditions.ConditionAuthenticated, metav1.ConditionFalse, "APIUnreachable",
 				fmt.Sprintf("DittoFS API is unreachable: %v", authErr))
 
 			backoff := computeBackoff(retryCount)
@@ -260,7 +261,7 @@ func (r *DittoServerReconciler) reconcileAuth(ctx context.Context, dittoServer *
 		}
 
 		// Permanent failure
-		r.setAuthCondition(ctx, dittoServer, metav1.ConditionFalse, "AuthenticationFailed",
+		r.setCondition(ctx, dittoServer, conditions.ConditionAuthenticated, metav1.ConditionFalse, "AuthenticationFailed",
 			fmt.Sprintf("Authentication failed: %v", authErr))
 		return ctrl.Result{}, authErr
 	}
@@ -270,7 +271,7 @@ func (r *DittoServerReconciler) reconcileAuth(ctx context.Context, dittoServer *
 		logger.Error(err, "Failed to reset retry count annotation")
 	}
 
-	r.setAuthCondition(ctx, dittoServer, metav1.ConditionTrue, "AuthenticationSucceeded",
+	r.setCondition(ctx, dittoServer, conditions.ConditionAuthenticated, metav1.ConditionTrue, "AuthenticationSucceeded",
 		"Operator service account authenticated successfully")
 
 	return result, nil
@@ -565,8 +566,23 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 	return nil
 }
 
-// setAuthCondition sets the Authenticated condition on the DittoServer status.
-func (r *DittoServerReconciler) setAuthCondition(ctx context.Context, ds *dittoiov1alpha1.DittoServer, status metav1.ConditionStatus, reason, message string) {
+// setAuthorizedCondition sets the Authorized condition: False, naming the calls
+// the DittoFS API refused with 403, else True. It runs on every adapter poll, so
+// it writes only on a change.
+func (r *DittoServerReconciler) setAuthorizedCondition(ctx context.Context, ds *dittoiov1alpha1.DittoServer, refused error) {
+	status, reason, message := metav1.ConditionTrue, "Allowed", "The DittoFS API refused none of the operator's calls"
+	if refused != nil {
+		status, reason = metav1.ConditionFalse, "Forbidden"
+		message = "The DittoFS API refused the operator's account: " + strings.ReplaceAll(refused.Error(), "\n", "; ")
+	}
+	if c := meta.FindStatusCondition(ds.Status.Conditions, conditions.ConditionAuthorized); c != nil && c.Status == status && c.Message == message {
+		return
+	}
+	r.setCondition(ctx, ds, conditions.ConditionAuthorized, status, reason, message)
+}
+
+// setCondition sets one condition on the DittoServer status.
+func (r *DittoServerReconciler) setCondition(ctx context.Context, ds *dittoiov1alpha1.DittoServer, conditionType string, status metav1.ConditionStatus, reason, message string) {
 	logger := logf.FromContext(ctx)
 
 	// Re-fetch the latest version to avoid conflicts
@@ -577,10 +593,10 @@ func (r *DittoServerReconciler) setAuthCondition(ctx context.Context, ds *dittoi
 	}
 
 	conditions.SetCondition(&latest.Status.Conditions, latest.Generation,
-		conditions.ConditionAuthenticated, status, reason, message)
+		conditionType, status, reason, message)
 
 	if err := r.Status().Update(ctx, latest); err != nil {
-		logger.Error(err, "Failed to update Authenticated condition")
+		logger.Error(err, "Failed to update condition", "type", conditionType)
 	}
 }
 

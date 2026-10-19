@@ -413,10 +413,43 @@ func TestEnsurePortmapperEnabled_EnablesWhenDisabled(t *testing.T) {
 		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
 	}
 
-	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters)
+	if err := r.ensurePortmapperEnabled(context.Background(), apiClient, adapters); err != nil {
+		t.Fatalf("ensurePortmapperEnabled: %v", err)
+	}
 
 	if !patchCalled {
 		t.Error("Expected PATCH to enable portmapper, but it was not called")
+	}
+	if !adapters[0].Portmapper {
+		t.Error("Expected the NFS adapter marked with the portmapper on after the PATCH")
+	}
+}
+
+// Only a 403 is returned, to show on the DittoServer; other failures are retried
+// quietly on the next poll.
+func TestEnsurePortmapperEnabled_ReturnsOnlyARefusal(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		refused bool
+	}{
+		{http.StatusForbidden, true},
+		{http.StatusInternalServerError, false},
+	} {
+		r := setupAuthReconciler(t, newTestDittoServer("test-server", "default"))
+		server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+			"GET /api/v1/adapters/nfs/settings": func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			},
+		})
+		adapters := []AdapterInfo{{Type: "nfs", Enabled: true, Running: true, Port: 12049}}
+
+		err := r.ensurePortmapperEnabled(context.Background(), NewDittoFSClient(server.URL), adapters)
+		if (err != nil) != tc.refused {
+			t.Errorf("status %d: got error %v, want one: %v", tc.status, err, tc.refused)
+		}
+		if adapters[0].Portmapper {
+			t.Errorf("status %d: the adapter is marked with the portmapper on", tc.status)
+		}
 	}
 }
 
