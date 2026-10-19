@@ -706,7 +706,10 @@ stays dirty, and is offered by a later call. A version whose existence has not
 committed has no stamp, and nothing correct can be written as its `born`
 ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)): its commit will read a cut that may not exist yet. Writes take
 no lock the offer holds, so without the bound a write landing between the
-caller's commit and the offer would be offered. The caller passes the bound
+caller's commit and the offer would be offered. Where a version above it
+overwrote one at or below it, the older one is still offered, retained, in
+`Dirty` as the file's live content ([§3.11](#3.11%20Snapshot%20holds)), and the newer waits for a
+later call. The caller passes the bound
 rather than the journal deriving it from its stamps, because a stamp can be
 lost ([§3.11](#3.11%20Snapshot%20holds)).
 
@@ -1346,9 +1349,8 @@ be released, and the headroom whose exhaustion refused the stamp would never com
 back: the file would wedge under exactly the pressure offloading relieves.
 Re-stamping before the offer is no way out, since it is refused by that same
 pressure. The rebuild writes no key, so the commit stays within its key budget
-`K`, and reads O(log *n*) records per lost-stamp version, within
-[RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)'s read bound; lost stamps arise only below half the headroom
-or from a failed write, so the cost lands only under pressure.
+`K`; what it reads is bounded by [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed). Lost stamps arise only below half
+the headroom or from a failed write, so the cost lands only under pressure.
 
 - **An existence-committed version is superseded only once its successor's
   existence commits.** Until then it **MUST NOT** be released, dropped by repack or

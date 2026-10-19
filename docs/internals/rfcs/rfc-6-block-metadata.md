@@ -1238,7 +1238,9 @@ database page, a log rewritten in place — which is this section's livelock.
 
 An offload commit **MUST** write O(refs replaced + chunks committed + blocks
 committed) records, and **MUST** read no more than O(log *n*) records per ref it
-replaces, where *n* is the number of refs in the file. An existence commit
+replaces, where *n* is the number of refs in the file, plus O(log *h*) per
+unstamped version whose `born` it rebuilds ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)),
+where *h* is the number of versions in the file record's history. An existence commit
 **MUST** write O(holes changed + overwritten runs) records per file it covers:
 one overwrite record per run of a write that replaced committed content, plus
 at most two for the existing records it splits ([§3.3](#3.3%20Holes%2C%20not%20written%20extents)). No per-commit cost may
