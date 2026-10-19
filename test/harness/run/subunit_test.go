@@ -228,7 +228,7 @@ func TestSubunitCell(t *testing.T) {
   s: { format: subunit, cmd: "cat {test}", tests: list.txt }
 `, map[string]string{"list.txt": "a prefix=p\nb\n", "a": "test: x\nfailure: x [\nboom\n]\n", "b": "Unknown torture operation\n"})
 	rep, out := runTarget(t, root, r, "s", false)
-	if o := rep.Outcomes[0]; o.Result != Failed || o.Note != "1 failed: smb2.p.x; b: no results" {
+	if o := rep.Outcomes[0]; o.Result != report.Failed || o.Note != "1 failed: smb2.p.x; b: no results" {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }

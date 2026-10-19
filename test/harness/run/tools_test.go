@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // Suites of the test tools: pjd runs pjdfstest's tests, found below {tools},
@@ -112,7 +113,7 @@ func TestToolsFromNix(t *testing.T) {
 	calls := fakeTools(t, outs)
 	nixLog := fakeNix(t, outs)
 
-	if rep, _ := runTarget(t, root, r, "plain", false); rep.Outcomes[0].Result != Passed {
+	if rep, _ := runTarget(t, root, r, "plain", false); rep.Outcomes[0].Result != report.Passed {
 		t.Fatalf("plain: %+v", rep.Outcomes)
 	}
 	if _, err := os.Stat(nixLog); err == nil {
@@ -123,7 +124,7 @@ func TestToolsFromNix(t *testing.T) {
 	tools := filepath.Join(rep.Dir, "tools")
 	o := rep.Outcomes[0]
 	open := filepath.Join(tools, "pjdfstest", "tests", "open", "00.t")
-	if o.Result != Failed || o.Note != "open/00.t: `sh "+open+"` exited 1" {
+	if o.Result != report.Failed || o.Note != "open/00.t: `sh "+open+"` exited 1" {
 		t.Errorf("outcome %+v", o)
 	}
 	real, err := filepath.EvalSymlinks(root)
@@ -163,7 +164,7 @@ func TestToolsOnlyNamed(t *testing.T) {
 		t.Fatalf("outcomes %+v", rep.Outcomes)
 	}
 	for _, o := range rep.Outcomes {
-		if o.Result != Failed || !strings.HasPrefix(o.Note, "open/00.t: ") {
+		if o.Result != report.Failed || !strings.HasPrefix(o.Note, "open/00.t: ") {
 			t.Errorf("outcome %+v", o)
 		}
 	}
@@ -287,17 +288,17 @@ func TestToolsSelect(t *testing.T) {
 	}
 
 	rep, out := run("chmod/00.t")
-	if rep.Outcomes[0].Result != Passed || strings.Contains(out, "chmod/01.t") || len(lines(t, calls)) != 2 {
+	if rep.Outcomes[0].Result != report.Passed || strings.Contains(out, "chmod/01.t") || len(lines(t, calls)) != 2 {
 		t.Errorf("chmod/00.t: %+v\n%s", rep.Outcomes[0], out)
 	}
 	_ = os.Remove(calls)
 	rep, _ = run("00.t")
-	if o := rep.Outcomes[0]; o.Result != Failed || !strings.HasPrefix(o.Note, "open/00.t: ") || len(lines(t, calls)) != 4 {
+	if o := rep.Outcomes[0]; o.Result != report.Failed || !strings.HasPrefix(o.Note, "open/00.t: ") || len(lines(t, calls)) != 4 {
 		t.Errorf("00.t: %+v", o)
 	}
 	_ = os.Remove(calls)
 	rep, _ = run("chmod/00.t", "chmod/99.t")
-	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != `no test "chmod/99.t" in {tools}/pjdfstest/tests/*/*.t` || rep.Status() != 2 {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != `no test "chmod/99.t" in {tools}/pjdfstest/tests/*/*.t` || rep.Status() != 2 {
 		t.Errorf("chmod/99.t: %+v", o)
 	}
 	if _, err := os.Stat(calls); err == nil {
@@ -316,7 +317,7 @@ func TestToolsMissing(t *testing.T) {
 	}
 	fakeNix(t, outs)
 	rep, _ := runTarget(t, root, r, "pjd", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.HasPrefix(o.Note, "the test tools: ") || !strings.Contains(o.Note, filepath.Join("pynfs", "bin")) || rep.Status() != 2 {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.HasPrefix(o.Note, "the test tools: ") || !strings.Contains(o.Note, filepath.Join("pynfs", "bin")) || rep.Status() != 2 {
 		t.Errorf("no pynfs programs: %+v", o)
 	}
 
@@ -326,13 +327,13 @@ func TestToolsMissing(t *testing.T) {
 	}
 	t.Setenv("PATH", nix)
 	rep, _ = runTarget(t, root, r, "pjd", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != "the test tools: `nix build .#pjdfstest --no-link --print-out-paths` exited 1" {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "the test tools: `nix build .#pjdfstest --no-link --print-out-paths` exited 1" {
 		t.Errorf("nix failed: %+v", o)
 	}
 
 	t.Setenv("PATH", t.TempDir())
 	rep, _ = runTarget(t, root, r, "pjd", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "nix isn't installed") {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.Contains(o.Note, "nix isn't installed") {
 		t.Errorf("no nix: %+v", o)
 	}
 }

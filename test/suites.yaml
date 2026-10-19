@@ -158,7 +158,17 @@ suites:
   wpts:
     format: trx
     image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
-    env: { Usage: RunTestCases, Filter: TestCategory=BVT }
+    # Its entrypoint only lists the tests unless DryRun is false, and writes these over the
+    # config's own values, so they repeat the fixture's.
+    env:
+      Usage: RunTestCases
+      Filter: TestCategory=BVT
+      DryRun: "false"
+      SutComputerName: "{server}"
+      SutIPAddress: "{server}"
+      DomainName: "{server}"
+      AdminUserName: "{user}"
+      PasswordForAllUsers: "{password}"
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture:

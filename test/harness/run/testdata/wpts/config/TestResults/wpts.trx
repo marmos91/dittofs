@@ -1,0 +1,89 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="72119e48-6f65-43fa-9b6f-0d5c190a826e" name="@8bbf53bbde28 2026-09-29 07:25:02" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-09-29T07:25:02.1070832+00:00" queuing="2026-09-29T07:25:02.1070833+00:00" start="2026-09-29T07:24:58.7385293+00:00" finish="2026-09-29T07:28:07.4885191+00:00" />
+  <TestSettings name="default" id="605bcd8c-eda4-4efa-ae15-e7eb4ab76c61">
+    <Deployment runDeploymentRoot="_8bbf53bbde28_2026-09-29_07_25_02" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="5d73a5de-20af-4c61-bab5-51dd3c233204" testId="9dcdef16-d592-f6b3-7de3-d83bbe3b5732" testName="FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_LastWriteTime" computerName="8bbf53bbde28" duration="00:00:03.1675302" startTime="2026-09-29T07:25:53.5710591+00:00" endTime="2026-09-29T07:25:56.7390523+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5d73a5de-20af-4c61-bab5-51dd3c233204" />
+    <UnitTestResult executionId="6c007ed2-5f9d-4678-b6fa-7dd1c516e6c1" testId="4a985340-a915-cfcd-fe8e-573e07ca91cd" testName="BVT_TunnelSCSIPersistentReserve_ReserveAndRelease" computerName="8bbf53bbde28" duration="00:00:00.0662605" startTime="2026-09-29T07:27:40.9796807+00:00" endTime="2026-09-29T07:27:41.0464523+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6c007ed2-5f9d-4678-b6fa-7dd1c516e6c1">
+      <Output>
+        <ErrorInfo>
+          <Message>Test method Microsoft.Protocols.TestSuites.FileSharing.RSVD.TestSuite.SCSIPersistentReservation.BVT_TunnelSCSIPersistentReserve_ReserveAndRelease threw exception: &#xD;
+System.TimeoutException: Failed to connect server 192.0.2.10:445 within 20000 milliseconds.</Message>
+          <StackTrace>   at Microsoft.Protocols.TestTools.StackSdk.Transport.TcpClientTransport.Connect() in D:\a\_work\1\s\ProtoSDK\TransportStack\Socket\TcpClientTransport.cs:line 194
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="103f867c-c254-4f2f-8aca-a47192d3f0fc" testId="6be9507a-f70b-232d-3620-f9fcdf33caea" testName="BVT_CopyOffload" computerName="8bbf53bbde28" duration="00:00:00.0620901" startTime="2026-09-29T07:27:54.7165007+00:00" endTime="2026-09-29T07:27:54.7807117+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="NotExecuted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="103f867c-c254-4f2f-8aca-a47192d3f0fc">
+      <Output>
+        <ErrorInfo>
+          <Message>Initialization method Microsoft.Protocols.TestSuites.FileSharing.SMB2.TestSuite.CopyOffload.BaseTestInitialize threw exception. Assert.Inconclusive is inconclusive. Test case is applicable in servers that implement IOCTL FSCTL_OFFLOAD_READ.&#xD;
+===== Stack Trace =====&#xD;
+   at Microsoft.Protocols.TestSuites.FileSharing.Common.Adapter.TestConfigBase.CheckIOCTL(CtlCode_Values[] values) in D:\a\_work\1\s\TestSuites\FileServer\src\Common\Adapter\TestConfigBase.cs:line 665
+=== End of Stack Trace ===&#xD;
+.</Message>
+          <StackTrace>   at Microsoft.Protocols.TestTools.AsynchronousErrorProcessor.Process()
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="5e905991-338f-4912-a560-cc70ee2d021d" testId="527dc68f-ee06-550a-f8ed-49be66022fb9" testName="BVT_Replay_ReplayCreate" computerName="8bbf53bbde28" duration="00:00:00.1341729" startTime="2026-09-29T07:27:57.9945442+00:00" endTime="2026-09-29T07:27:58.1294125+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="NotExecuted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5e905991-338f-4912-a560-cc70ee2d021d">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.Inconclusive is inconclusive. Test case is applicable in servers that support GLOBAL_CAP_MULTI_CHANNEL.&#xD;
+===== Stack Trace =====&#xD;
+   at Microsoft.Protocols.TestSuites.FileSharing.Common.Adapter.TestConfigBase.CheckCapabilities(NEGOTIATE_Response_Capabilities_Values capabilities) in D:\a\_work\1\s\TestSuites\FileServer\src\Common\Adapter\TestConfigBase.cs:line 698
+=== End of Stack Trace ===&#xD;
+</Message>
+          <StackTrace>   at Microsoft.Protocols.TestTools.AsynchronousErrorProcessor.Process()
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="3e743154-dbca-480f-a25f-d162c84115bd" testId="e9f6e5a8-4559-8af0-01bf-1adbc8a12778" testName="BVT_Sqos_UpdateCounters" computerName="8bbf53bbde28" duration="00:00:00.0676998" startTime="2026-09-29T07:28:02.7712951+00:00" endTime="2026-09-29T07:28:02.8719980+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Error" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="3e743154-dbca-480f-a25f-d162c84115bd">
+      <Output>
+        <ErrorInfo>
+          <Message>Test method Microsoft.Protocols.TestSuites.FileSharing.SQOS.TestSuite.SqosBasic.BVT_Sqos_UpdateCounters threw exception: &#xD;
+System.Exception: Cannot resolve IP address of (ScaleoutFS.contoso.com) from DNS.</Message>
+          <StackTrace>   at Microsoft.Protocols.TestTools.StackSdk.IpUtility.ParseIPAddress(String hostNameOrIpAddress) in D:\a\_work\1\s\ProtoSDK\Common\IpUtility.cs:line 39
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="aca3cd57-5d9f-47b0-89c9-09ed77e35481" testId="1e083d9b-c1b1-387f-7361-59e9d1dc16b3" testName="BVT_Sqos_ProbePolicy" computerName="8bbf53bbde28" duration="00:00:00.0700086" startTime="2026-09-29T07:28:02.6954398+00:00" endTime="2026-09-29T07:28:02.7691126+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Timeout" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="aca3cd57-5d9f-47b0-89c9-09ed77e35481">
+      <Output>
+        <ErrorInfo>
+          <Message>Test method Microsoft.Protocols.TestSuites.FileSharing.SQOS.TestSuite.SqosBasic.BVT_Sqos_ProbePolicy threw exception: &#xD;
+System.Exception: Cannot resolve IP address of (ScaleoutFS.contoso.com) from DNS.</Message>
+          <StackTrace>   at Microsoft.Protocols.TestTools.StackSdk.IpUtility.ParseIPAddress(String hostNameOrIpAddress) in D:\a\_work\1\s\ProtoSDK\Common\IpUtility.cs:line 39
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="ad0c05db-2d69-4ec5-b0b0-d1d17c07c14e" testId="d201544c-785a-5a02-cdb7-f0bb6033fd63" testName="BVT_OpenSharedVHDSetByTargetSpecifier" computerName="8bbf53bbde28" duration="00:00:00.0654726" startTime="2026-09-29T07:27:40.0544236+00:00" endTime="2026-09-29T07:27:40.1207312+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Aborted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="ad0c05db-2d69-4ec5-b0b0-d1d17c07c14e">
+      <Output>
+        <ErrorInfo>
+          <Message>Test method Microsoft.Protocols.TestSuites.FileSharing.RSVD.TestSuite.CreateAndDeleteCheckpoint.BVT_OpenSharedVHDSetByTargetSpecifier threw exception: &#xD;
+System.TimeoutException: Failed to connect server 192.0.2.10:445 within 20000 milliseconds.</Message>
+          <StackTrace>   at Microsoft.Protocols.TestTools.StackSdk.Transport.TcpClientTransport.Connect() in D:\a\_work\1\s\ProtoSDK\TransportStack\Socket\TcpClientTransport.cs:line 194
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="66fe8007-d151-4dc4-9a47-ec9e01363f34" testId="cc12cdcf-d4b2-6104-5e77-7f3bd64d76df" testName="BVT_TunnelValidateDiskToSharedVHD" computerName="8bbf53bbde28" duration="00:00:00.0698702" startTime="2026-09-29T07:27:41.4482425+00:00" endTime="2026-09-29T07:27:41.5519602+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Inconclusive" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="66fe8007-d151-4dc4-9a47-ec9e01363f34">
+      <Output>
+        <ErrorInfo>
+          <Message>Test method Microsoft.Protocols.TestSuites.FileSharing.RSVD.TestSuite.TunnelOperationToSharedVHD.BVT_TunnelValidateDiskToSharedVHD threw exception: &#xD;
+System.TimeoutException: Failed to connect server 192.0.2.10:445 within 20000 milliseconds.</Message>
+          <StackTrace>   at Microsoft.Protocols.TestTools.StackSdk.Transport.TcpClientTransport.Connect() in D:\a\_work\1\s\ProtoSDK\TransportStack\Socket\TcpClientTransport.cs:line 194
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <ResultSummary outcome="Failed">
+    <Counters total="8" executed="6" passed="1" failed="4" error="0" timeout="0" aborted="0" inconclusive="1" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+  </ResultSummary>
+</TestRun>

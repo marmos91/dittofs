@@ -1,0 +1,9 @@
+<?xml version="1.0" ?>
+<testsuite tests="2" errors="0" timestamp="2026-10-19 22:21:57.805149" name="all" failures="0" skipped="2" time="0">
+  <testcase code="LOCK20" name="testLockMerge" classname="st_lock" time="0">
+    <skipped/>
+  </testcase>
+  <testcase code="LOCKMRG" name="testMergeRanges" classname="st_lock" time="0">
+    <skipped/>
+  </testcase>
+</testsuite>
