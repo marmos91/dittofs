@@ -4,40 +4,6 @@
   category: feature
   reason: write-session freeze deliberately holds ctime, so change cannot advance
   where: {minor: ["0"]}
-- test: RPLY8
-  status: fail
-  fix: wontfix
-  category: proto
-  reason: 'knfsd fails this too: replay of a waiting LOCKU'
-  where: {minor: ["0"]}
-- test: CSESS16a
-  status: fail
-  fix: planned
-  category: bug
-  reason: EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation
-  issue: '#2340'
-  where: {minor: ["1"]}
-- test: CSESS26
-  status: fail
-  fix: planned
-  category: bug
-  reason: EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation
-  issue: '#2340'
-  where: {minor: ["1"]}
-- test: CSESS27
-  status: fail
-  fix: planned
-  category: bug
-  reason: EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation
-  issue: '#2340'
-  where: {minor: ["1"]}
-- test: RECC3
-  status: fail
-  fix: planned
-  category: bug
-  reason: non-reclaim op before RECLAIM_COMPLETE must draw NFS4ERR_GRACE
-  issue: '#2340'
-  where: {minor: ["1"]}
 - test: DELEG24
   status: fail
   fix: wontfix

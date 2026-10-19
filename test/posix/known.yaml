@@ -58,12 +58,6 @@
   category: feature
   reason: Extended attributes not supported
   where: {nfs: ["3"]}
-- test: chflags/*
-  status: fail
-  fix: wontfix
-  category: feature
-  reason: BSD-specific file flags, not in POSIX
-  where: {nfs: ["3", "4", "4.1"]}
 - test: lchflags/*
   status: fail
   fix: wontfix
@@ -94,31 +88,13 @@
   category: feature
   reason: No ALLOCATE procedure in NFSv3
   where: {nfs: ["3"]}
-- test: posix_fallocate/*
-  status: fail
-  fix: wontfix
-  category: feature
-  reason: No ALLOCATE procedure in NFSv3
-  where: {nfs: ["3"]}
 - test: utimensat/09.t
   status: fail
   fix: wontfix
   category: proto
   reason: 'NFSv3 nfstime3 uses uint32 seconds: cannot represent values >= 2^32 (year 2106)'
   where: {nfs: ["3"]}
-- test: open/03.t
-  status: fail
-  fix: wontfix
-  category: env
-  reason: 'PATH_MAX test fails: mount-point prefix pushes the absolute path over PATH_MAX in the Linux VFS before NFS sees it: client-side, affects any non-root mount'
-  where: {nfs: ["3", "4", "4.1"]}
 - test: fallocate/*
-  status: fail
-  fix: wontfix
-  category: feature
-  reason: No ALLOCATE operation in NFSv4.0 (requires NFSv4.2)
-  where: {nfs: ["4", "4.1"]}
-- test: posix_fallocate/*
   status: fail
   fix: wontfix
   category: feature

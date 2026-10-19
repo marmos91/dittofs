@@ -63,7 +63,7 @@
   category: permanent
   reason: 'Kernel oplock vs lease downgrade semantics: DittoFS has no kernel oplock layer'
 - test: smb2.kernel-oplocks.kernel_oplocks8
-  status: fail
+  status: skip
   fix: wontfix
   category: permanent
   reason: 'smbtorture-side localdir check is host-FS-specific: not applicable to a virtual FS'
@@ -78,7 +78,7 @@
   category: permanent
   reason: 'NTFS 8.3 short-name mask search: DOS/Win9x legacy, not in SMB2/3 protocol surface'
 - test: smb2.twrp.openroot
-  status: fail
+  status: skip
   fix: wontfix
   category: permanent
   reason: 'Requires Volume Shadow Copy backend (`SMB2_CREATE_TIMEWARP_TOKEN`): Windows OS feature, not protocol'

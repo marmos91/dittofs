@@ -55,4 +55,3 @@ another fails is a diagnosis worth keeping, not a flake worth re-running.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | WRT18 | feature | write-session freeze deliberately holds ctime, so change cannot advance | - |
-| RPLY8 | suite | knfsd fails this too — replay of a waiting LOCKU | - |

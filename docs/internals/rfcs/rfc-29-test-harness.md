@@ -1283,7 +1283,7 @@ converts the old lists once.
   `option` and `os`, because some skips depend on those: Go tests skip under `-short`, which only
   PRs pass, and some skip on Windows.
 - **A planned entry names its issue, as `issue: "#1234"`; a won't-fix entry needn't.** Today most
-  rows have no issue: 19 of 19 and 13 of 13 in the POSIX lists, 4 of pynfs's 8, and the WPTS list
+  rows have no issue: 16 of 16 and 10 of 10 in the POSIX lists, 3 of pynfs's 3, and the WPTS list
   has no issue column.
 - **Importing the old lists.** `dt known import FILE.md KNOWN.yaml --where AXIS=V,...` converts one
   Markdown list into a suite's known file, adding to the entries it holds, with `where` set from the
