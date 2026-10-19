@@ -24,23 +24,23 @@
   <text x="56" y="94" class="l">wire: RPC record marking, XDR codecs</text>
   <text x="56" y="114" class="l">sessions: v4.1 slot tables, reply cache</text>
   <text x="56" y="134" class="l">security: AUTH_SYS, RPCSEC_GSS contexts</text>
-  <text x="56" y="154" class="l">IDs: stateid ↔ OpenRef, READDIR cookies</text>
+  <text x="56" y="154" class="l">IDs: stateids, cookies decoded, no table</text>
   <text x="56" y="174" class="l">compound: current / saved filehandle</text>
   <text x="56" y="200" class="s">in memory only · gone on restart · client rebuilds it</text>
 
   <rect x="480" y="48" width="380" height="170" rx="6" class="ad"/>
   <text x="496" y="72" class="h">SMB adapter</text>
   <text x="496" y="94" class="l">wire: NetBIOS framing, SMB2 codecs</text>
-  <text x="496" y="114" class="l">sessions: credits, message IDs, channel seq</text>
+  <text x="496" y="114" class="l">sessions: credits, message-ID window</text>
   <text x="496" y="134" class="l">security: NTLM / Kerberos, signing, encryption</text>
-  <text x="496" y="154" class="l">IDs: FileId ↔ OpenRef, tree ID ↔ root handle</text>
+  <text x="496" y="154" class="l">IDs: tree ID, FileId volatile half</text>
   <text x="496" y="174" class="l">held requests: STATUS_PENDING re-drive</text>
   <text x="496" y="200" class="s">in memory only · gone on restart · client rebuilds it</text>
 
   <path d="M230,220 L410,276" class="ln"/>
   <path d="M670,220 L490,276" class="ln"/>
-  <text x="240" y="256" class="s">one call per operation</text>
-  <text x="560" y="256" class="s">one call per operation</text>
+  <text x="240" y="256" class="s">≤ 1 mutating call</text>
+  <text x="560" y="256" class="s">≤ 1 mutating call</text>
 
   <rect x="230" y="280" width="440" height="58" rx="6" class="sv"/>
   <text x="246" y="304" class="h">vfs.Service (RFC 17)</text>

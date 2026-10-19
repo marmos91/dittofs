@@ -359,7 +359,7 @@ type Data interface {
 	Open(ctx context.Context, id Identity, req OpenRequest) (OpenResult, error) // disposition, access, deny, grant wanted, durability; req names the ClientID, and the parent directory handle and name the open resolves through, passed to Authorize as via (§4.6)
 	Close(ctx context.Context, c metadata.ClientID, o metadata.OpenID) error
 	Read(ctx context.Context, o OpenRef, off int64, dst []byte) (n int, eof bool, err error) // n verified bytes may come with err (§5.2)
-	Write(ctx context.Context, o OpenRef, off int64, src []byte, stable Stability) (n int, v WriteVerifier, err error) // ctx carries the call's HoldPolicy (§5.9)
+	Write(ctx context.Context, o OpenRef, off int64, src []byte, stable Stability) (n int, v WriteVerifier, wcc WCC, err error) // ctx carries the call's HoldPolicy (§5.9); wcc as §5.7
 	Commit(ctx context.Context, o OpenRef, off, length int64) (WriteVerifier, error) // NFS COMMIT, SMB FLUSH (§5.8); through an SMB open, ErrLost once after a loss (RFC 14 §8.1)
 	Deallocate(ctx context.Context, o OpenRef, off, length int64) error // punch a hole; ordered as a write (§5.5)
 	Seek(ctx context.Context, o OpenRef, off int64, what SeekWhat) (int64, error) // SEEK_DATA, SEEK_HOLE
@@ -369,10 +369,10 @@ type Data interface {
 
 // Locking: byte-range locks, caching grants, watches (RFC 14).
 type Locking interface {
-	Lock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive, wait, reclaim bool) error // wait: a conflict leaves a waiter (RFC 14), answered ErrLocked (NFSv4 polls) or ErrBlocked (NLM, SMB)
+	Lock(ctx context.Context, o OpenRef, rs []metadata.ByteRange, exclusive, wait, reclaim bool) error // all or nothing: a range not granted releases those this call took; wait only when len(rs) == 1; wait: a conflict leaves a waiter (RFC 14), answered ErrLocked (NFSv4 polls) or ErrBlocked (NLM, SMB)
 	CancelLock(ctx context.Context, o OpenRef, r metadata.ByteRange) (granted bool, err error)     // drops a waiting lock, or reports it granted first; called before any answer to an ErrBlocked request but the grant (RFC 14 §2.10)
 	TestLock(ctx context.Context, o OpenRef, r metadata.ByteRange, exclusive bool) (*metadata.Lock, error)
-	Unlock(ctx context.Context, o OpenRef, r metadata.ByteRange) error
+	Unlock(ctx context.Context, o OpenRef, rs []metadata.ByteRange) error // in order; stops at the first range not held, ErrRangeNotLocked, leaving those before it unlocked
 	ReturnGrant(ctx context.Context, c metadata.ClientID, g metadata.GrantID) error
 	AckBreak(ctx context.Context, c metadata.ClientID, g metadata.GrantID, to GrantKind) error
 	Watch(ctx context.Context, c metadata.ClientID, id Identity, dir Handle, recursive bool, filter metadata.ChangeMask) (metadata.WatchID, error)
@@ -670,7 +670,7 @@ RFC 20's. This RFC fixes only the line between the two.
 ### 4.3 Errors are neutral values
 
 The service returns `ErrNotFound`, `ErrExist`, `ErrAccess`, `ErrPerm`, `ErrStale`,
-`ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`,
+`ErrNotEmpty`, `ErrNotDir`, `ErrIsDir`, `ErrNoSpace`, `ErrQuota`, `ErrLocked`, `ErrRangeNotLocked`,
 `ErrShareViolation`, `ErrGrace`, `ErrDelay`, `ErrBlocked`, `ErrNotYours`, `ErrRevoked`, `ErrBadLayout`, `ErrWrongSecurity`, `ErrInvalid`, `ErrCrossNamespace`, `ErrCrossShard`, `ErrCrossProject`, `ErrInconsistent`, `ErrClientInUse`, `ErrClientBusy`, `ErrSeqMisordered`, `ErrStaleClient`, `ErrStaleState`, `ErrBadState`, RFC 14's `ErrNoReclaim`, `ErrReclaimRevoked`, `ErrDeletePending`, `ErrNoCopy` and `ErrBadSeqID`, `ErrIncomplete`, and the content errors of
 [RFC 8](rfc-8-engine.md) (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`). Each adapter maps them
 once. `ErrDelay` means "retry shortly", and every one the service returns is a
@@ -719,6 +719,7 @@ const (
 	DelayQuotaSlack                   // the reservation slack is spent (§5.6)
 	DelayConflict                     // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2)
 	DelayHoldBudget                   // the call's hold budget is spent, and the node's hold pool too where it may draw on it (§5.9)
+	DelayResources                    // a node memory pool is spent: the share cap, open state, or a reply reservation's deadline (RFC 24)
 )
 ```
 
@@ -738,7 +739,7 @@ as long as the outage lasts — and an SMB request held pending for it is answer
 `STATUS_DISK_FULL` only once it has been held for `smb_pending_cap`
 ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings); longer than `migration.freeze_timeout` plus the break deadline, §3.2).
 `ErrNoSpace` is answered at once, and only for a permanent cause: the second
-row of [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table, which is the one list of them. `ErrBlocked` means a lock
+row of [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table, which is the one list of them. `ErrRangeNotLocked` means an `Unlock` named a range the open does not hold. `ErrBlocked` means a lock
 request waits and will be granted through `LockWaitOver` (§3.2); NLM maps it to
 `NLM_BLOCKED`, SMB to a pending response. `ErrNoSpace` means no space will come
 without operator action; `ErrQuota` means a logical quota
@@ -1307,6 +1308,21 @@ hold of the file's accept lock — not under the commit serialisation, which ord
 commits but lets another write be accepted between the capture and the operation —
 and never for a directory; where the lock cannot be taken they are omitted
 ([RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps), [§9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)).
+`Write` returns them, with the post-operation attributes read in the same hold
+once the write is staged, as a `WCC`:
+
+```go
+// WCC is a mutation's attributes either side of it, both from one hold of the
+// file's accept lock. Before is nil where they could not be captured so.
+type WCC struct {
+	Before *metadata.File
+	After  metadata.File
+}
+```
+
+An adapter answers a `WRITE`'s attributes from it and never from a `GetAttr`
+after the call, which could include another client's write landed between the
+two.
 
 ### 5.8 The write verifier
 

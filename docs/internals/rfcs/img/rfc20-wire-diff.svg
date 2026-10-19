@@ -45,10 +45,4 @@
   <rect x="740" y="320" width="130" height="56" rx="6" class="bad"/><text x="752" y="342" class="m">differs, unlisted</text><text x="752" y="360" class="s">red + both captures</text>
   <path d="M805,232 L805,108" class="ln"/><path d="M790,232 L790,180" class="ln"/><path d="M805,292 L805,316" class="ln"/>
 
-  <text x="24" y="330" class="h">normalised (tokens)</text>
-  <text x="24" y="348" class="s">times, nonces, verifiers, GUIDs, session / tree / client IDs,</text>
-  <text x="24" y="362" class="s">handles, FileIds, stateid other, cookies, fsids, signatures, names</text>
-  <text x="400" y="330" class="h">compared</text>
-  <text x="400" y="348" class="s">statuses, flags, optional fields present, attributes,</text>
-  <text x="400" y="362" class="s">sizes, counts, offsets, stateid seqids, credits, entry order</text>
 </svg>
