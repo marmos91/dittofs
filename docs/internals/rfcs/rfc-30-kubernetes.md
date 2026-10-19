@@ -230,6 +230,11 @@ pod ([RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%2
 gate traffic: a protocol pod is ready once its adapters accept clients, a
 storage pod once it has rejoined the store and holds no shard it cannot serve.
 
+Liveness and readiness probes **MUST** be HTTP, on `/health/live` and
+`/health/ready`, never TCP on 2049 or 445: a TCP probe on a protocol port opens
+a connection the adapter charges and logs
+([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)).
+
 ## 5. Lifecycle
 
 ### 5.1 Rolling upgrade
@@ -303,7 +308,8 @@ pods become ready only once storage pods serve.
 ### 6.1 Protocol pool
 
 The protocol pool **SHOULD** be scaled by a HorizontalPodAutoscaler on active
-client connections per pod, a custom metric each pod exports, with CPU as a
+client connections per pod — the custom metric `adapter_connections` each pod
+exports ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)) — with CPU as a
 second target. Scale-down **MUST** be slow — a stabilization window of at least
 10 minutes — because each removal drains clients (§5.2).
 

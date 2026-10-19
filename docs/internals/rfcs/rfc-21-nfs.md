@@ -304,7 +304,10 @@ version.
 ### 2.2 TCP only
 
 - Every NFS program — NFS, MOUNT, NLM, NSM — **MUST** be served over TCP and
-  **MUST NOT** be served over UDP.
+  **MUST NOT** be served over UDP, with one exception: NLM and NSM are served
+  over UDP too while [RFC 20 §11](rfc-20-adapters.md#11.%20Open%20questions)'s
+  UDP question stands, for parity with today, since some clients send lock
+  requests only over UDP.
 - The port mapper (the service a client asks which port each program listens
   on), where the server runs one, answers on UDP and TCP, because clients probe
   it there before choosing a transport. It reaches no file.
@@ -320,6 +323,17 @@ version.
 > offers only TCP. Revisit only for a client population that cannot speak TCP,
 > which no supported client is. RDMA (remote direct memory access) transports
 > are not offered either; see §14.
+
+**NFS over TLS** (RFC 9289) is served. A client sends a `NULL` call with the
+`AUTH_TLS` flavour; the server answers and upgrades the same TCP connection to
+TLS before any other request. With `mode: opportunistic` a client that does not
+probe is served in plaintext; with `mode: require` any call before the upgrade
+but the probe is refused and the connection closed. The settings are
+`adapters.nfs.tls`
+([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)); where
+the upgrade sits in the adapter, and why a client certificate authenticates the
+host and not the caller, is
+[RFC 20 §5.5](rfc-20-adapters.md#5.5%20Message%20transforms)'s.
 
 ### 2.3 Transfer sizes
 
@@ -1370,8 +1384,8 @@ monitored (`SM_MON`) is recorded with the client, as its `Notify`
   address's name, not a node's — with the new state number, so the client's
   statd reclaims locks.
 - `SM_NOTIFY` is sent by UDP, as statd peers listen for it. Apart from the port
-  mapper's answers (§2.2), it is the only UDP the server sends, and it carries
-  no file operation.
+  mapper's answers and the NLM and NSM replies served over UDP for parity
+  (§2.2), it is the only UDP the server sends, and it carries no file operation.
 - A `protocol` node loss alone is not a restart for NLM: no lock was lost, so no
   `SM_NOTIFY` is sent ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)).
 
@@ -1933,7 +1947,7 @@ Authentication and principal mapping are
 
 | # | Invariant |
 | --- | --- |
-| N1 | No NFS program is served over UDP. |
+| N1 | No NFS program is served over UDP, except NLM and NSM while RFC 20 §11's UDP question stands (§2.2). |
 | N2 | Every `protocol` node returns the same `server_scope` and `so_major_id`, and its own `so_minor_id`. |
 | N3 | Sessions, reply caches and GSS contexts live on one `protocol` node and are never stored; a session is never bound to connections on two nodes. |
 | N4 | A stateid's `other` names an RFC 14 record, resolvable on any node; its `seqid` is held with the state at the primary. |
@@ -1982,7 +1996,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
-| §2.2 TCP only | Probe NFS, MOUNT and NLM by UDP. Assert no reply; mount with `proto=udp` falls back or fails. | a UDP listener left enabled |
+| §2.2 TCP only | Probe NFS and MOUNT by UDP. Assert no reply; mount with `proto=udp` falls back or fails. While NLM and NSM are served over UDP (§2.2), assert they answer there. | a UDP listener left enabled |
 | §3.2 reply cache | pynfs `nfs4.1` session and `SEQUENCE` replay tests; then kill the `protocol` node with a `REMOVE` in flight and assert the client sees `NFS4ERR_NOENT` on retry and recovers its session with no grace. | a session assumed durable, or a grace started on `protocol` node loss |
 | §3.3 trunking | `EXCHANGE_ID` on two nodes: same `so_major_id` and scope, different `so_minor_id`; `BIND_CONN_TO_SESSION` across nodes is `NFS4ERR_BADSESSION`. | one scope per node, or a session bound across nodes |
 | §3.4 callback routing | Hold a delegation, kill the client's `protocol` node, reconnect through another, conflict from a second client. Assert `CB_RECALL` arrives on the new connection. | callbacks registered once at first `Connect` |
@@ -2103,6 +2117,13 @@ or client label.
    question 4.
 4. **Session trunking across nodes** (§3.3) would need slots held at a shared
    place; nothing asks for it yet.
+5. **A duplicate-request cache for NFSv3 and NFSv4.0.** The adapter keeps one
+   in memory today, and [RFC 20 §11](rfc-20-adapters.md#11.%20Open%20questions)
+   keeps it for parity (its question 2). The service's dedup covers only a
+   forwarded call ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)).
+   This RFC decides whether the service's dedup should cover a single node too,
+   so a retransmitted `REMOVE` or `CREATE` is answered its first result without
+   an adapter cache.
 
 ## Appendix A — prior art
 
