@@ -2,7 +2,8 @@
 // writes them as the run's summary.json, in the Common Test Report Format
 // (CTRF) at one pinned version, with each cell's as a JUnit file and the run's
 // report.md, both generated from the same results. It reads summary.json back,
-// and shows a run as dt report does.
+// shows a run as dt report does, and writes a cell's results as smbtorture's
+// baseline file.
 package report
 
 import (
