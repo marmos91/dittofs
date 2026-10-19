@@ -678,6 +678,54 @@ func (r *Runtime) RemoveShare(name string) error {
 	return rmErr
 }
 
+// PurgeShare deletes what a removed share leaves on this server: its records
+// in its metadata store and its journal directory, which holds its local
+// blocks.
+//
+// It resolves the share's metadata store from the share's row, so it runs
+// after RemoveShare, once the share's block store is closed and nothing writes
+// to what it deletes, and before the row goes. A share created again under the
+// name then starts empty instead of attaching the old root. Each step tolerates
+// what an earlier purge already deleted, so it can be repeated.
+//
+// decision: blocks the share synced to a remote store stay there, since other
+// shares on that store may reference the same chunks, and are left to garbage
+// collection. That sweeps a remote only through the shares still registered on
+// it, so a share that was alone on its remote, or on its metadata store, leaves
+// its blocks there. Delete them here once a removed share's blocks can be told
+// apart from every other share's.
+func (r *Runtime) PurgeShare(ctx context.Context, name string) error {
+	share, err := r.store.GetShare(ctx, name)
+	if err != nil {
+		return err
+	}
+	cfg, err := buildShareConfig(ctx, r.store, share)
+	if err != nil {
+		return err
+	}
+	// decision: a row naming no configured metadata store has no records this
+	// server can reach, so there are none to delete. A configured store that is
+	// not loaded is different: it holds the share's records and may load
+	// again, so that purge fails.
+	if cfg != nil {
+		metaStore, err := r.storesSvc.GetMetadataStore(cfg.MetadataStore)
+		if err != nil {
+			return err
+		}
+		if err := metaStore.DeleteShare(ctx, name); err != nil && !metadata.IsNotFoundError(err) {
+			return fmt.Errorf("delete the metadata of share %q: %w", name, err)
+		}
+	}
+
+	r.mu.RLock()
+	defaults := r.localStoreDefaults
+	r.mu.RUnlock()
+	if err := shares.RemoveShareJournal(name, defaults); err != nil {
+		return fmt.Errorf("remove the journal of share %q: %w", name, err)
+	}
+	return nil
+}
+
 func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
 	return r.sharesSvc.UpdateShare(name, readOnly, defaultPermission, retentionPolicy, retentionTTL)
 }

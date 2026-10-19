@@ -1025,6 +1025,25 @@ func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		// authoritative — but whether it was there decides who raises the
 		// invalidation below.
 		removedFromRuntime = h.runtime.RemoveShare(name) == nil
+
+		// decision: a purge that fails fails the removal and keeps the row. The
+		// share stays out of the runtime until a restart loads it from the row
+		// again, but its name stays taken, so no share can be created over what
+		// is left of it, and repeating the removal repeats the purge. Freeing
+		// the name instead would let a share created under it attach the old
+		// root and serve its files. The cost is that a share on a metadata store
+		// that is not loaded cannot be removed until the store loads. Revisit
+		// once the server records a removal and finishes it on its own.
+		if err := h.runtime.PurgeShare(r.Context(), name); err != nil {
+			if errors.Is(err, models.ErrShareNotFound) {
+				NotFound(w, "Share not found")
+				return
+			}
+			logger.Error("Failed to delete share data; the share is kept so its removal can be repeated",
+				"share", name, "error", err)
+			InternalServerError(w, "Failed to delete share data; repeat the removal")
+			return
+		}
 	}
 
 	if err := h.store.DeleteShare(r.Context(), name); err != nil {
