@@ -275,8 +275,8 @@ only, with one fixed 1 MiB transfer size.
 
 NFS is a family of RPC (remote procedure call) programs, each versioned on its
 own: NFS; MOUNT, which hands an NFSv3 client a share's root handle; NLM and NSM,
-NFSv3's lock and crash-notification side protocols (§6). NFSv4 needs no side
-program; it sends operations in batches (`COMPOUND`s), each naming its minor
+NFSv3's lock and crash-notification side protocols (§6). NFSv4 needs no
+auxiliary service ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)); it sends operations in batches (`COMPOUND`s), each naming its minor
 version.
 
 ![The NFS program family as served: on the NFSv3 side NFS v3, MOUNT v3 for a share's root handle, NLM v4 for byte-range locks and NSM v1 for crash notification are served; on the NFSv4 side v4.0 and v4.1 are served, v4.2 as the subset of section 9.3, and a minor version of 3 or above is answered NFS4ERR_MINOR_VERS_MISMATCH with nothing run. NFS v2 gets PROG_MISMATCH naming 3 to 4, and no program is served over UDP. All over TCP with one fixed 1 MiB transfer size; the port mapper answers on UDP and TCP and SM_NOTIFY is the only UDP the server sends](img/rfc21-programs.svg)
