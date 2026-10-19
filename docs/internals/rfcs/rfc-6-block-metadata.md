@@ -2532,7 +2532,7 @@ that resumes from a cursor the caller holds.
 type FileCommit struct {
     File  FileID
     Epoch uint64 // primary's epoch the pass ran under (§4.1)
-    Refs  []ChunkRef // File, Offset, Length, Chunk, Skip, Oldest, Newest; Born and Died are the commit's
+    Refs  []ChunkRef // File, Offset, Length, Chunk, Skip, Oldest, Newest; Born is the offered version's stamp (§6.5), Died is the commit's
 }
 
 type BlockCommit struct {

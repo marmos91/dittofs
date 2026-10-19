@@ -1224,7 +1224,7 @@ Offload is initiated by policy and driven by the journal, which offers its dirty
 extents and accepts a report of what became offloaded:
 
 ```
-journal.Offload / OffloadMany(ids, fn)
+journal.Offload / OffloadMany(files, fn)
     │  offers dirty extents, of one file or several
     └──► fn:  carver  — cut chunks
               engine  — group chunks into blocks, across files

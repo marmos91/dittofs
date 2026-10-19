@@ -1279,7 +1279,7 @@ events for what failed.
 
 | State | Does | Holds | When it fails |
 | --- | --- | --- | --- |
-| **Capture** | under the files' guards ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)), syncs the files and commits their pending existence ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)) — behind a cut's closed gate, only up to the cut point; content above it waits for the gate to reopen — then opens the offer with `OffloadMany`, recording with it the share's write namespace and that namespace's chunk-ID key, which the carve uses ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | guards, briefly; then the offer | nothing was offered; the pass is retried after backoff |
+| **Capture** | under the files' guards ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)), syncs the files and commits their pending existence ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)) — behind a cut's closed gate, only up to the cut point; content above it waits for the gate to reopen — then opens the offer with `OffloadMany`, passing each file's `Through` as the version that commit covered, so the journal offers nothing whose existence it did not commit ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and recording with it the share's write namespace and that namespace's chunk-ID key, which the carve uses ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | guards, briefly; then the offer | nothing was offered; the pass is retried after backoff |
 | **Carve** | runs the carver over each run of the offer ([§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) | the offer | the pass ends; blocks already reported stay reported, the rest stay **Dirty**; retried |
 | **Assemble** | folds the chunks into block plans with the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), every chunk carried ([§6.5](#6.5%20The%20dedup%20oracle), V1); the pass closes no block before it reaches the target or the count cap except its last, so a pass of many small files never yields short blocks mid-pass. It also closes a block early, at a chunk boundary, when its commit's worst-case keys — counting the existing refs each new ref replaces, from a covering lookup of the run — would pass the key budget `K` ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)) | plans: hashes and positions, no bytes | pure; cannot fail |
 | **Intent** | refuses a plan whose captured namespace is no longer the share's write namespace; mints the block's name and durably records its put intent ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | the intent | a refused plan's content is re-offered and carved again under the current namespace; a failed record is retried in place, and past the step bound the block's attempt is abandoned |
@@ -1361,9 +1361,11 @@ fault-injecting stub, and again as production composes it.
 | soak | Run for hours with random faults at every step, and partitions to the store and to metadata. Assert every stabilised byte reads back throughout; once the faults stop, the oldest unoffloaded age falls below the maximum age; and no abandoned attempt's intent outlives its bound. |
 
 **Snapshot holds.** Each existence commit hands the journal the cut it read
-([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), and the commit step copies that cut, offered with the
-version, into every ref it writes as `born` — the cut of the existence commit, not
-of the write ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A version counts as superseded only once its
+([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)), and the commit step copies that cut, offered with each
+extent as its `Cut`, into every ref it writes as `born` — the cut of the existence commit, not
+of the write ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). An extent offered with `Stamped` false lost its stamp,
+and the commit rebuilds its `born` from the file's record by the rule of
+[RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds). A version counts as superseded only once its
 successor's existence has committed; until then it is offered as a live version
 ([RFC 12 §2.4](rfc-12-snapshots.md#2.4%20A%20snapshot%20hold%20bridges%20dirty%20content%20to%20history)). A version held for a cut and superseded before its
 offload — by an overwrite, a truncate, a deallocate or a release — is still
@@ -1571,6 +1573,10 @@ shared copies dead weight.
   like the dirty bytes, and counts them in the offer's `Oldest`, so a release or
   repack cannot pull them from under the pass ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)).
 - The engine **MUST NOT** read offloaded neighbours outside an offer.
+- A neighbour is offered with its version, so a run splits on the correct side of
+  a live hold mark, and with no cut: its bytes are already carved, and their
+  `born` is that of the ref they come from ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). A ref the re-tiling
+  writes takes the highest `born` among the bytes it covers, as any ref does.
 - The engine tells `Cut` how each stretch ends, through `realEnd`
   ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). The end is real at a hole, at the file's settled end or at a
   offloaded neighbour; it is artificial where the offer's `limit` or age cut the
