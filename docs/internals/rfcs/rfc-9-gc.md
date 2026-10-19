@@ -544,8 +544,8 @@ A block record carries its own GC state, and that state is the state machine
 
 | State | Meaning | Index key written with it | Left by |
 | --- | --- | --- | --- |
-| `live` | at least one chunk record naming it has a nonzero refcount | the **compaction index** key `BC‖ns‖bucket‖name`, while it has dead bytes or is small ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | retirement |
-| `retired` | `live` = 0; its chunk records still name it; the object waits until `not_before` | the **retired index** key `BR‖ns‖not_before‖name` | resurrection, or the deleter |
+| `live` | at least one chunk record naming it has a nonzero refcount | the **compaction index** key `BC‖ns‖b‖bucket‖name`, while it has dead bytes or is small ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | retirement |
+| `retired` | `live` = 0; its chunk records still name it; the object waits until `not_before` | the **retired index** key `BR‖ns‖b‖not_before‖name`, where `b` is the block name's first byte | resurrection, or the deleter |
 | `deleted` | the object is being deleted; nothing can resurrect it | the **deleted index** key `BD‖ns‖name`, whose value records when the delete succeeded | pruning |
 
 Every transition is one transaction, and each writes the index key of the state
@@ -568,8 +568,8 @@ block's refusal does not fail the others.
    zero in the transaction — a clone batch or an audit correction can raise
    several at once — sets its state to `live`, clears `not_before`, deletes its
    `BR` key, and writes its `BC` key ([§3.3](#3.3%20Adoption%20resurrects%20a%20retired%20block)).
-3. **Mark deleted** (retired → deleted). The deleter reads the `BR` prefix in
-   `not_before` order up to store time and, per batch, in one transaction, moves
+3. **Mark deleted** (retired → deleted). The deleter reads its partition's range of
+   the `BR` prefix ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)), each name byte in `not_before` order up to store time and, per batch, in one transaction, moves
    each record still `retired` with `not_before` ≤ store time to `deleted` —
    only after the verification of [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) passes for it — and records the store time
    of the move in the record's `marked_at` ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
@@ -1164,13 +1164,16 @@ GC **MUST NOT** compact a block whose chunks are all referenced and which is not
 small, with one exception: retiring material or a transform ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census))
 compacts every block whose bodies use it, fully live or not. The target's minted
 name ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move) step 4) differs from the source's even though its chunk list is
-unchanged.
+unchanged. Retiring material or a transform starts a resumable walk of `B‖ns‖`
+per partition (cursor kind `retirement`, [§7.2](#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) that yields every block whose
+census names it; its candidates come before the index's. Where the retiring set
+is recorded is [RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)'s.
 
 **Finding candidates MUST NOT cost a scan of every block per pass.** A block's
 dead bytes change only in a transaction that moves one of its chunks' refcounts
 across zero, which already writes the block record. That transaction **MUST**
 maintain `dead` and `dead_at`, and the **compaction index** key
-`BC‖ns‖bucket‖name`, where `bucket` is the block's dead-byte ratio in sixteenths
+`BC‖ns‖b‖bucket‖name`, where `b` is the block name's first byte and `bucket` is the block's dead-byte ratio in sixteenths
 (1–15), or `small` for a fully live small block; a block with no dead bytes that
 is not small has no key. The key does not depend on any setting, so changing the
 target invalidates nothing. The compactor reads the buckets from the highest
@@ -1518,15 +1521,15 @@ key column is that table's, repeated so a reader of this one need not switch.
 | chunk record ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk)) | `C‖ns‖hash` | authoritative | one per hash | pruning of the block it names, or a repoint by a carrying commit |
 | reverse ref index ([§2.1](#2.1%20References%20are%20the%20only%20authority)) | `CR‖ns‖hash‖share‖file‖offset‖died` | authoritative | one per live, history or parked ref ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) | the transaction that drops or moves its ref, or the parked-ref prune |
 | put intent ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)) | `I‖ns‖name` | authoritative | one per put in flight, plus one per put abandoned since the last pass | the commit that consumes it, or its abandonment |
-| retired index ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `BR‖ns‖not_before‖name` | derived | one per `retired` block | resurrection or the move to `deleted` |
+| retired index ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `BR‖ns‖b‖not_before‖name`, `b` the name's first byte | derived | one per `retired` block | resurrection or the move to `deleted` |
 | deleted index ([§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) | `BD‖ns‖name` | derived | one per `deleted` block | pruning |
-| compaction index ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | `BC‖ns‖bucket‖name` | derived | one per `live` block with dead bytes, or small | the transaction that changes its bucket, or retirement |
+| compaction index ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | `BC‖ns‖b‖bucket‖name`, `b` the name's first byte | derived | one per `live` block with dead bytes, or small | the transaction that changes its bucket, or retirement |
 | GC lease partition ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) | `NS‖ns‖gc‖lease‖partition` | authoritative | one per partition, a fixed count | overwritten by each holder; the epoch only grows |
 | `Recheck` result ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | `NS‖ns‖gc‖recheck` | authoritative | one per namespace | overwritten by each `Recheck` |
 | hold ([§6.4](#6.4%20A%20store-wide%20trip%20holds%20the%20deleter)) | `NS‖ns‖gc‖hold` | authoritative | one per namespace, listing its reasons | cleared when its last reason clears |
 | lowering suspect ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖suspect‖hash` | authoritative | one per hash found high by the last walk | the next walk over its range, which lowers or deletes it; a walk runs every period, so its removal is guaranteed |
 | forward pass ([§6.2](#6.2%20Corrections)) | `NS‖ns‖gc‖forward` | authoritative | one per namespace: the numbers of the last full forward walk started and the last completed over every share, and when; and the start change sequence of the last completed pass of either kind, which the next incremental pass compares against | overwritten as each pass starts and completes |
-| walk cursor | `NS‖ns‖gc‖cursor‖walk‖partition` | derived | one per kind of walk (audit, block walk, index rebuild) per partition: the last key done | overwritten as the walk advances; deleted when it completes |
+| walk cursor | `NS‖ns‖gc‖cursor‖walk‖partition` | derived | one per kind of walk (audit, block walk, index rebuild, `retirement`) per partition: the last key done | overwritten as the walk advances; deleted when it completes |
 
 A record not in this table **MUST NOT** be added without a row. Where a pass
 leaves state on disk, what removes it after a crash is part of the row, and "the
@@ -1539,7 +1542,10 @@ engine: one namespace can hold the blocks of many shares, and GC covers all of
 them. Its work is split into a fixed number of **partitions** by prefix — a partition
 covers a range of block names for the deleter, collection and the compactor's
 sources, and the same range of chunk hashes for the audit; names and hashes are
-both uniform, so partitions are even. The forward walk is not partitioned: the holder of the first
+both uniform, so partitions are even. A partition is a contiguous range of
+the block name's first byte (*P* ≤ 256), so the key layout does not depend on *P*.
+The `BR` and `BC` keys lead with the name's first byte, so a holder reads only
+its partition's range. The forward walk is not partitioned: the holder of the first
 partition runs it, as it runs `Recheck`, with one cursor per share. `NS‖ns‖gc‖forward` keeps its
 single started/completed pair. Each partition has a **lease**, a record in the
 metadata store (`NS‖ns‖gc‖lease‖partition`), held by a node with the `storage` role
