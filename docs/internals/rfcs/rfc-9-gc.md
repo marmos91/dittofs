@@ -449,6 +449,8 @@ one scheduler instance, whose tenants are the (namespace, partition) pairs this
 node leases ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)). GC holds no state a restart needs: every source rebuilds
 from its index keys and cursors.
 
+![GC on one storage node. The runtime builds gc.New(Deps) and drives Start, Add, Remove, Drain and Close. Inside the GC, one context per namespace, added and removed by the runtime, holds that namespace's View: Blocks, Remote, Store and Keys. Five sources (deleter, compactor, collector, auditor, recheck) and a lease keeper run on GC's own work-scheduler instance, which every namespace shares. Below it sit the RFC 6 Blocks view over the shared metadata store, where every retirement, verification and gate happens; the RFC 4 remote store for direct deletes, listing and control objects, ref-counted per config; GC's RFC 3 syncer flow for compactor transfers and Recheck calls; RFC 5's keys read-back; and the node's clock, health, metrics and logger. A lifecycle strip reads: New starts nothing, Start registers the sources and each Add acquires leases and rebuilds, Drain stops posting and abandons in-flight compactions, Close releases leases with their epochs kept and closes flows](img/rfc9-composition.svg)
+
 | Component | Made of | Depends on | Injected how | Owned by | Lifecycle |
 | --- | --- | --- | --- | --- | --- |
 | `*gc.GC`, one per storage node | namespace contexts, five sources, the lease keeper | everything below | `New(Deps)` | the composition root; the runtime drives it | `New` starts nothing; `Start` after the share contexts; `Drain` and `Close` before they are joined |
