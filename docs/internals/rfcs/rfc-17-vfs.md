@@ -325,8 +325,8 @@ type Deps struct {
 func New(d Deps) (*Server, error)
 ```
 
-**One node, wired.** The whole single-node composition of the service, between
-the stores and the adapters:
+**One node, wired.** The single-node composition of the service, between the
+stores and the adapters:
 
 ```go
 st, _ := metadata.Open(ctx, kv, metadata.Options{ /* … */ })
@@ -335,9 +335,14 @@ ost := openstate.New(openstate.Deps{Store: st /* … */})
 svc, _ := vfs.New(vfs.Deps{Meta: st, Open: ost, Engine: eng, Identity: ident,
 	Events: sink, Clock: clk, Metrics: reg, Logger: log})
 _ = svc.Start(ctx) // §2.5: after the store, the engine and open state; before the adapters
-nfsSrv, _ := nfs.New(core.Deps{Service: svc /* … */}, cfg.NFS)
-smbSrv, _ := smb.New(core.Deps{Service: svc /* … */}, cfg.SMB)
 ```
+
+The adapters are not this RFC's to build. The composition root builds each one
+as [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) and
+[§4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)
+say, handing it `svc` as `core.Deps.Service` and nothing else of the service,
+and the runtime starts them as its `Adapter`s once `Start` has returned
+([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)).
 
 The service suite (§8) builds the same way, over the in-memory store, a real
 engine on a temporary journal, real open state and a fake clock, so the suite
