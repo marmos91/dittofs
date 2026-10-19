@@ -19,10 +19,10 @@
     </style>
   </defs>
   <rect width="900" height="380" fill="#ffffff"/>
-  <text x="16" y="26" class="t">What a client can reach: NFSv3 with three side programs, or NFSv4 alone, all over TCP.</text>
+  <text x="16" y="26" class="t">What a client can reach: NFSv3 with three auxiliary services, or NFSv4 alone, all over TCP.</text>
 
   <rect x="24" y="44" width="416" height="214" rx="8" class="zone"/>
-  <text x="36" y="62" class="s">NFSv3 holds no state: mounting and locking are side programs</text>
+  <text x="36" y="62" class="s">NFSv3 holds no state: mounting and locking are auxiliary services</text>
   <rect x="40" y="74" width="384" height="36" rx="5" class="sv"/><text x="52" y="96" class="m">NFS v3</text><text x="130" y="96" class="s">RFC 1813: names, attributes, data</text>
   <rect x="40" y="118" width="384" height="36" rx="5" class="sv"/><text x="52" y="140" class="m">MOUNT v3</text><text x="130" y="140" class="s">hands out a share's root handle (§6.3)</text>
   <rect x="40" y="162" width="384" height="36" rx="5" class="sv"/><text x="52" y="184" class="m">NLM v4</text><text x="130" y="184" class="s">byte-range locks (§6.1)</text>
