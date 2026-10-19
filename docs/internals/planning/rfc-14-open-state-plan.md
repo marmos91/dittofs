@@ -10,7 +10,7 @@ of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through tha
 
 ## 1. What already exists
 
-- **The durable records (stage 9.1a, merged with #3120).** `kvstore` stores what RFC 14 §8 makes
+- **The durable records (step 9 of #3119, merged with #3120).** `kvstore` stores what RFC 14 §8 makes
   durable, with views the service reads and writes:
   - `Clients`: `Create`, `Reboot`, `Get`, `ByOwner`, `Put`, `Delete`, `CreateSession`, `PutShard`, `Shards`;
   - `Opens`: `Put`, `Get`, `Of`, `Delete` (reports an orphan), `Durable(share, shard)`, locks under persistent
@@ -24,7 +24,7 @@ of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through tha
   - grace per share without instances; locks persisted, where RFC 14 keeps them volatile;
   - opens, deny modes, stateids and lock waiters live in the adapters, not here.
 
-  So the service is new, and ports only pure pieces and tests (§5).
+  So the service is new, and ports only pure pieces and tests (D3, §4, §7).
 
 ## 2. Decisions to settle
 
@@ -85,16 +85,44 @@ it is the file's last holder.
 Each piece lands as one or two PRs into `feat/storage-v2`, with its rows of the conformance suite
 (§4). Rows are named as RFC 14 §13.1 names them.
 
-| # | Piece | RFC 14 | Main calls | §13.1 rows |
-|---|---|---|---|---|
-| 1 | **Skeleton** | §2.1, §3, §11 | the `OpenState` interface, errors, the per-file table and step, the clock, `CheckIO` and `CheckChange` with nothing to conflict yet; the stateid layout and its per-shard index, with how a miss is classified | one table, client check |
-| 2 | **Clients and leases** | §2.1, §2.9, §4.1, §4.3 | `Connect`, `CreateSession`, `Renew`, `Expire`, `Revoke`, `FreeRevoked`, `Destroy`, `Rebind`; NFSv4.0 unconfirmed clients | lease expiry, server owner, client check |
-| 3 | **Opens and deny modes** | §2.2, §6, §7, §9 | `Open`, `Close`, `SetDisposition`, `SuspendTimes`, `Flushed`; deny modes at open; open-unlinked kept alive; delete on close; open children refuse an SMB rename or delete of their directory | no downgrade, anonymous I/O, cross-protocol, open-unlinked (and across protocols), lazy, delete pending, remove against deny-delete |
-| 4 | **Byte-range locks and waiters** | §2.3, §2.8, §2.10, §4.5 | `Lock` and `Unlock` over a list of ranges, all or nothing, each range shared or exclusive (an SMB LOCK of several elements is one call, RFC 20 §4.3); `TestLock`, `CancelLock`; FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM and `HostRestarted` | owners, NLM restart, the waiter rows |
-| 5 | **Caching grants and recalls** | §2.4, §5 | grants offered at open, `Return`, `AckBreak`; recalls through `RecallGrant` with deadlines; revocation into the revoked set; no more grants to a client after one revoke; the per-client budget | recall deadline, flush on recall, no blocked worker, lease key, no write grant on a setuid file |
-| 6 | **Grace and reclaim** | §4.2, §4.4, §8, §9.2 | grace per shard after a restart, reclaims only, `ReclaimComplete`, early end; durable opens rebuilt from `Opens.Durable`; a new primary releases nothing before grace ends | grace, reclaim needs a record, reclaim grants no more, grace per shard, reclaim scoped, I/O in grace, early end, new primary, durable open prefix |
-| 7 | **SMB durable and persistent opens** | §8.1 | `Reconnect`, `Disconnect`, timeouts, create and lock replay, app instance, channel sequence | reconnect matching, timeout, create replay, lock replay, app instance, persistent |
-| 8 | **The rest** | §2.5, §2.7, §11 | watches (`Watch`, `Unwatch`, `Notify`), async copies, `DropShare` | lost copy, the watch and drop-share rows |
+| # | Piece | RFC 14 | Main calls |
+|---|---|---|---|
+| 1 | Skeleton and stateids | §2.1, §3, §11 | `CheckIO`, `CheckChange` |
+| 2 | Clients and leases | §2.1, §2.9, §4.1, §4.3 | `Connect`, `CreateSession`, `Renew`, `Expire`, `Revoke`, `FreeRevoked`, `Destroy`, `Rebind` |
+| 3 | Opens and deny modes | §2.2, §6, §7, §9 | `Open`, `Close`, `SetDisposition`, `SuspendTimes`, `Flushed` |
+| 4 | Byte-range locks and waiters | §2.3, §2.8, §2.10, §4.5 | `Lock`, `Unlock`, `TestLock`, `CancelLock`, `HostRestarted` |
+| 5 | Caching grants and recalls | §2.4, §5 | `Return`, `AckBreak`, `RecallGrant` |
+| 6 | Grace and reclaim | §4.2, §4.4, §8, §9.2 | `ReclaimComplete` |
+| 7 | SMB durable and persistent opens | §8.1 | `Reconnect`, `Disconnect` |
+| 8 | The rest | §2.5, §2.7, §11 | `Watch`, `Unwatch`, `Notify`, `DropShare` |
+
+What each piece also carries, and its §13.1 rows:
+
+1. **Skeleton and stateids:** the `OpenState` interface, errors, the per-file table and step, the
+   clock, and `CheckIO`/`CheckChange` with nothing to conflict yet; the stateid layout and its
+   per-shard index, with how a miss is classified. *Rows:* one table, client check.
+2. **Clients and leases:** NFSv4.0 unconfirmed clients (open question 4). *Rows:* lease expiry,
+   server owner, client check.
+3. **Opens and deny modes:** deny modes at open; open-unlinked kept alive; delete on close; open
+   children refuse an SMB rename or delete of their directory. *Rows:* no downgrade, anonymous
+   I/O, cross-protocol, open-unlinked (and across protocols), lazy, delete pending, remove against
+   deny-delete.
+4. **Byte-range locks and waiters:** `Lock` and `Unlock` take a list of ranges, all or nothing,
+   each shared or exclusive, since an SMB LOCK of several elements is one call (RFC 20 §4.3); FIFO
+   waiters with no adapter timeout; NFSv4.0 owner sequences; NLM. *Rows:* owners, NLM restart, the
+   waiter rows.
+5. **Caching grants and recalls:** grants offered at open; recalls with deadlines; revocation into
+   the revoked set; no more grants to a client after one revoke; the per-client budget. *Rows:*
+   recall deadline, flush on recall, no blocked worker, lease key, no write grant on a setuid file.
+6. **Grace and reclaim:** grace per shard after a restart, reclaims only, early end; durable opens
+   rebuilt from `Opens.Durable`; a new primary releases nothing before grace ends. *Rows:* grace,
+   reclaim needs a record, reclaim grants no more, grace per shard, reclaim scoped, I/O in grace,
+   early end, new primary, durable open prefix.
+7. **SMB durable and persistent opens:** timeouts, create and lock replay, app instance, channel
+   sequence. *Rows:* reconnect matching, timeout, create replay, lock replay, app instance,
+   persistent.
+8. **The rest:** watches, async copies, `DropShare`. *Rows:* lost copy, the watch and drop-share
+   rows.
 
 Layouts (§2.6) and every "(cluster)" row wait for the cluster stages.
 
