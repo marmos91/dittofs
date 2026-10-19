@@ -576,7 +576,7 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 
 	// Delete the primary file row plus parent/link-count/PayloadID keys via the
 	// shared per-file teardown (also used by DeleteShare).
-	if err := deleteFileKeys(tx.txn, fileID, existingPayloadID); err != nil {
+	if _, err := deleteFileKeys(tx.txn, fileID, existingPayloadID); err != nil {
 		return err
 	}
 
@@ -1153,33 +1153,9 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	_, err := tx.txn.Get(keyShare(shareName))
-	if err != nil {
-		return mapBadgerError(err, "share", shareName)
-	}
-
-	// Tear down all file metadata on the active txn, identical to the pool
-	// path — deleting only the share key would orphan every file/parent/
-	// linkcount/child/payload-index entry (store.go:161 contract).
-	quotaFreed, deleted, err := tx.store.deleteShareFiles(tx.txn, shareName)
-	if err != nil {
-		return err
-	}
-	// A deleted file must stop resolving through the read caches too, or a
-	// handle into the removed share keeps serving it.
-	tx.dirtyFiles = append(tx.dirtyFiles, deleted...)
-	// Accumulate into the tx delta; applied once after a successful commit so a
-	// conflict-retry never double-counts.
-	for k, d := range quotaFreed {
-		tx.quota.AddKeyed(k, d)
-	}
-
-	if err := tx.txn.Delete(keyShare(shareName)); err != nil {
-		return err
-	}
-	tx.dirtyShares = append(tx.dirtyShares, shareName)
-	return nil
+	// The caller's transaction holds the whole share, so no budget applies.
+	_, err := tx.deleteShare(shareName, nil, 0)
+	return err
 }
 
 func (tx *badgerTransaction) ListShares(ctx context.Context) ([]string, error) {

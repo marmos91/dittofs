@@ -1031,10 +1031,9 @@ func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		// again, but its name stays taken, so no share can be created over what
 		// is left of it, and repeating the removal repeats the purge. Freeing
 		// the name instead would let a share created under it attach the old
-		// root and serve its files. The cost is that a share its metadata store
-		// cannot delete in one go, or one on a store that is not loaded, cannot
-		// be removed until that changes. Revisit once the server records a
-		// removal and finishes it on its own.
+		// root and serve its files. The cost is that a share on a metadata store
+		// that is not loaded cannot be removed until the store loads. Revisit
+		// once the server records a removal and finishes it on its own.
 		if err := h.runtime.PurgeShare(r.Context(), name); err != nil {
 			if errors.Is(err, models.ErrShareNotFound) {
 				NotFound(w, "Share not found")
