@@ -87,7 +87,7 @@ Each piece lands as one or two PRs into `feat/storage-v2`, with its rows of the 
 
 | # | Piece | RFC 14 | Main calls | §13.1 rows |
 |---|---|---|---|---|
-| 1 | **Skeleton** | §3, §11 | the `OpenState` interface, errors, the per-file table and step, the clock, `CheckIO` and `CheckChange` with nothing to conflict yet | one table, client check |
+| 1 | **Skeleton** | §2.1, §3, §11 | the `OpenState` interface, errors, the per-file table and step, the clock, `CheckIO` and `CheckChange` with nothing to conflict yet; the stateid layout and its per-shard index, with how a miss is classified | one table, client check |
 | 2 | **Clients and leases** | §2.1, §2.9, §4.1, §4.3 | `Connect`, `CreateSession`, `Renew`, `Expire`, `Revoke`, `FreeRevoked`, `Destroy`, `Rebind`; NFSv4.0 unconfirmed clients | lease expiry, server owner, client check |
 | 3 | **Opens and deny modes** | §2.2, §6, §7, §9 | `Open`, `Close`, `SetDisposition`, `SuspendTimes`, `Flushed`; deny modes at open; open-unlinked kept alive; delete on close; open children refuse an SMB rename or delete of their directory | no downgrade, anonymous I/O, cross-protocol, open-unlinked (and across protocols), lazy, delete pending, remove against deny-delete |
 | 4 | **Byte-range locks and waiters** | §2.3, §2.8, §2.10, §4.5 | `Lock` and `Unlock` over a list of ranges, all or nothing, each range shared or exclusive (an SMB LOCK of several elements is one call, RFC 20 §4.3); `TestLock`, `CancelLock`; FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM and `HostRestarted` | owners, NLM restart, the waiter rows |
@@ -132,11 +132,39 @@ The §13.3 benchmarks come with the pieces they measure.
    `exclusive` flag cannot carry an SMB LOCK that mixes shared and exclusive elements.
 3. **SMB deadlock refusal:** smbtorture's open-brlock-deadlock expects one. Port `deadlock.go`, or
    record it as a known failure?
-4. **NFSv4 state today:** `internal/adapter/nfs/v4/state` (about 33k lines with tests) holds today's
-   stateids, client and session handling. It needs its own survey for what `openstate` can port
-   (stateid layout, seqid handling) before piece 2.
+4. **Unconfirmed NFSv4 clients (§2.9):** SETCLIENTID and EXCHANGE_ID must return an existing
+   client's ID, or refuse with `ErrClientInUse`, before any `Connect`, but §11 has no call that finds
+   a client by owner. Either §11 gains one, or the adapter's handler reads `Clients.ByOwner` through
+   the service. Settle before piece 2; in `openstate` it adds two or three days.
 
-## 7. Size
+## 7. What ports from today's NFSv4 state
+
+`internal/adapter/nfs/v4/state` is 12.6k lines plus 20.8k of tests, one manager under one lock.
+- **Ports, as rules rather than code:** the owner seqid checks and the errors exempt from advancing
+  them (`ValidateSeqID`, `failedSeqidReply`: exactly §2.8's list), the stateid seqid check (made
+  wrap-aware), the principal-hijack rule (§2.1), the CREATE_SESSION sequence check, the first LOCK's
+  sequencing by the open-owner, and the delegation grant and conflict rules, which already recall
+  and answer DELAY without waiting. Stateid minting ports with the layout changed to §2.1's.
+- **Rewritten:** client IDs (today boot epoch and counter, lost at restart; §2.1 needs them durable
+  through `kvstore`), leases (per-client timers; §4.1 runs on the declared clock), grace (server-wide;
+  §4.4 is per shard), revocation (§5.3's revoked set), the stateid owner check (skipped for a v4.0
+  caller, making the stateid a bearer token; §2.2 checks the principal), and every lock path, which
+  waits on `pkg/metadata/lock`'s recalls.
+- **Stays in the adapter:** sessions, slot tables, the reply cache's bytes, connections and the back
+  channel, special stateids, and XDR.
+- **Tests worth porting as scenarios:** the SETCLIENTID and EXCHANGE_ID cases, the seqid and stateid
+  validity tests, grace (rewritten per shard), delegation conflicts, and lease expiry, whose released
+  stateid becomes bad rather than expired.
+
+Behaviours today's code has and RFC 14 does not state, to raise against RFC 14: courtesy clients
+(RFC 7530 §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace
+(RFC 8881 §18.51.3), `RENEW`'s principal check, `ClientStatus` flags for revoked state and a
+callback path down, a stateid naming an unknown shard, and no re-delegation for a while after a
+recall.
+
+## 8. Size
 
 The largest stage so far, comparable to the store: pieces 1–3 about a week each, 4–6 a week or
-more each, 7–8 a week together. About six to eight weeks, landing as twelve or so PRs.
+more each, 7–8 a week together. About six to eight weeks, landing as twelve or so PRs. The survey
+(§7) holds piece 2 at a week only once open question 3 is settled, and puts piece 6 at the high end:
+nothing of today's grace ports.
