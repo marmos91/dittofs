@@ -41,8 +41,8 @@ func result(t report.Test) string {
 // cases, its reports without -v, and reports prove -v printed. A bail-out, a
 // parse error or a report prove didn't finish is incomplete, as is a file
 // that couldn't find pjdfstest; a failed assertion or a dubious exit fails
-// it, and a TODO assertion doesn't. A file that timed out failed, which no
-// entry excuses.
+// it, and a TODO assertion doesn't. A plan of 1..0 # SKIP skips it, with its
+// reason. A file that timed out failed, which no entry excuses.
 func TestReadTAP(t *testing.T) {
 	const (
 		didntFinish = "prove didn't finish its report"
@@ -170,6 +170,8 @@ Test Summary Report
 Files=1, Tests=1,  0 wallclock secs ( 0.01 usr +  0.01 sys =  0.02 CPU)
 Result: FAIL
 `, status: report.Other, message: "not ok - could not find pjdfstest app\nFailed test:  1\nNon-zero exit status: 1\nParse errors: No plan found in TAP output"},
+		{name: "-v plan skipping every test", output: "/tools/pjdfstest/tests/chmod/00.t .. skipped: no ACL support\nFiles=1, Tests=0,  0 wallclock secs ( 0.01 usr +  0.01 sys =  0.02 CPU)\nResult: NOTESTS\n",
+			status: report.Skipped, message: "no ACL support"},
 		{name: "timed out", output: "/tools/pjdfstest/tests/chmod/00.t .. \n1..2\nok 1\n", timedOut: true,
 			status: report.Failed, grade: report.New, message: "timed out"},
 	} {
@@ -257,10 +259,14 @@ func TestReadJUnit(t *testing.T) {
 
 // WPTS's TRX file is read wherever it is under {out}, a result for each
 // test, the tests it didn't execute included, named by its testName and timed
-// by its duration: testdata/wpts holds results of a WPTS run, four with their
-// outcome changed to Error, Timeout, Aborted and Inconclusive. Passed passes;
-// Failed, Error, Timeout and Aborted fail; NotExecuted and any other outcome
-// skip, keeping the outcome as the raw status.
+// by its duration, and no other file is: testdata/wpts holds results of a
+// WPTS run, four with their outcome changed to Error, Timeout, Aborted and
+// Inconclusive, beside the server's dfs.log. Passed passes; Failed, Error,
+// Timeout and Aborted fail; NotExecuted and any other outcome skip, keeping
+// the outcome as the raw status. A message keeps no trailing line break, and
+// the run's warnings aren't errors. A run whose testhost process crashed, as
+// dotnet test wrote it when one was killed, returns its results and the run's
+// error.
 func TestReadTRX(t *testing.T) {
 	got, err := readTRX(report.Ran{Out: filepath.Join("testdata", "wpts")})
 	var lines []string
@@ -279,6 +285,22 @@ func TestReadTRX(t *testing.T) {
 	}
 	if err != nil || !slices.Equal(lines, want) {
 		t.Errorf("%v\n%s\nwant\n%s", err, strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+	if len(got) > 3 && !strings.HasSuffix(got[3].Message, "=== End of Stack Trace ===") {
+		t.Errorf("%s's message ends %q", got[3].Name, got[3].Message[max(0, len(got[3].Message)-30):])
+	}
+	crashed := writeFiles(t, map[string]string{"TestResults/run.trx": `<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Results><UnitTestResult testName="BVT_AppInstanceId" duration="00:00:00.0610000" outcome="Failed" /></Results>
+  <ResultSummary outcome="Failed">
+    <Counters total="1" executed="1" passed="0" failed="1" />
+    <RunInfos><RunInfo computerName="bb7417e114da" outcome="Error" timestamp="2026-10-20T08:18:48.9693531+00:00">
+      <Text>The active test run was aborted. Reason: Test host process crashed</Text>
+    </RunInfo></RunInfos>
+  </ResultSummary>
+</TestRun>`})
+	got, err = readTRX(report.Ran{Out: crashed})
+	if len(got) != 1 || err == nil || err.Error() != "run.trx: The active test run was aborted. Reason: Test host process crashed" {
+		t.Errorf("crashed: %+v, %v", got, err)
 	}
 	if got, err := readTRX(report.Ran{Out: t.TempDir()}); got != nil || err != nil {
 		t.Errorf("no file: %+v, %v", got, err)

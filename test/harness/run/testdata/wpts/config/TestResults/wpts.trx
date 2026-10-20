@@ -85,5 +85,13 @@ System.TimeoutException: Failed to connect server 192.0.2.10:445 within 20000 mi
   </Results>
   <ResultSummary outcome="Failed">
     <Counters total="8" executed="6" passed="1" failed="4" error="0" timeout="0" aborted="0" inconclusive="1" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <RunInfos>
+      <RunInfo computerName="8bbf53bbde28" outcome="Warning" timestamp="2026-09-29T07:25:06.8760035+00:00">
+        <Text>No test matches the given testcase filter `TestCategory=BVT` in /opt/fileserver/Bin/MS-FSAModel_ServerTestSuite.dll</Text>
+      </RunInfo>
+      <RunInfo computerName="8bbf53bbde28" outcome="Warning" timestamp="2026-09-29T07:27:43.5900450+00:00">
+        <Text>No test matches the given testcase filter `TestCategory=BVT` in /opt/fileserver/Bin/MS-SMB2Model_ServerTestSuite.dll</Text>
+      </RunInfo>
+    </RunInfos>
   </ResultSummary>
 </TestRun>

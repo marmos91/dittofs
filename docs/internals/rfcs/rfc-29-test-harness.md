@@ -1152,7 +1152,12 @@ grader:
 - `tap`: a file whose TAP has a bail-out, a parse error or a plan it didn't meet is incomplete,
   and so is one whose report `prove` didn't finish, without its `Files=` and `Result:` lines, or
   that `prove` failed without naming a failed assertion or exit status. A file with clean TAP whose
-  run still exits non-zero failed, as `prove` calls it dubious. A file that timed out failed.
+  run still exits non-zero failed, as `prove` calls it dubious. A file that timed out failed. A
+  file whose plan skips all its tests, `1..0 # SKIP reason`, which `prove` reports as
+  `skipped: reason` and `Result: NOTESTS`, is skipped with that reason, so it is graded as a skip
+  (§4.7); today's grader, which reads one report for every file, passes it. pjdfstest's own
+  `quick_exit`, for a feature the file system lacks, prints `1..1` and `ok 1` instead, so it reads
+  as a pass, which no reader can tell apart.
 - `junit`: pynfs writes its file only after a clean finish. It lists every test it knows: a
   FAILURE as `<failure>`, an OMIT as `<skipped>`, and WARNING and UNSUPPORTED with no child, so
   they pass, as they do today. The tests its flags didn't select are OMIT too, so pynfs's list
@@ -1168,7 +1173,12 @@ grader:
   reader grades itself. An entry that reports no test at all, as smbtorture does for a name it
   doesn't know, didn't run, so a test the image's smbtorture lacks is lost coverage (exit 2).
 - `trx`: `Passed` passes; `Failed`, `Error`, `Timeout` and `Aborted` fail; `NotExecuted` and any
-  other outcome skip, with the outcome kept as `rawStatus`.
+  other outcome skip, with the outcome kept as `rawStatus`. A run that `dotnet test` aborted, as
+  when its testhost process crashed, writes no result for the tests it didn't reach, and its
+  counters and test definitions count only the results it wrote, so none of them shows the tests
+  missing. Its run-level message with the outcome `Error` does (`The active test run was aborted.
+  Reason: Test host process crashed`), and the cell is not run, exit 2, unless a result it wrote
+  fails it. Today's grader passes such a run on the tests that reported.
 
 A crash of the code under test is a failure, exit 1, as a hang is (§4.4): a Go test binary that
 panics or dies on a signal fails the test it was running, and the fixture's server exiting during a

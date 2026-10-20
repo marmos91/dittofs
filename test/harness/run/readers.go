@@ -35,7 +35,8 @@ var (
 // a parse error, a plan it didn't meet included, is incomplete, and so is one
 // whose report prove didn't finish. Otherwise prove's result decides: a file
 // with a failed assertion fails, and so does one with clean TAP that exited
-// non-zero, which prove calls dubious. A file that timed out failed, a hang
+// non-zero, which prove calls dubious; a file whose plan skipped all its
+// tests skips, with the plan's reason. A file that timed out failed, a hang
 // no entry excuses.
 func readTAP(r report.Ran) ([]report.Test, error) {
 	t := report.Test{Name: r.Test, Status: report.Other, Duration: r.Took}
@@ -45,6 +46,7 @@ func readTAP(r report.Ran) ([]report.Test, error) {
 	}
 	var why []string   // the lines that say why it failed or is incomplete
 	var last [2]string // the last two lines with text
+	var skipped string // the reason prove gives for a file that skipped all its tests
 	incomplete := false
 	for _, line := range strings.Split(string(r.Output), "\n") {
 		s := strings.TrimSpace(line)
@@ -59,8 +61,11 @@ func readTAP(r report.Ran) ([]report.Test, error) {
 		case tapFailed.MatchString(s) && !strings.Contains(s, "# TODO"):
 			why = append(why, s)
 		}
+		if _, reason, ok := strings.Cut(s, ".. skipped: "); ok {
+			skipped = reason
+		}
 	}
-	finished := proveFooter.MatchString(last[0]) && (last[1] == "Result: PASS" || last[1] == "Result: FAIL")
+	finished := proveFooter.MatchString(last[0]) && (last[1] == "Result: PASS" || last[1] == "Result: FAIL" || last[1] == "Result: NOTESTS")
 	switch {
 	case incomplete:
 		t.Message = strings.Join(why, "\n")
@@ -68,6 +73,8 @@ func readTAP(r report.Ran) ([]report.Test, error) {
 		t.Message = "prove didn't finish its report"
 	case last[1] == "Result: PASS":
 		t.Status = report.Passed
+	case last[1] == "Result: NOTESTS":
+		t.Status, t.Message = report.Skipped, skipped
 	case len(why) == 0:
 		t.Message = "prove failed, and named no failed assertion or exit status"
 	default:
@@ -144,9 +151,12 @@ func readJUnit(r report.Ran) ([]report.Test, error) {
 // with a result for each test, the tests it didn't execute included, named by
 // its testName. Passed passes; Failed, Error, Timeout and Aborted fail;
 // NotExecuted and any other outcome skip, with the outcome kept as the raw
-// status.
+// status. A run that aborted, as when its testhost process crashed, has no result
+// for the tests it didn't reach, and its counters count only the results it
+// wrote; its run-level error says so, and is returned with the results.
 func readTRX(r report.Ran) ([]report.Test, error) {
 	var tests []report.Test
+	var runErrs []error
 	for _, f := range resultFiles(r.Out, ".trx") {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -159,6 +169,10 @@ func readTRX(r report.Ran) ([]report.Test, error) {
 				Duration string `xml:"duration,attr"` // hh:mm:ss.fffffff
 				Message  string `xml:"Output>ErrorInfo>Message"`
 			} `xml:"Results>UnitTestResult"`
+			Infos []struct {
+				Outcome string `xml:"outcome,attr"`
+				Text    string `xml:"Text"`
+			} `xml:"ResultSummary>RunInfos>RunInfo"`
 		}
 		if err := xml.Unmarshal(data, &run); err != nil {
 			return nil, fmt.Errorf("%s: %w", filepath.Base(f), err)
@@ -177,8 +191,13 @@ func readTRX(r report.Ran) ([]report.Test, error) {
 			}
 			tests = append(tests, t)
 		}
+		for _, info := range run.Infos {
+			if info.Outcome == "Error" {
+				runErrs = append(runErrs, fmt.Errorf("%s: %s", filepath.Base(f), info.Text))
+			}
+		}
 	}
-	return tests, nil
+	return tests, errors.Join(runErrs...)
 }
 
 // resultFiles lists the files with extension ext under dir, where a tool
