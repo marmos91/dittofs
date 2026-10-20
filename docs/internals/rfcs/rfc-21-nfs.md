@@ -1333,16 +1333,17 @@ truncated to the bits that fit.
 `Identity` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)) and names no
 flavour in it:
 
-| Credential | `Strength` | `Principal`, `Claims` |
-| --- | --- | --- |
-| `AUTH_NONE` | `None` | zero; none |
-| `AUTH_SYS` | `Claimed` | zero; the uid, gid and groups it carried, as claims |
-| `RPCSEC_GSS` `krb5` | `Verified` | the ticket's principal, through `Service.SignIn`; none |
-| `RPCSEC_GSS` `krb5i` | `VerifiedIntegrity` | as `krb5` |
-| `RPCSEC_GSS` `krb5p` | `VerifiedPrivacy` | as `krb5` |
+| Credential | `Proof` | `Protection` | `Principal`, `Claims` |
+| --- | --- | --- | --- |
+| `AUTH_NONE` | `None` | `None` | zero; none |
+| `AUTH_SYS` | `Claimed` | `None` | zero; the uid, gid and groups it carried, as claims |
+| `RPCSEC_GSS` `krb5` | `Ticket` | `None` | the ticket's principal, through `Service.SignIn`; none |
+| `RPCSEC_GSS` `krb5i` | `Ticket` | `Integrity` | as `krb5` |
+| `RPCSEC_GSS` `krb5p` | `Ticket` | `Privacy` | as `krb5` |
 
-An export's flavour policy is checked against `Strength`: "requires Kerberos"
-is at least `Verified`, a minimum Kerberos level the matching strength. Owner
+An export's flavour policy is checked against both parts: "requires Kerberos"
+is `MinProof` `Ticket`, and a minimum Kerberos level is the matching
+`MinProtection`. Owner
 strings are spelled and parsed through `Service.Spell` and `Service.Find`.
 
 **Request IDs.** The request ID a forwarded call carries
@@ -1744,7 +1745,7 @@ changing them turns auditing off. Both protocols gate them alike
 
 - `GETATTR` or `SETATTR` of `sacl` by a caller without `admin` — set only from
   an `admin` share grant on an authenticated flavour
-  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20strength%20proved%3A%20authenticated%2C%20admin%2C%20privileged)),
+  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)),
   and so without the system-security right
   ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right))
   — **MUST** be `NFS4ERR_ACCESS`.

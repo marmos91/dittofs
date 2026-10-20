@@ -86,7 +86,7 @@ With this RFC:
 1. alice and bob are two principals with two minted IDs. A missing uid is
    never defaulted; each gets one allocated from the installation's range,
    recorded once and never reissued (§2.3).
-2. Every cache of who the caller is keys on what was proved — the strength, the
+2. Every cache of who the caller is keys on what was proved — the proof kind, the
    Kerberos name, the SIDs — never on a uid alone (§7.1). bob's call misses
    alice's entry.
 3. The conformance suite signs alice in over Kerberos, sends her uid from
@@ -106,10 +106,12 @@ With this RFC:
 - **flavour** — how a request's sender was identified: `AUTH_NONE`, `AUTH_SYS`,
   Kerberos (over RPCSEC_GSS or SMB), NTLMv2, or an anonymous SMB session.
   `AUTH_SYS` and `AUTH_NONE` prove nothing; the others prove a name (§3). A
-  flavour never reaches the service: the adapter turns it into a strength.
-- **strength** — how much a request's `Identity` proved, on one neutral scale:
-  none, claimed, verified, verified with integrity, verified with privacy
-  (§6.1).
+  flavour never reaches the service: the adapter turns it into a proof kind and
+  a protection.
+- **proof kind and protection** — the two neutral, ordered parts of a request's
+  `Identity` (§6.1): how the sender was proved — none, claimed, a shared
+  secret, a ticket — and how its messages are protected — none, integrity,
+  privacy.
 - **proof** — what one handshake established: the name, the principal it was
   bound to, the verified group SIDs it carried; the session keys travel beside it, never in
   it. The adapter keeps it in the connection's security context and builds each request's `Identity` from it
@@ -256,9 +258,9 @@ This RFC **MUST NOT** be read as specifying:
   `ExportPolicy`, `Secret` and the protocol-ID index are
   [RFC 16](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)'s;
   this RFC says what their identity fields mean and how they are used;
-- the order of admission — share state, strength, client rules, squash — which
+- the order of admission — share state, proof and protection, client rules, squash — which
   is [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)'s;
-  this RFC defines the squash step and what admission's minimum strength means by
+  this RFC defines the squash step and what admission's minimum proof kind means by
   "authenticated";
 - the wire form of a handshake — RPCSEC_GSS framing, SPNEGO, NTLM messages,
   signing and encryption — which [RFC 21](rfc-21-nfs.md) and
@@ -266,7 +268,7 @@ This RFC **MUST NOT** be read as specifying:
 - the management API's tokens, sessions, roles and sign-in throttle, which are
   [RFC 23 §5](rfc-23-control-plane.md#5.%20Authentication%20and%20authorization)'s;
   this RFC only checks the password and the account (§8.1);
-- which protocol flavour gives which strength (§6.1), which
+- which protocol flavour gives which proof kind and protection (§6.1), which
   [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state) and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state) own;
 - where secrets are stored and how they rotate, which is
   [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)'s.
@@ -297,7 +299,7 @@ another (§6.2). Its uid and gid are 65534, reserved to it (§2.3), its SID is
 **Administrator is not a kind.** A principal is an administrator of a share
 when that share's grant names it `admin`
 ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)),
-and that counts only at verified strength or above (§6.5). No record, uid, group
+and that counts only for a proof of `Secret` or above (§6.5). No record, uid, group
 name or management-API role makes a principal an administrator of files
 (§8).
 
@@ -566,7 +568,7 @@ logon throttle (§3.1) and the caches, which start cold.
 ### 2.7 Package layout
 
 ```text
-pkg/identity/           the contract, a leaf importing metadata types only: Identity, Strength, Claims, Proof,
+pkg/identity/           the contract, a leaf importing metadata types only: Identity, ProofKind, Protection, Claims, Proof,
                         Keys, SignInStep, SignInResult, Caller, Spelling, Scheme, SID, NTLMAuthenticate, the
                         errors; Authenticator, Identities, Resolver, APISignIn
   identitytest/         Static (each interface, returning fixed values), a fake directory
@@ -582,7 +584,7 @@ internal/identity/      the server: one package, one file per concern
 
 **The contract is `pkg/identity`; the server is `internal/identity`**, the split RFC 17 makes between `pkg/vfs`
 and `internal/vfs`. Every interface and value type of this RFC is the contract's; `New`, `Deps`, `Records` and
-`Minter` (§2.6) are the server's. `pkg/vfs` aliases `Identity`, `Strength`, `Claims`, `Proof`, `SignInStep`, `SignInResult`, `Spelling` and
+`Minter` (§2.6) are the server's. `pkg/vfs` aliases `Identity`, `ProofKind`, `Protection`, `Claims`, `Proof`, `SignInStep`, `SignInResult`, `Spelling` and
 `Scheme` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), so an adapter imports `pkg/vfs` alone, as
 [RFC 20 §2.3](rfc-20-adapters.md#2.3%20What%20an%20adapter%20may%20import) requires, and imports neither identity
 package; `pkg/identity` imports no package of the service, so the two form no cycle. `internal/vfs` and the
@@ -598,7 +600,7 @@ a directory. It is what [RFC 20 §4.4](rfc-20-adapters.md#4.4%20Identity) calls
 "the authentication interface RFC 18 defines". Its one caller is `*vfs.Server`,
 which calls it for `vfs.Service`'s `SignIn`, on the node holding the connection
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)); the adapter passes the
-handshake round and receives the `Proof` and `Keys` back. Signatures are
+handshake round and receives the `Identity` and `Keys` back. Signatures are
 indicative:
 
 ```go
@@ -631,9 +633,10 @@ type SignInStep struct {
 	Client    netip.Addr
 }
 
-// SignInResult is what SignIn hands back: an Identity at Verified (§6.1), whose
-// strength the adapter raises per request as its protocol's signing or sealing
-// allows, and the Keys beside it, never in it.
+// SignInResult is what SignIn hands back: an Identity with proof kind Secret
+// (NTLM) or Ticket (Kerberos) and protection None (§6.1), which the adapter
+// raises per request as its protocol's signing or sealing allows, and the Keys
+// beside it, never in it.
 type SignInResult struct {
 	Identity Identity
 	Keys     Keys
@@ -717,10 +720,10 @@ the authenticator. Its rules:
 - An `AUTH_SYS` caller is **never** `authenticated`, and an `admin` grant
   confers nothing on it. Only an unsquashed uid 0 is privileged
   ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)).
-- An `AUTH_SYS` request reaches the service as strength `Claimed`, its ids as
-  `Claims` (§6.1); `AUTH_NONE` as `None`. That mapping is
+- An `AUTH_SYS` request reaches the service with proof kind `Claimed`, its ids as
+  `Claims` (§6.1); `AUTH_NONE` with `None`. That mapping is
   [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)'s.
-- Which hosts may send claimed ids at all is the share's minimum strength and client
+- Which hosts may send claimed ids at all is the share's `MinProof` and client
   rules ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)):
   the only thing that makes an asserted uid worth anything is the network it
   came from.
@@ -841,17 +844,12 @@ NTLMv1 and LM are refused ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
   the same bound a disable has (ID13).
 - A local user with no NT hash **MUST** fail `ErrLogonFailure`; it never falls
   through to pass-through or to anonymous.
-- The NTLMv2 session key is weaker than a Kerberos one, but an NTLM session
-  reaches the service at the strength [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)
-  maps its signing or sealing to, as a Kerberos one does. Which shares it may
-  reach is the share's minimum strength
-  ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
-
-> decision: admission sees a strength, not a mechanism, so a share cannot
-> admit Kerberos and refuse NTLM at the same strength. A deployment that must
-> refuse NTLM turns `identity.ntlm` off for the installation. Overturned if a
-> deployment needs NTLM on some shares and not on others; the proof then gains
-> its mechanism, and the share a rule naming it.
+- The NTLMv2 session key is weaker than a Kerberos one. An NTLM session
+  reaches the service with proof kind `Secret`, a Kerberos one with `Ticket`,
+  and each with the protection its signing or sealing gives ([RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)).
+  A share whose `MinProof` is `Ticket` refuses NTLM and admits Kerberos
+  ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees));
+  `identity.ntlm` off refuses NTLM for the whole installation.
 
 > decision: NTLM is on by default. Workgroup deployments with local users have
 > no KDC, and SMB clients outside a domain fall back to NTLM.
@@ -1051,14 +1049,14 @@ NFSv4 names owners and groups as strings. The adapter encodes them; this RFC
 decides the mapping
 ([RFC 20 §2.4](rfc-20-adapters.md#2.4%20Protocol%20details%20that%20stay%20in%20the%20adapter)).
 
-- **Encoding.** On a call at `Verified` or above, a principal with a name
+- **Encoding.** On a call with proof kind `Secret` or above, a principal with a name
   is `name@domain`, where `domain` is `identity.nfs4_domain` (default: the
-  first local realm in lower case, or `localdomain` with none). At `Claimed`
-  and `None` (`AUTH_SYS`, `AUTH_NONE`), it is the decimal uid or gid, as RFC 8881 §5.9 allows. A
+  first local realm in lower case, or `localdomain` with none). With `Claimed`
+  or `None` (`AUTH_SYS`, `AUTH_NONE`), it is the decimal uid or gid, as RFC 8881 §5.9 allows. A
   principal with no spelling is `nobody@domain`, or `65534`.
 - **Decoding.** A string `name@domain` whose domain equals
   `identity.nfs4_domain`, compared case-insensitively, maps by name (§4.6). A
-  decimal string maps by uid or gid, at any strength. Any other string,
+  decimal string maps by uid or gid, whatever the proof. Any other string,
   including a name in another domain, **MUST** be refused `NFS4ERR_BADOWNER`.
 - The special names an ACL entry carries — `OWNER@`, `GROUP@`, `EVERYONE@` —
   are not owner strings, nor is the `S-…@domain` form an ACL entry may spell;
@@ -1233,11 +1231,11 @@ local SMB password is refused: two passwords for one principal drift apart.
 Resolution is admission's step 4
 ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)). It
 runs in `*vfs.Server`, at the primary, on every call, after the share's state,
-minimum strength and client rules have admitted the call, and before `Authorize`:
+`MinProof`, `MinProtection` and client rules have admitted the call, and before `Authorize`:
 
-1. **Map** the `Identity` to a principal: at `Verified` or above, the
-   principal sign-in bound it to (§3.1), never by its name again; at
-   `Claimed`, by the claimed uid (§4.3); at `None`, to anonymous. Refuse
+1. **Map** the `Identity` to a principal: with proof kind `Secret` or above,
+   the principal sign-in bound it to (§3.1), never by its name again; with
+   `Claimed`, by the claimed uid (§4.3); with `None`, to anonymous. Refuse
    a disabled or deleted principal (§3.7). The result is the caller's
    `Mapped`.
 2. **Squash** it, if the share's policy says so (§6.2). An unlinked machine
@@ -1253,25 +1251,34 @@ package identity // pkg/identity
 // Identity is what the adapter proved for one request, in no protocol's terms;
 // pkg/vfs aliases it (RFC 17 §3.0), so the adapter still imports one package.
 // It names no flavour, mechanism or protocol: each adapter maps its own to a
-// Strength (RFC 21, RFC 22).
+// ProofKind and a Protection (RFC 21, RFC 22).
 type Identity struct {
-	Principal metadata.Principal // the proven principal, Proof.Principal; zero below Verified
-	Strength  Strength
-	Claims    Claims             // what the client asserted; read only at Claimed, never as proof
-	Proof     Proof              // §3.1; zero below Verified
-	Client    netip.Addr
+	Principal  metadata.Principal // the proven principal, Evidence.Principal; zero below Secret
+	Proof      ProofKind
+	Protection Protection
+	Claims     Claims             // what the client asserted; read only at Claimed, never as proof
+	Evidence   Proof              // what sign-in established (§3.1); zero below Secret
+	Client     netip.Addr
 }
 
-// Strength is how much an Identity proved, in increasing order. Only Verified
-// and above prove a principal.
-type Strength uint8
+// ProofKind is how the sender was proved, in increasing order. Secret and
+// Ticket prove a principal. Prose drops the Proof and Protection prefixes.
+type ProofKind uint8
 
 const (
-	None              Strength = iota // nothing: an anonymous caller
-	Claimed                           // POSIX ids asserted, nothing verified
-	Verified                          // a principal proved by a secret
-	VerifiedIntegrity                 // verified, and every message signed
-	VerifiedPrivacy                   // verified, and every message sealed
+	ProofNone    ProofKind = iota // nothing: an anonymous or guest caller, no principal
+	ProofClaimed                  // POSIX ids asserted, nothing verified
+	ProofSecret                   // a shared-secret challenge and response, such as NTLMv2
+	ProofTicket                   // a third party's mutual proof, such as Kerberos
+)
+
+// Protection is how the request's messages are protected, in increasing order.
+type Protection uint8
+
+const (
+	ProtectionNone      Protection = iota
+	ProtectionIntegrity            // every message signed
+	ProtectionPrivacy              // every message sealed
 )
 
 // Claims are POSIX ids a client asserted. They name no principal until
@@ -1283,7 +1290,7 @@ type Claims struct {
 
 // Key is the proof key every cache of identity keys on (§7.1): a
 // collision-resistant digest of every field but Client, which resolution does
-// not read.
+// not read — both Proof and Protection included.
 func (id Identity) Key() ProofKey
 
 // Resolver is admission's step 4 (RFC 17 §4.9); *vfs.Server is its only caller.
@@ -1292,12 +1299,17 @@ type Resolver interface {
 }
 ```
 
-**The flavour sets the strength; this RFC proves the principal.** Verifying a
-Kerberos ticket, its PAC, or an NTLMv2 response is this RFC's (§3.3–§3.5), and
-the `Identity` it returns is at `Verified`. Which strength each protocol flavour
-and level then carries — `AUTH_SYS` as `Claimed`, `krb5i` or a signed session
-as `VerifiedIntegrity` — is [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)'s and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)'s. Resolution reads only
-`Strength`, `Principal`, `Claims` and `Proof`.
+**The flavour sets the proof kind and protection; this RFC proves the
+principal.** Verifying a Kerberos ticket, its PAC, or an NTLMv2 response is
+this RFC's (§3.3–§3.5), and the `Identity` it returns has proof kind `Ticket`
+or `Secret`. Which pair each protocol flavour and level then carries —
+`AUTH_SYS` as `Claimed`, `krb5i` as `Ticket` with `Integrity`, a signed NTLM
+session as `Secret` with `Integrity` — is [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)'s and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)'s. A share's
+`ExportPolicy` sets a minimum on each part, `MinProof` and `MinProtection`
+([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)): Kerberos
+only is `MinProof` `Ticket`, and a minimum Kerberos level is `MinProtection`.
+Resolution reads `Proof`, `Principal`, `Claims` and `Evidence`; it never reads
+`Protection`, which only admission compares.
 
 The result is the caller. The service passes it to the metadata store as the
 resolved identity [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)
@@ -1368,10 +1380,10 @@ principal:
 
 The caller's groups are, in order of source:
 
-| Strength | Groups |
+| Proof kind | Groups |
 | --- | --- |
 | `Claimed` (`AUTH_SYS`) | the claimed gid and supplementary gids, each mapped (§4.3); with `ManageGIDs`, the mapped principal's closure instead (§3.2) |
-| `Verified` and above (Kerberos, NTLM) | the closure of the principal's store memberships (§2.5), unioned with the groups of the proof's verified SIDs and, for a directory principal, the directory's groups; the proof's `DenyOnly` SIDs map to `DenyOnly`, not to groups (§3.4) |
+| `Secret` or `Ticket` (NTLM, Kerberos) | the closure of the principal's store memberships (§2.5), unioned with the groups of the proof's verified SIDs and, for a directory principal, the directory's groups; the proof's `DenyOnly` SIDs map to `DenyOnly`, not to groups (§3.4) |
 | squashed, `None`, an unlinked machine | the `Anonymous` principal's closure |
 
 - The closure is computed whole or the call fails (§2.5).
@@ -1413,7 +1425,7 @@ in this order, stopping at the first that matches:
 > on a cache miss. Read the share's grant list once, under its grant-list version, when a profile shows misses
 > dominated by grant reads.
 
-### 6.5 What the strength proved: authenticated, admin, privileged
+### 6.5 What the proof proved: authenticated, admin, privileged
 
 [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)
 defines what `authenticated`, `admin` and the privileged flag do. This RFC
@@ -1423,7 +1435,7 @@ decides which callers get them:
 | --- | --- | --- | --- |
 | `None` | no | no | never |
 | `Claimed` | no | no | uid 0, unsquashed |
-| `Verified`, `VerifiedIntegrity`, `VerifiedPrivacy` | yes | yes | a principal whose uid is 0, unsquashed; or an `admin` |
+| `Secret` or `Ticket`, any protection | yes | yes | a principal whose uid is 0, unsquashed; or an `admin` |
 | an unlinked machine principal | no | no | never: it acts as `Anonymous` (§2.4) |
 | any squashed caller | no | no | never |
 
@@ -1431,8 +1443,8 @@ decides which callers get them:
   intent, as SMB does, that confinement is the open's
   ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)),
   not the `Identity`'s: the caller's flag is the same for every protocol.
-- `admin` **MUST** be set only from the grant, and only at `Verified` or
-  above. A uid, a group name, a SID such as `S-1-5-32-544` in a PAC, or a
+- `admin` **MUST** be set only from the grant, and only for a proof of
+  `Secret` or above. A uid, a group name, a SID such as `S-1-5-32-544` in a PAC, or a
   management-API role **MUST NOT** set it.
 - An NTLM pass-through session is authenticated exactly as a Kerberos one:
   the domain controller verified it.
@@ -1447,7 +1459,7 @@ the value was derived from:
 
 | Cache | Its key **MUST** include |
 | --- | --- |
-| proof → principal | the `Identity`'s proof key, `Key()` (§6.1): its strength, principal, whole proof — `Name`, bound principal, every SID with whether it is deny-only — and every claim |
+| proof → principal | the `Identity`'s proof key, `Key()` (§6.1): its proof kind and protection, principal, whole evidence — `Name`, bound principal, every SID with whether it is deny-only — and every claim |
 | principal → groups | the principal, and at `Claimed` the claimed gids and the share's `ManageGIDs` |
 | caller, per share | the proof key, the share, `ExportPolicy.Version`, the share's grant-list version, and the principals generation (§7.2); the admission result's key is RFC 17 §4.9's, which carries every field of this row |
 | directory answers | the question (§5.2) |
@@ -1455,7 +1467,7 @@ the value was derived from:
 - **Two proofs that share every numeric ID never share an entry.** Two
   Kerberos principals with the same uid, two NTLM users with the same uid, a
   Kerberos user and an `AUTH_SYS` caller sending its uid: each is a different
-  key, because the key holds the name and the strength, not just the numbers.
+  key, because the key holds the name and the proof kind, not just the numbers.
 - Adding a field to `Identity` or `Proof` is an edit to `Key()`, and adding one
   to `Caller` an edit to every key derived from one. A field that is not
   identity — an account's e-mail address (§2.2) — is in no key. A key that cannot be shown to include the whole value
@@ -1524,7 +1536,7 @@ check is identity's, which the API calls directly (§8.1). This RFC fixes only w
 
 - **A role grants nothing on files.** An API role (`viewer`, `operator`,
   `admin`, [RFC 23 §5.2](rfc-23-control-plane.md#5.2%20Roles)) **MUST NOT** make a principal `admin`, privileged or granted on any share.
-  File access comes only from share grants (§6.4) and strength (§6.5).
+  File access comes only from share grants (§6.4) and the proof (§6.5).
 - **An API user is not uid 0.** The API's bootstrap administrator **MUST NOT**
   be given uid 0, a share grant, or any spelling a file client could present,
   unless an operator gives it one.
@@ -1611,11 +1623,11 @@ type APISignIn interface {
 | ID2 | No ID given to a principal is given to another: `PrincipalID`, allocated uid, gid and RID alike. | §2.3 no reuse |
 | ID3 | No uid or gid is ever a default; every user has a uid, every group a gid, every user and group a SID — an API-only account aside, which has none (§8). 65534 is anonymous's alone. | §2.3, §7.1 one uid, two proofs; §4.4 SID-less directory |
 | ID4 | A SID never changes once given. | §4.4 SID-less directory |
-| ID5 | Every cache of identity is keyed by everything its value was derived from: the proof key, the proof's name and strength included. | §2.3, §7.1 one uid, two proofs |
+| ID5 | Every cache of identity is keyed by everything its value was derived from: the proof key, the proof's name and kind included. | §2.3, §7.1 one uid, two proofs |
 | ID6 | A store or directory error is never read as "no such principal", and never yields a guest, anonymous or default grant. | §5.4 error is not "unknown" |
 | ID7 | A failed sign-in never yields a session. | §3.6 no map to guest |
 | ID8 | `Claimed` and `None` callers (`AUTH_SYS`, `AUTH_NONE`) are never `authenticated` and never `admin`. | §6.5 admin needs proof |
-| ID9 | `admin` is set only from a share grant, at `Verified` or above. | §6.5 admin needs proof; §8 roles grant nothing |
+| ID9 | `admin` is set only from a share grant, for a proof of `Secret` or above. | §6.5 admin needs proof; §8 roles grant nothing |
 | ID10 | A squashed caller carries nothing of the principal it replaced. | §6.2 squash drops SIDs |
 | ID11 | A group closure is used whole or not at all. | §2.5 group cap |
 | ID12 | A directory answer is used no longer than the TTL plus the grace after it was given, read directly or through any cache derived from it. | §5.3 stale grace; §7.1 directory deadline |
@@ -1645,7 +1657,7 @@ type APISignIn interface {
 
 **Spans.** `identity.authenticate` is a child of the adapter's request span. `identity.resolve` is a child of
 the service-call span, opened only on a cache miss. Each directory query is a child of whichever opened it.
-Attributes are the strength or mechanism, the outcome, the cache result and the principal's ID: never a name, SID, ticket or
+Attributes are the proof kind, the outcome, the cache result and the principal's ID: never a name, SID, ticket or
 hash ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
 
 `identity_directory_lookups_total{result="refused"}` rising with
@@ -1695,7 +1707,7 @@ with the directory and KDC as local test services.
 
 **Fuzz.** `FuzzPAC`, `FuzzAPReq`, `FuzzSID` and `FuzzOwnerString` never panic, never
 allocate past the input's size times a constant, and decode∘encode is the identity on what decodes; the NTLM
-message decoder is RFC 20's. **Unit.** Resolution's five steps run as one table-driven test over (strength ×
+message decoder is RFC 20's. **Unit.** Resolution's five steps run as one table-driven test over (proof kind ×
 squash × grant × machine) against a fake `Principals` and a fake `Records`.
 
 **Who fakes what.** This suite drives identity alone, through its own interfaces, with no filesystem and no

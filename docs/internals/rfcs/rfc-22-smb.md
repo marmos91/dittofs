@@ -1327,13 +1327,18 @@ cannot read rather than misreading it, and RFC 14 never reads them.
 **Identity.** The SMB adapter maps each session to RFC 17's neutral
 `Identity` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)):
 
-| Session | `Strength` | `Principal` |
-| --- | --- | --- |
-| anonymous (null session) | `None` | zero |
-| guest | `Claimed` | the guest principal RFC 18 allows, never proved |
-| NTLMv2 or Kerberos, unsigned | `Verified` | the principal `Service.SignIn` returned |
-| NTLMv2 or Kerberos, signing required | `VerifiedIntegrity` | as above |
-| NTLMv2 or Kerberos, encrypted | `VerifiedPrivacy` | as above |
+| Session | `Proof` | `Protection` | `Principal` |
+| --- | --- | --- | --- |
+| anonymous (null session) or guest | `None` | `None` | zero: RFC 18 sets a guest session up as anonymous |
+| NTLMv2, unsigned | `Secret` | `None` | the principal `Service.SignIn` returned |
+| NTLMv2, signing required | `Secret` | `Integrity` | as above |
+| NTLMv2, encrypted | `Secret` | `Privacy` | as above |
+| Kerberos, unsigned | `Ticket` | `None` | as above |
+| Kerberos, signing required | `Ticket` | `Integrity` | as above |
+| Kerberos, encrypted | `Ticket` | `Privacy` | as above |
+
+A share whose `MinProof` is `Ticket` refuses an NTLM session and admits a
+Kerberos one.
 
 The session key comes back from `SignIn` beside the `Identity`, never in it.
 SIDs and names are spelled and parsed through `Service.Spell` and
