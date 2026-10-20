@@ -64,7 +64,7 @@
 
   <rect x="24" y="312" width="852" height="96" rx="6" class="dr"/>
   <text x="36" y="332" class="s">A compound crossing from one share into another is re-admitted, and re-squashed, at the crossing.</text>
-  <text x="36" y="350" class="s">Mount, PseudoRoot and TreeConnect resolve, admit and authorise too: that is where a client fails early, not where it is</text>
+  <text x="36" y="350" class="s">Root — for MNT, PUTROOTFH and TREE_CONNECT — resolves, admits and authorises too: that is where a client fails early, not where it is</text>
   <text x="36" y="366" class="s">gated, since every later call is admitted again.</text>
   <text x="36" y="384" class="s">An admission result may be cached per (share, identity) only with ExportPolicy.Version, the netgroups' versions and</text>
   <text x="36" y="400" class="s">ShareList.Version in the key.</text>

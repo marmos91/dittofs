@@ -44,7 +44,7 @@
   <rect x="24" y="190" width="130" height="86" rx="5" class="sv"/>
   <text x="34" y="208" class="h">1 admit</text><text x="34" y="226" class="s">to share profiles:</text><text x="34" y="241" class="s">state, flavour,</text><text x="34" y="256" class="s">client rules, squash</text>
   <rect x="168" y="190" width="130" height="86" rx="5" class="sv"/>
-  <text x="178" y="208" class="h">2 route</text><text x="178" y="226" class="s">to the primary of</text><text x="178" y="241" class="s">the file's shard</text>
+  <text x="178" y="208" class="h">2 route</text><text x="178" y="226" class="s">to the file's</text><text x="178" y="241" class="s">primary</text>
   <rect x="312" y="190" width="130" height="86" rx="5" class="sv"/>
   <text x="322" y="208" class="h">3 authorise</text><text x="322" y="226" class="s">through the metadata</text><text x="322" y="241" class="s">store's one</text><text x="322" y="256" class="s">chokepoint</text>
   <rect x="456" y="190" width="130" height="86" rx="5" class="sv"/>

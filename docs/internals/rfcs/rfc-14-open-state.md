@@ -981,6 +981,14 @@ where the other adapter cannot see it: a lock one protocol grants and the other
 does not observe is not a lock. Every adapter reaches the table through the
 filesystem service ([RFC 17](rfc-17-vfs.md)), which routes to the primary.
 
+**Who owns the table.** It is built at the primary and owned by the
+filesystem service's per-file part there, handed to it in the service's `Deps`
+([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), and it is the
+only lock manager in the system. The service's
+front on the protocol node and the adapters hold none of it; only this RFC's
+durable pieces, client records and persistent opens, reach the metadata store
+([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)).
+
 ## 4. Client leases, grace and reclaim
 
 ### 4.1 A client lease
@@ -1985,13 +1993,13 @@ service ([RFC 17](rfc-17-vfs.md)) is this interface's only caller.
 **One lock order.** A call that takes a file's open-state step — the
 serialisation each call below runs under at the file's primary, a
 `CheckChange` held to its commit included — takes it in the one order
-[RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write) states for every call: the open-state
+[RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order) states for every call: the open-state
 steps of every file it touches, in FileID order, then fold admission, then the
 accept locks, in FileID order. Open state never takes an accept lock or waits on
 fold admission while it holds a step out of that order, so a write holding its
 file's step and an unlink holding that file's accept lock never wait on each
 other. A call the service holds behind a clone or a chunk holds none of these
-while it waits ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write), "A held call holds nothing", which owns the rule).
+while it waits ([RFC 17 §5.0](rfc-17-vfs.md#5.0%20One%20lock%20order), "A held call holds nothing", which owns the rule).
 
 ```go
 // ClientStatus is what a renewal reports beside the lease; RFC 17's
@@ -2043,9 +2051,11 @@ type OpenState interface {
 
 	// Restart notification from an NLM host (§4.5): expires its old ClientID.
 	HostRestarted(ctx context.Context, host []byte, state uint32) error
-	DropShare(ctx context.Context, share ShareID, why DropReason) error // why is removed or moved. Ends every open, lock, lock waiter (NLM ones included), grant, watch, layout and copy under the share, and every copy reading from it, without a recall or a wait for the holder: for a share being removed (RFC 16 §2.3.2), and at a namespace move's release for each moved share (RFC 27 §2.2), whose FileIDs a move back would meet again; each is reported to its adapter through Revoked with the share-removed or the moved reason (RevokedMoved, RFC 17 §3.2), and its records go with it, so a later stateid of the share resolves to nothing and is answered bad stateid with no revoked-state flag left for the client to clear (RFC 21 answers it so); so a blocked lock or a pending change notification is answered rather than left waiting; it starts no §5.3 no-grant period for the client, and runs whether or not the shard is in grace
+	DropShare(ctx context.Context, share ShareID, why DropReason) error // why is removed or moved. Ends every open, lock, lock waiter (NLM ones included), grant, watch, layout and copy under the share, and every copy reading from it, without a recall or a wait for the holder: for a share being removed (RFC 16 §2.3.2), and at a namespace move's release for each moved share (RFC 27 §2.2), whose FileIDs a move back would meet again; each is reported to its adapter through Revoked as RevokedShare, the move's address set for a moved share (RFC 17 §3.2), and its records go with it, so a later stateid of the share resolves to nothing and is answered bad stateid with no revoked-state flag left for the client to clear (RFC 21 answers it so); so a blocked lock or a pending change notification is answered rather than left waiting; it starts no §5.3 no-grant period for the client, and runs whether or not the shard is in grace
 
-	// Asynchronous copies (§2.7). The filesystem service runs the copy and
+	// Asynchronous copies (§2.7): unused until a client is shown to need
+	// offload; the filesystem service answers every copy synchronously (RFC 17 §9).
+	// The filesystem service runs the copy and
 	// reports progress; Status and Cancel answer ErrNoCopy for a lost copy.
 	CopyBegin(ctx context.Context, c ClientID, cp Copy) (CopyID, error)
 	CopyProgress(ctx context.Context, id CopyID, done int64, s CopyState) error
@@ -2056,7 +2066,9 @@ type OpenState interface {
 	Return(ctx context.Context, c ClientID, g GrantID) error
 	AckBreak(ctx context.Context, c ClientID, g GrantID, to GrantKind) error
 
-	// Layouts (§2.6).
+	// Layouts (§2.6): reserved, cluster only. The filesystem service declares
+	// no layout call until a pNFS design is scheduled (RFC 17 §3.1, §10); a
+	// single node answers every layout operation not supported.
 	LayoutGet(ctx context.Context, c ClientID, o OpenID, r ByteRange, write, reclaim bool) (Layout, error)
 	LayoutCommit(ctx context.Context, c ClientID, l LayoutID, end int64, mtime time.Time) error // ErrBadLayout on a stale epoch
 	LayoutReturn(ctx context.Context, c ClientID, l LayoutID) error
@@ -2079,6 +2091,9 @@ type OpenState interface {
 	CheckChange(ctx context.Context, file FileID, by ClientID, what ChangeMask) error
 }
 
+// The filesystem service returns these to adapters as RFC 17 §4.3's errors:
+// the state refusals as ErrState kinds (ErrStaleClient as StateError
+// StaleClient, and so on), the rest under their own names.
 var (
 	ErrGrace          = errors.New("openstate: in grace period")
 	ErrShareViolation = errors.New("openstate: deny mode conflict")
