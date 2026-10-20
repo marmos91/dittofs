@@ -275,8 +275,9 @@ This document **MUST NOT**:
 - decide admission, tree connect or share enumeration — [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees);
 - decide authentication, principals or the mapping of users to Windows
   security identifiers (SIDs) — [RFC 18](rfc-18-identity.md#4.4%20SIDs); or
-  the mapping between a Windows security descriptor and the stored access
-  control list (ACL) — [RFC 19](rfc-19-authorization.md#6.%20SMB%20security%20descriptors);
+  what a stored access control list (ACL) means and how it is evaluated —
+  [RFC 19](rfc-19-authorization.md#2.%20The%20model). How a Windows security
+  descriptor spells that ACL is this RFC's (§11);
 - restate MS-SMB2 framing, or the rows of the status table that follow from
   MS-SMB2, which the adapter holds and
   [RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) keeps total over
@@ -535,7 +536,26 @@ one gateway node's memory; a client that loses the node signs in again.
   share but `IPC$` **MUST** be `STATUS_ACCESS_DENIED`, whatever the share's
   grants or policy would otherwise admit, and on `IPC$` it reaches only §5.2's
   services. A session setup whose credential fails is never made anonymous or
-  guest; it fails.
+  guest; it fails. How this confinement meets a re-authentication, and guest
+  access to disk shares, is open (§20, item 5); this rule is unchanged.
+- **Re-authentication in place.** A `SESSION_SETUP` naming an existing
+  `SessionId` without `SMB2_SESSION_FLAG_BINDING` re-authenticates that session
+  ([RFC 18 §3.8](rfc-18-identity.md#3.8%20Re-authentication)): the adapter
+  passes the session's current evidence in `SignInStep`, and a success keeps the
+  session's trees, opens and keys and replaces its identity in one step. Which
+  identity a successful re-authentication leaves the session with is open
+  (§20, item 5). Any failed re-authentication tears the session down as
+  MS-SMB2 3.3.5.5.3 requires: its opens close, pending change notifications
+  complete `STATUS_NOTIFY_CLEANUP`, and its trees are removed.
+- **An expired session keeps its release commands.** On a session past its
+  evidence's expiry, every command but `SESSION_SETUP` (re-authentication),
+  `LOGOFF`, `CLOSE`, an unlocking `LOCK` and an oplock or lease break
+  acknowledgement is refused `STATUS_NETWORK_SESSION_EXPIRED`, so a client can
+  release what it holds while it renews its ticket.
+- **The NTLM MIC is identity's to check**
+  ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)), so the adapter keeps the
+  `NEGOTIATE`, `CHALLENGE` and `AUTHENTICATE` bytes exactly as they crossed
+  the wire and passes them in `SignInStep`.
 
 > decision: a keyless session is exempt from signing and confined to `IPC$`,
 > rather than refused outright, because the exemption is then worth only a
@@ -576,9 +596,12 @@ card. A client asks for the server's addresses
   session, tree connects, and reconnects its durable and persistent opens
   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)).
 - **`PreviousSessionId` is honoured on the node that holds it.** A
-  `SESSION_SETUP` naming a previous session that this node still holds, for
-  the same user, **MUST** tear that session down before it completes, as
-  MS-SMB2 3.3.5.5.3 requires: that session's volatile opens close and its own
+  `SESSION_SETUP` naming a previous session that this node still holds **MUST**
+  tear that session down before it completes, as MS-SMB2 3.3.5.5.3 requires,
+  but only once this setup's `SignIn` has succeeded and bound to the same
+  `PrincipalID` as the previous session's. A failed, anonymous or other-principal
+  setup leaves the previous session untouched, and the field is then ignored,
+  never answered differently, since session IDs are predictable. On teardown that session's volatile opens close and its own
   durable and persistent opens are marked disconnected at their primaries, so
   the reconnects that follow find them free. Opens of other sessions under the
   same `ClientGuid` (§4.4) are untouched.
@@ -697,6 +720,11 @@ Its response carries the share's `ExportPolicy.SMB`:
   ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)).
 - **Hidden.** Nothing on the wire; the share is omitted from enumeration
   ([§5.2](#5.2%20IPC%24%20and%20the%20RPC%20services)).
+- **Access-based enumeration.** The share answers `TREE_CONNECT` with
+  `SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM`, and every `QUERY_DIRECTORY` on
+  it returns only the entries
+  [RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read)
+  lets through. The filter is the service's listing, never the adapter's.
 - The caller's maximal access (`MaximalAccess`) is the service's `Access` on
   the share root.
 
@@ -754,15 +782,17 @@ up its cache, and how a reconnect finds its open.
   (MS-SMB2 2.2.13.1) **MUST** be mapped through the file generic mapping to
   `FILE_GENERIC_READ`, `FILE_GENERIC_WRITE`, `FILE_GENERIC_EXECUTE` and
   `FILE_ALL_ACCESS` (MS-FSA 2.1.5.1.2) before `Open`, and so are the same
-  bits in an access mask of a descriptor a client sets, by
-  [RFC 19 §2.4](rfc-19-authorization.md#2.4%20Rights)'s mapping. Unmapped, no stored entry and no mode bit grants them, and a Linux
+  bits in every access mask of a descriptor a client sets (§11), before the
+  call. Directories use the same bits. This RFC is the one owner of the mapping:
+  the core receives entry rights only, and refuses a generic bit that reaches it
+  ([RFC 19 §2.4](rfc-19-authorization.md#2.4%20Rights)). Unmapped, no stored entry and no mode bit grants them, and a Linux
   client, which sends `GENERIC_READ` and `GENERIC_WRITE` on its opens, is
   refused every open.
 - **The mapped sets' minor rights follow the mode's bits.** The mapped sets
   also ask for `SYNCHRONIZE`, `READ_CONTROL`, `FILE_READ_EA`,
   `FILE_WRITE_EA`, `FILE_READ_ATTRIBUTES` and `FILE_WRITE_ATTRIBUTES`. On a
-  mode-governed file they are granted by the walk of
-  [RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode),
+  mode-governed file they are granted by the ACL the mode implies
+  ([RFC 19 §4.1](rfc-19-authorization.md#4.1%20The%20ACL%20a%20mode%20implies)),
   which owns the rule; on the wire it means `SYNCHRONIZE`, `READ_CONTROL`,
   `FILE_READ_EA` and `FILE_READ_ATTRIBUTES` go with any mode bit the caller
   holds, read, write or execute, and `FILE_WRITE_EA` and
@@ -1524,94 +1554,220 @@ with its mapping and limits.
 
 A Windows security descriptor holds a file's owner and group, its access
 control list (DACL, the discretionary ACL: who may do what), and its system ACL
-(SACL: which accesses are audited). Here it is RFC 7's ACL through the one
-translation both adapters use
-([RFC 19 §6](rfc-19-authorization.md#6.%20SMB%20security%20descriptors)).
+(SACL: which accesses are audited). Here it is RFC 7's one ACL, whose model and
+evaluation are [RFC 19](rfc-19-authorization.md#2.%20The%20model)'s, spelled
+through the one translation both adapters use
+([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)).
+This section is that spelling.
 
-- Owner and group security identifiers (SIDs) are RFC 18's principals
-  ([RFC 18 §4.4](rfc-18-identity.md#4.4%20SIDs)); a deleted one is shown as the
-  null SID `S-1-0-0`.
-- The DACL is the ACL's access list and its flags. An effective `OWNER@` or
-  `GROUP@` entry is spelled with the owner's or group's SID, an inheritable one
-  as CREATOR OWNER or CREATOR GROUP, and an entry naming the owner's or group's
-  SID is stored back as `OWNER@` or `GROUP@`
-  ([RFC 19 §6.3](rfc-19-authorization.md#6.3%20Owner%20and%20group%20entries%20become%20%60OWNER%40%60%20and%20%60GROUP%40%60)).
-- The **SACL is the ACL's audit entries**
-  ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)),
-  stored with it; reading or writing it needs `ACCESS_SYSTEM_SECURITY` on the
-  open, which **MUST** be granted only to a caller whose identity has `admin`
-  set ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)),
-  never by the file's ACL, by ownership or by privilege alone. A request for it
-  by anyone else is `STATUS_PRIVILEGE_NOT_HELD`. NFS gates the same entries the
-  same way ([RFC 21 §8.1](rfc-21-nfs.md#8.1%20Supported)), so neither protocol
-  is a way round the other.
-- Audit entries never grant or deny; they select the access events the service
-  emits ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)).
-- A query returns none of the parts the caller did not ask for, and never a
-  label, attribute or scope part.
-- **What a set may carry is RFC 19's**
-  ([§6.4](rfc-19-authorization.md#6.4%20What%20is%20not%20supported),
-  [§2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)). A
-  set it refuses is refused whole and nothing is stored: object, callback,
-  mandatory-label, resource-attribute or scoped-policy entries, an entry kind or
-  revision the model does not hold, an audit entry in the DACL or an allow in
-  the SACL, a list of more than 128 entries or over 64 KiB, an entry naming a
-  SID no principal holds, or a deny naming a well-known principal that matches
-  no caller, are `STATUS_INVALID_SECURITY_DESCR`; an owner or group SID no
-  principal holds is `STATUS_INVALID_OWNER` or `STATUS_INVALID_PRIMARY_GROUP`
-  ([RFC 19 §6.1](rfc-19-authorization.md#6.1%20The%20parts)). A null DACL is
-  stored as allow `EVERYONE@` every right and read back so.
-- **Who may read and change a descriptor is the chokepoint's walk**
-  ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)), not the adapter's: the
-  file's owner holds `READ_CONTROL` and `WRITE_DAC` whatever the DACL denies,
-  unless an entry for owner rights applies, so an owner can always repair a
-  DACL that locks it out. An open asking `MAXIMUM_ALLOWED`
-  ([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), the `MxAc` create
-  context and `MaximalAccess` are answered from `Files.Granted`, through the
-  service's `Access`
-  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), to which the adapter
-  passes the directory the open resolved through, as for `DELETE` at open
-  (§6.1), so the `DELETE` granted through the parent is in the answer.
-- **Setting the owner or group** follows
-  [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved):
-  only a privileged caller may set the owner to another principal, and over
-  SMB only through a handle opened with backup or restore intent; an
-  unprivileged caller may set it only to itself, and only with the change-owner
-  right (`WRITE_OWNER`), which an ACL grants and which is not a privilege; the
-  owner, or a caller with that right, may set the group only to one it is a
-  member of; anything else is `ErrPerm`, `STATUS_ACCESS_DENIED`.
-- **The backup and restore privileges are the one privileged flag.** Which
-  callers hold it is
-  [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)'s
-  rule — over SMB, an authenticated session whose principal a share grant
-  names `admin`; never a guest or anonymous one. Take-ownership is not among
-  them: it is the `WRITE_OWNER` right above, decided by the DACL. The adapter
-  asks for privilege only where Windows applies those privileges: a `CREATE`
-  with `FILE_OPEN_FOR_BACKUP_INTENT` sets `OpenRequest.Backup` (§16.4), the
-  service marks the open privileged when its caller is, and **every later
-  request through the handle that `CREATE` made** — reads, writes, a set of
-  the owner, group or DACL, a rename — passes that open, so its privilege
-  applies, as
-  [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)
-  says. Every request of the session through any other handle is decided by
-  the DACL and mode as anyone's is, and `MaximalAccess` and the `MxAc` context
-  are computed without the flag, even on an intent handle. A backup-intent
-  open is granted every right but what the immutable and append-only flags
-  refuse
-  ([RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)),
-  so a backup tool in backup mode reads and restores files their DACLs would
-  refuse it, and `robocopy /B /SECFIX` restores owner, group and DACL alike
-  — except execute on a file that no mode execute bit and no ACL entry grants
-  to anyone, which `Files.Granted` withholds from a privileged caller too
-  ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)).
-- **A request through a handle uses the handle's grant.** A security
-  descriptor set, a rename, an EA set or removal (§9.5) and a delete, a
-  delete on close's included (§13), through a FileId pass the open to the
-  service as the `Target`'s `Open` (an `OpenRef`, [RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), so the access the
-  open was granted — the privileged flag of an intent handle, and the
-  `DELETE` granted at open through the parent (§6.1) — applies, and is not
-  re-checked against the file. A rename still checks, at the rename, that the
-  caller may add an entry to the target directory (MS-FSA 2.1.5.14.11).
+**The parts.**
+
+| Part | Model | To read | To write |
+| --- | --- | --- | --- |
+| owner SID | the File's `Owner` | read the ACL | change the owner, under [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)'s rules for the value |
+| group SID | the File's `Group` | read the ACL | change the owner, under RFC 7 §7.4 |
+| DACL | the access list and its flags | read the ACL | write the ACL |
+| SACL | the audit list and its flags | `ACCESS_SYSTEM_SECURITY` | `ACCESS_SYSTEM_SECURITY`, and write the ACL in the call's ceiling |
+
+- The rights are asked of the chokepoint through the open the request came on
+  ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)), so the open's grant
+  decides, as Windows' set-security does. A query returns only the parts its
+  security-information bits ask for, and never a label, attribute or scope
+  part. A set changes only the parts its security-information bits name,
+  whatever else the descriptor holds, and the parts it names change together,
+  in one transaction, with `Mode`
+  ([RFC 19 §4.3](rfc-19-authorization.md#4.3%20Setting%20mode%20and%20ACL)).
+- **Owner and group SIDs** are RFC 18's principals
+  ([RFC 18 §4.4](rfc-18-identity.md#4.4%20SIDs)), spelled as §16.3 says; a
+  deleted one is shown as the null SID `S-1-0-0`. On a set, one no principal
+  holds is `STATUS_INVALID_OWNER` or `STATUS_INVALID_PRIMARY_GROUP`; it is never
+  ignored with the rest of the set applied.
+- **The SACL is the ACL's audit list.** Reading or writing it needs
+  `ACCESS_SYSTEM_SECURITY` on the open, which is granted only to a caller whose
+  identity has `admin` set, never by the file's ACL, by ownership or by
+  privilege alone
+  ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)).
+  A request for it by anyone else is `STATUS_PRIVILEGE_NOT_HELD`. NFS gates the
+  same entries the same way ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)), so
+  neither protocol is a way round the other. Audit entries never grant or deny;
+  they select the access events the service emits
+  ([RFC 19 §3.6](rfc-19-authorization.md#3.6%20Audit%20entries%20select%20events)).
+- **A descriptor sent with a `CREATE`** (the `SecD` context) is the new file's
+  ACL, owner and group, set under the same rules in the create's transaction,
+  in place of the inherited ACL. It carries no security-information bits, so
+  its parts are those it holds; a part it does not hold is the one the create
+  would give, so a `SecD` without a SACL keeps the inherited audit list
+  ([RFC 19 §4.4](rfc-19-authorization.md#4.4%20Inheritance)).
+
+**Control bits.** The descriptor's control bits map to RFC 19's list flags
+([§2.6](rfc-19-authorization.md#2.6%20ACL%20flags%2C%20null%20and%20empty)):
+
+| List flag | DACL | SACL |
+| --- | --- | --- |
+| protected | `SE_DACL_PROTECTED` | `SE_SACL_PROTECTED` |
+| auto-inherited | `SE_DACL_AUTO_INHERITED` | `SE_SACL_AUTO_INHERITED` |
+| defaulted | `SE_DACL_DEFAULTED` | `SE_SACL_DEFAULTED` |
+
+`SE_DACL_PRESENT` with no DACL is the null list, stored as allow `EVERYONE@`
+every right and read back so. The protected flag of a list is its descriptor's
+control bit, set or clear, for a list the set names. The protected and
+unprotected security-information bits (`PROTECTED_DACL_SECURITY_INFORMATION`
+and its siblings) are an API's, which the client turns into that control bit;
+they are not among the bits a set request carries (MS-SMB2 2.2.39).
+
+**Inheritance computed at set.** A set may carry `SE_DACL_AUTO_INHERIT_REQ` or
+`SE_SACL_AUTO_INHERIT_REQ`, asking for inheritance to be computed. Such a set
+recomputes that file's inherited entries from the current lists of the directory
+the open was resolved through (its `via`,
+[RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)),
+by RFC 19 §4.4's rules, read in the set's transaction. It keeps the explicit
+entries the client sent, and stores explicit before inherited. A set with no
+`via` — on a share's root, or through an open by file ID — stores the entries as
+sent. A set without that request stores the entries as sent, inherited flags
+included.
+
+**Entries.**
+
+- Allow, deny, audit and alarm entries of the basic forms are RFC 19's kinds
+  ([§2.2](rfc-19-authorization.md#2.2%20Entry%20kinds)). The DACL holds allow
+  and deny; the SACL holds audit and alarm.
+- Masks are entry rights after the generic mapping (§6.1). Each right is the SMB
+  right of the same bit
+  ([RFC 19 §2.4](rfc-19-authorization.md#2.4%20Rights)):
+
+  | Right | SMB name (on a directory) |
+  | --- | --- |
+  | read data | `FILE_READ_DATA` (`FILE_LIST_DIRECTORY`) |
+  | write data | `FILE_WRITE_DATA` (`FILE_ADD_FILE`) |
+  | append | `FILE_APPEND_DATA` (`FILE_ADD_SUBDIRECTORY`) |
+  | read / write extended attributes | `FILE_READ_EA`, `FILE_WRITE_EA` |
+  | execute | `FILE_EXECUTE` (`FILE_TRAVERSE`) |
+  | delete a child | `FILE_DELETE_CHILD` |
+  | read / write attributes | `FILE_READ_ATTRIBUTES`, `FILE_WRITE_ATTRIBUTES` |
+  | delete, read the ACL, write the ACL, change the owner, synchronize | `DELETE`, `READ_CONTROL`, `WRITE_DAC`, `WRITE_OWNER`, `SYNCHRONIZE` |
+  | system security; the maximal flag | `ACCESS_SYSTEM_SECURITY`; `MAXIMUM_ALLOWED` |
+
+- Flags map by name
+  ([RFC 19 §2.5](rfc-19-authorization.md#2.5%20Entry%20flags)), never by bit:
+
+  | Entry flag | SMB bit |
+  | --- | --- |
+  | file inherit | `0x01` (`OI`) |
+  | directory inherit | `0x02` (`CI`) |
+  | no propagate | `0x04` (`NP`) |
+  | inherit only | `0x08` (`IO`) |
+  | inherited | `0x10` |
+  | successful access | `0x40` |
+  | failed access | `0x80` |
+
+- Order is kept ([RFC 19 §2.7](rfc-19-authorization.md#2.7%20Order)). An
+  explicit entry after an inherited one is stored where it was sent.
+
+**Owner and group entries.** Windows has no word for "whoever owns this file".
+It names the current owner's account directly, and uses CREATOR OWNER,
+inherit-only, for future children. The translation keeps `OWNER@` and a named
+owner entry apart this way:
+
+- **Read.** An effective `OWNER@` entry with no inherit flags is spelled with the
+  owner's SID. An inherit-only `OWNER@` entry is spelled CREATOR OWNER. An
+  `OWNER@` entry both effective and inheritable is spelled as two: the owner's
+  SID with no inherit flags, then CREATOR OWNER inherit-only with the inherit
+  flags. `GROUP@` likewise, with the group's SID and CREATOR GROUP.
+- **Write.** First, a **pair** is folded into one entry: two adjacent entries of
+  the same kind and mask, and the same flags but the inherit flags, the first
+  naming the SID that will be the file's owner after the set with no inherit
+  flags, the second naming CREATOR OWNER, inherit-only, with at least one
+  inherit flag, are stored as one `OWNER@` entry carrying the second's inherit
+  flags without inherit-only. The group's SID followed by CREATOR GROUP folds to
+  `GROUP@` alike. Then an **allow** with no inherit flags naming the owner's SID
+  is stored as `OWNER@`, and one naming the group's SID as `GROUP@`. A deny
+  naming the owner's or group's SID stays a named deny. Every other entry is
+  stored with the principal it names.
+
+The fold makes a write the inverse of a read for an inheritable `OWNER@`, and
+changes no decision: on the file both forms grant the owner the same rights, and
+below it CREATOR OWNER's copy names `OWNER@`
+([RFC 19 §4.4](rfc-19-authorization.md#4.4%20Inheritance)), as the folded
+entry's does. The NFS spelling folds the same pair
+([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)), so no stored ACL holds an
+unfolded pair. A write is not a read's inverse in one case: a stored named allow
+with no inherit flags for the principal that now owns the file is shown as the
+owner's SID and written back as `OWNER@`, and it grants the same until the next
+`chown`.
+
+> decision: an effective allow naming the owner's SID is stored as `OWNER@`.
+> Without it, every Explorer edit of a file with a mode-derived ACL turns the
+> owner's entry into a named entry for alice, which a later `chmod 750` limits to
+> the group bits and a `chown` leaves granting alice. The cost: an allow a
+> Windows user meant for alice personally follows the file to its next owner.
+> Denies are left named, so a deny written for alice keeps denying alice after a
+> `chown`; the cost there is that the mode-implied `deny OWNER@` of a rare mode
+> such as 0044 comes back as a named deny, which fails closed for a new owner.
+> Overturned if a workload is shown to `chown` files whose Windows ACLs name the
+> old owner and expect that owner to keep access.
+
+**What a set may carry.** A set the model cannot hold is refused whole and
+nothing is stored ([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)):
+
+| Descriptor content | Answer |
+| --- | --- |
+| object entries (`ACCESS_ALLOWED_OBJECT_ACE` and its siblings) | `STATUS_INVALID_SECURITY_DESCR` |
+| callback (conditional) entries, allow, deny or audit | `STATUS_INVALID_SECURITY_DESCR` |
+| mandatory-label, resource-attribute and scoped-policy entries, and the label, attribute and scope security-information parts | a query returns none; a set carrying any is `STATUS_INVALID_SECURITY_DESCR` |
+| an entry kind or revision the model does not hold; an audit entry in the DACL or an allow in the SACL | `STATUS_INVALID_SECURITY_DESCR` |
+| everything else RFC 19 §2.8 refuses — a list over its limit, a generic bit left in a mask, an entry naming a SID no principal holds, a deny naming a well-known principal that matches no caller | `STATUS_INVALID_SECURITY_DESCR` |
+| an owner or group SID no principal holds | `STATUS_INVALID_OWNER`, `STATUS_INVALID_PRIMARY_GROUP` |
+
+> decision: an unsupported entry fails the whole set rather than being skipped.
+> Skipping a callback deny grants what it denied; skipping an allow quietly
+> withdraws a grant. Both look like success to the client. Overturned only by
+> supporting the kind; a tool that sets one is told so, and can fall back.
+
+**Who may read and change a descriptor** is the chokepoint's decision, not the
+adapter's: the file's owner holds `READ_CONTROL` and `WRITE_DAC` whatever the
+DACL denies, unless an entry for owner rights applies, so an owner can always
+repair a DACL that locks it out
+([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order),
+step 5). An open asking `MAXIMUM_ALLOWED`
+([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)),
+the `MxAc` create context and `MaximalAccess` are answered from
+`Files.Granted`, through the service's `Access`
+([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), to which the adapter passes
+the directory the open resolved through, as for `DELETE` at open (§6.1), so the
+`DELETE` granted through the parent is in the answer.
+
+**Setting the owner or group** follows
+[RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved):
+only a privileged caller may set the owner to another principal, and over SMB
+only through a handle opened with backup or restore intent; an unprivileged
+caller may set it only to itself, and only with `WRITE_OWNER`, which an ACL
+grants and which is not a privilege; the owner, or a caller with that right,
+may set the group only to one it is a member of; anything else is `ErrPerm`,
+`STATUS_ACCESS_DENIED`.
+
+**The backup and restore privileges are the one privileged flag.** Which
+callers hold it is
+[RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)'s,
+and what it lets a decision grant is
+[RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)'s.
+On the wire: take-ownership is not among them — it is the `WRITE_OWNER` right,
+decided by the DACL; a `CREATE` with `FILE_OPEN_FOR_BACKUP_INTENT` sets
+`OpenRequest.Backup` (§16.4), and the service marks the open privileged when its
+caller is, so every later request through the handle that `CREATE` made carries
+that privilege; every request of the session through any other handle is
+decided as anyone's is; and `MaximalAccess` and the `MxAc` context are computed
+without the flag, even on an intent handle. So a backup tool in backup mode
+reads and restores files their DACLs would refuse it, and `robocopy /B /SECFIX`
+restores owner, group and DACL alike.
+
+**A request through a handle uses the handle's grant.** A security descriptor
+set, a rename, an EA set or removal (§9.5) and a delete, a delete on close's
+included (§13), through a FileId pass the open to the service as the `Target`'s
+`Open` (an `OpenRef`, [RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), so the
+access the open was granted — the privileged flag of an intent handle, and the
+`DELETE` granted at open through the parent (§6.1) — applies, and is not
+re-checked against the file. A rename still checks, at the rename, that the
+caller may add an entry to the target directory (MS-FSA 2.1.5.14.11).
 
 > decision: privilege needs backup or restore intent over SMB, as Windows
 > servers apply their backup and restore privileges, and then covers every
@@ -1857,7 +2013,7 @@ Each session becomes RFC 17's neutral `Identity`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), which names no mechanism
 and no signing or sealing setting:
 
-| `Proof` | `Protection` | `Principal` | ← SMB session |
+| `Proof` | `Protection` | `Evidence.Principal` | ← SMB session |
 | --- | --- | --- | --- |
 | `None` | `None` | zero: RFC 18 sets a guest session up as anonymous | anonymous (null session) or guest |
 | `Secret` | `None` | the principal `Service.SignIn` returned | NTLMv2, unsigned |
@@ -1966,17 +2122,33 @@ onto them and onto the file's type:
 - **Open by id.** `FILE_OPEN_BY_FILE_ID` is `STATUS_NOT_SUPPORTED`: nothing
   resolves a number to a file
   ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused), Appendix D).
-- **Rights.** `GENERIC_*` bits are mapped by the file generic mapping before a
-  call and before an entry is stored (§6.1); `MAXIMUM_ALLOWED` and the `MxAc`
-  context are `Files.Granted`. The minor rights a mode bit grants are spelled
-  `SYNCHRONIZE`, `READ_CONTROL`, `FILE_READ_ATTRIBUTES` and `FILE_READ_EA`
-  (§6.1).
-- **Well-known principals** ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)) have fixed SIDs: everyone
-  `S-1-1-0`, owner rights `S-1-3-4`, Authenticated Users `S-1-5-11`,
-  BUILTIN\Users `S-1-5-32-545`, Administrators `S-1-5-32-544`, NETWORK
-  `S-1-5-2`, SYSTEM `S-1-5-18`, CREATOR OWNER `S-1-3-0`, CREATOR GROUP
-  `S-1-3-1`, ANONYMOUS LOGON `S-1-5-7`; owner and group are the file's own
-  SIDs ([RFC 19 §6.3](rfc-19-authorization.md#6.3%20Owner%20and%20group%20entries%20become%20%60OWNER%40%60%20and%20%60GROUP%40%60)).
+- **Rights.** `GENERIC_*` bits are mapped to entry rights by the file generic
+  mapping this RFC owns (§6.1), and an entry's rights are spelled as §11 says.
+- **Principals are spelled by SID.** Each well-known principal of
+  [RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)
+  has a fixed SID, and every other principal its own:
+
+  | Principal | SID |
+  | --- | --- |
+  | everyone | `S-1-1-0` |
+  | owner rights | `S-1-3-4` |
+  | creator owner, creator group | `S-1-3-0`, `S-1-3-1` |
+  | authenticated users | `S-1-5-11` |
+  | built-in users | `S-1-5-32-545` |
+  | administrators | `S-1-5-32-544` |
+  | network | `S-1-5-2` |
+  | system | `S-1-5-18` |
+  | anonymous | `S-1-5-7` (ANONYMOUS LOGON) |
+  | root | `S-1-22-1-0`, the Unix-user SID of uid 0 |
+  | `OWNER@`, `GROUP@` | the file's owner's or group's SID, or CREATOR OWNER and CREATOR GROUP (§11) |
+  | a user or group | its SID ([RFC 18 §4.4](rfc-18-identity.md#4.4%20SIDs)) |
+  | a deleted principal | the null SID `S-1-0-0` |
+
+  A SID in this table maps back to its principal through `Service.Find`. Of the
+  well-known SIDs, a PAC or a pass-through reply may carry only everyone,
+  authenticated users and network and have them kept; every other well-known SID
+  it carries is dropped and counted
+  ([RFC 18 §3.4](rfc-18-identity.md#3.4%20The%20PAC)).
 - **Names.** The `windows` name rule's reserved characters are those MS-FSCC
   2.1.5.2 forbids in a component
   ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)). The first upcase table RFC 16 §4.6 names is the
@@ -2285,6 +2457,14 @@ name, a SID, a principal or a client address
 | §11 backup intent | A session whose principal a grant names `admin`: open a file its DACL denies without `FILE_OPEN_FOR_BACKUP_INTENT`, assert `STATUS_ACCESS_DENIED` and `MaximalAccess` without the denied right; with it, assert granted. A guest session with the intent: assert denied. As that `admin`, run `robocopy /B /SECFIX` of a tree whose files' DACLs exclude the `admin`, with other owners and groups: assert every file's owner, group and DACL restored. Set another owner through a handle opened without the intent: assert `STATUS_ACCESS_DENIED`. | privilege applied to every open of an `admin` session, or stopping at the intent `CREATE` so a restore cannot set a DACL |
 | §5.2 IPC$ | smbtorture `rpc.srvsvc`, `rpc.wkssvc`; a hidden share is absent from `NetShareEnumAll`. | |
 | §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a gateway node and then a primary failed mid-run: every container mounts again without a repair prompt, and every write acknowledged before the failure reads back. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
+| §4.1 re-authentication | alice holds a Kerberos session with a tree and an open. Re-authenticate with alice's wrong password: the session, its tree and open gone, pending notifies completed `STATUS_NOTIFY_CLEANUP`. Re-authenticate as alice with a new ticket: the tree and open still work and the new expiry is in force. smbtorture `smb2.session.reauth1`–`reauth6` pass as they do against the reference servers. |
+| §4.1 expired session | Let a session's ticket expire: assert a `READ` is `STATUS_NETWORK_SESSION_EXPIRED`, and `CLOSE`, an unlocking `LOCK`, a lease break acknowledgement and `LOGOFF` succeed. |
+| §4.3 `PreviousSessionId` | alice holds a session; a new `SESSION_SETUP` names it with a wrong password, then as bob: assert alice's session and opens untouched each time. Then as alice: assert it torn down. |
+| §5.1 access-based enumeration | On a share with the flag, a directory holding alice's folder and bob's: as bob, `QUERY_DIRECTORY` lists only bob's, and `TREE_CONNECT` reports `SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM`. |
+| §11 owner entries | On a mode-0755 file owned by alice, read the descriptor, write it back unchanged, `chown` the file to bob: assert bob, not alice, holds the owner's rights. Write a descriptor naming alice's SID with `OI CI` on a directory: assert it stays a named entry. Over NFSv4 set `deny alice write` and `allow EVERYONE@ write` on alice's file, write the descriptor back unchanged, `chown` to bob: assert alice still refused write. |
+| §11 inheritance at set | A set with the auto-inherit request on a child whose parent changed: assert the child's inherited entries recomputed and its explicit ones kept; assert its siblings unchanged. |
+| §11 owner SID | Set an owner SID no principal holds together with a DACL: assert `STATUS_INVALID_OWNER` and the DACL unchanged. |
+| §11 null DACL | Set a null DACL: assert everyone granted, and one allow-everyone entry read back. |
 
 **Wire tests.** The wire tests of [RFC 20 §8](rfc-20-adapters.md#8.%20Wire%20tests)
 run this adapter and a reference SMB server through the same scripts and
@@ -2346,6 +2526,24 @@ client label.
 3. **SMB 3.1.1 POSIX extensions** for Linux clients over SMB.
 4. **Directory leases**, with NFS directory delegations and RFC 14's open
    question 4.
+5. **The identity a re-authentication leaves.** A successful re-authentication
+   of a session in place (§4.1) proves an identity, possibly another user's, or
+   anonymous. Two options:
+   1. *The new identity replaces the session's identity*, and every open handle
+      keeps the access granted at its open. This is what reference servers do
+      and what the reference test suite checks (a session re-authenticated as
+      anonymous keeps using its handles). **Recommended.**
+   2. *Follow MS-SMB2 3.3.5.5.3 literally*: a valid session refreshes only its
+      expiry and group SIDs and keeps its original user; an expired session
+      takes the new user.
+
+   Undecided. The keyless-session rule of §4.1 (S19, "a session without a
+   session key reaches no share but `IPC$`") sits on the same question: under
+   option 1 a session re-authenticated as anonymous keeps trees on disk shares,
+   and a deployment that enables guest access to disk shares contradicts S19.
+   S19 is left as written, not strengthened; whether it narrows to keyless null
+   sessions is decided with this item. RFC 18 §3.8 states only what both
+   options share.
 ## Appendix A — prior art
 
 *Non-normative.*
@@ -2402,7 +2600,7 @@ Every share, whatever its policy:
 | `RqLs` v1 and v2 (lease request) | a lease request ([§6.2](#6.2%20Oplocks%20are%20leases)) |
 | `DHnQ`, `DH2Q`, `DHnC`, `DH2C` (durable request, reconnect) | durability and reconnect ([§6.4](#6.4%20Durable%20and%20persistent%20handles)) |
 | `AlSi` (allocation size) | allocation size ([§9.3](#9.3%20Timestamps%2C%20allocation%20and%20sparse%20files)) |
-| `SecD` (security descriptor) | the new file's ACL, owner and group, in place of the inherited ACL ([RFC 19 §6.1](rfc-19-authorization.md#6.1%20The%20parts)) |
+| `SecD` (security descriptor) | the new file's ACL, owner and group, in place of the inherited ACL ([§11](#11.%20Security%20descriptors)) |
 | `ExtA` (extended attributes) | initial extended attributes ([§9.5](#9.5%20Extended%20attributes)) |
 | `TWrp` (timewarp) | the snapshot at that time ([§15](#15.%20Previous%20Versions)) |
 | `AppInstanceId`, `AppInstanceVersion` | RFC 14's `Reconnect.Instance`; a second open with the same id, from another client that may read the file, closes the first (§6.4) |
