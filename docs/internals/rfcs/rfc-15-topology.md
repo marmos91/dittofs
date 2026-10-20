@@ -430,6 +430,12 @@ file logic, and are made by its implementation outside `vfs`.
 > on the share's files is admitted again by its primary's server. Overturned if
 > such a call ever needs state a primary holds.
 
+**Calls with no file run on the receiving node.** A call that names no file —
+sign-in and principal spellings (`Principals`), the client calls, share
+listing and the pseudo-filesystem — is served by the gateway through its local
+checked `vfs.Service` and is never forwarded
+([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)).
+
 ### 2.4 Composition
 
 > [!important] Release 1
@@ -767,6 +773,13 @@ Every message between nodes — a forwarded call, a replication message
   node other than the channel's authenticated peer. Without that, any node — or
   anything that reaches the network — can forge an offload notice that makes a
   replica release dirty content, or a forwarded write under another node's name.
+- **What a forwarded `Identity` is worth.** A primary trusts the `Identity` a
+  forwarded call carries only because the channel it arrived on is mutually
+  authenticated and bound to its sender; it is the gateway node's proof, not
+  the client's, and is never re-verified. Each node resolves it locally against
+  its own caches, which are invalidated on the principals generation
+  ([RFC 18 §7](rfc-18-identity.md#7.%20Caches)), so no resolved caller crosses
+  between nodes.
 
 Collocated, a node channel is a function call and none of this applies.
 

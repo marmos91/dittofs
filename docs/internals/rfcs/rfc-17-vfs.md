@@ -224,8 +224,10 @@ sends:
 ![The separation: on a single node the adapters call vfs.Service, which is the *vfs.Server, and the server alone calls the metadata store, the engine, open state and identity. On node A, a gateway node in a cluster, the adapters call the same vfs.Service, which is a *vfs.Gateway that routes each call through the Router; a call whose primary is node A goes to node A's own server through the checked vfs.Service that Serve returns, which fences and dedups it as it does a forwarded call, and any other call goes with its route envelope over the Transport to vfs.Serve on node B, the file's primary, which fences on node epoch, shard epoch and hop 0, dedups by request ID and calls node B's server, which decides the call. Node B is itself the gateway node for its own clients. The gateway holds a vfs.Service, never a *vfs.Server](img/rfc17-gateway.svg)
 
 **Adapters sign in, the gateway forwards, the server decides.** An adapter
-authenticates its client with [RFC 18](rfc-18-identity.md)'s `Authenticator`
-and passes the `Identity` it proved in every call. The gateway carries that
+authenticates its client through the service's own `SignIn`, which the server
+delegates to [RFC 18](rfc-18-identity.md)'s authenticator, and passes the
+`Identity` it proved in every call. `vfs.Service` is an adapter's only
+dependency on the core: it holds no identity interface of its own. The gateway carries that
 `Identity` without reading it. The server resolves it on the share the call
 reaches, then admits, authorises and runs the call. An adapter is handed a
 `vfs.Service` once and cannot tell which implementation it holds.
@@ -272,7 +274,7 @@ is data, one row per kind of argument:
 | two handles: `Rename`, `Link` | the coordinator that [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) names: the source directory's primary, or the target directory's for a link |
 | two handles: `Copy`, `Clone` | the destination's primary |
 | an ID that names its shard ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) and no handle: `AckRecall`'s `GrantID`, `Unwatch`'s `WatchID`, `TestState`'s and `FreeRevoked`'s `StateRef` | the primary of that shard; for `TestState`, of its first `StateRef`'s, whose server asks each other one's primary through `Peers` |
-| no file: the rest of the `Clients` area, `Root`, `SecInfo`, `ListShares`; or a pseudo-filesystem handle | the local server, which is the lease owner of the clients connected to its node |
+| no file: the rest of the `Clients` area, the `Principals` area, `Root`, `SecInfo`, `ListShares`; or a pseudo-filesystem handle | the local server, which is the lease owner of the clients connected to its node; a call that names no file runs on the node that received it and is never forwarded |
 | a handle the router cannot place | the local server, which admits the call before it answers `ErrStale` (V39), so the gateway refuses nothing |
 
 The gateway keeps nothing past a call, and `Serve` keeps only the dedup table.
@@ -350,7 +352,9 @@ type Deps struct {
 	Meta     *metadata.Store   // RFC 16 §3.2: the views the server declares
 	Open     *openstate.Table  // RFC 14: open state and client records (§2.2)
 	Engine   Content           // RFC 8's engine, or a fake in unit tests (§8)
-	Identity identity.Resolver // RFC 18 §6: real, or a fake in unit tests
+	Identity identity.Resolver // RFC 18 §6: real, or a fake in unit tests; internal to the server
+	Auth     identity.Authenticator // RFC 18 §3.1: behind Principals.SignIn
+	Names    identity.Identities    // RFC 18 §4.1: behind Principals.Spell and Find
 	Peers    Peers             // (cluster) the transport; nil on a single node, where every primary is this one
 	Events   Events            // the node's event sink, or the null sink (§3.3)
 	Clock    clock.Clock
@@ -590,7 +594,7 @@ holds.
 
 | Type | What it is |
 | --- | --- |
-| `Identity` | what the adapter authenticated, not yet mapped through any share's policy: `Protocol`, the flavour and Kerberos level, the uid, gid and groups an `AUTH_SYS` credential carried, the client's address, and RFC 18's proof fields — `Name`, `Principal`, `SIDs`, `DenyOnly`, `Machine`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), never the session key. Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) |
+| `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Principal`, the proven principal or zero for none; `Strength`, how it was proved — `None`, `Claimed` (asserted, not proved), `Verified`, `VerifiedIntegrity` (every message signed), `VerifiedPrivacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Proof`, RFC 18's proof fields — `Name`, `Principal`, `SIDs`, `DenyOnly`, `Machine`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Strength` ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)). Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
 | `OpenRef` | `{Client ClientID; Open OpenID; Handle Handle; Kind RefKind; Seq uint32}`: an open, a delegation, or an anonymous open, and the stateid seqid presented with it (zero: current; an older one is `StateError` `OldState`) — a lock stateid's for a `LOCK` or `LOCKU` that names one. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). It carries no identity: the call's `id` is compared with the principal the open was granted to (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(c, g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)) |
@@ -644,6 +648,7 @@ type Service interface {
 	Data
 	Locking
 	Shares
+	Principals
 }
 
 // Clients (RFC 14). The lease owner is the server of the node holding the
@@ -725,12 +730,28 @@ type Shares interface {
 }
 ```
 
+```go
+// Principals: sign-in and principal spellings. They act on no share and are
+// not admitted; the server delegates each to the identity component it holds
+// (RFC 18 §3.1, §4.1). They run on the node holding the connection and are
+// never forwarded.
+type Principals interface {
+	SignIn(ctx context.Context, step SignInStep) (SignInResult, error)           // one verification round: a ticket or an NTLM response in, the Identity, the session keys and the reply token out
+	Spell(ctx context.Context, p Principal, as Scheme) (Spelling, error)         // owner string, SID, uid: RFC 18's spelling of p
+	Find(ctx context.Context, id Identity, s Spelling) (Principal, error)       // the principal holding s; mints a directory principal only for a proven id
+}
+```
+
 **Principals are not file operations.** Mapping a principal to a protocol's
-spelling and back — SMB's `lsarpc` lookups, NFSv4's owner strings — is
-[RFC 18 §4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)'s
-`Identities`, which acts on no share and is not admitted. `pkg/vfs` re-declares
-it as an alias, `vfs.Identities`, so an adapter keeps importing one package, and
-the node hands it to an adapter beside the service.
+spelling and back is
+[RFC 18 §4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)'s,
+and verifying a handshake is
+[RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)'s;
+the service exposes both as `Principals`, so an adapter imports `pkg/vfs` and
+nothing else of the core. The resolver that maps an `Identity` per share stays
+internal to the server. `SignInStep`, `SignInResult`, `Scheme` and `Spelling`
+alias RFC 18's types; `SignInResult` carries the session keys beside the
+`Identity`, never inside it.
 
 > decision: one interface per area, embedded, and no finer. Each area is one
 > section of this RFC, one file of the conformance suite and the whole surface
@@ -1107,6 +1128,7 @@ and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%
 | `AckRecall` | `OpenState.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
 | `Watch`, `Unwatch` | `OpenState.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
 | `Root`, `SecInfo`, `ListShares` | share records and export policy (gap: RFC 16 declares no read view of the share indexes but `ControlPlane.Shares`), `Files.Root` | — | lease owner |
+| `SignIn`, `Spell`, `Find` | RFC 18's authenticator and principal mapping, held by the server ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface), [§4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)) | — | the local server; never forwarded |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
 | `Snapshots` | RFC 12 `Snapshots.List`, filtered by the handle's path | — | primary |
 

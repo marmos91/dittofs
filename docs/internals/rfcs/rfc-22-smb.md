@@ -1324,6 +1324,21 @@ and lease version, today; the client record's is empty. The bytes start with
 an adapter-defined version, so a node of another version refuses what it
 cannot read rather than misreading it, and RFC 14 never reads them.
 
+**Identity.** The SMB adapter maps each session to RFC 17's neutral
+`Identity` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)):
+
+| Session | `Strength` | `Principal` |
+| --- | --- | --- |
+| anonymous (null session) | `None` | zero |
+| guest | `Claimed` | the guest principal RFC 18 allows, never proved |
+| NTLMv2 or Kerberos, unsigned | `Verified` | the principal `Service.SignIn` returned |
+| NTLMv2 or Kerberos, signing required | `VerifiedIntegrity` | as above |
+| NTLMv2 or Kerberos, encrypted | `VerifiedPrivacy` | as above |
+
+The session key comes back from `SignIn` beside the `Identity`, never in it.
+SIDs and names are spelled and parsed through `Service.Spell` and
+`Service.Find`.
+
 **Request IDs.** SMB names its retries by open state, not by a request
 identity, so the request ID a forwarded call carries
 ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) is minted by
@@ -2312,4 +2327,4 @@ What each method then calls below is
 | srvsvc `NetShareEnumAll` | `ListShares` | |
 | srvsvc `NetShareGetInfo` | `ListShares`, filtered by name | |
 | srvsvc `NetSrvGetInfo`, wkssvc `NetWkstaGetInfo` | none (adapter only) | |
-| lsarpc `LookupSids2/3`, `LookupNames3/4` | none: `vfs.Identities`' `Spell`, `Find` ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)) | |
+| lsarpc `LookupSids2/3`, `LookupNames3/4` | none: `vfs.Service`'s `Spell`, `Find` ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)) | |
