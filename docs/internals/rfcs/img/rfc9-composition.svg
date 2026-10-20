@@ -11,7 +11,7 @@
 .lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
 </style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker></defs>
 <rect width="900" height="640" fill="#ffffff"/>
-<text x="16" y="26" class="t">One GC per storage node: a namespace is a context; all safety sits in block metadata's transactions.</text>
+<text x="16" y="26" class="t">One GC per node: a namespace is a context; all safety sits in block metadata's transactions.</text>
 
 <rect x="20" y="42" width="860" height="40" rx="5" class="vfs"/>
 <text x="34" y="60" class="h">runtime (RFC 23 §2.2) — the composition root builds gc.New(Deps), then Start · Add · Remove · Drain · Close</text>

@@ -439,8 +439,8 @@ checks the counts and never deletes.
 
 ### 2.5 Composition and lifecycle
 
-**One GC per storage node; a namespace is a context.** The composition root builds
-one `*gc.GC` from `Deps` ([§8](#8.%20API%20surface)) on every node with the `storage` role, as it
+**One GC per node; a namespace is a context.** `runtime.New` ([RFC 23](rfc-23-control-plane.md)) builds
+one `*gc.GC` from `Deps` ([§8](#8.%20API%20surface)) on every node, as it
 builds one engine per node and a share is a context there
 ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)). The runtime adds and removes contexts ([RFC 23](rfc-index.md) §2.1): a
 context is one namespace with a remote store, holding that namespace's `View`.
@@ -449,26 +449,27 @@ one scheduler instance, whose tenants are the (namespace, partition) pairs this
 node leases ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)). GC holds no state a restart needs: every source rebuilds
 from its index keys and cursors.
 
-![GC on one storage node. The runtime builds gc.New(Deps) and drives Start, Add, Remove, Drain and Close. Inside the GC, one context per namespace, added and removed by the runtime, holds that namespace's View: Blocks, Remote, Store and Keys. Five sources (deleter, compactor, collector, auditor, recheck) and a lease keeper run on GC's own work-scheduler instance, which every namespace shares. Below it sit the RFC 6 Blocks view over the shared metadata store, where every retirement, verification and gate happens; the RFC 4 remote store for direct deletes, listing and control objects, ref-counted per config; GC's RFC 3 syncer flow for compactor transfers and Recheck calls; RFC 5's keys read-back; and the node's clock, health, metrics and logger. A lifecycle strip reads: New starts nothing, Start registers the sources and each Add acquires leases and rebuilds, Drain stops posting and abandons in-flight compactions, Close releases leases with their epochs kept and closes flows](img/rfc9-composition.svg)
+![GC on one node. The runtime builds gc.New(Deps) and drives Start, Add, Remove, Drain and Close. Inside the GC, one context per namespace, added and removed by the runtime, holds that namespace's View: Blocks, Remote, Store and Keys. Five sources (deleter, compactor, collector, auditor, recheck) and a lease keeper run on GC's own work-scheduler instance, which every namespace shares. Below it sit the RFC 6 Blocks view over the shared metadata store, where every retirement, verification and gate happens; the RFC 4 remote store for direct deletes, listing and control objects, ref-counted per config; GC's RFC 3 syncer flow for compactor transfers and Recheck calls; RFC 5's keys read-back; and the node's clock, health, metrics and logger. A lifecycle strip reads: New starts nothing, Start registers the sources and each Add acquires leases and rebuilds, Drain stops posting and abandons in-flight compactions, Close releases leases with their epochs kept and closes flows](img/rfc9-composition.svg)
 
-| Component | Made of | Depends on | Injected how | Owned by | Lifecycle |
-| --- | --- | --- | --- | --- | --- |
-| `*gc.GC`, one per storage node | namespace contexts, five sources, the lease keeper | everything below | `New(Deps)` | the composition root; the runtime drives it | `New` starts nothing; `Start` after the share contexts; `Drain` and `Close` before they are joined |
-| namespace context | a `View` and the partitions this node holds | `Blocks`, `Remote`, `Keys`, its store's flow | `Add(ns, View)` | GC, one per namespace with a remote store | added when the namespace's records name a remote store; removed once its `NS‖ns` records are gone ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3), or at `Close` |
-| deleter, compactor, collector, auditor, recheck | one scheduler source each | the context's `Blocks`, `Remote` and flow; `Clock` | registered by `Start` | GC | run while a partition of the context is leased; `Recheck` by the holder of the first partition |
-| lease keeper | acquire, renew at a third of the lease, release | `Blocks.Lease`, `Clock` | internal | GC | acquires at `Add`, releases at `Remove` and `Close`, never lowering an epoch |
-| `Blocks` | block metadata's transactions over the shared metadata store ([RFC 6](rfc-6-block-metadata.md), [RFC 16](rfc-16-metadata-store.md)) | — | `View.Blocks` | the root; shared process-wide | opened before GC starts, closed after it closes |
-| `Remote` | the namespace's one remote store ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)) | — | `View.Remote` | the root, ref-counted per store configuration | never closed by GC |
-| syncer flow | one background flow per namespace store ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | `Deps.Syncer` | opened by GC through `OpenFlow` | GC; the syncer is shared | closed at `Remove` and `Close` |
-| `Keys` | the transform layer's keys-object read-back ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) | RFC 5's key lock | `View.Keys` | the root | called once per `Recheck` |
-| work scheduler | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)'s library, GC's own instance | — | `Deps.Sched` | the root; shared by every context | started by `Start`, drained by `Drain` |
-| clock, health, metrics, logger | the node's | — | `Deps` | the root, shared | — |
+| Component | Made of | Depends on | Calls | Injected how | Owned by | Lifecycle |
+| --- | --- | --- | --- | --- | --- | --- |
+| `*gc.GC`, one per node | namespace contexts, five sources, the lease keeper | everything below | `Blocks`, `Remote`, the syncer, `Keys` | `New(Deps)` | the composition root; the runtime drives it | `New` starts nothing; `Start` after the share contexts; `Drain` and `Close` before they are joined |
+| namespace context | a `View` and the partitions this node holds | `Blocks`, `Remote`, `Keys`, its store's flow | its `View` | `Add(ns, View)` | GC, one per namespace with a remote store | added when the namespace's records name a remote store; removed once its `NS‖ns` records are gone ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3), or at `Close` |
+| deleter, compactor, collector, auditor, recheck | one scheduler source each | the context's `Blocks`, `Remote` and flow; `Clock` | `Blocks`, `Remote`, the flow | registered by `Start` | GC | run while a partition of the context is leased; `Recheck` by the holder of the first partition |
+| lease keeper | acquire, renew at a third of the lease, release | `Blocks.Lease`, `Clock` | `Blocks.Lease` | internal | GC | acquires at `Add`, releases at `Remove` and `Close`, never lowering an epoch |
+| `Blocks` | block metadata's transactions over the shared metadata store ([RFC 6](rfc-6-block-metadata.md), [RFC 16](rfc-16-metadata-store.md)) | — | — | `View.Blocks` | the root; shared process-wide | opened before GC starts, closed after it closes |
+| `Remote` | the namespace's one remote store ([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)) | — | the remote service | `View.Remote` | the root, ref-counted per store configuration | never closed by GC |
+| syncer flow | one background flow per namespace store ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | `Deps.Syncer` | `Remote` | opened by GC through `OpenFlow` | GC; the syncer is shared | closed at `Remove` and `Close` |
+| `Keys` | the transform layer's keys-object read-back ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) | RFC 5's key lock | the keys object | `View.Keys` | the root | called once per `Recheck` |
+| work scheduler | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)'s library, GC's own instance | — | the sources | `Deps.Sched` | the root; shared by every context | started by `Start`, drained by `Drain` |
+| clock, health, metrics, logger | the node's | — | — | `Deps` | the root, shared | — |
 
 The engine is not a dependency: GC reaches neither its share contexts nor its
 queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
 
-**Start.** The runtime starts GC after the content subsystem, whose syncer GC's
-flows need, and after the share contexts ([RFC 23](rfc-index.md) §2.2 step 4). `New`
+**Start.** The runtime starts GC in build order: after the metadata store and
+the engine, whose syncer GC's flows need, and before open state, identity and
+`*vfs.Server` ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)). `New`
 starts nothing and opens nothing. `Start` registers the sources. Contexts arrive
 by `Add`. For each, GC acquires the partitions it can, posts `BD` and then `BR`
 up to store time, and runs a first `Recheck`. No delete is issued until that
@@ -481,8 +482,8 @@ have in flight is conditional on records that are gone, so a late one does
 nothing. A share's removal changes nothing here: its refs drop through RFC 6, and
 its blocks retire like any others.
 
-**Drain.** The runtime drains GC before the share contexts are joined and the
-content subsystem stops. GC stops posting, lets each in-flight batch commit or
+**Drain.** The runtime drains GC in reverse build order: after the adapters, the
+gateway and `Serve` stop, and before `*vfs.Server` and the engine stop. GC stops posting, lets each in-flight batch commit or
 abort, and cancels remote deletes at the context's deadline. A cancelled delete
 leaves its record `deleted`, and the next start resumes it. A compaction
 cancelled after its intent abandons that intent at once ([§3.4](#3.4%20A%20retired%20key%20is%20not%20re-created%20underneath%20its%20delete)), and an
@@ -1568,7 +1569,7 @@ The `BR` and `BC` keys lead with the name's first byte, so a holder reads only
 its partition's range. The forward walk is not partitioned: the holder of the first
 partition runs it, as it runs `Recheck`, with one cursor per share. `NS‖ns‖gc‖forward` keeps its
 single started/completed pair. Each partition has a **lease**, a record in the
-metadata store (`NS‖ns‖gc‖lease‖partition`), held by a node with the `storage` role
+metadata store (`NS‖ns‖gc‖lease‖partition`), held by a node
 ([RFC 15](rfc-15-topology.md)) and spread across them; on one node every lease is local. Cadence,
 the trash retention, the space target and the audit period are GC's own
 configuration ([RFC 13](rfc-13-configuration.md)).
@@ -2260,7 +2261,7 @@ row fails the run.
 | Space amplification | stored over referenced bytes under a churn workload, per target, and bytes rewritten to hold it | report; feeds [§12](#12.%20Open%20questions) item 1 |
 | Audit coverage at scale | projected time to merge 2 PB's chunk records and reverse keys at measured throughput | ≤ `gc.audit.period` |
 | Audit coverage at scale: block walk | projected time to point-read 2 PB's carried chunk records (about 8.6×10⁹) at measured throughput | ≤ `gc.audit.period` |
-| Partition scaling | deleter and audit throughput with 1, 4 and 16 storage nodes | ≥ 0.7 × linear at 16 nodes (proposal, unmeasured) |
+| Partition scaling | deleter and audit throughput with 1, 4 and 16 nodes | ≥ 0.7 × linear at 16 nodes (proposal, unmeasured) |
 | Index rebuild | seconds per 10⁶ block records | report |
 | Soak | 72 h of mixed writes, releases, snapshots, compaction and audit, with Group B's invariants checked hourly and Group C's faults on | zero invariant failures; memory and backlog flat |
 
