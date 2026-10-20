@@ -1849,7 +1849,7 @@ cannot know which check runs.
 **Two fields say what the flavour proved.** The filesystem service sets
 `authenticated` when the caller's proof established who it is, and `admin`
 when, on such a proof, the share grant names the principal `admin`; which
-proofs establish identity is [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20flavour%20proved%3A%20authenticated%2C%20admin%2C%20privileged)'s.
+proofs establish identity is [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)'s.
 Authenticated Users and Administrators entries match on them ([§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). An
 unlinked machine principal is not authenticated: on files it acts as the
 share's anonymous principal (RFC 18 §2.4). Neither flag is
@@ -1865,7 +1865,7 @@ would grant what the proof withheld.
 **Privilege is a field of the identity, or of an open.** A *privileged*
 caller is one the filesystem service marks so — POSIX's `CAP_CHOWN`,
 `CAP_FOWNER`, `CAP_DAC_OVERRIDE`, `CAP_FSETID` and `CAP_LINUX_IMMUTABLE`, as one
-flag. Which callers the service marks is [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20flavour%20proved%3A%20authenticated%2C%20admin%2C%20privileged)'s table, and never wider than
+flag. Which callers the service marks is [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)'s table, and never wider than
 this:
 
 - a caller whose identity is asserted rather than proven is privileged only as
