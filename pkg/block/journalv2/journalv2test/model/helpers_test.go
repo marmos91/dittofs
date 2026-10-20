@@ -63,6 +63,7 @@ func refused(t *testing.T, err error) {
 	if err == nil {
 		t.Fatal("the model accepted an outcome the RFC forbids")
 	}
+	t.Logf("refused: %v", err)
 }
 
 func equalSpans(t *testing.T, got, want []span) {
