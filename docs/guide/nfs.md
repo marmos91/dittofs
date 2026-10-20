@@ -450,9 +450,11 @@ among them — is squashed on a `root_to_guest` share exactly as NFS root is, an
 an `all_to_guest` share maps every SMB user to the anonymous UID/GID. SMB guest
 sessions are the exception and stay at UID/GID 65534 under every mode
 ([guest mapping](smb.md)). Crucially, squashing happens at the *identity*
-layer — **after** the client authenticates but **before** the
-[export gate and POSIX/ACL checks](access-control.md). It rewrites *who you are*;
-it never grants access on its own.
+layer — **after** the client authenticates and after the
+[share-permission gate](access-control.md), but **before** the POSIX/ACL checks.
+The gate resolves grants for the UID the client claimed (NFS) or the user it
+authenticated as (SMB); only file operations run as the squashed identity. It
+rewrites *who you are* on the filesystem; it never grants access on its own.
 
 ### How NFS sends an identity
 

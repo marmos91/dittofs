@@ -693,6 +693,14 @@ func askPersistedRecord(ctx context.Context, user *models.User, userStore models
 // group memberships consulted below are current ones rather than those captured
 // when the session authenticated, while every other identity field still comes
 // from the one read that produced the generation the re-check is pinned to.
+//
+// decision: grants resolve against the authenticated, unsquashed user; the
+// share's squash mode applies only to the filesystem identity, in
+// BuildAuthContextFromUser. So an all_to_guest caller keeps its own share grant
+// and does file operations as the anonymous UID/GID. NFS orders the two the
+// same way (ResolveSharePermission runs on the claimed UID before
+// ApplyIdentityMapping), so the protocols agree. Resolve against the squashed
+// identity instead only if both change together.
 func resolveSharePermissionForIdentity(
 	ctx *SMBHandlerContext,
 	sess *session.Session,
