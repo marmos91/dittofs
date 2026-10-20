@@ -530,8 +530,10 @@ jobs:
   summary:
     name: Conformance summary
     runs-on: ubuntu-latest
-    if: always()
-    needs: [wpts, smbtorture, pjdfstest, nfs-mount]
+    # Not on a cancelled run: its cells report `cancelled`, which says nothing
+    # about the code.
+    if: ${{ !cancelled() }}
+    needs: [matrix, graders, wpts, smbtorture, pjdfstest, nfs-mount, smbtorture-kerberos]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
