@@ -1283,7 +1283,8 @@ the file. It runs five steps, and each fills part of the `Caller`:
    (§6.2)? Fills `Principal`: the mapped one, or the share's `Anonymous`.
 3. **Collect** — which groups is it in (§6.3)? Fills `Groups` and `DenyOnly`.
 4. **Grant** — what does this share allow it (§6.4)? Fills `Access` and
-   `ReadOnly`.
+   `ReadOnly`, read for the squashed principal of a claimed identity and for
+   the mapped principal of a proven one (§6.2).
 5. **Flags** — how far is it trusted (§6.5)? Fills `Authenticated`, `Admin`
    and `Privileged`.
 
@@ -1414,11 +1415,32 @@ Squashing replaces the mapped principal with the policy's `Anonymous`:
 - Squashing applies to every protocol alike; `all` over SMB makes every session
   act as anonymous on that share. The default for a new share is `root`.
 
-**Squash, then grants.** Resolution squashes (step 2) before it reads the grants
-(step 4), so a squashed caller's access is the `Anonymous` principal's own grant,
-if any, else the everyone grant: on an `all` share, per-user grants and `none`
-grants decide nothing. Whether a proven caller's grant should be read before the
-squash is open (§12, item 2); this paragraph is the one place that answer lands.
+**The squash order follows the proof.** Whether the share grant is read for
+the principal before or after the squash depends on what the proof proved:
+
+- **A claimed identity** — proof `None` or `Claimed`, such as `AUTH_SYS` or
+  `AUTH_NONE` — is squashed first, and its grant is read for the squashed
+  principal: on an `all` share its access is the `Anonymous` principal's own
+  grant, if any, else the everyone grant, and per-user grants decide nothing.
+- **A proven identity** — proof `Secret` or `Ticket`, such as NTLMv2 or
+  Kerberos — has its grant read for `Mapped`, the principal sign-in
+  authenticated, with that principal's own groups (§6.3's `Secret` or `Ticket`
+  row), before any squash. The squash then applies to file operations only:
+  `Principal`, `Groups` and the flags are the `Anonymous` principal's, as for
+  any squashed caller, while `Access` is the authenticated principal's grant,
+  `none` included. On an `all` share, a per-user grant decides who may use it.
+
+> decision: a claimed identity is squashed before its grant is read, a proven
+> one after. A grant on a claimed uid has no security value: all-squash means
+> "do not trust the claim", and reading grants first would let any client
+> claim an administrator's uid and receive that principal's `admin` or
+> `read-write` grant. A proven principal's grant names who the proof
+> established, so reading it first lets an operator say which users may reach
+> an anonymous drop box. This is the order the Linux kernel NFS server applies
+> to `all_squash` and the order Samba applies to `valid users` before
+> `force user`. The cost: a proven caller's grant and its file identity
+> differ on a squashed share. Overturned if a proof kind between `Claimed`
+> and `Secret` is added; it then needs its own row here.
 
 > decision: squashing applies to SMB too, so a share's policy means one thing
 > whatever the protocol. Over SMB `root` rarely matters, since only a principal
@@ -1834,6 +1856,7 @@ RFC 16's conformance suite's, not repeated here.
 | error is not "unknown" | 2 | Inject a store error on the `uid` index during an `AUTH_SYS` call to a share with an everyone grant of `read-write`: a retryable error and nothing created. | an error read as "not found" |
 | no map to guest | 2 | Over SMB a wrong password, an unknown user and, with the store failing, a known user: `STATUS_LOGON_FAILURE` each time and no session. An anonymous session reaches `IPC$`, and `TREE_CONNECT` to `profiles` is refused. | a failed login answered as guest |
 | squash drops SIDs | 2 | `Squash = all`: a Kerberos caller whose PAC carries `Finance` reads a file whose ACL grants `Finance` only: refused. `Squash = none`: granted. | a squash that kept the SIDs |
+| squash order follows the proof | 2 | `Squash = all`, a grant of `read-write` to alice, `none` to bob, and `read` to everyone. Over `AUTH_SYS` claiming alice's uid: assert a write refused (the everyone grant). Over Kerberos as alice: assert the write succeeds and the file is owned by `Anonymous`; as bob: assert refused at the share. | a claimed uid receiving its principal's grant, or a proven principal's grant ignored on a squashed share |
 | admin needs proof | 2 | A grant names uid 1500 `admin`. Over `AUTH_SYS` as uid 1500, read a mode-0600 file of another user: refused. Give the principal a Kerberos name; over `sec=krb5`: granted. `S-1-5-32-544` in a test PAC for a non-admin: not `admin`. | `admin` from a uid or a SID |
 | roles grant nothing | 2 | [RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)'s §5.1 check, which also asserts that the account holds no spelling. | — |
 | disable takes effect | 2 | bob holds an SMB open and an NFS GSS context; make one call on each, a cache hit. Disable bob; before the `State` is applied, the next call is still served; apply it (fake clock): every call from both is refused. | a cached caller outliving a disable |
@@ -1910,21 +1933,11 @@ their markers, with what would overturn each.
 1. **Name case.** Whether case-insensitive uniqueness of names (§4.6) holds for
    every directory a deployment uses, or a directory with case-distinct names
    needs an exception.
-2. **Squash before grants, or grants before squash.** §6.2 squashes, then reads
-   the grants, so on an `all` share per-user grants and `none` grants decide
-   nothing, and an operator has no per-user way to say who may use an anonymous
-   drop box. Today's code reads the grants for the pre-squash principal. The
-   recommendation is to keep squash first for a `Claimed` proof, and to read the
-   grants first for a proven one (`Secret`, `Ticket`): an all-squash client
-   sending `AUTH_SYS` could otherwise claim the uid of a principal with an
-   `admin` or `read-write` grant and receive that grant, while a proven caller's
-   grant names a principal the proof established. Undecided; §6.2's one
-   paragraph is what changes.
-3. **Minting from a claimed uid.** Whether an `AUTH_SYS` uid with no record
+2. **Minting from a claimed uid.** Whether an `AUTH_SYS` uid with no record
    should mint the directory principal holding its `uidNumber` (§5.5) at all, or
    only principals that sign in with a proof should be minted, leaving `AUTH_SYS`
    users to records an operator creates.
-4. **One machine account, several nodes.** Whether two nodes holding secure
+3. **One machine account, several nodes.** Whether two nodes holding secure
    channels to domain controllers under one machine account invalidate each
    other's channels (§3.5) is unmeasured; if they do, pass-through needs one
    machine account per node, or one node holding the channel for all.
@@ -1966,7 +1979,7 @@ their markers, with what would overturn each.
 | §2.1 | root is a well-known principal | a claimed uid 0 is root without a user record when unsquashed (`internal/adapter/nfs/auth/share_permission.go`) |
 | §4.3 | directory uids written once | foreign SIDs get a durable, never-remapped Unix ID (`models.SIDMapping`); LDAP `rid` mode sets uid = gid = RID with no range base (`pkg/identity/ldap/provider.go`) |
 | §2.4, §8 | API roles grant nothing on files | the bootstrap administrator is created with uid 0 so it bypasses file permission checks (`pkg/controlplane/models/admin.go`); roles themselves are read only by API middleware |
-| §6.2 | squash none, root, all; anonymous is a principal; squash before grants | five modes — `none`, `root_to_admin`, `root_to_guest`, `all_to_admin`, `all_to_guest` — with anonymous uid and gid numbers per export, default 65534 (`pkg/controlplane/models/permission.go`); squashing runs in the NFS adapter and clears SIDs; grants are resolved for the pre-squash identity |
+| §6.2 | squash none, root, all; anonymous is a principal; a claimed identity squashed before its grant is read, a proven one after | five modes — `none`, `root_to_admin`, `root_to_guest`, `all_to_admin`, `all_to_guest` — with anonymous uid and gid numbers per export, default 65534 (`pkg/controlplane/models/permission.go`); squashing runs in the NFS adapter and clears SIDs; grants are resolved for the pre-squash identity |
 | §4.3 | an unmapped uid is anonymous | an unknown uid is a guest granted the share's `default_permission`, or a direct SID grant matched on its uid (`internal/adapter/nfs/auth/share_permission.go`) |
 | §6.4 | default access is an everyone grant | a per-share `default_permission` field; per-user grants, per-group grants and SID grants (`models.SIDSharePermission`) combined with the explicit user grant authoritative |
 | §3.3 | unknown Kerberos user refused | over RPCSEC_GSS an unmapped principal acts as `nobody` (`internal/adapter/nfs/rpc/gss/framework.go`); over SMB it is refused |

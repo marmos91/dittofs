@@ -472,7 +472,8 @@ and carrying why it is read-only
 A file's ACL can narrow what the ceiling allows and never widen it: the ceiling
 is an intersection, not an entry. It is never written into a file's ACL, stored
 or shown; a share's root carries its own ACL like any directory (§4.5). Which
-principal a grant is read for on a squashed share is
+principal a grant is read for on a squashed share — the squashed one for a
+claimed identity, the authenticated one for a proven identity — is
 [RFC 18 §6.2](rfc-18-identity.md#6.2%20Squashing)'s.
 
 > decision: `read-write` is every entry right, the ACL's included, unlike
