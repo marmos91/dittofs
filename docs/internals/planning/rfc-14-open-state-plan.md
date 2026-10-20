@@ -94,7 +94,7 @@ Each piece lands as one or two PRs into `feat/storage-v2`, with its rows of the 
 | # | Piece | RFC 14 | Main calls |
 |---|---|---|---|
 | 1 | Skeleton and stateids | §2.1, §3, §11 | `CheckIO`, `CheckChange` |
-| 2 | Clients and leases | §2.1, §2.9, §4.1, §4.3 | `Connect`, `CreateSession`, `Renew`, `Expire`, `Revoke`, `FreeRevoked`, `Destroy`, `Rebind` |
+| 2 | Clients and leases | §2.1, §2.9, §4.1, §4.3 | `Propose`, `Connect`, `CreateSession`, `Renew`, `Expire` |
 | 3 | Opens and deny modes | §2.2, §6, §7, §9 | `Open`, `Close`, `SetDisposition`, `SuspendTimes`, `Flushed` |
 | 4 | Byte-range locks and waiters | §2.3, §2.8, §2.10, §4.5 | `Lock`, `Unlock`, `TestLock`, `CancelLock`, `HostRestarted` |
 | 5 | Caching grants and recalls | §2.4, §5 | `Return`, `AckBreak`, `RecallGrant` |
@@ -107,9 +107,11 @@ What each piece also carries, and its §13.1 rows:
 1. **Skeleton and stateids:** the `OpenState` interface, errors, the per-file table and step, the
    clock, and `CheckIO`/`CheckChange` with nothing to conflict yet; the stateid layout and its
    per-shard index, with how a miss is classified. *Rows:* one table, client check.
-2. **Clients and leases:** an unconfirmed NFSv4 client stays in the service's front (RFC 17's
-   `Propose`), so open state first sees a client at `Connect`. *Rows:* lease expiry, server
-   owner, client check.
+2. **Clients and leases:** `Propose` holds an unconfirmed NFSv4 client in open state's client
+   area, which runs in the service's front at the client's lease owner (RFC 14 §2.9, §11.3), and
+   `Connect` confirms it. `Revoke` and `FreeState` come with piece 5, which builds the revoked
+   set they act on, and `Destroy` and `Rebind` with the state and back channel they check.
+   *Rows:* L25, L38, L41.
 3. **Opens and deny modes:** deny modes at open; open-unlinked kept alive; delete on close; open
    children refuse an SMB rename or delete of their directory; the calls behind RFC 17's
    `Downgrade` and `ConfirmOpen`. *Rows:* no downgrade, anonymous
