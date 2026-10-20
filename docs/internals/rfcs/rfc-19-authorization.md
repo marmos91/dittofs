@@ -197,10 +197,11 @@ arrives.
 
 > decision: every squashed or anonymous caller of a share is one principal, so
 > each owns what any of them created and holds the owner's implicit rights on it
-> (§3.1 step 5). That is POSIX `all_squash`, and it is reachable only over NFS,
-> since a keyless SMB session reaches only `IPC$`
-> ([RFC 18 §3.6](rfc-18-identity.md#3.6%20Anonymous%20and%20guest%20sessions)).
-> Revisit if a keyless session is ever admitted to a share.
+> (§3.1 step 5). That is POSIX `all_squash`. Over SMB it is reached by a
+> guest on a share that enables guest access
+> ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)), where every guest is the
+> same anonymous principal, as every `all_squash` client is. Revisit if a
+> deployment needs one squashed or guest caller kept from another's files.
 
 `OWNER@` and `GROUP@` follow the file: after a `chown` they match the new owner.
 An entry naming the owner's own principal does not; it keeps matching that

@@ -493,7 +493,7 @@ type ExportPolicy struct {
 	Anonymous   Principal     // what a squashed, AUTH_NONE or anonymous-session caller acts as; by default the well-known anonymous principal (§2.2, 0x0C). A deleted one fails closed: calls it would serve are refused (RFC 18 §6.2)
 	ManageGIDs  bool          // false by default; true replaces an AUTH_SYS caller's gids with its principal's store memberships (RFC 18 §3.2)
 	ReadOnly    bool          // false by default; true narrows every caller's share access to read-only at admission, whatever its grant or client rule (RFC 17 §4.9, RFC 7 §7.4)
-	SMB         SMBShareFlags // encrypt, hidden from enumeration, continuously available, access-based enumeration (RFC 19 §3.7)
+	SMB         SMBShareFlags // encrypt, hidden from enumeration, continuously available, access-based enumeration (RFC 19 §3.7), guest access (RFC 22 §5.1); all off by default
 	Version     uint64        // raised by every change; the authorisation cache key carries it
 }
 
