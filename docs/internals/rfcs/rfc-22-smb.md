@@ -1916,6 +1916,110 @@ link).
   2.2.2.2.1), and the client resolves it.
 - Other tags are refused ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)).
 
+### 12.5 Namespace translation
+
+[RFC 7](rfc-7-namespace-metadata.md) is protocol-neutral: its records, rules and errors name no SMB
+field. This section is where SMB's attribute bits, times, ids, security
+identifiers and statuses meet them; the information classes that carry them
+are [Appendix E](#Appendix%20E%20%E2%80%94%20information%20classes), the descriptors §11.
+
+**Attributes.** RFC 7's stored markers are an attribute set it stores and never
+interprets ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)); the `FILE_ATTRIBUTE_*` bits (MS-FSCC 2.6) map
+onto them and onto the file's type:
+
+| RFC 7 field | SMB |
+| --- | --- |
+| `Type` `Directory` | `FILE_ATTRIBUTE_DIRECTORY`, reported from the type, never stored |
+| `Type` `Symlink` | `FILE_ATTRIBUTE_REPARSE_POINT`, reported from the type (§12.4) |
+| marker read-only | `FILE_ATTRIBUTE_READONLY` |
+| marker hidden | `FILE_ATTRIBUTE_HIDDEN` |
+| marker system | `FILE_ATTRIBUTE_SYSTEM` |
+| marker archive | `FILE_ATTRIBUTE_ARCHIVE` |
+| marker sparse | `FILE_ATTRIBUTE_SPARSE_FILE`, set by `FSCTL_SET_SPARSE` (§9.3) |
+| no marker and not a directory | `FILE_ATTRIBUTE_NORMAL` |
+| none | every other bit — `TEMPORARY`, `OFFLINE`, `NOT_CONTENT_INDEXED`, `ENCRYPTED`, `COMPRESSED`, `RECALL_ON_OPEN`, `RECALL_ON_DATA_ACCESS` — is ignored on a set and never reported |
+| `Birth`, `Access`, `Modify`, `Change` | `CreationTime`, `LastAccessTime`, `LastWriteTime`, `ChangeTime` |
+| `Size`, `Charged` | `EndOfFile`; `AllocationSize`, rounded up to 4096 (§9.3) |
+| `Number`, and the wider id | the 64-bit file ids, and the 128-bit `FileIdInformation` id (§9.1) |
+| the share's filesystem identity | the volume serial number, derived from the `ShareID` (Appendix E.1) |
+| a `Stream` `File` | an alternate data stream, `name:stream:$DATA` (§12.1); its file id is its base file's |
+
+> decision: the read-only marker is stored and reported and refuses nothing,
+> since RFC 7 interprets no marker; a Windows server refuses writes and deletes
+> of a read-only file, and this one does not. The bits that report residency
+> (`OFFLINE`, `RECALL_*`) are never reported, because residency is not an
+> attribute ([RFC 7 §9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute)); the others are not stored. Enforce read-only, as
+> a rule RFC 7 states for every protocol, when an application is shown to rely
+> on the refusal; store a further marker when a client is shown to read back
+> one it set.
+
+- **Times.** In `FileBasicInformation`, 0 leaves a time unchanged and −1 and −2
+  suspend and resume it (§9.3); any other value is a client-given time, stored
+  as given ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)). A time set travels on an open, so a client-given
+  time needs write attributes in the open's grant, a mode bit's included
+  ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs), §6.1). `ChangeTime` is never suspended (§9.3).
+- **Short names.** RFC 7 stores none
+  ([RFC 7 §3.7](rfc-7-namespace-metadata.md#3.7%20No%20short%20names)): directory classes report the short name empty,
+  `FileAlternateNameInformation` is `STATUS_OBJECT_NAME_NOT_FOUND` and a set of
+  one is refused ([Appendix E.3](#E.3%20Not%20supported)).
+- **Open by id.** `FILE_OPEN_BY_FILE_ID` is `STATUS_NOT_SUPPORTED`: nothing
+  resolves a number to a file
+  ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused), Appendix D).
+- **The credential's group.** An SMB session carries no group, so a new file
+  takes the principal's primary group
+  ([RFC 7 §2.4](rfc-7-namespace-metadata.md#2.4%20Attributes%2C%20and%20who%20writes%20them)). An owner or group in a create's security descriptor
+  (`SecD`) is applied after that rule, as a change of owner or group in the
+  create's transaction.
+- **What a session proved.** A session established by authentication, not as
+  guest or anonymous, sets `authenticated`; SIDs a ticket's PAC marks
+  `SE_GROUP_USE_FOR_DENY_ONLY` are the identity's deny-only principals
+  ([RFC 18 §3.4](rfc-18-identity.md#3.4%20The%20PAC)). The backup and restore privileges are RFC 7's
+  privileged open, given only to a `CREATE` with `FILE_OPEN_FOR_BACKUP_INTENT`
+  (§11).
+- **Rights.** `GENERIC_*` bits are mapped by the file generic mapping before a
+  call and before an entry is stored (§6.1); `MAXIMUM_ALLOWED` and the `MxAc`
+  context are `Files.Granted`. The minor rights a mode bit grants are spelled
+  `SYNCHRONIZE`, `READ_CONTROL`, `FILE_READ_ATTRIBUTES` and `FILE_READ_EA`
+  (§6.1).
+- **Well-known principals** ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)) have fixed SIDs: everyone
+  `S-1-1-0`, owner rights `S-1-3-4`, Authenticated Users `S-1-5-11`,
+  BUILTIN\Users `S-1-5-32-545`, Administrators `S-1-5-32-544`, NETWORK
+  `S-1-5-2`, SYSTEM `S-1-5-18`, CREATOR OWNER `S-1-3-0`, CREATOR GROUP
+  `S-1-3-1`, ANONYMOUS LOGON `S-1-5-7`; owner and group are the file's own
+  SIDs ([RFC 19 §6.3](rfc-19-authorization.md#6.3%20Owner%20and%20group%20entries%20become%20%60OWNER%40%60%20and%20%60GROUP%40%60)).
+- **Names.** The `windows` name rule's reserved characters are those MS-FSCC
+  2.1.5.2 forbids in a component
+  ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)). The first upcase table RFC 16 §4.6 names is the
+  mapping set of an NTFS volume's `$UpCase` table, which is how Windows servers
+  and Samba compare names, so a tree copied from an NTFS volume keeps every
+  file, `Straße.docx` beside `STRASSE.docx` included.
+- **Delete pending as SMB sees it.** A disposition set or
+  `FILE_DELETE_ON_CLOSE` sets RFC 14's mark (§13). While it stands, a `CREATE`
+  of the file, and a create, link or rename into the directory it marks, is
+  `ErrDeletePending`, `STATUS_DELETE_PENDING`, and `FileStandardInformation`
+  reports `DeletePending`. The unlink at the last close is RFC 7's ordinary
+  unlink, run as the marking open's principal under its grant
+  ([RFC 7 §8.2](rfc-7-namespace-metadata.md#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later)). The same mark refuses NFS requests too, as an access
+  error ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation)).
+
+**Errors.** RFC 7's neutral errors
+([RFC 7 §11.3](rfc-7-namespace-metadata.md#11.3%20Neutral%20errors)) reach the wire as below; the rows §6.6 already
+holds — `ErrStale` for a share being removed, `ErrNameTooLong`, `ErrPerm`,
+`ErrCross` (`CrossProject`), `ErrInconsistent`, `ErrDeletePending`, `ErrDelay` —
+are not repeated.
+
+| RFC 7 error | SMB |
+| --- | --- |
+| `ErrNotFound` | `STATUS_OBJECT_NAME_NOT_FOUND` for the last component of a path, `STATUS_OBJECT_PATH_NOT_FOUND` for an earlier one |
+| `ErrExist` | `STATUS_OBJECT_NAME_COLLISION` |
+| `ErrNotEmpty` | `STATUS_DIRECTORY_NOT_EMPTY` |
+| `ErrNotDir`, `ErrIsDir` | `STATUS_NOT_A_DIRECTORY`, `STATUS_FILE_IS_A_DIRECTORY` |
+| `ErrAccess` | `STATUS_ACCESS_DENIED` |
+| `ErrInvalid` | `STATUS_OBJECT_NAME_INVALID` for a name RFC 7 refuses; `STATUS_INVALID_PARAMETER` otherwise |
+| `ErrStale` — a released file | `STATUS_OBJECT_NAME_NOT_FOUND`: an open holds its file, so only a durable reconnect meets it (§6.4) |
+| `ErrWrongShare` | `STATUS_ACCESS_DENIED` |
+| `ErrCross` (`CrossShare`) | `STATUS_NOT_SAME_DEVICE`; it does not arise from a rename, whose target is resolved within the tree |
+
 ## 13. Rename and delete with open handles
 
 Windows refuses to rename or delete a file in use in ways NFS does not. RFC 14

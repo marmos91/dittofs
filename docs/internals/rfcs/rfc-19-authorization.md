@@ -903,7 +903,7 @@ either. The translation spells:
 | `EVERYONE@` | `S-1-1-0` | `EVERYONE@` |
 | Authenticated Users, NETWORK | `S-1-5-11`, `S-1-5-2` | `AUTHENTICATED@`, `NETWORK@` |
 | ANONYMOUS LOGON | `S-1-5-7` | `ANONYMOUS@` |
-| owner rights, BUILTIN\Users, Administrators, SYSTEM, CREATOR OWNER, CREATOR GROUP | their fixed SIDs ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)) | the SID's string form at the ID-mapping domain, `S-1-3-4@example.com` |
+| owner rights, BUILTIN\Users, Administrators, SYSTEM, CREATOR OWNER, CREATOR GROUP | their fixed SIDs ([RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)) | the SID's string form at the ID-mapping domain, `S-1-3-4@example.com` |
 | a user or group | from RFC 18 | RFC 18's owner-string spelling for the call's flavour — `name@domain` on Kerberos, the decimal uid or gid on `AUTH_SYS` — with the group flag for a group |
 
 On a set, a `who` of the form `S-…@domain` with a well-formed SID resolves
