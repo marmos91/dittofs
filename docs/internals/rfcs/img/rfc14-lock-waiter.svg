@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 416" width="900" height="416" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}.ok{font-size:11px;font-weight:600;fill:#4c8a58}
+      .no{font-size:12px;font-weight:700;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .life{stroke:#9aa3ad;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="416" fill="#ffffff"/>
+  <text x="16" y="26" class="t">A lock that waits leaves a waiter in the file's table, not a waiting worker, and ends only as listed.</text>
+
+  <rect x="24" y="56" width="214" height="56" rx="6" class="pr"/>
+  <text x="36" y="76" class="h">a lock request</text>
+  <text x="36" y="94" class="s">conflicts with a held lock</text>
+  <path d="M131,114 L131,138" class="ln"/>
+  <text x="138" y="130" class="s">no wait</text>
+  <rect x="24" y="140" width="214" height="50" rx="6" class="bad"/>
+  <text x="36" y="160" class="no">ErrLocked, no waiter</text>
+  <text x="36" y="178" class="s">the request did not ask to wait</text>
+  <path d="M240,84 L298,84" class="ln"/>
+  <text x="246" y="78" class="s">waits</text>
+
+  <rect x="24" y="230" width="250" height="110" rx="6" class="dr"/>
+  <text x="36" y="249" class="h">a lock meeting another's grant</text>
+  <text x="36" y="267" class="s">starts the recall (§7) and is decided</text>
+  <text x="36" y="282" class="s">only after it. Blocking NLM or SMB:</text>
+  <text x="36" y="297" class="s">a waiter, answered ErrBlocked. Any</text>
+  <text x="36" y="312" class="s">other: ErrDelay, no waiter. Never</text>
+  <text x="36" y="327" class="s">ErrLocked: the range may be free.</text>
+  <path d="M276,285 L287,285 L287,150 L298,150" class="ln"/>
+
+  <rect x="300" y="56" width="260" height="112" rx="6" class="sv"/>
+  <text x="312" y="76" class="h">LockWaiter recorded</text>
+  <text x="312" y="94" class="s">answered at once, holding no worker:</text>
+  <text x="312" y="109" class="s">NFSv4: ErrLocked, and the client polls</text>
+  <text x="312" y="124" class="s">NLM, SMB: ErrBlocked, granted later</text>
+  <text x="312" y="142" class="s">one per owner per file; a repeat of</text>
+  <text x="312" y="157" class="s">the same request keeps its Arrived</text>
+
+  <path d="M562,90 L656,78" class="ln"/><path d="M562,130 L656,162" class="ln"/>
+  <text x="572" y="114" class="s">range frees:</text>
+  <text x="572" y="129" class="s">FIFO</text>
+
+  <rect x="660" y="44" width="216" height="76" rx="6" class="sv"/>
+  <text x="672" y="63" class="h">NLM, SMB: granted</text>
+  <text x="672" y="80" class="s">in the step that frees the range;</text>
+  <text x="672" y="95" class="s">NLM_GRANTED resent until the</text>
+  <text x="672" y="110" class="s">host answers; SMB completes</text>
+  <rect x="660" y="132" width="216" height="76" rx="6" class="dr"/>
+  <text x="672" y="151" class="h">NFSv4: reserved</text>
+  <text x="672" y="168" class="s">the range is held for this owner</text>
+  <text x="672" y="183" class="s">until Deadline, one lease period;</text>
+  <text x="672" y="198" class="s">its next poll takes the lock</text>
+
+  <path d="M430,170 L430,228" class="ln"/>
+  <text x="438" y="204" class="s">ends</text>
+  <rect x="300" y="230" width="260" height="110" rx="6" class="bad"/>
+  <text x="312" y="249" class="no">dropped, and nothing else ends it</text>
+  <text x="312" y="267" class="s">cancelled: CancelLock, ordered with grant</text>
+  <text x="312" y="282" class="s">its open closes; SMB: last channel ends</text>
+  <text x="312" y="297" class="s">its client expires or is revoked</text>
+  <text x="312" y="312" class="s">its NLM host restarts; DropShare</text>
+  <text x="312" y="327" class="s">NFSv4: no poll by Deadline</text>
+  <path d="M768,210 L768,285 L562,285" class="ln"/>
+  <text x="580" y="305" class="s">no poll by Deadline: the next</text>
+  <text x="580" y="320" class="s">waiter is considered</text>
+
+  <text x="16" y="370" class="s">First in, first out per range: while a waiter waits, no later request from another owner is granted a lock that</text>
+  <text x="16" y="385" class="s">conflicts with it, so a stream of shared locks cannot starve an exclusive waiter. No adapter imposes a timeout,</text>
+  <text x="16" y="400" class="s">and an adapter that must answer a waiting request other than as granted calls CancelLock first (§2.10).</text>
+</svg>
