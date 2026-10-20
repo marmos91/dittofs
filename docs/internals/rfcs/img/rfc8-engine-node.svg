@@ -11,13 +11,13 @@
 .lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
 </style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker></defs>
 <rect width="900" height="590" fill="#ffffff"/>
-<text x="16" y="26" class="t">One engine per node: share contexts, five policy components, four modules, one queue per journal.</text>
+<text x="16" y="26" class="t">One engine per node: share contexts, five policy functions, three modules, one queue per journal.</text>
 <rect x="20" y="44" width="860" height="44" rx="5" class="vfs"/>
 <text x="34" y="64" class="h">filesystem service — vfs.Service (RFC 17)</text>
-<text x="34" y="80" class="s">the facade's only caller: Write, Commit, Read, Truncate, Deallocate, Release, Clone, Overlay, Allocation, PreWarm</text>
+<text x="34" y="80" class="s">the only caller of the content methods: Write, Commit, Read, Truncate, Deallocate, Delete, Clone, Copy, Overlay, Allocation</text>
 <path d="M450 90V110" class="arr"/>
 <rect x="20" y="112" width="860" height="276" rx="5" class="data"/>
-<text x="34" y="134" class="h">engine (RFC 8) — a library in the process, on every node with the storage role</text>
+<text x="34" y="134" class="h">engine (RFC 8) — a library in the process, one on every node</text>
 <rect x="36" y="146" width="264" height="132" rx="4" class="ext"/>
 <text x="48" y="166" class="h">share contexts (§2.3)</text>
 <text x="48" y="186" class="l">share A: settings, scope, budgets</text>
@@ -26,18 +26,17 @@
 <text x="48" y="246" class="s">scope = namespace ID; every share</text>
 <text x="48" y="262" class="s">has a remote block store</text>
 <rect x="316" y="146" width="268" height="132" rx="4" class="ext"/>
-<text x="328" y="166" class="h">policy (§3.1): decide, no I/O</text>
-<text x="328" y="186" class="m">OffloadScheduler</text>
-<text x="328" y="203" class="m">EvictionPolicy</text>
-<text x="328" y="220" class="m">FillPolicy</text>
-<text x="328" y="237" class="m">CapacityGovernor</text>
-<text x="328" y="254" class="m">HealthTracker</text>
+<text x="328" y="166" class="h">policy (§3.1): pure functions, no I/O</text>
+<text x="328" y="186" class="m">offloadDue</text>
+<text x="328" y="203" class="m">evict, repackDue</text>
+<text x="328" y="220" class="m">fill</text>
+<text x="328" y="237" class="m">admit</text>
+<text x="328" y="254" class="m">health</text>
 <rect x="600" y="146" width="264" height="132" rx="4" class="ext"/>
 <text x="612" y="166" class="h">modules: act, persist nothing</text>
 <text x="612" y="186" class="l">work queue (§6.1)</text>
 <text x="612" y="204" class="l">offload pipeline (§6.3)</text>
-<text x="612" y="222" class="l">dedup oracle (§6.5)</text>
-<text x="612" y="240" class="l">speculator (§7.4)</text>
+<text x="612" y="222" class="l">speculator (§7.4)</text>
 <text x="612" y="262" class="s">block assembler: RFC 2 §5</text>
 <rect x="36" y="292" width="408" height="80" rx="4" class="k"/>
 <text x="48" y="312" class="h">work queue — journal of device 1</text>

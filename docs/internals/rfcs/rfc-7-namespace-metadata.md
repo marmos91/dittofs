@@ -1369,7 +1369,7 @@ Releasing a file drops its refs and decrements the chunks they name
 ([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)), drops the journal's copy of its content, and deletes
 its File, ACL and xattrs, and writes the pending release of each of its named
 streams ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)). It is the engine's `Release`
-([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service)), called by the filesystem service at the file's primary; this component
+([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)), called by the filesystem service at the file's primary; this component
 never calls it ([§1](#1.%20Purpose)) and never drops a ref itself. A release that drops the
 refs and leaves the journal holding the file is half a release. Block metadata is
 never told the name that was removed ([RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)).
