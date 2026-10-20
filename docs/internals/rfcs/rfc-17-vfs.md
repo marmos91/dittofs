@@ -311,7 +311,7 @@ reservations, the admitted-call counts, and the client and open state of §2.2.
 | **adapter** ([RFC 20](rfc-20-adapters.md)) | the wire form of a waiting lock: the request to answer, the NLM host to call back | decides a conflict |
 | **gateway** | nothing | holds any of the open-state table: it routes `Lock`, `Open`, `Close` and the rest to the file's primary |
 | **server, as lease owner** (the node holding the client's sessions) | each NFSv4 client's unconfirmed proposal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)), each client's lease record and callback channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)); relays recalls and grants to the connection | — |
-| **server, at the file's primary** | [RFC 14](rfc-14-open-state.md)'s open-state table: opens, deny modes, byte-range locks of NLM, NFSv4 and SMB alike, delete pending, caching grants, watches, lock waiters, and in a cluster layouts. It is held as the concrete `*openstate.Table` in the server's `Deps`, and the server implements its `Sink`, `Closed` included, which the node hands to the table's `Start` rather than its `Deps`, since the table is built first. The server runs the conflict check and the I/O it admits under the file's accept lock with nothing between ([§4.8](#4.8%20One%20primary%20per%20file), V7) | — |
+| **server, at the file's primary** | [RFC 14](rfc-14-open-state.md)'s open-state table: opens, deny modes, byte-range locks of NLM, NFSv4 and SMB alike, delete pending, caching grants, watches, lock waiters, and in a cluster layouts. It is held as the concrete `*openstate.Table` in the server's `Deps`, of which the server keeps only the views (§2.3), and the server implements its `Sink`, `Closed` included, which the node hands to the table's `Start` rather than its `Deps`, since the table is built first. The server runs the conflict check and the I/O it admits under the file's accept lock with nothing between ([§4.8](#4.8%20One%20primary%20per%20file), V7) | — |
 | **metadata store** ([RFC 16](rfc-16-metadata-store.md)) | only what must survive a restart: client records, persistent SMB opens, the durable open records that keep an unlinked file alive | an ordinary lock |
 
 The table is in memory, keyed by file, never by name or handle. It is lost when
@@ -350,7 +350,7 @@ package vfs // internal/vfs
 
 type Deps struct {
 	Meta     *metadata.Store   // RFC 16 §3.2: the views the server declares
-	Open     *openstate.Table  // RFC 14: open state and client records (§2.2)
+	Open     *openstate.Table  // RFC 14: open state and client records (§2.2); New keeps only its views
 	Engine   Content           // RFC 8's engine, or a fake in unit tests (§8)
 	Identity identity.Resolver // RFC 18 §6: real, or a fake in unit tests; internal to the server
 	Auth     identity.Authenticator // RFC 18 §3.1: behind Principals.SignIn
@@ -427,6 +427,14 @@ type Envelope struct {
 type Call struct { Env Envelope; Op vfs.Op; Args []any; Trace []byte }
 type Reply struct { Results []any; Err error }
 ```
+
+`New` keeps no `*openstate.Table`: it takes the table's seven views
+([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)) as fields, and each
+area of §3.1 calls only the ones it needs — `Locking` calls `openstate.Locks`,
+`Grants` and `Watches`; `Data` calls `Opens` and `Checks`; `Names` calls
+`Checks`; `Attributes` calls `Checks` and `Opens`; `Clients` calls
+`openstate.Clients`, `Recovery` and, for `ReleaseLockOwner`, `Locks`. Starting
+and stopping the table is the node's (§2.5).
 
 The router and the transport are RFC 15's, built over the shard records and
 the node channel; the transport also implements `Peers`, whose methods are every case where a
@@ -1100,33 +1108,35 @@ coordinator, and "lease owner" is the local server, as
 through `Peers` (§2.3). Gaps in the layers below are rows of §10's fourth. Which wire request becomes which method is the protocol RFCs':
 [RFC 21 Appendix D](rfc-21-nfs.md#Appendix%20D%20%E2%80%94%20requests%20and%20the%20service%20calls%20they%20make)
 and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%20the%20service%20calls%20they%20make).
+An open-state call is named by its RFC 14 view (§2.3); `openstate.Clients` is
+qualified so as not to read as the store's `Clients`.
 
 | Method | Metadata calls (RFC 7, RFC 6, RFC 14, RFC 16, RFC 12) | Engine calls (RFC 8) | Runs at |
 | --- | --- | --- | --- |
 | `Propose` | `Clients.Get` by (protocol, name): an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | — | lease owner; it holds the `Client.Pending` proposal in memory, so the confirm must reach the same node |
-| `Connect`, `AddSession`, `Renew`, `Destroy` | `OpenState.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
-| `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `OpenState.Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`; `Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
-| `TestState`, `FreeRevoked` | `OpenState.TestState`; `FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
+| `Connect`, `AddSession`, `Renew`, `Destroy` | `openstate.Clients.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
+| `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `openstate.Clients.Disconnect`, `Recovery.ReclaimComplete`, `Locks.ReleaseLockOwner`; `openstate.Clients.Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
+| `TestState`, `FreeRevoked` | `Recovery.TestState`; `FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
 | `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary through `Peers.Overlay` | the directory's primary |
-| `Create`, `Link` | `Namespace.Create` / `Link`, `OpenState.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
-| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `OpenState.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Release` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
+| `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
+| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Release` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
-| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `OpenState.CheckChange`, `MarkDelete`, `SuspendTimes` | `Draw`; `Truncate` for a size | primary |
+| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange`; `Opens.MarkDelete`, `SuspendTimes` | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr` | `Draw` | primary |
-| `Open` | `Namespace.Lookup` or `Create`, `Files.Authorize`, `Granted`, `OpenState.Open` or `Reconnect` | `Draw` when it creates | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
-| `Downgrade`, `ConfirmOpen` | `OpenState.Downgrade`, `ConfirmOpen` | — | primary |
-| `Close` | `OpenState.Close`; `Namespace.Unlink` for a delete on close | `Release` for an orphan | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
-| `Read` | `OpenState.CheckIO`; `Files.Authorize` for an anonymous or delegated open | `Read` | primary |
-| `Write` | `OpenState.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota | `Draw`, `Write`, `Overlay`, `Commit` when stable | primary |
-| `Commit` | `OpenState.Flushed` through an SMB open | `Commit` | primary |
-| `Deallocate`, `Seek` | `OpenState.CheckIO` | `Deallocate`; `Allocation` | primary |
-| `Copy`, `Clone` | `OpenState.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
-| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `OpenState.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
-| `AckRecall` | `OpenState.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
-| `Watch`, `Unwatch` | `OpenState.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
+| `Open` | `Namespace.Lookup` or `Create`, `Files.Authorize`, `Granted`, `Opens.Open` or `Reconnect` | `Draw` when it creates | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| `Downgrade`, `ConfirmOpen` | `Opens.Downgrade`, `ConfirmOpen` | — | primary |
+| `Close` | `Opens.Close`; `Namespace.Unlink` for a delete on close | `Release` for an orphan | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| `Read` | `Checks.CheckIO`; `Files.Authorize` for an anonymous or delegated open | `Read` | primary |
+| `Write` | `Checks.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota | `Draw`, `Write`, `Overlay`, `Commit` when stable | primary |
+| `Commit` | `Opens.Flushed` through an SMB open | `Commit` | primary |
+| `Deallocate`, `Seek` | `Checks.CheckIO` | `Deallocate`; `Allocation` | primary |
+| `Copy`, `Clone` | `Checks.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
+| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `Locks.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
+| `AckRecall` | `Grants.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
+| `Watch`, `Unwatch` | `Watches.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
 | `Root`, `SecInfo`, `ListShares` | share records and export policy (gap: RFC 16 declares no read view of the share indexes but `ControlPlane.Shares`), `Files.Root` | — | lease owner |
 | `SignIn`, `Spell`, `Find` | RFC 18's authenticator and principal mapping, held by the server ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface), [§4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)) | — | the local server; never forwarded |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
@@ -1562,7 +1572,7 @@ func (s *Server) writeOnce(ctx context.Context, c Caller, ref OpenRef, f File, o
 	if err = s.authz.IO(ctx, c, ref, f, Write); err != nil { // step 2: §4.6
 		return wr, false, err
 	}
-	if err = s.open.CheckIO(ctx, ref, span(off, src), true); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
+	if err = s.checks.CheckIO(ctx, ref, span(off, src), true); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, growth(f, off, src)) // step 4: §5.6
@@ -1677,7 +1687,7 @@ func (s *Server) openLocked(ctx context.Context, c Caller, r OpenRequest, seen F
 	if err := s.authz.Check(ctx, c, f.Handle, r.Parent, r.Access); err != nil { // §4.6: via the parent, so DELETE comes from delete-child
 		return OpenResult{}, false, err
 	}
-	o, g, err := s.open.Open(ctx, c.Client, f.ID, toOpenState(r)) // RFC 14 §6: deny modes; a handle-caching grant over a
+	o, g, err := s.opens.Open(ctx, c.Client, f.ID, toOpenState(r)) // RFC 14 §6: deny modes; a handle-caching grant over a
 	if err != nil {                                                  //   conflict is broken first, ErrDelay(DelayRecall): no worker waits (§3.2)
 		return OpenResult{}, false, err
 	}
@@ -1773,7 +1783,7 @@ func (s *Server) unlinkLocked(ctx context.Context, c Caller, dir Target, name []
 	// Opens of others: a deny-delete refuses after handle caching is broken (§5.3);
 	// a grant on the file is recalled (ErrDelay); an SMB delete of a directory with
 	// an open child is ErrShareViolation (RFC 14 §9.5).
-	if err := s.open.CheckChange(ctx, f.ID, c.Client, ChangeRemove); err != nil {
+	if err := s.checks.CheckChange(ctx, f.ID, c.Client, ChangeRemove); err != nil {
 		return UnlinkResult{}, false, err
 	}
 	var r UnlinkResult
@@ -1815,17 +1825,17 @@ func (s *Server) renameAt(ctx context.Context, c Caller, from Target, fromName [
 	if err := s.authz.Rename(ctx, c, from, src, to, dst); err != nil { // delete-child at from, add-entry at to; through an open its grant
 		return RenameResult{}, err
 	}
-	if err := s.open.CheckChange(ctx, fileOf(to), c.Client, ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
+	if err := s.checks.CheckChange(ctx, fileOf(to), c.Client, ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
 		return RenameResult{}, err
 	}
 	// A rename of a delete-pending file, a deny-delete on src or a replaced dst, and an
 	// SMB rename of a directory with an open child are refused; grants are recalled
 	// (RFC 14 §7, §9.4, §9.5). An SMB rename over a target open by anyone is refused (RFC 22 §13).
-	if err := s.open.CheckChange(ctx, src.ID, c.Client, ChangeRename); err != nil {
+	if err := s.checks.CheckChange(ctx, src.ID, c.Client, ChangeRename); err != nil {
 		return RenameResult{}, err
 	}
 	if exists {
-		if err := s.open.CheckChange(ctx, dst.ID, c.Client, ChangeRemove); err != nil {
+		if err := s.checks.CheckChange(ctx, dst.ID, c.Client, ChangeRemove); err != nil {
 			return RenameResult{}, err
 		}
 	}
@@ -2103,7 +2113,7 @@ func (s *Server) createLocked(ctx context.Context, c Caller, dir Handle, name []
 	if err := s.authz.Check(ctx, c, dir, Handle{}, addRight(a.Kind)); err != nil {
 		return CreateResult{}, err
 	}
-	if err := s.open.CheckChange(ctx, fileOf(dir), c.Client, ChangeAddEntry); err != nil {
+	if err := s.checks.CheckChange(ctx, fileOf(dir), c.Client, ChangeAddEntry); err != nil {
 		return CreateResult{}, err // ErrDeletePending (§5.4)
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(c, a), File{}, inode) // one inode, charged to the new file's owner (§5.6)
@@ -2144,7 +2154,7 @@ func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) e
 	// owner's sequence (StateError BadSeqID), checked and advanced at the owner's
 	// home primary as RFC 14 §2.8 says: this node on a single node; (cluster)
 	// asked through Peers.Sequence first (§2.3).
-	return s.open.Lock(ctx, c.Client, fileOf(ref.Handle), toOpenState(ref, r)) // ErrBlocked: a waiter is registered; LockWaitOver answers it
+	return s.locks.Lock(ctx, c.Client, fileOf(ref.Handle), toOpenState(ref, r)) // ErrBlocked: a waiter is registered; LockWaitOver answers it
 }
 ```
 
@@ -2336,7 +2346,7 @@ tree working:
 | 0 | the neutral value types (§3.0) and errors out of `pkg/metadata` into `pkg/vfs`; the allowlist test below, seeded with every adapter file importing `pkg/metadata` (112 today) | nothing yet: the list only shrinks from here |
 | 1 | `vfs.Service` and `vfs.New` with its lifecycle (§2.5), the server delegating to today's `metadata.Service`; `vfstest`'s `Record`, `Null` and `RecordingCallbacks`; the integration tier's harness | nothing: this is the harness every later slice tests against |
 | 2 | shares, identity and admission: `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem into the service; a cross-protocol test that a quiesced or netgroup-restricted share is refused on every entry path | the four admission paths and three auth-context builders, `v4/pseudofs`, `shareEntryStatus`, the NFSv3 permission cache; closes #3040 and E-01. An adapter's own admission check stays until every operation on its path calls the service: removed earlier, it fails open |
-| 3 | the server reaches today's lock manager through a small lock interface of its own, so `Write`'s `CheckIO` and every other open-state call go through one seam. RFC 14's open state is built new, and its `*openstate.Table` then replaces the manager behind that interface | nothing yet; `pkg/metadata/lock` is deleted once the table replaces it, never ported, and none of its lock persistence carries forward |
+| 3 | the server reaches today's lock manager through RFC 14 §11.3's seven views, served by a shim over the manager, so `Write`'s `CheckIO` and every other open-state call go through one seam. RFC 14's open state is built new, and its `*openstate.Table` then replaces the shim behind the same views | nothing yet; `pkg/metadata/lock` is deleted once the table replaces it, never ported, and none of its lock persistence carries forward |
 | 4 | `Write`, `Read` and `Commit`, with the attempt deadline and the write verifier — the four copies of the write sequence become §5.1, returning `WCC` | the adapters' copies and the payload-scope call sites |
 | 5 | `Open` and `Close`: deny modes, delete on close, releases | the six deny-mode sites; closes E-08 and #2927 |
 | 6 | range-list `Lock` and `Unlock`, then `Copy` and `Clone` | the copychunk loops, `common/clone.go` |
