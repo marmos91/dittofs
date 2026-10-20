@@ -574,7 +574,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
 - **conformance.yml** -- The presubmit profiles of each suite (see the table above)
-- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + badger-s3)
+- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (badger-s3)
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)

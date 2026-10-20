@@ -8,9 +8,7 @@
 # to shared code (a metadata store, the runtime) can break the protocol from
 # underneath, so this runs on all non-docs PRs. Path filters skip docs only.
 #
-#   presubmit (pull_request): memory + badger-s3 x 2 minor versions = 4 jobs
-#   postsubmit (push develop/main) + nightly:
-#     memory, badger, badger-s3 x 2 minor versions = 6 jobs
+#   every event: badger-s3, the production profile, x 2 minor versions = 2 jobs
 #
 # Graded against KNOWN_FAILURES_V40.md / KNOWN_FAILURES_V41.md the same way the
 # POSIX and SMB suites are graded: red only on a failure that is not on the list.

@@ -161,7 +161,7 @@ cd smbtorture
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `memory-kerberos`) |
+| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `badger-s3`, `memory-kerberos`) |
 | `--filter FILTER` | (all) | Run specific sub-test by name |
 | `--timeout SECONDS` | `1200` | Kill smbtorture after SECONDS |
 | `--keep` | off | Leave containers running |

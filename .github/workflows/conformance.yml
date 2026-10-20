@@ -389,7 +389,7 @@ jobs:
   # each named option set in test/nfs-mount/option-sets.sh. Same shape as
   # pjdfstest: a dfs on the host adapter, sudo for the mount. Both suites run
   # in this one job; the matrix cell names which. Mostly nightly: PRs get
-  # cthon04 on memory only, merges get nothing (tiers in suites.json).
+  # cthon04, merges get nothing (tiers in suites.json).
   # ---------------------------------------------------------------------------
   nfs-mount:
     name: ${{ matrix.suite }} ${{ matrix.variant }} / ${{ matrix.profile }}

@@ -1733,7 +1733,6 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      A last job compares the two sides' results per cell.
-   - smbtorture's `badger-s3` cell is new (§4.3), so no script runs it: it needs 5 green runs.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
