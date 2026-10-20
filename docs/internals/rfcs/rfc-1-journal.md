@@ -1114,7 +1114,7 @@ un-offloaded delete that a crash reverts would resurrect a removed file.
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
 Files() iter.Seq[FileID]                   // files of this share with a held extent, an unsettled removal marker or an unsettled synced loss record
 Stats() Stats                              // journal-wide, with a per-share breakdown
-DirtyFiles() iter.Seq2[FileID, time.Time]  // files with an unset offloaded bit, each with its oldest dirty byte's write time
+DirtyFiles() iter.Seq2[FileID, time.Time]  // files with a held or retained extent whose offloaded bit is unset, each with its oldest dirty byte's write time
 ```
 
 `Extents` reports what the journal holds, and is not an answer about what
@@ -1129,8 +1129,11 @@ as past the end of file or as zeros rather than **Lost**.
 `DirtyFiles` is what the engine's age tick reads ([RFC 8 §6.1](rfc-8-engine.md#6.1%20The%20work%20queue)), so it
 **MUST** be cheap: the journal keeps a per-journal list of dirty files keyed by
 their oldest dirty byte's write time, updated when a write sets a file's first
-unset offloaded bit and when `Offload` or a removal clears its last, and
-rebuilt at recovery. It **MUST NOT** walk the placement index or read a record,
+unset offloaded bit and when `Offload` or a removal leaves the file no held or
+retained extent with an unset bit, and rebuilt at recovery. A retained extent
+counts: a removal after a snapshot cut leaves the held version only retained
+([§3.11](#3.11%20Snapshot%20holds)), and a file dropped from the list then would never be
+offered, so its hold would never be released. It **MUST NOT** walk the placement index or read a record,
 and costs O(dirty files), not O(extents).
 
 `Stats` **MUST** be served from maintained counters: it **MUST NOT** walk the

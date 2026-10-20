@@ -478,10 +478,10 @@ shares. What is truly per share is small — settings, policy state, lifecycle,
 health and budgets — and the binding holds exactly that.
 
 **Background work runs per journal, not per share.** Each device journal has one
-work queue ([§6.1](#6.1%20The%20work%20queue)), which drives offload, removal batches, eviction, repack
-and the consistency check for every share on it, weighted by their budgets and
-fair between them. A node serving 10⁴ shares runs one set of loops per device,
-not 10⁴ sets.
+work queue ([§6.1](#6.1%20The%20work%20queue)), which drives offload and removal batches for every share
+on it, weighted by their budgets and fair between them, and one eviction loop
+([§10](#10.%20Local%20space)) and one reseed ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 7) beside it. A node serving
+10⁴ shares runs one set of loops per device, not 10⁴ sets.
 
 **Isolation comes from state, budgets and fairness, not from separate
 engines.** A share cannot starve another because its capacity, transfers and
@@ -494,8 +494,11 @@ engine.
 serve it attaches it ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). For one it serves it applies the change: a
 state change, quiesced and back, or a backend change, which replaces the binding
 ([§2.1](#2.1%20Content%20composition)). Two changes belong to a re-home ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a `Bind`
-naming a new write namespace returns once every pass captured under the old one
-is joined ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)); one with `State: Closing` counts clones and copies admitted
+naming a new write namespace first publishes the binding with it, then returns
+once every pass the pass registry ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)) lists under the old one is joined
+([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)). Passes captured from then on take the new one, and Intent refuses a
+plan still carrying the old, so the set the join waits for only shrinks, under
+any write load. One with `State: Closing` counts clones and copies admitted
 from then on as refused, and returns once those admitted before it are done
 ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 
@@ -509,15 +512,21 @@ phase-2 batches of a clone the join below waits on; join every call admitted bef
 share on either side, and every pass and batch in flight; cancel every
 asynchronous copy reading from the share, whatever share it writes
 ([RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)); and, with `keepHolds` — a removal that keeps snapshots —
-offload the extents its hold marks cover before it returns. A namespace call — a create, link or
+offload the extents its hold marks cover before it returns. The `removing` state
+is what narrows the queue: from then on the age tick and the rescan post for the
+share only files with hold marks or a clone the join waits on, its offload runs
+offer only what the hold marks cover, and its removal runs resume only those
+clones; `WaitTenant` on each of the share's shards ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)) is the join of
+the runs already in flight. A namespace call — a create, link or
 rename — enters the engine only to `Draw` its versions, which counts nothing,
 so the engine cannot join it: the filesystem
 service counts the calls it has admitted per share and the removal's step 3
 waits for that count to reach zero as well ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)). Only then does the removal end the share's open
 state and drop the tag, in RFC 16's order ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): once every shard of
 the share has recorded its step 3 offload done (a removal that keeps no
-snapshots records it with nothing to offload), it calls `Drop`, which
-closes the share's journal handle on the tag (`Close`, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), runs the
+snapshots records it with nothing to offload), it calls `Drop`, which cancels
+the share's shards in the scheduler (`CancelTenant`), so no entry for the tag runs
+against a closed handle, then closes the share's journal handle on the tag (`Close`, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), runs the
 whole-tag `Forget`, which is refused while a handle is open, and closes the
 share's flow, **before** the shard's `rm` row is advanced to forgotten. Node
 stop never calls `Drop`: `Close` closes handles and keeps tags. `Forget` is durable and idempotent, so a crash between
@@ -662,17 +671,21 @@ attached, and `Stats` names it and its device.
    an unclaimed tag from a share attached later, so the engine passes the tags
    to forget explicitly, and an import's attach forgets none by itself: a share
    still waiting out a store outage keeps its dirty bytes.
-6. **Rebuild the work queue** ([§6.1](#6.1%20The%20work%20queue)): a `Dirty` event for every file the
-   journal holds with an extent whose offloaded bit is unset.
-7. **Start background work**: the work queue's consumer, eviction and the
-   **reseed**. The reseed reads each held file's refs ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) and marks,
+6. **Rebuild the work queue** ([§6.1](#6.1%20The%20work%20queue)): add each shard the node is primary of
+   as a tenant of both engine sources, whose `Rebuild` posts an offload key for
+   every file the journal holds with a held or retained extent whose offloaded
+   bit is unset, and a removal key for every file the unfinished-removal index
+   lists.
+7. **Start background work**: the scheduler's dispatch, the age tick, the removal
+   rescan, eviction and the **reseed**. The reseed reads each held file's refs ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) and marks,
    through `MarkOffloaded` ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), every held extent a committed ref covers, at
    the ref's versions. **A file is offered and evicted only once the reseed has
    run for it.** Offered earlier, an extent whose offloaded record a crash lost
    unsynced is uploaded again and its block swept; evicted earlier, a bit no ref
    backs would drop the only copy. The reseed visits first the files offload or
-   eviction asks for, so a journal full at restart frees space at the reseed's
-   pace. A bit no ref justifies — metadata lost a commit the journal was told
+   eviction asks for — an offload run handed a file the reseed has not visited
+   reseeds that file before it offers — so a journal full at restart frees space
+   at the reseed's pace. A bit no ref justifies — metadata lost a commit the journal was told
    of — is reported as a ledger mismatch and cleared with `Unmark` ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), so
    the extent is offered again; `MarkOffloaded` only ever sets bits.
 8. **Serve.** No file is served before step 3 has run for it.
@@ -715,15 +728,27 @@ offloaded bit is offered again:
 handover ([RFC 11](rfc-11-ownership.md)) — the new primary settles each file to the sealed or drained
 point ([RFC 10](rfc-10-journal-replication.md)) and runs steps 3, 4 and 6 for it before serving it.
 
+**A primary that loses a shard drains it first.** Before a handover writes the
+record naming the new primary ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover), step 2), and on a lease loss or a
+`StopTenant` result, the engine cancels the shard in both engine sources
+(`CancelTenant`), waits for its runs in flight (`WaitTenant`, within the drain's
+bound), and abandons every intent a cancelled pass left (O4). It posts nothing
+for the shard from then on, and its pending entries no longer hold any of the
+total. A batch of files moved out of a shard ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) is drained the same
+way at its freeze: the runs holding its keys are joined, and its keys are posted
+nowhere until the batch is aborted.
+
 **Stop.** `Close(ctx)` runs these steps in one call, after `*vfs.Server` has
 stopped and while the metadata store is still open, so the last group commit
 can land.
 
 1. Refuse every call with `ErrUnavailable`.
-2. Stop the work queue dispatching new passes and batches, and commit every
-   file's pending existence in a last group commit per journal, within the stop
-   bound, so a clean stop leaves no append or hole fill for recovery to replay.
-3. Cancel in-flight passes and background loops, then join them.
+2. Stop the work queue: the scheduler's `Stop` refuses new dispatch, cancels the
+   passes and batches in flight and joins them. Then commit every file's pending
+   existence in a last group commit per journal, within the stop bound, so a
+   clean stop leaves no append or hole fill for recovery to replay.
+3. Cancel the other background loops — the age tick, the rescan, eviction and
+   the reseed — then join them.
 4. Close what the engine opened — every share's flow, then its journal handles,
    then the journals — in the reverse of the order they were opened, and nothing
    it was handed, only after every join has completed. A component **MUST NOT** be closed while any work
@@ -790,7 +815,7 @@ primary of the file's shard.
 | storage binding | its journal handles and flow, settings, budgets, policy state, health, state, the clones and copies admitted into it ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) | journal, syncer, metadata store | its journal handles and flow | internal | engine at `Start` or `Bind` → engine | adding → serving → removing → forgotten ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)) |
 | journal, one per device | [RFC 1](rfc-1-journal.md) | its directory, `Clock`, its fault seam | its directory, `Clock` | `Deps.Devices`, `Deps.Open` | engine at `Start` step 1, once it has read the floor and identity → engine | closed by `Close` after every handle; never after a failed join ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), stop step 5) |
 | journal handle, one per share per journal | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | its journal | — | the journal's `Share` | engine → storage binding | `Close` then the tag's `Forget` in `Drop`; `Close` alone at node stop |
-| work queue, one per journal | one instance of the shared work scheduler with the engine's source ([§6.1](#6.1%20The%20work%20queue)) | journal statistics, the policy functions | the policy functions, the offload pipeline | internal | engine at `Start` step 6 → engine | its consumer starts at step 7; it stops dispatching at `Close` |
+| work queue, one per journal | one instance of the shared work scheduler with the engine's two sources, offload and removals ([§6.1](#6.1%20The%20work%20queue)) | journal statistics, the policy functions | the policy functions, the offload pipeline | internal | engine at `Start` step 6 → engine | its dispatch starts at step 7; `Close` stops and joins it |
 | offload pipeline | one state machine per pass ([§6.3](#6.3%20The%20offload%20pipeline)) | the offer, carver, assembler, flow, `Existence`, `Content` | the carver, assembler, flow, `Existence`, `Content` | internal | work queue → the pass | joined by `Close`; a pass outlives no component (E13) |
 | speculator | per-open-file frontiers, pre-warm plans ([§7.4](#7.4%20The%20speculator)) | journal statistics, the flow's `Prefetch` | the flow's `Prefetch` | internal | engine → engine | memory only; cancelled by `Close` |
 | carver and block assembler | [RFC 2](rfc-2-carver.md) | — | — | `Deps.Carver` | a value, not a component | stateless; the offload pipeline calls `Cut` |
@@ -864,7 +889,7 @@ pkg/block/engine/            the engine (this RFC)
   health.go fence.go         health, conditions, Stats, WaitOffloaded (§11.1, §11.4); the self-fence (§11.2)
   policy.go                  the five policy functions (§3.1)
   speculate.go               the speculator, PreWarm (§7.4)
-  queue.go                   the engine's source for the shared work scheduler, per journal (§6.1)
+  queue.go                   the engine's two sources for the shared work scheduler, per journal (§6.1)
   offload/                   the pipeline state machine (§6.3–§6.8): capture, carve, assemble, intent, put, commit, report
   arch_test.go               §15.3's architecture test
 pkg/sched/                   the shared work scheduler (§6.1.1), used by the engine and GC
@@ -919,7 +944,7 @@ inputs, outputs, invariants and checks:
 
 | Module | Does | Section |
 | --- | --- | --- |
-| work queue | turns events into offload passes, removal batches and retries, per journal | [§6.1](#6.1%20The%20work%20queue) |
+| work queue | turns events into offload passes, removal batches and prunes, per journal | [§6.1](#6.1%20The%20work%20queue) |
 | offload pipeline | runs a pass as an explicit state machine, with per-step retries | [§6.3](#6.3%20The%20offload%20pipeline) |
 | speculator | plans read-ahead and pre-warm fetches | [§7.4](#7.4%20The%20speculator) |
 
@@ -1304,52 +1329,93 @@ and the fences order the commits ([§6.4](#6.4%20The%20offload%20guard%20is%20na
 
 ### 6.1 The work queue
 
-Offload, removal batches and their retries are driven by one **in-process work
-queue per device journal**: events in, work handed to the journal's workers out.
+Offload, removal batches and prunes are driven by one **in-process work queue
+per device journal**: events in, runs handed to the journal's workers out.
 
 **Inputs.**
 
 | Event | Posted by | Effect |
 | --- | --- | --- |
-| `Dirty(file)` | the write path, after staging ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) | marks the file as holding dirty bytes |
-| `AgeTick(now)` | a timer per journal | calls `offloadDue` with fresh journal statistics; re-derives due work from the journal |
-| `Pressure(level)` | `admit`, crossing the soft threshold or the limit ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | makes every file with dirty bytes eligible; shortens backoff |
-| `PutDone(block)`, `PutFailed(block, outcome)` | the pipeline's put step | advances or retries that block's attempt |
-| `CommitDone(block, result)` | the pipeline's commit step | reports, retries or re-offers |
-| `RetryDue(step)` | the queue's own timer | re-runs a failed step once its backoff expires |
-| `RemovalPending(file, v)` | a removal's first transaction ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), recovery | runs the removal's next batch |
+| `Dirty(file)` | the write path, after staging ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) | posts the file's offload key once `offloadDue` finds it due by its bytes; a file below the block target waits for the age tick |
+| `AgeTick(now)` | a timer per journal, every quarter of `offload.max_age` | calls `offloadDue` with fresh journal statistics and posts the offload key of every file due, oldest first within each shard |
+| `Pressure(level)` | `admit`, crossing the soft threshold or the limit ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | sets the journal's pressure level; see below |
+| `RemovalPending(file)` | a removal's first transaction ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), the removal rescan, the rebuild | posts the file's removal key |
 
-**Outputs.** Offload passes handed to the pipeline, removal batches, eviction
-and repack requests from `evict` and `repackDue`, and, after a `CommitDone` for a file
-whose writes replaced committed content, a pruning of that file's superseded
-overwrite records ([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). Pruning is housekeeping: a lost one
-costs lookup work, never a wrong read.
+**Pressure is a level, not an event per refusal.** Setting it to the level it
+already has does nothing, so a burst of refused writes costs one change. A change
+runs the age tick at once, at most once per tick period. While the level is
+raised every file with dirty bytes is due ([§6.2](#6.2%20When%20a%20file%20is%20offered)), and each shard whose store
+is put-healthy at that tick has its backoff cap lowered to
+`offload.retry_max_pressure` (O2), which pulls in its keys already backing off
+([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)).
+
+**Outputs.** Offload passes handed to the pipeline ([§6.3](#6.3%20The%20offload%20pipeline)), removal batches
+([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), and prunes of a file's superseded overwrite records
+([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)), which a pass posts for a file whose writes replaced committed
+content. Pruning is housekeeping: a lost one costs lookup work, never a wrong
+read. Eviction and repack are not the queue's work ([§10](#10.%20Local%20space)).
+
+**Keys.** An entry is keyed by **(shard, kind, file)**, the kind one of offload,
+removal and prune, so one file's kinds of work never merge and none is lost to
+another. The shard is the scheduler's tenant: on a single node a share has one
+shard per journal, so fairness between shards is fairness between shares, each
+shard weighted by its share's budget divided among the share's shards on the
+journal. A removal key carries no version: its run resumes every unfinished
+removal of the file from the unfinished-removal index, in version order, so any
+number of removals of one file are one entry. Offload is one source of the
+journal's scheduler instance, and removals with prunes are a second, each with
+its own reservation and slots, so a deletion storm fills only its own.
 
 **Rules.**
 
 - **One queue per journal**, serving every share on it, fair between shares by
   budget weight. It is not on the request path: a writer only posts.
-- **Posting never blocks and never grows with bytes.** Events for one file
-  coalesce into one entry, so the queue holds at most one entry per file with
-  pending work plus one per block in flight.
+- **Posting never blocks and never grows with bytes.** A post for a pending key
+  merges into its entry, so the queue holds at most one entry per key, within the
+  instance's fixed total ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)).
+- **A key is in at most one run.** A key whose run is in flight is not dispatched
+  again; a post for it only marks it to run again once the run returns. So no two
+  passes on this node offer the same file's unreported extents, and a pass slower
+  than the maximum age is never joined by a duplicate under fresh names.
+- **Only the shards this node is primary of post.** The queue holds a tenant for
+  each shard the node is primary of now, and refuses a post for any other.
+  `DirtyFiles` lists a replica's held content too, so the age tick filters it by
+  the file's shard. A run that finds the node no longer primary returns
+  `StopTenant`, and the engine drains the shard ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 - **The queue is not durable.** Every event is a hint about state the journal,
-  the put intents and the records already hold durably. At start it **MUST** be
-  rebuilt from them ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)): a `Dirty` for every file the journal holds with
-  an unset offloaded bit, a `RemovalPending` for every removal not done or not
-  yet pruned, read from the shard's unfinished-removal index
-  `S‖id‖rr‖shard‖file‖version`, never by a scan of its files
-  ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)).
-- **A lost event costs latency, never offload.** `AgeTick` asks the journal for
-  its dirty files and their oldest dirty byte ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) and posts what is
-  due, so every dirty byte is offered within the maximum age even if every other
-  event were dropped.
-- **Retries are scheduled events, never sleeps.** A failed step posts `RetryDue`
-  at its backoff deadline and frees its worker.
-- **Handlers do no I/O.** A handler calls a policy function and hands the work
-  to a worker, so a slow put never delays another file's event.
-- **Dispatch is the shared work scheduler's** ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). The queue is the
-  engine's source; batching, retry timing, concurrency, fairness and rate limits
-  are the scheduler's.
+  the put intents and the records already hold durably. Each shard's entries
+  **MUST** be rebuilt from them whenever the node gains the shard — at start
+  ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), at attach and at takeover: an offload key for every file the journal
+  holds with a held or retained extent whose offloaded bit is unset, and a removal
+  key for every file with a removal not done or not yet pruned, read from the
+  shard's unfinished-removal index `S‖id‖rr‖shard‖file‖version`, never by a scan
+  of its files ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)).
+- **A lost event costs latency, never offload.** The age tick asks the journal
+  for its dirty files and their oldest dirty byte ([RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)) and posts what
+  is due, oldest first, until the shard's reservation refuses one. So every dirty
+  byte is offered within the maximum age plus one tick, plus the time its shard
+  takes to drain the entries ahead of it, even if every other event were dropped.
+- **Removals are re-derived on a timer.** Every `removal.rescan`
+  ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings), proposed there), and at once when the removal source's drop
+  count has risen since the last scan, the engine reads each served shard's
+  unfinished-removal index from a per-shard cursor and posts a removal key for
+  each file listed, until the shard's reservation refuses one; the next scan
+  resumes at the cursor and wraps at the end. So a removal dropped or lost is
+  dispatched within ⌈the shard's index entries ÷ its reservation⌉ rescans.
+- **Retries are the scheduler's.** Inside a pass, only the pipeline's steps retry,
+  each within its deadline (O1), and a pass that gives up ends. Its `Run` returns
+  one result per file, and the scheduler alone holds O2's backoff per file and
+  resets it on `Done` ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). Nothing re-runs a step after its pass
+  returned: the offer it needed is closed ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)).
+- **Handlers do no I/O.** A handler calls a policy function and posts, so a slow
+  put never delays another file's event.
+- **Dispatch is the shared work scheduler's** ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)); batching, retry
+  timing, concurrency, fairness and rate limits are its.
+
+> decision: the removal key names the file, not one removal. A file's removals
+> share its fences and must run in version order anyway, so one run walks them
+> all, and a storm of truncates on one file is one entry. Overturned if a file's
+> removals ever need to run out of version order.
 
 **What does not post here.** The events above are the queue's only inputs, and
 every one is posted by the engine itself. The syncer posts none
@@ -1362,9 +1428,9 @@ to its caller.
   `fill` ([§7.3](#7.3%20Filling%20is%20a%20decision)); the journal's `Fill` runs beside the reply, which never waits on it.
 - **Read-ahead** is the speculator's ([§7.4](#7.4%20The%20speculator)): it calls the flow's
   `Prefetch`, which the syncer runs behind demand ([RFC 3 §4.4](rfc-3-syncer.md#4.4%20Speculation%20does%20not%20delay%20demand)).
-- **An upload's outcome** reaches the queue as `PutDone` or `PutFailed`, which the
-  pipeline's put step posts from the result `Upload` returned to it, not from
-  any callback of the syncer's.
+- **An upload's outcome** stays inside its pass: the put step reads the result
+  `Upload` returned to it, and only the pass's result per file reaches the
+  scheduler.
 - **A store's ill health** reaches the queue through the binding: the engine
   reads the flow's `Healthy` and `Health(d)` into the binding's health
   ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)), and `offloadDue` backs off a share whose store refuses, so a down
@@ -1373,12 +1439,12 @@ to its caller.
 **A crash, by example.** A node holds 3 dirty files of one share; a pass for the
 first has put its block and not yet committed it, and the second's removal is
 between batches. The process dies. At start, after the journals open and every
-binding is rebuilt ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), `Rebuild` posts a `Dirty` for each of the 3 files,
-since none has its offloaded bit set. The first file's pass does not resume:
+binding is rebuilt ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), `Rebuild` posts an offload key for each of the 3
+files, since none has its offloaded bit set. The first file's pass does not resume:
 its put intent is abandoned before the node serves, and the new pass carves the
 same bytes again under a freshly minted name ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)), so the object the dead
 pass put is reclaimed through its abandoned intent ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)) and never
-named by a ref. A `RemovalPending` for the second file, read from the
+named by a ref. A removal key for the second file, read from the
 unfinished-removal index, runs its next batch. Nothing came from the queue that
 died, and no adapter served a client before all of it was posted.
 
@@ -1386,75 +1452,152 @@ died, and no adapter served a client before all of it was posted.
 
 | Requirement | Check |
 | --- | --- |
-| a lost event costs latency | Drop every `Dirty`, `PutDone` and `CommitDone` event at random with probability ½ under sustained writes. Assert every dirty extent is offered within the maximum age, and reported offloaded once its commit lands. |
-| posting never blocks | Stall the consumer; write at full rate. Assert no write waits on the queue, memory stays within one entry per file, and writes are slowed only by capacity pacing. |
-| rebuild | Crash with 10⁵ dirty files, passes in flight and removals between batches; restart. Assert every dirty file is offered, every removal resumes, and nothing else is needed to reach both. |
-| fairness | Two shares on one journal, one with 10⁵ small dirty files, the other with one. Assert the other share's file is offered within one age tick. |
+| a lost event costs latency | Drop every `Dirty` and `RemovalPending` event at random with probability ½ under sustained writes and removals. Assert every dirty extent is offered within the maximum age plus one tick and reported offloaded once its commit lands, and every removal reaches done without a restart. |
+| one run per key | Make the store slow but healthy, so a pass over a 64 MiB file outlasts three age ticks, with a superseded version of the file held under a cut. Assert the file is never in two passes at once, each block is put once, and no commit fails as `ErrInconsistent`. |
+| removal rescan | Fill the removal source to its reservation and drop half the `RemovalPending` posts beyond it. Assert every removal reaches done within the rescan bound, with no restart. |
+| posting never blocks | Stall the consumer; write at full rate. Assert no write waits on the queue, entries never pass the instance's total, and writes are slowed only by capacity pacing. |
+| rebuild | Crash with 10⁵ dirty files, passes in flight, removals between batches, and a released file whose only unoffloaded content is a version held for a snapshot; restart. Assert every dirty file is offered, the held version is offloaded and the snapshot completes, every removal resumes, and nothing else is needed to reach all of it. |
+| fairness | Two shares on one journal, one with 10⁵ small dirty files, the other with one. Assert the other share's file is offered within the maximum age plus one tick. |
+| a slow share holds its own slots | Two shares on one journal, one store throttled to 1 MB/s and still healthy. Assert the other share's oldest unoffloaded age stays below the maximum age. |
+| **(cluster)** primary only | A node primary of one shard and replica of nine on one journal. Assert no entry for a replica shard is posted or dispatched, and the primary shard's files are offered within the age bound. |
 
 ### 6.1.1 The shared work scheduler
 
-Background work in the set — the engine's offload, removal batches and retries,
+Background work in the set — the engine's offload, removal batches and prunes,
 and GC's deleter, compactor, audit and collection ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)) — is dispatched by
 one **work scheduler**, specified here once. It is a library, not a component:
 each component runs its own instance, so no component imports another
 ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)) and a stalled GC never holds up offload.
 
-A **source** supplies the work and owns its durability. The scheduler is its own
-package, which each component instantiates, so no component imports another
-through it:
+A **source** supplies the work and owns its durability. A **tenant** is the unit
+within a source that fairness, reservations and cancellation apply to: a shard for
+the engine, a namespace for GC. The scheduler is its own package, which each
+component instantiates, so no component imports another through it:
 
 ```go
 package sched // pkg/sched
 
-// Source is one kind of background work. The scheduler holds no durable state;
-// the source rebuilds its pending work from its own durable records.
-type Source interface {
-	Rebuild(ctx context.Context, post func(Item)) error // re-derive pending work from durable state at start
-	Run(ctx context.Context, batch []Item) []error      // one batch; one result per item
+// Key names one entry; posts for one key merge.
+type Key struct {
+	Tenant TenantID // the engine's: a shard; GC's: a namespace
+	Kind   uint8    // the engine's: offload, removal or prune
+	ID     uint64   // the engine's: a file
 }
 
-func New(clk Clock) *Scheduler                     // Clock: the subset of the node's clock it reads
-func (s *Scheduler) Register(src Source, l Limits) // l is fixed for the source's life
+type Item struct {
+	Key       Key
+	NotBefore time.Time // zero: now
+	Cost      int64     // in Limits.Rate's unit
+	Expired   bool      // set by the scheduler: Deadline passed, and this is the last dispatch
+}
+
+type Outcome uint8
+
+const (
+	Done       Outcome = iota // the key leaves, or is pending again at once if a post marked it
+	Retry                     // the key backs off
+	Throttled                 // as Retry, and its tenant's pace drops until the tenant's next Done
+	StopTenant                // as CancelTenant for the item's tenant
+)
+
+type Result struct {
+	Outcome Outcome
+	Err     error // reported; the outcome alone decides what follows
+}
+
+// Source is one kind of background work. The scheduler holds no durable state;
+// the source rebuilds a tenant's pending work from its own durable records.
+type Source interface {
+	Rebuild(ctx context.Context, t TenantID, post func(Item)) error
+	Run(ctx context.Context, batch []Item, done func(i int, r Result)) // done once per item, as each finishes
+}
 
 type Limits struct {
 	Batch       int           // items per Run
-	Concurrency int           // Runs in flight
-	Rate        float64       // items or bytes per second; 0 is unlimited
-	Weight      int           // share of the instance under contention
-	Deadline    time.Duration // bound on one item's retries (I8)
+	Concurrency int           // Runs in flight for the source
+	Rate        float64       // Cost per second; 0 is unlimited
+	Weight      int           // the source's share of dispatch under contention
+	Total       int           // the source's reservation of the instance's fixed total
+	RunTimeout  time.Duration // the deadline on every Run's ctx
+	Deadline    time.Duration // longest one item is retried; 0: for as long as the source asks
 }
+
+type Tenant struct {
+	Weight                 int           // its share of its source
+	BackoffMin, BackoffMax time.Duration // jittered exponential backoff per key
+}
+
+func New(clk Clock) *Scheduler                              // Clock: the subset of the node's clock it reads
+func (s *Scheduler) Register(src Source, l Limits) SourceID // before Start; l is fixed for the source's life
+func (s *Scheduler) Start()                                 // dispatch begins
+func (s *Scheduler) SetTenant(ctx context.Context, src SourceID, t TenantID, c Tenant) error // adds t, running Rebuild for it, or changes it
+func (s *Scheduler) Post(src SourceID, it Item) bool        // never blocks; false: refused, or dropped and counted
+func (s *Scheduler) CancelTenant(src SourceID, t TenantID)  // drops t's entries and cancels its Runs; refuses t's posts until SetTenant
+func (s *Scheduler) WaitTenant(ctx context.Context, src SourceID, t TenantID) error // until every Run of t in flight at the call has returned
+func (s *Scheduler) Stop(ctx context.Context) error         // refuses dispatch, cancels every Run, joins them
 ```
 
 | Source | Durable state it rebuilds from |
 | --- | --- |
-| engine offload and removals | the journal's dirty files, the put intents and the removals not done ([§6.1](#6.1%20The%20work%20queue)) |
+| engine offload | the journal's dirty files ([§6.1](#6.1%20The%20work%20queue)) |
+| engine removals and prunes | the unfinished-removal index ([§6.1](#6.1%20The%20work%20queue)) |
 | GC deleter, compactor, audit, collection | the GC index keys and cursors of each GC partition whose lease it holds ([RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)) |
+
+**Each key is in one state:**
+
+| State | A post for the key | When its run reports |
+| --- | --- | --- |
+| absent | → pending; or dropped and counted while its tenant holds its reservation | — |
+| pending, not before *t* | merges; the earlier *t* wins | — |
+| running | sets the key's *redo* mark, nothing else | `Done`: → absent, or → pending at once if *redo* is set; `Retry`, `Throttled`: → backoff; `StopTenant`: → absent, with its tenant |
+| backoff, until *t* | sets *redo*; never moves *t* earlier | at *t*: → pending |
+
+A post never shortens a backoff, so a file that fails and keeps being written is
+not retried once per write. Lowering a tenant's `BackoffMax` is the one way to,
+and it pulls each of the tenant's keys in backoff in to at most now plus the new
+cap.
 
 The scheduler **MUST**:
 
-- **coalesce and batch**: items posted for one key merge into one entry, and a
-  `Run` receives up to `Batch` items;
-- **retry per item**: a failed item is re-posted at a backoff deadline with jitter,
-  bounded by `Deadline`, never by an attempt count ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)); a batch's
-  successes are never retried with its failures;
-- **bound concurrency and memory**: at most `Concurrency` runs per source,
-  one entry per key, and at most a fixed total of pending entries per instance
-  (RFC 24 §5.1), so posting never blocks and never grows with bytes. A post
-  past the total is dropped and counted, and the source **MUST** re-derive
-  dropped work from its durable records within its own bound: offload by
-  `AgeTick`, removals by re-reading the unfinished-removal index, GC by its
-  cursors. The instances are bounded by count too: one per journal for the
-  engine's offload and removals, and one per process for GC, whose sources
-  serve every GC partition the node leases
-  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), so a node holds at most its journals plus
-  one times the total;
-- **share fairly**: under contention, sources and the tenants within them (shares,
-  namespaces) receive work in proportion to `Weight`;
-- **rate-limit**: a source with a `Rate` is paced to it, and a throttled result
-  lowers the pace until successes return;
-- **hold a fixed total** of pending entries per instance
-  ([RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)): a post that finds the instance full and its key absent is
-  dropped and counted, and the source re-derives it.
+- **batch**: a `Run` receives up to `Batch` pending items of one source, never two
+  of one key and never one whose key is running;
+- **complete per item**: `done` moves its item's key at once, so one slow item
+  holds back no other in its batch; an item its `Run` returns without `done` is a
+  `Retry`. Every `Run`'s ctx carries `RunTimeout`, and a `Run` still running at
+  twice it raises `work_queue_stalled`, naming the source and the tenant, and keeps
+  its slot: the scheduler cannot reclaim a goroutine, only report it;
+- **retry per key**: `Retry` and `Throttled` back the key off with jitter,
+  doubling from its tenant's `BackoffMin` to `BackoffMax`, and `Done` resets it.
+  This is the only backoff a source's work has: no source re-posts at a deadline
+  of its own. `Deadline` bounds an item's retries for a source with a caller to
+  answer, never by an attempt count ([RFC 0 §9.2](rfc-0-data-lifecycle.md#9.2%20Conflicts%20and%20their%20retries)); at it the item is counted
+  and dispatched once more with `Expired` set, so its source records the failure
+  and decides, and is never dropped silently. The engine's sources register zero
+  (O2). A batch's successes are never retried with its failures;
+- **bound concurrency**: at most `Concurrency` runs per source, and per tenant at
+  most max(1, ⌈`Concurrency` × its weight ÷ the weights of the source's tenants
+  with work⌉), so a slow or throttled tenant holds only its own slots;
+- **reserve the total**: an instance holds a fixed total of entries
+  ([RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)), all of it reserved: each source its `Total`, and within a
+  source each tenant max(1, ⌊`Total` × its weight ÷ the source's weights⌋). A
+  post for an absent key whose tenant holds its reservation is dropped and
+  counted, and never takes another tenant's entry. The source **MUST** re-derive
+  dropped work from its durable records within its own bound: offload by the age
+  tick, removals by the rescan ([§6.1](#6.1%20The%20work%20queue)), GC by its cursors. The instances
+  are bounded by count too: one per journal for the engine's two sources, and
+  one per process for GC, whose sources serve every GC partition the node leases
+  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), so a node holds at most its journals plus one times the
+  total;
+- **share fairly**: under contention, sources receive dispatch in proportion to
+  their `Weight`, and a source's tenants in proportion to theirs;
+- **rate-limit**: a source with a `Rate` is paced to it, and a `Throttled` result
+  lowers its tenant's pace until that tenant's next `Done`.
+
+> decision: no tenant borrows another's reservation. Borrowing would make a
+> tenant's room depend on how full the others are, and taking the entries back
+> would need an eviction rule; a dropped post costs only the latency of its
+> re-derivation. Overturned if a tenant's drops are shown delaying its offload
+> past the age bound while the instance has free entries.
 
 It **MUST NOT** hold state a restart needs: every item is a hint about durable
 state its source already holds, and a lost item costs latency only.
@@ -1492,8 +1635,8 @@ become offloaded, so every transition names what happens when it fails.
 binding, and the components it drives — journal, carver, block assembler,
 syncer flow, block metadata; a deduplication lookup joins them only once
 deduplication is re-added ([§6.5](#6.5%20The%20dedup%20oracle)). **Outputs:** per block, a report of the
-extents it made offloaded; per pass, an outcome for `health`; `RetryDue`
-events for what failed.
+extents it made offloaded; per pass, an outcome for `health` and one result per
+file for the scheduler ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)).
 
 | State | Does | Holds | When it fails |
 | --- | --- | --- | --- |
@@ -1506,7 +1649,8 @@ events for what failed.
 | **Mark offloaded** | reports the block's committed extents through `report` ([§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed)) | — | a `report` error leaves the block's extents unmarked and **Dirty**, and the re-offer finds every ref already committed; a crash here is recovered by a re-offer whose commit finds every ref already committed ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 
 A pass is done when every block has been reported or abandoned. What was not
-reported stays **Dirty**, and the file is re-queued with a `RetryDue`.
+reported stays **Dirty**, and the pass returns `Retry` for its file, which the
+scheduler backs off (O2).
 
 **Rules.**
 
@@ -1515,8 +1659,9 @@ reported stays **Dirty**, and the file is re-queued with a `RetryDue`.
   and holds nothing durable. **Proposal:** Capture and Commit are bounded by the
   metadata deadline; Put by the offload maximum age for its queue wait
   ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) plus a transfer bound proportional to the block's size.
-- **O2 — retries never stop.** A failed step is retried with jittered
-  exponential backoff, per file, for as long as this node is the shard's primary.
+- **O2 — retries never stop.** A file whose pass failed is retried with jittered
+  exponential backoff, per file, by the scheduler alone ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)), for as long
+  as this node is the shard's primary.
   It starts at `offload.retry_min` and is capped by `offload.retry_max`, or by
   `offload.retry_max_pressure` under capacity pressure while the store is
   healthy ([RFC 13](rfc-13-configuration.md); proposal: 1 s, 60 s and 5 s); the first success resets it. Overturned by
@@ -1536,7 +1681,9 @@ reported stays **Dirty**, and the file is re-queued with a `RetryDue`.
   off alone; while it backs off, its chunks are offered in passes of their own,
   so a block shared with other files never carries it. After five consecutive
   failed passes it is a health condition naming the file
-  ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)).
+  ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). The count is kept by file in the binding's policy state
+  ([§3.3](#3.3%20Policy%20state%20is%20memory%2C%20and%20disposable)), not on the queue's entry, so it survives the entry being dropped
+  and re-derived.
 
   > decision: five is fixed, not a setting: it only decides when a file's
   > failures are reported, never what is retried, and the backoff already
@@ -1544,7 +1691,8 @@ reported stays **Dirty**, and the file is re-queued with a `RetryDue`.
   > longer than the oldest-unoffloaded alert ([§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)) would catch it.
 - **O7 — a stale epoch stops, it does not retry.** A commit or intent refused on
   the primary epoch means the shard has moved: the shard's passes end without
-  reporting, and the new primary offers the content again.
+  reporting and return `StopTenant`, the engine drains the shard
+  ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), and the new primary offers the content again.
 - **O8 — it holds no bytes and persists nothing.** Its state is rebuilt by
   re-offering ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 
@@ -1560,7 +1708,7 @@ recompute each chunk's hash as it reads and fail the put on a mismatch
 
 **Before a pass, the engine checks `Healthy(Put)`** on the share's flow
 ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) and skips the pass while the store is put-unhealthy; the skipped
-pass is a `RetryDue`, not a stop.
+pass returns `Retry`, not a stop.
 
 **Checks.** The pipeline is tested with every component it drives replaced by a
 fault-injecting stub, and again as production composes it.
@@ -1571,7 +1719,7 @@ fault-injecting stub, and again as production composes it.
 | O3 unknown outcome | Lose a put's response. Assert the retry reuses the name and the bytes, and one object results. |
 | no second retry layer | Make the store fail every put past the syncer's bound. Assert `Upload` is called once per attempt, the engine never calls it again with the same name, and the content is re-offered under a new name after the backoff. An engine that re-puts after `Upload` returned doubles the store's retry budget. |
 | commit within `K` | Plan a block over a run whose current refs are 10⁴ 4 KiB refs, with `K` forced small. Assert the assembler closed the block early and no commit transaction exceeded `K` keys. Land a second pass's commit between plan and commit; assert the commit applies the files that fit and re-offers the rest, never exceeding `K`. |
-| namespace captured | Start a re-home switch after a pass's capture and before its intent. Assert the plan is refused at intent, nothing is put under the new namespace with chunk IDs keyed by the old one, and the content is re-offered and reads back. |
+| namespace captured | Start a re-home switch after a pass's capture and before its intent. Assert the plan is refused at intent, nothing is put under the new namespace with chunk IDs keyed by the old one, and the content is re-offered and reads back. Repeat under sustained writes to the share: assert the `Bind` returns once the passes captured before it are joined, and no pass captured after it carries the old namespace. |
 | O4 own intents | Abandon an attempt past its put bound with the primary still live. Assert its intent is abandoned and its object deleted without an epoch change. |
 | O6 poison file | One file's offered reader fails every read, among 10³ other dirty files. Assert the others become offloaded at the unloaded rate, and the failing file is backed off alone and reported by name. |
 | O7 stale epoch | Move the shard mid-pass. Assert the pass stops, reports nothing more, and the new primary offloads the content. |
@@ -1617,10 +1765,18 @@ Offloading the version releases its hold.
   stale ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records), [RFC 11 §8](rfc-11-ownership.md#8.%20Metadata%20consistency)); on a single node only that comparison is
   skipped ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 
-Two passes of one file may therefore upload at once; block metadata orders their
-commits by content version ([RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order)). Every offload commit writes the
-file's fence `F_o` ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)), so two commits of one file conflict in the store,
-and the guard only spares them the retry.
+On one node a file is in at most one pass at a time ([§6.1](#6.1%20The%20work%20queue)). A second pass
+of it uploads at once only in another process across a change of primary, and its
+commit is refused on the stale epoch. Every offload commit writes the file's fence
+`F_o` ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)), so an offload commit and a removal or group commit of one
+file conflict in the store, and the guard only spares them the retry.
+
+**A pass in flight is registered.** At capture, under each file's guard, the
+engine records the pass's `Newest` and captured write namespace against the
+file, and clears them when the pass returns; a file has at most one entry,
+since it is in at most one pass. A prune reads the file's in-flight floor from it
+under the same guard ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), and a namespace switch joins the passes it lists
+under the old namespace ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
 
 **The guard is an optimisation, not a fence.** It saves commits from
 conflicting and retrying; correctness **MUST NOT** depend on it. Two processes
@@ -1668,9 +1824,9 @@ the chunk. Until then the engine declares no oracle, and `Offloaded` stays out o
   there too, not at the attempt. The Intent step **MUST** refuse a plan whose
   captured namespace is no longer the share's write namespace; its content is
   re-offered and carved again. When a re-home switches the write namespace
-  ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the primary joins every pass captured under the old one
-  before it acknowledges the switch: the `Bind` naming the new write
-  namespace returns only then ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). A pass carved under one namespace whose
+  ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the primary publishes the new one first, then joins every pass
+  captured under the old one before it acknowledges the switch: the `Bind`
+  naming the new write namespace returns only then ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). A pass carved under one namespace whose
   blocks were put in the next would hold chunk IDs keyed under the first, which
   every later read, hashing under the second's key, fails as corrupt.
 - Before the put, it durably records a **put intent** for the name, carrying the
@@ -2077,7 +2233,9 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   removal's version ([RFC 1 §3.10](rfc-1-journal.md#3.10%20Settle%20and%20Since)), so the journal drops its marker. A crash
   before that leaves the marker for recovery ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 - A removal record is pruned by the file's primary once it is done and at or below
-  the file's in-flight floor ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)).
+  the file's in-flight floor ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), which the prune reads from the pass
+  registry under the file's guard ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)): a capture adds to it under that
+  guard, so no pass captured before the removal can be missed.
 
 **Steps.**
 
@@ -2100,10 +2258,11 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    none, whatever the extent's size: every ref over the extent is dropped or
    narrowed in phase 2 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). A deallocate's phase 1 does write one
    hole: the extent's merged hole, at *v*, under the merged hole's own start key ([§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)).
-4. Release the guard, `Settle(id, v)`, post `RemovalPending(file, v)` ([§6.1](#6.1%20The%20work%20queue)),
+4. Release the guard, `Settle(id, v)`, post `RemovalPending(file)` ([§6.1](#6.1%20The%20work%20queue)),
    and return.
 5. Phase 2, from the work queue: batches within the key budget `K` from the
-   removal's cursor, a byte offset, until done ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)).
+   removal's cursor, a byte offset, until done, each under the metadata deadline
+   as Capture and Commit are (O1) ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)).
 
 ### 8.2 Deallocate records a hole; it does not write zeros
 
@@ -2443,6 +2602,20 @@ A fill brings a released extent back held and already offloaded. A write over an
 extent in any state stages a new, Dirty version beside it; a failed or partly
 reported pass returns what it did not report to Dirty.
 
+**Eviction and repack are not work-queue work.** Each journal runs one eviction
+loop, started at start step 7 ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), which calls `evict` and `repackDue`
+and runs the journal's `Release` and `Repack` itself; `admit`'s refusal path runs
+them inline under the caller's deadline ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Neither needs the queue's keys:
+`Release` refuses an unset bit, and two repacks never select the same segment
+([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), so a refusal racing the loop costs copy work, never
+correctness.
+
+> ponytail: concurrent refusals on one journal each run their own scoped repack,
+> and the loop runs another beside them; the journal keeps them on disjoint
+> segments, but their copy bandwidth adds up. Upgrade to one repack in flight per
+> (journal, scope) that later refusals wait on when repack bytes copied per byte
+> freed rises under a refusal storm in the B3 benchmark ([§15.4](#15.4%20Benchmarks)).
+
 ### 10.1 Eviction is chosen here, and needs no new record
 
 `evict` selects what to evict, and the engine calls the journal's `Release` on it.
@@ -2480,8 +2653,8 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
    unreclaimed bytes ([§10.3](#10.3%20Repack%20is%20triggered%20here)), then retry;
 2. evict offloaded extents by segment ([§10.1](#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)), repack exactly those
    segments — `Repack` with them as its scope — then retry;
-3. if what is held is dirty and the remote is put-healthy, post `Pressure` so it
-   is offloaded at once, then evict and repack what that made offloaded, and
+3. if what is held is dirty and the remote is put-healthy, raise the journal's
+   `Pressure` level ([§6.1](#6.1%20The%20work%20queue)) so it is offloaded at once, then evict and repack what that made offloaded, and
    retry;
 4. otherwise refuse, as the table below says.
 
@@ -2646,12 +2819,12 @@ Only what the engine adds to [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%
 | --- | --- |
 | Remote unavailable | keeps accepting writes while capacity allows; backs off offloads; fails **Remote** reads distinguishably ([§7.5](#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)) |
 | Journal at capacity | runs [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) |
-| Metadata unwritable, or stalled | **The one rule for a store that commits nothing**, which [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) cites: writes are still staged and acknowledged; a stability point or stable write that covers an overwrite of committed content waits for its existence commit until the caller's deadline and is then answered `ErrDelay` (retry-later), never success; one that covers only appends and hole fills is answered after its sync ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). Truncate, deallocate, release and clone fail at their deadline. Offload fails and reports the offload condition ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). |
+| Metadata unwritable, or stalled | **The one rule for a store that commits nothing**, which [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) cites: writes are still staged and acknowledged; a stability point or stable write that covers an overwrite of committed content waits for its existence commit until the caller's deadline and is then answered `ErrDelay` (retry-later), never success; one that covers only appends and hole fills is answered after its sync ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). Truncate, deallocate, release and clone fail at their deadline. A phase-2 batch or a prune fails at the metadata deadline and backs off ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). Offload fails and reports the offload condition ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). |
 | No write transaction committed for 30 s | **The engine owns the self-fence.** It records the store time of the last write transaction any of its components committed; once a write transaction is outstanding or failing and none has committed for 30 s — the default request deadline ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) — it fences the node: writes and stability points answer `ErrDelay`, reads continue, and a health condition names the store. It counts commits, not answers, so a store whose writes fail at once while its reads complete — device full, read-only remount — trips it as one that answers nothing does. The first write transaction to commit clears it, with no new node epoch and no grace. On a single node this is a local fault, never a lease loss ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)); **(cluster)** a node that cannot renew its lease fences at half the lease instead ([RFC 11 §9](rfc-11-ownership.md#9.%20Failure)). |
 | Metadata store lost | the single node's embedded store gone with its host, or found unreadable: the engine serves no share until [RFC 26](rfc-26-catalog-backups.md)'s recovery import has run, files revert to the last catalog backup, and GC does not run until an operator acknowledges the import ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). |
 | Journal sync fails | the journal fails or re-appends the window; a failed window is reported once to the next `Sync` of each file with a write in it, and raises that file's loss sequence and the journal's loss generation ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)) |
 | Crash | recovers, re-applies existence, rebuilds the queue, reseeds, then re-offers ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
-| Shard moved | the shard's passes stop on the stale epoch ([§6.3](#6.3%20The%20offload%20pipeline), O7) |
+| Shard moved, handed over or its lease lost | the old primary drains the shard's work before the record moves, or at once on a lease loss; a pass that meets the stale epoch stops ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [§6.3](#6.3%20The%20offload%20pipeline), O7) |
 | Node started from a copied image | serves reads of offloaded content and refuses every write at once with `ErrNoSpace`, the second row of [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table, offering and evicting nothing, until an operator says whether this copy is the installation ([RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model)). Where the platform offers no machine-generation identifier ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)), the cause is the first namespace claim read that carries a nonce this installation did not record ([RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)), and the engine answers it the same way from then on |
 
 ### 11.3 The engine surfaces no serialization conflict
@@ -2714,7 +2887,8 @@ cost is the file's uncommitted operations, at most those staged within one
 existence age.
 
 Offload, eviction and removal batches are not engine methods: the work queue
-runs them under the hood ([§6.1](#6.1%20The%20work%20queue)), and a method only posts events.
+runs offload and removal batches ([§6.1](#6.1%20The%20work%20queue)) and the eviction loop eviction
+([§10](#10.%20Local%20space)), and a method only posts events.
 
 The engine **MUST NOT** return a component to its caller: a caller holding one
 can do what the engine orders, out of order.
@@ -2839,8 +3013,8 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E19 | Every existence commit syncs the file in the journal first. |
 | E20 | An artificial stretch end leaves its tail Dirty and re-offered from `consumed`, except past the age ceiling. |
 | E21 | A put-unhealthy or drifted store stops offload and never refuses a read. |
-| E22 | Every offload failure ends with the extent reported offloaded or Dirty and re-queued; no step waits without a deadline, and retries never stop while this node is the shard's primary. |
-| E23 | The work queue is rebuilt from durable state; a lost event delays an offer by at most the maximum age. |
+| E22 | Every offload failure ends with the extent reported offloaded or Dirty and its file backed off by the scheduler, the one owner of its backoff; no step waits without a deadline, and retries never stop while this node is the shard's primary. |
+| E23 | The work queue is rebuilt from durable state for every shard the node gains; a lost event delays an offer by at most the maximum age plus one age tick, and a removal by at most the rescan bound, each plus the time its shard takes to drain the entries ahead of it. |
 | E24 | A group-commit conflict delays only the conflicting files. |
 | E25 | Speculation never delays a demand read, never causes a write to be refused, and never fetches a block whose every byte the journal holds. |
 | E26 | A retried content mutation is answered from its original result, never applied twice ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). |
@@ -2858,6 +3032,7 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E38 | The engine fences the node once no write transaction has committed for 30 s while one is outstanding or failing, answering writes and stability points `ErrDelay` and serving reads, and clears the fence on the next commit. |
 | E39 | A pass's chunk IDs, names and commits stay in the write namespace it captured with its offer; a plan whose namespace is no longer the share's write namespace is refused before its intent. |
 | E40 | No engine transaction exceeds the key budget `K`: group commits, offload commits, removal and clone batches are bounded by keys written, not by files or refs. |
+| E41 | A work-queue key is in at most one run at once; a post for a running key only marks it to run again, and a post never shortens a backoff. |
 
 ## 14. Observability
 
@@ -2875,7 +3050,7 @@ pipeline states, `count` for operations per commit.
 | --- | --- | --- |
 | dirty bytes, drain rate, time to drain ([§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable)) | `engine_dirty_bytes`, `engine_drain_bytes_per_second`, `engine_drain_seconds` | gauge |
 | age of the oldest unoffloaded extent the journal holds; alert past the share's bound | `engine_oldest_unoffloaded_seconds` | gauge |
-| work-queue entries and events, labelled `event` ([§6.1](#6.1%20The%20work%20queue)) | `engine_queue_entries`, `engine_queue_events_total` | gauge, counter |
+| work-queue entries, labelled `source` and `state`; events posted, labelled `event` = `dirty`, `age_tick`, `pressure` or `removal_pending` ([§6.1](#6.1%20The%20work%20queue)) | `engine_queue_entries`, `engine_queue_events_total` | gauge, counter |
 | offload passes, labelled `result` ([§6.3](#6.3%20The%20offload%20pipeline)) | `engine_offload_passes_total` | counter |
 | time in each pipeline state, and step failures and retries, labelled `state` | `engine_pipeline_state_seconds`, `engine_pipeline_retries_total` | histogram, counter |
 | attempts abandoned, and the intents the pipeline abandoned itself | `engine_attempts_abandoned_total`, `engine_intents_abandoned_total` | counter |
@@ -2992,6 +3167,9 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) shared journal | Two shares on one device journal; fill one. Assert the other's writes are not refused. |
 | [§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck) no cross-share slowdown | Run N shares with M writers each on one node; saturate one share with writes and cold reads. Assert every other share's p99 write and read latency stays within its unloaded baseline's bound, and `engine_lock_wait_seconds` shows no area whose wait grows with the loaded share's rate. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join | Close with an offload parked in a stalled put. Assert no component is closed while the pass runs. |
+| [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) unbind and drop | Unbind a share with 10⁴ pending entries and a pass in flight. Assert no run for it starts after `Unbind` is called except hold-mark offloads and clone batches the join waits on, `Unbind` returns once the pass has returned, and no entry for its tag remains after `Drop`. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) **(cluster)** handover drains | Hand over a shard with 500 pending files and 3 passes in flight. Assert no pass for it starts after the drain begins, every pass returns and its intents are committed or abandoned before the record names the new primary, and none of its entries remains. |
+| [§6.1.1](#6.1.1%20The%20shared%20work%20scheduler) a stuck run | With two tenants holding work, make a `Run` of one ignore its ctx and block, in every slot that tenant may hold. Assert `work_queue_stalled` names the source and tenant within twice `RunTimeout`, and another tenant's work still runs. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) self-fence threshold | Stall the store for 10 s: assert writes are still acknowledged. Stall it for 31 s: assert writes and stability points answer `ErrDelay`, reads are served, a condition names the store, and once a write commits, writes resume with the verifier unchanged. |
 | [§2.7](#2.7%20The%20version%20limit) version limit under sustained load | Write at the measured peak version rate (4 KiB writes at the device's peak IOPS) and stall the store just as a raise falls due, its last commit one existence age before the stall. Assert writes are acknowledged for the first 10 s and until the self-fence trips at 30 s, never refused by the version limit first. Hold the rate below the trigger, then raise it in one step: assert the raise is due on the next draw, not on a timer. A limit raised only below half a block of 2²⁰ refuses within seconds. |
 | [§2.7](#2.7%20The%20version%20limit) burst at a stall's start | With a block of 2²⁴, write at 100 000 versions a second for a minute, then stall the store and raise the rate in one step. At 250 000 a second assert no write is refused by the version limit before the self-fence trips. At 500 000 a second assert the refusals are `ErrDelay` with `DelayCommit`, never `ErrNoSpace`, and begin no sooner than the ponytail's bound, about 13 s before the fence; once the store returns and the raise commits, writes are acknowledged again. |
