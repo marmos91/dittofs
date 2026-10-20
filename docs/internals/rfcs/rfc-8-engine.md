@@ -2608,7 +2608,7 @@ the rest drains stays invisible to every sum.
 ### 12.1 One content interface, called by the filesystem service
 
 The engine is one concrete type, `*Engine`; nothing declares it as an
-interface. The filesystem service's per-file part, at the file's primary, is
+interface. The filesystem server, `*vfs.Server` at the file's primary, is
 the only caller of the content methods ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)); adapters never reach
 the engine. The lifecycle, share and control methods are node-local. Their
 callers are the node ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components), [§2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which starts and stops the
@@ -2669,7 +2669,7 @@ func (e *Engine) SetShare(ctx context.Context, s Share) error                   
 func (e *Engine) StopShare(ctx context.Context, id ShareID, keepHolds bool) error // removal step 3: refuse, join; with keepHolds, offload what kept snapshots' holds cover
 func (e *Engine) ForgetShare(ctx context.Context, id ShareID) error               // after every shard's step 3: Close the handle, Forget the tag, close the flow
 
-// Content: called only by the filesystem service's per-file part, at the primary (RFC 17 §2.1).
+// Content: called only by *vfs.Server, at the file's primary (RFC 17 §2.1).
 func (e *Engine) Write(ctx context.Context, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
 func (e *Engine) Draw(ctx context.Context, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
 func (e *Engine) Commit(ctx context.Context, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
@@ -3009,7 +3009,7 @@ One line per requirement.
 
 | Requirement | Code today |
 | --- | --- |
-| [§2.1](#2.1%20Content%20composition) one composition root, no setters | split between the runtime and the engine; setters wire the remote store and metrics on a serving engine |
+| [§2.1](#2.1%20Content%20composition) one composition root, no setters | split between today's control-plane runtime and the engine; setters wire the remote store and metrics on a serving engine |
 | [§2.1](#2.1%20Content%20composition) every share has a remote store | a share may run with a local sink that reports extents offloaded |
 | [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no type assertions | about fifteen capabilities negotiated by assertion, each with a silent fallback |
 | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context) one journal per device | one journal per share |

@@ -1590,8 +1590,8 @@ derives one from another.
 
 A handle **MUST** encode:
 
-- the **share** it belongs to, so the runtime can route without interpreting the
-  rest;
+- the **share** it belongs to, so a node can find the share without interpreting
+  the rest;
 - the **file**, by `FileID`.
 
 **A `FileID` MUST be unguessable**: minted from a random source, never derived
