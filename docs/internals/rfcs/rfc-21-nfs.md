@@ -1772,7 +1772,7 @@ NFSv3 carries, and the rules after it bind both versions.
   ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)): a tree whose ACL grants only those, as some
   tools write it, needs a named entry, a group's or everyone's for these
   clients. `RPCSEC_GSS` callers are authenticated
-  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20flavour%20proved%3A%20authenticated%2C%20admin%2C%20privileged)); which NFS callers are privileged is §8.1.
+  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)); which NFS callers are privileged is §8.1.
 - **umask.** NFSv4.2's `mode_umask` ([RFC 8275](https://www.rfc-editor.org/rfc/rfc8275.html)) is the umask RFC 7 says a
   create carries apart from the mode: ignored when the parent holds
   inheritable entries, applied to the mode when it holds none (Appendix B).
