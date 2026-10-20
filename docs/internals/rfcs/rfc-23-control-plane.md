@@ -831,6 +831,11 @@ them and decides nothing about identity:
   naming a machine principal is refused with `ErrInvalid` (§5.1). Netgroups are put and deleted whole; a client rule naming a
   deleted one fails closed (RFC 16).
 
+[RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds)'s figure follows a user's create
+from this API through the principals generation to its next sign-in, beside
+the two paths that do not come through here: a principal identity mints, and an
+OpenID Connect subject an operator links.
+
 ### 3.6 Provisioned records
 
 A record a provisioning file declares is **managed** ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)). The
