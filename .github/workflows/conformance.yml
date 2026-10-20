@@ -60,7 +60,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A scheduled run has a group of its own, so it and a push never replace
+  # each other. A re-run keeps its event, and so its group.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   # Cancel a superseded PR run: a new commit replaces the old one, and only the
   # tip matters. Do NOT cancel a develop run: each push is a distinct commit
   # someone wants tested, and cancelling it means it never is -- which left most
