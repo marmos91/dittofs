@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -265,13 +266,16 @@ func TestConfigureSelfAndRPCBind(t *testing.T) {
 	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	self := fmt.Sprintf("dt-%d", os.Getuid())
-	for _, call := range []string{
-		fmt.Sprintf("POST /api/v1/users %s uid=%d gid=%d", self, os.Getuid(), os.Getgid()),
-		"PUT /api/v1/shares/export/permissions/users/" + self + " read-write",
-	} {
-		if !slices.Contains(f.calls, call) {
-			t.Errorf("no %q among the calls:\n%s", call, strings.Join(f.calls, "\n"))
+	// A Windows process has no uid (os.Getuid is -1), and users: self runs on Linux only.
+	if runtime.GOOS != "windows" {
+		self := fmt.Sprintf("dt-%d", os.Getuid())
+		for _, call := range []string{
+			fmt.Sprintf("POST /api/v1/users %s uid=%d gid=%d", self, os.Getuid(), os.Getgid()),
+			"PUT /api/v1/shares/export/permissions/users/" + self + " read-write",
+		} {
+			if !slices.Contains(f.calls, call) {
+				t.Errorf("no %q among the calls:\n%s", call, strings.Join(f.calls, "\n"))
+			}
 		}
 	}
 	if f.settings["portmapper_register_with_system"] != true || f.settings["udp_enabled"] != true {
