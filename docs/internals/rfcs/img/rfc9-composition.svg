@@ -14,7 +14,7 @@
 <text x="16" y="26" class="t">One GC per node: a namespace is a context; all safety sits in block metadata's transactions.</text>
 
 <rect x="20" y="42" width="860" height="40" rx="5" class="vfs"/>
-<text x="34" y="60" class="h">runtime (RFC 23 §2.2) — the composition root builds gc.New(Deps), then Start · Add · Remove · Drain · Close</text>
+<text x="34" y="60" class="h">node (RFC 23 §2.2) — node.New builds gc.New(Deps); the node drives Start · Add · Remove · Drain · Close</text>
 <text x="34" y="75" class="s">starts GC after the content subsystem and the share contexts; drains and closes it before they are joined</text>
 <path d="M450 84V100" class="arr"/>
 
@@ -25,7 +25,7 @@
 <text x="48" y="153" class="h">namespace contexts</text>
 <text x="48" y="172" class="l">ns A: View + held partitions</text>
 <text x="48" y="189" class="l">ns B: View + held partitions</text>
-<text x="48" y="206" class="l">… added and removed by the runtime</text>
+<text x="48" y="206" class="l">… added and removed by the node</text>
 <text x="48" y="230" class="s">View = Blocks, Remote, Store, Keys</text>
 <text x="48" y="245" class="s">removed once its NS‖ns records are</text>
 <text x="48" y="260" class="s">gone (drain step 3), or at Close</text>
