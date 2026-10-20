@@ -1403,7 +1403,9 @@ the handle or open it names, in this order:
    — `ErrDelay` with `DelayResources`, at once — except a call that only
    releases state (close, unlock, lock cancel, grant or layout return, freeing
    a state ID) or reclaims it, with the operations that carry it, which steps
-   1–4 and `Authorize` still gate.
+   1, 2 and 4 still gate; step 3's refusal and the ceiling's do not apply to a
+   call that only releases state
+   ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)).
 
 In a cluster the gateway's router reads the handle's shard to route it, but
 nothing it learns reaches the client: a handle it cannot place goes to the
@@ -1412,7 +1414,9 @@ local server, which admits first ([§2.1](#2.1%20What%20runs%20where)).
 Then the shard's `Authorize` applies the share access as a ceiling and
 evaluates the file (§4.6). **There is no call that skips admission**: lock,
 unlock, test-lock, watch, grant acknowledgement and the calls that name only an
-open are admitted like a read. Admission is a property of the share a call
+open are admitted like a read; NFSv3 `MNT` and the NLM calls meet step 2 as
+[RFC 21 §6.3](rfc-21-nfs.md#6.3%20MOUNT) and [§6.1](rfc-21-nfs.md#6.1%20NLM)
+decide. Admission is a property of the share a call
 reaches, not of how it reached it, so an NFSv4 compound that `PUTFH`s a handle
 and one that walks the pseudo-filesystem into the share meet the same five
 checks. A compound crossing from one share into another is re-admitted, and
