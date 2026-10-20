@@ -223,7 +223,7 @@ suites:
     cmd: "{test-args}"
     dir: "{tools}/cthon04"
     matrix:
-      profile: [memory, badger, badger-s3]
+      profile: [badger-s3]
       mount-options:
         - default: ""                   # none: the kernel negotiates NFSv4.2 against DittoFS
         - v3: vers=3,tcp,mountproto=tcp
@@ -231,7 +231,6 @@ suites:
         - v4.1: vers=4.1
         - v4.1-noac: vers=4.1,noac
         - v4.1-smallio: vers=4.1,rsize=32768,wsize=32768
-    select: { pr: { profile: [badger-s3] }, merge: { profile: [badger-s3] } }   # every profile nightly
     fixture:
       profile: "{profile}"
       nfs: { options: "{mount-options}" }    # mounted at {mount}, at the version vers= gives

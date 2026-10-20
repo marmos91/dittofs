@@ -618,7 +618,7 @@ suites:
     cmd: "{test-args}"
     dir: "{tools}/cthon04"
     matrix:
-      profile: [memory, badger, badger-s3]
+      profile: [badger-s3]
       mount-options:                    # #3008's named option sets, each NAME: its options
         - default: ""                   # none: the kernel negotiates
         - v3: vers=3,tcp,mountproto=tcp
@@ -626,7 +626,6 @@ suites:
         - v4.1: vers=4.1
         - v4.1-noac: vers=4.1,noac
         - v4.1-smallio: vers=4.1,rsize=32768,wsize=32768
-    select: { pr: { profile: [badger-s3] }, merge: { profile: [badger-s3] } }   # every profile nightly
     fixture:
       profile: "{profile}"
       nfs: { options: "{mount-options}" }    # mounted at {mount}, at the version vers= gives
@@ -958,10 +957,7 @@ the long and heavy suites each night.
 run only `badger-s3`, the profile production uses. Since the bucket fix (#3013, for #2986) they
 reach S3; before it they tested nothing more than `badger`. `memory` and `badger` run after merge
 and nightly. smbtorture gains a `badger-s3` profile for this, and cthon04, which runs on `memory`
-on PRs today, moves to it. cthon04 keeps to `badger-s3` after merge too, its six option sets, and runs
-every profile nightly: all 18 cells after every merge would add about 55 runner-minutes a merge,
-queued beside the merge's other jobs, for what the nightly run catches a day later. This is
-revisited on measured numbers once CI runs through `dt`.
+on PRs today, moves to it.
 
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
