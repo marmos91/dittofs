@@ -1107,11 +1107,11 @@ There are three places to run:
 | Dedicated test host | a large disk and long run times | nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file |
 
 **Windows clients on a hosted runner.** The runner's own system owns TCP port 445, which is why
-`smb-client-compat.yml`'s Windows job has skipped `net use` on most runs since mid-September
-(#2994). Since Windows Server 2025, which the hosted runners are, the SMB client can connect on
-another port: `net use \\localhost\share /TCPPORT:12445`, or `New-SmbMapping -TcpPort`. So the
-fixture mounts on DittoFS's own port, and port 445 isn't needed. This still needs one run to prove
-it end to end.
+`smb-client-compat.yml`'s Windows job skipped `net use` on most runs from mid-September (#2994),
+until it was dropped: it tested nothing. Since Windows Server 2025, which the hosted runners are,
+the SMB client can connect on another port: `net use \\localhost\share /TCPPORT:12445`, or
+`New-SmbMapping -TcpPort`. So the fixture mounts on DittoFS's own port, and port 445 isn't needed.
+This still needs one run to prove it end to end.
 
 **Scenarios on a runner.** They need podman 5.6 or later (`test/scenarios/README.md`), and the
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:

@@ -331,7 +331,7 @@ SMBTORTURE_AUTH=kerberos ./smbtorture/run.sh --profile memory --verbose
 
 ## Multi-OS Client Compatibility
 
-Validates DittoFS SMB adapter against native OS SMB clients on three platforms.
+Validates DittoFS SMB adapter against native OS SMB clients on two platforms.
 
 ### Workflow
 
@@ -376,7 +376,7 @@ Each platform runs the same core operations:
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
 | `conformance.yml` | PR (presubmit profiles), push (all), nightly | WPTS BVT + smbtorture + Kerberos | ~20 min |
-| `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux client testing | ~10 min |
+| `smb-client-compat.yml` | push, weekly | macOS/Linux client testing | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol) | ~15 min |
 
 ### Speed Tiers
