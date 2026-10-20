@@ -19,7 +19,7 @@
   <!-- left: the control path -->
   <rect x="16" y="56" width="200" height="46" rx="6" class="sv"/>
   <text x="28" y="75" class="h">management API</text>
-  <text x="28" y="92" class="s">writes records, calls nothing</text>
+  <text x="28" y="92" class="s">writes records; identity: sign-in</text>
   <path d="M116,104 L116,136" class="ln"/>
 
   <rect x="16" y="140" width="200" height="60" rx="6" class="st"/>
@@ -46,7 +46,7 @@
   <!-- 11 adapters -->
   <rect x="250" y="56" width="634" height="40" rx="6" class="sv"/>
   <text x="262" y="74" class="h">10 · adapters</text>
-  <text x="262" y="89" class="s">call vfs.Service: the gateway in a cluster, the server on one node · sign in through identity</text>
+  <text x="262" y="89" class="s">call vfs.Service only, sign-in included: the gateway in a cluster, the server on one node</text>
 
   <!-- 10 gateway, Serve -->
   <rect x="290" y="128" width="270" height="44" rx="6" class="pr"/>
@@ -79,7 +79,7 @@
   <rect x="739" y="284" width="145" height="40" rx="6" class="sv"/>
   <text x="751" y="302" class="h">5 · GC</text>
   <text x="751" y="317" class="s">sibling, not in the engine</text>
-  <path d="M265,98 L265,280" class="ln"/>
+  <path d="M214,100 L262,280" class="ln"/>
   <path d="M330,246 L322,280" class="ln"/>
   <path d="M485,246 L485,280" class="ln"/>
   <path d="M648,246 L648,280" class="ln"/>

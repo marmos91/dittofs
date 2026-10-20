@@ -1744,7 +1744,7 @@ changing them turns auditing off. Both protocols gate them alike
 
 - `GETATTR` or `SETATTR` of `sacl` by a caller without `admin` — set only from
   an `admin` share grant on an authenticated flavour
-  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20flavour%20proved%3A%20authenticated%2C%20admin%2C%20privileged)),
+  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20strength%20proved%3A%20authenticated%2C%20admin%2C%20privileged)),
   and so without the system-security right
   ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right))
   — **MUST** be `NFS4ERR_ACCESS`.

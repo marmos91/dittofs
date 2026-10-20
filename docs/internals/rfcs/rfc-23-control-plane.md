@@ -259,7 +259,8 @@ This RFC **MUST NOT** be read as specifying:
   cut, a move — which stays in the component's RFC;
 - the identity of file principals, mapping and squashing:
   [RFC 18](rfc-18-identity.md)'s. This RFC owns only how an API account signs
-  in to the API and what its role permits there;
+  in to the API — the password check itself it asks of identity directly
+  ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)) — and what its role permits there;
 - what a caller may do to a file: [RFC 19](rfc-19-authorization.md)'s;
 - metric and label conventions, how health is derived, and the delivery of
   events: [RFC 25](rfc-25-observability.md)'s. This RFC owns the management
@@ -314,11 +315,13 @@ took the request.
 node. The management API calls the node for nothing: it writes the
 control-plane store, and the node applies the change through reconcile (§2.3).
 So every change takes effect by one path — API, store, reconcile, the
-component's call — on every node alike. The node holds no routing or cluster
+component's call — on every node alike. The API's one direct call is to
+identity, to check a password and an account
+([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)), which changes nothing. The node holds no routing or cluster
 logic: in a cluster, the one thing `New` does differently is build `vfs.Serve`
 and the gateway.
 
-![The node and what it builds. On the left, the management API writes records to the control-plane store, and the node reads its generations and drives every component: New builds them, Start starts them in build order, Stop stops them in reverse but hands the node's shards over before Serve stops, and reconcile calls addShare, removeShare and apply; the node is never on the request path. On the right, the components in build order from the bottom: 1 the metadata store and 2 the remote stores; 3 the syncer, beside the journals the engine opens itself; 4 the engine and 5 GC, its sibling, which is never passed into it; 6 open state and 7 identity; 8 the vfs server; 9, in a cluster only, vfs.Serve and the gateway; 10 the adapters. The arrows are calls: the adapters call the vfs service and sign in through identity; the gateway calls this node's Serve locally, or another node's Serve over the transport, using the router, so a local call is fenced too; Serve fences and deduplicates, then calls the local server; the server calls identity, open state, the metadata views and the engine; the engine calls the journal, the syncer and the metadata views; GC calls the metadata store's Blocks view, the syncer and the remote stores; the syncer calls the remote stores](img/rfc23-node.svg)
+![The node and what it builds. On the left, the management API writes records to the control-plane store, and the node reads its generations and drives every component: New builds them, Start starts them in build order, Stop stops them in reverse but hands the node's shards over before Serve stops, and reconcile calls addShare, removeShare and apply; the node is never on the request path. On the right, the components in build order from the bottom: 1 the metadata store and 2 the remote stores; 3 the syncer, beside the journals the engine opens itself; 4 the engine and 5 GC, its sibling, which is never passed into it; 6 open state and 7 identity; 8 the vfs server; 9, in a cluster only, vfs.Serve and the gateway; 10 the adapters. The arrows are calls: the management API calls identity for sign-in only; the adapters call the vfs service alone, sign-in included; the gateway calls this node's Serve locally, or another node's Serve over the transport, using the router, so a local call is fenced too; Serve fences and deduplicates, then calls the local server; the server calls identity, open state, the metadata views and the engine; the engine calls the journal, the syncer and the metadata views; GC calls the metadata store's Blocks view, the syncer and the remote stores; the syncer calls the remote stores](img/rfc23-node.svg)
 
 **What `New` builds, in order.** Each row is built from its own `Deps`; the
 Calls column is the call graph once it is built. The node owns every row and
@@ -333,15 +336,15 @@ store configuration, and the last share's context to close one releases it.
 | 4 | engine ([RFC 8 §2.6](rfc-8-engine.md#2.6%20Dependencies%20and%20wiring)) | `Devices` and `Open`, the journal opener; the carver; the syncer; the `Existence`, `Content` and `Lifecycle` views | the journals, the syncer, the block-metadata views | 5 / 8 |
 | 5 | GC ([RFC 9 §2.5](rfc-9-gc.md#2.5%20Composition%20and%20lifecycle)), a sibling of the engine, never passed into it | its scheduler, the syncer; at each namespace's `Add`, the `View` of its `Blocks`, `Remote` and `Keys` | `Blocks`, `Remote`, the syncer, `Keys` | 5 / drains at 5, closes at 7 |
 | 6 | open state ([RFC 14](rfc-14-open-state.md)) | `Store`, the metadata store; at `Start`, its `Sink`, which the server implements | the metadata store, the `Sink` | 5 / 7 |
-| 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)) | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
-| 8 | `*vfs.Server`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine), `Identity` | identity, open state, the metadata views, the engine | 6 / 6 |
+| 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
+| 8 | `*vfs.Server`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
 | 9 | **(cluster)** `vfs.Serve`, then the gateway by `vfs.NewGateway` ([RFC 17](rfc-17-vfs.md)) | `Serve`: the server, the `Transport`, the `Router`; the gateway: `Local` (the checked `Service` that `Serve` returns), `Router`, `Transport` | `Serve`: the fence, the dedup, then the server; the gateway: `Service`, `Router`, `Transport` | 6 / 4 |
-| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `Service`, the `vfs.Service` — the gateway in a cluster, the server on one node; `Auth`, identity | `vfs.Service`, identity's `Authenticator` and `Identities` | 9 / 2 |
+| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `Service`, the `vfs.Service` — the gateway in a cluster, the server on one node — and nothing of identity | `vfs.Service`, sign-in and principal spellings included | 9 / 2 |
 
 **What `New` looks like.** The sketch is illustrative and elides errors and
 the values beside the rows. Where a component's RFC declares a constructor or a
 `Deps` field, the sketch uses that name; where none is declared yet (the remote
-stores and the syncer), it names one.
+stores, the syncer and the API), it names one.
 
 ```go
 func New(cfg Config) (*Node, error) {
@@ -355,14 +358,16 @@ func New(cfg Config) (*Node, error) {
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
 	n.open   = openstate.New(openstate.Deps{Store: n.meta, ...})         // its Sink, the server, is handed to its Start (§2.2 step 5)
 	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
-	n.server = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Identity: n.ident, ...})
+	n.server = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
+		Identity: n.ident, Auth: n.ident, Names: n.ident, ...})                // the one identity, behind three narrow fields
 
 	var svc vfs.Service = n.server                                      // one node: the adapters call the server
 	if cfg.Transport != nil {                                           // (cluster); n.router is RFC 15's
 		checked := vfs.Serve(n.server, cfg.Transport, n.router, ...)    // the fence and the dedup around the server
 		svc = vfs.NewGateway(vfs.GatewayDeps{Local: checked, Router: n.router, Transport: cfg.Transport})
 	}
-	n.adapters = core.Deps{Service: svc, Auth: n.ident, ...}            // handed to each adapter's factory as reconcile enables it
+	n.adapters = core.Deps{Service: svc, ...}                           // handed to each adapter's factory as reconcile enables it; no identity
+	n.api      = api.New(api.Deps{SignIn: n.ident, ...})                // the same identity, called directly, never through vfs (RFC 18 §8.1)
 	return n, nil                                                       // only the metadata store opened; nothing started
 }
 ```
@@ -792,7 +797,17 @@ them and decides nothing about identity:
   created with a role and no spelling at all is API-only and gets none, so it
   signs in over no file protocol ([RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users));
 - **a password is write-only**. It is set by `POST /users/{id}:set-password`,
-  hashed and sealed as RFC 13 §7 and RFC 18 require, and never returned;
+  its hashes derived by identity's `APISignIn.Hashes`
+  ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)) and sealed as RFC 13 §7
+  requires, and never returned;
+- **an e-mail address** is an optional field, `email`, of a user: never
+  required, never defaulted, and naming no principal to any file check
+  ([RFC 18 §2.2](rfc-18-identity.md#2.2%20Spellings)). The API refuses a value
+  that is not a syntactically valid address with `ErrInvalid`, stores it as
+  given, and refuses to set it on a directory principal, whose address the
+  directory supplies. It is returned only to `operator`, `admin` and the user
+  itself; a `viewer` reading another user gets the record without it. There is
+  no filter or lookup by it;
 - **delete** a user or group is an operation: RFC 16's `DeleteUser` and
   `DeleteGroup` mark the record in their first transaction and drop grants,
   memberships and quotas in batches ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); the `202` comes after
@@ -1193,15 +1208,17 @@ second store.
 
 ### 5.3 Sign-in, tokens and sessions
 
-- **Sign-in** is `POST /api/v1/auth/sign-in` with a name and password, verified
-  against the account's password hash, a `Secret` sealed under the `storage`
-  wrapping key, which every API node opens ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). It returns an
+- **Sign-in** is `POST /api/v1/auth/sign-in` with a name and password. The API
+  verifies them by calling identity directly, `APISignIn.VerifyPassword`
+  ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)), never through `vfs`: the account's password hash is a
+  `Secret` sealed under the `storage` wrapping key, which every API node opens
+  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). It returns an
   **access token** and a **refresh token**. A disabled or deleted account
   ([RFC 18 §3.7](rfc-18-identity.md#3.7%20Disabled%20and%20deleted%20principals)) cannot sign in, and the refusal does not say which.
 - **The access token** is a signed JWT (RFC 7519) naming the account's principal,
   the session and an expiry 15 min ahead, a fixed value. It carries no role. On every call the
-  API verifies the signature and expiry and then reads the account — through the
-  identity cache, keyed by the principals generation
+  API verifies the signature and expiry and then reads the account — through
+  `APISignIn.Account`, identity's cache keyed by the principals generation
   ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) — and refuses a disabled or deleted account, a
   revoked session, or a token issued before the account's **not-before** time.
   So disabling an account, changing its role, changing its password or signing
@@ -1322,6 +1339,8 @@ The CLI is a client of the management API and of nothing else:
 - for an operation it prints the operation's ID and, with `--wait`, follows it
   to its end with `?wait=`; interrupted, it can be resumed with
   `operation wait <id>` from any machine;
+- `user create` and `user update` take `--email`, and an empty value clears it
+  (§3.5);
 - it keeps named contexts — server URL, account, TLS trust — and stores a
   refresh token or an API token with access for its user only;
 - **its reference is generated** from its own command definitions, never
