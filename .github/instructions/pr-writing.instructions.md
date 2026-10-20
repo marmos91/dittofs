@@ -12,7 +12,7 @@ Everything you write on a PR will be read by a person who is also reviewing othe
 - **Code over prose.** If a fix or alternative can be shown, show it as a snippet instead of describing it.
 - **Short beats complete.** Cut anything the reader can see in the diff, anything a linter/formatter/CI would catch, and anything you are not confident about.
 - **Say how you know.** Mark each claim "ran it", "read the code" or "I think". Never invent behavior, benchmarks or references.
-- **A human owns the output.** Unless explicitly told to post, return drafts to the user. The person posting must have read every line and be able to defend it. Write so that this is easy: short enough to read in under a minute.
+- **A human owns the output.** An agent that a person runs locally returns drafts to that person unless explicitly told to post. A bot that posts directly, such as Copilot code review, is exempt. The person posting must have read every line and be able to defend it. Write so that this is easy: short enough to read in under a minute.
 
 ## PR title and description
 
@@ -31,20 +31,21 @@ Where to anchor a comment:
 - **On the file** (the comment icon in the file header) for anything broader, such as a design point. File comments survive pushes.
 - **On the most relevant file** for a point about the PR as a whole, or on the first file if none stands out.
 
-Format:
+Format: [Conventional Comments](https://conventionalcomments.org/).
 
 ```
-**<severity>:** <the problem, one sentence>. <why it matters, only if not obvious>.
+**<label> (<decoration>):** <the problem, one sentence>. <why it matters, only if not obvious>.
 
 <code showing the fix>
 ```
 
-Severity tags:
+The labels used most:
 
-- **blocking** — must change before merge (bug, data loss, security, broken contract).
-- **suggestion** — would improve it, author decides.
-- **nit** — style/naming, never blocks.
+- **issue (blocking)** — must change before merge (bug, data loss, security, broken contract).
+- **suggestion (non-blocking)** — would improve it, author decides.
+- **nitpick (non-blocking)** — style/naming, never blocks.
 - **question** — you need information, not a change. Ask whenever the intent is unclear rather than guessing it.
+- **praise** — something done well, worth keeping.
 
 Rules:
 
@@ -52,6 +53,22 @@ Rules:
 - Link the RFC, spec section or doc that backs a point instead of re-explaining it.
 - Do not repeat the same comment on every occurrence: comment once and say "same in X and Y".
 - If a point needs more than a short paragraph to argue, or the thread goes past two rounds, propose a quick live review instead of writing more.
+
+### Example
+
+Bad:
+
+> I noticed that in this function there might be a potential issue related to error handling. Specifically, when the write operation fails, the error is being logged but not returned to the caller, which could potentially lead to situations where the caller assumes the operation succeeded. This could have several implications: 1. Data consistency... 2. Observability... 3. ... It would be beneficial to consider propagating the error so that callers can handle it appropriately. Additionally, you might want to wrap the error with context.
+
+Good:
+
+> **issue (blocking):** the write error is logged but swallowed, so the caller treats a failed flush as success.
+>
+> ```suggestion
+> if err := j.write(entry); err != nil {
+>     return fmt.Errorf("journal flush: %w", err)
+> }
+> ```
 
 ## Review body
 
@@ -79,23 +96,8 @@ Use this list to guide the review. Do not paste it into the review: report only 
 - **Testing**: new code covered by unit tests; integration/E2E tests for protocol changes; error paths tested.
 - **Documentation**: public APIs commented; user documentation updated; configuration examples provided.
 
-### Example
-
-Bad:
-
-> I noticed that in this function there might be a potential issue related to error handling. Specifically, when the write operation fails, the error is being logged but not returned to the caller, which could potentially lead to situations where the caller assumes the operation succeeded. This could have several implications: 1. Data consistency... 2. Observability... 3. ... It would be beneficial to consider propagating the error so that callers can handle it appropriately. Additionally, you might want to wrap the error with context.
-
-Good:
-
-> **blocking:** the write error is logged but swallowed, so the caller treats a failed flush as success.
->
-> ```suggestion
-> if err := j.write(entry); err != nil {
->     return fmt.Errorf("journal flush: %w", err)
-> }
-> ```
-
 ## Replying to review threads
 
 - If you applied the change: `Done in <short sha>.` Nothing else.
+- To add to or correct something you already posted, edit that comment in place rather than posting a new one: one notification instead of two.
 - If you did not: one or two sentences on why, plus a link if relevant. If you still disagree after one round, suggest talking live.

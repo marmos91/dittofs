@@ -39,8 +39,6 @@ locking in X". One line. -->
 already shows those. Say where to start, which files are mechanical (renames, moves,
 generated code) and which part needs careful eyes. -->
 
-Please provide a clear list of changes:
-
 -
 -
 -
@@ -77,5 +75,3 @@ Add screenshots to help explain your changes.
 ## Additional Notes
 
 <!-- Risks, known limitations, follow-ups, things deliberately left out. -->
-
-Add any other context about the pull request here.
