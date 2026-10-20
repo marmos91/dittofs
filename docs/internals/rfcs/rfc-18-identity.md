@@ -887,12 +887,11 @@ re-authenticates a session in place, keeping its trees and opens, to renew a
 ticket ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). The adapter passes the
 context's current evidence in `SignInStep.Context`.
 
-- A re-authentication happens in place: a successful one changes the context's
-  identity in one step and keeps everything else the context holds, its open
-  handles with the access each was granted at its open. Which identity it
-  leaves — the new proof's, or the original principal's with a refreshed
-  `Expires` and SIDs — is the protocol's open question
-  ([RFC 22 §20](rfc-22-smb.md#20.%20Open%20questions), item 5).
+- A re-authentication happens in place: a successful one replaces the
+  context's identity with the one the new proof establishes, in one step, and
+  keeps everything else the context holds, its open handles with the access
+  each was granted at its open. Why, and its ceiling, is
+  [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)'s decision.
 - Any failed re-authentication ends the context it targeted. The old evidence
   never outlives a failed proof, such as one after a password change.
 - A context past `Expires` still admits its re-authentication and the calls that
@@ -1770,7 +1769,7 @@ alice's still signs in as alice.
 | ID9 | A directory answer is used no longer than the TTL plus the grace after it was given, read directly or through a cached caller. | §10 stale grace; directory deadline |
 | ID10 | A disabled or deleted local principal is refused on every call admitted after the first `State` that follows the change, at most 1 s after it (§7.2), and no caller resolved under an older `State` is cached. | §10 disable takes effect; in-flight disable |
 | ID11 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`. | [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s import test |
-| ID12 | A security context acts as the principal its sign-in bound it to until it ends or is re-authenticated; its name is never mapped again. | §10 binding; re-authentication |
+| ID12 | A security context acts as the principal its last successful sign-in bound it to; its name is never mapped again. | §10 binding; re-authentication |
 | ID13 | A deny-only SID matches deny entries only; it never grants, through an ACL or a share grant. | §10 deny-only SIDs |
 | ID14 | A grant of `none` is stored, and is distinct from no grant. | §10 `none` is stored |
 
@@ -1840,7 +1839,7 @@ RFC 16's conformance suite's, not repeated here.
 | deny-only SIDs | 2 | A test PAC marks `Finance` deny-only. A file's ACL allows `Finance` read: refused. Another allows alice and denies `Finance` read: refused. A share whose only grant names `Finance`: the share refuses alice. | a deny-only SID dropped, or treated as a group |
 | deny-only lookup error | 1 | Inject a store error on the `sid` index while mapping a PAC's deny-only SID: the call fails, never resolved without the deny. | a deny dropped by an error |
 | binding | 2 | Over SMB, alice holds a Kerberos session. Delete alice and create a user named alice: every call on the old session refused; a fresh sign-in acts as the new principal. Repeat with an NTLM pass-through session, its user SID re-linked. | a live context re-mapped by name |
-| re-authentication | 2 | alice re-authenticates her SMB session with a wrong password: the session gone. As alice with a new ticket: trees and opens kept, the new `Expires` in force. Past `Expires`, `CLOSE` and an unlock succeed and a read is refused. | a failed proof leaving the old identity in place; a client unable to release what it holds |
+| re-authentication | 2 | alice re-authenticates her SMB session with a wrong password: the session gone. As alice with a new ticket: trees and opens kept, the new `Expires` in force. As bob: the session acts as bob, and alice's open keeps its grant. Past `Expires`, `CLOSE` and an unlock succeed and a read is refused. | a failed proof leaving the old identity in place; a client unable to release what it holds |
 | pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password reaches the fake domain controller once. | no mapping path; amplified lockouts |
 | no file spelling | 2 | On a share whose only grant is authenticated users read, a machine principal reads a file: refused, not `authenticated`. A second machine's state operation on the first's `SP4_MACH_CRED` client record: refused. A grant naming a machine or an API-only account: refused. | a machine treated as an authenticated file caller |
 | `none` is stored | 2 | Grant `Finance` read-write and alice `none`: alice refused. Remove alice's grant: alice granted through `Finance`. | `none` stored as no grant |
