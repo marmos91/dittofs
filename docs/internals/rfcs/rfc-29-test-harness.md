@@ -1326,7 +1326,13 @@ file; how a Go package opts in is settled with e2e's list, after step 2. This is
 silent cases into visible ones: WPTS's 70 not-executed tests, the 19 error-conformance cases and the
 11 Kerberos e2e subtests would each have shown as lost coverage the day they started skipping. The
 first lists are written from today's runs, each entry with a reason, so the suites start green and a
-new skip stands out.
+new skip stands out. An expected skip's reason is the tool's own message, or what the test needs
+that the run doesn't give, such as an option, a second address or a domain. When the skip hides
+something DittoFS does or lacks, the reason says so, and `fix: planned` names the issue that makes
+the test run. A pattern is used only where one reason covers every test it matches, and it matches
+no test that runs where it applies. pynfs writes an OMIT with no message, and OMITs more than its
+flags leave out: a test of another minor version, and one whose own check fails, as GSS's do under
+`--security sys`; pynfs's entries say which.
 
 **Quarantine.** For a flaky test, failing some runs and not others:
 - `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date.

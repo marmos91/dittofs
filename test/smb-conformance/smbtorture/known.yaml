@@ -242,3 +242,89 @@
   fix: wontfix
   category: permanent
   reason: 'Bucket 10. "Error Codes for DurableHandleReqV2 Replay": after replaying a DH2Q CreateGuid once (which correctly returns the original FileId), the test replays the *same* CreateGuid again and asserts the returned `handle.data[0]/[1]` DIFFER: i.e. the second replay must mint a distinct handle and break the original oplock. That is Windows-specific: Samba (and DittoFS, which models Samba here) resolve a replay by CreateGuid via one persistent replay-cache slot, so every replay returns the SAME open: the conformant behaviour the `dhv2-pending*-vs-*-sane` rows depend on (each replays a completed open twice and requires the same handle both times). The two invariants are mutually exclusive under one replay-cache rule; Samba fails replay6 too. No spec-conformant target for DittoFS.'
+# The skips the runs give that no row of the Markdown list holds.
+- test: smb2.create.path-length
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'an interactive test: smbtorture skips it unless run with --interactive'
+- test: smb2.durable-v2-regressions.durable_v2_reconnect_bug15624
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'needs Samba''s error_inject VFS module on its share, and --option=torture:bug15624=yes: ''--option=torture:bug15624=yes'' missing'
+- test: smb2.ioctl.compress_notsup_*
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'for a server without file system compression: DittoFS reports FILE_FILE_COMPRESSION, so smbtorture skips them (FS compression supported)'
+- test: smb2.ioctl.trim_simple
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'trim not supported: DittoFS doesn''t implement FSCTL_FILE_LEVEL_TRIM'
+- test: smb2.ioctl.dup_extents_*
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'block refcounting not supported: DittoFS doesn''t implement FSCTL_DUPLICATE_EXTENTS_TO_FILE'
+- test: smb2.*.bug14607
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'needs smbtorture''s own response padding FSCTLs (FSCTL_SMBTORTURE_*_RESPONSE_BODY_PADDING8), which only Samba''s smbd implements'
+- test: smb2.ioctl.bug14788.*
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'needs a share named noperm that the user may not access, and the fixture has none (NT_STATUS_BAD_NETWORK_NAME), so these IOCTLs go untested on such a share'
+- test: smb2.lease.dynamic_share
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'dynamic shares are not supported: it runs only against a Samba target, on a share whose path changes between connections'
+- test: smb2.lock.rw-none
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: RW-NONE tests a NONE-type lock that W2K8 grants by a bug; smbtorture skips it for any other target
+- test: smb2.lock.replay_broken_windows
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: 'for servers that, as Windows has, check LockSequence only on resilient or persistent handles: DittoFS checks it on a plain handle under SMB 3, as MS-SMB2 3.3.5.14 allows, so smbtorture skips the rest (SMB3 Server implements LockSequence for all handles)'
+- test: smb2.lock.ctdb-delrec-deadlock
+  status: skip
+  fix: wontfix
+  category: proto
+  reason: must run on a ctdb cluster, Samba's clustered database
+- test: smb2.lock.open-brlock-deadlock
+  status: skip
+  fix: wontfix
+  category: env
+  reason: runs only with --option=torture:open_brlock_deadlock_timemout=SEC, which the run doesn't give
+- test: smb2.replay.replay5
+  status: skip
+  fix: wontfix
+  category: feature
+  reason: 'Server does not support persistent handles: DittoFS doesn''t advertise SMB2_GLOBAL_CAP_PERSISTENT_HANDLES'
+- test: smb2.session.expire*
+  status: skip
+  fix: wontfix
+  category: env
+  reason: needs --use-kerberos=required, which only the kerberos option gives
+- test: smb2.session.bind_different_user
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'valid user2 credentials are required: the run gives no --option=torture:user2name and torture:user2password, so binding a second user''s session goes untested'
+- test: smb2.twrp.write
+  status: skip
+  fix: wontfix
+  category: permanent
+  reason: 'needs a previous version of a file (torture:twrp_file): DittoFS has no Volume Shadow Copy backend'
+- test: smb2.twrp.stream
+  status: skip
+  fix: wontfix
+  category: permanent
+  reason: 'needs a previous version of a file (torture:twrp_file): DittoFS has no Volume Shadow Copy backend'
