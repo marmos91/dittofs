@@ -148,7 +148,7 @@ DittoFS if the Linux kernel server passes the same assertion on the same kernel.
 `run.sh` against knfsd, under every option set, grades each set against DittoFS's tables, and
 writes [`nfstest/baseline-knfsd.md`](nfstest/baseline-knfsd.md). A row knfsd fails every time is
 about the client; a row knfsd passes is ours. It needs the in-kernel nfsd, so it runs on a Linux
-host, or in CI: nightly beside the nfstest cells, or on demand:
+host, or in CI on demand:
 
 ```bash
 gh workflow run nfs-knfsd-baseline.yml            # every option set

@@ -582,13 +582,13 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **conformance.yml** -- Every profile of every suite
+- **conformance.yml** -- The same cells as on PRs except cthon04, plus Kerberos smbtorture
 - **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
 - **integration-tests.yml** -- Backend-specific integration tests
 
 ### What Runs Weekly (Full Matrix)
 
-The weekly cron runs the complete test matrix (Monday mornings UTC):
+The weekly cron runs the complete test matrix (Sunday evenings UTC):
 
 - Everything from push checks
 - **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
@@ -633,12 +633,7 @@ Follow this template pattern for new workflow jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: >-
-          ${{
-            github.event_name == 'pull_request'
-              && fromJson('["memory"]')
-            || fromJson('["memory", "badger"]')
-          }}
+        profile: [badger-s3]
     steps:
       - uses: actions/checkout@v4
       - name: Run tests
@@ -653,7 +648,7 @@ Follow this template pattern for new workflow jobs:
 ```
 
 Key guidelines:
-- Use matrix strategy with tiered profiles (memory-only on PR, all on push/weekly)
+- Use a matrix strategy; conformance runs the production profile, `badger-s3`, in every tier
 - Always set `timeout-minutes` to prevent runaway jobs
 - Use `fail-fast: false` so one profile failure does not cancel others
 - Upload artifacts with `if: always()` so results are available even on failure
