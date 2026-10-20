@@ -103,7 +103,7 @@ re-read and re-write the whole list, which is how a long sequential write
 slowed down as the file grew; one key per ref keeps each commit's cost to what
 changed.
 
-![The filesystem service holds Namespace, Files, Capacity and OpenState; the engine Existence and Content; GC Blocks; authentication Principals; the management API ControlPlane; internal tools Inspect. Adapters hold only vfs.Service. Every view sits on one metadata store of entities, codecs, key layout and transaction-level helpers, which calls only the small KV interface (Update, View, Limits; Get, Scan, Before, Versions, Set, Delete, Guard, GuardRange, Now), backed by an embedded store on one node or a replicated one in a cluster](img/rfc16-views.svg)
+![The filesystem service holds Namespace, Files and Capacity; open state OpenRecords; the engine Existence and Content; GC Blocks; authentication Principals; the management API ControlPlane; internal tools Inspect. Adapters hold only vfs.Service. Every view sits on one metadata store of entities, codecs, key layout and transaction-level helpers, which calls only the small KV interface (Update, View, Limits; Get, Scan, Before, Versions, Set, Delete, Guard, GuardRange, Now), backed by an embedded store on one node or a replicated one in a cluster](img/rfc16-views.svg)
 
 ![The keys the example writes, grouped by scope. Under F‖profiles‖f7 the flush writes the File and an overwrite record and the offload writes a ref; under d1 and d9 mkdir writes the new directory's File, the Entry keyed by the folded name and a time delta. mkdir guards d1's File record; the flush guards f7's fence and N1's node record. Per share, the flush moves the version-floor entry and mkdir writes a usage delta. Per namespace, the offload writes a put intent, then chunk, block and reverse-ref records. Server-wide records hold users, shards and settings; the store format record is read first](img/rfc16-keys.svg)
 
@@ -403,12 +403,15 @@ what moves with a share:
 type User struct {
 	Principal  Principal
 	Name       string
-	IDs        ProtocolIDs // UID, SID, Kerberos principal: the mapping RFC 18 owns; each also a PX‖ row
+	IDs        ProtocolIDs // UID, SID, Kerberos principal, OpenID Connect (issuer, subject): the mapping RFC 18 owns; each also a PX‖ row
+	Email      string      // optional, never defaulted, never a spelling: no PX‖ row, no lookup by it (RFC 18 §2.2)
 	Primary    Principal   // the group a new file gets (RFC 7 §2.4, RFC 18); zero, or a group deleted or being deleted: none, and a new file's group is then its creator's own principal
 	Disabled   bool
 	Secret     SecretRef   // by reference, never the credential itself (RFC 13)
 	// Role, NotBefore and MustChange are the management API's (RFC 23 §5):
-	// they grant nothing on files, and a user with no Role is no API account.
+	// they grant nothing on files. A user with no Role has no API role of its
+	// own; an OpenID Connect sign-in may still give its session one from the
+	// issuer's role claim (RFC 23 §5.5), so no Role does not mean no API access.
 	Role       APIRole     // none, viewer, operator, admin
 	NotBefore  time.Time   // store time: an access or API token issued before it is refused; raised by a disable, a role or password change, or a sign-out everywhere
 	MustChange bool        // set with a generated password: until it changes, a sign-in permits only the password change and sign-out
@@ -1043,7 +1046,7 @@ The views are defined where their semantics are:
 | --- | --- | --- |
 | `Namespace`, `Files`, `Capacity` | names, attributes, ACLs, xattrs, streams, statfs and usage | [RFC 7](rfc-7-namespace-metadata.md) |
 | `Existence`, `Content`, `Blocks` | the write path, the engine's commits and refs, GC | [RFC 6](rfc-6-block-metadata.md) |
-| `OpenState` | opens, locks, caching grants, watches | [RFC 14](rfc-14-open-state.md) |
+| `OpenRecords` (`metadata.Clients`, `metadata.Opens`, not open state's `openstate.Clients` and `openstate.Opens` views over them) | client records, durable opens and their locks, delete pending, the restart-notice number; never caching grants or watches, which are never durable | [RFC 14](rfc-14-open-state.md) |
 | `Principals`, `Records`, `Minter` | identity's lookups, its reads of one record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
 | `Lifecycle` | a device's journal identity, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
 | `ControlPlane`, `Inspect` | the management API, trusted reads by ID | this RFC |
@@ -1076,6 +1079,7 @@ type Minter interface {
 	CreateUser(ctx context.Context, u User) error
 	CreateGroup(ctx context.Context, g Group) error
 	Rename(ctx context.Context, p Principal, name string) error // the record's Name and its name index only
+	SetEmail(ctx context.Context, p Principal, email string) error // the record's Email only, from the directory or issuer (RFC 18 §2.2)
 }
 
 // Lifecycle is the engine's store access outside block metadata's views and
@@ -1149,7 +1153,8 @@ What each consumer holds:
 | Consumer | Holds |
 | --- | --- |
 | NFS and SMB adapters | `vfs.Service` only ([RFC 17](rfc-17-vfs.md)) |
-| Filesystem service ([RFC 17](rfc-17-vfs.md)) | `Namespace`, `Files`, `Capacity`, `OpenState`, and the engine's content facade |
+| Filesystem service ([RFC 17](rfc-17-vfs.md)) | `Namespace`, `Files`, `Capacity`, and the engine's content facade |
+| Open state ([RFC 14](rfc-14-open-state.md)), `*openstate.Table` | `OpenRecords`: the filesystem service reaches open state only through the table, never the view |
 | Engine | `Existence`, `Content`, `Lifecycle`; `Inspect.Refs` for the reseed only |
 | GC | `Blocks` |
 | Identity: authentication and resolution ([RFC 18](rfc-18-identity.md)) | `Principals`, `Records`, `Minter`; tree connect and mount go through the filesystem service's `Shares` calls ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
@@ -1557,7 +1562,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `IN` | Installation: the installation's identity, written once by the explicit initialisation step, which writes the same ID into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); its instance part and recorded machine-generation identifier; and the active version of every shared format but the store format, which `\x00format` holds, each raised only by the control plane's gate (§2.3, §4.6) |
 | | `NSM` | the restart-notice number, one per installation; raised durably before the grace of any failover that lost locks of clients that recover by notice, and at a moved address's arrival above the larger of the move delta's number and its own ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) |
 | | `PGEN` | principals generation: one installation-wide counter, raised in the transaction of every `User`, `Group` or `Membership` write and every `PX‖` row written or deleted; every node reads it at least once a second and stops serving identity it cached under an older one (RFC 18 §7.2) |
-| | `PX‖scheme‖id` | protocol-ID index → `PrincipalID`, unique per scheme; `scheme` is one of `uid`, `gid`, `sid` (binary form) and `krb`, a Kerberos principal as `name@REALM`, compared byte for byte as the KDC spells it; with the User or Group record, the only place a protocol spelling is stored (§2.2) |
+| | `PX‖scheme‖id` | protocol-ID index → `PrincipalID`, unique per scheme; `scheme` is one of `uid`, `gid`, `sid` (binary form) `krb`, a Kerberos principal as `name@REALM`, compared byte for byte as the KDC spells it, and `oidc`, an OpenID Connect (issuer, subject) as the issuer spells them, held only by API accounts ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)); with the User or Group record, the only place a protocol spelling is stored (§2.2) |
 | | `N‖node`, `N‖node‖exp`, `N‖node‖clk` | Node: its roles, binary version, the version range it reads and writes for every shared format, failure domain, node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease (cluster): the lease's expiry, which a renewal writes with its journals' generations and nothing else, and a resume rewrites with the node record ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). On a single node the node record's epoch rises at every start and no lease is written ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). Clock ceiling, only on a backend without a timestamp oracle: the bound `Now` stays under, raised once a second (§4.1); its own key, so raising it conflicts with no fenced commit |
 | | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, join incarnation), its epoch, its shard incarnation, its grace instance and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard‖rq‖requestID` | (cluster) request record: a namespace mutation's request ID and result, written in its transaction and expiring after the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)), so a retry after a takeover is answered, not applied again ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)); a batch move's commit re-keys the shipped ones under the receiving shard ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) step 3) |
@@ -1739,7 +1744,7 @@ are the prefix's. No separator byte is written.
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | `protocol.Kind`'s byte: 0x01, 0x02, 0x03, 0x04, one per kind the adapters register (e.g. NFSv4.0, NFSv4.1, SMB, NLM) |
 | `IDS` | kind: client 0x01, open 0x02, lock 0x03, uid 0x04, gid 0x05, RID 0x06 |
-| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
+| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
 (§4.6): changing any of them is a format bump, and a code once assigned is never

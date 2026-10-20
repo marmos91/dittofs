@@ -1952,7 +1952,7 @@ holds none while the service holds it behind a clone or chunk.
 package openstate // pkg/openstate
 
 type Deps struct {
-	Store   *metadata.Store   // RFC 16: the OpenRecords view only — client records, durable opens and their locks, delete pending, the restart-notice number
+	Store   *metadata.Store   // RFC 16: the OpenRecords view only (metadata.Clients, metadata.Opens) — client records, durable opens and their locks, delete pending, the restart-notice number
 	Pool    *resources.Pool   // RFC 24 §4.6: the open-state pool
 	Clock   clock.Clock       // the only time source
 	Metrics *metrics.Registry

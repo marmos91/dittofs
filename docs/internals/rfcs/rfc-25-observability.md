@@ -1036,7 +1036,11 @@ No log line, span attribute, health detail, metric or event record carries:
   symlink targets;
 - **at `Info` or above, any name a user chose** — file and directory names, paths,
   symlink targets, stream names. A file is named by share and FileID. Names appear
-  at `Debug` only, and in the `access` stream (§4.2).
+  at `Debug` only, and in the `access` stream (§4.2);
+- **a person's identifiers** — e-mail addresses, OpenID Connect issuer
+  subjects and user names
+  ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)). A
+  principal is named by its principal ID.
 
 Share, store and namespace names, principal IDs, client addresses and client IDs
 are operational identifiers and may be logged at any level.
@@ -1352,7 +1356,6 @@ been removed.
 | --- | --- | --- |
 | [RFC 17 §7](rfc-17-vfs.md#7.%20Observability), §3.3 | `outcome` on `vfs_op_seconds` has no stated values, and the full error set would cost about 70,000 series; `vfs_events_dropped_total` is the sink's; §3.3 defines no `QuotaEvent`, and says "planned observability RFC" | "`outcome` = `ok`, `error` or `delay`; the error itself is counted in `vfs_errors_total{op, error}`"; remove the drop row, "events dropped are RFC 25's `events_dropped_total`"; add a `QuotaEvent` type with RFC 25 §4.2's quota fields; "belong to RFC 25" |
 | [RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded), [§2.2](rfc-24-resources.md#2.2%20What%20is%20outside%20the%20budget) | §2.2 and §5.1 list two rings and 20 MiB | add the `logon` ring, 4,096 entries, for three rings and 24 MiB |
-| [RFC 7 §8.2](rfc-7-namespace-metadata.md#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later), [§11.2](rfc-7-namespace-metadata.md#11.2%20Observability) / [RFC 17 §7](rfc-17-vfs.md#7.%20Observability) | `namespace_deferred_unlink_refused_total` and `vfs_deferred_unlink_refusals_total` count one event (§2.7) | remove RFC 7's; link RFC 17's |
 | [RFC 21 §13](rfc-21-nfs.md#13.%20Observability) / [RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics) | `nfs_replay_hits_total` duplicates `adapter_replay_hits_total{protocol}` | remove RFC 21's; link RFC 20's |
 | [RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits), [§18](rfc-22-smb.md#18.%20Observability) / [RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics) / [RFC 17 §7](rfc-17-vfs.md#7.%20Observability) | `vfs_held_calls`, `vfs_held_bytes`, `vfs_hold_pool_bytes` and `vfs_hold_refusals_total` are defined nowhere; RFC 17 §7 and RFC 24 §10 say held requests are RFC 20 §10.1's, which lists none | RFC 20 §10.1 adds `adapter_held_requests{protocol}`, `adapter_held_bytes{protocol}` and `adapter_hold_refusals_total{protocol}`; the hold pool's fill is RFC 24's `memory_pool_reserved_bytes{pool="hold"}`; RFC 22 uses those names |
 | [RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded), [§10](rfc-24-resources.md#10.%20Observability) | `work_items_dropped_total{source}`: the prefix `work_` has no owner, and the drop is decided by [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)'s scheduler | `engine_work_items_dropped_total{source}` in RFC 8 §14; RFC 24 links it |

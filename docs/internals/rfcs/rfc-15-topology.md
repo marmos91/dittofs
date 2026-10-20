@@ -561,7 +561,7 @@ is not primary of:
 | --- | --- |
 | **any node's server** (store reads, needing no primary) | `Lookup`, `Entries`, `EntriesPlus`, `Files.Get` (the committed part), `ACL`, `Xattrs`, `Streams`, `Authorize`, `Resolve`, `Capacity.*`, `Principals.*` |
 | **any node** (store transactions, no shard's primary) | `ControlPlane.*` |
-| **the shard's primary** | `Create`, `Link`, `Unlink`, `Rename`, `SetAttrs`, `SetACL`, `SetXattr`, `RemoveXattr`, `OpenState.*`, `Existence.*`, the size and times overlay of `Files.Get`, reads and writes |
+| **the shard's primary** | `Create`, `Link`, `Unlink`, `Rename`, `SetAttrs`, `SetACL`, `SetXattr`, `RemoveXattr`, `OpenRecords.*`, `Existence.*`, the size and times overlay of `Files.Get`, reads and writes |
 | **any node, by sweep assignment** | `Blocks.*` ([RFC 9](rfc-9-gc.md)) |
 
 A read off the primary is deferred: the gateway forwards every read to the primary ([RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes)).
@@ -637,14 +637,14 @@ source extent until the clone ends, and that registration is rebuilt after a
 failover only from the source's clone-kind open record, which names the
 destination and the clone's version ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A
 by-reference clone or copy whose source and destination are in different
-shards **MUST** therefore be refused at admission with `ErrCross` (`CrossShard`)
+shards **MUST** therefore be refused at admission with `ErrCross` (`OtherShard`)
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), whatever their primaries are then: two shards
 that share a primary at admission can be split by the next failover or
 handover mid-clone. A clone admitted within one shard is not split by a batch
 move either: a batch skips a file that is the source or destination of an
 unfinished clone until the clone is done
 ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). On
-`ErrCross` (`CrossShard`) the adapters fall back without telling the client the
+`ErrCross` (`OtherShard`) the adapters fall back without telling the client the
 operation is missing: a copy becomes a server-side byte copy, reads at the
 source's primary through `vfs.Peers` and writes at the destination's; a clone
 is answered as a cross-device refusal, never as an operation the server lacks,

@@ -1884,8 +1884,12 @@ this:
   `Rename`, `Unlink` and the xattr calls take an open reference, [§11.1](#11.1%20Interface)), so
   the open's grant and privilege decide them, never a fresh unprivileged
   check. A maximal-access answer is computed without an open's privilege, even
-  on that open. Which protocol scopes privilege to an open, and on what
-  request, is the adapter's ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)).
+  on that open. An open asks for it as a backup or restore intent on the open
+  request (`OpenRequest.Backup`,
+  [RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), and the service marks it
+  privileged only for a caller this list makes privileged. Which protocol
+  request carries that intent is the adapter's
+  ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)).
 
 Take-ownership is not privilege here: it is the **change the owner** right,
 which lets a caller set the owner to itself only (below). This component reads

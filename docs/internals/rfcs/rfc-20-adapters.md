@@ -335,7 +335,11 @@ An adapter imports `pkg/vfs` and nothing else of the core. Its packages
 - the standard library and wire-format libraries that do no file I/O.
 
 They **MUST NOT** import a metadata store, the open-state tables, the content
-engine, the topology or routing code, the identity component, the configuration
+engine, the topology or routing code, the identity component — neither its
+contract, `pkg/identity`, nor its server, `internal/identity`
+([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle));
+the identity types an adapter names reach it as `pkg/vfs` aliases
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)) — the configuration
 store, or another adapter. Two adapters that need the same helper — the ACL translation between a
 security descriptor or an NFSv4 ACL and the neutral ACL
 ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)),
@@ -1190,9 +1194,16 @@ reach no service call.
 The adapter runs the protocol's security handshake — AUTH_SYS credential
 decoding, the RPCSEC_GSS context exchange, SMB's NTLM or Kerberos session setup
 — and hands the service an `Identity` holding what the handshake proved, and
-nothing more ([RFC 17 §3](rfc-17-vfs.md#3.%20Interface)): the protocol, the
-flavour and level, the principal or numeric IDs the credential carried, the
-client's address.
+nothing more, in neutral terms
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): the proven principal or
+none; `Proof`, how it was proved (`None` < `Claimed` < `Secret` < `Ticket`);
+`Protection`, how its messages are protected (`None` < `Integrity` <
+`Privacy`); the numeric IDs a client asserted, as `Claims`; the client's
+address; and the handshake's `Evidence`. No protocol, flavour or level is in
+it: which flavour gives which proof and protection is each adapter's
+translation ([RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity),
+[RFC 22 §16.1](rfc-22-smb.md#16.1%20Identity)), and a share's policy is
+checked against the two neutral parts.
 
 The adapter **MUST NOT** map a principal to numeric IDs or SIDs, apply
 squashing, or decide that a principal is privileged. Those are the service's,
@@ -1713,7 +1724,7 @@ What follows from the service owning it:
   `TREE_CONNECT` are not where a share is admitted: every service call naming
   a handle or an open is admitted ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
   So a handle presented through any entry path meets the same checks — share
-  state, flavour, client rules, squashing — including the operations that
+  state, the proof and protection minimums, client rules, squashing — including the operations that
   build no other context (`LOCK`, `LOCKT`, `LOCKU`). The adapter's job at entry
   is to make the call and map its error.
 - **`PUTFH` makes no call.** It sets the current filehandle; the next
@@ -2279,7 +2290,9 @@ These boundary checks run per change:
 
 A test walks the import graph of every adapter package and fails, naming the
 package and the import, on anything §2.3 forbids: any core package but
-`pkg/vfs`, the identity component's included. It is seeded with one
+`pkg/vfs`, both identity packages included — `pkg/identity` and
+`internal/identity` — since an adapter takes identity types only as `pkg/vfs`
+aliases. It is seeded with one
 deliberate violation in its own test data and must report it, so a check that
 silently matches nothing is caught. The same test lists adapter files over 800
 lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
