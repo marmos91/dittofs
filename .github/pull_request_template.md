@@ -16,6 +16,11 @@ Writing rules for PRs, review comments and replies:
 <!-- One to three sentences: what changes in behavior, and why. Link the issue / RFC
 instead of re-explaining it. -->
 
+## Decision needed
+
+<!-- What you need from the reviewer: "approve as is", "pick A or B", "check the
+locking in X". One line. -->
+
 ## Type of change
 
 <!-- Please delete options that are not relevant. -->
@@ -64,7 +69,6 @@ by the behavior they protect. Do not paste test output or logs. -->
 - [ ] I have made corresponding changes to the documentation
 - [ ] New and existing unit tests pass locally with my changes
 - [ ] Any dependent changes have been merged and published
-- [ ] I have read and can defend every line of this description, including any part written with AI
 
 ## Screenshots (if applicable)
 
