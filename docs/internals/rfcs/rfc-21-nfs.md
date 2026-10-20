@@ -739,7 +739,7 @@ A **lease** is how long a client's state is kept while it is silent.
   It is unique and never reused, but not random: `clientid4` is 8 bytes, with no
   room beside what makes it unique, so it is honoured only together with the
   principal or session that holds it
-  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
+  ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)).
 - Ending a client (`DESTROY_CLIENTID`) maps to the service's `Destroy`
   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), RFC 14's `Destroy`, never
   to `Disconnect`, which is an SMB session's last channel ending; a refusal is
@@ -838,7 +838,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    non-random part carries the number of the shard that holds the record, and
    its random bits are unique within that shard, whose primary keeps an index
    from them to the record
-   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): a stateid is resolved
+   ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)): a stateid is resolved
    by shard, then index, with no file handle. The 12 bytes are laid out as:
    byte 0 the type tag (open, lock state, delegation, layout, copy) in its low
    3 bits and the low 5 bits of the shard's grace instance the stateid was
@@ -847,7 +847,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
 
    **A miss says whether state was lost.** The adapter passes the grace-instance
    bits with the lookup, and a stateid whose index entry is gone is answered
-   as [RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client) decides: `ErrState` (`StaleState`)
+   as [RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references) decides: `ErrState` (`StaleState`)
    (`NFS4ERR_STALE_STATEID`) when its bits name an earlier grace instance than
    the shard's current one, or for any miss while the shard is in grace;
    `ErrState` (`BadState`) (`NFS4ERR_BAD_STATEID`) otherwise — a stateid minted under the
@@ -861,7 +861,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    otherwise; G deletes its forwarding entry on a bad answer, or by RFC 11
    §4's sweep once R, out of grace, still answers stale
    ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries),
-   [RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). So a moved stateid
+   [RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)). So a moved stateid
    lost in R's failover is stale and reclaimed in R's grace, and one moved and
    later freed is bad. A grace instance advances
    only when the shard's open state is lost, at a restart or a failover that
@@ -889,7 +889,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    names another's. `other` has the room: RFC 14 gives an open's stateid its
    `Token`, which `other` carries in place of the `OpenID`, and a lock state,
    delegation, layout or copy an ID that carries those bits
-   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); a counter or a
+   ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)); a counter or a
    timestamp in their place makes every neighbouring stateid reachable by
    arithmetic. The rule binds stateids, which are bearer tokens with room for
    it; the 8-byte client ID is not one (§5.1).
