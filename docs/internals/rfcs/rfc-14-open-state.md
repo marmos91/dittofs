@@ -344,6 +344,8 @@ shard the same way**, so a call naming one with no file handle — `AckRecall`,
 shard's primary from the ID alone
 ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)).
 
+![A state reference names its shard: a StateRef minted by open state, which the adapter spells on the wire (a stateid, for one), carries Type (open, lock state or grant), Shard, which routes the call, Instance, the low bits of its grace instance, Token, at least 64 random bits unique within the shard, and Seq, the value presented, zero for current; a call with no file handle — TestState, FreeState, AckRecall, Unwatch, and any call naming a GrantID or WatchID, which name their shard the same way — is routed by Shard alone to that shard's primary, whose index maps Token to the record and its file; a request whose handle names another file is ErrBadState; a hit whose Seq is current or zero is answered as in use, an older Seq is ErrOldState and a newer one ErrBadState; a miss is ErrStaleState while the shard is in grace or when Instance is older than the shard's, so the client reclaims, and ErrBadState otherwise — expired, freed, a removed share's or forged — since nothing maps released state back to its client; only a reference in the client's revoked set is ErrRevoked until FreeState, and a ClientID or OpenID, with no room for random bits, is honoured only with its principal and session](img/rfc14-stateref.svg)
+
 **A stateid that misses is stale or bad.** A stateid whose record the index does
 not hold is answered stale (`ErrStaleState`) when it may name state the shard
 lost, so the client reclaims, and bad (`ErrBadState`) otherwise:
@@ -947,6 +949,8 @@ for a whole lease period is treated as gone. Without that, a laptop that sleeps
 holding a lock blocks every other client forever. A durable open's `Timeout`
 plays the same part for a client that has no lease.
 
+![A client's life: at first contact it gives its Name, Boot and Owner and changes no state; Propose makes a pending confirmation, volatile at the node that answered, with a 64-bit random confirm token, lapsing after one lease period, and Connect confirms it, while a one-step protocol connects at once; the current client holds state and is renewed, its record durable but for Lease.Expires and found again by (protocol, Name), Renew extending Lease.Expires at the one lease owner, Lease.Node, which renews and expires it, another principal naming its Name refused ErrClientInUse, and a call naming it accepted only under its Owner or session; it leaves by reboot, the same Name under a new Boot, which is a new ClientID proposed again, the old ID expiring only once the new one is confirmed; by expiry, silent for one lease period, which releases everything at every shard in one step and deletes the record; by an administrator's Revoke, which releases its state at once but keeps the record, its sessions and its revoked set, each answered ErrRevoked; or its back channel is lost, setting Reach.Down, which is signalled, offers no grant and revokes an unsendable recall at its deadline, until Rebind sets Reach.Callback and clears Reach.Down, by Owner only under Protect; Destroy is refused ErrClientBusy while a session or state remains, and releases nothing](img/rfc14-client-lifecycle.svg)
+
 The lease period is fixed, not a setting ([RFC 13](rfc-13-configuration.md)):
 90 s, which the adapter advertises; a durable open is kept for the `Timeout` its
 request negotiated, within the bounds its adapter enforces.
@@ -1020,6 +1024,8 @@ Without that window, two clients that were correctly serialised before the
 restart are both granted the same lock after it, and neither is told.
 Open-state leases are extended by the grace period, so a client is not expired
 for time the server spent restarting.
+
+![One shard over time: under instance k the shard serves normally; a loss takes its table, and the start sets GraceInstance to the new incarnation, k+1, opening grace for at most one lease period, 90 s, ending early once every client its records name has finished, after which new state is granted again; during grace a reclaim from a client whose record names the shard is accepted for only what it held, authorised like a new open against the file as it is now, and a shard that lost nothing answers with the state it still holds; a reclaim of volatile state past the reclaim allowance is ErrDelay, retried within grace, while a durable or persistent open and its locks are never refused for memory; a reclaim from a client no record names is ErrNoReclaim; a new open, lock or grant, and I/O a lost lock might forbid, is ErrGrace whether or not it seems to conflict, a retry-later whose pending request outlives grace and is granted at its end; a StateRef minted under k that the table no longer holds is ErrStaleState, during and after grace, so its client reclaims; after grace every reclaim is refused; a client has finished when it sends an explicit completion for k+1 or reconnects or times out every persistent open of its own, and a client with no completion signal never finishes, so grace then runs the full lease period](img/rfc14-grace-reclaim.svg)
 
 **The move grace is the one exception.** A namespace move that names an
 address holds the moved shares at the receiving installation in a narrower
@@ -2029,6 +2035,8 @@ on `Deps.Clock`. A timer firing is a call into the same per-file step. There is
 no drain: draining revokes nothing, and open state is left to the next start's
 grace ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). `Stop` stops the
 timers; `Close` is the per-open call of §11.3.
+
+![How open state is wired: node.New opens the metadata store, of which the table uses only the OpenRecords view, then builds openstate.New(Deps) with Store, Pool, Clock, Metrics and Logger but no Sink and no settings, starting nothing, then vfs.New(Deps), whose *vfs.Server holds the *Table as a concrete type, and the adapters reach the table only through vfs.Service; Node.Start calls table.Start(ctx, sink = *vfs.Server) at step 5, handing it the built server as its Sink, which reads each served shard's GraceInstance and incarnation, already raised by the node's start transaction, enters grace for each and arms the lease, recall, waiter, grant-fence and Timeout timers on Deps.Clock; then server.Start at step 6 builds the pseudo-filesystem, followed in a cluster by Serve and the gateway, and the adapters serve at step 9 after the first reconcile, so no client arrives before; Node.Stop runs in reverse: the adapters stop, each draining its closes and unlocks; in a cluster the shards are handed over while Serve still receives, then Serve stops; the server's Drain and Close revoke nothing; table.Stop stops the timers and has no drain of its own; the engine and then the store close last; the Sink arrives at Start because the server is built after the table and holds it, and state left in memory at a stop is recovered by the next start's grace](img/rfc14-wiring.svg)
 
 ### 11.3 Methods
 
