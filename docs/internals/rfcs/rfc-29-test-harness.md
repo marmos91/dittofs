@@ -569,7 +569,15 @@ suites:
   wpts:
     format: trx                         # WPTS's own TRX file
     image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8   # its entrypoint runs the tests
-    env: { Usage: RunTestCases, Filter: TestCategory=BVT }
+    env:                                # its entrypoint only lists the tests unless DryRun is false,
+      Usage: RunTestCases               # and writes these over the config's, so they repeat the fixture's
+      Filter: TestCategory=BVT
+      DryRun: "false"
+      SutComputerName: "{server}"
+      SutIPAddress: "{server}"
+      DomainName: "{server}"
+      AdminUserName: "{user}"
+      PasswordForAllUsers: "{password}"
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture:
@@ -1134,19 +1142,28 @@ There are six, each read by one reader in `dt`:
 | `exit` | the exit status | each file or entry in `tests`; without `tests`, each command of a `cmd` list, named by its first line, as the registry writes it | lint, operator, system, fio-verify, bench-smoke, one-line suites |
 | `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache. A suite whose tests need root (e2e) runs as `go test -json -count=1 -exec 'sudo -n env ...'`, which builds as the user, runs each test binary under `sudo`, and gives the same events | each test and subtest, with skips and their reasons | unit, integration, e2e |
 | `junit` | every JUnit XML file the tool writes under `{out}` | each test case, named by its `code` attribute when it has one, as pynfs's lists are keyed on it, else by `classname.name` | pynfs (`--xml`) |
-| `tap` | the TAP each test file prints | each test file, as the known-failure lists name them | pjdfstest |
+| `tap` | `prove -v`'s report on each test file, the file's TAP included | each test file, as the known-failure lists name them | pjdfstest |
 | `subunit` | smbtorture's `test:`, `success:`, `failure:`, `error:` and `skip:` lines | each smbtorture test | smbtorture; its connection-failure filter and truncation handling move into Go with their test cases |
-| `trx` | WPTS's TRX file, including the tests it didn't execute | each WPTS test | wpts |
+| `trx` | WPTS's TRX file, wherever under `{out}` it writes it, including the tests it didn't execute | each WPTS test | wpts |
 
 **What a reader decides.** For every format but `exit`, the results the tool writes decide, not
 its exit status, which is non-zero whenever a test failed. Each reader keeps the rules of today's
 grader:
-- `tap`: a file whose TAP has a bail-out, a parse error or a plan it didn't meet is incomplete. A
-  file with clean TAP whose run still exits non-zero failed, as `prove` calls it dubious.
+- `tap`: a file whose TAP has a bail-out, a parse error or a plan it didn't meet is incomplete,
+  and so is one whose report `prove` didn't finish, without its `Files=` and `Result:` lines, or
+  that `prove` failed without naming a failed assertion or exit status. A file with clean TAP whose
+  run still exits non-zero failed, as `prove` calls it dubious. A file that timed out failed. A
+  file whose plan skips all its tests, `1..0 # SKIP reason`, which `prove` reports as
+  `skipped: reason` and `Result: NOTESTS`, is skipped with that reason, so it is graded as a skip
+  (§4.7); today's grader, which reads one report for every file, passes it. pjdfstest's own
+  `quick_exit`, for a feature the file system lacks, prints `1..1` and `ok 1` instead, so it reads
+  as a pass, which no reader can tell apart.
 - `junit`: pynfs writes its file only after a clean finish. It lists every test it knows: a
   FAILURE as `<failure>`, an OMIT as `<skipped>`, and WARNING and UNSUPPORTED with no child, so
   they pass, as they do today. The tests its flags didn't select are OMIT too, so pynfs's list
-  names them as expected skips (#2996).
+  names them as expected skips (#2996). A file in which every test skipped ran nothing, and the
+  cell is not run, as today. An `<error>`, which pynfs doesn't write, fails its test as a
+  `<failure>` does.
 - `subunit`: a `test:` line with no result is incomplete. When an entry of `tests.txt` reaches its
   timeout, the test it had open failed, and no known-failure entry excuses it, since the entry's
   later tests never ran. A client that crashes (exit 129 or more) fails nothing by
@@ -1156,7 +1173,12 @@ grader:
   reader grades itself. An entry that reports no test at all, as smbtorture does for a name it
   doesn't know, didn't run, so a test the image's smbtorture lacks is lost coverage (exit 2).
 - `trx`: `Passed` passes; `Failed`, `Error`, `Timeout` and `Aborted` fail; `NotExecuted` and any
-  other outcome skip, with the outcome kept as `rawStatus`.
+  other outcome skip, with the outcome kept as `rawStatus`. A run that `dotnet test` aborted, as
+  when its testhost process crashed, writes no result for the tests it didn't reach, and its
+  counters and test definitions count only the results it wrote, so none of them shows the tests
+  missing. Its run-level message with the outcome `Error` does (`The active test run was aborted.
+  Reason: Test host process crashed`), and the cell is not run, exit 2, unless a result it wrote
+  fails it. Today's grader passes such a run on the tests that reported.
 
 A crash of the code under test is a failure, exit 1, as a hang is (§4.4): a Go test binary that
 panics or dies on a signal fails the test it was running, and the fixture's server exiting during a
