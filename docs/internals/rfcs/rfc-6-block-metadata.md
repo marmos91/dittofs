@@ -235,7 +235,7 @@ The engine is its caller on the content path: write, offload, read, truncate,
 clone. Two other components hold narrow views, wired by whoever composes them
 ([RFC 15](rfc-15-topology.md)): the filesystem service reads `size` and write-time attributes as fields of
 `File`, joined with the engine's overlay ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and GC retires blocks, relocates and audits ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)). Releasing a
-file reaches this component only through the engine's `Release`, which drops the
+file reaches this component only through the engine's `Delete`, which drops the
 refs and the journal's copy together ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)).
 
 ### 1.1 Non-goals
@@ -824,7 +824,7 @@ A pass that had been offered the 11 MiB file at versions up to 3 and commits now
 finds `Removal(f, 4)` and drops its refs that overlap `[3M, ∞)`. Once no pass
 offered below v4 is in flight, the primary prunes the removal.
 
-**t7 — delete.** The namespace releases the file through the engine's `Release`
+**t7 — delete.** The namespace releases the file through the engine's `Delete`
 ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)). Phase 1 deletes the File record, and with it the FileData fields, and writes `Removal(f, 5) = [0, ∞)`,
 kind release; phase 2 drops the three refs and their reverse keys. K1's and K2's
 `live` reach 0, and the sub-transaction that takes each to zero retires it:
@@ -1832,7 +1832,7 @@ Phase 2 leaks rather than loses:
 Refs belong to a **file**, not to a name. Hard links, renames, trash and a file
 unlinked while open are namespace states of one file, and none changes a ref.
 Block metadata learns of a deletion only when [RFC 7](rfc-7-namespace-metadata.md) releases the file through
-the engine's `Release`.
+the engine's `Delete`.
 
 A **snapshot** holds counted content through the refs its files had at its cut,
 and writes nothing per file when it is taken:

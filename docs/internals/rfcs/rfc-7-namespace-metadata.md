@@ -220,7 +220,7 @@ whether an operation is allowed to happen at all.
 
 It is also the component that decides when a file stops existing, and records
 that decision as a pending release; the release that drops its content is the
-engine's `Release` ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)). Nothing else in the set may make that
+engine's `Delete` ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)). Nothing else in the set may make that
 decision, and nothing else may keep content alive behind this component's back
 ([§4.4](#4.4%20There%20is%20no%20third%20holder)).
 
@@ -1267,7 +1267,7 @@ unlinked file; this component keeps no second list ([§4.3](#4.3%20Release%20is%
 Releasing a file drops its refs and decrements the chunks they name
 ([RFC 0 §7](rfc-0-data-lifecycle.md#7.%20Mutation%20and%20removal), [RFC 6 §6.4](rfc-6-block-metadata.md#6.4%20Delete)), drops the journal's copy of its content, and deletes
 its File, ACL and xattrs, and writes the pending release of each of its named
-streams ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)). It is the engine's `Release`
+streams ([§2.7](#2.7%20Extended%20attributes%20and%20named%20streams)). It is the engine's `Delete`
 ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)), called by the filesystem service at the file's primary; this component
 never calls it ([§1](#1.%20Purpose)) and never drops a ref itself. A release that drops the
 refs and leaves the journal holding the file is half a release. Block metadata is
@@ -1289,7 +1289,7 @@ primary ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20pr
 **Only the release transaction deletes it.** The filesystem service at the file's
 primary runs the release ([RFC 17 §5.3](rfc-17-vfs.md#5.3%20Open%20and%20close)) once no open references the file: at once
 when none does, when open state reports the last close ([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)), or when
-grace ends with no reclaimed open ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)). That transaction is the first transaction of the engine's `Release`
+grace ends with no reclaimed open ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)). That transaction is the first transaction of the engine's `Delete`
 ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)): it records the removal, deletes the namespace records and
 deletes the pending release `F‖id‖rel` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); the removal then masks
 the refs, and its batches drop them. A crash
@@ -1324,7 +1324,7 @@ own `FileID` and its own content ([§2.7](#2.7%20Extended%20attributes%20and%20n
 leaves the stream's. An open of a stream counts as an open of its base for
 [§4.2](#4.2%20Open%20state%20is%20the%20second%20holder), so a base with an open stream is not released. The base's release
 transaction **MUST** write a pending-release record for each of its streams, and
-each stream is then released as a file of its own, by the same engine `Release`
+each stream is then released as a file of its own, by the same engine `Delete`
 the filesystem service runs for any pending release. A share setting bounds the
 streams a file may have, so that transaction stays bounded.
 
@@ -2270,7 +2270,7 @@ order; the IDs are kept as issued, because other RFCs and tests cite them.
 | --- | --- |
 | N1 | A file's `Nlink` equals the number of entries naming it, changes in the transaction that changes them, and fails the transaction rather than going negative. A directory's `Subdirs`, its folded value plus its unfolded deltas, equals its entries that name a directory and is what an adapter reports, as 2 + `Subdirs`, for its link count; `Subdirs` is signed; an underflow raises a health condition and a recount behind the directory's fold admission, never fails a read, and is never clamped in the store. |
 | N2 | A file is released when, and only when, it has a pending-release record, `Nlink` is zero and no open state references it; only the removal of its last entry, or its base's release for a named stream, writes that record, so a share root and a live file's streams are never released. Nothing else keeps a file alive. |
-| N3 | The transaction that removes a file's last entry writes its pending release, always, holding no holder list; only the release transaction — the engine's `Release`, which drops the refs — deletes it, so a restart or a new primary resumes it. Holders of an unlinked file are its durable opens ([RFC 14](rfc-14-open-state.md)); open state of a linked file is never written. |
+| N3 | The transaction that removes a file's last entry writes its pending release, always, holding no holder list; only the release transaction — the engine's `Delete`, which drops the refs — deletes it, so a restart or a new primary resumes it. Holders of an unlinked file are its durable opens ([RFC 14](rfc-14-open-state.md)); open state of a linked file is never written. |
 | N4 | A rename applies wholly or not at all, and its loop check is evaluated inside its transaction and guards every ancestor it reads. Create, link and rename-into guard the parent; removing a directory, or replacing it by rename, range-guards its entries and writes its record in the transaction that proves it empty, so a create racing it fails in either commit order. |
 | N5 | A handle names a file and a share, is stable across restart, and resolves to stale — never to another file and never to "not found" — when its file is gone. A `FileID` is unguessable and never reissued; so is a principal's ID. |
 | N6 | No name, path or parent appears in a handle, a lock, a ref or a journal key. |
