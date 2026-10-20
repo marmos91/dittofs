@@ -115,9 +115,19 @@ func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group) error {
 	})
 }
 
+// rootID and anonymousID are the uid and gid of root and of the anonymous
+// caller, held by rule rather than as records.
+const (
+	rootID      = 0
+	anonymousID = 65534
+)
+
 // validIDs refuses a scheme the principal's kind may not carry, an empty
 // spelling, a UID or GID not in canonical decimal, and a repeated ID: each
-// spelling has one index row, so it must have one form.
+// spelling has one index row, so it must have one form. It also refuses uid
+// and gid 0 and 65534, which are root's and anonymous's by rule and never a
+// stored principal's, so no record can claim root's privileges or stand in for
+// the anonymous caller.
 func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 	for i, id := range ids {
 		if !slices.Contains(schemes, id.Scheme) || id.Value == "" {
@@ -127,6 +137,9 @@ func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 			n, err := strconv.ParseUint(id.Value, 10, 32)
 			if err != nil || strconv.FormatUint(n, 10) != id.Value {
 				return merrs.NewInvalidArgumentError(id.Scheme.String() + " " + id.Value + " is not a canonical decimal")
+			}
+			if n == rootID || n == anonymousID {
+				return merrs.NewInvalidArgumentError(id.Scheme.String() + " " + id.Value + " is reserved")
 			}
 		}
 		if slices.Contains(ids[:i], id) {
