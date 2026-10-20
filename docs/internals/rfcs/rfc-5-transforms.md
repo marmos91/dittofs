@@ -891,9 +891,28 @@ blocks are deleted, and T19 still holds. The check is one check before any
 K-bounded batches, and every retained export's material as the metadata store's
 backup state records it, never by reading remote locations. If any of them
 names **any** of the namespace's material, the drain destroys none of it and
-stops; it destroys all of it only when the whole check passed and a re-read of
-the namespace's fence shows no census entry naming its material appeared since
-the check began ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)).
+stops; it destroys all of it only when the whole check passed and no census
+entry naming its material has appeared since the check began
+([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)).
+
+**The drain mark carries a check token.** The check first rewrites the drain
+mark `NS‖ns‖drain` with a fresh token. Every copy transaction that adds a
+census entry for this namespace's material, in any namespace's folder record,
+reads the mark with tracking and, while it exists, writes a new token into it
+in the same transaction ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)).
+The transaction that removes the keys reads the mark with tracking, proceeds
+only if it still holds the token its own check wrote, and rewrites the mark.
+Both commit orders are then caught:
+
+| Commits first | What stops the removal |
+| --- | --- |
+| a census entry, at any point after the check began — before the removal transaction started, or while it runs | it has replaced the token, so the removal finds another value, or conflicts, removes nothing, and the check runs again |
+| the removal | it has written the mark the later copy transaction read, so that copy aborts and finds the material gone |
+
+A mark with no value would catch neither: a census entry committed before the
+removal transaction's snapshot is no conflict for it
+([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)),
+and a removal that only reads the mark writes nothing a copy read.
 Folder censuses list transform material only, so a key-by-key check would
 destroy the chunk-ID key and the chunking key, which no census lists, before the
 data key stopped it, and leave another namespace's retained backups of these
