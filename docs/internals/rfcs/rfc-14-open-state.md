@@ -1049,9 +1049,9 @@ errors; every mapping from a protocol to them, and back, is its adapter's
 - **What survives a loss.** Translation state a gateway or primary loss must
   not take is `Adapter` bytes in the record (§2.1). They travel opaque in the
   forwarded call and come back in its result; the gateway never treats a copy
-  as authoritative, and a read of them is always forwarded
-  ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state),
-  [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state) test it).
+  as authoritative, and a read of them is always forwarded; holding to that is
+  the adapters' ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state),
+  [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)).
 - **One fence.** A write of `Adapter` bytes passes the same node-epoch and
   shard-epoch fence as any write
   ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), so a stale
@@ -2223,8 +2223,8 @@ the next start ([RFC 17 §5.3](rfc-17-vfs.md#5.3%20Open%20and%20close)), a
 persistent open's delete pending is durable, and a volatile one is lost as a
 failover loses it (§9.4).
 
-`Revocation`, `RevokeReason`, `ClientStatus`, `StateRef`, `LockRange`,
-`LockWaiter` and `Caller` are declared here and aliased by `pkg/vfs`
+`Revocation`, `RevokeReason`, `ClientStatus`, `StateRef`, `LockRange` and
+`LockWaiter` are declared here and aliased by `pkg/vfs`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), since open state cannot
 import vfs; `LockReq` is open state's own, and the service copies `pkg/vfs`'s
 request's ranges into it whole. The import rule — only the filesystem service
@@ -2560,7 +2560,7 @@ Deleted numbers are not reused.
 | L25 | A client record is found by (protocol, name); where it has an `Owner`, the same name from another principal is refused `ErrClientInUse`, and the record keeps its `Boot`, `Owner` and `Protect` durably. An SMB record, and one whose owner maps to the anonymous principal, holds no `Owner`. | Connect a name, again with the same `Boot` through another node: the same ID; with a new `Boot`: a new ID and the old state released; from another principal: refused; after a restart: the same ID. Two principals negotiate one SMB name: one record, no `Owner`; the second presenting or reconnecting the first's open is refused. Two hosts whose uids map to nobody propose different names: two clients, neither able to `Destroy` or `Rebind` the other. |
 | L26 | Every call using an open or lock state is refused unless its caller is the opener's principal, or the client's `Owner` with `Protect`; every bearer ID with room carries at least 64 random bits, and an ID without room is honoured only with its principal and session. | Mint 2¹⁶ references from a seeded `Deps.Rand` and flip each of the 64 random bits of each: no flip names a record. A counter fails at the low bits. The opener-only half is RFC 17 V18. |
 | L27 | A reference's sequence and an open-owner's confirmation are held as state and change in the step that applies the request. | Upgrade an open, then `Downgrade` with the pre-upgrade seqid: `ErrOldState`, and `TestState` with it too. A new NFSv4.0 open-owner's read before `ConfirmOpen`: refused; after it: accepted. |
-| L28 | (cluster) One node, the lease owner, renews and expires each client; no primary expires a client on its own. Recalls route to the client's back-channel node, and a lost one is signalled until the client rebinds. | A client holds state at two primaries and talks only to the first for two lease periods: the second does not expire it; kill the client: it is expired once and both release. Kill its back-channel node: `Reach.Down` is reported through another node, no grant is offered until `Rebind`, and a recall then reaches the new node. |
+| L28 | (cluster) One node, the lease owner, renews and expires each client; no primary expires a client on its own. Recalls route to the client's back-channel node, and a lost one is signalled until the client rebinds. | A client holds state at two primaries and talks only to the first for two lease periods: the second does not expire it, and the lease owner receives at most one activity report per renewal interval from each serving node, however many requests arrive; kill the client: it is expired once and both release. Kill its back-channel node: `Reach.Down` is reported through another node, no grant is offered until `Rebind`, and a recall then reaches the new node. |
 | L28b | (cluster) A partition between the lease owner and a gateway never expires a client that gateway still serves. | Partition the lease owner from the client's only gateway, not from the store, for two lease periods: the client is not expired while the gateway receives its renewals, and the gateway answers its open-state requests `ErrUnavailable` from half a lease on. |
 | L29 | `ReclaimComplete` is tracked per (client, shard, grace instance), every node start raises every shard's incarnation, and a loss signals every client its records name to reclaim. | An NFSv4.1 client completes, its shard fails over: `ClientStatus.ReclaimNeeded`, its reclaim accepted, grace not ended before it completes again; a reclaim at a shard that lost nothing returns its state, delegations included. On one node, restart twice: the incarnation rises each time (the verifier is RFC 8 E27) and each grace waits for a new completion. An NFSv4.0 client is answered `ErrStaleClient` until it confirms again, across a lease-owner restart. A handover whose old primary dies before the table arrives: `GraceInstance` = the new incarnation before serving. A failover writes no client record. |
 | L29b | A completion ends only the grace instances the client was shown. | Fail shard A over, let the client reclaim; fail shard B over inside the status cache window and deliver `ReclaimComplete` naming A's instance: B's grace is not ended for the client, and its next renewal shows `ReclaimNeeded` for B. |
