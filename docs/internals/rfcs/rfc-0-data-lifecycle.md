@@ -616,7 +616,7 @@ it owns no component's internals.
 
 A component **MUST NOT** import another component in this set. The composition
 root, the node (`node.New`), is the one exception: it builds the components,
-imports them, and is imported by none of them ([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition)).
+imports them, and is imported by none of them ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)).
 
 Where a component requires a capability it does not own, it **MUST** declare an
 interface for that capability in its own package, named for the need rather than

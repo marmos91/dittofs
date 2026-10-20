@@ -455,7 +455,7 @@ So no wait is unbounded and none forms a cycle.
 ### 2.7 Wiring and lifecycle
 
 The node
-([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition)) builds the
+([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)) builds the
 budget in two phases, inside the start order
 [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) owns:
 
