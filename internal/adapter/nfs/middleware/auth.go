@@ -28,9 +28,8 @@ var unixTranslator = nfsauth.NewUnixTranslator()
 // the UID, GID, and supplementary GIDs. For other auth flavors (like AUTH_NULL),
 // the Unix credential fields are left as nil.
 //
-// Parsing failures are logged but do not cause the procedure to fail -
-// the procedure receives a context with nil credentials and can decide
-// how to handle unauthenticated requests.
+// A credential that fails to decode never gets here: the dispatcher answers
+// it AUTH_BADCRED first (rpc.CheckCredential).
 //
 // **Context Propagation:**
 //
@@ -95,16 +94,9 @@ func ExtractHandlerContext(
 		return handlerCtx
 	}
 
-	// Parse Unix auth credentials.
-	//
-	// decision: a malformed credential leaves the context anonymous rather
-	// than failing the RPC. The wire already asserts the identity, so an
-	// unparseable one carries no authorization evidence at all — which is the
-	// same state as AUTH_NULL. Downstream, auth.ResolveSharePermission gates
-	// that anonymous context on the share's default_permission, so it is
-	// refused wherever the share is not open to guests. Withdraw this
-	// fail-open only if an anonymous context can reach a share that grants
-	// guests more than the share's own default.
+	// Parse Unix auth credentials. The dispatcher has already refused a body
+	// that fails to decode (rpc.CheckCredential), so the error branch below is
+	// defensive only.
 	result, _, err := unixTranslator.Translate(ctx, authBody)
 	if err != nil {
 		logger.Warn("Failed to parse AUTH_UNIX credentials",
@@ -151,8 +143,8 @@ func ExtractMountHandlerContext(
 		KerberosEnabled: kerberosEnabled,
 	}
 
-	// Parse Unix credentials if AUTH_UNIX. A parse failure leaves the mount
-	// context anonymous, matching ExtractHandlerContext's decision above.
+	// Parse Unix credentials if AUTH_UNIX. The dispatcher has already refused a
+	// body that fails to decode.
 	if handlerCtx.AuthFlavor == rpc.AuthUnix {
 		if result, _, err := unixTranslator.Translate(ctx, call.GetAuthBody()); err == nil {
 			handlerCtx.UID = result.Identity.UID
