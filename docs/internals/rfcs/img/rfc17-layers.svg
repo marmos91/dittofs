@@ -32,25 +32,25 @@
   <rect x="250" y="44" width="200" height="48" rx="5" class="pr"/>
   <text x="262" y="63" class="h">SMB adapter</text><text x="262" y="80" class="s">SMB2/3</text>
   <rect x="476" y="44" width="200" height="48" rx="5" class="pr"/>
-  <text x="488" y="63" class="h">pNFS endpoints</text><text x="488" y="80" class="s">layouts</text>
+  <text x="488" y="63" class="h">IPC$ RPC</text><text x="488" y="80" class="s">srvsvc, lsarpc (SMB)</text>
   <path d="M124,94 L124,128" class="ln"/><path d="M350,94 L350,128" class="ln"/><path d="M576,94 L576,128" class="ln"/>
 
   <rect x="24" y="130" width="652" height="150" rx="8" class="sv"/>
-  <text x="36" y="150" class="m">vfs.Service</text><text x="126" y="150" class="s">— the one API adapters see; it keeps nothing between calls</text>
+  <text x="36" y="150" class="m">vfs.Service</text><text x="126" y="150" class="s">— six area interfaces; its front admits and routes, its per-file part runs at the primary</text>
   <rect x="36" y="162" width="150" height="48" rx="4" class="pr"/>
-  <text x="46" y="180" class="h">Clients</text><text x="46" y="197" class="s">Connect, Renew, Destroy</text>
+  <text x="46" y="180" class="h">clients</text><text x="46" y="197" class="s">Connect, Renew, Destroy</text>
   <rect x="196" y="162" width="150" height="48" rx="4" class="pr"/>
-  <text x="206" y="180" class="h">Names</text><text x="206" y="197" class="s">Lookup, Create, Rename</text>
+  <text x="206" y="180" class="h">names</text><text x="206" y="197" class="s">Lookup, Create, Rename</text>
   <rect x="356" y="162" width="150" height="48" rx="4" class="pr"/>
-  <text x="366" y="180" class="h">Attributes</text><text x="366" y="197" class="s">GetAttr, SetACL, Access</text>
+  <text x="366" y="180" class="h">attributes</text><text x="366" y="197" class="s">GetAttr, SetACL, Access</text>
   <rect x="516" y="162" width="150" height="48" rx="4" class="pr"/>
-  <text x="526" y="180" class="h">Data</text><text x="526" y="197" class="s">Open, Read, Write, Copy</text>
+  <text x="526" y="180" class="h">data</text><text x="526" y="197" class="s">Open, Read, Write, Clone</text>
   <rect x="36" y="220" width="150" height="48" rx="4" class="pr"/>
-  <text x="46" y="238" class="h">Locking</text><text x="46" y="255" class="s">locks, grants, watches</text>
+  <text x="46" y="238" class="h">locks</text><text x="46" y="255" class="s">locks, grants, watches</text>
   <rect x="196" y="220" width="150" height="48" rx="4" class="pr"/>
-  <text x="206" y="238" class="h">Volumes</text><text x="206" y="255" class="s">StatFS, Quota</text>
+  <text x="206" y="238" class="h">principals</text><text x="206" y="255" class="s">Spell, Find</text>
   <rect x="356" y="220" width="310" height="48" rx="4" class="pr"/>
-  <text x="366" y="238" class="h">Shares</text><text x="366" y="255" class="s">Mount, PseudoRoot, TreeConnect, SecInfo, ListShares</text>
+  <text x="366" y="238" class="h">shares and volumes</text><text x="366" y="255" class="s">Root, SecInfo, ListShares, StatFS, Quota</text>
 
   <rect x="700" y="44" width="176" height="96" rx="6" class="dr"/>
   <text x="712" y="63" class="h">Callbacks</text>

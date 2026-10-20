@@ -1237,7 +1237,7 @@ to recall, a directory watch. So:
 
 A by-reference clone or copy is not among these operations: one whose source
 and destination are in different shards is refused at admission with
-`ErrCrossShard`, whatever their primaries, and the adapter falls back to a
+`ErrCross` (`CrossShard`), whatever their primaries, and the adapter falls back to a
 server-side byte copy or a cross-device answer ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)).
 
 On any no, the coordinator sends abort and returns the protocol's
