@@ -70,8 +70,10 @@ fi
 # grade exactly like a clean pass. pynfs skips any test whose DEPEND
 # prerequisites did not run in the same invocation, so this is reachable
 # whenever a caller names a subset of tests.
+RAN=0
 if [[ "$TALLY" =~ ^Of\ those:\ ([0-9]+)\ Skipped,\ ([0-9]+)\ Failed,\ ([0-9]+)\ Warned,\ ([0-9]+)\ Passed ]]; then
-    if (( BASH_REMATCH[2] + BASH_REMATCH[3] + BASH_REMATCH[4] == 0 )); then
+    RAN=$((BASH_REMATCH[2] + BASH_REMATCH[3] + BASH_REMATCH[4]))
+    if (( RAN == 0 )); then
         echo -e "${RED}ERROR: every test was skipped — this run is not evidence.${NC}"
         echo "$TALLY"
         exit 1
@@ -116,12 +118,15 @@ for code in "${FAILING[@]:-}"; do
     if kf_is_known "$code"; then
         KNOWN_HITS=$((KNOWN_HITS + 1))
         printf "  ${YELLOW}%-16s KNOWN${NC} (%s)\n" "$code" "$(kf_reason "$code")"
+        kf_record known "$code"
     else
         NEW_FAILURES=$((NEW_FAILURES + 1))
         NEW_FAILURE_LIST+=("$code")
         printf "  ${RED}%-16s FAIL${NC}\n" "$code"
+        kf_record new "$code"
     fi
 done
+kf_record ran "$RAN"
 
 echo ""
 echo -e "${BOLD}--- Summary ---${NC}"

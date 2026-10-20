@@ -497,6 +497,7 @@ assert_contains "profile placeholder is substituted" "args: --profile memory" "$
 OUT="$(run_fake --suite graded --profile memory --variant 4.0)"
 rc=$?
 assert_eq "a grader's failure count survives to the caller" "3" "$rc"
+assert_eq "the exit status is saved beside the results" "3" "$(cat "${WORK}/results/graded/memory-4.0/status")"
 assert_contains "teardown runs after a failed step" "TEARDOWN RAN" "$OUT"
 assert_not_contains "steps after a failure are skipped" "ran pass.sh" "$OUT"
 

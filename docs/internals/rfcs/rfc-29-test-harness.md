@@ -896,8 +896,9 @@ The fixture gives the command these placeholders:
   server at `localhost`, and WPTS and smbtorture reach it inside the server's container. When
   step 2's exit criterion compares results through `dt` with the scripts' (§8), a difference that
   comes from the address, or from where the server runs, has its cause listed beforehand. The
-  scripts stay as they are, except that pynfs's reference run is given `--server` with the host's
-  address, so a difference in the delegation tests isn't hidden behind the address.
+  scripts stay as they are, except that pynfs's reference run is given the host's address as its
+  `--server`, through `PYNFS_SERVER`, so a difference in the delegation tests isn't hidden behind
+  the address, and that they save each cell's exit status and grades for the comparison (§8).
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
   port, or `rpcbind: host`, run one at a time.
@@ -1723,12 +1724,29 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    consecutive runs, every profile, and every CI job that runs a suite through `dt`, the lint jobs
    and the parity jobs, publishes through `dt report`.
    - **The same results,** per cell: the same verdict (green or not), the same new failures, the
-     same known failures and the same tests run. A difference whose cause is listed beforehand
-     doesn't reset the count: what `dt` grades that the scripts don't, such as skips and tests with
-     no result (§4.6, §4.7), and where the server runs (§4.2).
+     same known failures and the same tests run, counted as the tests that passed or failed,
+     expected skips excluded, as smbtorture's failed `CSN 0x7fff` draw is (§4.6). A
+     difference whose cause is listed beforehand doesn't reset the count: what `dt` grades that
+     the scripts don't, such as skips and tests with no result (§4.6, §4.7), and where the server
+     runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
+     alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
+     grading each test, as it does when one has no result, compares only its verdict, and differs
+     when the scripts pass it. pynfs's scripts reach the server at the host's address, as `dt`
+     does (§4.2); a test whose difference comes from where its server runs is named, with the
+     cause, in the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
-     A last job compares the two sides' results per cell.
+     They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
+     which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
+     the schedule and on a dispatch naming a suite, and `merge` on another dispatch. A last job
+     compares the two sides' results for each planned cell, writes the comparison to its summary,
+     and fails when a cell differs, as a planned cell missing on either side does, or when there
+     is none to compare: its result is what the 5 runs count. None of these jobs fails the
+     workflow run, so develop's status is still the scripts'.
+   - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
+     name, as the scripts' results directories name them (`pynfs/badger-s3-4.1` for `dt`'s
+     `pynfs/badger-s3/1`). For it, `run.sh` saves each cell's exit status, and each grader its
+     grades: each failure, known or new, and the tests run.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.

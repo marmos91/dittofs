@@ -20,7 +20,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 PROFILE="${PROFILE:-memory}"
 MINOR_VERSION="4.0"
-SERVER="localhost:12049"
+SERVER="${PYNFS_SERVER:-localhost:12049}"
 EXPORT_PATH="/export"
 TESTS="all"
 NO_SETUP=false
@@ -69,7 +69,7 @@ Options:
                            Passed through to test/posix/setup-posix.sh.
   --minor-version VERSION  NFSv4 minor version (default: 4.0)
                            Valid: 4.0, 4.1
-  --server HOST:PORT       Server to test (default: localhost:12049)
+  --server HOST:PORT       Server to test (default: $PYNFS_SERVER, else localhost:12049)
   --export PATH            Export path on the server (default: /export)
   --tests "CODES"          pynfs test codes or flags (default: all)
                            e.g. --tests "LOOK1 OPEN4", --tests lookup
