@@ -363,7 +363,7 @@ type Deps struct {
 }
 
 // Content is the engine methods §3.5 lists, declared where the server calls them.
-type Content interface{ /* Draw, Overlay, Write, Commit, Read, Release, … */ }
+type Content interface{ /* Draw, Overlay, Write, Commit, Read, Delete, … */ }
 
 // New builds the server and starts nothing (§2.5). *Server implements vfs.Service.
 func New(d Deps) (*Server, error)
@@ -1129,7 +1129,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
 | `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary through `Peers.Overlay` | the directory's primary |
 | `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
-| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Release` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
+| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
 | `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange`; `Opens.Update` for delete on close and suspended times | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
@@ -1137,7 +1137,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr` | `Draw` | primary |
 | `Open` | `Namespace.Lookup` or `Create`, `Files.Authorize`, `Granted`, `Opens.Open` or `Reconnect` | `Draw` when it creates | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `Downgrade`, `ConfirmOpen` | `Opens.Downgrade`, `ConfirmOpen` | — | primary |
-| `Close` | `Opens.Close`; `Namespace.Unlink` for a delete on close | `Release` for an orphan | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| `Close` | `Opens.Close`; `Namespace.Unlink` for a delete on close | `Delete` for an orphan | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `Read` | `Checks.CheckIO`; `Files.Authorize` for an anonymous or delegated open | `Read` | primary |
 | `Write` | `Checks.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota | `Draw`, `Write`, `Overlay`, `Commit` when stable | primary |
 | `Commit` | `Opens.Flushed` through an SMB open | `Commit` | primary |
@@ -1755,7 +1755,7 @@ and returns the parent's `WCC`. One still refused is logged at `Warn`, counted
 (§7), and the file keeps its name: the client has closed, and no reply reaches
 it.
 
-**The service runs every release.** It calls the engine's `Release`
+**The service runs every release.** It calls the engine's `Delete`
 ([RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches))
 at the file's primary, at four moments: when `Unlink` or `Rename` reports a file
 left with no entry and no open holds it; when open state's `Close` reports the
@@ -1826,7 +1826,7 @@ func (s *Server) unlinkLocked(ctx context.Context, c Caller, dir Target, name []
 		r.Dir.After = s.overlaid(ctx, dir.H)
 	}, fileOf(dir.H), f.ID)
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Release(ctx, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
+		err = s.engine.Delete(ctx, orphan.File) // aborts while an open holds it (RFC 7 §4.5); the last close releases (§5.3)
 	}
 	return r, false, err // the chunks it referenced are dropped by the engine's batches and GC (RFC 8 §8.1)
 }
@@ -1884,7 +1884,7 @@ func (s *Server) renameAt(ctx context.Context, c Caller, from Target, fromName [
 		}
 	}, fileOf(from.H), fileOf(to), src.ID, dst.ID)
 	if err == nil && orphan.File != 0 {
-		err = s.engine.Release(ctx, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
+		err = s.engine.Delete(ctx, orphan.File) // the replaced target; aborts while an open holds it (RFC 7 §4.5)
 	}
 	return r, err
 }
@@ -2374,6 +2374,14 @@ service benchmark is the adapter's own cost:
 
 The service is introduced in slices, each one PR or a few, each leaving the
 tree working:
+
+> decision: the server is built over the RFC 16 store and RFC 14's open state
+> from slice 1, not over today's `metadata.Service` and lock manager, because
+> both are deleted when the new store lands and a server delegating to them
+> would be written twice. Slice 1's delegation and slice 3's shim are
+> therefore skipped, and slice 0's types come from the new store. Today's code
+> gets only the drift fixes below. Overturned if the new store slips far
+> enough that adapters need the service before it lands.
 
 | Slice | What moves | What is deleted or closed |
 | --- | --- | --- |
