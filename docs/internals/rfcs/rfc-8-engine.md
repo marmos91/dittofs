@@ -2464,8 +2464,8 @@ deadline ends the wait, never the cause's class:** an `ErrDelay` still standing
 at the deadline stays `ErrDelay`, and only a permanent cause — the second row —
 answers `ErrNoSpace`, at once, including a transient cause that turns permanent
 while the client retries. How a protocol carries a standing `ErrDelay`, and at
-what cap it gives up with which status, is the adapters' ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)). Converting at the deadline would turn a two-minute remote
+what cap it gives up with which status, is the adapters' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+[RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). Converting at the deadline would turn a two-minute remote
 outage into a write error a client treats as fatal.
 
 ### 10.2.1 Writes are paced before the limit, not stopped at it

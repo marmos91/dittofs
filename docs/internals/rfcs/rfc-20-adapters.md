@@ -76,7 +76,7 @@ With this RFC:
    back (§4.3).
 3. The service refuses the write with `ErrShareViolation`; the adapter's error
    table turns it into `NFS3ERR_ACCES`
-   ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire)), and the table's own test proves every service error has a row (§4.5).
+   ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)), and the table's own test proves every service error has a row (§4.5).
 4. A nightly run sends the same NFSv3 and SMB sequence to a reference server and
    to DittoFS, captures both, and compares them field by field after removing
    what legitimately differs (§8). A reply that differs, and that no recorded
@@ -380,7 +380,7 @@ requests and returns neutral results and errors. Every mapping from a protocol
 to them and back — owner strings and verifiers, the stateid's wire layout and
 `StateRef`, access and deny masks, grant levels, lock semantics into
 `LockReq`, a neutral error into a status — is the adapter's, written down once
-per protocol in [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state) and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state). Translation state
+per protocol in [RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state) and [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state). Translation state
 that must outlive a connection, a gateway or a primary — a setup call's
 one-slot replay, a callback address, a restart-notice address — is in the
 adapter's own format, stored durably in the record's opaque `Adapter` bytes
@@ -1359,8 +1359,8 @@ version:
 
 Who writes which rows: a protocol RFC states the rows whose answer is a
 protocol choice — which status makes a client retry, reclaim or give up
-([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)). The rest follow
+([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+[RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). The rest follow
 from the protocol's own specification, are not restated in any RFC, and live
 only in the adapter's table. This RFC fixes that there is exactly one table per
 protocol and that it is total (§7.3).
@@ -1403,7 +1403,7 @@ it holds — the service counts nothing about holds:
   the same decoded arguments, the wire IDs resolved again, so an open closed
   meanwhile is seen;
 - how long a request is held is the protocol's bound for the delay's cause
-  ([RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)),
+  ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)),
   applied by the pipeline from the `Delay`'s cause; a handler never chooses;
 - a client `CANCEL` or a closed connection ends the hold, and for a waiting lock
   calls `CancelLock` before answering ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)).
@@ -1984,8 +1984,8 @@ inside the service, or a reply reservation's deadline, before it — is one clas
 adapter builds itself for its own reply-reservation refusal. A request past its
 connection's hold floor with the hold pool full is the adapter's own refusal
 (§4.6). The error table answers both at once and holds neither; the statuses
-are the protocol RFCs' ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)).
+are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+[RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)).
 
 > ponytail: a fixed cap of 64 per connection for protocols without flow control.
 > One NFSv3 client on one connection is limited to the cap however idle the node
@@ -2245,7 +2245,7 @@ the ones above it cannot, and none stands in for another:
 | handler | translation: the right service call with the right arguments, and the right reply for each answer | a recording service (§7.2) | per change |
 | boundary | imports, error-table totality, one mutating call | §7.1, §7.2, §7.3 | per change |
 | in-process | an adapter on the real service and in-memory stores, driven by §8.2's scripted client over loopback; no root, no kernel client | Go tests | per change |
-| conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §12](rfc-21-nfs.md#12.%20Conformance), [RFC 22 §17](rfc-22-smb.md#17.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, after merge on every profile |
+| conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, after merge on every profile |
 | end to end | the scenarios of this RFC with kernel clients on a composed node (§7.5) | `test/e2e` | after merge and nightly |
 | wire diff | field-by-field agreement with reference servers | §8 | nightly |
 
@@ -2272,8 +2272,9 @@ wire tests'. Its cost is brittleness, so a handler test pins the **mutating**
 call exactly, with its arguments, and read-only calls by name only — a handler
 free to fetch attributes once rather than twice does not break its test.
 
-**Translations are tested as pure functions.** Each protocol's translation to
-open state ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)) is table-driven, with golden
+**Translations are tested as pure functions.** Each protocol's translations
+([RFC 21 §11](rfc-21-nfs.md#11.%20Translation), [RFC 22 §16](rfc-22-smb.md#16.%20Translation)), open state's
+included, are table-driven, with golden
 vectors protocol → neutral → protocol, and property tests: every protocol input
 maps to a neutral value or a named refusal (the mapping is total), every neutral
 error maps to a status in each adapter, and the mapping round-trips where it is
@@ -2405,7 +2406,7 @@ request by request.
 - Scripts drive the protocol, not a kernel client. A kernel client's caching,
   retries and timing differ between runs and hide the reply under test. The
   kernel clients are exercised by the protocol suites
-  ([RFC 21 §12](rfc-21-nfs.md#12.%20Conformance), [RFC 22 §17](rfc-22-smb.md#17.%20Conformance)).
+  ([RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance)).
 - Scripts are written, not replayed from captures.
 - Encryption and signing are switched off where the protocol allows, so the
   dissector sees the messages; one script per protocol runs them on, to compare

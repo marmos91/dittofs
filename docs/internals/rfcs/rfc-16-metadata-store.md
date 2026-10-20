@@ -1698,8 +1698,8 @@ are the prefix's. No separator byte is written.
   record IDs: raw bytes at its fixed length, 16 for every minted ID, a Secret's
   ID (`SEC‖id`) among them. A client ID, an open ID and a lock ID are integers,
   issued from `IDS‖kind`, at the widths [RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client) gives them, 8 bytes each, the
-  widths the adapters carry them in on the wire ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state),
-  [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)). A request ID is a byte
+  widths the adapters carry them in on the wire ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state),
+  [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). A request ID is a byte
   string, since it is composed of several fields
   ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). `ChunkHash` and `BlockName` are raw
   at the fixed lengths [RFC 6](rfc-6-block-metadata.md#2.%20The%20records) gives them.

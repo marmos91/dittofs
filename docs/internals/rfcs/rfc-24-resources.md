@@ -808,8 +808,8 @@ needs only a small reply (§3.3), so no reply wait can refuse it either.
 reply reservation's deadline; the hold pool's refusal is the adapter's own
 (§4.3). It is never held, since holding it would spend the hold pool on the very
 share that is short of memory. Each protocol's status for it is its RFC's
-([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)).
+([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+[RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)).
 
 Below the service, every share-wide resource already has its own share rule:
 the journal's capacity per share ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)),
@@ -1277,7 +1277,7 @@ outside the pools has grown, and is a bug.
    kernel's memory-pressure signal to shrink the metadata store's cache early,
    before the page cache is squeezed, is unmeasured.
 4. **Registered memory for RDMA.** If NFS over RDMA or SMB Direct is offered
-   ([RFC 21 §14](rfc-21-nfs.md#14.%20Open%20questions)), registered buffers are
+   ([RFC 21 §15](rfc-21-nfs.md#15.%20Open%20questions)), registered buffers are
    pinned and cannot be shared with the heap's pools; they would be a pool of
    their own, sized by connection, and the buffer classes of §3.1 would be
    theirs.

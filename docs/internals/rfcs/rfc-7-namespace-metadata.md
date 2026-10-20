@@ -239,7 +239,7 @@ what the namespace stores and enforces, never by a protocol's field. A rule only
 one protocol needs, which the namespace need not enforce for the others, is that
 protocol's RFC's; a rule that must hold whichever protocol reaches the file is
 stated here. How each protocol's fields and statuses map onto these entities and
-onto the neutral errors of [§11.3](#11.3%20Neutral%20errors) is [RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation)'s and [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)'s.
+onto the neutral errors of [§11.3](#11.3%20Neutral%20errors) is [RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)'s and [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)'s.
 
 ### 1.1 Non-goals
 
@@ -432,10 +432,16 @@ append-only, are rules this component applies to every caller and protocol
 — are an attribute set the namespace stores, returns and changes on a
 set-attribute, and never interprets beyond that: no marker grants, refuses or
 changes any other operation here, read-only included. An adapter maps its
-protocol's attribute bits onto them ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation), [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)); a protocol with no spelling
+protocol's attribute bits onto them ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace), [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)); a protocol with no spelling
 for a marker leaves it unchanged. A link a protocol represents as a special
 kind of file is a `Symlink`; a special-file kind no `FileType` holds is refused
 by its adapter before it reaches this component.
+
+> decision: the read-only marker refuses nothing, for every protocol: the
+> namespace stores and returns it, and enforces only the immutable and
+> append-only flags. A protocol whose own servers refuse writes and deletes of
+> a read-only file sees them succeed here. Enforce it, as a rule here for every
+> protocol, when an application is shown to rely on the refusal.
 
 **There is no generation.** A generation exists where file IDs are reused, to
 tell a handle to a released file from one to its successor. A `FileID` is a
@@ -537,7 +543,7 @@ directory's `Group` when the parent has the setgid bit, and otherwise to the
 credential's group: the group the request's credential names, where the
 credential carries one, resolved to its principal,
 and the principal's primary group ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)) where it does not; which
-credentials carry a group is the adapters' ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation), [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)). A
+credentials carry a group is the adapters' ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace), [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)). A
 credential group that resolves to no principal counts as no group on the
 credential, so the primary group applies. A
 principal with neither — no group on the credential and no primary group — gets
@@ -724,7 +730,7 @@ Four inputs the walk meets are fixed here, and adopted by RFC 19, which fixes th
 - **Generic rights arrive mapped.** A requested mask, and an entry's mask a
   client sets, reach this component in entry rights (RFC 19 §2.4). A protocol
   that carries generic rights maps them by the file generic mapping before the
-  call and before an entry is stored ([RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)). A generic bit that reaches the
+  call and before an entry is stored ([RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)). A generic bit that reaches the
   walk is granted by no entry and no mode bit, so the request is refused.
 - **What a mode bit grants.** A protocol's read, write and execute requests
   carry rights beyond the data right, and a check needs every right it asks
@@ -761,7 +767,7 @@ Four inputs the walk meets are fixed here, and adopted by RFC 19, which fixes th
   | **ANONYMOUS LOGON** | a caller acting as the anonymous principal: a caller with no credential, an anonymous session, a caller squashed to it (RFC 18 §2.1) |
 
   How each protocol spells them is RFC 19 §5.2's, the fixed security
-  identifiers [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)'s.
+  identifiers [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)'s.
 
   A caller whose identity is asserted rather than proven — `authenticated`
   unset ([§7.4](#7.4%20The%20identity%20arrives%20resolved)) — does not match Authenticated Users or BUILTIN\Users, though
@@ -770,7 +776,7 @@ Four inputs the walk meets are fixed here, and adopted by RFC 19, which fixes th
   Users promises a proof the flavour never gave. The cost lands on mixed
   shares: a tree whose ACL grants only Authenticated Users is closed to every
   asserted-identity caller, which needs a named entry, its group's or
-  everyone's instead ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation)).
+  everyone's instead ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)).
   A well-known principal with no row in the table matches no
   caller, and storing a **deny** entry that names one is refused with
   `ErrInvalid`: skipped by every walk, it would fail open. An allow entry naming
@@ -789,7 +795,7 @@ Four inputs the walk meets are fixed here, and adopted by RFC 19, which fixes th
   nothing for bob. The create's requested mode is then applied as an **and**:
   it limits the inherited effective entries as a `chmod` merge would, but never
   adds an entry or a right the inherited ACL did not hold. A umask the create
-  carries apart from the mode ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation)) is ignored when
+  carries apart from the mode ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)) is ignored when
   the parent has inheritable entries and applied to the mode when it has none,
   so an inherited "Finance: modify" is not cut to read
   and execute by a umask the client applied for a parent without them. A parent
@@ -863,15 +869,15 @@ it is a stream. Where identity shows, it follows the file it belongs to:
   of its own ([§4.3](#4.3%20Release%20is%20what%20block%20metadata%20sees)).
 
 How a stream is named on a wire, and which protocols reach streams at all, is
-the adapters' ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation), [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)).
+the adapters' ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace), [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)).
 
 ### 2.8 A share is one filesystem
 
 **Its root is a File.** A share's root is a `File` of type `Directory` with no
 entry: the share names it, and its `Parent` is itself, so `..` at the root
 stays at the root. Each share reports its own filesystem identity, derived
-from its `ShareID`, which each protocol spells in its own field ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation),
-[RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)). The pseudo-filesystem, the synthetic tree joining every share where a
+from its `ShareID`, which each protocol spells in its own field ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace),
+[RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)). The pseudo-filesystem, the synthetic tree joining every share where a
 protocol needs one, is **not stored**: the filesystem service
 builds it from the share list ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a lookup that crosses from it into a share lands on
 that share's root. Shares are disjoint trees; one share is never an entry in
@@ -1068,7 +1074,7 @@ No entity has `Save`, `Reload` or a pointer to the store.
 An exclusive create may carry a **create verifier**: an opaque value of
 bounded size, chosen by the client so that a retry of a create whose
 reply was lost can be told from a second client's create of the same name.
-Which protocols carry one, and in which field, is [RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation)'s. The
+Which protocols carry one, and in which field, is [RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)'s. The
 create stores the verifier in the File's `CreateVerifier`, in its own
 transaction. An exclusive create that finds the name taken **MUST** succeed,
 returning that file, when the file's `CreateVerifier` equals the request's,
@@ -1251,7 +1257,7 @@ creates keep a shared point guard and stay parallel.
 
 A file has the names its entries hold and no other. No abbreviated alternate
 name is generated, stored or resolved: a lookup of one finds nothing, and a
-file has no alternate name to report ([RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation) gives the wire answer).
+file has no alternate name to report ([RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace) gives the wire answer).
 
 > decision: short names are not generated. Each would be a second entry per
 > name, kept unique per directory and moved by every rename — a cost on every
@@ -1301,7 +1307,7 @@ is compared as given, and the Kelvin, Ohm and Angstrom signs and the capital
 sharp s upcase to themselves rather than folding to `k`, `ω`, `å` and `ß`. So
 `K.txt` and the same name spelled with the Kelvin sign U+212A are two entries;
 `Straße.docx` and `STRASSE.docx` stay two entries; and a tree copied from a
-case-insensitive volume that compares the same way keeps every file ([RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)
+case-insensitive volume that compares the same way keeps every file ([RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)
 names the volumes that do). On a case-sensitive share the key is the
 bytes. On either, a name one client sends decomposed and another composed is two
 entries, as on a local POSIX filesystem.
@@ -1738,7 +1744,7 @@ keeps numbers **MUST** raise the destination share's allocator above the highest
 share; otherwise the next create is issued a number a restored file holds, and
 two files report one id.
 
-- Every protocol's 64-bit file id is `Number` ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation), [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)).
+- Every protocol's 64-bit file id is `Number` ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace), [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)).
 - A wider file id a protocol reports is a 64-bit keyed digest
   of the `ShareID` under an installation secret, followed by `Number`, so it is
   unique across the installation and reveals neither the `ShareID` nor a
@@ -1769,7 +1775,7 @@ two files report one id.
 > 2¹⁵ visible snapshots, or a share 2⁴⁸ creates.
 
 > decision: opening by numeric id is not offered, and an adapter refuses a
-> request for it as not supported ([RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation)). It needs an index from number to `FileID`, one more record per
+> request for it as not supported ([RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)). It needs an index from number to `FileID`, one more record per
 > create, and it turns a guessable number into a way to reach a file without
 > traversing to it ([§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)). Add the index, checked against the traversal rules,
 > if a workload's clients are shown to open by id.
@@ -1846,7 +1852,7 @@ An identity **MUST** carry every field any check reads — including the ones a
 particular backend's checks do not read — because the component that builds it
 cannot know which check runs.
 
-**Two fields say what the flavour proved.** The filesystem service sets
+**Two fields say what the proof proved.** The filesystem service sets
 `authenticated` when the caller's proof established who it is, and `admin`
 when, on such a proof, the share grant names the principal `admin`; which
 proofs establish identity is [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)'s.
@@ -2128,7 +2134,7 @@ behind it ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)).
 > protocol, though only one protocol can set it, because a create through
 > another would fill a directory its deleter was told is going and fail the
 > close-time unlink. It costs the other protocols' clients a refusal their own
-> semantics would not give, mapped in [RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation). Withdraw it only for a share
+> semantics would not give, mapped in [RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace). Withdraw it only for a share
 > served by one protocol.
 
 ## 9. Attributes and what is not one
@@ -2225,7 +2231,7 @@ out of the client's cache.
 > revalidation shows up in a profile.
 
 **Pre-operation attributes are omitted unless captured atomically.** A protocol
-may return an object's attributes before and after each change ([RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation)), and a
+may return an object's attributes before and after each change ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)), and a
 client whose
 cache matches the `before` patches its cache instead of revalidating. The pair
 is exact only when nothing else changed the object between them, which, as above,
@@ -2648,7 +2654,7 @@ Every refusal this component makes is one of the values below. Where
 `ErrCrossProject` and `ErrCrossShare` are surfaced by the filesystem service as
 its `ErrCross`, with the matching kind. No protocol status is returned or named
 here. Each adapter maps every row through its one error table
-([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)): [RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation) and [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation).
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)): [RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace) and [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace).
 
 | Error | Returned when |
 | --- | --- |
@@ -2721,7 +2727,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs) removal rights | Remove a file with delete-a-child on its directory and no right on the file, and with delete on the file and no right on the directory; assert both allowed and refused with neither. In a sticky directory governed by mode, remove another's file in another's directory: assert refused. Move a directory to another parent without write on it: assert refused. A build that authorises removal with one `Authorize` on the directory fails the second case. |
 | [§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs) delete at open | In a 0775 directory of group `staff`, a mode-0644 file owned by bob; as alice, a `staff` member, open it through the directory asking **delete** and set delete on close, and separately open it asking **delete** and rename it through that open: assert both succeed, as an unlink and a rename on no open do. Repeat with the directory 0755: assert the opens are refused. A build that decides `DELETE` on the file alone fails the first case. |
 | [§7.4](#7.4%20The%20identity%20arrives%20resolved) who is privileged | On a share that squashes the superuser and admits asserted identities, with a share grant naming principal P `admin`: as P with an asserted identity, and as the asserted superuser, read a mode-0 file, `chown` it and set a setuid mode: assert `ErrAccess` or `ErrPerm` on each. As P authenticated: assert all succeed. As P on an unprivileged open of a file whose ACL denies write: assert refused and `Granted` without write; on a privileged open: assert granted. Which flavours yield which flags is checked on the wire ([§12.5](#12.5%20Translations%2C%20fuzzing%20and%20metrics)). As privileged, open a mode-0644 file for execute: assert refused; in a sticky directory remove another user's file: assert allowed. As a group writer, set `Modify` to server time: assert allowed; to a client time: assert `ErrPerm`. |
-| [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) generic rights | Call `Authorize` with a mask holding a generic bit, on a file whose mode grants every right to the caller: assert refused. The mapping itself is the adapter's, checked by [RFC 22 §17](rfc-22-smb.md#17.%20Conformance)'s generic-rights row. |
+| [§2.6](#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode) generic rights | Call `Authorize` with a mask holding a generic bit, on a file whose mode grants every right to the caller: assert refused. The mapping itself is the adapter's, checked by [RFC 22 §18](rfc-22-smb.md#18.%20Conformance)'s generic-rights row. |
 | [§9.2](#9.2%20Timestamps) two-directory rename | With folds due on A and B, rename A→B and B→A concurrently, 1,000 times: assert each completes within one fold's time and creates in both directories keep running. |
 | [§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) append-only setuid | Make a file mode 4755, append-only, owned by alice; append to it as bob: assert the append succeeds and the setuid bit is clear; write below its size: assert refused and the bit unchanged. |
 | [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.`: assert each `ErrInvalid`. On a `posix` share assert each is created. On a case-insensitive share create `Straße.docx`, then `STRASSE.docx`: assert two entries; create `Ǆ` and look up `ǆ`: assert one entry, found with one read, listed as given; create `ǅ` beside them: assert a second entry, since the table maps a titlecase digraph to itself. Create `K.txt` and look up the same name spelled with the Kelvin sign U+212A: assert not found; a build that applies Unicode case folding finds it. Create `café` decomposed and then composed: assert two entries. A build that folds fully or normalises the key fails the first assertion. |
@@ -2807,7 +2813,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 
 The suite above checks the neutral rules through [§11.1](#11.1%20Interface). What reaches this
 component from a wire is checked at the adapter boundary, against the tables of
-[RFC 21 §7.5](rfc-21-nfs.md#7.5%20Namespace%20translation) and [RFC 22 §12.5](rfc-22-smb.md#12.5%20Namespace%20translation), so that a translation cannot drift from the rule it carries:
+[RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace) and [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace), so that a translation cannot drift from the rule it carries:
 
 - **Golden vectors.** Every row of those tables has one at the adapter: fixed
   protocol bytes in, the [§11.1](#11.1%20Interface) call and its fields out; and for an error row,
