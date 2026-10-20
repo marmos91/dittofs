@@ -59,8 +59,8 @@ One decision runs in four phases. **Limit**: look up the most this caller may
 ever have on this share, the *ceiling*. **Collect**: gather what the caller is
 granted, from privilege, which grants everything, or else from the owner's
 automatic rights plus the ACL, then from the parent directory, which can grant
-delete. **Remove**: the immutable and append-only flags take away what they
-forbid. **Cut**: keep only what fits under the ceiling. The request succeeds when
+delete. **Remove**: the immutable and append-only flags, and the read-only
+marker, take away what they forbid. **Cut**: keep only what fits under the ceiling. The request succeeds when
 everything it asked for survives.
 
 **The problem, with one example.** alice opens the Security tab on
@@ -407,7 +407,11 @@ after the service has admitted the call and resolved the caller
    directory also asks traverse on that directory
    ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)).
 8. **Remove: the flags** of [RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)
-   remove what they refuse.
+   remove what they refuse, and on a non-directory the read-only marker removes
+   write data and append
+   ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)).
+   The marker's refusal of a delete is the delete's own, not a right removed
+   here, since an open asking delete to rename the file is allowed.
 9. **Cut to the ceiling**: the granted set `G` is what steps 3–8 granted, within
    `C`. `Granted` returns `G`. `Authorize` succeeds exactly when every right in
    `want` is in `G`, and is refused `ErrAccess` otherwise; a maximal request as

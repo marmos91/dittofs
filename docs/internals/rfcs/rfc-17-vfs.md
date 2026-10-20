@@ -1196,7 +1196,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | Error | Means | Kind |
 | --- | --- | --- |
 | `ErrNotFound`, `ErrExist`, `ErrNotEmpty`, `ErrNotDir`, `ErrIsDir` | the name or entry is not as the call needs | — |
-| `ErrAccess` | the share grant, its client rules, or the file's mode or ACL refuse the caller | — |
+| `ErrAccess` | the share grant, its client rules, or the file's mode or ACL refuse the caller; or the read-only marker refuses a write or a delete ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `*AccessError{Cause}`: `ReadOnly` when the read-only marker refused a delete; absent otherwise |
 | `ErrPerm` | refused whatever the caller's access: an immutable or append-only file ([RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)), or a change of owner, group or flags only a privileged caller or the owner may make ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)) | — |
 | `ErrStale` | a handle to nothing, or to a share being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | — |
 | `ErrReadOnly` | a mutation where only reading is admitted: a share or a client rule narrowed to read-only ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)), a snapshot ([RFC 12](rfc-12-snapshots.md)), the pseudo-filesystem | — |

@@ -2081,6 +2081,13 @@ NFSv3 carries, and the rules after it bind both versions. Its errors are
   times on no open, so a client-given time needs ownership, an ACL's write
   attributes or privilege
   ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)).
+- **The read-only marker has no NFS spelling.** NFSv3 has no attribute for it
+  and NFSv4 defines none beside `archive`, `hidden` and `system`, so an NFS
+  client can neither see the marker nor clear it. It is still enforced
+  ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)):
+  a `WRITE`, a `SETATTR` of `size`, an `OPEN` for write and a `REMOVE` or a
+  `RENAME` over a file an SMB client marked read-only are `NFS4ERR_ACCESS` or
+  `NFS3ERR_ACCES`, and `ACCESS` reports no `MODIFY` or `EXTEND` for it.
 - **Exclusive create.** The verifier of an NFSv3 `EXCLUSIVE` create and of an
   NFSv4 `EXCLUSIVE4` or `EXCLUSIVE4_1` open is RFC 7's create verifier
   ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)), stored in `CreateVerifier` and never in `atime` or
@@ -2323,7 +2330,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrExist` | `NFS4ERR_EXIST` | `NFS3ERR_EXIST` |
 | `ErrNotEmpty` | `NFS4ERR_NOTEMPTY` | `NFS3ERR_NOTEMPTY` |
 | `ErrNotDir`, `ErrIsDir` | `NFS4ERR_NOTDIR`, `NFS4ERR_ISDIR` | `NFS3ERR_NOTDIR`, `NFS3ERR_ISDIR` |
-| `ErrAccess` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
+| `ErrAccess`, the read-only marker's refusals included, a delete's `ReadOnly` cause too ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrWrongShare` — a handle of another share than the one asked | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrCross` (`CrossShare`) — a `RENAME` or `LINK` between shares | `NFS4ERR_XDEV` | `NFS3ERR_XDEV` |
 | `ErrDelay` — a recall or break in progress, a write held behind a clone past its own deadline or past what its session lets wait (`DelayClone`, §9.3), a share frozen for a move (§7.4), any transient refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes as retry-later, a stability reply waiting on a stalled store (§9.1), or a store conflict still unresolved at the caller's deadline (`DelayConflict`, [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
@@ -2536,6 +2543,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | App. B `mode_umask` *(1 node)* | Over NFSv4.2 with umask 022, create a file mode 0666 in a directory with no inheritable entries: assert 0644. In a directory whose ACL holds an inheritable entry granting a group modify, create the same: assert the group's inherited entry intact, the umask ignored, and no entry the inherited ACL lacked. | the umask applied to an inherited ACL, or an entry added by the create mode |
 | §11.3 audit entries | As a file's owner who is not an administrator, over NFSv4.0 and NFSv4.1: `GETATTR` and `SETATTR` of `sacl` (NFSv4.1) are `NFS4ERR_ACCESS`; `GETATTR` of `acl` shows no audit entry; `SETATTR` of `acl` with one is `NFS4ERR_ACCESS`, and without one keeps the stored audit entries. As an administrator, all succeed. | the SACL readable or writable by the owner, or the `acl` gate applied to one minor version |
 | §11.3 ACL attributes | `SETATTR` of `acl` and `dacl` together: `NFS4ERR_INVAL`, nothing stored. `SETATTR` of `mode` 04750 with an `acl`: the ACL stored as sent, setuid set, and `Mode` the ACL's own bits. A `who` naming a group with the group flag clear: resolved in the user namespace, `NFS4ERR_BADOWNER` when no user holds it. | flag bits copied byte for byte; a mode merged into a sent ACL |
+| §11.3 read-only marker | Over SMB set `FILE_ATTRIBUTE_READONLY` on a file and on an empty directory. Over NFSv3 and NFSv4: `WRITE`, `SETATTR` of `size` and `REMOVE` of the file are `NFS3ERR_ACCES` / `NFS4ERR_ACCESS`, an `OPEN` for write is `NFS4ERR_ACCESS`, `ACCESS` reports `READ` without `MODIFY` or `EXTEND`, `READ` and `RENAME` of it succeed; a create in the directory succeeds and its `RMDIR` is refused. Clear the flag over SMB: assert each now succeeds. | the marker enforced for SMB only, or answered as a read-only filesystem |
 | §11.1 refused credentials *(1 node)* | Send a truncated `AUTH_SYS` credential, one with 17 gids, one with a 256-byte machine name, and an `AUTH_DH` and an unknown flavour, to a share with an everyone grant: each rejected `AUTH_BADCRED`, nothing created. | garbage credentials served as anonymous |
 | §6.3 `MNT` on a Kerberos-only share *(1 node)* | `MNT` over `AUTH_UNIX` of a share whose `MinProof` is `Ticket`: the flavours and the root handle returned; a `GETATTR` with that handle over `AUTH_SYS`: refused `AUTH_TOOWEAK`; over `sec=krb5`: answered. | NFSv3 Kerberos mounts refused; or a handle that skips the minimum |
 | §6.1 NLM on a Kerberos-only share *(1 node)* | On a share whose `MinProof` is `Ticket`, an NLM `LOCK` over `AUTH_SYS` as a uid that can read the file: granted; as a uid that can neither read nor own a 0600 file: refused. A store error resolving the caller: the lock refused, never granted as anonymous. | every NFSv3 lock on a Kerberos share failing; locks on files the caller cannot read |
