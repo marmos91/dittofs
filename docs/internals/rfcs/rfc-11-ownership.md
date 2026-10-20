@@ -821,6 +821,14 @@ request records and journal request entries on a miss; it re-applies existence
 and serves with no grace period.
 A handover whose old primary is lost before it completes becomes a failover.
 
+**A node that stops hands its shards over first.** `Node.Stop` hands each shard
+the node is primary of to a replica, by the handover above, after its adapters
+and gateway have stopped and before its `vfs.Serve` stops
+([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)). Until a shard's new primary
+serves, other nodes' calls to it are still answered here, so a planned stop
+costs them a freeze, never a refusal held until the lease lapses. A shard whose
+handover does not complete is left to fail over.
+
 **Files move between shards in batches.** A subtree can hold more files than one
 transaction may write. A move from giving shard G to receiving shard R keeps its
 cursor in a **move record** of its own, keyed by the pair (G, R), so advancing it
@@ -1253,8 +1261,8 @@ to recall, a directory watch. So:
 
 1. **One primary runs it**: the source directory's, or, for a link, the target
    directory's. It is the **coordinator**.
-2. **Prepare.** The coordinator asks the primary of every other shard involved
-   to check the operation against its open state — deny modes, conflicting
+2. **Prepare.** The coordinator asks the primary of every other shard involved,
+   through `vfs.Peers` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), to check the operation against its open state — deny modes, conflicting
    opens — to recall the caching grants it breaks, and to **hold** the files:
    refuse new opens and grants that would conflict, until an outcome arrives or a
    deadline passes. The deadline, in store time, is at most the participant's own

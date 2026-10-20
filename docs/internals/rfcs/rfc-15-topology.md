@@ -350,8 +350,8 @@ holds three things behind it, all in package `vfs`:
 
 | Piece | Does | Never does | Holds |
 | --- | --- | --- | --- |
-| **`vfs.Gateway`** — implements `vfs.Service` | resolves the routing handle each request value names to its shard's primary through `vfs.Router` ([§6](#6.%20Learning%20primaries)); if the primary is this node, calls the local `vfs.Service`; otherwise stamps the route envelope ([§4.3](#4.3%20The%20route%20envelope)) with the request identity the adapter handed it, sends the call through `vfs.Transport`, and retries, traces and counts it — one generic call path for every method | authenticate, admit to a share, map an identity, squash, check a permission, order, parse protocol data, or call open state, the metadata store or the engine itself | nothing about files; its router caches shard records and files' recorded shards |
-| **`vfs.Serve`** — the receive side | refuses a call whose node epoch is fenced, whose shard epoch is not current or whose hop count is not zero, naming the primary it knows; answers a retry from the dedup table by request ID ([§4.3](#4.3%20The%20route%20envelope)); then calls the local `vfs.Service` | forward a call, or read anything about the file | the dedup table |
+| **`vfs.Gateway`** — implements `vfs.Service` | resolves the routing handle each request value names to its shard's primary through `vfs.Router` ([§6](#6.%20Learning%20primaries)); if the primary is this node, calls the checked `vfs.Service` that `vfs.Serve` returns; otherwise stamps the route envelope ([§4.3](#4.3%20The%20route%20envelope)) with the request identity the adapter handed it, sends the call through `vfs.Transport`, and retries, traces and counts it — one generic call path for every method | authenticate, admit to a share, map an identity, squash, check a permission, order, parse protocol data, or call open state, the metadata store or the engine itself | nothing about files; its router caches shard records and files' recorded shards |
+| **`vfs.Serve`** — the receive side | refuses a call whose node epoch is fenced, whose shard epoch is not current or whose hop count is not zero, naming the primary it knows; answers a retry from the dedup table by request ID ([§4.3](#4.3%20The%20route%20envelope)); then calls the server. It runs the same checks for a call that arrives over `vfs.Transport` and for the gateway's local path, which it returns as a checked `vfs.Service` | forward a call, or read anything about the file | the dedup table |
 | **`vfs.Server`** — the filesystem | everything else: refusing a file whose recorded shard is not the one named (`ErrWrongShard`), admission to the share, identity resolution, flavour and squash, ordering, open state, metadata and content ([RFC 17](rfc-17-vfs.md)) | route | open state, quota reservations, grace, admitted-call counts |
 
 So adapters sign in, the gateway forwards, and the server decides. The gateway's
@@ -366,16 +366,16 @@ file logic, and are made by its implementation outside `vfs`.
     ▼
  vfs.Gateway ─ route by handle (vfs.Router over shard records)
     │
-    ├── primary is this node ─────────────────────────────────────┐
+    ├── primary is this node: the checked vfs.Service ────────────┐
     │                                                             │
     └── primary elsewhere: stamp envelope ─► vfs.Transport        │
                 (retry, trace, metrics)        │ node channel     │
-                                               ▼                  │
-                                 vfs.Serve at the primary:        │
-                                 fence (node epoch, shard epoch,  │
-                                 hop 0), dedup by request ID      │
-                                               │                  │
                                                ▼                  ▼
+                                 vfs.Serve at the primary, for both paths:
+                                 fence (node epoch, shard epoch, hop 0),
+                                 dedup by request ID
+                                               │
+                                               ▼
                                 vfs.Server at the primary: admission,
                                 identity, squash, ordering
                                 ─► open state, metadata, engine
@@ -387,14 +387,17 @@ file logic, and are made by its implementation outside `vfs`.
   forwarded call — `vfs.Serve`'s checks, run in-process — and carry the same
   request ID, so a call a stale cache routes locally is refused, and the retry
   of a call first sent locally is answered once, after a takeover too. The
-  shortcut drops only the network hop. How the local `vfs.Service` handed to
-  `vfs.NewGateway` reaches those checks is open ([§11](#11.%20Open%20questions)).
+  shortcut drops only the network hop: `vfs.Serve` returns its checks as a
+  checked `vfs.Service`, and that, never the bare server, is the gateway's
+  local `vfs.Service`.
 - The request identity a request ID is derived from ([§4.3](#4.3%20The%20route%20envelope)) — XID,
   procedure and argument checksum, or session, slot and sequence — is the
   adapter's, which hands it with the call; the gateway only stamps it.
 - `vfs.Router` and `vfs.Transport` **MUST** be declared in `vfs` and implemented
   outside it, so `vfs` imports no network code.
-- A call names its route by its handle. A call with no handle — `Root`,
+- A call names its route by its handle, or, with none, by the shard its
+  grant, watch or state ID names
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). A call with neither — `Root`,
   `ListShares`, the pseudo-filesystem, a client's lease and session calls —
   runs at the gateway node's own server. A client's lease owner and back
   channel are chosen among the nodes holding its sessions
@@ -436,17 +439,19 @@ starts nothing:
 | 7 | open state ([RFC 14](rfc-14-open-state.md)) | — |
 | 8 | identity ([RFC 18](rfc-index.md)) | — |
 | 9 | `vfs.New`, the `*vfs.Server` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) | identity, open state, the metadata views, the engine |
-| 10 | **(cluster)** `vfs.Serve`, then `vfs.NewGateway` with the server as its local `vfs.Service`, the router ([§6](#6.%20Learning%20primaries)) and the transport | Serve: the server; the gateway: its local `vfs.Service`, `vfs.Router`, `vfs.Transport` |
+| 10 | **(cluster)** `vfs.Serve` over the server, then `vfs.NewGateway` with the checked `vfs.Service` `vfs.Serve` returns as its local one, the router ([§6](#6.%20Learning%20primaries)) and the transport | Serve: the server; the gateway: the checked `vfs.Service`, `vfs.Router`, `vfs.Transport` |
 | 11 | the adapters ([RFC 20](rfc-20-adapters.md)), handed the `vfs.Service` — the gateway in a cluster, the server on one node — and identity as their authenticator | `vfs.Service` |
 
-`Node.Start` starts the components in build order, then registers the node and
-runs reconcile. Until the first reconcile has opened the node's shares, and in a
-cluster until the node holds a node epoch to stamp, the adapters answer every
-call retry-later, so no client is served by a component not yet serving. `Node.Stop` stops them in reverse: adapters first, so no client
-call arrives at a component already closed; then **(cluster)** the gateway and
-the receive side, and the node hands the shards it is primary of over
-([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) before
-GC drains and the content subsystem closes. No component closes anything it was
+`Node.Start` starts the components in build order, runs the first reconcile,
+and only then starts the adapters: no adapter listens until the node's shares
+are open and, in a cluster, the node holds a node epoch to stamp. `Node.Stop`
+stops them in reverse: adapters first, so no client call arrives at a component
+already closed; then **(cluster)** the gateway; then the node hands the shards
+it is primary of over
+([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) while
+`vfs.Serve` still receives, so other nodes' calls to them are answered, not
+refused until a failover; then `vfs.Serve`, and GC drains before the content
+subsystem closes. No component closes anything it was
 handed. [RFC 8 §2](rfc-8-engine.md#2.%20Composition) composes the content
 subsystem only; this section is the root above it.
 
@@ -482,7 +487,8 @@ service at the gateway and cost:
 | --- | --- | --- |
 | a forwarded `vfs.Service` call | a gateway and `vfs.Serve` at the primary | §2.3, [§4.3](#4.3%20The%20route%20envelope) |
 | a replication message | a primary and its replicas | [RFC 10](rfc-10-journal-replication.md) |
-| a cross-shard prepare, commit or release | two primaries' servers | [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) |
+| a cross-shard prepare, commit or release | two primaries' servers, through `vfs.Peers` | [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) |
+| a server's other call to a second primary: an overlay of an entry in another shard, a cross-shard copy's source read, an NFSv4.0 owner's sequence at its home primary, the lease owner's calls to its client's primaries, and their recalls back | two servers, through `vfs.Peers` | [RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring) |
 | a handover's or move's shipped tail and open-state table | two primaries | [RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) |
 | a newest-version question for a read served off the primary | a node and the primary | [RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes) |
 
@@ -560,7 +566,8 @@ as [RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards) gives 
 
 - **One coordinator** runs it: the source directory's primary, or, for a link,
   the target directory's.
-- **Prepare.** The coordinator asks the primary of every other shard involved to
+- **Prepare.** The coordinator asks, through `vfs.Peers`
+  ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)), the primary of every other shard involved to
   check the operation against its open state, recall the caching grants it
   breaks, and hold the files until an outcome or a deadline in store time, no
   later than its own node lease expiry less the drift bound, and first commit a
@@ -728,7 +735,7 @@ Every call a node forwards to a primary carries one envelope:
 ### 4.4 Node channels
 
 Every message between nodes — a forwarded call, a replication message
-([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)), a prepare of a cross-shard operation — travels on a
+([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)), a `vfs.Peers` call — travels on a
 **node channel**:
 
 - **Mutually authenticated.** Each node holds a credential the installation
@@ -968,7 +975,8 @@ to the store:
   unchanged through a gateway whose every call is forwarded, and with a stale
   route injected before every call.
 - **Faults:** the loopback transport loses replies, sends twice and delivers
-  under a stale epoch; assert each is answered once or refused (T3). A nightly
+  under a stale epoch; assert each is answered once or refused (T3), and that a
+  call a stale cache routes to the local path is refused as a forwarded one is. A nightly
   harness runs a cluster under partitions, pauses and node kills, and checks
   the history of client operations for linearizability per file.
 
@@ -997,17 +1005,11 @@ table.
 
 ## 11. Open questions
 
-1. **Forwarding bounds.** A forwarding gateway streams (item 4); how its
+1. **Forwarding bounds.** A forwarding gateway streams (item 3); how its
    in-flight bytes are bounded is [RFC 24](rfc-index.md)'s.
 2. **Striping one file across data servers** waits on per-file and range shards
    ([RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards)).
-3. **The gateway's local path.** The brief's composition hands `vfs.NewGateway`
-   the `vfs.Server` as its local `vfs.Service`, but [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides) requires
-   the local shortcut to pass `vfs.Serve`'s fence and dedup. Open: whether
-   `vfs.Serve` exposes an in-process `vfs.Service` the gateway is handed
-   instead, or the server itself refuses a shard it does not serve and keys its
-   request records by the request ID on every call.
-4. **The node-to-node wire format** is decided in outline: a typed RPC framework
+3. **The node-to-node wire format** is decided in outline: a typed RPC framework
    with schemas versioned for a rolling upgrade (gRPC is the example in mind),
    over the mutually authenticated channel of [§4.4](#4.4%20Node%20channels), with bidirectional
    streams carrying forwarded data and replication batches ([RFC 10](rfc-10-journal-replication.md)) so no
