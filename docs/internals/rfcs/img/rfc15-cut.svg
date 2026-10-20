@@ -40,7 +40,7 @@
 
   <!-- local shortcut -->
   <path d="M100,251 L100,452" class="arr"/>
-  <text x="108" y="350" class="al">local: a function call</text>
+  <text x="108" y="350" class="al">local: checked, then a function call</text>
 
   <!-- remote path -->
   <path d="M341,212 L420,212" class="arr"/>
