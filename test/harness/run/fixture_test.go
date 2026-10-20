@@ -27,6 +27,7 @@ type fakeServer struct {
 	err      error // what Stop reports
 	resetErr error // what Reset reports
 	mount    string
+	client   []string  // what Command puts before a command, as a client would
 	out      io.Writer // the cell's output
 }
 
@@ -42,6 +43,10 @@ func (f *fakeServer) Reset(share string) error {
 	f.resets++
 	_, _ = fmt.Fprintln(f.out, "[dt] fake reset", share)
 	return f.resetErr
+}
+
+func (f *fakeServer) Command(argv []string, _ string, _ []string) ([]string, error) {
+	return append(slices.Clone(f.client), argv...), nil
 }
 
 func (f *fakeServer) Stop() error {
@@ -215,5 +220,22 @@ func TestFixtureResetEach(t *testing.T) {
 	rep, out = runTarget(t, root, r, "r", false)
 	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "a: its share wasn't reset: the API answered 500; b: its share wasn't reset: the API answered 500" || strings.Contains(out, "[dt] $ echo") {
 		t.Errorf("a failed reset: %+v\n%s", o, out)
+	}
+}
+
+// A fixture with a client runs each command there, and dt shows it as it
+// runs.
+func TestCommandOnTheClient(t *testing.T) {
+	fakeFixture(t, func(context.Context) (fixtureServer, error) {
+		return &fakeServer{client: []string{"env", "ON_CLIENT=yes"}}, nil
+	})
+	root, r := repo(t, `suites:
+  c:
+    cmd: { sh: 'test "$ON_CLIENT" = yes' }
+    fixture: { profile: memory, nfs: export }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
+	rep, out := runTarget(t, root, r, "c", false)
+	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(out, "[dt] $ env ON_CLIENT=yes sh -c") {
+		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }

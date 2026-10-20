@@ -215,6 +215,54 @@ suites:
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
 
+  # What a kernel client sees through an untuned mount, one change at a time: the named
+  # mount-option sets. Both run as the user dt runs as, on a client in a network namespace
+  # of its own, so an NFSv3 lock reaches the server's lock manager through the host's rpcbind.
+  cthon04:
+    tests: test/nfs-mount/cthon04/tests.txt   # each program on its own, with its command line
+    cmd: "{test-args}"
+    dir: "{tools}/cthon04"
+    matrix:
+      profile: [memory, badger, badger-s3]
+      mount-options:
+        - default: ""                   # none: the kernel negotiates NFSv4.2 against DittoFS
+        - v3: vers=3,tcp,mountproto=tcp
+        - v4.0: vers=4.0
+        - v4.1: vers=4.1
+        - v4.1-noac: vers=4.1,noac
+        - v4.1-smallio: vers=4.1,rsize=32768,wsize=32768
+    select: { pr: { profile: [badger-s3] } }
+    fixture:
+      profile: "{profile}"
+      nfs: { options: "{mount-options}" }    # mounted at {mount}, at the version vers= gives
+      shares: test/nfs-mount/shares.yaml
+      users: [self]
+      client: namespace
+      rpcbind: host
+    known: test/nfs-mount/cthon04/known.yaml
+    timeout: { test: 10m }
+    tier: pr
+    needs: [linux]
+  nfstest:
+    format: nfstest
+    tests: test/nfs-mount/nfstest/tests.txt   # the modules, each with the sets it runs on
+    # nfstest mounts by itself, at the version it's told, so a set gives its flags.
+    cmd: "{tools}/nfstest/bin/nfstest_{test} --server {server} --port {nfs-port} --export /export --nfsversion {nfs} --mtpoint /tmp/dittofs-test --mtopts {mtopts} --rmtraces --notty {test-args}"
+    matrix:
+      profile: [memory]
+      mount-options:
+        - default: { nfs: "4.2", mtopts: hard }
+        - v3: { nfs: "3", mtopts: "hard,tcp,mountproto=tcp" }
+        - v4.0: { nfs: "4.0", mtopts: hard }
+        - v4.1: { nfs: "4.1", mtopts: hard }
+        - v4.1-noac: { nfs: "4.1", mtopts: "hard,noac" }
+        - v4.1-smallio: { nfs: "4.1", mtopts: "hard,rsize=32768,wsize=32768" }
+    fixture: { profile: "{profile}", nfs: export, shares: test/nfs-mount/shares.yaml, users: [self], client: namespace, clients: 2, rpcbind: host }
+    known: test/nfs-mount/nfstest/known.yaml
+    timeout: { test: 20m }
+    tier: nightly
+    needs: [linux]
+
   # Each OS's own clients mount the fixture's share, and the workloads run over the mount.
   # The suite itself is the Linux run, with every workload; macOS and Windows run a smoke test.
   clients:

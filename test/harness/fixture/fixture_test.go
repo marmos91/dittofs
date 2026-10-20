@@ -52,7 +52,7 @@ func TestUnsupported(t *testing.T) {
 		f    registry.Fixture
 		want string
 	}{
-		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []int{1}, Lease: "30s"}, ""},
+		{registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []string{"1"}, Lease: "30s"}, ""},
 		{registry.Fixture{Profile: "{profile}", NFS: registry.NFS{Version: "{nfs}"}}, ""},
 		{registry.Fixture{Profile: "badger-s3"}, ""},
 		{registry.Fixture{Profile: "postgres-s3"}, `the "postgres-s3" profile`},

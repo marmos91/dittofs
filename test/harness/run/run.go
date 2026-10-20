@@ -177,10 +177,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	if ctx.Err() != nil {
 		return didntRun("interrupted")
 	}
-	var spec registry.Fixture // the cell's fixture, its matrix values filled in
+	matrix := c.Unit.Matrix.Fill(c.Matrix) // the matrix's placeholders
+	var spec registry.Fixture              // the cell's fixture, its matrix values filled in
 	if f := c.Unit.Fixture; f != nil {
 		var err error
-		if spec, err = cellFixture(*f, c.Matrix); err != nil {
+		if spec, err = cellFixture(*f, matrix); err != nil {
 			return didntRun(err.Error())
 		}
 		// What dt can't do yet decides before the needs, as in Blocked.
@@ -198,10 +199,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	}
 	out := filepath.Join(dir, report.Slug(c.Name))
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
-	for k, v := range c.Matrix {
-		vals[k] = v
-	}
+	maps.Copy(vals, matrix)
 	lists := map[string][]string{"args": strings.Fields(c.Unit.Args[c.Tier])}
+	if c.Unit.Tests.File != "" {
+		lists["test-args"] = []string{""} // until each test's, from its line, fills it
+	}
 	if c.Unit.Packages != nil {
 		pkgs, err := goPackages(o.Root, c.Unit.Packages.Tag)
 		if err != nil {
@@ -341,7 +343,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 	}
 	setupDone()
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, lines: lines, server: server, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		result, note, tests := t.goJSON(c.Tests)
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
@@ -493,7 +495,7 @@ func gradeNotes(cases []report.Test) (failed, notRun []string) {
 
 // readers read the formats whose results a tool writes: every format but
 // exit and go-json, which dt reads itself.
-var readers = map[string]report.Reader{"junit": readJUnit, "subunit": readSubunit, "tap": readTAP, "trx": readTRX}
+var readers = map[string]report.Reader{"junit": readJUnit, "nfstest": readNFStest, "subunit": readSubunit, "tap": readTAP, "trx": readTRX}
 
 // exitNotRun is the exit status of a command that ran nothing, as the
 // scenarios' setup gives when another run holds their lock.
@@ -510,7 +512,9 @@ type tester struct {
 	own      []string // the suite's alone
 	vals     map[string]string
 	lists    map[string][]string
-	paths    map[string]string // the file each test runs as {test}, when it isn't its name
+	paths    map[string]string    // the file each test runs as {test}, when it isn't its name
+	lines    map[string]plan.Line // what each test's line in a .txt list gives it
+	server   fixtureServer        // the cell's fixture, which may run the commands on its client
 	out, log io.Writer
 	capture  io.Writer // also gets the commands' output, for a reader
 }
@@ -539,6 +543,16 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		defer cancel()
 	}
 	t.vals["test"] = cmp.Or(t.paths[test], test)
+	if _, ok := t.lists["test-args"]; ok {
+		t.lists["test-args"] = nil
+		for _, a := range t.lines[test].Args {
+			v, err := replace(a, t.vals, nil, nil)
+			if err != nil {
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
+			}
+			t.lists["test-args"] = append(t.lists["test-args"], v)
+		}
+	}
 	var r testRun
 	var failed, notRun []string
 	image := t.cell.Unit.Image
@@ -571,6 +585,15 @@ func (t tester) run(test string, limit time.Duration) testRun {
 				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
 			}
 			printed = strings.Join(argv, " ")
+		}
+		if t.server != nil {
+			wrapped, err := t.server.Command(argv, t.dir, t.own)
+			if err != nil {
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
+			}
+			if !slices.Equal(wrapped, argv) {
+				argv, printed = wrapped, strings.Join(wrapped, " ")
+			}
 		}
 		if pw := t.vals["password"]; pw != "" { // a credential stays out of the log
 			shown = strings.ReplaceAll(shown, pw, "{password}")
@@ -742,6 +765,9 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 // unsupported says why dt can't run the suite yet, or returns "": only a
 // fixture field dt doesn't do yet, since it reads every format.
 func unsupported(u *registry.Suite) string {
+	if u.Format == "go-json" && u.Fixture != nil && u.Fixture.Client != "" {
+		return "dt doesn't run go test on a namespaced client yet"
+	}
 	if u.Fixture != nil {
 		return fixture.Unsupported(u.Fixture)
 	}

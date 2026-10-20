@@ -3,6 +3,7 @@ package plan
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -45,6 +46,7 @@ func TestPRTier(t *testing.T) {
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
 		"wpts/badger-s3", "smbtorture/badger-s3",
+		"cthon04/badger-s3/default", "cthon04/badger-s3/v3", "cthon04/badger-s3/v4.0", "cthon04/badger-s3/v4.1", "cthon04/badger-s3/v4.1-noac", "cthon04/badger-s3/v4.1-smallio",
 		"bench-smoke",
 	}
 	if got := names(cells); !slices.Equal(got, want) {
@@ -157,6 +159,8 @@ suites:
     needs: [linux, root]
   b: { cmd: "true", fixture: { profile: memory, smb: { mount: true } } }
   c: { cmd: "true", fixture: { profile: memory, smb: { port: 445 } }, needs: [linux] }
+  d: { cmd: "true", fixture: { profile: memory, nfs: { options: "" } } }
+  e: { cmd: "true", fixture: { profile: memory, nfs: export, client: namespace, rpcbind: host } }
 `
 	r, err := registry.Parse(root, []byte(y))
 	if err != nil {
@@ -173,6 +177,8 @@ suites:
 		"a/badger-s3/4.1":    {"linux", "root", "service:localstack", "nfs-client"},
 		"b":                  {"root", "smb-client"},
 		"c":                  {"linux", "root", "port:445"},
+		"d":                  {"root", "nfs-client"},
+		"e":                  {"root", "nfs-client", "rpcbind"},
 	}
 	for _, c := range cells {
 		if !slices.Equal(c.Needs, want[c.Name]) {
@@ -276,7 +282,7 @@ suites:
 		t.Errorf("limits %d and %d minutes, want 45 and 30", cells[0].TimeoutMinutes, cells[1].TimeoutMinutes)
 	}
 	_, lines, err := ListTests(root, r.Units(r.Suite("s"))[0], "")
-	if err != nil || lines["quick"] != (Line{Share: "two", Prefix: "q"}) || lines["slow"] != (Line{Limit: 40 * time.Minute}) {
+	if err != nil || !reflect.DeepEqual(lines["quick"], Line{Share: "two", Prefix: "q"}) || !reflect.DeepEqual(lines["slow"], Line{Limit: 40 * time.Minute}) {
 		t.Errorf("lines %+v, %v", lines, err)
 	}
 
@@ -285,6 +291,56 @@ suites:
 			t.Fatal(err)
 		}
 		if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1") {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+}
+
+// A .txt test list's line may name the matrix values of the cells its test
+// runs in, among its share= and prefix= in any order, and give the test its
+// {test-args}; a line that names a value the matrix lacks or an axis twice,
+// an unknown placeholder, or a word that is none of these is an error.
+func TestTestListLines(t *testing.T) {
+	root := t.TempDir()
+	list := "all -- run {mount}\nonly-b prefix=p v=b share=two -- {share}\nb-or-c v=b,c 5m\n"
+	if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(list), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	y := `version: 1
+defaults: { format: exit, tier: merge, timeout: { test: 10m, cell: 30m } }
+suites:
+  s: { cmd: "run {v} {test}", tests: tests.txt, matrix: { v: [a, b, c] } }
+`
+	r, err := registry.Parse(root, []byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Plan(root, r, "merge", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"s/a": {"all"}, "s/b": {"all", "only-b", "b-or-c"}, "s/c": {"all", "b-or-c"}}
+	for _, c := range cells {
+		if !slices.Equal(c.Tests, want[c.Name]) {
+			t.Errorf("%s: tests %q, want %q", c.Name, c.Tests, want[c.Name])
+		}
+	}
+	_, lines, err := ListTests(root, r.Units(r.Suite("s"))[0], "")
+	only := Line{Share: "two", Prefix: "p", Where: map[string][]string{"v": {"b"}}, Args: []string{"{share}"}}
+	if err != nil || !slices.Equal(lines["all"].Args, []string{"run", "{mount}"}) || !reflect.DeepEqual(lines["only-b"], only) || lines["b-or-c"].Limit != 5*time.Minute {
+		t.Errorf("lines %+v, %v", lines, err)
+	}
+	for bad, want := range map[string]string{
+		"x v=d\n":       `v has no value "d"`,
+		"x v=\n":        `v has no value ""`,
+		"x v=a v=b\n":   `"v=b" is not a limit above zero, share=NAME, prefix=NAME, AXIS=V,... or --, each given once`,
+		"x -- {nope}\n": "unknown placeholder {nope}",
+		"x w=a\n":       `"w=a" is not a limit above zero, share=NAME, prefix=NAME, AXIS=V,... or --, each given once`,
+	} {
+		if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(bad), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Plan(root, r, "merge", nil); err == nil || !strings.Contains(err.Error(), "tests.txt:1: "+want) {
 			t.Errorf("%q: %v", bad, err)
 		}
 	}

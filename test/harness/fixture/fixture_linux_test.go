@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestRealMount(t *testing.T) {
 			var w bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: v, Options: "noac,sync,lookupcache=none"}, Squash: "none", Users: []int{65534}}
+			f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: v, Options: "noac,sync,lookupcache=none"}, Squash: "none", Users: []string{"65534"}}
 			s, err := Start(ctx, f, nil, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
@@ -86,5 +87,80 @@ func TestRealMount(t *testing.T) {
 				t.Errorf("{mount} stays: %v\n%s", err, w.String())
 			}
 		})
+	}
+}
+
+// Where root, the NFS client, the host's rpcbind and the client tools are
+// there, a real dfs serves two namespaced clients. The first mounts the share
+// at NFSv3 without nolock, so its locks go to the server's lock manager, which
+// the host's rpcbind gives it, and its own rpcbind lists its own rpc.statd;
+// each client has its own hostname, and the user dt runs as reaches the
+// second over ssh. Stop leaves no namespace or bridge behind.
+func TestRealClients(t *testing.T) {
+	for _, n := range []string{"root", "nfs-client", "rpcbind"} {
+		if err := needs.Check("", n); err != nil {
+			t.Skipf("%s: %v", n, err)
+		}
+	}
+	for _, tool := range []string{"/usr/sbin/sshd", "ssh", "nsenter", "unshare", "tc", "rpc.statd"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			if _, err := exec.LookPath("/usr/sbin/" + tool); err != nil {
+				t.Skipf("%s: %v", tool, err)
+			}
+		}
+	}
+	bin := realBin(t)
+	f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Options: "vers=3,tcp,mountproto=tcp", FromOptions: true}, Squash: "none", Client: "namespace", Clients: 2, RPCBind: "host"}
+	if geteuid() != 0 {
+		f.Users = []string{"self"}
+	}
+	out := t.TempDir()
+	var w bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	s, err := Start(ctx, f, nil, bin, out, &w)
+	if err != nil {
+		log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
+		t.Fatalf("Start: %v\n%s\ndfs.log:\n%s", err, w.String(), log)
+	}
+	bridge := s.clients.bridge
+	run := func(argv ...string) string {
+		cmd, err := s.Command(argv, "/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
+		if err != nil {
+			t.Errorf("%s: %v\n%s", strings.Join(argv, " "), err, got)
+		}
+		return strings.TrimSpace(string(got))
+	}
+	mount := s.Placeholders()["mount"]
+	if opts, _, err := s.mountedAt(mount); err != nil || !strings.Contains(opts, "vers=3") || !strings.Contains(opts, "local_lock=none") {
+		t.Errorf("mounted with %q (%v), not at NFSv3 with its locks on the server", opts, err)
+	}
+	// decision: no lock is taken, since the server refuses new locks for
+	// its grace period after it starts, and the first would wait it out.
+	port, _ := strconv.Atoi(s.Placeholders()["nfs-port"])
+	if got := run("rpcinfo", "-p", s.Placeholders()["server"]); len(unregistered(got, port)) > 0 {
+		t.Errorf("from the client, the host's rpcbind lacks the server's %q:\n%s", unregistered(got, port), got)
+	}
+	if got := run("rpcinfo", "-p"); !strings.Contains(got, " status") {
+		t.Errorf("the client's own rpcbind lists no rpc.statd:\n%s", got)
+	}
+	if got := run("hostname"); got != bridge+"-1" {
+		t.Errorf("the first client's hostname is %q", got)
+	}
+	if got := run("ssh", s.Placeholders()["client2"], "hostname"); got != bridge+"-2" {
+		t.Errorf("over ssh the second client says %q", got)
+	}
+	if err := s.Stop(); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+	if list, _ := exec.Command(asRoot("ip", "netns", "list")[0], asRoot("ip", "netns", "list")[1:]...).Output(); strings.Contains(string(list), bridge+"-") {
+		t.Errorf("namespaces stay:\n%s", list)
+	}
+	if exec.Command("ip", "link", "show", bridge).Run() == nil {
+		t.Errorf("the bridge %s stays", bridge)
 	}
 }

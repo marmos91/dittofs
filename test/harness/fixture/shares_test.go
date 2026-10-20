@@ -107,6 +107,7 @@ func TestSharesFileRefuses(t *testing.T) {
 		{"- { encrypt-data: true }", "share 1 has no name"},
 		{"- { name: /a, read-only: true }", "/a: read-only isn't a flag"},
 		{"- { name: /a, encrypt-data: yes please }", "/a: encrypt-data isn't a flag"},
+		{"- { name: /a, default-permission: true }", "/a: default-permission isn't a flag"},
 		{"[]", "holds no share"},
 	} {
 		path := filepath.Join(t.TempDir(), "shares.yaml")
@@ -116,5 +117,25 @@ func TestSharesFileRefuses(t *testing.T) {
 		if _, err := loadShares(path); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want %q", tc.yaml, err, tc.want)
 		}
+	}
+}
+
+// The share cthon04 and nfstest mount is the one the posix setup creates for
+// them, with suites.json's default permission, owned by {user} as a shares
+// file's shares are: the request the fixture sends is dfsctl's for those flags.
+func TestNFSMountShare(t *testing.T) {
+	shares, err := loadShares(filepath.Join("..", "..", "nfs-mount", "shares.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, c, _ := newFakeAPI(t)
+	for _, s := range shares {
+		if err := addShare(c, registry.Fixture{Shares: "shares.yaml"}, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := dfsctlShare(t, []string{"--name", Share, "--metadata", "default", "--block-store", "default", "--default-permission", "read", "--owner", User})
+	if len(f.shares) != 1 || !reflect.DeepEqual(f.shares[0], want) {
+		t.Errorf("the fixture sends %v\ndfsctl sends %v", f.shares, want)
 	}
 }
