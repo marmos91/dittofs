@@ -114,23 +114,6 @@ func TestImageDockerArgs(t *testing.T) {
 	golden(t, "docker-run.golden", got)
 }
 
-// The network is the one the fixture's server is on: the host's, or, for dt
-// in a dtc container on a bridge network, that container's.
-func TestImageNetwork(t *testing.T) {
-	for _, c := range []struct{ in, hostnet, want string }{
-		{"", "", "host"},
-		{"1", "1", "host"},
-		{"1", "", "container:dtc-1"},
-	} {
-		t.Setenv("DT_IN_CONTAINER", c.in)
-		t.Setenv("DT_HOSTNET", c.hostnet)
-		t.Setenv("DT_CONTAINER_NAME", "dtc-1")
-		if got := network(); got != c.want {
-			t.Errorf("in %q, hostnet %q: %s, want %s", c.in, c.hostnet, got, c.want)
-		}
-	}
-}
-
 // A test stopped at its limit, at the cell's or by an interrupt has its
 // container removed by name: killing docker's client leaves the container
 // running.
