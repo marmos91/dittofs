@@ -819,7 +819,7 @@ tables always describe what CI runs, and until then CI runs those suites from `s
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
 workflows, not suites, so the registry doesn't hold them. When `suites.json` goes in step 3 (§8),
 the list moves into `ci-health.yml` itself, whose trigger already repeats it, and names `tests.yml`
-and any workflow still outside it (§4.8).
+and any workflow still outside it (§4.8). Until then `suites.json`'s list names `tests.yml` too.
 
 **What isn't registered, and why.** Each has a reason or an issue:
 - **The NFS `sec=krb5` conformance job:** e2e covers the same mounts (§3).
@@ -1310,9 +1310,10 @@ it is `known`. A subtest that crashed or hung is `new`, and so is its parent. go
 parent that also failed on its own assertion the same way, so that failure is excused as well.
 
 A test that failed and then passed on retry is `passed` with `flaky: true` and its `retries`, and a
-pass with a `flaky` property in JUnit. A quarantined test is shown as a known failure, with the
-grade `quarantined`. A reader of CTRF or JUnit then counts as failed only what makes the cell exit
-1, and as an error only what makes it exit 2.
+pass with a `flaky` property in JUnit; the summary's `flaky` counts them. A new failure that failed
+every retry keeps its grade, with its `retries`. A quarantined test is shown as a known failure,
+with the grade `quarantined`. A reader of CTRF or JUnit then counts as failed only what makes the
+cell exit 1, and as an error only what makes it exit 2.
 
 **Why CTRF, with JUnit beside it.** Decided in the 2026-10-08 call.
 - JUnit XML began with Java's JUnit. It has no formal specification, tools write it in their own
@@ -1465,7 +1466,17 @@ from #2914 on, and is fixed in #2980.
 so a PR can't merge a flaky test it introduced. On develop and the schedule, `--retry 1` runs only
 the failed tests again: `go test -run '^(A|B)$'`, the one scenario, the one test file or test code.
 A pass on retry there is flaky: it doesn't open the develop-red issue, and `dt history` counts it.
-An unexpected pass isn't retried.
+An unexpected pass isn't retried, nor is a known failure: only new failures are.
+
+- **How a test is named.** Each format's own way: a Go test by its top-level test, through `-run`;
+  a test of a tool that takes test names, as pynfs takes codes, through `{names}`; and any other by
+  the `{test}` that reported it, so an smbtorture failure runs its whole `tests.txt` entry again. A
+  test none of these can name isn't retried: a command of a list without `tests`, a test of WPTS's
+  one run, and a Go package that failed outside its tests.
+- **Where it runs.** On the cell's own fixture, before it stops, and within the cell's limit. A
+  new failure whose test passed in every result of a retry passes, flaky; the results its retry
+  gives for other tests, and what else it meets, such as a skip or no results, don't count.
+
 A test flaky twice in a week on develop is a quarantine candidate.
 
 That retry replaces `ci-health.yml`'s re-run of failed jobs for `tests.yml`: re-running a job as
@@ -1492,16 +1503,29 @@ then green, a regression shows as a new failure, and a fix shows as an unexpecte
 One workflow, `tests.yml`, runs every registered suite:
 
 - **Triggers:** `pull_request` runs tier `pr`, a push to develop `merge`, the schedule `nightly`,
-  and `workflow_dispatch` the tier it's given.
+  and `workflow_dispatch` the tier it's given. Pull requests are those to `develop`, `main` and
+  `feat/storage-v2`, as the workflows it replaces take them.
 - **Jobs:**
   - `plan` runs `dt plan --tier T --json`.
   - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`
-    named, with `--retry 1` on develop and the schedule, never on PRs.
+    named (`ubuntu-latest` for `ubuntu`), with `--retry 1` on develop and the schedule, never on
+    PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
+    artifact `dt-run-CELL-ATTEMPT`, the cell's name with `-` for `/`, without `{bin}` and `{tools}`.
   - `gate` needs every job that runs a blocking cell, and always runs. It merges the summaries
-    into one report, and fails unless every blocking cell exited 0.
+    into one report: its job summary is each blocking cell's `report.md`, one after another. It
+    fails unless `plan` and every `run` job passed, which a `run` job does only when its cell
+    exited 0.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
-    and a failed job still shows on the PR.
+    and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
+    `dt-non-blocking-CELL-ATTEMPT`, so the gate's report doesn't take them.
+- **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
+  of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
+  any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
+  every suite runs there.
+- **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, a
+  push queues, and a scheduled run has a group of its own, so it and a push never replace each
+  other (§9).
 
   Because the gate needs every blocking job, a failing job can't hide behind a green summary, as
   the nightly's baseline job did from 2026-09-10 (#2997).

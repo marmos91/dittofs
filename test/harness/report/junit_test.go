@@ -16,8 +16,9 @@ import (
 // pass; a failure; skipped with the entry's reason for a known failure, and
 // with the tool's for an ungraded skip; an error for an unexpected skip; a
 // failure with its grade as its message for an unexpected pass, which the
-// tool said nothing about. JUnit reads the grade only for that message, so
-// grades that share a status share a row.
+// tool said nothing about; and a pass with a flaky property for a pass on a
+// retry. JUnit reads the grade only for that message, so grades that share a
+// status share a row.
 func TestJUnitGrades(t *testing.T) {
 	pjdfstest, smbtorture, unit := "pjdfstest/badger-s3/4.1", "smbtorture/memory", "unit"
 	for _, c := range []struct {
@@ -32,6 +33,7 @@ func TestJUnitGrades(t *testing.T) {
 			Reason: "a buffered backlog arrives per operation", Issue: "#12"}},
 		{"unexpected_skip", smbtorture, "not run", Test{Name: "smb2.lock.rw", Status: Other, Message: "skip: no lock support", Grade: "unexpected_skip"}},
 		{"ungraded", unit, "passed", Test{Name: "TestB", Suite: []string{"example.com/m/a"}, Status: Skipped, Message: "a_test.go:9: needs root", Grade: Ungraded}},
+		{"flaky", unit, "passed", Test{Name: "TestF", Suite: []string{"example.com/m/a"}, Status: Passed, Message: "a_test.go:7: timed out", Retries: 1, Flaky: true}},
 	} {
 		cell := Cell{Name: c.cell, Result: c.result, Took: 912 * time.Second, Tests: []Test{c.test}}
 		got, err := cell.junit()

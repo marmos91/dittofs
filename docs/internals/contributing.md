@@ -535,6 +535,7 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `conformance.yml` | PR, push, nightly | WPTS BVT, smbtorture, pjdfstest, NFS `sec=krb5` | ~45 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
 | `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
+| `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, pynfs so far, decided by one `gate` check | ~20 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 

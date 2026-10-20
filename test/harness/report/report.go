@@ -66,6 +66,8 @@ type Test struct {
 	Grade     string // how dt graded the result, when it did
 	Reason    string // why the result was expected: the reason of the known entry that graded it
 	Issue     string // the issue that entry names
+	Retries   int    // how many times a retry ran it again
+	Flaky     bool   // it failed, then passed on a retry
 }
 
 // Cell is how one cell went, and its tests' results.
@@ -197,6 +199,7 @@ func Read(dir string) (Run, error) {
 		if t.Extra != nil {
 			out.Grade, out.Reason, out.Issue = t.Extra.Grade, t.Extra.Reason, t.Extra.Issue
 		}
+		out.Retries, out.Flaky = t.Retries, t.Flaky
 		r.Cells[in].Tests = append(r.Cells[in].Tests, out)
 	}
 	return r, nil
@@ -241,7 +244,7 @@ func (r Run) json() ([]byte, error) {
 		res.Extra.Cells = append(res.Extra.Cells, cell{suite, name, c.Result, c.Note, int64(c.Took.Round(time.Second) / time.Second), c.Log, junitPath(c.Name)})
 		at := strings.Split(c.Name, "/")
 		for _, t := range c.Tests {
-			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message}
+			out := test{Name: t.Name, Suite: slices.Concat(at, t.Suite), Status: t.Status, RawStatus: t.RawStatus, Duration: t.Duration.Milliseconds(), Message: t.Message, Retries: t.Retries, Flaky: t.Flaky}
 			if x := (testExtra{Grade: t.Grade, Reason: t.Reason, Issue: t.Issue}); x != (testExtra{}) {
 				out.Extra = &x
 			}
@@ -255,6 +258,9 @@ func (r Run) json() ([]byte, error) {
 				sum.Skipped++
 			default:
 				sum.Other++
+			}
+			if t.Flaky {
+				sum.Flaky++
 			}
 		}
 	}
@@ -290,6 +296,7 @@ type summary struct {
 	Skipped int   `json:"skipped"`
 	Pending int   `json:"pending"`
 	Other   int   `json:"other"`
+	Flaky   int   `json:"flaky"`
 	Start   int64 `json:"start"`
 	Stop    int64 `json:"stop"`
 }
@@ -301,6 +308,8 @@ type test struct {
 	RawStatus string     `json:"rawStatus,omitempty"`
 	Duration  int64      `json:"duration"`
 	Message   string     `json:"message,omitempty"`
+	Retries   int        `json:"retries,omitempty"`
+	Flaky     bool       `json:"flaky,omitempty"`
 	Extra     *testExtra `json:"extra,omitempty"`
 }
 

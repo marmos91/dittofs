@@ -9,7 +9,8 @@
 #   retry (workflow_run): when a conformance workflow's first attempt fails a
 #     POSTSUBMIT or PERIODIC run on develop (push or schedule — NOT a PR run),
 #     re-run its failed jobs once so a transient flake self-heals to green with
-#     no human touch. No paging.
+#     no human touch. No paging. Not for Tests (tests.yml), whose dt run
+#     retries its failed tests itself.
 #
 #   warn-on-pr (pull_request): if develop is currently RED (any monitored
 #     conformance workflow's latest develop run that reached a verdict failed),
@@ -27,6 +28,7 @@ on:
       - "Conformance Suites"
       - "NFS Protocol Conformance"
       - "E2E Tests"
+      - "Tests"
     types: [completed]
     # The retry acts on develop only, so a run on any other branch would
     # start a run that skips every job.
@@ -59,6 +61,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.name != 'Tests' &&
       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule') &&
       github.event.workflow_run.conclusion != 'success' &&
       github.event.workflow_run.conclusion != 'cancelled' &&

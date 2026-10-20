@@ -1,0 +1,215 @@
+# Every registered suite of test/suites.yaml, through dt
+# (docs/internals/rfcs/rfc-29-test-harness.md).
+#
+# plan lists the tier's cells with dt plan. Each cell runs as a job of its own,
+# dt run CELL, on the runner the plan names: the blocking cells in run, the
+# others in non-blocking, which nothing waits for. gate waits for plan and run,
+# always runs, and is the check that decides.
+#
+# The suites move in from their own workflows one at a time, each running here
+# beside its old job until their results match on 5 consecutive runs. pynfs is
+# the first, so plan keeps only its cells. A suite joins by being added to the
+# select in plan, with any step its cells need that run doesn't give yet, such
+# as another service; the select goes once every suite runs here.
+name: Tests
+
+on:
+  pull_request:
+    branches: [develop, main, feat/storage-v2]
+  push:
+    branches: [develop]
+  schedule:
+    # Nightly at 22:13 UTC, staggered from the other suites' runs.
+    - cron: '13 22 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: The tier to run
+        type: choice
+        options: [pr, merge, nightly, manual]
+        default: merge
+
+permissions:
+  contents: read
+
+concurrency:
+  # A scheduled run has a group of its own, so it and a push never replace
+  # each other. Only a superseded pull-request run is cancelled: a push is a
+  # distinct commit someone wants tested, so its run queues instead.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The tier of the run, and the retry: a test that fails is run once more after
+# a merge and on the schedule, and never on a pull request, so a pull request
+# can't merge a flaky test it introduced.
+env:
+  TIER: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'merge' || github.event_name == 'schedule' && 'nightly' || inputs.tier }}
+  RETRY: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && '1' || '0' }}
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      blocking: ${{ steps.plan.outputs.blocking }}
+      non-blocking: ${{ steps.plan.outputs.non-blocking }}
+    steps:
+      # Full history: on a pull request, dt plan --base compares the branch
+      # with where it left its base, so a docs-only change plans no cell.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Build dt
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      # Each cell gets its name as one path element, for its artifact's name.
+      - name: Plan the cells
+        id: plan
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
+            jq -c '[(.cells // [])[] | select(.suite == "pynfs") | .slug = (.name | gsub("/"; "-"))]' > "$RUNNER_TEMP/cells.json"
+          jq . "$RUNNER_TEMP/cells.json"
+          echo "blocking=$(jq -c 'map(select(.blocking))' "$RUNNER_TEMP/cells.json")" >> "$GITHUB_OUTPUT"
+          echo "non-blocking=$(jq -c 'map(select(.blocking | not))' "$RUNNER_TEMP/cells.json")" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.blocking != '[]'
+    runs-on: ${{ matrix.place }}-latest
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.blocking) }}
+
+    # An empty image starts no service: a cell gets the ones its needs name.
+    services: &services
+      localstack:
+        image: ${{ contains(matrix.needs, 'service:localstack') && 'localstack/localstack:4.13.1' || '' }}
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps: &cell
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+
+      # dt builds the test tools a cell names under {tools} with nix, at the
+      # revisions flake.lock pins.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: ./.github/actions/nix-cache
+
+      - name: Build dt
+        id: build
+        run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+
+      - name: Run ${{ matrix.name }}
+        env:
+          CELL: ${{ matrix.name }}
+        run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci --retry "$RETRY"'
+
+      - name: Report
+        if: always() && steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/dt" report --format md >> "$GITHUB_STEP_SUMMARY"'
+
+      # Under the job's own name, which gate's download picks the blocking
+      # cells' by, and each attempt's apart, as dt's RUN-a2 directory keeps
+      # them. Without the binaries dt built and the tools it linked.
+      - name: Upload results
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dt-${{ github.job }}-${{ matrix.slug }}-${{ github.run_attempt }}
+          path: |
+            test/harness/results/
+            !test/harness/results/*/bin/
+            !test/harness/results/*/tools/
+          if-no-files-found: ignore
+
+  # Reported and annotated like the blocking cells, and a failed one shows on
+  # the pull request, but gate doesn't wait for it.
+  non-blocking:
+    name: ${{ matrix.name }} (non-blocking)
+    needs: plan
+    if: needs.plan.outputs.non-blocking != '[]'
+    runs-on: ${{ matrix.place }}-latest
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.non-blocking) }}
+    services: *services
+    steps: *cell
+
+  # Fails unless plan passed and every blocking cell's job did, which a job
+  # does only when its dt run exited 0. A plan with no blocking cell, as a
+  # docs-only change gives, passes.
+  gate:
+    name: gate
+    needs: [plan, run]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the results
+        if: needs.run.result != 'skipped'
+        uses: actions/download-artifact@v7
+        with:
+          pattern: dt-run-*
+          path: ${{ runner.temp }}/results
+
+      # Every blocking cell's report.md, which is what dt report prints for it.
+      - name: Report
+        if: always()
+        run: |
+          shopt -s nullglob
+          reports=("$RUNNER_TEMP"/results/*/*/report.md)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No blocking cell reported." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          for r in "${reports[@]}"; do
+            cat "$r"
+            echo
+          done >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict
+        if: always()
+        env:
+          PLAN: ${{ needs.plan.result }}
+          RUN: ${{ needs.run.result }}
+        run: |
+          echo "plan: $PLAN; blocking cells: $RUN"
+          [ "$PLAN" = success ] && { [ "$RUN" = success ] || [ "$RUN" = skipped ]; }

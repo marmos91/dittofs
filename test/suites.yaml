@@ -141,7 +141,8 @@ suites:
     needs: [linux, root, nfs-client]
   pynfs:
     format: junit
-    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml all"
+    cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
+    names: all                          # what {names} holds when a run names no tests
     matrix: { profile: [badger-s3], minor: ["0", "1"] }
     fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # uid 1 is pynfs's second client
     known: test/nfs-conformance/pynfs/known.yaml
