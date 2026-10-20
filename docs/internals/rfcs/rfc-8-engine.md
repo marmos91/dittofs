@@ -521,15 +521,17 @@ primary, which offloads the whole file. A file is never split across shards
 
 ### 2.4 Settings are validated once, and refused rather than replaced
 
-The engine validates every setting it composes at construction, and **MUST**
-refuse an invalid one with an error rather than substitute a default
+The engine validates every setting it is handed at `Apply`, and **MUST**
+refuse an invalid one with an error rather than substitute a default, keeping
+the settings it already had
 ([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). It **MUST** record which chunking settings produced a share's content,
 and **MUST** report a change to them as a migration rather than apply it
 ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 ### 2.5 Start in order, stop in reverse, and join before closing
 
-**Start.** `New` validates settings and opens nothing. `Start(ctx, shares)` runs
+**Start.** `New` takes no settings and opens nothing; the node's first `Apply`
+comes before `Start` ([§2.6](#2.6%20Dependencies%20and%20wiring)). `Start(ctx, shares)` runs
 the steps below over the given shares, each step completing before the next
 begins. A step that fails closes in reverse what earlier steps opened and
 returns its error, so the engine is either serving or as built. A share refused
@@ -708,8 +710,12 @@ can land.
 ![Who builds, owns, starts and closes what: the composition root builds and owns the metadata store, the carver, the cut gate, the syncer, the ref-counted remote block stores, the clock and the filesystem service; the node starts and stops the engine and sets and stops its shares, the snapshot cut calls PrepareCut and CommitCut, and the filesystem service alone calls the content methods; the root lends the store's views, the carver, the cut gate, the syncer and the clock to the engine through Deps, and the remote block stores are reached only through the syncer's flows; the engine opens and owns the journals, one work queue per journal, the offload passes and a share table whose contexts each own their journal handles and a syncer flow; the engine moves from New, which opens nothing, through Start with its shares, serving with SetShare, StopShare and ForgetShare, to Close, and closes only what it opened](img/rfc8-composition.svg)
 
 `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)) builds the engine with `New(Deps)`. `New`
-validates the settings and opens nothing; the engine closes only what it opens:
-the journals, their share handles, the flows.
+takes no settings and opens nothing; the engine closes only what it opens:
+the journals, their share handles, the flows. **No constructor takes
+settings.** The engine's first node-level settings arrive through `Apply`,
+which the node calls after reading the records and before the engine's
+`Start` ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop),
+start step 4), and every later change arrives the same way.
 
 ```go
 // Deps is what the composition root hands New. Every interface here is
@@ -726,7 +732,6 @@ type Deps struct {
 	Refs      Refs      // RFC 16 §3.1: Inspect.Refs, for the reseed only
 	Gate      Gate      // RFC 12 §2.3: the per-shard cut gate every existence commit passes
 	Clock     Clock     // Now, Elapsed, After: the subset of the node's clock the engine reads
-	Settings  Settings  // node-level; New refuses an invalid one (§2.4)
 	Metrics   *metrics.Registry
 	Logger    *slog.Logger
 }
@@ -753,7 +758,7 @@ primary of the file's shard.
 
 | Component | Composed of | Depends on | Calls | Injected | Built by → owned by | Lifecycle |
 | --- | --- | --- | --- | --- | --- | --- |
-| engine, `*Engine` | the share table, the journals, a work queue per journal, the passes, the speculator, verifier and fence state, the policy functions | everything in `Deps` | the journals and their handles, the carver and assembler, the share flows, `Existence`, `Content`, `Lifecycle`, `Refs`, the cut gate, `Clock` | `Deps` | root, `New` → root | `New` opens nothing → `Start(shares)` → serving → `Close`, after the filesystem service and before the syncer and the store |
+| engine, `*Engine` | the share table, the journals, a work queue per journal, the passes, the speculator, verifier and fence state, the policy functions | everything in `Deps` | the journals and their handles, the carver and assembler, the share flows, `Existence`, `Content`, `Lifecycle`, `Refs`, the cut gate, `Clock` | `Deps` | root, `New` → root | `New` opens nothing → `Apply` → `Start(shares)` → serving → `Close`, after the filesystem service and before the syncer and the store |
 | share table | the share contexts, copy-on-write ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | — | — | internal | engine → engine | swapped by `SetShare` and `ForgetShare` |
 | share context | its journal handles and flow, settings, budgets, policy state, health, state, the clones and copies admitted into it ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) | journal, syncer, metadata store | its journal handles and flow | internal | engine at `Start` or `SetShare` → engine | adding → serving → removing → forgotten ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)) |
 | journal, one per device | [RFC 1](rfc-1-journal.md) | its directory, `Clock`, its fault seam | its directory, `Clock` | `Deps.Devices`, `Deps.Open` | engine at `Start` step 1, once it has read the floor and identity → engine | closed by `Close` after every handle; never after a failed join ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), stop step 5) |
@@ -2657,8 +2662,13 @@ Signatures are indicative; the obligations are normative.
 ```go
 package engine // pkg/block/engine
 
-// New validates d (§2.6) and builds the engine. It opens nothing and starts no goroutine.
+// New validates d (§2.6) and builds the engine. It takes no settings, opens
+// nothing and starts no goroutine.
 func New(d Deps) (*Engine, error)
+
+// Apply hands the engine its node-level settings: first before Start, then on
+// every change. An invalid one is refused and the engine keeps its last (§2.4).
+func (e *Engine) Apply(s Settings) error
 
 // Lifecycle: called by the node (RFC 23 §2.2), never by the filesystem service.
 func (e *Engine) Start(ctx context.Context, shares []Share) error // §2.5 steps 1–8 over these shares; all or nothing
@@ -2927,7 +2937,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | Requirement | Check |
 | --- | --- |
 | [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no assertions | An architecture test scans the engine package: no type assertion or type switch on a value of a `Deps` interface type ([§2.6](#2.6%20Dependencies%20and%20wiring)), no `interface{ … }` literal in an assertion, no setter on `*Engine`. Seed one violation; assert it is reported. |
-| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings | Configure `Min ≥ Target`. Assert construction fails. Change a share's profile. Assert it is reported as a migration. |
+| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings | Configure `Min ≥ Target`. Assert `Apply` refuses it and the engine keeps its earlier settings. Change a share's profile. Assert it is reported as a migration. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed | Restart with a ledger bit no ref justifies. Assert the bit is reported and cleared, the extent is re-offered rather than released, and extents of other files are evicted as soon as the reseed has visited them. |
 | [§2.1](#2.1%20Content%20composition) declared interfaces | The architecture test lists every method of every `Deps` interface ([§2.6](#2.6%20Dependencies%20and%20wiring)) and fails on one the engine never calls. Seed an unused method; assert it is reported. |
 
