@@ -207,6 +207,11 @@ func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 		})
 	}
 	var out []string
+	if f.Server == "knfsd" {
+		// The kernel's server, free on its port, so the one dt starts and
+		// stops is its own.
+		out = append(out, "root", "knfsd", "port:2049")
+	}
 	if fill(f.Profile) == "badger-s3" {
 		out = append(out, "service:localstack")
 	}

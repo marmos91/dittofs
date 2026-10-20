@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -182,6 +183,12 @@ func checkUnit(root string, u *Suite) []error {
 	if f := u.Fixture; f != nil {
 		if f.Profile == "" && (f.Server == "" || f.Server == "dfs") {
 			fail("fixture: a dfs fixture names its profile")
+		}
+		if f.Server == "knfsd" {
+			only := Fixture{Server: "knfsd", NFS: NFS{Version: "export"}, Squash: f.Squash, Lease: f.Lease}
+			if !reflect.DeepEqual(*f, only) || f.Squash != "" && f.Squash != "none" {
+				fail("fixture: a knfsd fixture sets nfs: export, and at most squash: none and a lease")
+			}
 		}
 		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
 		// squash decides, not a user to create, and the fixture's own test

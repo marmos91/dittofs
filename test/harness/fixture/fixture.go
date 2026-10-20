@@ -47,6 +47,9 @@ const stopGrace = 10 * time.Second
 // field that holds a matrix placeholder is checked once a cell fills it.
 func Unsupported(f *registry.Fixture) string {
 	fixed := func(s string) bool { return len(registry.Placeholders(s)) == 0 }
+	if f.Server == "knfsd" {
+		return "" // the registry lets it set only what dt sets
+	}
 	switch {
 	case f.Server != "" && f.Server != "dfs" && fixed(f.Server):
 		return fmt.Sprintf("dt doesn't set up a %s fixture yet", f.Server)
@@ -76,6 +79,9 @@ func Unsupported(f *registry.Fixture) string {
 // share, {client2} with a second client, and {realm} and {krb5-conf} with
 // Kerberos.
 func Placeholders(f registry.Fixture) []string {
+	if f.Server == "knfsd" {
+		return []string{"server", "nfs-port"} // the kernel's server has no users, and runs no {bin}
+	}
 	names := []string{"server", "share", "user", "user2", "password"}
 	if f.NFS.Serves() {
 		names = append(names, "nfs-port")

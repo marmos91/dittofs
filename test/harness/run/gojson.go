@@ -160,8 +160,12 @@ func (t tester) goTest(argv []string, asRoot bool, events string, res *results) 
 // buildBin builds dfs and dfsctl from the checkout at root, as the user, into
 // {bin}, the run's bin directory, once per run: for a cell with a fixture, and
 // for a suite whose tests run as root, which take the binaries from
-// DITTOFS_E2E_BIN, so root never runs go build.
+// DITTOFS_E2E_BIN, so root never runs go build. A cell without {bin}, as a
+// knfsd fixture's, builds nothing.
 func buildBin(ctx context.Context, root, bin string, env []string, w io.Writer) error {
+	if bin == "" {
+		return nil
+	}
 	names := []string{"dfs", "dfsctl"}
 	if !slices.ContainsFunc(names, func(n string) bool { _, err := os.Stat(filepath.Join(bin, n)); return err != nil }) {
 		return nil // an earlier cell of this run built them

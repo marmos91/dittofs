@@ -48,7 +48,7 @@ var debian = map[string]string{
 }
 
 // inDtc are the tools the dtc image installs.
-var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true}
+var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true}
 
 // hints say how to meet a need that isn't a tool, by its kind.
 var hints = map[string]string{
