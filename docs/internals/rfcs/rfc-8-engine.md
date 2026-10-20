@@ -433,17 +433,44 @@ cold read linear.
 ### 2.3 One engine per node; a share is a storage binding
 
 Every node runs **one engine**, and each share it serves is a
-**storage binding** in it, not an engine of its own. The binding is the engine's
-own, unexported; no caller sees it. It holds the share's ID; its key scope, the
-namespace ID ([§2.1](#2.1%20Content%20composition)); its settings, validated at `Bind` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)); its
-policy state — access pattern, dirty ages, backoff, frontiers ([§3.3](#3.3%20Policy%20state%20is%20memory%2C%20and%20disposable)); its
-health per direction ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its budgets — its share of journal capacity,
-transfers and pacing; its journal handles and syncer flow; and its state:
-adding, serving, quiesced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
-The binding is the content side only: the filesystem service decides who may
-reach a share ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); the binding says where its bytes go, and exists so
-that recovery and background offload, which run with no file call, can find
-each share's store, namespace and budgets.
+**storage binding** in it, not an engine of its own. **A storage binding tells
+the engine where to find one share's data: locally, in the device journals, and
+remotely, in the share's remote block store through the syncer.** It exists
+because the engine acts on a share's data when no file call is in progress —
+background offload, and recovery after a restart — and must then find the
+share's journal records, its store and its namespace without a caller to name
+them. It is needed on a single node serving a single share; it is not a
+scaling device.
+
+- **Local side: a handle on each shared journal.** A journal is per device and
+  holds the records of every share on that device in one log; a share has no
+  journal of its own. The binding holds the share's handle on each journal,
+  opened by `Share` at attach, which stamps the share's tag on every record it
+  writes. The tag is how a journal tells shares apart: it accounts capacity,
+  lists dirty files and forgets records per tag ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
+- **Remote side: a flow to the share's store.** The binding holds the syncer flow
+  to the share's remote block store, and the key scope, the namespace ID
+  ([§2.1](#2.1%20Content%20composition)), under which the blocks it uploads are named.
+- **The rules for using both:** its settings, validated at `Bind` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)), the
+  sync policy among them; its policy state — access pattern, dirty ages,
+  backoff, frontiers ([§3.3](#3.3%20Policy%20state%20is%20memory%2C%20and%20disposable)); its health per direction ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its budgets —
+  its share of journal capacity, transfers and pacing; and its state: adding,
+  serving, quiesced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
+
+The binding is the engine's own, unexported; no caller sees it. Its identifiers
+and settings are copied from the share record at `Bind`, and the metadata store
+stays their source of truth; its handles, flow, budgets, health and state are
+live and never stored, and `Start` rebuilds every binding from the share records.
+It is the content side only: the filesystem service decides who may reach a
+share ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); the binding says where its data is.
+
+> decision: a journal record carries only the share's tag, never the store,
+> namespace or credential the tag leads to. Those change while records persist
+> (a credential rotates, a share is re-homed), one is a secret, and copying them
+> would grow every record on the write path; the binding resolves the tag to
+> the current values instead. Overturned if a record must be placed with the
+> metadata store unreachable, and then by recording a store reference, never
+> its credential.
 
 Everything below the engine is already shared: the journal is per device and
 accounts capacity per share ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), the syncer's pools are shared and schedule
