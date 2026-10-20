@@ -799,7 +799,10 @@ them and decides nothing about identity:
 - **a password is write-only**. It is set by `POST /users/{id}:set-password`,
   its hashes derived by identity's `APISignIn.Hashes`
   ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)) and sealed as RFC 13 §7
-  requires, and never returned;
+  requires, and never returned. It is refused for a directory principal, which
+  signs in only through the directory's own paths
+  ([RFC 18 §5.5](rfc-18-identity.md#5.5%20A%20directory%20without%20Active%20Directory%20or%20Kerberos)):
+  a second password for one principal drifts from the first;
 - **an e-mail address** is an optional field, `email`, of a user: never
   required, never defaulted, and naming no principal to any file check
   ([RFC 18 §2.2](rfc-18-identity.md#2.2%20Spellings)). The API refuses a value
