@@ -255,11 +255,9 @@ the service maps it under the installation's default, never a share's. An
 is then false: such a record is found by its name alone, as an SMB one is.
 
 > decision: an owner that resolves to the anonymous principal protects
-> nothing, so it is not recorded. Two hosts whose credentials map to nobody can
-> then reach each other's client by name, which their protocol already allows
-> them; recording the anonymous principal would also let them destroy each
-> other's client while appearing to refuse it. Record it if a protocol is
-> served whose anonymous callers are told apart by something the table sees.
+> nothing, so it is not recorded; two hosts mapped to nobody can reach each
+> other's client by name, as their credentials already let them. Record it if a
+> protocol is served whose anonymous callers the table can tell apart.
 
 **State protection is the table's.** With `Protect` set, `Owner` may make every
 call that releases or uses the client's state — `Close`, `Downgrade`, `Unlock`,
@@ -270,13 +268,11 @@ refuses a call outside it before it calls the table, and the table admits
 nothing the adapter refuses.
 
 > decision: state protection is enforced by the table, as `Owner` plus a flag,
-> rather than by the adapter from its own record, because its one effect that
-> matters is an admission — a principal other than the opener acting through
-> an open (§2.2) — and that check runs at the file's primary, which may be
-> another node, and after a restart. The table holds only the widest set; an
-> adapter's bug that skipped its own narrowing would admit the client's own
-> machine principal to its own state, and no other client's. Move it to the
-> adapter if the opener check ever moves there.
+> because its one effect that matters — a principal other than the opener acting
+> through an open (§2.2) — is checked at the file's primary, which may be
+> another node, and after a restart. An adapter that skipped its own narrowing
+> would admit only the client's own machine principal to its own state. Move it
+> to the adapter if the opener check ever moves there.
 
 **An SMB client record names a machine, not a user.** One Windows machine sends
 one name on every connection, and a multi-session host carries many users'
@@ -1528,14 +1524,11 @@ one renewal interval.
 > per renewal. Read the aggregate per reply if a client is seen acting on
 > state it was not yet told is revoked.
 
-The deadline is generous: 35 s for a grant that covers opens, and one client
-lease period for one that covers none. Waiting indefinitely for a client that
-has stopped answering blocks every other client of that file on a promise the
-server made unprompted; a revoked grant costs one client its cache. The first
-value is the one the most common client of such grants is built against, and
-is fixed rather than a setting
-([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings));
-the second is §4.1's lease.
+The deadlines are 35 s for a grant that covers opens — the value the most
+common client of such grants is built against, fixed rather than a setting
+([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings))
+— and §4.1's lease for one that covers none. An unbounded recall costs every
+other client the file; a revoked grant costs one client its cache.
 
 **A client that missed a recall is fenced.** A client that let one recall be
 revoked or time out **MUST NOT** be offered grants for one lease period, 90 s,
@@ -2286,8 +2279,9 @@ interfaces, the **views**, so each area of the filesystem service depends on,
 and fakes in its tests, only the calls it makes. A view adds no state and no
 step of its own: each is a small unexported struct over the one core, and a
 deny-mode check in `Opens` and a lock in `Locks` run under the same entry
-mutex. `Clients` runs at the client's lease owner; the others at the file's
-primary, or at the shard an ID names.
+mutex. `Clients` runs at the client's lease owner, `Expire` and `Revoke` also
+at each primary the record names; the others run at the file's primary, or at
+the shard an ID names (`AckRecall`, `Unwatch`, `TestState`, `FreeState`).
 
 ```go
 func (t *Table) Clients() Clients
@@ -2298,16 +2292,6 @@ func (t *Table) Watches() Watches
 func (t *Table) Recovery() Recovery
 func (t *Table) Checks() Checks
 ```
-
-| View | Its calls | Runs at | Sections | Called by RFC 17's area |
-| --- | --- | --- | --- | --- |
-| `Clients` | proposals, records, sessions, the lease, expiry and revoke | the lease owner; `Expire` and `Revoke` also at each primary the record names | §2.1, §2.9, §4.1, §4.3 | `Clients` |
-| `Opens` | opens, reconnect, updates, close, the unlink and clone seams | the file's primary | §2.2, §6, §8.1, §9 | `Data`, `Attributes`, `Names` |
-| `Locks` | locks, waiters, owners | the file's primary; `ReleaseLockOwner` at every primary of the owner's files | §2.3, §2.10 | `Locking`, `Clients` |
-| `Grants` | a holder's answer to a recall | the shard the `GrantID` names | §5 | `Locking` |
-| `Watches` | watches and the changes they hear | the directory's primary; `Unwatch` at the shard the `WatchID` names | §2.5 | `Locking`, `Names` |
-| `Recovery` | shards served, grace, reclaim completion, references, a share's drop | the shards the client's state or the reference names | §4.2, §4.4, §2.11 | `Clients`, the service's start and shares |
-| `Checks` | what an I/O or a namespace change must pass | the file's primary | §6, §7, §9.5 | `Data`, `Names`, `Attributes` |
 
 **Every call names its caller.** `Caller` is the client a call acts for and the
 principal it runs as, mapped before squashing (§2.1); the primary refuses, with
