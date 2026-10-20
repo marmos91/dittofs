@@ -593,7 +593,7 @@ func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.Fi
 
 func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, target docTarget, caller string) {
 	name := target.Name
-	authCtx := h.buildCleanupAuthContext(ctx, sess)
+	authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
 	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
 	// apply the Samba `dirlease_should_break` parent-key
 	// suppression rule on the parent dir lease. Suppression applies only when
@@ -951,10 +951,11 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 // buildCleanupAuthContext creates an AuthContext for cleanup operations.
 // This is used during session/tree cleanup when we need to perform file operations
 // (like delete-on-close) but don't have a full SMBHandlerContext.
-// If the session is available, it uses the session user's UID/GID.
+// If the session is available, it uses the session user's UID/GID, squashed
+// by shareName's mode as every other op is.
 // Otherwise, it falls back to root credentials for cleanup operations.
 
-func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
+func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session, shareName string) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:                ctx,
 		Identity:               &metadata.Identity{},
@@ -974,6 +975,7 @@ func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Ses
 		authCtx.Identity.UID = &uid
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = user.Username
+		authCtx.Identity = squashIdentity(h.Registry, shareName, authCtx.Identity)
 		authCtx.ClientAddr = sess.ClientAddr
 	} else {
 		// Fallback to root for cleanup operations when session info is unavailable.

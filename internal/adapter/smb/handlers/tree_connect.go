@@ -796,20 +796,8 @@ func isRootUser(user *models.User) bool {
 	return user != nil && user.UID != nil && *user.UID == 0
 }
 
-// rootHasAdminAccess checks if the share's squash mode allows root to have admin access.
-// An empty/unset squash normalizes to DefaultSquashMode (root_to_guest), which
-// does NOT grant root admin. Root has admin access only when squash mode is:
-//   - SquashNone (no mapping)
-//   - SquashRootToAdmin (root keeps admin)
-//   - SquashAllToAdmin (everyone gets admin)
+// rootHasAdminAccess checks if the share's squash mode lets root keep admin
+// access (models.SquashMode.RootKeepsAdmin, shared with NFS).
 func rootHasAdminAccess(share *runtime.Share) bool {
-	if share == nil {
-		return false
-	}
-	switch share.Squash.OrDefault() {
-	case models.SquashNone, models.SquashRootToAdmin, models.SquashAllToAdmin:
-		return true
-	default:
-		return false
-	}
+	return share != nil && share.Squash.RootKeepsAdmin()
 }

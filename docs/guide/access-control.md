@@ -44,7 +44,7 @@ Access to a file is decided by **two independent layers**, both of which must al
 
 **Effective access = share gate AND filesystem permission.** Both must allow.
 
-> **Before either layer runs, NFS may *remap the caller's identity*** via
+> **Before either layer runs, the share may *remap the caller's identity*** (NFS and SMB alike) via
 > per-share squashing (`root_squash` and friends). Squashing decides *who you
 > are* — e.g. mapping a remote `root` to an anonymous user — and the two layers
 > above then apply to that effective identity. See
