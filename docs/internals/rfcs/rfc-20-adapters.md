@@ -1195,11 +1195,10 @@ The adapter runs the protocol's security handshake — AUTH_SYS credential
 decoding, the RPCSEC_GSS context exchange, SMB's NTLM or Kerberos session setup
 — and hands the service an `Identity` holding what the handshake proved, and
 nothing more, in neutral terms
-([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): the proven principal or
-none; `Proof`, how it was proved (`None` < `Claimed` < `Secret` < `Ticket`);
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): `Proof`, how it was proved (`None` < `Claimed` < `Secret` < `Ticket`);
 `Protection`, how its messages are protected (`None` < `Integrity` <
 `Privacy`); the numeric IDs a client asserted, as `Claims`; the client's
-address; and the handshake's `Evidence`. No protocol, flavour or level is in
+address; and the handshake's `Evidence`, which holds the proven principal or none. No protocol, flavour or level is in
 it: which flavour gives which proof and protection is each adapter's
 translation ([RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity),
 [RFC 22 §16.1](rfc-22-smb.md#16.1%20Identity)), and a share's policy is
@@ -1249,7 +1248,7 @@ type Mechanism interface {
 // Context is what a finished exchange leaves: what it proved, the session key,
 // and the per-message operations the mechanism defines.
 type Context struct {
-	Proof   identity.Proof // RFC 18 §3.1: principal, SIDs, expiry
+	Evidence identity.Evidence // RFC 18 §3.1: principal, SIDs, expiry
 	Key     []byte          // for SMB's key derivation; never in an Identity
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
 	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
@@ -1278,9 +1277,9 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 | RFC 4121 per-message tokens (MIC and wrap) | `auth.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | — (SMB derives its own keys from `Key`) | RFC 4121, the Kerberos mechanism's |
 | `Identity`, expiry | `auth` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one |
 | failure handling: every error a logon failure, never guest | `auth` | GSS `CREDPROBLEM` | `STATUS_LOGON_FAILURE` | decided once for both |
-| NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | the server's authenticator behind `SignIn`, `VerifyNTLM` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
-| Kerberos AP-REQ acceptance, keytab, PAC verification | the server's authenticator behind `SignIn`, `AcceptKerberos` ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos), [§3.4](rfc-18-identity.md#3.4%20The%20PAC)) | through the Kerberos mechanism | through the Kerberos mechanism | needs the keytab; its rotation is RFC 18's |
-| SMB signing and encryption keys from the session key | SMB adapter, `smb/session` | — | yes | MS-SMB2's key derivation; the key arrives in the `Proof` |
+| NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | the server's authenticator behind `SignIn` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
+| Kerberos AP-REQ acceptance, keytab, PAC verification | the server's authenticator behind `SignIn` ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos), [§3.4](rfc-18-identity.md#3.4%20The%20PAC)) | through the Kerberos mechanism | through the Kerberos mechanism | needs the keytab; its rotation is RFC 18's |
+| SMB signing and encryption keys from the session key | SMB adapter, `smb/session` | — | yes | MS-SMB2's key derivation; the key arrives beside the `Evidence`, in `Keys` |
 | `RPCSEC_GSS` control procedures (`INIT`, `CONTINUE_INIT`, `DESTROY`) | NFS adapter: routed by the RPC router to `auth.Exchanges` | yes | — | the framing is RPC's; the exchange is `auth`'s |
 | GSS context table and sequence window | NFS adapter, `nfs/rpc`, owned by the RPC `Protocol` like sessions (§4.7); in memory only ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) | yes | — | RPCSEC_GSS's own state |
 | User and group lookups, ID mapping, SIDs — the LDAP directory | the service, through RFC 18's resolution per share ([§6](rfc-18-identity.md#6.%20Resolution%20per%20share)) | — | — | per share, cached with every key field ([RFC 18 §7](rfc-18-identity.md#7.%20Caches)) |
@@ -1298,7 +1297,7 @@ every request is:
 1. the **Router** stage asks `auth.Identity` for the request's `Identity` from
    the session's or GSS context's `auth.Context` — one function for both;
 2. the pipeline's check (§4.7) refuses, with the protocol's expired-credential
-   answer, a request whose `Proof` has expired, and, with its
+   answer, a request whose `Evidence` has expired, except the calls RFC 18 §3.8 lets through, and, with its
    not-authenticated answer, a request with no context to an operation whose
    `needs` column asks for one (§4.2);
 3. the `Security` stage verifies and wraps through the context's
@@ -1334,7 +1333,7 @@ layer offers what NFS and SMB clients can present, and no more:
 
 | Candidate | Decision |
 | --- | --- |
-| OIDC, OAuth bearer tokens | no NFS or SMB client sends one. A future auxiliary service over HTTP that does (§3.1) adds a `VerifyToken` to RFC 18's authenticator returning a `Proof`; `auth.Identity`, the pipeline and every handler stay as they are. Operators' sign-in to the management API is RFC 23's, not an adapter's |
+| OIDC, OAuth bearer tokens | no NFS or SMB client sends one. A future auxiliary service over HTTP that does (§3.1) adds a `VerifyToken` to RFC 18's authenticator returning `Evidence`; `auth.Identity`, the pipeline and every handler stay as they are. Operators' sign-in to the management API is RFC 23's, not an adapter's |
 | client certificates over TLS | prove the host, not the user (§5.5's decision) |
 | guest and anonymous sessions | allowed only where RFC 18 allows them ([§3.6](rfc-18-identity.md#3.6%20Anonymous%20and%20guest%20sessions)), only when the client asks for one, and decided once, in `auth`; never the result of a failure |
 | channel binding of Kerberos to TLS | not offered; SMB 3.1.1's pre-authentication integrity already binds its exchange to the connection, and is SMB's |

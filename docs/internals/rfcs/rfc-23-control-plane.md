@@ -831,7 +831,7 @@ them and decides nothing about identity:
   naming a machine principal is refused with `ErrInvalid` (§5.1). Netgroups are put and deleted whole; a client rule naming a
   deleted one fails closed (RFC 16).
 
-[RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds)'s figure follows a user's create
+[RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)'s figure follows a user's create
 from this API through the principals generation to its next sign-in, beside
 the two paths that do not come through here: a principal identity mints, and an
 OpenID Connect subject an operator links.
@@ -1170,7 +1170,7 @@ adds: its **role**. RFC 18 §8's rules bind it:
   password; the API reads its role, file access reads its grants.
 - **A machine principal is neither.** It holds no role, and setting a share
   grant that names one is refused with `ErrInvalid`
-  ([RFC 18 §2.4](rfc-18-identity.md#2.4%20Machine%20principals)): a machine that
+  ([RFC 18 §2.4](rfc-18-identity.md#2.4%20Principals%20with%20no%20file%20spelling)): a machine that
   needs file access is linked to a user, and signs in as that user.
 - **A service account** — the Kubernetes operator, a backup script — is a
   `User` record with a role, no password, and **no protocol spelling**: no uid,
@@ -1571,7 +1571,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | §4.5 idempotency | Send a `DELETE` with a key, drop the answer, resend: assert one operation, the same ID and body. Resend with the same key and another body: `422`. Send a create that fails validation, fix it and resend with the same key: accepted. Sign in, refresh and create an API token, each twice; read the store's raw keys: assert no idempotency record exists for them and no token value or password appears; assert the second refresh revoked the session. | double application on retry; a credential kept in a replay record |
 | §4.6 runner claim | **(cluster)** Start a credential rotation; kill the node that claims it; assert another node claims it after the claim expires and it completes, deleting the old version once. | an operation lost with its node |
 | §4.7 error table | For every error value in every closed set, provoke it through the API, or inject it at the seam where none can be provoked; assert each has a status and code, and `api_unmapped_errors_total` stays 0. | an error with no row |
-| §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §11](rfc-18-identity.md#11.%20Conformance)) |
+| §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)) |
 | §5.2 roles | Read the route list from the router and compare it with §4.1's resources and Actions table; a route in neither fails the check. For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. | a route missing its check; privileged credentials replaced through a secret write |
 | §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
 | §5.5 OpenID Connect | Against a test issuer, run `login --oidc` with no browser: assert a session whose tokens are the API's, and no ID token stored. Map a claim value to `operator` for an account whose own role is `viewer`: assert `operator` rights, and `viewer` only in a session whose token lacks the value. Set `api.password_sign_in` to `viewer`: assert an `operator`'s password sign-in refused `403`, and the last unlinked `admin` still signs in by password. As `operator`, write `api.oidc_role_map`: refused. | an ID token used as the session; a role carried in a token; an operator raising its own role |
