@@ -318,7 +318,7 @@ does not replicate.
 | **replica** | a node whose journal receives a copy of every operation the primary assigns for the shard |
 | **replica set** | the primary and its replicas |
 | **learner** | a replica that joined at a **join point** and has not yet been given the shard's older content ([§7.3](#7.3%20Joining)) |
-| **holds durably** | a node holds an operation durably once its journal has synced the record of it to the journal's device ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so the operation survives a crash or power loss of that node. It says nothing of the remote tier: content synced there is *offloaded* |
+| **holds durably** | a node holds an operation durably once its journal has synced the record of it to the journal's device ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)), so the operation survives a crash or power loss of that node. It says nothing of the remote tier: content synced there is *offloaded* |
 | **acknowledged** | answered to the client as done — a write's reply, a stable write, a flush or a synchronous metadata operation. Only what the client was told counts; an operation the primary assigned but did not answer is not acknowledged |
 | **epoch** | the shard's **ownership epoch**: a number in the shard record, carried by every version and message ([§6](#6.%20Fencing)). **This is the one statement of what raises it; every other RFC cites it.** It is raised by every change to the record that must fence a sender: a takeover, a handover, a relinquish ([§7.2](#7.2%20Removal)), a replica joining or removed, a learner cleared, and the raise before a move. Two record changes raise none, because nothing else can hold the shard: a node's re-claim of a shard with no replica ([§10](#10.%20A%20single%20node)) and a journal attach on one node ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)); both raise the shard incarnation only. Others raise neither, because they change no member and fence no sender: an override of the shard's replica count or floor ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)), and an operator's acknowledgement that a relinquished shard's replicas are lost ([§7.2](#7.2%20Removal)); each is a compare-and-swap on the record, and the claim or write that relies on it reads it there |
 | **shard incarnation** | a second number in the shard record, raised every time a node or journal begins serving the shard as primary, the re-claim included, and by nothing else. It fences nothing; it is an input of the write verifier ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state)). A start that lost the shard's open state, a handover whose table never arrived included, copies it into the record's `GraceInstance`, which names the grace instance; a handover that ships the table raises the incarnation and leaves `GraceInstance` alone ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
@@ -713,7 +713,7 @@ committed content is committed; appends and hole fills keep the bounded age of
 in its install record, never lowers it, and then settles to it ([§2.3](#2.3%20The%20journal%20extension)).
 
 **Batching.** The primary **SHOULD** batch operations to a replica and group their
-syncs, as the journal groups its own ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)). The unit of
+syncs, as the journal groups its own ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)). The unit of
 acknowledgement stays the operation.
 
 ## 5. Offload and release
