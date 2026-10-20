@@ -73,8 +73,8 @@ suites:
         needs: [windows]
         blocking: { pr: false }
       nonrace:
-        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
-        env: { DITTOFS_BENCH_LANE: "1" }
+        # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
+        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
   integration:
     job: Integration Tests (1.26.x)

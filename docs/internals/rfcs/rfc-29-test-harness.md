@@ -485,8 +485,7 @@ suites:
         needs: [windows]
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
       nonrace:                          # the throughput and allocation gates that skip under -race
-        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
-        env: { DITTOFS_BENCH_LANE: "1" }
+        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
   integration:
     job: Integration Tests (1.26.x)
@@ -1541,9 +1540,9 @@ manual:
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
 
-**What moves when.** The AD-DC, Kerberos and Windows runs are options of registered suites, and
-their workflows move into `tests.yml` after the main ones (§8 step 3); until then they keep running
-as they are.
+**What moves when.** The AD-DC, Kerberos and Windows runs and the performance gates are options of
+registered suites, and their workflows move into `tests.yml` after the main ones (§8 step 3); until
+then they keep running as they are.
 
 Three things stay outside the registry:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
@@ -1599,7 +1598,8 @@ a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
   needing no secrets) runs on PRs, non-blocking, as `bench-smoke.yml` does today. `unit --nonrace`
   runs nightly: the throughput and allocation gates that skip under `-race` and `-short` today
-  (#2999).
+  (#2999). The aggregate random-write gate joins once it has a baseline: without one it passes
+  whatever it measures.
 - **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
   below its 7-day median for three nights in a row adds a note to the develop-status issue.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
@@ -1734,7 +1734,7 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
-     Then AD-DC, the Kerberos runs and `bench-smoke.yml`.
+     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.
