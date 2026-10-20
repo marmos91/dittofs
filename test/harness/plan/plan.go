@@ -294,9 +294,10 @@ type Line struct {
 }
 
 // ListTests expands the unit's tests: a glob relative to root, a list of
-// names, or a .txt file of names, each line a name and then, in any order, its
-// own limit, share= and prefix=. A glob holding a placeholder is resolved only
-// when the cell runs, so it lists nothing here.
+// names, or a .txt file of names, each line a name and then, in any order, at
+// most one each of its own limit, share= and prefix=, each with a value. A
+// glob holding a placeholder is resolved only when the cell runs, so it lists
+// nothing here.
 func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[string]Line, error) {
 	var tests []string
 	lines := map[string]Line{}
@@ -323,14 +324,14 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 				key, value, isKey := strings.Cut(f, "=")
 				limit, err := time.ParseDuration(f)
 				switch {
-				case isKey && key == "share":
+				case isKey && key == "share" && value != "" && l.Share == "":
 					l.Share = value
-				case isKey && key == "prefix":
+				case isKey && key == "prefix" && value != "" && l.Prefix == "":
 					l.Prefix = value
 				case err == nil && limit > 0 && l.Limit == 0:
 					l.Limit = limit
 				default:
-					return nil, nil, fmt.Errorf("%s:%d: %q is not a limit above zero, share= or prefix=", u.Tests.File, i+1, f)
+					return nil, nil, fmt.Errorf("%s:%d: %q is not a limit above zero, share=NAME or prefix=NAME, each given once", u.Tests.File, i+1, f)
 				}
 			}
 			tests = append(tests, fields[0])

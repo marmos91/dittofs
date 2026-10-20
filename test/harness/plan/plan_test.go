@@ -247,7 +247,8 @@ func TestChangedPaths(t *testing.T) {
 
 // A .txt test list may give a test its own limit, which the cell covers, and
 // the share it runs on and the prefix of the names it reports, in any order.
-// Anything else on a line is an error.
+// Anything else on a line is an error, as are an empty or a repeated share= or
+// prefix=.
 func TestTestListLimits(t *testing.T) {
 	root := t.TempDir()
 	list := "# a comment\nslow 40m\nquick prefix=q share=two\n"
@@ -279,7 +280,7 @@ suites:
 		t.Errorf("lines %+v, %v", lines, err)
 	}
 
-	for _, bad := range []string{"slow forty", "slow 0s", "slow 1m 2m", "slow shard=x", "slow share"} {
+	for _, bad := range []string{"slow forty", "slow 0s", "slow 1m 2m", "slow shard=x", "slow share", "slow share=", "slow prefix=", "slow share=a share=b", "slow prefix=a prefix=b"} {
 		if err := os.WriteFile(filepath.Join(root, "tests.txt"), []byte(bad+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}

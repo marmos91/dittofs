@@ -130,7 +130,7 @@ func readSubunit(r report.Ran) ([]report.Test, error) {
 			// the lines after it count for the connection-failure filter.
 			pending = &subunitResult{keyword: keyword, name: test, details: []string{strings.Trim(m[3], "[] ")}}
 			// One draw excuses one failure.
-			if drawn && keyword != "skip" && strings.Contains(test, "channel-sequence") {
+			if drawn && keyword != "skip" {
 				pending.draw, drawn = true, false
 			}
 		}

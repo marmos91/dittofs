@@ -704,9 +704,10 @@ Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the `smb2.` the 
 a name that lacks it, as today's grader does, make that `smb2.oplock.batch1`, the name the known
 list uses. `run.sh` gives every test of its list one limit, 5 minutes, so the suite's
 `timeout.test` holds it, and a line gives its own only to differ. A line is a name and then, in
-any order, a timeout, `share=` and `prefix=`, as `smb2.acls_non_canonical share=smbnoncanon
-prefix=acls_non_canonical`; anything else on it is an error, and a line that starts with `#` is a
-comment. The comments on why some tests aren't run stay in the file.
+any order, at most one each of a timeout, `share=` and `prefix=`, as `smb2.acls_non_canonical
+share=smbnoncanon prefix=acls_non_canonical`; anything else on it, an empty `share=` or
+`prefix=` too, is an error, and a line that starts with `#` is a comment. The comments on why
+some tests aren't run stay in the file.
 
 **Scenario timeouts.** A scenario's size class is in its file name (`test/scenarios/README.md`):
 `xs` under 10 s, `s` under 1 min, `m` under 5, `l` under 15, `xl` under 1 h. With `test: size`, its

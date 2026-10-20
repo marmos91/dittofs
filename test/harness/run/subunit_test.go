@@ -63,6 +63,9 @@ test: smb2.notify.mask
 test: smb2.notify.mask
 success: smb2.notify.mask
 `, want: []string{"smb2.notify.dir incomplete", "smb2.notify.mask passed"}},
+		{name: "a result under another name leaves the open test incomplete", output: `test: smb2.notify.dir
+success: smb2.notify.mask
+`, want: []string{"smb2.notify.mask passed", "smb2.notify.dir incomplete"}},
 		{name: "a timeout fails the open test, which no entry excuses, and keeps the failures before it", timedOut: true, output: `test: smb2.oplock.batch1
 failure: smb2.oplock.batch1 [ wildcard ]
 test: smb2.rename.rename1
