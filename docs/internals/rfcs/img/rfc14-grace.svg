@@ -45,7 +45,7 @@
   <text x="300" y="116" class="h">grace for A: only reclaims are granted</text>
   <rect x="700" y="102" width="180" height="20" rx="3" class="sv"/>
   <text x="710" y="116" class="ok">granting</text>
-  <text x="300" y="138" class="s">begins only after N1's node lease has lapsed, plus the drift bound</text>
+  <text x="300" y="138" class="s">begins after N1's node lease lapsed plus the drift bound; persistent opens installed first</text>
 
   <text x="16" y="162" class="h">shard B's primary</text>
   <rect x="150" y="150" width="730" height="20" rx="3" class="sv"/>
@@ -73,18 +73,18 @@
   <text x="728" y="294" class="ok">retry: granted</text>
 
   <rect x="24" y="336" width="420" height="96" rx="6" class="dr"/>
-  <text x="36" y="355" class="h">How each client is told to reclaim</text>
-  <text x="36" y="372" class="s">NFSv4.1: ClientStatus.ReclaimNeeded, next reply</text>
-  <text x="36" y="387" class="s">NFSv4.0: ErrStaleClient until it confirms again</text>
-  <text x="36" y="402" class="s">SMB: connection broken; RFC 21 and RFC 22 spell each</text>
-  <text x="36" y="417" class="s">NLM: restart notice after the NSM number rises</text>
+  <text x="36" y="355" class="h">How each client is told, by its recovery kind</text>
+  <text x="36" y="372" class="s">status (e.g. NFSv4.1): ReclaimNeeded on its next renewal</text>
+  <text x="36" y="387" class="s">refusal (e.g. NFSv4.0): ErrStaleClient until it confirms</text>
+  <text x="36" y="402" class="s">reconnect (e.g. SMB): its connection is ended</text>
+  <text x="36" y="417" class="s">notice (e.g. NLM): a restart notice, NSM number raised</text>
 
   <rect x="456" y="336" width="420" height="96" rx="6" class="pr"/>
   <text x="468" y="355" class="h">When grace ends</text>
   <text x="468" y="372" class="s">Early, once every client its records name has finished:</text>
-  <text x="468" y="387" class="s">NFSv4.1 by RECLAIM_COMPLETE, SMB by reconnecting or</text>
-  <text x="468" y="402" class="s">letting each Timeout pass. An NFSv4.0 client or NLM host</text>
-  <text x="468" y="417" class="s">never finishes, so then grace runs the full 90 s.</text>
+  <text x="468" y="387" class="s">status: ReclaimComplete for the instances it was shown;</text>
+  <text x="468" y="402" class="s">reconnect: each persistent open reconnected or timed out;</text>
+  <text x="468" y="417" class="s">refusal, notice: never, so grace then runs the full 90 s.</text>
 
   <text x="16" y="454" class="s">Only a loss runs grace: a handover or a batch move ships the table, keeps the grace instance and tells no client (§10).</text>
 </svg>

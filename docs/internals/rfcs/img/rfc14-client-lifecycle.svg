@@ -45,16 +45,20 @@
   <text x="240" y="138" class="s">e.g. SETCLIENTID, then its confirm</text>
   <text x="240" y="162" class="s">one step: Connect at once (e.g. SMB, NLM)</text>
   <path d="M100,124 L100,170 L516,170" class="cb"/>
+  <path d="M516,194 L440,194 L440,126" class="cb"/>
+  <text x="160" y="190" class="s">shard lost, refusal kind: ErrStaleClient;</text>
+  <text x="160" y="204" class="s">the same Boot proposed again keeps the ID</text>
 
   <rect x="518" y="48" width="358" height="150" rx="6" class="sv"/>
   <text x="530" y="67" class="h">current: holds state, renewed</text>
-  <text x="530" y="85" class="s">the record is durable but for Lease.Expires;</text>
+  <text x="530" y="85" class="s">the record is durable; Expires is not;</text>
   <text x="530" y="100" class="s">found again by (protocol, Name)</text>
   <text x="530" y="122" class="m">Renew</text>
-  <text x="572" y="122" class="s">extends Lease.Expires; one node, the</text>
+  <text x="572" y="122" class="s">extends Expires; one node, the</text>
   <text x="530" y="137" class="s">lease owner (Lease.Node), renews and expires it</text>
-  <text x="530" y="159" class="s">another principal naming Name: ErrClientInUse</text>
-  <text x="530" y="181" class="s">a call naming it: under its Owner or session only</text>
+  <text x="530" y="155" class="s">with an Owner: another principal naming</text>
+  <text x="530" y="171" class="s">its Name is refused ErrClientInUse</text>
+  <text x="530" y="188" class="s">a call naming it: under its Owner or session only</text>
 
   <path d="M640,200 L640,212" class="ex" style="marker-end:none"/>
   <path d="M136,212 L774,212" class="ex" style="marker-end:none"/>
@@ -63,22 +67,22 @@
 
   <rect x="36" y="234" width="200" height="88" rx="6" class="dr"/>
   <text x="48" y="253" class="h">reboot</text>
-  <text x="48" y="270" class="s">same Name, new Boot: a new</text>
-  <text x="48" y="285" class="s">ClientID, proposed again; the old</text>
-  <text x="48" y="300" class="s">ID expires once the new one is</text>
-  <text x="48" y="315" class="s">confirmed, not before</text>
+  <text x="48" y="270" class="s">same Name, new Boot: a new ID,</text>
+  <text x="48" y="285" class="s">connected again (proposed first</text>
+  <text x="48" y="300" class="s">where it confirms); the old ID</text>
+  <text x="48" y="315" class="s">expires once the new is confirmed</text>
   <rect x="246" y="234" width="200" height="88" rx="6" class="bad"/>
   <text x="258" y="253" class="no">expiry</text>
   <text x="258" y="270" class="s">silent for one lease period:</text>
   <text x="258" y="285" class="s">everything it held released at</text>
   <text x="258" y="300" class="s">every shard in one step; the</text>
-  <text x="258" y="315" class="s">record goes (§4.3)</text>
+  <text x="258" y="315" class="s">then the record goes (§4.3)</text>
   <rect x="456" y="234" width="200" height="88" rx="6" class="bad"/>
   <text x="468" y="253" class="no">admin Revoke</text>
-  <text x="468" y="270" class="s">state released for others at</text>
-  <text x="468" y="285" class="s">once; the record, its sessions</text>
-  <text x="468" y="300" class="s">and its revoked set are kept,</text>
-  <text x="468" y="315" class="s">each answered ErrRevoked (§5.3)</text>
+  <text x="468" y="270" class="s">state released for others at once;</text>
+  <text x="468" y="285" class="s">record, sessions, revoked set kept,</text>
+  <text x="468" y="300" class="s">each answered ErrRevoked; Shards</text>
+  <text x="468" y="315" class="s">emptied, so no reclaim (§5.3)</text>
   <rect x="672" y="234" width="204" height="88" rx="6" class="dr"/>
   <text x="684" y="253" class="h">back channel lost</text>
   <text x="684" y="270" class="s">Reach.Down set: signalled to</text>

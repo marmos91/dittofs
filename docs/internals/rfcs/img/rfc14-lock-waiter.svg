@@ -33,7 +33,7 @@
   <path d="M131,114 L131,138" class="ln"/>
   <text x="138" y="130" class="s">no wait</text>
   <rect x="24" y="140" width="214" height="50" rx="6" class="bad"/>
-  <text x="36" y="160" class="no">ErrLocked, no waiter</text>
+  <text x="36" y="160" class="no">LockedError, no waiter</text>
   <text x="36" y="178" class="s">the request did not ask to wait</text>
   <path d="M240,84 L298,84" class="ln"/>
   <text x="246" y="78" class="s">waits</text>
@@ -41,31 +41,31 @@
   <rect x="24" y="230" width="250" height="110" rx="6" class="dr"/>
   <text x="36" y="249" class="h">a lock meeting another's grant</text>
   <text x="36" y="267" class="s">starts the recall (§7) and is decided</text>
-  <text x="36" y="282" class="s">only after it. Blocking NLM or SMB:</text>
-  <text x="36" y="297" class="s">a waiter, answered ErrBlocked. Any</text>
+  <text x="36" y="282" class="s">only after it. A callback request:</text>
+  <text x="36" y="297" class="s">a waiter, answered Waiting. Any</text>
   <text x="36" y="312" class="s">other: ErrDelay, no waiter. Never</text>
-  <text x="36" y="327" class="s">ErrLocked: the range may be free.</text>
+  <text x="36" y="327" class="s">a conflict: the range may be free.</text>
   <path d="M276,285 L287,285 L287,150 L298,150" class="ln"/>
 
   <rect x="300" y="56" width="260" height="112" rx="6" class="sv"/>
   <text x="312" y="76" class="h">LockWaiter recorded</text>
   <text x="312" y="94" class="s">answered at once, holding no worker:</text>
-  <text x="312" y="109" class="s">NFSv4: ErrLocked, and the client polls</text>
-  <text x="312" y="124" class="s">NLM, SMB: ErrBlocked, granted later</text>
-  <text x="312" y="142" class="s">one per owner per file; a repeat of</text>
-  <text x="312" y="157" class="s">the same request keeps its Arrived</text>
+  <text x="312" y="109" class="s">poll (e.g. NFSv4): LockedError; it asks again</text>
+  <text x="312" y="124" class="s">callback (e.g. NLM, SMB): Waiting</text>
+  <text x="312" y="142" class="s">one per owner per file; a repeat keeps</text>
+  <text x="312" y="157" class="s">Arrived; a replaced callback one is answered</text>
 
   <path d="M562,90 L656,78" class="ln"/><path d="M562,130 L656,162" class="ln"/>
   <text x="572" y="114" class="s">range frees:</text>
   <text x="572" y="129" class="s">FIFO</text>
 
   <rect x="660" y="44" width="216" height="76" rx="6" class="sv"/>
-  <text x="672" y="63" class="h">NLM, SMB: granted</text>
-  <text x="672" y="80" class="s">in the step that frees the range;</text>
-  <text x="672" y="95" class="s">NLM_GRANTED resent until the</text>
-  <text x="672" y="110" class="s">host answers; SMB completes</text>
+  <text x="672" y="63" class="h">callback: granted</text>
+  <text x="672" y="80" class="s">in the freeing step; LockWaitOver</text>
+  <text x="672" y="95" class="s">repeated until WaitAnswered</text>
+  <text x="672" y="110" class="s">(NLM_GRANTED is one spelling)</text>
   <rect x="660" y="132" width="216" height="76" rx="6" class="dr"/>
-  <text x="672" y="151" class="h">NFSv4: reserved</text>
+  <text x="672" y="151" class="h">poll: reserved until Deadline</text>
   <text x="672" y="168" class="s">the range is held for this owner</text>
   <text x="672" y="183" class="s">until Deadline, one lease period;</text>
   <text x="672" y="198" class="s">its next poll takes the lock</text>
@@ -75,15 +75,18 @@
   <rect x="300" y="230" width="260" height="110" rx="6" class="bad"/>
   <text x="312" y="249" class="no">dropped, and nothing else ends it</text>
   <text x="312" y="267" class="s">cancelled: CancelLock, ordered with grant</text>
-  <text x="312" y="282" class="s">its open closes; SMB: last channel ends</text>
+  <text x="312" y="282" class="s">its open closes, or its session's last channel</text>
   <text x="312" y="297" class="s">its client expires or is revoked</text>
   <text x="312" y="312" class="s">its NLM host restarts; DropShare</text>
-  <text x="312" y="327" class="s">NFSv4: no poll by Deadline</text>
+  <text x="312" y="327" class="s">a poll waiter misses its Deadline</text>
   <path d="M768,210 L768,285 L562,285" class="ln"/>
-  <text x="580" y="305" class="s">no poll by Deadline: the next</text>
-  <text x="580" y="320" class="s">waiter is considered</text>
+  <text x="578" y="302" class="s">Deadline missed:</text>
+  <text x="578" y="317" class="s">next considered</text>
+  <path d="M876,82 L888,82 L888,334 L562,334" class="ex"/>
+  <text x="690" y="302" class="e">refused or cancelled (WaitAnswered):</text>
+  <text x="690" y="317" class="e">released, next waiter considered</text>
 
-  <text x="16" y="370" class="s">First in, first out per range: while a waiter waits, no later request from another owner is granted a lock that</text>
-  <text x="16" y="385" class="s">conflicts with it, so a stream of shared locks cannot starve an exclusive waiter. No adapter imposes a timeout,</text>
+  <text x="16" y="370" class="s">First in, first out per range: while a waiter waits, no request from another owner is granted a lock that conflicts</text>
+  <text x="16" y="385" class="s">with it over a range that blocks it, so shared locks cannot starve it there. No adapter imposes a timeout,</text>
   <text x="16" y="400" class="s">and an adapter that must answer a waiting request other than as granted calls CancelLock first (§2.10).</text>
 </svg>

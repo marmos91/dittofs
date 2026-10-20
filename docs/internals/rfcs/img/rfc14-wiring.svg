@@ -25,7 +25,7 @@
     </style>
   </defs>
   <rect width="900" height="444" fill="#ffffff"/>
-  <text x="16" y="26" class="t">The node builds the table before the server, and hands it the server as its Sink only at Start.</text>
+  <text x="16" y="26" class="t">The node builds the table before the server, and hands it the server as its Sink, and the admission lock, only at Start.</text>
 
   <text x="24" y="54" class="h">node.New builds</text>
   <rect x="24" y="64" width="180" height="70" rx="6" class="st"/>
@@ -35,13 +35,14 @@
   <path d="M206,99 L232,99" class="ln"/>
   <rect x="234" y="64" width="232" height="70" rx="6" class="pr"/>
   <text x="246" y="83" class="m">openstate.New(Deps)</text>
-  <text x="246" y="100" class="s">Store, Pool, Clock, Metrics, Logger;</text>
-  <text x="246" y="115" class="s">no Sink, no settings; starts nothing</text>
+  <text x="246" y="100" class="s">Records, Budget, Clock, Rand, Metrics,</text>
+  <text x="246" y="115" class="s">Logger. No Sink; starts nothing</text>
   <path d="M468,99 L494,99" class="ln"/>
-  <rect x="496" y="64" width="200" height="70" rx="6" class="sv"/>
+  <rect x="496" y="64" width="200" height="72" rx="6" class="sv"/>
   <text x="508" y="83" class="m">vfs.New(Deps)</text>
-  <text x="508" y="100" class="s">*vfs.Server holds the *Table,</text>
-  <text x="508" y="115" class="s">a concrete type, as Open</text>
+  <text x="508" y="100" class="s">*vfs.Server holds the *Table and</text>
+  <text x="508" y="115" class="s">hands each area only its views:</text>
+  <text x="508" y="128" class="s">e.g. Data: Opens and Checks</text>
   <path d="M698,99 L724,99" class="ln"/>
   <rect x="726" y="64" width="150" height="70" rx="6" class="pr"/>
   <text x="738" y="83" class="h">adapters</text>
@@ -50,26 +51,26 @@
 
   <text x="24" y="180" class="h">Node.Start, in build order</text>
   <rect x="24" y="190" width="442" height="84" rx="6" class="pr"/>
-  <text x="36" y="209" class="m">table.Start(ctx, sink = *vfs.Server)</text>
+  <text x="36" y="209" class="m">table.Start(ctx, sink, order)</text>
   <text x="410" y="209" class="s">step 5</text>
-  <text x="36" y="227" class="s">reads each served shard's GraceInstance and incarnation, already raised</text>
-  <text x="36" y="242" class="s">by the node's start transaction; enters grace for each; arms the lease,</text>
-  <text x="36" y="257" class="s">recall, waiter, grant-fence and Timeout timers on Deps.Clock</text>
+  <text x="36" y="227" class="s">sink and order are the built *vfs.Server's; starts the one deadline</text>
+  <text x="36" y="242" class="s">goroutine on Deps.Clock. Then the server's Start calls ServeShard per</text>
+  <text x="36" y="257" class="s">shard: installs its persistent opens, enters grace, arms its timers</text>
   <path d="M468,232 L494,232" class="ln"/>
   <rect x="496" y="190" width="200" height="84" rx="6" class="sv"/>
   <text x="508" y="209" class="m">server.Start</text>
   <text x="600" y="209" class="s">step 6</text>
-  <text x="508" y="227" class="s">builds the pseudo-filesystem;</text>
-  <text x="508" y="242" class="s">(cluster) then Serve and the</text>
-  <text x="508" y="257" class="s">gateway</text>
-  <path d="M698,232 L724,232" class="gl"/>
+  <text x="508" y="227" class="s">ServeShard each shard; builds</text>
+  <text x="508" y="242" class="s">the pseudo-filesystem; (cluster)</text>
+  <text x="508" y="257" class="s">then Serve and the gateway</text>
+  <path d="M698,232 L724,232" class="ln"/>
   <rect x="726" y="190" width="150" height="84" rx="6" class="pr"/>
   <text x="738" y="209" class="h">adapters serve</text>
   <text x="738" y="227" class="s">step 9, after the first</text>
   <text x="738" y="242" class="s">reconcile; no client</text>
   <text x="738" y="257" class="s">arrives before</text>
-  <path d="M590,136 L590,150 L330,150 L330,200" class="cb"/>
-  <text x="600" y="152" class="s">the built server is the Sink</text>
+  <path d="M590,136 L590,150 L330,150 L330,188" class="cb"/>
+  <text x="600" y="152" class="s">the built server: Sink and order</text>
 
   <text x="24" y="304" class="h">Node.Stop, in reverse</text>
   <rect x="24" y="314" width="150" height="70" rx="6" class="pr"/>

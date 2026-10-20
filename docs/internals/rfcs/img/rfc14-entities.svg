@@ -15,6 +15,7 @@
       .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
       .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
       .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .dd{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4;stroke-dasharray:5 3}
       .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
       .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
       .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
@@ -25,15 +26,15 @@
     </style>
   </defs>
   <rect width="900" height="456" fill="#ffffff"/>
-  <text x="16" y="26" class="t">Open state's entities: each names its client and its file; the colour says what is written down.</text>
+  <text x="16" y="26" class="t">Open state's entities: every per-file entry names its client and its file; the colour says what is written down.</text>
 
   <rect x="24" y="48" width="210" height="124" rx="6" class="st"/>
   <text x="36" y="67" class="h">Client</text>
-  <text x="36" y="85" class="s">ID, Protocol, Name, Boot,</text>
-  <text x="36" y="100" class="s">Owner, Protect, Lease, Reach,</text>
-  <text x="36" y="115" class="s">Shards, Adapter (opaque)</text>
+  <text x="36" y="85" class="s">ID, Protocol, Name, Boot, Owner,</text>
+  <text x="36" y="100" class="s">Protect, Recovery, Lease, Reach,</text>
+  <text x="36" y="115" class="s">Shards (each with Done), Adapter</text>
   <text x="36" y="133" class="s">found by (protocol, name);</text>
-  <text x="36" y="148" class="s">durable but Lease.Expires,</text>
+  <text x="36" y="148" class="s">durable as ClientRecord; Expires</text>
   <text x="36" y="163" class="s">held by the lease owner (§2.1)</text>
 
   <rect x="24" y="192" width="210" height="72" rx="6" class="pr"/>
@@ -48,7 +49,8 @@
   <text x="36" y="303" class="h">Sequence</text>
   <text x="36" y="320" class="s">the number an owner's next</text>
   <text x="36" y="335" class="s">sequenced request carries, at its</text>
-  <text x="36" y="350" class="s">home primary (§2.8)</text>
+  <text x="36" y="350" class="s">home primary; orders opens, locks</text>
+  <path d="M236,300 L268,244" class="cb"/>
 
   <rect x="270" y="48" width="226" height="124" rx="6" class="dr"/>
   <text x="282" y="67" class="h">Open</text>
@@ -56,12 +58,12 @@
   <text x="282" y="100" class="s">Durability, Session, Grant, Delete</text>
   <text x="282" y="115" class="s">Token, Seq: its StateRef</text>
   <text x="282" y="133" class="s">Suspended, LossSeen, Channel;</text>
-  <text x="282" y="148" class="s">Reconnect keys when durable;</text>
+  <text x="282" y="148" class="s">Durable keys when SMB-durable;</text>
   <text x="282" y="163" class="s">Clone for a clone source (§2.2)</text>
   <path d="M236,90 L268,90" class="ln"/>
   <text x="238" y="84" class="s">holds</text>
 
-  <rect x="270" y="192" width="226" height="72" rx="6" class="dr"/>
+  <rect x="270" y="192" width="226" height="72" rx="6" class="dd"/>
   <text x="282" y="211" class="h">Lock, LockState</text>
   <text x="282" y="228" class="s">Owner, Range (exclusive or not);</text>
   <text x="282" y="243" class="s">taken under an open, released by</text>
@@ -73,6 +75,8 @@
   <text x="282" y="320" class="s">a conflicting request that waits:</text>
   <text x="282" y="335" class="s">first in, first out per range,</text>
   <text x="282" y="350" class="s">holding no worker (§2.10)</text>
+  <path d="M383,282 L383,266" class="cb"/>
+  <text x="390" y="278" class="s">waits on</text>
 
   <rect x="532" y="48" width="222" height="88" rx="6" class="pr"/>
   <text x="544" y="67" class="h">CachingGrant</text>
@@ -81,6 +85,7 @@
   <text x="544" y="115" class="s">Recall: To and a Deadline</text>
   <text x="544" y="130" class="s">one per (client, key, file)</text>
   <path d="M530,100 L498,100" class="cb"/>
+  <text x="501" y="90" class="s">covers</text>
 
   <rect x="532" y="150" width="222" height="60" rx="6" class="pr"/>
   <text x="544" y="169" class="h">Watch</text>
@@ -110,8 +115,10 @@
   <rect x="24" y="378" width="14" height="14" rx="2" class="st"/>
   <text x="46" y="389" class="s">durable: written to the metadata store (§8)</text>
   <rect x="330" y="378" width="14" height="14" rx="2" class="dr"/>
-  <text x="352" y="389" class="s">durable only for a persistent open, or one keeping an unlinked file alive</text>
+  <text x="352" y="389" class="s">durable only if persistent, a clone source, or keeping an unlinked file alive</text>
   <rect x="24" y="402" width="14" height="14" rx="2" class="pr"/>
-  <text x="46" y="413" class="s">volatile: held in the file's table at its primary, lost with it, then reclaimed in grace or asked for again</text>
+  <text x="46" y="413" class="s">volatile: held in memory, lost with its node; reclaimed in grace or asked for again</text>
+  <rect x="530" y="402" width="14" height="14" rx="2" class="dd"/>
+  <text x="552" y="413" class="s">durable only under a persistent open</text>
   <text x="16" y="440" class="s">A client's expiry or revoke releases every Open, Lock, LockWaiter, CachingGrant and Watch it holds, at every shard, in one step (§4.3).</text>
 </svg>

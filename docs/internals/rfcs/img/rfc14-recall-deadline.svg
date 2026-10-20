@@ -43,10 +43,10 @@
   <text x="92" y="196" class="e">never answered:</text>
   <text x="92" y="211" class="e">its network failed</text>
   <text x="470" y="172" class="m">ErrDelay, at once</text><path d="M450,178 L648,178" class="ln"/>
-  <text x="676" y="196" class="m">held pending</text><path d="M650,202 L818,202" class="ln"/>
+  <text x="666" y="196" class="m">interim: pending</text><path d="M650,202 L818,202" class="ln"/>
 
   <rect x="442" y="190" width="16" height="140" rx="3" class="dr"/>
-  <text x="466" y="246" class="s">recall deadline:</text>
+  <text x="466" y="246" class="s">recall deadline, from send:</text>
   <text x="466" y="261" class="s">one lease period, 90 s</text>
   <text x="466" y="282" class="ok">no worker waits</text>
   <text x="660" y="246" class="s">the adapter</text>
@@ -61,14 +61,14 @@
   <text x="92" y="450" class="m">WRITE, deleg stateid</text><path d="M80,456 L248,456" class="ln"/>
   <text x="330" y="474" class="m">Write</text><path d="M250,480 L448,480" class="ln"/>
   <text x="300" y="498" class="m">ErrRevoked</text><path d="M450,504 L252,504" class="ex"/>
-  <path d="M250,528 L82,528" class="ex"/>
+  <text x="104" y="522" class="m">revoked</text><path d="M250,528 L82,528" class="ex"/>
 
   <rect x="24" y="550" width="420" height="96" rx="6" class="dr"/>
   <text x="36" y="569" class="h">The fence after a revoke</text>
-  <text x="36" y="586" class="s">build01 is offered no grant for one lease period, 90 s,</text>
-  <text x="36" y="601" class="s">and its other grants should be recalled: it has shown</text>
-  <text x="36" y="616" class="s">it does not answer. Each further revoke restarts it. Its</text>
-  <text x="36" y="631" class="s">ClientStatus.RecallableRevoked is set until it frees it.</text>
+  <text x="36" y="586" class="s">build01 is offered no grant at this primary for one lease</text>
+  <text x="36" y="601" class="s">period, 90 s; each further revoke restarts it, and its other</text>
+  <text x="36" y="616" class="s">grants end by their own recalls. Its RecallableRevoked</text>
+  <text x="36" y="631" class="s">flag is set until it frees the reference.</text>
 
   <rect x="456" y="550" width="420" height="96" rx="6" class="pr"/>
   <text x="468" y="569" class="h">Had the holder been an SMB lease</text>
@@ -77,5 +77,5 @@
   <text x="468" y="616" class="s">modes, and the holder may keep writing through them,</text>
   <text x="468" y="631" class="s">as Windows does: nothing it sends is refused.</text>
 
-  <text x="16" y="670" class="s">The conflicting caller is answered at once and retries; the deadline is a timer at the primary, so a silent holder pins no worker.</text>
+  <text x="16" y="670" class="s">The conflicting caller is answered at once and retries; the deadline is a timer at the primary, started when the recall is sent.</text>
 </svg>
