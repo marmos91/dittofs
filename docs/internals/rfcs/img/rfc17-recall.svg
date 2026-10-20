@@ -55,8 +55,8 @@
   <text x="36" y="404" class="s">The break is forced at its deadline, 35 s for SMB: the lease</text>
   <text x="36" y="419" class="s">drops to none and the retried write proceeds. Her opens stay,</text>
   <text x="36" y="434" class="s">with their locks and deny modes. A revoked NFS delegation's</text>
-  <text x="36" y="449" class="s">later writes are refused. The client is offered no more</text>
-  <text x="36" y="464" class="s">grants, and the others it holds are recalled.</text>
+  <text x="36" y="449" class="s">later writes are refused. The client is offered no grant</text>
+  <text x="36" y="464" class="s">at that primary for 90 s.</text>
 
   <rect x="456" y="366" width="420" height="104" rx="6" class="pr"/>
   <text x="468" y="386" class="h">If the conflicting caller speaks SMB</text>
