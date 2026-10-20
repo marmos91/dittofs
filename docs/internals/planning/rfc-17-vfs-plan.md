@@ -134,7 +134,10 @@ Stage 3's engine runs the same check, so the fake cannot drift from the engine. 
 3. **D4:** when does RFC 18's resolver land, and is the store-backed fake enough until then?
 4. **Gaps below the server** (RFC 17 §10.4): RFC 16 has no read view of the share indexes or
    of quota records other than `ControlPlane`, which the server must not call. Both are store
-   work, and so ours, before pieces 3 and 8.
+   work, and so ours, before pieces 3 and 8. RFC 16 on #3142 now adds `SharePolicy`, read
+   through identity's `Records` view: a share's squash, anonymous principal and cache versions
+   in one snapshot. That covers admission's policy read; the share list and path index, and
+   quota records, are still without one.
 5. **ID widths** (RFC 17 §10.3): the shard and `OpenID` widths in the stateid and the SMB
    `FileId` are one choice, which stage 1's stateid layout also depends on.
 
