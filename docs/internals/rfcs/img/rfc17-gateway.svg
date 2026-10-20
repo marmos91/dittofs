@@ -58,7 +58,7 @@
   <text x="428" y="269" class="m">Transport</text><text x="428" y="284" class="s">node channel</text>
   <path d="M340,236 L340,250" class="ln"/><path d="M500,236 L500,250" class="ln"/>
   <path d="M270,203 L264,203 L264,350 L268,350" class="gl"/>
-  <text x="284" y="309" class="s">primary is this node: a function call</text>
+  <text x="284" y="309" class="s">local: the checked Service (fence, dedup)</text>
   <rect x="270" y="320" width="276" height="62" rx="5" class="sv"/>
   <text x="282" y="339" class="m">*vfs.Server</text>
   <text x="282" y="356" class="s">this node's shards; and the leases of</text>
@@ -86,5 +86,5 @@
   <rect x="600" y="70" width="272" height="48" rx="5" class="pr"/>
   <text x="612" y="89" class="h">adapters, a gateway</text><text x="612" y="106" class="s">node B is a gateway node for its own clients</text>
 
-  <text x="16" y="432" class="s">Every node builds the server; a node in a cluster also builds Serve and the gateway. The gateway holds a vfs.Service, never a *vfs.Server.</text>
+  <text x="16" y="432" class="s">Every node builds the server; a cluster node also builds Serve and the gateway, which holds Serve's checked vfs.Service, never a *vfs.Server.</text>
 </svg>

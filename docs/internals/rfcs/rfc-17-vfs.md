@@ -218,10 +218,10 @@ sends:
 | --- | --- | --- | --- |
 | `*vfs.Server` | the filesystem; a file's calls run in the server at the primary of the file's shard ([RFC 11](rfc-11-ownership.md)) | everything a call decides: admission to the share, identity resolution, flavour and squash ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)); the order of every step (§5); open state (§2.2), metadata and content | routes a call |
 | `*vfs.Gateway` | the `Service` the adapters hold in a cluster | sends each call to its file's primary (§2.1): to the local `Service` when that is this node, otherwise with the route envelope ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) through `Transport` to `Serve` there. Within the caller's deadline it re-routes a routing refusal and resends a lost reply's call under the same request ID; it traces and counts each send (§7). One generic call path serves every method | admits, resolves an identity, squashes, calls the metadata store or the engine, holds open state, or answers a call itself, except `ErrUnavailable` while it stops or when no primary answers within the caller's deadline |
-| `vfs.Serve` | the receive side, at the primary | fences each call (the sender's node epoch, the shard epoch, and a hop count of zero), answers a retry from the dedup table by request ID, and otherwise calls the local `Service` | forwards: the `Service` it calls is the server, never the gateway |
-| `vfs.Router`, `vfs.Transport` | interfaces declared in `vfs` and implemented outside it, so `vfs` imports no network code | the router places a handle from RFC 11's shard records ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)) and fences an arriving envelope; the transport carries a call over a node channel ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)) | — |
+| `vfs.Serve` | the checks every call to a primary passes, forwarded or local | fences each call (the sender's node epoch, the shard epoch, and a hop count of zero), answers a retry from the dedup table by request ID, and otherwise calls the server. It receives from `Transport`, and returns the same checks as a **checked `Service`** for the gateway's local path | forwards: it holds the `*Server`, so it cannot reach the gateway |
+| `vfs.Router`, `vfs.Transport`, `vfs.Peers` | interfaces declared in `vfs` and implemented outside it, so `vfs` imports no network code | the router places a handle from RFC 11's shard records ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries)) and fences an arriving envelope; the transport carries a call over a node channel ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)); `Peers`, implemented by the transport, carries the server's own calls to another primary (§2.3) | — |
 
-![The separation: on a single node the adapters call vfs.Service, which is the *vfs.Server, and the server alone calls the metadata store, the engine, open state and identity. On node A, a gateway node in a cluster, the adapters call the same vfs.Service, which is a *vfs.Gateway that routes each call through the Router; a call whose primary is node A goes to node A's own server as a function call, and any other call goes with its route envelope over the Transport to vfs.Serve on node B, the file's primary, which fences on node epoch, shard epoch and hop 0, dedups by request ID and calls node B's server, which decides the call. Node B is itself the gateway node for its own clients. The gateway holds a vfs.Service, never a *vfs.Server](img/rfc17-gateway.svg)
+![The separation: on a single node the adapters call vfs.Service, which is the *vfs.Server, and the server alone calls the metadata store, the engine, open state and identity. On node A, a gateway node in a cluster, the adapters call the same vfs.Service, which is a *vfs.Gateway that routes each call through the Router; a call whose primary is node A goes to node A's own server through the checked vfs.Service that Serve returns, which fences and dedups it as it does a forwarded call, and any other call goes with its route envelope over the Transport to vfs.Serve on node B, the file's primary, which fences on node epoch, shard epoch and hop 0, dedups by request ID and calls node B's server, which decides the call. Node B is itself the gateway node for its own clients. The gateway holds a vfs.Service, never a *vfs.Server](img/rfc17-gateway.svg)
 
 **Adapters sign in, the gateway forwards, the server decides.** An adapter
 authenticates its client with [RFC 18](rfc-18-identity.md)'s `Authenticator`
@@ -233,7 +233,7 @@ reaches, then admits, authorises and runs the call. An adapter is handed a
 | Deployment | Builds | Adapters are handed |
 | --- | --- | --- |
 | a single node | `*vfs.Server` | the server |
-| each node of a cluster | the server, `Serve` over it, and the gateway over it | the gateway, whose local `Service` is that server |
+| each node of a cluster | the server, `Serve` over it, and the gateway over the checked `Service` `Serve` returns | the gateway, whose local `Service` is that checked `Service`, never the bare server |
 
 Every node runs the whole filesystem, so the identity resolver runs on every
 node. A cluster differs from a single node only by `Serve` and the gateway.
@@ -271,7 +271,8 @@ is data, one row per kind of argument:
 | a handle, or an open (by `OpenRef.Handle`) | the primary of that handle's shard |
 | two handles: `Rename`, `Link` | the coordinator that [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) names: the source directory's primary, or the target directory's for a link |
 | two handles: `Copy`, `Clone` | the destination's primary |
-| no file: the `Clients` area, `AckBreak`, `Unwatch`, `Root`, `SecInfo`, `ListShares`; or a pseudo-filesystem handle | the local server, which is the lease owner of the clients connected to its node |
+| an ID that names its shard ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) and no handle: `AckBreak`'s `GrantID`, `Unwatch`'s `WatchID`, `TestState`'s and `FreeRevoked`'s `StateRef` | the primary of that shard; for `TestState`, of its first `StateRef`'s, whose server asks each other one's primary through `Peers` |
+| no file: the rest of the `Clients` area, `Root`, `SecInfo`, `ListShares`; or a pseudo-filesystem handle | the local server, which is the lease owner of the clients connected to its node |
 | a handle the router cannot place | the local server, which admits the call before it answers `ErrStale` (V39), so the gateway refuses nothing |
 
 The gateway keeps nothing past a call, and `Serve` keeps only the dedup table.
@@ -308,7 +309,7 @@ reservations, the admitted-call counts, and the client and open state of §2.2.
 | **adapter** ([RFC 20](rfc-20-adapters.md)) | the wire form of a waiting lock: the request to answer, the NLM host to call back | decides a conflict |
 | **gateway** | nothing | holds any of the open-state table: it routes `Lock`, `Open`, `Close` and the rest to the file's primary |
 | **server, as lease owner** (the node holding the client's sessions) | each NFSv4 client's unconfirmed proposal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)), each client's lease record and callback channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)); relays recalls and grants to the connection | — |
-| **server, at the file's primary** | [RFC 14](rfc-14-open-state.md)'s open-state table: opens, deny modes, byte-range locks of NLM, NFSv4 and SMB alike, delete pending, caching grants, watches, lock waiters, and in a cluster layouts. It is held as the concrete `*openstate.Table` in the server's `Deps`. The server runs the conflict check and the I/O it admits under the file's accept lock with nothing between ([§4.8](#4.8%20One%20primary%20per%20file), V7) | — |
+| **server, at the file's primary** | [RFC 14](rfc-14-open-state.md)'s open-state table: opens, deny modes, byte-range locks of NLM, NFSv4 and SMB alike, delete pending, caching grants, watches, lock waiters, and in a cluster layouts. It is held as the concrete `*openstate.Table` in the server's `Deps`, and the server implements its `Sink`, `Closed` included. The server runs the conflict check and the I/O it admits under the file's accept lock with nothing between ([§4.8](#4.8%20One%20primary%20per%20file), V7) | — |
 | **metadata store** ([RFC 16](rfc-16-metadata-store.md)) | only what must survive a restart: client records, persistent SMB opens, the durable open records that keep an unlinked file alive | an ordinary lock |
 
 The table is in memory, keyed by file, never by name or handle. It is lost when
@@ -350,6 +351,7 @@ type Deps struct {
 	Open     *openstate.Table  // RFC 14: open state and client records (§2.2)
 	Engine   Content           // RFC 8's engine, or a fake in unit tests (§8)
 	Identity identity.Resolver // RFC 18 §6: real, or a fake in unit tests
+	Peers    Peers             // (cluster) the transport; nil on a single node, where every primary is this one
 	Events   metadata.Events   // RFC 7 §7.6's sink, or the null sink (§3.3)
 	Clock    clock.Clock
 	Metrics  *metrics.Registry
@@ -363,7 +365,7 @@ type Content interface{ /* Draw, Overlay, Write, Commit, Read, Release, … */ }
 func New(d Deps) (*Server, error)
 
 type GatewayDeps struct {
-	Local     vfs.Service // this node's server, held as the interface (§2)
+	Local     vfs.Service // the checked Service Serve returned, never the bare server (§2)
 	Router    Router
 	Transport Transport
 	Metrics   *metrics.Registry
@@ -373,9 +375,11 @@ type GatewayDeps struct {
 // NewGateway builds the gateway. *Gateway implements vfs.Service.
 func NewGateway(d GatewayDeps) (*Gateway, error)
 
-// Serve receives calls from t: r.Fence, then the dedup table, then local.
-// stop ends it (§2.5).
-func Serve(local vfs.Service, t Transport, r Router, m *metrics.Registry) (stop func(context.Context) error, err error)
+// Serve receives calls from t: r.Fence, then the dedup table, then s. It
+// returns the same checks as checked, which the gateway calls for a primary that
+// is this node, so a local call is fenced and deduplicated as a forwarded one is.
+// stop ends both (§2.5).
+func Serve(s *Server, t Transport, r Router, m *metrics.Registry) (checked vfs.Service, stop func(context.Context) error, err error)
 
 // Router places a call, and fences one that arrives, from RFC 11's shard
 // records (RFC 15 §6).
@@ -388,6 +392,20 @@ type Router interface {
 type Transport interface {
 	Send(ctx context.Context, c Call) (Reply, error)
 	Receive(h func(context.Context, Call) Reply) (stop func())
+}
+
+// Peers carries the server's own calls to another primary (cluster), each
+// under the route envelope and received by Serve there, fenced and deduplicated
+// as a forwarded call. The transport implements it; the gateway never does,
+// since a server calling through the gateway would route through itself.
+type Peers interface {
+	Prepare(ctx context.Context, to NodeID, p Prepare) (Prepared, error) // RFC 15 §4.2: prepare a two-primary call
+	Outcome(ctx context.Context, to NodeID, op []byte, commit bool) error // RFC 15 §4.2: its commit or abort
+	Overlay(ctx context.Context, hs []Handle) ([]File, error)             // §3.5: a lookup's or listing's entries in another shard, batched per primary
+	ReadAt(ctx context.Context, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
+	OwnerSeq(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: an NFSv4.0 owner's sequence at its home primary (RFC 14 §2.8)
+	ClientState(ctx context.Context, to NodeID, c ClientID, op vfs.Op, args []any) error // the lease owner to each primary holding its client's state (§3.5)
+	Recall(ctx context.Context, to NodeID, c ClientID, ev any) error        // a primary's recall, notify or revoke back to the client's lease owner (RFC 14 §4.1)
 }
 
 // Envelope is RFC 15 §4.3's route envelope; its rules are there.
@@ -407,7 +425,10 @@ type Reply struct { Results []any; Err error }
 ```
 
 The router and the transport are RFC 15's, built over the shard records and
-the node channel. The adapters are not this RFC's to build: `node.New` builds
+the node channel; the transport also implements `Peers`, whose methods are every case where a
+server needs a second primary; §3.5's table names each use. `Serve` takes the
+`*Server` because it also hands `Peers` calls to it, which are no `Service`
+methods. The adapters are not this RFC's to build: `node.New` builds
 each one last, as [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) and
 [§4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)
 say, and hands it the server or the gateway as `core.Deps.Service` (§2), and
@@ -429,8 +450,8 @@ pkg/vfs/                     the contract adapters build against
 internal/vfs/                the server, one file per operation; the gateway and its receive side
   server.go                  Server, New(Deps), Start, Drain, Close (§2.5); Content
   gateway.go                 Gateway, NewGateway: §2.1's routing table and the one generic call path
-  serve.go                   Serve: the fence and the dedup table
-  envelope.go                Envelope, Call, Reply, Router, Transport
+  serve.go                   Serve: the fence and the dedup table, and the checked Service it returns
+  envelope.go                Envelope, Call, Reply, Router, Transport, Peers
   clients.go                 Connect, CreateSession, Renew, Disconnect, Destroy, … (§3.1)
   lookup.go readdir.go       Lookup (§5.10); ReadDir
   create.go link.go          Create (§5.10); Link
@@ -474,14 +495,20 @@ reverse. No piece closes anything it was handed.
 | --- | --- | --- | --- | --- | --- |
 | 1 | metadata store, engine, GC, open state, identity | their RFCs, in [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s order | engine: the journal, the syncer, the block-metadata views; GC: `Blocks`, `Remote`, the syncer, `Keys` | before the server | after it; GC drains before the server stops |
 | 2 | `*vfs.Server` | `vfs.New(Deps)` | identity, open state, the metadata views, the engine | `Start`, below | `Drain`, then `Close` |
-| 3 | `vfs.Serve` **(cluster)** | `vfs.Serve` | `Router.Fence`, the local `Service` | registers on the transport | stops receiving, so a later call meets a routing refusal its sender retries; joins the calls running |
-| 4 | `*vfs.Gateway` **(cluster)** | `vfs.NewGateway(GatewayDeps)` | the local `Service`, `Router`, `Transport` | nothing to start | refuses new calls with `ErrUnavailable` and joins the forwarded ones |
-| 5 | adapters | [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) | `vfs.Service` | last | first |
+| 3 | `vfs.Serve` **(cluster)** | `vfs.Serve` | `Router.Fence`, the server | registers on the transport | after the node has handed over the shards it is primary of; stops receiving and joins the calls running |
+| 4 | `*vfs.Gateway` **(cluster)** | `vfs.NewGateway(GatewayDeps)` | the checked `Service`, `Router`, `Transport` | nothing to start | refuses new calls with `ErrUnavailable` and joins the forwarded ones |
+| 5 | adapters | [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) | `vfs.Service` | last: after the first reconcile has opened the shares and, in a cluster, a node epoch exists | first |
 
 So the start order is: the metadata store, the engine, GC, open state and
-identity, the server, `Serve`, the gateway, the adapters. The stop order is:
-the adapters, the gateway, `Serve`, the GC drain, the server, open state and
-identity, the engine, the metadata store.
+identity, the server, `Serve`, the gateway, the first reconcile, the adapters.
+No adapter listens before then, so no call meets a server with no shares.
+The stop order is: the adapters, the gateway, **(cluster)** the handover of
+every shard this node is primary of
+([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)),
+`Serve`, the GC drain, the server, open state and identity, the engine, the
+metadata store. The handover runs while `Serve` still receives, so other nodes'
+calls to those shards are answered by this node until the new primary serves,
+never refused while they wait for a failover.
 
 `vfs.Service` carries no lifecycle method. `*vfs.Server`, which `New` returns
 and only the node holds, carries three:
@@ -522,8 +549,8 @@ the next start's grace, and a recall in flight is neither forced nor revoked.
 
 **Close.** Stops the timers, flushes the event sink's queue until the context
 given to `Drain` ends, then drops what is left and counts it (§7). It closes
-nothing it was handed: the node closes open state, the engine and the store
-after it.
+nothing it was handed: the node stops open state (`Table.Stop`), then closes
+the engine and the store, after it.
 
 **Shares come and go while the server serves.** Adding a share is a record
 written to the store; the server sees the share list's version rise and
@@ -548,7 +575,7 @@ Signatures are indicative; the obligations are normative.
 
 Every type an adapter passes or receives is in `pkg/vfs`. Types the metadata
 store and open state define — `ClientID`, `OpenID`, `GrantID`, `WatchID`,
-`SessionRef`, `StateRef`, `LockOwner`, `ByteRange`, `File`, `Attrs`, `ACL`,
+`SessionRef`, `StateRef`, `Seqs`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
 `Xattr`, `Principal`, `FilesystemInfo`, `Usage`, `Quota`, `CachingGrant`,
 `LockWaiter`, `ChangeMask`, `ShareID` — are re-declared there as aliases
 (`type File = metadata.File`), so an adapter imports one package and the
@@ -559,7 +586,7 @@ holds.
 | --- | --- |
 | `Identity` | what the adapter authenticated, not yet mapped through any share's policy: `Protocol`, the flavour and Kerberos level, the uid, gid and groups an `AUTH_SYS` credential carried, the client's address, and RFC 18's proof fields — `Name`, `Principal`, `SIDs`, `DenyOnly`, `Machine`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), never the session key. Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
-| `OpenRef` | `{Client ClientID; Open OpenID; Handle Handle; Kind RefKind}`: an open, a delegation, or an anonymous open. It carries no identity: the call's `id` is compared with the principal the open was granted to (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(c, g, h)` one for I/O under a delegation |
+| `OpenRef` | `{Client ClientID; Open OpenID; Handle Handle; Kind RefKind; Seq uint32}`: an open, a delegation, or an anonymous open, and the stateid seqid presented with it (zero: current; an older one is `StateError` `OldState`). It carries no identity: the call's `id` is compared with the principal the open was granted to (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(c, g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
@@ -589,8 +616,7 @@ type WriteResult struct { N int; Verifier Verifier; WCC WCC }
 type Extent struct { SrcOff, DstOff, Len int64 }
 type CopyArgs struct { Src, Dst OpenRef; Extents []Extent } // Copy: in order, as copychunk's chunks; Clone: exactly one
 type CopyResult struct { N int64; WCC WCC }
-type LockRange struct { ByteRange; Exclusive bool } // an SMB LOCK may mix shared and exclusive elements
-type LockReq struct { Ranges []LockRange; Wait, Reclaim bool; Owner LockOwner; Seq *LockSequence } // §5.11
+type LockReq struct { Ranges []LockRange; Wait, Reclaim bool; Owner LockOwner; Seq *LockSequence; NFS Seqs } // §5.11: every range in one step, all or none
 type Proposal struct { Client ClientID; Confirm [8]byte; Sequence uint32 } // what Propose answers and Connect confirms
 type WatchSpec struct { Dir Handle; Recursive bool; Filter ChangeMask }
 ```
@@ -615,7 +641,8 @@ type Service interface {
 }
 
 // Clients (RFC 14). The lease owner is the server of the node holding the
-// client's sessions; the gateway routes these calls to it (§2.1, §2.2).
+// client's sessions; the gateway routes these calls to it (§2.1, §2.2), except
+// TestState and FreeRevoked, which go to the shard their StateRef names.
 type Clients interface {
 	Propose(ctx context.Context, id Identity, c ClientInfo) (Proposal, error) // SETCLIENTID, EXCHANGE_ID: RFC 14 §2.9's Unconfirmed record, held by this node's server; changes no state
 	Connect(ctx context.Context, id Identity, c ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB NEGOTIATE, an NLM host's first call; again on another node to re-register the callback path: the latest wins (RFC 14 Rebind)
@@ -657,9 +684,9 @@ type Attributes interface {
 // Data.
 type Data interface {
 	Open(ctx context.Context, id Identity, req OpenRequest) (OpenResult, error)
-	Downgrade(ctx context.Context, id Identity, ref OpenRef, access, deny Access) error // NFSv4 OPEN_DOWNGRADE
+	Downgrade(ctx context.Context, id Identity, ref OpenRef, q Seqs, access, deny Access) error // NFSv4 OPEN_DOWNGRADE
 	ConfirmOpen(ctx context.Context, id Identity, ref OpenRef, seq uint32) error        // NFSv4.0 OPEN_CONFIRM
-	Close(ctx context.Context, id Identity, ref OpenRef) (*WCC, error)                    // the parent's WCC when a delete on close ran
+	Close(ctx context.Context, id Identity, ref OpenRef, q Seqs) (*WCC, error)            // the parent's WCC when a delete on close ran
 	Read(ctx context.Context, id Identity, ref OpenRef, off int64, dst []byte) (n int, eof bool, err error)
 	Write(ctx context.Context, id Identity, ref OpenRef, off int64, src []byte, s Stability) (WriteResult, error)
 	Commit(ctx context.Context, id Identity, ref OpenRef, off, length int64) (Verifier, error) // NFS COMMIT, SMB FLUSH
@@ -674,7 +701,7 @@ type Locking interface {
 	Lock(ctx context.Context, id Identity, ref OpenRef, r LockReq) error
 	CancelLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange) (granted bool, err error)
 	TestLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
-	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange) error // in order; stops at the first range not held, ErrRangeNotLocked
+	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange, q Seqs) error // in order; stops at the first range not held, ErrRangeNotLocked
 	AckBreak(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind) error // to GrantNone: DELEGRETURN, a lease released
 	Watch(ctx context.Context, id Identity, c ClientID, w WatchSpec) (WatchID, error)
 	Unwatch(ctx context.Context, id Identity, c ClientID, w WatchID) error
@@ -892,7 +919,8 @@ address and the trees reached through other addresses is
 and [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)'s.
 
 **A callback path can move between nodes** (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
-A client's callbacks go out through the node that holds its back channel.
+A client's callbacks go out through the node that holds its back channel; a
+primary on another node reaches it through `Peers.Recall` (§2.3).
 When the client binds its callback path through another node — after an
 address takeover, or a lost connection — that node's adapter calls `Connect`
 again, and its server records it in the client's record (RFC 14's `Rebind`); the
@@ -1009,8 +1037,8 @@ Every service method, what it calls below, and where it runs: "primary" is the
 primary of the handle's shard, "coordinator" is the server at
 [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)'s
 coordinator, and "lease owner" is the local server, as
-[§2.1](#2.1%20What%20runs%20where) routes them. A step at a second primary is
-§10's sixth question. Gaps in the layers below are rows of §10's fourth. Which wire request becomes which method is the protocol RFCs':
+[§2.1](#2.1%20What%20runs%20where) routes them. A step at a second primary goes
+through `Peers` (§2.3). Gaps in the layers below are rows of §10's fourth. Which wire request becomes which method is the protocol RFCs':
 [RFC 21 Appendix D](rfc-21-nfs.md#Appendix%20D%20%E2%80%94%20requests%20and%20the%20service%20calls%20they%20make)
 and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%20the%20service%20calls%20they%20make).
 
@@ -1018,28 +1046,28 @@ and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%
 | --- | --- | --- | --- |
 | `Propose` | `Clients.Get` by (protocol, owner): an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)) | — | lease owner; it holds the `Unconfirmed` record in memory, so the confirm must reach the same node |
 | `Connect`, `CreateSession`, `Renew`, `Destroy` | `OpenState.Connect` (and `Rebind`), `CreateSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
-| `Disconnect`, `ReclaimComplete`, `FreeRevoked`, `HostRestarted` | `OpenState.Disconnect`, `ReclaimComplete`, `FreeRevoked`, `HostRestarted` | — | lease owner, then each primary holding the client's state |
-| `TestState`, `ReleaseLockOwner` | gap: RFC 14 declares no call that tests a stateid, drops a lock owner, or frees one lock stateid | — | lease owner, then each state's primary |
-| `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay |
-| `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary | the directory's primary |
-| `Create`, `Link` | `Namespace.Create` / `Link`, `OpenState.CheckChange` on the parent | `Draw` (parent, new file) | coordinator |
-| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `OpenState.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Release` for an orphan | coordinator |
+| `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `OpenState.Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`; `Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
+| `TestState`, `FreeRevoked` | `OpenState.TestState`; `FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
+| `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
+| `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary through `Peers.Overlay` | the directory's primary |
+| `Create`, `Link` | `Namespace.Create` / `Link`, `OpenState.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
+| `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `OpenState.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Release` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
 | `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `OpenState.CheckChange`, `SetDisposition`, `SuspendTimes` | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr` | `Draw` | primary |
 | `Open` | `Namespace.Lookup` or `Create`, `Files.Authorize`, `Granted`, `OpenState.Open` or `Reconnect` | `Draw` when it creates | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
-| `Downgrade`, `ConfirmOpen` | gap: RFC 14 declares neither | — | primary |
+| `Downgrade`, `ConfirmOpen` | `OpenState.Downgrade`, `ConfirmOpen` | — | primary |
 | `Close` | `OpenState.Close`; `Namespace.Unlink` for a delete on close | `Release` for an orphan | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `Read` | `OpenState.CheckIO`; `Files.Authorize` for an anonymous or delegated open | `Read` | primary |
 | `Write` | `OpenState.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota | `Draw`, `Write`, `Overlay`, `Commit` when stable | primary |
 | `Commit` | `OpenState.Flushed` through an SMB open | `Commit` | primary |
 | `Deallocate`, `Seek` | `OpenState.CheckIO` | `Deallocate`; `Allocation` | primary |
-| `Copy`, `Clone` | `OpenState.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | the destination's primary, reading at the source's across shards |
-| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `OpenState.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
-| `AckBreak` | `OpenState.AckBreak`, or `Return` for `GrantNone` | — | lease owner, then the grant's primary |
-| `Watch`, `Unwatch` | `OpenState.Watch`, `Unwatch` | — | the directory's primary; `Unwatch` through the lease owner |
+| `Copy`, `Clone` | `OpenState.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
+| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `OpenState.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.OwnerSeq` |
+| `AckBreak` | `OpenState.AckBreak`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
+| `Watch`, `Unwatch` | `OpenState.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
 | `Root`, `SecInfo`, `ListShares` | share records and export policy (gap: RFC 16 declares no read view of the share indexes but `ControlPlane.Shares`), `Files.Root` | — | lease owner |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
 | `Snapshots` | RFC 12 `Snapshots.List`, filtered by the handle's path | — | primary |
@@ -1116,7 +1144,8 @@ refusals: `ClientInUse` (an NFSv4 owner another principal holds), `ClientBusy`
 order), `StaleClient` (a client that expired, or is marked by a shard's loss
 until it repeats `SETCLIENTID`, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)),
 `StaleState` (a stateid or `FileId` whose state may have been lost with its
-shard's open state, by the grace-instance rule of §3.4), `BadState` (every
+shard's open state, by the grace-instance rule of §3.4), `OldState` (a stateid
+seqid older than the state's current one), `BadState` (every
 other stateid or `FileId` whose record is missing — expired, freed, a removed or
 moved share's, never issued), `NoReclaim`, `ReclaimRevoked` (an NFSv4 reclaim
 in a shard where an administrator revoked the client's state), `BadSeqID` (an
@@ -1611,7 +1640,9 @@ it.
 at the file's primary, at four moments: when `Unlink` or `Rename` reports a file
 left with no entry and no open holds it; when open state's `Close` reports the
 last close of a file with no entry, having deleted its durable open record
-([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive));
+([RFC 14 §9.1](rfc-14-open-state.md#9.1%20An%20open%20keeps%20a%20file%20alive)),
+or reports through `Sink.Closed` a close the table made itself — a timeout,
+grace's end, an expiry or revoke ([RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring));
 when a release commits that wrote the pending releases of its file's named
 streams ([RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)),
 for each of those streams; and in recovery, for every pending release, once the
@@ -2021,27 +2052,17 @@ func (s *Server) createLocked(ctx context.Context, c Caller, dir Handle, name []
 
 ```go
 func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) error {
-	if r.Wait && len(r.Ranges) != 1 {
-		return ErrInvalid // only a single range may wait (RFC 22 §7)
-	}
 	if err := s.authz.LockState(ctx, c, ref); err != nil {
 		return err
 	}
-	taken := make([]ByteRange, 0, len(r.Ranges))
-	for _, rg := range r.Ranges {
-		// RFC 14: grace (ErrGrace unless r.Reclaim), conflicts with every protocol's
-		// locks, a recall of a conflicting grant (ErrDelay, or ErrBlocked with a waiter
-		// when waiting), the NFSv4.0 owner's sequence (StateError BadSeqID), checked
-		// and advanced at the owner's home primary as RFC 14 §2.8 says — this node
-		// on a single node; (cluster) this server asks the home primary first (§10, question 6).
-		err := s.open.Lock(ctx, c.Client, fileOf(ref.Handle), r.Owner, ref.Open, rg.ByteRange, rg.Exclusive, r.Wait, r.Reclaim, r.Seq)
-		if err != nil {
-			s.unlock(ctx, c, ref, r.Owner, taken) // all or nothing: release what this call took
-			return err                            // ErrBlocked: a waiter is registered; LockWaitOver answers it
-		}
-		taken = append(taken, rg.ByteRange)
-	}
-	return nil
+	// RFC 14 §11.3: every range in one step, all or none, and only a single range
+	// may wait. Grace (ErrGrace unless r.Reclaim), conflicts with every protocol's
+	// locks, a recall of a conflicting grant (ErrDelay, or ErrBlocked with a waiter
+	// when waiting), the stateid's seqid (StateError OldState) and the NFSv4.0
+	// owner's sequence (StateError BadSeqID), checked and advanced at the owner's
+	// home primary as RFC 14 §2.8 says: this node on a single node; (cluster)
+	// asked through Peers.OwnerSeq first (§2.3).
+	return s.open.Lock(ctx, c.Client, fileOf(ref.Handle), toOpenState(ref, r)) // ErrBlocked: a waiter is registered; LockWaitOver answers it
 }
 ```
 
@@ -2232,7 +2253,7 @@ tree working:
 | 0 | the neutral value types (§3.0) and errors out of `pkg/metadata` into `pkg/vfs`; the allowlist test below, seeded with every adapter file importing `pkg/metadata` (112 today) | nothing yet: the list only shrinks from here |
 | 1 | `vfs.Service` and `vfs.New` with its lifecycle (§2.5), the server delegating to today's `metadata.Service`; `vfstest`'s `Record`, `Null` and `RecordingCallbacks`; the integration tier's harness | nothing: this is the harness every later slice tests against |
 | 2 | shares, identity and admission: `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem into the service; a cross-protocol test that a quiesced or netgroup-restricted share is refused on every entry path | the four admission paths and three auth-context builders, `v4/pseudofs`, `shareEntryStatus`, the NFSv3 permission cache; closes #3040 and E-01. An adapter's own admission check stays until every operation on its path calls the service: removed earlier, it fails open |
-| 3 | `pkg/metadata/lock` becomes `pkg/openstate`, its behaviour unchanged, reaching the store only through a narrow view for its durable records, so `Write`'s `CheckIO` calls a component outside the metadata package | the lock manager's home under `pkg/metadata` |
+| 3 | the server reaches today's lock manager through a small lock interface of its own, so `Write`'s `CheckIO` and every other open-state call go through one seam. RFC 14's open state is built new as `pkg/openstate`, and its `*openstate.Table` then replaces the manager behind that interface | nothing yet; `pkg/metadata/lock` is deleted once the table replaces it, never ported, and none of its lock persistence carries forward |
 | 4 | `Write`, `Read` and `Commit`, with the attempt deadline and the write verifier — the four copies of the write sequence become §5.1, returning `WCC` | the adapters' copies and the payload-scope call sites |
 | 5 | `Open` and `Close`: deny modes, delete on close, releases | the six deny-mode sites; closes E-08 and #2927 |
 | 6 | range-list `Lock` and `Unlock`, then `Copy` and `Clone` | the copychunk loops, `common/clone.go` |
@@ -2294,10 +2315,7 @@ tree working:
    (shard, epoch) it was granted under ([RFC 14](rfc-14-open-state.md)).
 3. **ID widths.** The shard-number and `OpenID` widths of the stateid and the
    SMB `FileId` must be one choice (§3.4's ponytail).
-4. **Gaps in the layers below**, found by §3.5's table: RFC 14 declares no call
-   for `TestState`, `ReleaseLockOwner`, `Downgrade` or `ConfirmOpen`, though
-   RFC 21 §4.2 and §5.2 rely on each, nor one that frees a single lock
-   stateid, which `FREE_STATEID` needs (RFC 8881 §18.38); RFC 7's `Attrs` has no exclusive-create
+4. **Gaps in the layers below**, found by §3.5's table: RFC 7's `Attrs` has no exclusive-create
    verifier though §2.10 stores one, and no call turns an empty file into a
    symlink (SMB `SET_REPARSE_POINT`); RFC 16 declares no read view of the share
    name and path indexes or of quota records but `ControlPlane`'s, which the
@@ -2310,24 +2328,6 @@ tree working:
    is missing, is unspecified. Whether a single node places per-child shards at
    all decides whether `ErrCross` (`CrossShard`) can reach it, and is RFC 11's
    to state.
-
-6. **Calls from one server to another primary (cluster).** Some calls need a
-   second primary after the gateway has routed them: RFC 15 §4.2's prepares; a
-   listing's or a lookup's overlay of an entry in another shard; a cross-shard
-   copy's reads at the source; an NFSv4.0 owner's home primary (§5.11); and the
-   lease owner reaching each primary that holds its client's state
-   (`Disconnect`, `AckBreak`, `TestState` and the rest of §3.5's "lease owner,
-   then" rows), with a primary's recall reaching the lease owner. A server
-   holds no gateway, so none of these has a path yet. Proposed: a narrow
-   interface declared in `vfs` beside `Transport`, carrying only these calls
-   under the route envelope, and implemented by the transport. RFC 15 §4.2 and
-   RFC 14 §4.1 own what each call carries.
-7. **Handover against `Serve`'s stop.** The stop order stops `Serve` before the
-   server, so a call to a shard this node still owns meets a routing refusal
-   until the shard is handed over or fails over
-   ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)).
-   Whether `Node.Stop` hands the shards over before `Serve` stops is
-   [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s to state.
 
 ## Appendix A — prior art
 
