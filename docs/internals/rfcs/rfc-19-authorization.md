@@ -512,7 +512,7 @@ admission:
 | none (no grant) | nothing: the call is refused at step 2 |
 | read | read data and list, execute and traverse, read attributes, read extended attributes, read the ACL, synchronize |
 | read-write | every entry right |
-| admin | every entry right; the identity's `admin` flag is set as [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20strength%20proved%3A%20authenticated%2C%20admin%2C%20privileged) says, which Administrators entries match and the system-security right needs (§3.5) |
+| admin | every entry right; the identity's `admin` flag is set as [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged) says, which Administrators entries match and the system-security right needs (§3.5) |
 
 Admission may narrow a grant to read-only — a client rule, or a share marked
 read-only ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
