@@ -49,15 +49,17 @@ Severity tags:
 Rules:
 
 - Prefer GitHub `suggestion` blocks when the fix is local to the commented lines, so the author can apply it in one click.
-- Link the RFC, spec section or DittoFS doc that backs a point instead of re-explaining it.
+- Link the RFC, spec section or doc that backs a point instead of re-explaining it.
 - Do not repeat the same comment on every occurrence: comment once and say "same in X and Y".
 - If a point needs more than a short paragraph to argue, or the thread goes past two rounds, propose a quick live review instead of writing more.
 
 ## Review body
 
+The review state is the verdict: **Request changes** if any comment is blocking, **Approve** if none is, **Comment** only when you can't judge. Nobody should have to dig the verdict out of the text.
+
 A reader who skips the inline comments must still know whether the PR can merge and what blocks it. Write the body in this order, and skip any part that would be empty:
 
-1. **Summary**: the verdict, in a couple of sentences.
+1. **Summary**: the first sentence names what blocks the merge, or says nothing does.
 2. **Critical issues**: what blocks the merge (correctness, security, breaking changes).
 3. **Suggestions**: improvements to performance or maintainability.
 4. **Questions**: what you need to know before you can judge.
