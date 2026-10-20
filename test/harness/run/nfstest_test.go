@@ -99,7 +99,7 @@ func TestReadNFStest(t *testing.T) {
 `, []string{"new dio/basic: traceback: Exception: mount.nfs: Connection refused for <ip>:/export on /tmp/dittofs-test_N"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tests, err := readNFStest(report.Ran{Test: tc.module, Output: []byte(tc.output)})
+			tests, err := readers["nfstest"](report.Ran{Test: tc.module, Output: []byte(tc.output)})
 			if err != nil {
 				t.Fatal(err)
 			}
