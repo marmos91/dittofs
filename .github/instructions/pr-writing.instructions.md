@@ -11,7 +11,7 @@ Everything you write on a PR will be read by a person who is also reviewing othe
 - **Lead with the point.** First sentence says what matters. No preamble, no restating the task, the code or the comment you are answering.
 - **Code over prose.** If a fix or alternative can be shown, show it as a snippet instead of describing it.
 - **Short beats complete.** Cut anything the reader can see in the diff, anything a linter/formatter/CI would catch, and anything you are not confident about.
-- **Be honest about uncertainty.** If you are guessing, say "I think" or ask a question. Never invent behavior, benchmarks or references.
+- **Say how you know.** Mark each claim "ran it", "read the code" or "I think". Never invent behavior, benchmarks or references.
 - **A human owns the output.** Unless explicitly told to post, return drafts to the user. The person posting must have read every line and be able to defend it. Write so that this is easy: short enough to read in under a minute.
 
 ## PR title and description
