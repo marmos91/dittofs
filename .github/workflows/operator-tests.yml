@@ -6,8 +6,13 @@
 name: Operator Tests
 
 on:
+  # The operator is a module of its own and imports nothing from the root
+  # one, so only its own paths can break it.
   push:
     branches: [develop, main, feat/storage-v2]
+    paths:
+      - 'k8s/dittofs-operator/**'
+      - '.github/workflows/operator-tests.yml'
   pull_request:
     branches: [develop, main, feat/storage-v2]
     paths:
