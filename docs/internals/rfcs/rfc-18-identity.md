@@ -376,7 +376,7 @@ uses for its lease and state operations, or an SMB client's machine account,
 - A machine principal has two roles, and resolution keeps them apart. It is
   the principal NFSv4.1 state protection records
   ([RFC 21 §3.3](rfc-21-nfs.md#3.3%20Trunking%2C%20server%20owner%20and%20scope),
-  RFC 14's `MachCred`), held in the caller's `Mapped` field (§6.1), so two
+  RFC 14's client `Owner`, with the calls its `Protect` names), held in the caller's `Mapped` field (§6.1), so two
   machines are two principals. On files it acts as the share's `Anonymous`
   principal (§6.2), with anonymous's groups and every flag false: it is
   **not** `authenticated`, so authenticated-users grants and ACL entries do

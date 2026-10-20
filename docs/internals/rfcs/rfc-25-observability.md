@@ -725,6 +725,11 @@ row.
 | `replication_under_floor` **(cluster)** | [RFC 10 §14](rfc-10-journal-replication.md#14.%20Observability) | share | degraded | page at 5 min |
 | `shard_relinquished` **(cluster)** | [RFC 10 §14](rfc-10-journal-replication.md#14.%20Observability) | share | unhealthy; waits for a replica or the operator | page at once |
 | `node_lost` **(cluster)** | [RFC 11 §9](rfc-11-ownership.md#9.%20Failure), §3.8 | installation | degraded while its shards fail over | page at 5 min |
+| `lock_grant_unacknowledged` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node, naming the client | degraded | ticket |
+| `recall_deadline_misses` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node | degraded while recalls revoked at their deadline exceed 1 per minute for 15 min (proposed) | ticket |
+| `adapter_record_near_bound` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | node, naming the protocol | degraded while any adapter record written in the last hour exceeds 3 KiB of its 4 KiB bound | ticket |
+| `adapter_record_unreadable` | [RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes) | node, naming the protocol | degraded while adapter records fail to decode, the usual cause a rolling upgrade across record versions | ticket at once |
+| `grace_stuck` | [RFC 14 §14](rfc-14-open-state.md#14.%20Observability) | share, naming the shard | unhealthy: a shard has been in grace past twice the lease period | page at 5 min |
 
 ## 4. Event streams
 
@@ -1076,6 +1081,14 @@ them.
   A trace starts at the adapter.
 - Replication and node-channel calls **(cluster)** carry the context of the work
   that caused them.
+- **(cluster)** The split between translating and deciding is one trace: the
+  adapter's request span on the gateway node (`protocol`, operation, the neutral
+  result), a child span for the forwarded call carrying the envelope's trace
+  context, and the primary's service span, which carries the open-state step's
+  neutral op, shard, result and whether it waited
+  ([RFC 14 §14](rfc-14-open-state.md#14.%20Observability)). A recall and a
+  lock waiter's grant open root spans linked to the request that caused them.
+  No client, owner, file or principal is an attribute beyond what §5.4 allows.
 
 ### 6.3 Sampling and cost
 

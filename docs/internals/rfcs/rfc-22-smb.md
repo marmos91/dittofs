@@ -810,7 +810,7 @@ file open locally, until the server takes the promise back.
   other as oplocks always have; a lease's grant is keyed by its lease key, so
   they do not.
 - The lease key, parent lease key and lease epoch are carried on the grant
-  (`Key`, `ParentKey`, `Epoch`,
+  (`Key` and `Epoch`, the parent lease key in the grant's `Adapter`,
   [RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). One grant covers
   every open of a file by one client under one key; a key already naming a
   grant on another file is refused. A v2 lease's `Epoch` rises with every
@@ -1132,21 +1132,21 @@ The server must answer it without doing it twice.
   that open (MS-SMB2 3.3.5.9.10), on any node, because the `CreateGuid` is kept
   with the open ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
 - Every other request naming a FileId, on 3.x, is checked at the primary
-  against the open's `ChannelSeq` and its two `Outstanding` counts — requests
-  in flight under `ChannelSeq`, and under the sequences before it — fields of
+  against the open's `Channel.Seq` and its two `Channel.Outstanding` counts — requests
+  in flight under `Channel.Seq`, and under the sequences before it — fields of
   RFC 14's Open ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), exactly as
   MS-SMB2 3.3.5.2.10 does. "Newer" means a 16-bit difference from
-  `ChannelSeq` of at most 0x7FFF, and "older" any other unequal value:
-  - **not flagged as a replay**: equal to `ChannelSeq`, it is counted under
+  `Channel.Seq` of at most 0x7FFF, and "older" any other unequal value:
+  - **not flagged as a replay**: equal to `Channel.Seq`, it is counted under
     it; newer, the current count is added to the earlier one, the request
     becomes the current one's only request and its sequence becomes
-    `ChannelSeq`; older, a `WRITE`, `SET_INFO` or `IOCTL` is refused
+    `Channel.Seq`; older, a `WRITE`, `SET_INFO` or `IOCTL` is refused
     `STATUS_FILE_NOT_AVAILABLE` and any other request runs;
   - **flagged as a replay** (`SMB2_FLAGS_REPLAY_OPERATION`): equal, it runs,
-    counted under `ChannelSeq`, only while no request under an earlier
+    counted under `Channel.Seq`, only while no request under an earlier
     sequence is still in flight, and otherwise a `WRITE`, `SET_INFO` or
     `IOCTL` is refused `STATUS_FILE_NOT_AVAILABLE`; newer, the current count is
-    added to the earlier one and `ChannelSeq` raised as above, and if any
+    added to the earlier one and `Channel.Seq` raised as above, and if any
     request under an earlier sequence is still in flight the current count is
     0 and a `WRITE`, `SET_INFO` or `IOCTL` is refused the same way, else the
     request is the current one's only request; older, a
@@ -1157,15 +1157,15 @@ The server must answer it without doing it twice.
   the original is in flight under an earlier sequence, the replay is refused,
   and the client sends it again. `STATUS_FILE_NOT_AVAILABLE` is also the
   status a request held past a freeze's or grace's bound ends with (§6.6).
-  `ChannelSeq` is durable with a persistent open, written in the transaction of
+  `Channel.Seq` is durable with a persistent open, written in the transaction of
   the request that raised it, so a stale replayed `WRITE` is refused after a
   failover too; the counts are never written, and a new primary starts them
   at zero
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
-  Any request naming a FileId may raise `ChannelSeq` — a `READ` or
+  Any request naming a FileId may raise `Channel.Seq` — a `READ` or
   `QUERY_INFO` as much as a `WRITE` — and most have no transaction of their own
   to carry the raise, so **any** request that raises a persistent open's
-  `ChannelSeq` writes the new value in a transaction before it runs. A raise
+  `Channel.Seq` writes the new value in a transaction before it runs. A raise
   happens only when the client moves the open to a new channel after a
   failure, so this costs one transaction per channel move, not per request.
   The gateway node keeps no replay state of its own.
@@ -1258,6 +1258,99 @@ drains, so it is held pending like a full journal; only a logical quota and a
 permanent capacity cause do not clear by themselves and are answered at once. Which capacity refusals are
 `ErrDelay`, and which become `ErrNoSpace`, is RFC 8 §10.2's one table
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)).
+
+### 6.7 Translation to open state
+
+The SMB adapter translates; open state decides
+([RFC 20 §2.1](rfc-20-adapters.md#2.1%20Two%20questions%20place%20every%20piece%20of%20logic)).
+Every call reaching RFC 14 carries neutral values only, and every neutral
+result or error comes back to this section and §6.6 to be spelled. Each
+mapping below is a pure function of the request and, where named, the
+record's `Adapter` bytes.
+
+| RFC 14 field or call | Filled from | Notes |
+| --- | --- | --- |
+| `Client.Name` | `ClientGuid` | indexed with the protocol; one record per machine (§4.4) |
+| `Client.Boot` | unused, zero | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
+| `Client.Owner`, `Client.Protect` | zero | principals bind per session and per open (§4.4) |
+| `Client.Pending` | never set | an SMB client is confirmed in one step, by `NEGOTIATE` |
+| `Client.Adapter` | empty | nothing SMB-only must outlive a connection at the client level |
+| `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call |
+| `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | a share bit set allows that access; RFC 14 holds what is refused |
+| `Open.Mode.Privileged` | `FILE_OPEN_FOR_BACKUP_INTENT` with the session's backup or restore privilege | S28 |
+| `Open.Durability` | `DHnQ`, `DH2Q`; persistent when `DH2Q` asks it on a continuously available share | §6.4 |
+| `Reconnect.Timeout` | the durable timeout the create negotiated | MS-SMB2 3.3.5.9.10 bounds |
+| `Reconnect.Create` | `CreateGuid` (`DH2Q`, `DH2C`) | zero for a v1 durable open |
+| `Reconnect.Instance` | `AppInstanceId`, `AppInstanceVersion` | §6.4 |
+| `Reconnect.LockSeq` | `LockSequenceNumber` and `LockSequenceIndex` | §6.5; durable v2 and persistent opens on 3.x |
+| `Open.Channel.Seq` | `ChannelSequence` | checked at the primary as MS-SMB2 3.3.5.2.10 says (§6.5) |
+| `Open.Session` | the session ID with its gateway node and that node's epoch | session IDs are unique only per node and process |
+| `Open.Via` | the directory the create named | zero for a create by file ID, which then grants no delete through a parent |
+| `Open.Delete.OnClose` | `FILE_DELETE_ON_CLOSE` | `Delete.By` is the creating principal |
+| `MarkDelete` | `FileDispositionInformation`, `FileDispositionInformationEx` | through the open |
+| `Open.Suspended` | the -1 and -2 timestamp sentinels of a set-info (§9.3) | `ChangeTime` is never suspended (S15) |
+| `Open.LossSeen` | nothing on the wire | `ErrLost` on `FLUSH` is `STATUS_UNEXPECTED_IO_ERROR`, once per open (§9.4) |
+| `CachingGrant.Key` | the lease key | an oplock has none and covers its one open |
+| `CachingGrant.Epoch` | the v2 lease epoch | zero for a v1 lease and an oplock |
+| `CachingGrant.Adapter` | the parent lease key and the lease version the reply must echo | written with a persistent open's lease |
+| `LockOwner.Name` | the `OpenID` | two opens of one client conflict (§7) |
+| `Lock` (`LockReq.Ranges`) | every `LOCK` element, in order, in one call | all or none; an unlock list stops at the first range not held (MS-SMB2 3.3.5.14.1) |
+| `LockReq.Wait` | callback when `SMB2_LOCKFLAG_FAIL_IMMEDIATELY` is clear; none when set | only a single-element `LOCK` waits (§7) |
+| `LockReq.Replay` | the lock sequence of a durable v2 or persistent open | §6.5 |
+| `Watch` | `CHANGE_NOTIFY`: completion filter, `WATCH_TREE` | §8 |
+
+**Grant levels.** Level II is read; exclusive is read and write; batch is read,
+write and handle; a lease is any of R, RW, RH and RWH. A break to a level is a
+`RecallGrant` to that neutral kind, acknowledged through `AckRecall`. A break
+not acknowledged by 35 s downgrades the grant to none and leaves its opens
+open (§6.3, S12).
+
+**Lock semantics.** SMB locks are mandatory and stack: one open's locks never
+merge, and an exclusive lock conflicts with any overlapping lock, its own
+open's included. The adapter carries that in the owner it names (`Name` is the
+`OpenID`); RFC 14 holds the stacking rule for an SMB owner.
+
+**Errors.** Each neutral error becomes the status §6.6's table gives it; that
+table is total for the errors RFC 14 returns to SMB: `ErrShareViolation`,
+`ErrDeletePending`, `ErrLocked`, `ErrRangeNotLocked`, `ErrBlocked`
+(pending), `ErrDelay` and `ErrGrace` (held pending), `ErrState`
+(`NoReclaim`) on reconnect, `ErrLost` on `FLUSH`, `ErrState` (`NotYours`) and
+`ErrState` (`Revoked`). A recursive watch completed from another shard is
+`STATUS_NOTIFY_ENUM_DIR` (§8); a logoff closes only its own session's opens
+(MS-SMB2 3.3.5.6, §4.4).
+
+**What the SMB adapter keeps in `Adapter`.** Only the grant's parent lease key
+and lease version, today; the client record's is empty. The bytes start with
+an adapter-defined version, so a node of another version refuses what it
+cannot read rather than misreading it, and RFC 14 never reads them.
+
+**Request IDs.** SMB names its retries by open state, not by a request
+identity, so the request ID a forwarded call carries
+([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) is minted by
+the gateway node — its node ID and node epoch, the connection, and a number
+never reused on it, tagged SMB — and is never derived from message IDs, which
+are per connection, so two channels of one session can send two different
+requests under one (`ClientGuid`, session ID, message ID). A request the
+client flags as a replay carries a new request ID, and the primary matches it
+against the open as MS-SMB2 3.3.5.2.10 does: a create by its `CreateGuid`
+(`Reconnect.Create`), a lock by the open's lock sequence (`Reconnect.LockSeq`),
+and every other operation on an open by `Channel.Seq`, refusing with
+`STATUS_FILE_NOT_AVAILABLE` a `WRITE`, `SET_INFO` or `IOCTL` whose channel
+sequence is stale, or that replays one still in flight under an earlier
+sequence — never holding it — and no other request (§6.5).
+
+**Topology on the wire.** A copychunk refused `ErrCross` (`CrossShard`) becomes a
+server-side byte copy; an `FSCTL_DUPLICATE_EXTENTS_TO_FILE` is
+`STATUS_NOT_SAME_DEVICE` (§6.6). Clients of a continuously available share
+learn where to move through Witness (§14).
+
+**Across nodes.** The adapter translates on the gateway node holding the
+connection; only neutral calls and the opaque `Adapter` bytes cross to the
+server ([RFC 17 §2.1](rfc-17-vfs.md#2.1%20What%20runs%20where)). Sessions,
+channels, credits and keys stay volatile on the gateway (S2). What a
+reconnect must find — a persistent open's fields, its locks and lease — lives
+in RFC 14's records at the file's primary, written through the server's fence,
+and every read of it is forwarded there; the gateway never answers from a copy.
 
 ## 7. Byte-range locks
 
@@ -1948,7 +2041,7 @@ restore; here they are the share's read-only snapshots
 | §6.3 fence and budget | Let one break time out; assert the client offered no lease for 90 s and offered one after. Drive one client to the grant budget, touching a first file throughout; assert the grants broken are the least recently used and the first file's lease kept. | a fence tied to a lease SMB does not have, or the budget breaking the oldest grant |
 | §3.3 credits under a hold | Hold a connection's writes behind a 9-minute store outage while it keeps sending: assert every interim `STATUS_PENDING` grants credits and every final response grants none, the connection's other tree keeps working, and, with the node's hold pool already filled by a second connection's held writes (its size set through the process memory limit, [RFC 24 §2.3](rfc-24-resources.md#2.3%20The%20pools)), once 256 requests or 32 MiB of writes are held a further write is `STATUS_INSUFFICIENT_RESOURCES` at once and `adapter_hold_refusals_total{protocol="smb"}` rises; after the outage every held write succeeds. | held requests escaping the credit bound, a final response granting credits a second time, or a connection starved of credits while it waits |
 | §3.3 multi-session host through a freeze *(1 node)* | One connection carries 40 sessions, each writing its own 4 GiB profile disk at queue depth 8 with 64 KiB writes. Freeze the share for 20 s, then stall the metadata store for 30 s: assert every write held is answered success after each, none `STATUS_INSUFFICIENT_RESOURCES`, `adapter_held_requests` past 256 during the hold, and `adapter_hold_refusals_total{protocol="smb"}` unchanged. | a per-connection cap that fails a multi-session host's writes during a planned freeze or a short stall |
-| §6.5 replay | smbtorture `smb2.replay`; replay a `CREATE` with the same `CreateGuid` through another node. On a persistent open, send a `LOCK` with a lock sequence, fail the primary over before the reply, and replay it; assert success and one lock held. On two channels of one session, send two different `WRITE`s with the same message ID; assert both applied. Hold a `WRITE` under channel sequence 1 at a clone; on a second channel replay it under sequence 2: assert the replay `STATUS_FILE_NOT_AVAILABLE` while the original is held, a `READ` under 2 served meanwhile, and the replay applied once when sent again after the original ends. Send a `WRITE` and a `READ` under sequence 0 after `ChannelSeq` is 2: assert the `WRITE` refused and the `READ` served. | a lock sequence held only in memory, replays matched by message ID, a replay run beside its original, or a stale `READ` refused |
+| §6.5 replay | smbtorture `smb2.replay`; replay a `CREATE` with the same `CreateGuid` through another node. On a persistent open, send a `LOCK` with a lock sequence, fail the primary over before the reply, and replay it; assert success and one lock held. On two channels of one session, send two different `WRITE`s with the same message ID; assert both applied. Hold a `WRITE` under channel sequence 1 at a clone; on a second channel replay it under sequence 2: assert the replay `STATUS_FILE_NOT_AVAILABLE` while the original is held, a `READ` under 2 served meanwhile, and the replay applied once when sent again after the original ends. Send a `WRITE` and a `READ` under sequence 0 after `Channel.Seq` is 2: assert the `WRITE` refused and the `READ` served. | a lock sequence held only in memory, replays matched by message ID, a replay run beside its original, or a stale `READ` refused |
 | §4.3 session after a restart *(1 node)* | Hold a persistent open made on the node's first session after a start; restart the node and, before the client reconnects, set up a session, which takes the same session ID; drop that session's connection: assert the persistent open's timeout does not start, and the client's reconnect then succeeds. | an open named by a session ID a new process reuses |
 | §7 locks | smbtorture `smb2.lock`; an SMB lock refuses an NFSv3 write across it. Client A holds an RW lease and a local lock; client B sends `LOCK` over the range: assert A's lease is broken and its lock reaches the server before B is answered. Repeat with A holding an R lease; assert it is broken to none before B is granted. A `LOCK` of three `FAIL_IMMEDIATELY` elements whose third conflicts: assert `STATUS_LOCK_NOT_GRANTED` and none of the three held. An unlock of three ranges whose second is not held: assert `STATUS_RANGE_NOT_LOCKED`, the first unlocked and the third still held. A `LOCK` of two elements without `FAIL_IMMEDIATELY`: assert `STATUS_INVALID_PARAMETER`. | locks held in the adapter, a lock request that does not break read or write caching, or a failed multi-element `LOCK` leaving earlier ranges held |
 | §7 waiting locks | Client B waits on client A's lock; A holds it 5 minutes, then releases: assert B's lock granted and its request completed. B waits again; send `CANCEL` racing A's unlock, 10^3 times: assert each request is either `STATUS_CANCELLED` with no lock held by B afterwards, or success with the lock held. | a waiting lock answered on a timer, or a cancel answered before `CancelLock` |
@@ -1979,6 +2072,10 @@ restore; here they are the share's read-only snapshots
 | §11 backup intent | A session whose principal a grant names `admin`: open a file its DACL denies without `FILE_OPEN_FOR_BACKUP_INTENT`, assert `STATUS_ACCESS_DENIED` and `MaximalAccess` without the denied right; with it, assert granted. A guest session with the intent: assert denied. As that `admin`, run `robocopy /B /SECFIX` of a tree whose files' DACLs exclude the `admin`, with other owners and groups: assert every file's owner, group and DACL restored. Set another owner through a handle opened without the intent: assert `STATUS_ACCESS_DENIED`. | privilege applied to every open of an `admin` session, or stopping at the intent `CREATE` so a restore cannot set a DACL |
 | §5.2 IPC$ | smbtorture `rpc.srvsvc`, `rpc.wkssvc`; a hidden share is absent from `NetShareEnumAll`. | |
 | §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a gateway node and then a primary failed mid-run: every container mounts again without a repair prompt, and every write acknowledged before the failure reads back. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
+| §6.7 translation vectors | Table-driven golden vectors for every row of §6.7's table and §6.6's: SMB request → neutral call → SMB reply, byte for byte. Property tests: every SMB input in each decoded field maps to a neutral value or a named refusal; every neutral error RFC 14 and RFC 17 return has an SMB status; access and share masks, grant levels and lock elements round-trip. | a create context, mask or status left unmapped, or a mapping that differs between two handlers |
+| §6.7 decoders fuzzed | Native Go fuzz targets (`testing.F`) over create-context decoding (`DHnQ`, `DH2Q`, `DH2C`, `RqLs`, `AppInstanceId`), access and share masks, `LOCK` elements, and the `Adapter`-bytes decoder fed truncated, corrupt, older- and newer-version bytes: assert no panic, and each input either yields a valid neutral request or a refusal, never a misread value. | a decoder that panics, or reads another version's bytes as its own |
+| §6.7 edge cases | Fail the primary over under a persistent open with a lease and locks, reconnect: open, lease and locks as left. Hold an SMB deny-write open, open the file for write over NFS: refused. Hold an NLM lock, take an overlapping SMB byte-range lock: refused, and the reverse. Open delete-on-close, revoke the client: the open is released and the pending delete runs as its marker. | a translation tested only within one protocol, or a reconnect that loses the lease |
+| §6.7 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 
 **Wire tests.** The wire tests of [RFC 20 §8](rfc-20-adapters.md#8.%20Wire%20tests)
 run this adapter and a reference SMB server through the same scripts and
@@ -2018,6 +2115,10 @@ shown without the `dittofs_` prefix the exporter adds.
 | names hidden from SMB in listings | `smb_names_hidden_total` | counter |
 | Witness registrations per node | `smb_witness_registrations` | gauge |
 | requests and bytes held pending, the hold pool in use, requests refused past their floor (§3.3) | RFC 20 §10.1's `adapter_held_requests`, `adapter_held_bytes`, `adapter_hold_pool_bytes`, `adapter_hold_refusals_total{protocol="smb"}` | gauges, counter |
+| SMB inputs refused as unmappable, by reason (§6.7) | RFC 20's `adapter_translation_refused_total{protocol="smb", reason}` | counter |
+| neutral errors spelled as SMB statuses, by error (§6.6) | RFC 20's `adapter_status_mapped_total{protocol="smb", error}` | counter |
+| `Adapter` bytes that failed to decode, by reason — truncated, unknown version; any nonzero is an alert (§6.7) | RFC 20's `adapter_record_decode_failures_total{protocol="smb", reason}` | counter |
+| `CREATE` and `LOCK` replays answered from the record (§6.5) | RFC 20's `adapter_record_replays_total{protocol="smb"}` | counter |
 | deferred unlinks refused at the last close (§13) | RFC 17 §7's `vfs_deferred_unlink_refusals_total` | counter |
 
 Operation latency is RFC 17's; leases, breaks and grace are RFC 14's. No share
@@ -2098,7 +2199,7 @@ Every share, whatever its policy:
 | `SecD` (security descriptor) | the new file's ACL, owner and group, in place of the inherited ACL ([RFC 19 §6.1](rfc-19-authorization.md#6.1%20The%20parts)) |
 | `ExtA` (extended attributes) | initial extended attributes ([§9.5](#9.5%20Extended%20attributes)) |
 | `TWrp` (timewarp) | the snapshot at that time ([§15](#15.%20Previous%20Versions)) |
-| `AppInstanceId`, `AppInstanceVersion` | RFC 14's open identity; a second open with the same id, from another client that may read the file, closes the first (§6.4) |
+| `AppInstanceId`, `AppInstanceVersion` | RFC 14's `Reconnect.Instance`; a second open with the same id, from another client that may read the file, closes the first (§6.4) |
 | `SVHDX_OPEN_DEVICE_CONTEXT` (shared virtual disk) | `STATUS_NOT_SUPPORTED` |
 
 ## Appendix E — information classes
@@ -2205,7 +2306,7 @@ What each method then calls below is
 | `SET_INFO` `Link` | `Link` | |
 | `SET_INFO` `FullEa` | `SetXattr`, `RemoveXattr` | |
 | `SET_INFO` security | `SetACL` | |
-| `OPLOCK_BREAK` (lease or oplock acknowledgement) | `AckBreak` | |
+| `OPLOCK_BREAK` (lease or oplock acknowledgement) | `AckRecall` | |
 | `CANCEL` | `CancelLock` for a waiting lock, `Unwatch` for a notification; otherwise none | |
 | `ECHO` | none (adapter only) | |
 | srvsvc `NetShareEnumAll` | `ListShares` | |

@@ -29,43 +29,43 @@
 
   <rect x="24" y="48" width="210" height="124" rx="6" class="st"/>
   <text x="36" y="67" class="h">Client</text>
-  <text x="36" y="85" class="s">ID, Protocol, Owner, Verifier,</text>
-  <text x="36" y="100" class="s">Principal, MachCred, CSSeq</text>
-  <text x="36" y="115" class="s">LeaseOwner, Callback, Shards</text>
-  <text x="36" y="133" class="s">found by (protocol, owner);</text>
-  <text x="36" y="148" class="s">durable except Expires, which</text>
-  <text x="36" y="163" class="s">the lease owner holds (§2.1)</text>
+  <text x="36" y="85" class="s">ID, Protocol, Name, Boot,</text>
+  <text x="36" y="100" class="s">Owner, Protect, Lease, Reach,</text>
+  <text x="36" y="115" class="s">Shards, Adapter (opaque)</text>
+  <text x="36" y="133" class="s">found by (protocol, name);</text>
+  <text x="36" y="148" class="s">durable but Lease.Expires,</text>
+  <text x="36" y="163" class="s">held by the lease owner (§2.1)</text>
 
   <rect x="24" y="192" width="210" height="72" rx="6" class="pr"/>
-  <text x="36" y="211" class="h">Unconfirmed</text>
-  <text x="36" y="228" class="s">SETCLIENTID or EXCHANGE_ID not</text>
-  <text x="36" y="243" class="s">yet confirmed; held in open state on</text>
-  <text x="36" y="258" class="s">the node that answered (§2.9)</text>
+  <text x="36" y="211" class="h">Client.Pending</text>
+  <text x="36" y="228" class="s">a proposal awaiting its confirm;</text>
+  <text x="36" y="243" class="s">held in open state on the node</text>
+  <text x="36" y="258" class="s">that answered, never written (§2.9)</text>
   <path d="M129,190 L129,174" class="cb"/>
   <text x="136" y="186" class="s">confirm: Connect</text>
 
   <rect x="24" y="284" width="210" height="72" rx="6" class="pr"/>
-  <text x="36" y="303" class="h">OwnerSeq, NFSv4.0</text>
-  <text x="36" y="320" class="s">the next seqid of an open-owner</text>
-  <text x="36" y="335" class="s">or lock-owner, at its home</text>
-  <text x="36" y="350" class="s">primary (§2.8)</text>
+  <text x="36" y="303" class="h">Sequence</text>
+  <text x="36" y="320" class="s">the number an owner's next</text>
+  <text x="36" y="335" class="s">sequenced request carries, at its</text>
+  <text x="36" y="350" class="s">home primary (§2.8)</text>
 
   <rect x="270" y="48" width="226" height="124" rx="6" class="dr"/>
   <text x="282" y="67" class="h">Open</text>
-  <text x="282" y="85" class="s">Access, Deny, Durability, Principal</text>
-  <text x="282" y="100" class="s">DeleteOnClose, DeleteBy, Via</text>
-  <text x="282" y="115" class="s">StateSeq, Nonce: its stateid</text>
-  <text x="282" y="133" class="s">SMB: CreateGUID, AppInstance,</text>
-  <text x="282" y="148" class="s">Timeout, LockSeq, ChannelSeq,</text>
-  <text x="282" y="163" class="s">LossSeen, Session (§2.2)</text>
+  <text x="282" y="85" class="s">Principal, Via, Mode: access, deny;</text>
+  <text x="282" y="100" class="s">Durability, Session, Grant, Delete</text>
+  <text x="282" y="115" class="s">Token, Seq: its StateRef</text>
+  <text x="282" y="133" class="s">Suspended, LossSeen, Channel;</text>
+  <text x="282" y="148" class="s">Reconnect keys when durable;</text>
+  <text x="282" y="163" class="s">Clone for a clone source (§2.2)</text>
   <path d="M236,90 L268,90" class="ln"/>
   <text x="238" y="84" class="s">holds</text>
 
   <rect x="270" y="192" width="226" height="72" rx="6" class="dr"/>
   <text x="282" y="211" class="h">Lock, LockState</text>
-  <text x="282" y="228" class="s">Owner, Range, Exclusive; taken</text>
-  <text x="282" y="243" class="s">under an open, released by its</text>
-  <text x="282" y="258" class="s">close. NLM: no open (§2.3)</text>
+  <text x="282" y="228" class="s">Owner, Range (exclusive or not);</text>
+  <text x="282" y="243" class="s">taken under an open, released by</text>
+  <text x="282" y="258" class="s">its close, or under none (§2.3)</text>
   <path d="M383,174 L383,190" class="ln"/>
 
   <rect x="270" y="284" width="226" height="72" rx="6" class="pr"/>
@@ -77,9 +77,9 @@
   <rect x="532" y="48" width="222" height="88" rx="6" class="pr"/>
   <text x="544" y="67" class="h">CachingGrant</text>
   <text x="544" y="85" class="s">covers opens; read, write, handle</text>
-  <text x="544" y="100" class="s">SMB: Key, ParentKey, Epoch</text>
-  <text x="544" y="115" class="s">Recall: a deadline in flight</text>
-  <text x="544" y="130" class="s">one per (client, lease key, file)</text>
+  <text x="544" y="100" class="s">Key, Epoch, Adapter (opaque)</text>
+  <text x="544" y="115" class="s">Recall: To and a Deadline</text>
+  <text x="544" y="130" class="s">one per (client, key, file)</text>
   <path d="M530,100 L498,100" class="cb"/>
 
   <rect x="532" y="150" width="222" height="60" rx="6" class="pr"/>
