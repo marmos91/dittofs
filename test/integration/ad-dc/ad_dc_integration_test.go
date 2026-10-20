@@ -270,8 +270,8 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	t.Log("Waiting for KDC TCP port...")
 	waitForADPort(t, kdcHostPort, 6*time.Minute)
 
-	// Wait for the entrypoint to finish exporting the keytab. It is the last
-	// artifact written before samba re-execs in the foreground.
+	// Wait for the entrypoint to export the keytab, the last artifact it writes.
+	// The samba that served the setup keeps running, so the DC stays up from here.
 	t.Log("Waiting for service keytab export...")
 	waitForKeytab(t, 4*time.Minute)
 

@@ -5,6 +5,7 @@ package ad_dc_test
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,12 @@ import (
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/ntlm"
 )
+
+// serverAuthenticateDenied is how a DC's refusal of the machine credential
+// reaches the caller: NetrServerAuthenticate3 returned STATUS_ACCESS_DENIED
+// (0xC0000022, printed as a signed 32-bit value). go-msrpc folds the status into
+// the error text instead of wrapping it, so the text is all there is to match.
+const serverAuthenticateDenied = "NetrServerAuthenticate3: error: -1073741790"
 
 // ntlmResponseFor computes a deterministic NTLMv2 NT/LM response for the given
 // AD user against a fixed 8-byte server challenge, mirroring the helper inlined
@@ -297,17 +304,23 @@ func TestNetlogonHotReload_PasswordRotation(t *testing.T) {
 	rotateMachinePassword(t, newMachinePass)
 
 	// Prove the OLD secret no longer authenticates: reload with the now-stale
-	// original password and confirm the next logon FAILS. This proves the rebuilt
-	// channel presents whatever credential the reload installed (if it were frozen
-	// at the first credential, both old and new would behave identically and this
-	// signal would be meaningless).
+	// original password and confirm the DC REFUSES the rebuilt channel. This proves
+	// the rebuilt channel presents whatever credential the reload installed (if it
+	// were frozen at the first credential, both old and new would behave
+	// identically and this signal would be meaningless). Only the DC's refusal
+	// counts: a logon that fails before the DC checks the credential (DNS, SMB, a
+	// dropped pipe) proves nothing about which secret the channel presented.
 	a.ReloadCredential(ctx, credWith(machineAccountPass))
-	if _, errStale := logonAlice(); errStale == nil {
+	_, errStale := logonAlice()
+	if errStale == nil {
 		t.Fatal("logon SUCCEEDED with the stale machine password after rotation — " +
 			"the secure channel is not presenting the reloaded credential to the DC")
-	} else {
-		t.Logf("stale-password logon correctly rejected after rotation: %v", errStale)
 	}
+	if !strings.Contains(errStale.Error(), serverAuthenticateDenied) {
+		t.Fatalf("stale-password logon failed, but not with the DC's credential refusal (%s): %v",
+			serverAuthenticateDenied, errStale)
+	}
+	t.Logf("stale-password logon refused by the DC after rotation: %v", errStale)
 
 	// 3. Reload with the NEW password — the rebuilt channel must authenticate with
 	// it and the logon must succeed. This is the core #1369 finding-#2 assertion:
