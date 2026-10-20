@@ -561,7 +561,9 @@ block's refusal does not fail the others.
    the `BR` prefix ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)), each name byte in `not_before` order up to store time and, per batch, in one transaction, moves
    each record still `retired` with `not_before` ≤ store time to `deleted` —
    only after the verification of [§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes) passes for it — and records the store time
-   of the move in the record's `marked_at` ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
+   of the move in the record's `marked_at` ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)). The batch reads the
+   namespace's `Recheck` record (`NS‖ns‖gc‖recheck`) with a tracked `Get`, which
+   orders it against every `Recheck` (step 4).
 4. **Delete** the objects through the remote store's multi-object delete
    ([RFC 4 §4.5](rfc-4-remote-tier.md#4.5%20Delete%20is%20batched%20and%20idempotent)), after reading the namespace claim and confirming that the last
    `Recheck` passed ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), and only for a name whose move to `deleted` precedes
@@ -573,7 +575,18 @@ block's refusal does not fail the others.
    `MarkedBlock.MarkedAt` with the `started` of the last passed `Recheck`, both
    read from block metadata (`State`). `started` is store time, stamped by the
    transaction that records the intended nonce, and the claim put follows that
-   commit, so `MarkedAt` < `started` implies that the put came after the mark.
+   commit. A stamp is taken at a transaction's snapshot, not at its commit
+   ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), so the times alone do not order the two: a mark stamped
+   before `started` could commit after the put. The mark's tracked read of the
+   `Recheck` record closes that. A mark whose snapshot precedes a `Recheck`'s
+   commit, and which would commit after it, conflicts and aborts; so a mark
+   committed after a `Recheck` read it, and its `MarkedAt` is at or above that
+   `started` on one clock, or above `started` − σ across the nodes of a store
+   without a timestamp oracle (σ of [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). A name is therefore deleted
+   only when `MarkedAt` + σ < `started`, with σ zero where `Now` is one clock; a
+   mark that committed first but within σ waits one more period. The record is
+   written twice per period, so the conflict costs at most a retried batch
+   or two per period.
 5. **Prune.** A `deleted` record whose delete succeeded before the start of a
    later `Recheck` that passed is pruned, in batches: one transaction deletes
    the block record, conditional on state `deleted`, every chunk record in its
@@ -1704,6 +1717,16 @@ same drift rule**, by their folder record's holder, not by GC
   the syncer refuses puts to it; gets go on
   ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)). A later `Recheck` that passes clears it
   ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
+- **Every node applies the recorded result to its own syncer.** The syncer and
+  its store registrations are per process, and only the first partition's
+  holder runs `Recheck`. So GC on every node reads the namespace's `Recheck`
+  record at `Add`, before it returns, and once per `Recheck` period after,
+  and calls `SetDrift` on its own syncer from it: raised while the record holds
+  `drift`, cleared once it holds a passed `Recheck`. No node repeats a remote
+  check, a restarted node takes up the recorded state at `Add`, and a former
+  holder clears as soon as its successor's pass is recorded. GC is thus its
+  process's one `SetDrift` caller, acting on the record rather than on its own
+  reads.
 - **A paused namespace gets no relocation, delete or collection.** While the
   namespace's GC pause record exists — written by a move between installations
   ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) and kept across a restart — GC **MUST** read it before every
@@ -1849,8 +1872,22 @@ the last runs the check. Then:
    and every retained export's material list as the backup records
    ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)) record it, never by reading a backup location.
 
-   The key check is [RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)'s, with its check token.
-   If any entry or export names any key, it removes none. Checked one key at a time,
+   **The drain mark carries a check token.** The check first rewrites the mark
+   with a fresh token. Every copy transaction that adds a census entry for this
+   namespace's material, in any namespace's folder record, reads the mark with
+   tracking and, while it exists, writes a new token into it in the same
+   transaction ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)). The transaction that removes the keys reads
+   the mark with tracking, proceeds only if it still holds the token its own
+   check wrote, and rewrites the mark. Both commit orders are then caught: a
+   census entry committed at any point after the check began — before the
+   removal transaction started, or while it runs — has replaced the token, so
+   the removal finds another value, or conflicts, removes nothing and the check
+   runs again; a removal that commits first has written the mark a later copy
+   transaction read, so that copy aborts and finds the material gone. A mark
+   with no value would catch neither: a census entry committed before the
+   removal transaction's snapshot is no conflict for it ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)), and a
+   removal that only reads the mark writes nothing a copy read. If any entry or
+   export names any key, it removes none. Checked one key at a time,
    a step that stops at the data key has already destroyed the chunk-ID and
    chunking keys, which no census lists, and the other namespace's retained
    backups can then be neither verified nor restored.
@@ -1935,11 +1972,13 @@ type Blocks interface {
 }
 
 type deleterBlocks interface {
-	// MarkDue moves to deleted, in K-bounded batches, each retired block of part whose
-	// not_before (read from the record) is at or before store time and whose §3.5
-	// verification passes; a refused block is resurrected and listed in Refused.
-	// ErrHeld or ErrPaused (read with a tracked Get) fails the remaining batches.
-	MarkDue(ctx context.Context, part Partition) (MarkResult, error)
+	// MarkDue moves to deleted, one K-bounded transaction per yielded result, each
+	// retired block of part whose not_before (read from the record) is at or before
+	// store time and whose §3.5 verification passes; a refused block is resurrected
+	// and listed in Refused. Each transaction reads the Recheck record with a tracked
+	// Get (§3.1 step 3). The caller may stop between results, so nothing accumulates.
+	// ErrHeld or ErrPaused (read with a tracked Get) ends the sequence.
+	MarkDue(ctx context.Context, part Partition) iter.Seq2[MarkResult, error]
 	Marked(ctx context.Context, part Partition) iter.Seq2[MarkedBlock, error]
 	MarkGone(ctx context.Context, names []BlockName) error // one batch: each name's delete succeeded
 	// Prune removes deleted records whose success precedes the started time of the
@@ -1980,7 +2019,7 @@ type namespaceBlocks interface {
 	RecordRecheck(ctx context.Context, r RecheckRecord) error
 }
 
-type MarkResult struct{ Deleted, Refused []BlockName }
+type MarkResult struct{ Deleted, Refused []BlockName } // one transaction's, at most K names
 
 type MarkedBlock struct {
 	Name     BlockName
@@ -2012,7 +2051,7 @@ type Remote interface {
 // Syncer is RFC 3's syncer as GC uses it; the root adapts *syncer.Flow to Flow.
 type Syncer interface {
 	OpenFlow(store StoreID, background bool) (Flow, error) // GC opens one per namespace it holds a partition of
-	SetDrift(store StoreID, err error)                      // GC is the store's one Recheck caller
+	SetDrift(store StoreID, err error)                      // GC is the process's one caller, from the Recheck record (§7.5)
 }
 
 type Flow interface {
@@ -2106,7 +2145,7 @@ trace ID.
 | Condition | Scope | Raised when | Cleared when |
 | --- | --- | --- | --- |
 | `gc_hold` | namespace | the hold has any reason: a §6.4 trip or a reverse rebuild ([§7.4](#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) | its last reason clears |
-| `gc_deletion_backlog` | namespace | the due and `deleted` count has not decreased over six `Recheck` periods (proposal, unmeasured) ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | it decreases |
+| `gc_deletion_backlog` | namespace | the due and `deleted` count is nonzero and has not decreased over six `Recheck` periods (proposal, unmeasured) ([§3.6](#3.6%20Failures%20resolve%20on%20their%20own)) | it decreases or reaches zero |
 | `gc_clock_skew` | node | the local clock differs from store time by more than the clock skew limit ([§3.7](#3.7%20Trash)); a distinct quantity from [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)'s clock bound | it is back within the limit |
 | `gc_audit_behind` | namespace | a hash range was not covered within its period, or the derived rate is above the scheduler's cap ([§6.1](#6.1%20Coverage)) | every range is covered within its period and the rate is under the cap |
 | `gc_lost_refs` | namespace | derived: any Lost ref is recorded and not yet dropped ([§6.3](#6.3%20A%20ref%20with%20no%20live%20chunk%20record%20is%20found%20by%20one%20read)); it pages | the last such ref is dropped; never by an operator's acknowledgement |
@@ -2156,6 +2195,8 @@ the implementation, not by timing.
 | [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) slow clock | Run the old installation's GC with its clock 5 % slow, partition it from the claim and take the claim over. Assert its last delete precedes the new installation's first put, adoption or delete. A wait of *T* plus an offset, with no rate stretch, overlaps them. |
 | [§3.7](#3.7%20Trash) metadata recovery within the trash | Snapshot the metadata store; then release files, compact blocks and run the deleter for less than one retention; restore the metadata store from the snapshot. Assert every ref resolves and reads, including those whose blocks were compaction sources. Let compaction sources skip the trash; assert the check fails. |
 | [§3.7](#3.7%20Trash) recovered retired blocks | Release a file so block *B* retires; snapshot the metadata store; let *B*'s `not_before` pass and the deleter remove it; restore the snapshot. Assert that before the first client call or adoption *B* is `deleted`, and that a clone naming one of *B*'s chunks is refused rather than resurrecting *B*. Leave a block retired whose `not_before` is still ahead: assert it stays `retired`. A recovery that serves the restored state as found resurrects a block with no object. |
+| [§3.1](#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object) mark against `Recheck` | From a snapshot taken before a `Recheck` records its intended nonce, commit a `MarkDue` batch (a) after that record and the claim put, and (b) before the record. Assert (a) aborts and its retry stamps `MarkedAt` at or above `started`, so no delete is issued for its names before a later `Recheck`; (b) commits and its names are deleted once that `Recheck` passes. Repeat (a) on a backend without a timestamp oracle with the marking node's clock σ behind the `Recheck` holder's; assert no delete before a later `Recheck`. Make the mark's read of the record untracked: assert (a) commits and the check fails. |
+| [§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period) drift on every node | On two nodes, let node A hold the first partition and record a `Recheck` with drift. Assert node B's syncer refuses uploads to the store within one period, and at once after a restart's `Add`. Move the lease to B and record a passed `Recheck`; assert both syncers clear and A issued no remote check after the handoff. |
 | [§3.7](#3.7%20Trash) restore within one `Recheck` period | Snapshot the metadata store just after a claim rewrite; retire block *B* with zero retention and let the deleter mark it `deleted`; restore the snapshot before the next claim rewrite. Assert the deleter issued no delete for *B* before a `Recheck` that started after the mark rewrote the claim, and that the restored store either still finds *B*'s object or is detected as older and settles *B*. |
 | [§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) census added during the key check | Start the drain's key check, let it read past folder record *F*, then commit a copy batch adding a census entry for the draining namespace's material to *F*, (a) before the key-removing transaction starts and (b) while it runs; then (c) commit the removal first and a copy batch after it. Assert in (a) and (b) the removal finds another token or conflicts, removes no key, and the re-run check finds the entry; in (c) the copy batch aborts. A mark with no token fails (a); a removal that does not rewrite the mark fails (c). Repeat in a plaintext namespace with a retained copying backup: assert the claim and folder records stay until a sweep removes its blocks. |
 | [§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move) staging bound | Compact into a store whose puts stall while a copying backup to another folder runs. Assert the two together stay within the one staging budget, memory plus spill never pass `backups.spill_max` and reads wait there, neither starving the other, spill lies under `backups.spill_path` and is empty after a restart; with no spill path, assert nothing spills. |
