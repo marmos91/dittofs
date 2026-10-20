@@ -1069,7 +1069,7 @@ if those writes were on disk — a silent hole in a virtual disk that shows up a
 corruption days later. Making writes on surviving opens stable, and refusing
 durable opens that do not survive, removes both halves of that.
 
-![What a reconnect finds after each kind of loss: a volatile open is lost after a network blip, a lost protocol node or a lost primary; a durable handle reconnects after a blip or a lost protocol node, but after the primary is lost it was only in that primary's memory and the reconnect is STATUS_OBJECT_NAME_NOT_FOUND; a persistent handle, offered only on a continuously available share, is stored and reconnects with its lease in all three cases, with every acknowledged write synced](img/rfc22-node-loss.svg)
+![What a reconnect finds after each kind of loss: a volatile open is lost after a network blip, a lost gateway node or a lost primary; a durable handle reconnects after a blip or a lost gateway node, but after the primary is lost it was only in that primary's memory and the reconnect is STATUS_OBJECT_NAME_NOT_FOUND; a persistent handle, offered only on a continuously available share, is stored and reconnects with its lease in all three cases, with every acknowledged write synced](img/rfc22-node-loss.svg)
 
 > decision: a durable v1 or v2 open is not reclaimable across the loss of its
 > primary; only a persistent open survives it. Reclaiming a durable open whose

@@ -19,7 +19,7 @@
     </style>
   </defs>
   <rect width="900" height="430" fill="#ffffff"/>
-  <text x="16" y="26" class="t">A protocol node's loss takes the session and its reply cache, never the client's state.</text>
+  <text x="16" y="26" class="t">A gateway node's loss takes the session and its reply cache, never the client's state.</text>
 
   <rect x="310" y="44" width="280" height="44" rx="6" class="am"/>
   <text x="326" y="64" class="h">build01 — Linux, NFSv4.1</text>
@@ -31,7 +31,7 @@
   <text x="620" y="108" class="s">reconnects at once</text>
 
   <rect x="40" y="134" width="320" height="96" rx="6" class="bad"/>
-  <text x="56" y="156" class="h">P1 — protocol node, dies</text>
+  <text x="56" y="156" class="h">P1 — gateway node, dies</text>
   <text x="56" y="176" class="l">session 1: up to 64 slots</text>
   <text x="56" y="194" class="l">reply cache, in memory only</text>
   <text x="56" y="214" class="e">both lost with the node</text>
@@ -40,7 +40,7 @@
   <text x="378" y="162" class="s">floating address moves</text>
 
   <rect x="540" y="134" width="320" height="96" rx="6" class="pr"/>
-  <text x="556" y="156" class="h">P2 — protocol node, takes the address</text>
+  <text x="556" y="156" class="h">P2 — gateway node, takes the address</text>
   <text x="556" y="176" class="m">NFS4ERR_BADSESSION first</text>
   <text x="556" y="194" class="l">session 2, same client ID</text>
   <text x="556" y="214" class="l">reply cache starts empty</text>
