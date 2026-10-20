@@ -44,14 +44,38 @@ Severity tags:
 - **blocking** — must change before merge (bug, data loss, security, broken contract).
 - **suggestion** — would improve it, author decides.
 - **nit** — style/naming, never blocks.
-- **question** — you need information, not a change.
+- **question** — you need information, not a change. Ask whenever the intent is unclear rather than guessing it.
 
 Rules:
 
 - Prefer GitHub `suggestion` blocks when the fix is local to the commented lines, so the author can apply it in one click.
+- Link the RFC, spec section or DittoFS doc that backs a point instead of re-explaining it.
 - Do not repeat the same comment on every occurrence: comment once and say "same in X and Y".
-- The overall review body starts with the verdict, then the points that matter most, in order of importance. A reader who skips the inline comments must still know whether the PR can merge and what blocks it. Do not repeat what the inline comments already say.
 - If a point needs more than a short paragraph to argue, or the thread goes past two rounds, propose a quick live review instead of writing more.
+
+## Review body
+
+A reader who skips the inline comments must still know whether the PR can merge and what blocks it. Write the body in this order, and skip any part that would be empty:
+
+1. **Summary**: the verdict, in a couple of sentences.
+2. **Critical issues**: what blocks the merge (correctness, security, breaking changes).
+3. **Suggestions**: improvements to performance or maintainability.
+4. **Questions**: what you need to know before you can judge.
+5. **Praise**: what was done well, named specifically enough that nobody changes it later by mistake.
+
+Order points by importance: correctness, then performance, then style. In parts 2–4, give each point one line that names its thread; the detail lives in the inline comment, so do not repeat it here.
+
+## What to check
+
+Use this list to guide the review. Do not paste it into the review: report only what fails, as inline comments.
+
+- **Protocol implementation**: encoding/decoding follows the specifications; error codes map correctly; authentication and authorization are correct; behavior compared with reference implementations.
+- **Architecture**: protocol and business logic stay separate; store interfaces used correctly; two-phase write pattern followed where needed.
+- **Code quality**: no data races or deadlocks; context cancellation respected; proper error handling with structured errors; thread safety ensured.
+- **Performance**: no unnecessary allocations in hot paths; buffer pooling used appropriately; efficient algorithms for common operations.
+- **Security**: input validated; permission checks at the correct layer; no sensitive data logged.
+- **Testing**: new code covered by unit tests; integration/E2E tests for protocol changes; error paths tested.
+- **Documentation**: public APIs commented; user documentation updated; configuration examples provided.
 
 ### Example
 

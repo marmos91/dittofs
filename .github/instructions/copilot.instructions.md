@@ -238,68 +238,7 @@ if attr.UID != authCtx.UID { return ErrAccess }
 metadataStore.CheckPermissions(authCtx, handle, requested)
 ```
 
-## Review Checklist Template
+## Writing the review
 
-Use this template for comprehensive reviews:
-
-```markdown
-## Protocol Implementation
-- [ ] Protocol encoding/decoding follows specifications
-- [ ] Error codes map correctly
-- [ ] Authentication/authorization is correct
-- [ ] Compared with reference implementations
-
-## Architecture
-- [ ] Separation of concerns maintained (protocol vs business logic)
-- [ ] Store interfaces used correctly
-- [ ] Two-phase write pattern followed where needed
-
-## Code Quality
-- [ ] No data races or deadlocks
-- [ ] Context cancellation respected
-- [ ] Proper error handling with structured errors
-- [ ] Thread safety ensured
-
-## Performance
-- [ ] No unnecessary allocations in hot paths
-- [ ] Buffer pooling used appropriately
-- [ ] Efficient algorithms for common operations
-
-## Security
-- [ ] Input validation present
-- [ ] Permission checks at correct layer
-- [ ] No sensitive data logged
-
-## Testing
-- [ ] Unit tests cover new code
-- [ ] Integration/E2E tests for protocol changes
-- [ ] Error paths tested
-
-## Documentation
-- [ ] Code comments for public APIs
-- [ ] User documentation updated
-- [ ] Configuration examples provided
-```
-
-## Tone & Communication
-
-- Be constructive and specific
-- Provide code examples for suggested improvements
-- Reference relevant documentation (RFCs, specs, DittoFS docs)
-- Praise good implementations
-- Ask clarifying questions when intent is unclear
-- Prioritize correctness > performance > style
-
-## Writing comments and discussions
-
-Write every comment, review body and reply following
-[`pr-writing.instructions.md`](pr-writing.instructions.md).
-
-## Output Format
-
-Structure your review as:
-1. **Summary**: High-level assessment (2-3 sentences)
-2. **Critical Issues**: Must-fix items (security, correctness, breaking changes)
-3. **Suggestions**: Improvements for performance, maintainability
-4. **Questions**: Clarifications needed
-5. **Praise**: What was done well
+Follow [`pr-writing.instructions.md`](pr-writing.instructions.md) for what to check, the
+review body, the comments and the replies.
