@@ -530,17 +530,16 @@ suites:
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
 
-  # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix` and
-  # `select.pr` replace suites.json's profiles and PR lists. Commands are shortened: the flags each
-  # tool needs are in its script today, and move here with it. On PRs only the production profile,
-  # badger-s3, runs (§4.3).
+  # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix`
+  # replaces suites.json's profiles. Commands are shortened: the flags each tool needs are in its
+  # script today, and move here with it. Conformance runs the production profile, badger-s3,
+  # only (§4.3).
   pjdfstest:
     format: tap                         # each test file prints TAP; no prove summary to parse
     cmd: prove -v {test}
     dir: "{mount}"                      # run in the mounted share
     tests: "{tools}/pjdfstest/tests/*/*.t"
-    matrix: { profile: [memory, badger, badger-s3], nfs: ["3", "4", "4.1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], nfs: ["3", "4", "4.1"] }
     fixture:
       profile: "{profile}"
       nfs: { version: "{nfs}", options: "noac,sync,lookupcache=none" }   # mounted at {mount}; v3 adds nolock
@@ -554,8 +553,7 @@ suites:
     format: junit                       # pynfs writes JUnit itself with --xml
     cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
     names: all                          # what {names} holds when a run names no tests
-    matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], minor: ["0", "1"] }
     fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # pynfs mounts nothing; uid 1 is its second client
     known: test/nfs-conformance/pynfs/known.yaml
     tier: pr
@@ -578,8 +576,7 @@ suites:
       DomainName: "{server}"
       AdminUserName: "{user}"
       PasswordForAllUsers: "{password}"
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     fixture:
       profile: "{profile}"
       smb: { encryption: preferred, port: 445 }   # WPTS connects to 445 only
@@ -595,8 +592,7 @@ suites:
     cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}%{password} {test}"
     tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's share and name prefix
     timeout: { test: 5m }               # run.sh's one limit for each test of its list
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }   # its multichannel test dials 445
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
@@ -642,7 +638,7 @@ suites:
     tests: test/nfs-mount/nfstest/tests.txt   # the modules, each with the option sets it runs on
     cmd: "{tools}/nfstest/bin/nfstest_{test} --server {server} --port {nfs-port} --export /export --nfsversion {nfs} --mtpoint /tmp/dittofs-test --mtopts {mtopts} --rmtraces --notty {test-args}"
     matrix:
-      profile: [memory]
+      profile: [badger-s3]
       mount-options:                    # the same sets as nfstest's flags: it mounts by itself
         - default: { nfs: "4.2", mtopts: hard }
         - v3: { nfs: "3", mtopts: "hard,tcp,mountproto=tcp" }
@@ -810,8 +806,8 @@ a scenario's size is in its file name, a fio job's parameters in its job file.
 read it with `jq`. Workflows never parse the file itself, though; they parse `run.sh --matrix`
 output. `dt plan --json` gives them the same, from YAML.
 
-`suites.json` goes with `run.sh`: its profiles become `matrix`, its PR lists `select.pr`, and its
-known-failure paths `known`. `test/conformance/check-docs.sh`, which renders the documentation's
+`suites.json` goes with `run.sh`: its profiles become `matrix`, and its known-failure paths
+`known`. `test/conformance/check-docs.sh`, which renders the documentation's
 tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance suites move: the
 tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
@@ -953,11 +949,11 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 Each tier contains the one below it: a quick run on every PR, the full set after every merge, and
 the long and heavy suites each night.
 
-**PRs run the production profile only.** On PRs, pjdfstest, pynfs, WPTS, smbtorture and cthon04
-run only `badger-s3`, the profile production uses. Since the bucket fix (#3013, for #2986) they
-reach S3; before it they tested nothing more than `badger`. `memory` and `badger` run after merge
-and nightly. smbtorture gains a `badger-s3` profile for this, and cthon04, which runs on `memory`
-on PRs today, moves to it.
+**Conformance runs the production profile only.** In every tier, pjdfstest, pynfs, WPTS,
+smbtorture, cthon04 and nfstest run only `badger-s3`, the profile production uses: the team
+decided on 2026-10-19 to drop `memory` and `badger` from the conformance matrix. Since the bucket
+fix (#3013, for #2986) they reach S3; before it they tested nothing more than `badger`. smbtorture
+gains a `badger-s3` profile for this, and cthon04 and nfstest, which ran on `memory`, move to it.
 
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
@@ -1823,7 +1819,7 @@ Carried over from earlier reviews:
 
 Settled before revision 4:
 - CTRF: decided in the 2026-10-08 call.
-- Which profiles run on PRs: `badger-s3` only.
+- Which profiles conformance runs: `badger-s3` only, on PRs, and since 2026-10-19 in every tier.
 - WPTS's setup: it fits the fixture's fields.
 - The NFS `sec=krb5` job: it goes.
 - Real Windows and macOS mounts: the `clients` suite, on hosted runners, on the `memory` profile.
