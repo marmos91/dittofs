@@ -85,7 +85,7 @@ What each piece carries:
    function of the share list, admission on every call with its cache key, and `authz` as the
    one caller of `Authorize`.
 4. **Clients and callbacks:** the `Clients` area over open state's client area, the per-client
-   `Callbacks` registry (`Rebind`), and the server's `Sink`, handed to `Table.Start`.
+   `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the server's `Sink`, handed to `Table.Start`.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
    store's `Namespace`, with open state's `CheckChange` before each change.
 6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams, `Access` and
