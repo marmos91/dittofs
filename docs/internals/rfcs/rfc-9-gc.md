@@ -627,7 +627,8 @@ the compactor, the audit and collection are its sources. The scheduler batches,
 retries with backoff and jitter, bounds concurrency and applies rate limits; each
 source owns its durability, and GC's is the index keys. A restart resumes from
 them — `BD` first, then `BR` up to store time — with no scan of block records.
-The scheduler drops a post past its total (RFC 24 §5.1); each GC source
+The scheduler drops a post past its tenant's reservation of the total, a tenant being a
+namespace (RFC 24 §5.1); each GC source
 **MUST** then re-derive the dropped work from its index keys and cursors, so a
 dropped item costs latency, never a deletion.
 
