@@ -796,6 +796,11 @@ them and decides nothing about identity:
   uid, gid or SID gets one allocated in the create's transaction; an account
   created with a role and no spelling at all is API-only and gets none, so it
   signs in over no file protocol ([RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users));
+- **link** an OpenID Connect subject to a user by writing its `oidc` spelling,
+  the (issuer, subject) pair, and **unlink** it by removing it, under the same
+  account rules (§5.2): checked unique, allocating nothing, giving no file
+  access ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)),
+  and audited as a change of the user (§6);
 - **a password is write-only**. It is set by `POST /users/{id}:set-password`,
   its hashes derived by identity's `APISignIn.Hashes`
   ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)) and sealed as RFC 13 §7
@@ -1191,7 +1196,8 @@ second store.
   current record — never against a role carried in a token (§5.3).
 - **An operator cannot raise privilege.** Giving an account a role, or editing
   a user that holds one, is `admin`'s; so an operator cannot make itself admin by
-  editing its own record.
+  editing its own record, nor write `identity.oidc` or `api.oidc_role_map`,
+  which map an issuer's claim to a role (§5.5).
 - **A secret is written as its owner is.** A write of a `Secret` is authorized
   as a write of the resource that names it — a remote store's credential as the
   store, a backup location's as the location — and no route writes a secret by
@@ -1281,6 +1287,54 @@ second store.
 > must prove that no change bypasses the API, and replace it with a second
 > admin account kept sealed.
 
+### 5.5 OpenID Connect sign-in
+
+An installation **MAY** let API accounts sign in through an OpenID Connect
+issuer it configures (`identity.oidc`). It is for this API only: no file
+protocol can carry the token
+([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)).
+
+- **The API runs the device authorization grant** (RFC 8628) for the client,
+  so a headless CLI can sign in. `POST /api/v1/auth/oidc/device` with an
+  issuer's name calls that issuer's device authorization endpoint and returns
+  the user code, the verification URI, the device code and the poll interval.
+  `POST /api/v1/auth/oidc/token` with the device code polls the issuer's token
+  endpoint once, answering `202` with `Retry-After` while the user has not
+  approved, and honouring `slow_down`. The client holds the device code, as
+  RFC 8628's client does; the API holds nothing between polls, so any node
+  answers one. A confidential client's secret is a `Secret` sealed under the
+  `storage` wrapping key ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)),
+  sent only to the issuer's token endpoint, over TLS.
+- **Verification is identity's.** The API passes the ID token the issuer
+  returned to `APISignIn.VerifyToken` and gets back the linked principal and
+  its claims ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)). It then
+  checks the account as for a password sign-in and issues **its own** access
+  and refresh tokens (§5.3). Revocation, hash-only storage and the per-call
+  account check are unchanged. The ID token is not stored, and no client
+  presents one: the API takes every ID token from the issuer's token endpoint
+  itself.
+- **Roles from a claim.** `api.oidc_role_map` maps values of the issuer's role
+  claim to `viewer`, `operator` or `admin`. The session's role is the higher of
+  the account's own and the highest one the claim maps to, recorded in the
+  session record, never in a token. A token with no mapped value adds no role
+  beyond the account's own; an account left with no role is refused `403`.
+  `identity.oidc` and `api.oidc_role_map` are `admin`'s to write, since either
+  can grant `admin` (§5.2).
+- **Password sign-in per role.** `api.password_sign_in` lists the roles that
+  may sign in by password (default: every role). A password sign-in for any
+  other role is refused `403` `password_sign_in_disabled`, audited. The last
+  enabled `admin` account with no `oidc` link keeps password sign-in whatever
+  the setting, so the break-glass reset (§5.4) always leaves a way in.
+- **Audit.** Each OpenID Connect sign-in, failed or not, is audited as a
+  sign-in (§6), naming the issuer and the principal, never the subject's
+  address or user name; a link or unlink is a change of the user.
+
+> ponytail: the claim's role is read at sign-in and fixed for the session's
+> life (`api.session_lifetime`); a refresh does not ask the issuer again, so a
+> role removed there lasts until the session ends. Re-read it at refresh, with
+> the issuer's refresh token kept sealed, when a deployment needs role removal
+> faster than a session.
+
 ## 6. The audit
 
 Every management action leaves an **audit record**:
@@ -1344,6 +1398,9 @@ The CLI is a client of the management API and of nothing else:
   `operation wait <id>` from any machine;
 - `user create` and `user update` take `--email`, and an empty value clears it
   (§3.5);
+- `login --oidc <issuer>` signs in through §5.5's device grant: it prints the
+  verification URI and user code, polls the API, and stores the API's refresh
+  token as a password sign-in's; it needs no browser on the machine it runs on;
 - it keeps named contexts — server URL, account, TLS trust — and stores a
   refresh token or an API token with access for its user only;
 - **its reference is generated** from its own command definitions, never
@@ -1395,6 +1452,7 @@ These rules bind from the single node on, where most of them cost nothing
 | a node frozen or partitioned | status names it behind; `config_generation_behind` | — |
 | **(cluster)** the runner's node dies | `GET` on any node keeps reporting the last step | another node takes the claim after it expires (§4.6) |
 | a stop step misses its bound | — | §2.2's rule: leaves its dependencies open and exits non-zero |
+| an OpenID Connect issuer unreachable | a device-grant call or poll answers `503` `unavailable`; a sign-in whose keys are past their grace is refused, never let in ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)) | — |
 
 ## 9. Versioning and compatibility
 
@@ -1454,6 +1512,7 @@ labels and histogram buckets follow
 | How long do they take? | `api_request_seconds{op}` | histogram (`request`) |
 | How many calls run now, against the bound of §4.3? | `api_calls_in_flight`, `api_calls_in_flight_limit` | gauge |
 | How often is authentication refused, and why? | `api_auth_failures_total{reason}` | counter |
+| Sign-ins by method and result | `api_sign_ins_total{method, result}` — `method` `password`, `oidc`, `token`; `result` `ok` or the problem `code`; no issuer subject, address or name as a label | counter |
 | How often are writes refused on a precondition? | `api_precondition_failures_total{kind}` — `generation`, `idempotency`, `missing` | counter |
 | How often are retries answered from an idempotency record? | `api_idempotent_replays_total` | counter |
 | How many idempotency records are written, and deleted at expiry? | `api_idempotency_records_written_total`, `api_idempotency_records_deleted_total` | counter |
@@ -1510,6 +1569,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §11](rfc-18-identity.md#11.%20Conformance)) |
 | §5.2 roles | Read the route list from the router and compare it with §4.1's resources and Actions table; a route in neither fails the check. For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. | a route missing its check; privileged credentials replaced through a secret write |
 | §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
+| §5.5 OpenID Connect | Against a test issuer, run `login --oidc` with no browser: assert a session whose tokens are the API's, and no ID token stored. Map a claim value to `operator` for an account whose own role is `viewer`: assert `operator` rights, and `viewer` only in a session whose token lacks the value. Set `api.password_sign_in` to `viewer`: assert an `operator`'s password sign-in refused `403`, and the last unlinked `admin` still signs in by password. As `operator`, write `api.oidc_role_map`: refused. | an ID token used as the session; a role carried in a token; an operator raising its own role |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |
 | §6 audit | Run every mutating route once, applied and refused. Assert one audit record each, with generations before and after, and no secret value; fault the commit of one change and assert neither the change nor its record exists. | a change with no record |
 | §7 CLI | Run the CLI's whole suite with the host's bootstrap and the store unreadable to the CLI's user: assert every command still works. Assert the generated reference matches the command tree. Assert `go list -deps` of the CLI names no package of the metadata store, the block stores or the control-plane server. | a command that bypasses the API |
