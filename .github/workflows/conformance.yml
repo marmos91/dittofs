@@ -128,7 +128,9 @@ jobs:
 
   # The graders decide whether a suite is red at all, so they are guarded on
   # their own in about a second rather than only through a 40-minute run that
-  # would have to fail first to reveal a grading regression.
+  # would have to fail first to reveal a grading regression. The common
+  # runner's, the known-failures parser's and the admission lease's tests run
+  # in Repo Checks (lint.yml).
   graders:
     name: Grading logic
     runs-on: ubuntu-latest
@@ -136,12 +138,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Test the common runner
-        run: ./test/conformance/run_test.sh
-
-      - name: Test the shared known-failures parser
-        run: ./test/common/known-failures_test.sh
 
       - name: Test the POSIX grader
         run: ./test/posix/parse-results_test.sh
@@ -160,9 +156,6 @@ jobs:
 
       - name: Test grader exit-status boundaries
         run: ./test/conformance/grader-exit-status_test.sh
-
-      - name: Test the conformance admission lease
-        run: ./test/smb-conformance/compose-env_test.sh
 
   # ---------------------------------------------------------------------------
   # SMB — Docker Compose, no host services, no root.
