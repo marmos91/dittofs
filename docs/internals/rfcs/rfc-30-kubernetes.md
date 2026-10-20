@@ -200,7 +200,7 @@ condition on the resource.
 
 The pool **MUST** be one StatefulSet with at least as many pods as the replica
 count, every pod the same node image running every component
-([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition)):
+([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)):
 
 - **Journal volumes.** Each pod has a volume for its journals, from a class the
   resource names; local NVMe is the expected class. A pod's node identity lives
@@ -234,7 +234,7 @@ The resource's `Ready` condition **MUST** be false while the pool has no live
 pod or the metadata store is unreachable. Readiness probes gate traffic: a pod
 is ready once it has rejoined the store and its adapters accept clients, which
 they do only after everything under them serves
-([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition)). A shard it cannot serve
+([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)). A shard it cannot serve
 is that shard's `shard_relinquished` or `replication_under_floor` condition,
 which §5.1's upgrade waits on beside readiness, not a reason to be unready.
 

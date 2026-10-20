@@ -271,6 +271,49 @@ This RFC **MUST NOT** be read as specifying:
 
 ## 2. The node
 
+**A node is one server process on one host, and the `*node.Node` it builds.**
+It has three jobs and no others: it builds every component once (§2.1); it
+starts and stops them in a fixed order (§2.2); and while it runs it makes them
+match the control-plane records (§2.3). It is never on a request's path, holds
+no routing or cluster logic of its own, and is called by nothing but the start
+command and the test harness. Every node of an installation is one of these,
+running the same binary ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)):
+a single-node installation is one node over an embedded metadata store; a
+cluster is several over one replicated store.
+
+**The start command does four things, and nothing else.**
+
+1. It reads the host's bootstrap — the facts needed before the metadata store
+   can be reached, and only those ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) —
+   from the host's file or environment.
+2. It builds the `Config` (§2.1) from it: the bootstrap, the key-value store the
+   metadata store opens on, the transport (none on one node), the clock, the
+   fault seam, the metrics registry and the logger.
+3. It calls `node.New(cfg)`, then `Start`. An error from either is printed,
+   naming the step that failed, and the process exits non-zero.
+4. On a termination signal it calls `Stop` and exits: zero when every stop step
+   completed, non-zero naming the step that missed its bound (§2.2).
+
+```go
+func run(ctx context.Context) error {
+	boot := config.LoadBootstrap()               // the host's file or environment
+	n, err := node.New(node.Config{Bootstrap: boot, KV: kv.Open(boot.Store),
+		Transport: transportFor(boot), Clock: clock.Real(), ...})
+	if err != nil {
+		return err                               // nothing was started
+	}
+	if err := n.Start(ctx); err != nil {
+		return err                               // what started is closed again
+	}
+	<-terminated(ctx)
+	return n.Stop(context.Background())          // non-nil names the step that missed
+}
+```
+
+The command reads no record and builds no component: a setting it applied
+itself, or a component it built beside the node, would be a second composition
+the records cannot reach.
+
 ### 2.1 The node builds its components
 
 `node.New(cfg)` is the one composition root: the server's start command calls

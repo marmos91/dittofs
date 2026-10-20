@@ -442,38 +442,32 @@ checked `vfs.Service` and is never forwarded
 > This section binds the single-node release, which builds every step below
 > except the cluster's; [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) cites it.
 
-One type, `node.Node`, built by `node.New(cfg)`, composes a node. No other
-component builds components: each is built from its `Deps` and is handed what it
-needs. `New` first refuses what [§2.2](#2.2%20Startup%20refuses%20what%20cannot%20work) lists, then builds, in this order, and
-starts nothing:
+One type, `node.Node`, built by `node.New(cfg)`, composes a node, single or
+clustered alike. Its build order, each component's `Deps` and calls, and its
+start and stop steps are [RFC 23 §2](rfc-23-control-plane.md#2.%20The%20node)'s,
+and are stated only there; [RFC 8 §2](rfc-8-engine.md#2.%20Composition) composes
+the content subsystem below it. Before it builds anything, `New` refuses what
+[§2.2](#2.2%20Startup%20refuses%20what%20cannot%20work) lists. What a cluster
+adds to that composition, and nothing else, is this section's:
 
-| Step | Builds | Calls |
-| --- | --- | --- |
-| 1 | the metadata store, embedded or a client of the replicated one ([RFC 16](rfc-16-metadata-store.md)) | — |
-| 2 | the remote stores ([RFC 4](rfc-4-remote-tier.md)) | — |
-| 3 | the syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores |
-| 4 | the engine ([RFC 8](rfc-8-engine.md)), handed the journal opener: it opens each device's journal itself at `Start`, and **(cluster)** its replication ([RFC 1](rfc-1-journal.md), [RFC 10](rfc-10-journal-replication.md)) | the journal, the syncer, the Existence, Content and Lifecycle views; the carver's `Cut`, which holds no state and is not built ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)) |
-| 5 | GC ([RFC 9](rfc-9-gc.md)), a sibling of the engine, never passed into it | Blocks, the remote stores, the syncer, Keys |
-| 6 | open state ([RFC 14](rfc-14-open-state.md)) | — |
-| 7 | identity ([RFC 18](rfc-index.md)) | — |
-| 8 | `vfs.New`, the `*vfs.Server` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) | identity, open state, the metadata views, the engine |
-| 9 | **(cluster)** `vfs.Serve` over the server, then `vfs.NewGateway` with the checked `vfs.Service` `vfs.Serve` returns as its local one, the router ([§6](#6.%20Learning%20primaries)) and the transport | Serve: the server; the gateway: the checked `vfs.Service`, `vfs.Router`, `vfs.Transport` |
-| 10 | the adapters ([RFC 20](rfc-20-adapters.md)), handed the `vfs.Service` — the gateway in a cluster, the server on one node — and nothing of identity: they sign in through its `SignIn` | `vfs.Service` |
-
-`Node.Start` opens the metadata store and registers the node first, so a
-version refusal stops it before anything else starts; then starts the other
-components in build order, except the adapters; runs the first reconcile; and
-only then starts the adapters: no adapter listens until the node's shares
-are open and, in a cluster, the node holds a node epoch to stamp. `Node.Stop`
-stops them in reverse: adapters first, so no client call arrives at a component
-already closed; then **(cluster)** the gateway; then the node hands the shards
-it is primary of over
-([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) while
-`vfs.Serve` still receives, so other nodes' calls to them are answered, not
-refused until a failover; then `vfs.Serve`, and GC drains before the content
-subsystem closes. No component closes anything it was
-handed. [RFC 8 §2](rfc-8-engine.md#2.%20Composition) composes the content
-subsystem only; this section is the root above it.
+- **What it builds.** After `*vfs.Server`, `vfs.Serve` over the server, then
+  `vfs.NewGateway` with the checked `vfs.Service` that `vfs.Serve` returns as its
+  local one, the router ([§6](#6.%20Learning%20primaries)) and the transport
+  ([§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides)). The
+  adapters are handed the gateway instead of the server; on one node they are
+  handed the server and none of these is built. The engine's journal
+  replication ([RFC 10](rfc-10-journal-replication.md)), shard placement
+  ([RFC 11](rfc-11-ownership.md)), the client-address agent and the pNFS data
+  server ([§5](#5.%20Clients)) come with the cluster too, at the places RFC 23
+  §2.1 names.
+- **What start waits for.** No adapter listens until the node holds a node
+  epoch to stamp ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)),
+  as well as having reconciled.
+- **What stop adds.** The node hands over the shards it is primary of
+  ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) while
+  `vfs.Serve` still receives, so other nodes' calls for them meet a refusal
+  naming the new primary instead of waiting for a failover; only then do the
+  gateway and `vfs.Serve` stop.
 
 > ponytail: the node both builds and drives its components. Split the builder
 > out when it gains dependencies a multi-node test cannot fake cheaply.
