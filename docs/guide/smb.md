@@ -497,6 +497,23 @@ The secret is stored at-rest and is write-only / redacted in API responses.
 > is still being validated — the sealed-schannel `AlterContext` is currently rejected by the
 > test DC (`RPC_S_UNKNOWN_AUTHN_SERVICE`); see #1345.
 
+### Share access policy
+
+A share's export access policy — `require_kerberos`, `allow_auth_sys`,
+`min_kerberos_level` and the netgroup client allowlist, set with
+`dfsctl share nfs-config set` — applies to SMB as well as NFS. It is checked at
+TREE_CONNECT and again on every request on the tree, so a policy change, a
+re-authentication over NTLM, or a channel bound from another address takes
+effect on the next request. A refusal is `STATUS_ACCESS_DENIED`.
+
+| Setting | Over SMB |
+|---------|----------|
+| `require_kerberos=true` | Only Kerberos sessions; NTLM, guest and anonymous sessions are refused. |
+| `allow_auth_sys=false` | Same as `require_kerberos=true`. |
+| `min_kerberos_level=krb5i` | The session must enforce signing (signing required, or dialect 3.1.1), or the tree is made to require encryption when the session can encrypt; otherwise refused. |
+| `min_kerberos_level=krb5p` | The tree requires encryption (`SMB2_SHAREFLAG_ENCRYPT_DATA`); a session that cannot encrypt (SMB 2.x, no cipher) is refused. |
+| netgroup | The client's IP must be in the netgroup, as for NFS. |
+
 ### Guest Sessions
 
 When authentication fails and guest access is enabled, a session is created with guest

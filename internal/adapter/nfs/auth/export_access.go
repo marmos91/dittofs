@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 
@@ -15,24 +14,24 @@ import (
 // the share's export access-control policy. Every denial wraps it, with the
 // rule that fired in the message, so a caller can map one decision onto its own
 // protocol status (MNT3ERR_ACCES, NFS3ERR_ACCES, NFS4ERR_WRONGSEC) and log why.
-var ErrExportAccessDenied = errors.New("export access denied")
+// It is the runtime's sentinel, so SMB refusals of the same policy match it too.
+var ErrExportAccessDenied = runtime.ErrExportAccessDenied
 
 // NetgroupChecker reports whether a client address is allowed by a share's
-// netgroup allowlist. Passing the lookup in keeps the policy dependent on the
-// one call it needs rather than on the whole control plane;
-// *runtime.Runtime.CheckNetgroupAccess satisfies it.
-type NetgroupChecker func(ctx context.Context, shareName string, clientIP net.IP) (bool, error)
+// netgroup allowlist; *runtime.Runtime.CheckNetgroupAccess satisfies it.
+type NetgroupChecker = runtime.NetgroupChecker
 
-// CheckExportAccess applies a share's export access-control policy to one
+// CheckExportAccess applies a share's export access-control policy to one NFS
 // request: which auth flavors the export accepts, the protection level a
 // Kerberos session must have negotiated, and which client addresses may reach
 // it. It returns nil when the request may proceed and an error wrapping
 // ErrExportAccessDenied otherwise. share must not be nil.
 //
-// Both flavor gates test for RPCSEC_GSS rather than against AUTH_UNIX: a share
-// that refuses AUTH_SYS refuses everything weaker than it too, and naming
-// AUTH_UNIX alone would let an AUTH_NONE caller — no credential at all — past
-// the gate.
+// The policy itself is runtime.CheckShareAccess, which SMB applies too; this
+// function only states the NFS request in its terms. Every flavor other than
+// RPCSEC_GSS carries no Kerberos protection: a share that refuses AUTH_SYS
+// refuses everything weaker than it too, and naming AUTH_UNIX alone would let
+// an AUTH_NONE caller — no credential at all — past the gate.
 //
 // The negotiated GSS service level rides in ctx, attached by the GSS DATA
 // dispatch to every RPCSEC_GSS request it processes — control messages and
@@ -40,13 +39,7 @@ type NetgroupChecker func(ctx context.Context, shareName string, clientIP net.IP
 // claimed GSS flavor with no session info was never processed as GSS, which
 // happens when no GSS processor is configured and the dispatch leaves flavor 6
 // unintercepted. That credential is unverified and cannot stand in for
-// Kerberos — RequireKerberos is satisfied by the flavor alone and AllowAuthSys
-// does not apply to it — so it is denied, not skipped.
-//
-// The netgroup allowlist gates the client address, and only when a lookup is
-// supplied: a nil netgroup means the caller applies no address gate here (an
-// empty allowlist already means "allow all"). When one is supplied, an
-// unparseable client address and a failed lookup both deny.
+// Kerberos, so it is denied, not skipped.
 func CheckExportAccess(
 	ctx context.Context,
 	share *runtime.Share,
@@ -54,42 +47,14 @@ func CheckExportAccess(
 	clientIP net.IP,
 	netgroup NetgroupChecker,
 ) error {
-	if authFlavor != rpc.AuthRPCSECGSS {
-		if !share.AllowAuthSys {
-			return fmt.Errorf("%w: share %q accepts only Kerberos auth (flavor %d)",
-				ErrExportAccessDenied, share.Name, authFlavor)
-		}
-		if share.RequireKerberos {
-			return fmt.Errorf("%w: share %q requires Kerberos (flavor %d)",
-				ErrExportAccessDenied, share.Name, authFlavor)
-		}
-	} else {
+	protection := runtime.NoKerberos
+	if authFlavor == rpc.AuthRPCSECGSS {
 		si := gss.SessionInfoFromContext(ctx)
 		if si == nil {
 			return fmt.Errorf("%w: RPCSEC_GSS credential for share %q was not verified",
 				ErrExportAccessDenied, share.Name)
 		}
-		if !MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
-			return fmt.Errorf("%w: share %q requires min kerberos level %q (negotiated service %d)",
-				ErrExportAccessDenied, share.Name, share.MinKerberosLevel, si.Service)
-		}
+		protection = protectionForGSSService(si.Service)
 	}
-
-	if netgroup == nil {
-		return nil
-	}
-	if clientIP == nil {
-		return fmt.Errorf("%w: client address for share %q is not an IP, cannot evaluate the netgroup allowlist",
-			ErrExportAccessDenied, share.Name)
-	}
-	allowed, err := netgroup(ctx, share.Name, clientIP)
-	if err != nil {
-		return fmt.Errorf("%w: netgroup check for share %q failed: %w",
-			ErrExportAccessDenied, share.Name, err)
-	}
-	if !allowed {
-		return fmt.Errorf("%w: client %s is not in the netgroup allowed for share %q",
-			ErrExportAccessDenied, clientIP, share.Name)
-	}
-	return nil
+	return runtime.CheckShareAccess(ctx, share, protection, clientIP, netgroup)
 }

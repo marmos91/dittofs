@@ -219,11 +219,18 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		// SECINFO would narrow to an empty flavor list. Refuse the boot rather
 		// than serve it or silently drop the policy.
 		//
-		// Only where the policy can actually be reached. It gates NFS alone, so
-		// a server with no NFS adapter enabled never consults it and must still
-		// boot; and the share has to be one this load actually served, which is
-		// why this sits after AddShare rather than before it — an enabled row
-		// that AddShare warns about and skips exports nothing either.
+		// Only where the policy can actually be reached, and the share has to be
+		// one this load actually served, which is why this sits after AddShare
+		// rather than before it — an enabled row that AddShare warns about and
+		// skips exports nothing either.
+		//
+		// decision: the refusal is keyed on the NFS adapter alone, although SMB
+		// applies the same Kerberos-only rule at TREE_CONNECT. An SMB-only server
+		// boots with such a share and refuses every session to it, which fails
+		// closed; refusing the boot there too would stop servers that booted
+		// before SMB honoured the policy. Extend the condition to SMB if an
+		// unreachable SMB share turns out to be a misconfiguration operators
+		// miss.
 		if shareConfig.Enabled && nfsEnabled &&
 			ExportAcceptsNoAuthFlavor(shareConfig.RequireKerberos, shareConfig.AllowAuthSys, rt.KerberosEnabled()) {
 			cause, remedy := ExportNoAuthFlavorCause(share.Name, shareConfig.RequireKerberos, shareConfig.AllowAuthSys)

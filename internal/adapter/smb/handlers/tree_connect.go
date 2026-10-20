@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -113,7 +114,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	}
 
 	sess, _ := h.SessionManager.GetSession(ctx.SessionID)
-	permission, status := h.admitTreeConnect(ctx, sess, share)
+	permission, encryptTree, status := h.admitTreeConnect(ctx, sess, share)
 	if status != types.StatusSuccess {
 		return NewErrorResult(status), nil
 	}
@@ -127,7 +128,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		ShareType:              types.SMB2ShareTypeDisk,
 		CreatedAt:              time.Now(),
 		Permission:             permission,
-		EncryptData:            share.EncryptData,
+		EncryptData:            encryptTree,
 		AccessBasedEnumeration: share.AccessBasedEnumeration,
 		ChangeNotifyDisabled:   share.ChangeNotifyDisabled,
 		StreamsDisabled:        share.StreamsDisabled,
@@ -161,7 +162,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 
 	// Calculate ShareFlags
 	var shareFlags uint32
-	if share.EncryptData {
+	if tree.EncryptData {
 		shareFlags |= SMB2ShareFlagEncryptData
 	}
 	// Refs #549: SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM (MS-SMB2 §2.2.10)
@@ -197,10 +198,10 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 // which permission. It is the whole admission rule: TREE_CONNECT applies it,
 // and the srvsvc share list applies it per share so a session is shown only
 // what it could connect to. A second copy of these checks would be one that
-// can drift. It returns the permission capped for a read-only share, and
-// StatusSuccess when the session is admitted or the status TREE_CONNECT
-// answers with when it is not.
-func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session, share *runtime.Share) (models.SharePermission, types.Status) {
+// can drift. It returns the permission capped for a read-only share, whether
+// the tree must require encryption, and StatusSuccess when the session is
+// admitted or the status TREE_CONNECT answers with when it is not.
+func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session, share *runtime.Share) (models.SharePermission, bool, types.Status) {
 	// Refuse TREE_CONNECT on a disabled share. Matches
 	// MS-SMB2 2.2.9 — STATUS_NETWORK_NAME_DELETED is the spec error for a
 	// share that existed but is no longer available. The Enabled flag is
@@ -209,14 +210,25 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 	if !share.Enabled {
 		logger.Warn("SMB TREE_CONNECT refused: share disabled",
 			"share", share.Name, "sessionID", ctx.SessionID)
-		return models.PermissionNone, types.StatusNetworkNameDeleted
+		return models.PermissionNone, false, types.StatusNetworkNameDeleted
+	}
+
+	// The share's access policy: Kerberos-only, the Kerberos protection floor
+	// and the netgroup client allowlist. A floor above what the session already
+	// enforces is met by requiring encryption on this tree when the session can
+	// encrypt; otherwise the session is refused.
+	encryptTree := share.EncryptData || treeEncryptionMeetsKerberosFloor(share, sess)
+	if err := h.checkSharePolicy(ctx.Context, share, sess, ctx.ClientAddr, encryptTree); err != nil {
+		logger.Warn("SMB TREE_CONNECT refused by the share's access policy",
+			"share", share.Name, "sessionID", ctx.SessionID, "client", ctx.ClientAddr, "error", err)
+		return models.PermissionNone, false, types.StatusAccessDenied
 	}
 
 	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
 	permission, user, generation := resolveSharePermission(ctx, sess, share, defaultPerm, h.Registry.GetUserStore())
 	if permission == models.PermissionNone {
 		logger.Debug("Share access denied", "shareName", share.Name, "user", user)
-		return models.PermissionNone, types.StatusAccessDenied
+		return models.PermissionNone, false, types.StatusAccessDenied
 	}
 
 	logger.Debug("Permission resolved for tree connect",
@@ -232,7 +244,7 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 		logger.Info("TREE_CONNECT rejected: encrypted share requires encrypted session",
 			"shareName", share.Name,
 			"encryptionMode", h.EncryptionConfig.Mode)
-		return models.PermissionNone, types.StatusAccessDenied
+		return models.PermissionNone, false, types.StatusAccessDenied
 	}
 	// Re-check the revocation between resolving access and acting on it. The
 	// dispatch gate ran before this did, so a re-check sweep that revoked the
@@ -243,7 +255,7 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 	if sess != nil && sess.IsExpiredOrRevoked() {
 		logger.Warn("SMB TREE_CONNECT refused: session was revoked while access was being resolved",
 			"share", share.Name, "sessionID", ctx.SessionID)
-		return models.PermissionNone, types.StatusNetworkSessionExpired
+		return models.PermissionNone, false, types.StatusNetworkSessionExpired
 	}
 	// The permission above was resolved against one identity, and resolving it
 	// takes two store round trips. A re-authentication landing inside that
@@ -256,9 +268,9 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 	if sess != nil && sess.AuthGeneration() != generation {
 		logger.Warn("SMB TREE_CONNECT refused: session re-authenticated while access was being resolved",
 			"share", share.Name, "sessionID", ctx.SessionID)
-		return models.PermissionNone, types.StatusNetworkSessionExpired
+		return models.PermissionNone, false, types.StatusNetworkSessionExpired
 	}
-	return permission, types.StatusSuccess
+	return permission, encryptTree, types.StatusSuccess
 }
 
 // calculateMaximalAccess returns the SMB2 MaximalAccess mask based on share permission.
@@ -360,6 +372,120 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 	w.WriteUint32(ipcMaximalAccess)       // MaximalAccess: basic read/write for IPC
 
 	return NewResult(types.StatusSuccess, w.Bytes()), nil
+}
+
+// checkSharePolicy applies the share's access policy to a session's request on
+// the share: runtime.CheckShareAccess, the same decision NFS applies, stated in
+// SMB terms. treeEncrypted is whether every request on the tree must be
+// encrypted. It returns nil when the request may proceed.
+//
+// decision: allow_auth_sys=false refuses NTLM, guest and anonymous sessions,
+// exactly as require_kerberos does. On NFS the two settings already refuse the
+// same requests — everything that is not RPCSEC_GSS — and the operator's
+// intent in both is "Kerberos only"; reading allow_auth_sys=false as meaning
+// nothing over SMB would leave a weaker logon reaching a share that NFS keeps
+// Kerberos-only, which is the gap this gate closes. Narrow it to require_kerberos
+// alone only if allow_auth_sys ever gains a meaning NTLM does not fall under.
+func (h *Handler) checkSharePolicy(ctx context.Context, share *runtime.Share, sess *session.Session, clientAddr string, treeEncrypted bool) error {
+	return runtime.CheckShareAccess(ctx, share, smbKerberosProtection(sess, treeEncrypted),
+		clientIPFromAddr(clientAddr), h.Registry.CheckNetgroupAccess)
+}
+
+// TreeSharePolicyStatus re-applies the share's access policy to one request on
+// an established disk tree, returning the status to refuse it with, or zero
+// when it may proceed. The dispatcher calls it for every tree-scoped command
+// except CLOSE and TREE_DISCONNECT, so a policy change, a re-authentication
+// from Kerberos to NTLM, and a channel bound from an address outside the
+// netgroup all take effect on the next request, as the NFS per-operation gate
+// does, rather than at the next TREE_CONNECT. A netgroup membership edit lands
+// once the runtime's cached verdict for that address expires, as it does for
+// NFS.
+//
+// decision: work admitted before a policy change — a CREATE parked on a lease
+// break, a blocked LOCK, an armed CHANGE_NOTIFY — completes against the policy
+// it was admitted under, because it never re-enters dispatch. Each completes at
+// most once and the client's next request is refused. Drain them the way the
+// authorization re-check does if a policy change ever has to cut off work
+// already in flight.
+//
+// IPC$ is a pipe tree with no share behind it, and a tree whose share is no
+// longer registered has no policy to apply, so both are let through here; the
+// handler's own share resolution refuses the latter.
+func (h *Handler) TreeSharePolicyStatus(ctx context.Context, tree *TreeConnection, clientAddr string) types.Status {
+	if h.Registry == nil || tree.ShareType == types.SMB2ShareTypePipe {
+		return 0
+	}
+	share, err := h.Registry.GetShare(tree.ShareName)
+	if err != nil || share == nil {
+		return 0
+	}
+	sess, _ := h.SessionManager.GetSession(tree.SessionID)
+	if err := h.checkSharePolicy(ctx, share, sess, clientAddr, tree.EncryptData); err != nil {
+		logger.Debug("SMB request refused by the share's access policy",
+			"share", share.Name, "treeID", tree.TreeID, "client", clientAddr, "error", err)
+		return types.StatusAccessDenied
+	}
+	return 0
+}
+
+// smbKerberosProtection states what Kerberos protection a session's requests on
+// a tree carry, in the terms the share policy compares: none unless the
+// session's identity was authenticated with Kerberos; privacy when its traffic
+// on the tree is encrypted; integrity when every request must be signed;
+// authentication only otherwise.
+//
+// decision: SMB has no per-tree signing, so krb5i is met only by signing the
+// session already enforces — signing required, or the implicit requirement of
+// dialect 3.1.1 — or by encryption, whose AEAD gives integrity as well. A
+// session that merely may sign gets authentication only, because an unsigned
+// request from it would be accepted. treeEncryptionMeetsKerberosFloor raises
+// such a session to encryption where it can; one that cannot encrypt is refused.
+func smbKerberosProtection(sess *session.Session, treeEncrypted bool) runtime.KerberosProtection {
+	if sess == nil || !sess.IsKerberos() {
+		return runtime.NoKerberos
+	}
+	cs := sess.GetCryptoState()
+	switch {
+	case sess.ShouldEncrypt() || (treeEncrypted && sessionCanEncrypt(sess)):
+		return runtime.KerberosPrivacy
+	case cs != nil && cs.ShouldVerify() && (cs.SigningRequired || sess.Dialect == types.Dialect0311):
+		return runtime.KerberosIntegrity
+	default:
+		return runtime.KerberosAuthOnly
+	}
+}
+
+// treeEncryptionMeetsKerberosFloor reports whether a tree must require
+// encryption to bring a Kerberos session up to the share's min_kerberos_level:
+// the floor asks for integrity or privacy, the session does not already
+// provide it, and the session can encrypt. Encryption is the one protection
+// SMB can enforce per tree.
+func treeEncryptionMeetsKerberosFloor(share *runtime.Share, sess *session.Session) bool {
+	required := runtime.RequiredKerberosProtection(share.MinKerberosLevel)
+	if required < runtime.KerberosIntegrity || !sessionCanEncrypt(sess) {
+		return false
+	}
+	have := smbKerberosProtection(sess, false)
+	return have != runtime.NoKerberos && have < required
+}
+
+// sessionCanEncrypt reports whether a session negotiated SMB 3.x encryption, so
+// a tree requiring it is one the client can use.
+func sessionCanEncrypt(sess *session.Session) bool {
+	if sess == nil || (sess.Dialect > 0 && sess.Dialect < types.Dialect0300) {
+		return false
+	}
+	cs := sess.GetCryptoState()
+	return cs != nil && cs.Encryptor != nil
+}
+
+// clientIPFromAddr parses the IP out of a peer address of the form host:port,
+// or a bare host. It returns nil when the host is not an IP literal.
+func clientIPFromAddr(addr string) net.IP {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	return net.ParseIP(addr)
 }
 
 // shouldRejectUnencryptedTreeConnect returns true if a TREE_CONNECT should be

@@ -550,6 +550,14 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 				"sessionID", reqHeader.SessionID)
 			return nil, nil, types.StatusNetworkNameDeleted
 		}
+		// The share's access policy is re-applied per request, not only at
+		// TREE_CONNECT. CLOSE and TREE_DISCONNECT are exempt so a client the
+		// policy now refuses can still release what it holds.
+		if reqHeader.Command != types.SMB2Close && reqHeader.Command != types.SMB2TreeDisconnect {
+			if st := connInfo.Handler.TreeSharePolicyStatus(ctx, tree, handlerCtx.ClientAddr); st != 0 {
+				return nil, nil, st
+			}
+		}
 		handlerCtx.ShareName = tree.ShareName
 	}
 

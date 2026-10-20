@@ -92,6 +92,14 @@ type Session struct {
 	pacGroupSIDs []string
 	pacUserSID   string
 
+	// kerberos records that the current identity was authenticated with a
+	// Kerberos ticket rather than NTLM, guest or anonymous logon. A share that
+	// admits only Kerberos reads it. It belongs to the identity, so it is
+	// guarded by mu and rewritten by every re-authentication: a session that
+	// re-authenticates from Kerberos to NTLM keeps its tree connections, and
+	// must not keep the Kerberos standing with them.
+	kerberos bool
+
 	// authIdentity memoizes the *metadata.Identity derived from User + the PAC
 	// group SIDs above. That derivation (UID/GID lookup, supplementary-GID slice,
 	// group-SID concat + dedup) is fixed for the life of a session's identity, so
@@ -272,8 +280,19 @@ type Session struct {
 // reader taking a correctly locked snapshot in that window would authorize.
 // The group SIDs are copied, so the caller's slice is never aliased.
 func (s *Session) UpdateIdentity(username, domain string, user *models.User, isGuest, isNull bool, pacGroupSIDs []string, pacUserSID string) {
+	s.updateIdentity(username, domain, user, isGuest, isNull, pacGroupSIDs, pacUserSID, false)
+}
+
+// UpdateKerberosIdentity is UpdateIdentity for a Kerberos re-authentication:
+// the same single write, marking the new identity as Kerberos-authenticated.
+func (s *Session) UpdateKerberosIdentity(username, domain string, user *models.User, pacGroupSIDs []string, pacUserSID string) {
+	s.updateIdentity(username, domain, user, false, false, pacGroupSIDs, pacUserSID, true)
+}
+
+func (s *Session) updateIdentity(username, domain string, user *models.User, isGuest, isNull bool, pacGroupSIDs []string, pacUserSID string, kerberos bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.kerberos = kerberos
 	s.Username = username
 	s.Domain = domain
 	s.User = user
@@ -323,6 +342,16 @@ func (s *Session) PublishUser(user *models.User, generation uint64) bool {
 	s.authIdentity = nil
 	s.authIdentityUser = nil
 	return true
+}
+
+// MarkKerberos records that the session's identity was authenticated with
+// Kerberos. Called when a Kerberos session is first established, before its ID
+// has reached the client; a re-authentication rewrites it through
+// UpdateIdentity or UpdateKerberosIdentity instead.
+func (s *Session) MarkKerberos() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kerberos = true
 }
 
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
@@ -564,6 +593,7 @@ type AuthzIdentity struct {
 	IsNull     bool
 	GroupSIDs  []string
 	UserSID    string
+	Kerberos   bool
 	Generation uint64
 }
 
@@ -585,8 +615,17 @@ func (s *Session) AuthzIdentity() AuthzIdentity {
 		IsNull:     s.IsNull,
 		GroupSIDs:  groupSIDs,
 		UserSID:    s.pacUserSID,
+		Kerberos:   s.kerberos,
 		Generation: s.authGen.Load(),
 	}
+}
+
+// IsKerberos reports whether the session's current identity was authenticated
+// with Kerberos.
+func (s *Session) IsKerberos() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.kerberos
 }
 
 // AuthGeneration reports the generation of the session's current identity.
