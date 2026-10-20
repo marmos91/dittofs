@@ -1729,18 +1729,19 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      the scripts don't, such as skips and tests with no result (§4.6, §4.7), and where the server
      runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
      alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
-     grading each test, as it does when one has no result, compares only its verdict. pynfs's
-     scripts reach the server at the host's address, as `dt` does (§4.2); a test whose difference
-     comes from where its server runs is named, with the cause, in the comparer before the runs
-     it is excused in. None is named yet.
+     grading each test, as it does when one has no result, compares only its verdict, and differs
+     when the scripts pass it. pynfs's scripts reach the server at the host's address, as `dt`
+     does (§4.2); a test whose difference comes from where its server runs is named, with the
+     cause, in the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
-     which come in step 3: each `dt run CELL --ci`, at `nightly` on the schedule and at `merge` on
-     a dispatch, which the scripts run as after a merge. A last job compares the two sides'
-     results per cell, writes the comparison to its summary, and fails when a cell differs: its
-     result is what the 5 runs count. None of these jobs fails the workflow run, so develop's
-     status is still the scripts'.
+     which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
+     the schedule and on a dispatch naming a suite, and `merge` on another dispatch. A last job
+     compares the two sides' results for each planned cell, writes the comparison to its summary,
+     and fails when a cell differs, as a planned cell missing on either side does, or when there
+     is none to compare: its result is what the 5 runs count. None of these jobs fails the
+     workflow run, so develop's status is still the scripts'.
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pynfs/badger-s3-4.1` for `dt`'s
      `pynfs/badger-s3/1`). For it, `run.sh` saves each cell's exit status, and each grader its

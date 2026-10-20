@@ -17,10 +17,11 @@ type script struct{ status, grades string }
 
 // TestCompare compares cells as a workflow run's artifacts hold them: each dt
 // cell in a run of its own, as dt writes it, and each scripts' cell under the
-// path its job uploads.
+// path its job uploads. The plan is dt's cells, unless a case names it.
 func TestCompare(t *testing.T) {
 	pass := report.Test{Name: "p", Status: report.Passed}
 	known := report.Test{Name: "k", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known}
+	knownToo := report.Test{Name: "j", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known}
 	newFail := report.Test{Name: "n", Status: report.Failed, Grade: report.New}
 	unexpectedPass := report.Test{Name: "u", Status: report.Failed, RawStatus: report.Passed, Grade: report.UnexpectedPass}
 	skipped := report.Test{Name: "s", Status: report.Other, RawStatus: report.Skipped, Grade: report.UnexpectedSkip}
@@ -35,47 +36,62 @@ func TestCompare(t *testing.T) {
 		scripts map[string]script
 		same    bool
 		says    string // in the comparison
+		plan    []string
 	}{
 		{"the same", []report.Cell{cell("pjdfstest/memory/3", report.Passed, pass, known)},
 			map[string]script{"pjdfstest/memory-3": {"0", "known k\nran 2\n"}},
-			true, "- `pjdfstest/memory/3` (dt: passed, scripts: exit 0): the same"},
+			true, "- `pjdfstest/memory/3` (dt: passed, scripts: exit 0): the same", nil},
+		{"failures in another order", []report.Cell{cell("wpts/memory", report.Passed, pass, known, knownToo)},
+			map[string]script{"wpts/memory": {"0", "known k\nknown j\nran 3\n"}},
+			true, "(dt: passed, scripts: exit 0): the same", nil},
 		{"a verdict only the scripts give", []report.Cell{cell("pjdfstest/memory/3", report.Passed, pass, known)},
 			map[string]script{"pjdfstest/memory-3": {"1", "known k\nran 2\n"}},
-			false, "(dt: passed, scripts: exit 1): differs: the verdict"},
+			false, "(dt: passed, scripts: exit 1): differs: the verdict", nil},
 		{"different new failures", []report.Cell{cell("wpts/memory", report.Failed, newFail, known)},
 			map[string]script{"wpts/memory": {"1", "known k\nnew x\nran 2\n"}},
-			false, "differs: new failures only through dt: n; only through the scripts: x"},
+			false, "differs: new failures only through dt: n; only through the scripts: x", nil},
 		{"different known failures", []report.Cell{cell("wpts/memory", report.Passed, pass, known)},
 			map[string]script{"wpts/memory": {"0", "known j\nran 2\n"}},
-			false, "differs: known failures only through dt: k; only through the scripts: j"},
+			false, "differs: known failures only through dt: k; only through the scripts: j", nil},
 		{"different numbers of tests run", []report.Cell{cell("wpts/memory", report.Passed, pass, known)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 3\n"}},
-			false, "differs: tests run: 2 through dt, 3 through the scripts"},
-		{"skips and tests with no result only dt grades",
-			[]report.Cell{cell("wpts/memory", "not run", pass, known, skipped, expectedSkip, noResult)},
+			false, "differs: tests run: 2 through dt, 3 through the scripts", nil},
+		{"skips only dt grades", []report.Cell{cell("wpts/memory", "not run", pass, known, skipped, expectedSkip)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
-			true, "(dt: not run, scripts: exit 0): the same"},
+			true, "(dt: not run, scripts: exit 0): the same", nil},
+		{"tests with no result only dt grades", []report.Cell{cell("wpts/memory", "not run", pass, known, noResult)},
+			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
+			true, "(dt: not run, scripts: exit 0): the same", nil},
 		{"a cell not run for something else", []report.Cell{cell("wpts/memory", "not run", pass, known)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
-			false, "differs: the verdict"},
+			false, "differs: the verdict", nil},
 		{"an unexpected pass", []report.Cell{cell("wpts/memory", report.Failed, unexpectedPass, known, skipped)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
-			false, "differs: the verdict"},
+			false, "differs: the verdict", nil},
 		{"scripts that graded no test", []report.Cell{cell("pjdfstest/memory/3", "not run", noResult, known)},
 			map[string]script{"pjdfstest/memory-3": {"1", ""}},
-			true, "(dt: not run, scripts: exit 1): the same"},
+			true, "(dt: not run, scripts: exit 1): the same", nil},
+		{"scripts that pass without grading", []report.Cell{cell("pjdfstest/memory/3", report.Passed, pass, known)},
+			map[string]script{"pjdfstest/memory-3": {"0", ""}},
+			false, "differs: the scripts passed it without grading each test", nil},
 		{"pynfs's minor version", []report.Cell{cell("pynfs/badger-s3/1", report.Passed, pass)},
 			map[string]script{"pynfs/badger-s3-4.1": {"0", "ran 1\n"}},
-			true, "- `pynfs/badger-s3/1` (dt: passed, scripts: exit 0): the same"},
+			true, "- `pynfs/badger-s3/1` (dt: passed, scripts: exit 0): the same", nil},
 		{"a cell no script runs, green", []report.Cell{cell("smbtorture/badger-s3", report.Passed, pass)}, nil,
-			true, "- `smbtorture/badger-s3` (dt: passed): the same"},
+			true, "- `smbtorture/badger-s3` (dt: passed): the same", nil},
 		{"a cell no script runs, not green", []report.Cell{cell("smbtorture/badger-s3", "not run", pass, skipped)}, nil,
-			false, "differs: no script runs it, so it must be green"},
+			false, "differs: no script runs it, so it must be green", nil},
 		{"a cell only dt ran", []report.Cell{cell("wpts/badger", report.Passed, pass)}, nil,
-			false, "- `wpts/badger` (dt: passed): differs: no results through the scripts"},
+			false, "- `wpts/badger` (dt: passed): differs: no results through the scripts", nil},
 		{"a cell only the scripts ran", nil, map[string]script{"wpts/badger": {"0", "ran 1\n"}},
-			false, "- `wpts/badger` (scripts: exit 0): differs: no results through dt"},
-		{"another suite's cells", nil, map[string]script{"cthon04/memory-v3": {"1", "ran 1\n"}}, true, "0 of 0 cells differ"},
+			false, "- `wpts/badger` (scripts: exit 0): differs: no results through dt", nil},
+		{"a planned cell no side ran", []report.Cell{cell("wpts/memory", report.Passed, pass)},
+			map[string]script{"wpts/memory": {"0", "ran 1\n"}},
+			false, "- `smbtorture/badger-s3` (dt: none): differs: no results through dt", []string{"wpts/memory", "smbtorture/badger-s3"}},
+		{"no cell planned", nil, nil, false, "No cells to compare.", nil},
+		{"another suite's cells", []report.Cell{cell("wpts/memory", report.Passed, pass), cell("cthon04/memory/3", report.Failed, newFail)},
+			map[string]script{"wpts/memory": {"0", "ran 1\n"}, "cthon04/memory-v3": {"1", "ran 1\n"}},
+			true, "0 of 1 cells differ", []string{"wpts/memory"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -94,7 +110,13 @@ func TestCompare(t *testing.T) {
 					write(t, filepath.Join(cell, "grades"), s.grades)
 				}
 			}
-			out, same, err := compare(dir, []string{"pjdfstest", "pynfs", "wpts", "smbtorture"})
+			plan := tc.plan
+			if plan == nil {
+				for _, c := range tc.dt {
+					plan = append(plan, c.Name)
+				}
+			}
+			out, same, err := compare(dir, plan, []string{"pjdfstest", "pynfs", "wpts", "smbtorture"})
 			if err != nil {
 				t.Fatal(err)
 			}

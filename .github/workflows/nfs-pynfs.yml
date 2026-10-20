@@ -238,11 +238,12 @@ jobs:
           go-version: "1.26.x"
           cache: false
 
+      # Options are left out, as in conformance.yml.
       - name: Plan the cells
         id: plan
         run: |
           set -o pipefail
-          cells="$(go run ./cmd/dt plan --tier "$TIER" --json | jq -c '[.cells[] | select(.suite == "pynfs")]')"
+          cells="$(go run ./cmd/dt plan --tier "$TIER" --json | jq -c '[.cells[] | select(.option == null and .suite == "pynfs")]')"
           echo "$cells" | jq .
           echo "cells=${cells}" >> "$GITHUB_OUTPUT"
 
@@ -332,7 +333,7 @@ jobs:
   parity:
     name: dt and the scripts, cell by cell
     runs-on: ubuntu-latest
-    needs: [dt, pynfs]
+    needs: [dt-plan, dt, pynfs]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     timeout-minutes: 10
     continue-on-error: true
@@ -351,10 +352,13 @@ jobs:
         with:
           path: ${{ runner.temp }}/results
 
+      # Against the plan, so a cell missing on either side, or none at all, differs.
       - name: Compare
+        env:
+          CELLS: ${{ needs.dt-plan.outputs.cells }}
         run: |
           set -o pipefail
-          go run ./test/conformance/parity "$RUNNER_TEMP/results" pynfs | tee -a "$GITHUB_STEP_SUMMARY"
+          go run ./test/conformance/parity --plan "$CELLS" "$RUNNER_TEMP/results" pynfs | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The evidence behind every `suite` row in KNOWN_FAILURES: which tests the
   # Linux kernel server fails too. Never gates — it measures a third-party

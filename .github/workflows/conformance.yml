@@ -75,8 +75,9 @@ concurrency:
 
 env:
   DITTOFS_MOUNT: /tmp/dittofs-test
-  # The tier the parity jobs' dt runs at: a dispatch, like the scripts', as after a merge.
-  TIER: ${{ github.event_name == 'schedule' && 'nightly' || 'merge' }}
+  # The tier the parity jobs' dt runs at, as the scripts' jobs pick theirs: a
+  # dispatch naming a suite as the schedule, a blank one as after a merge.
+  TIER: ${{ (github.event_name == 'schedule' || inputs.suite != '') && 'nightly' || 'merge' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -658,7 +659,7 @@ jobs:
   parity:
     name: dt and the scripts, cell by cell
     runs-on: ubuntu-latest
-    needs: [dt, wpts, smbtorture, pjdfstest]
+    needs: [dt-plan, dt, wpts, smbtorture, pjdfstest]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     timeout-minutes: 10
     continue-on-error: true
@@ -677,10 +678,13 @@ jobs:
         with:
           path: ${{ runner.temp }}/results
 
+      # Against the plan, so a cell missing on either side, or none at all, differs.
       - name: Compare
+        env:
+          CELLS: ${{ needs.dt-plan.outputs.cells }}
         run: |
           set -o pipefail
-          go run ./test/conformance/parity "$RUNNER_TEMP/results" pjdfstest wpts smbtorture | tee -a "$GITHUB_STEP_SUMMARY"
+          go run ./test/conformance/parity --plan "$CELLS" "$RUNNER_TEMP/results" pjdfstest wpts smbtorture | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   summary:

@@ -4,18 +4,22 @@
 // verdict, the same new failures, the same known failures and the same number
 // of tests run. It goes with the scripts.
 //
-//	go run ./test/conformance/parity DIR SUITE...
+//	go run ./test/conformance/parity --plan CELLS DIR SUITE...
 //
-// DIR holds a workflow run's artifacts: dt's runs, each with its
-// summary.json, and the scripts' cells, each in conformance/results/SUITE/LABEL
-// with the runner's status and the grader's grades. It prints the comparison
-// as Markdown, for the job summary, and exits 1 when a cell differs.
+// CELLS are the cells dt plan --json gave the run, as its JSON, and SUITE the
+// suites whose scripts ran beside them. DIR holds the run's artifacts: dt's
+// runs, each with its summary.json, and the scripts' cells, each in
+// conformance/results/SUITE/LABEL with the runner's status and the grader's
+// grades. It prints the comparison as Markdown, for the job summary, and exits
+// 1 when a cell differs, as a planned cell missing on either side does, or when
+// there is none to compare.
 //
 // The differences whose causes the RFC lists beforehand don't count:
 //   - what dt grades and the scripts don't: dt's skips and tests with no
 //     result aren't compared, a dt cell they alone leave not run is as green
 //     as the scripts', and a cell whose scripts' grader stopped before grading
-//     each test, as it does when one has no result, compares only its verdict;
+//     each test, as it does when one has no result, compares only its verdict,
+//     and differs when the scripts pass it;
 //   - where the server runs: pynfs's scripts reach the server at the host's
 //     address, as dt does, and a test whose difference comes from where its
 //     server runs is named here, with the cause, before the runs it is
@@ -24,7 +28,9 @@ package main
 
 import (
 	"cmp"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -56,11 +62,22 @@ type side struct {
 }
 
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: parity DIR SUITE...")
+	plan := flag.String("plan", "", "the cells dt plan --json gave, as JSON")
+	flag.Parse()
+	if *plan == "" || flag.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "usage: parity --plan CELLS DIR SUITE...")
 		os.Exit(2)
 	}
-	text, same, err := compare(os.Args[1], os.Args[2:])
+	var cells []struct{ Name string }
+	if err := json.Unmarshal([]byte(*plan), &cells); err != nil {
+		fmt.Fprintln(os.Stderr, "parity: --plan:", err)
+		os.Exit(2)
+	}
+	planned := make([]string, len(cells))
+	for i, c := range cells {
+		planned[i] = c.Name
+	}
+	text, same, err := compare(flag.Arg(0), planned, flag.Args()[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "parity:", err)
 		os.Exit(2)
@@ -71,9 +88,10 @@ func main() {
 	}
 }
 
-// compare compares the cells of suites in dir, and says whether they are all
-// the same.
-func compare(dir string, suites []string) (string, bool, error) {
+// compare compares the planned cells, and the scripts' cells of suites, in
+// dir, and says whether they are all the same. A cell missing on either side
+// differs, and comparing none isn't the same.
+func compare(dir string, planned, suites []string) (string, bool, error) {
 	dt := map[string]side{}
 	scripts := map[string]side{}
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -88,9 +106,7 @@ func compare(dir string, suites []string) (string, bool, error) {
 				return err
 			}
 			for _, c := range r.Cells {
-				if suite, _, _ := strings.Cut(c.Name, "/"); slices.Contains(suites, suite) {
-					dt[c.Name] = fromDT(c)
-				}
+				dt[c.Name] = fromDT(c)
 			}
 		case d.Name() == "status" && len(p) >= 5 && p[len(p)-5] == "conformance" && p[len(p)-4] == "results" && slices.Contains(suites, p[len(p)-3]):
 			s, err := fromScripts(filepath.Dir(path))
@@ -118,28 +134,38 @@ func compare(dir string, suites []string) (string, bool, error) {
 		_, _ = fmt.Fprintf(&b, "- `%s` (%s): %s\n", name, results, verdict)
 	}
 	paired := map[string]bool{}
-	for _, name := range slices.Sorted(maps.Keys(dt)) {
-		d := dt[name]
+	for _, name := range planned {
+		d, inDT := dt[name]
 		key := scriptsName(name)
-		s, ok := scripts[key]
-		paired[key] = ok
+		s, inScripts := scripts[key]
+		paired[key] = true
+		results := "dt: " + cmp.Or(d.result, "none")
+		if inScripts {
+			results += ", scripts: " + s.result
+		}
+		var diffs []string
 		switch {
+		case !inDT:
+			diffs = []string{"no results through dt"}
 		case slices.Contains(noScript, name):
-			var diffs []string
 			if !d.green {
 				diffs = []string{"no script runs it, so it must be green"}
 			}
-			line(name, "dt: "+d.result, diffs)
-		case !ok:
-			line(name, "dt: "+d.result, []string{"no results through the scripts"})
+		case !inScripts:
+			diffs = []string{"no results through the scripts"}
 		default:
-			line(name, "dt: "+d.result+", scripts: "+s.result, differences(d, s))
+			diffs = differences(d, s)
 		}
+		line(name, results, diffs)
 	}
 	for _, key := range slices.Sorted(maps.Keys(scripts)) {
 		if !paired[key] {
 			line(key, "scripts: "+scripts[key].result, []string{"no results through dt"})
 		}
+	}
+	if cells == 0 {
+		b.WriteString("No cells to compare.\n")
+		return b.String(), false, nil
 	}
 	_, _ = fmt.Fprintf(&b, "\n%d of %d cells differ.\n", differ, cells)
 	return b.String(), differ == 0, nil
@@ -175,10 +201,10 @@ func fromDT(c report.Cell) side {
 			d.ran++
 		}
 	}
-	// Not run for one of what only dt grades, with tests that ran, a cell is
-	// green as far as the scripts grade. A failed one isn't: it has a new
-	// failure, an unexpected pass, or a server that exited.
-	d.excused = c.Result != report.Passed && c.Result != report.Failed && d.ran > 0 && onlyDT
+	// Not run for one of what only dt grades, a cell is green as far as the
+	// scripts grade. A failed one isn't: it has a new failure, an unexpected
+	// pass, or a server that exited.
+	d.excused = c.Result != report.Passed && c.Result != report.Failed && onlyDT
 	d.new, d.known = set(d.new), set(d.known)
 	return d
 }
@@ -228,6 +254,9 @@ func differences(d, s side) []string {
 		out = append(out, "the verdict")
 	}
 	if !s.graded {
+		if s.green {
+			out = append(out, "the scripts passed it without grading each test")
+		}
 		return out
 	}
 	for _, f := range []struct {
