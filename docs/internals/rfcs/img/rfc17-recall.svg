@@ -44,7 +44,7 @@
   <text x="102" y="216" class="m">NFS3ERR_JUKEBOX</text>
   <text x="458" y="210" class="ok">no worker waits</text>
   <text x="680" y="220" class="m">acknowledge</text><path d="M820,226 L652,226" class="ln"/>
-  <text x="520" y="244" class="m">AckBreak</text><path d="M650,250 L452,250" class="ln"/>
+  <text x="520" y="244" class="m">AckRecall</text><path d="M650,250 L452,250" class="ln"/>
   <text x="96" y="270" class="m">retry shortly</text><path d="M80,276 L248,276" class="ln"/>
   <text x="318" y="294" class="m">Write</text><path d="M250,300 L448,300" class="ln"/>
   <text x="268" y="318" class="ok">OK: the write goes ahead</text><path d="M450,324 L252,324" class="gl"/>

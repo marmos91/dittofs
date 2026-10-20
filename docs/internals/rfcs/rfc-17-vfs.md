@@ -271,7 +271,7 @@ is data, one row per kind of argument:
 | a handle, or an open (by `OpenRef.Handle`) | the primary of that handle's shard |
 | two handles: `Rename`, `Link` | the coordinator that [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) names: the source directory's primary, or the target directory's for a link |
 | two handles: `Copy`, `Clone` | the destination's primary |
-| an ID that names its shard ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) and no handle: `AckBreak`'s `GrantID`, `Unwatch`'s `WatchID`, `TestState`'s and `FreeRevoked`'s `StateRef` | the primary of that shard; for `TestState`, of its first `StateRef`'s, whose server asks each other one's primary through `Peers` |
+| an ID that names its shard ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) and no handle: `AckRecall`'s `GrantID`, `Unwatch`'s `WatchID`, `TestState`'s and `FreeRevoked`'s `StateRef` | the primary of that shard; for `TestState`, of its first `StateRef`'s, whose server asks each other one's primary through `Peers` |
 | no file: the rest of the `Clients` area, `Root`, `SecInfo`, `ListShares`; or a pseudo-filesystem handle | the local server, which is the lease owner of the clients connected to its node |
 | a handle the router cannot place | the local server, which admits the call before it answers `ErrStale` (V39), so the gateway refuses nothing |
 
@@ -308,7 +308,7 @@ reservations, the admitted-call counts, and the client and open state of §2.2.
 | --- | --- | --- |
 | **adapter** ([RFC 20](rfc-20-adapters.md)) | the wire form of a waiting lock: the request to answer, the NLM host to call back | decides a conflict |
 | **gateway** | nothing | holds any of the open-state table: it routes `Lock`, `Open`, `Close` and the rest to the file's primary |
-| **server, as lease owner** (the node holding the client's sessions) | each NFSv4 client's unconfirmed proposal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)), each client's lease record and callback channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)); relays recalls and grants to the connection | — |
+| **server, as lease owner** (the node holding the client's sessions) | each NFSv4 client's unconfirmed proposal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)), each client's lease record and callback channel ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)); relays recalls and grants to the connection | — |
 | **server, at the file's primary** | [RFC 14](rfc-14-open-state.md)'s open-state table: opens, deny modes, byte-range locks of NLM, NFSv4 and SMB alike, delete pending, caching grants, watches, lock waiters, and in a cluster layouts. It is held as the concrete `*openstate.Table` in the server's `Deps`, and the server implements its `Sink`, `Closed` included, which the node hands to the table's `Start` rather than its `Deps`, since the table is built first. The server runs the conflict check and the I/O it admits under the file's accept lock with nothing between ([§4.8](#4.8%20One%20primary%20per%20file), V7) | — |
 | **metadata store** ([RFC 16](rfc-16-metadata-store.md)) | only what must survive a restart: client records, persistent SMB opens, the durable open records that keep an unlinked file alive | an ordinary lock |
 
@@ -403,7 +403,7 @@ type Peers interface {
 	Outcome(ctx context.Context, to NodeID, op []byte, commit bool) error // RFC 15 §4.2: its commit or abort
 	Overlay(ctx context.Context, to NodeID, hs []Handle) ([]File, error)  // §3.5: a lookup's or listing's entries in another shard, batched per primary
 	ReadAt(ctx context.Context, to NodeID, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
-	OwnerSeq(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: an NFSv4.0 owner's sequence at its home primary (RFC 14 §2.8)
+	Sequence(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: a sequenced owner's number at its home primary (RFC 14 §2.8)
 	ClientState(ctx context.Context, to NodeID, c ClientID, op Op, args []any) (Reply, error) // the lease owner to each primary holding its client's state, TestState's other refs included (§3.5)
 	Recall(ctx context.Context, to NodeID, c ClientID, ev any) error        // a primary's recall, notify or revoke back to the client's lease owner (RFC 14 §4.1)
 }
@@ -458,7 +458,7 @@ internal/vfs/                the server, one file per operation; the gateway and
   gateway.go                 Gateway, NewGateway: §2.1's routing table and the one generic call path
   serve.go                   Serve: the fence and the dedup table, and the checked Service it returns
   envelope.go                Envelope, Call, Reply, Router, Transport, Peers
-  clients.go                 Connect, CreateSession, Renew, Disconnect, Destroy, … (§3.1)
+  clients.go                 Connect, AddSession, Renew, Disconnect, Destroy, … (§3.1)
   lookup.go readdir.go       Lookup (§5.10); ReadDir
   create.go link.go          Create (§5.10); Link
   unlink.go rename.go        Unlink and Rmdir; Rename (§5.4)
@@ -469,7 +469,7 @@ internal/vfs/                the server, one file per operation; the gateway and
   read.go write.go           Read, Seek (§5.2); Write (§5.1)
   commit.go                  Commit, and the write verifier (§5.8)
   deallocate.go copy.go      Deallocate; Copy and Clone (§5.9)
-  lock.go grant.go watch.go  Lock, CancelLock, TestLock, Unlock (§5.11); AckBreak; Watch, Unwatch
+  lock.go grant.go watch.go  Lock, CancelLock, TestLock, Unlock (§5.11); AckRecall; Watch, Unwatch
   shares.go                  Root, SecInfo, ListShares, StatFS, Quota, Snapshots (§4.9)
   release.go grace.go        the four moments of release (§5.3); grace and pending-release recovery
   arch_test.go               imports, call sites and the gateway's fields (§8)
@@ -592,7 +592,7 @@ holds.
 | --- | --- |
 | `Identity` | what the adapter authenticated, not yet mapped through any share's policy: `Protocol`, the flavour and Kerberos level, the uid, gid and groups an `AUTH_SYS` credential carried, the client's address, and RFC 18's proof fields — `Name`, `Principal`, `SIDs`, `DenyOnly`, `Machine`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), never the session key. Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
-| `OpenRef` | `{Client ClientID; Open OpenID; Handle Handle; Kind RefKind; Seq uint32}`: an open, a delegation, or an anonymous open, and the stateid seqid presented with it (zero: current; an older one is `StateError` `OldState`) — a lock stateid's for a `LOCK` or `LOCKU` that names one. It is the only place that seqid travels: `Seqs` carries the NFSv4.0 owner seqids only ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). It carries no identity: the call's `id` is compared with the principal the open was granted to (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(c, g, h)` one for I/O under a delegation |
+| `OpenRef` | `{Client ClientID; Open OpenID; Handle Handle; Kind RefKind; Seq uint32}`: an open, a delegation, or an anonymous open, and the stateid seqid presented with it (zero: current; an older one is `StateError` `OldState`) — a lock stateid's for a `LOCK` or `LOCKU` that names one. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). It carries no identity: the call's `id` is compared with the principal the open was granted to (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(c, g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
@@ -603,7 +603,7 @@ holds.
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
-| `ClientInfo`, `ClientStatus` | what `Propose` and `Connect` register — protocol, owner, verifier, principal, NSM monitor name, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1) |
+| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, the state-protection call set, the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
 
 The rest carry no meaning beyond their shape:
 
@@ -622,7 +622,7 @@ type WriteResult struct { N int; Verifier Verifier; WCC WCC }
 type Extent struct { SrcOff, DstOff, Len int64 }
 type CopyArgs struct { Src, Dst OpenRef; Extents []Extent } // Copy: in order, as copychunk's chunks; Clone: exactly one
 type CopyResult struct { N int64; WCC WCC }
-type LockReq struct { Ranges []LockRange; Wait, Reclaim bool; Owner LockOwner; Seq *LockSequence; NFS Seqs } // §5.11: every range in one step, all or none
+type LockReq struct { Ranges []LockRange; Wait WaitKind; Reclaim bool; Owner LockOwner; Replay *LockSequence; Seqs Seqs } // §5.11: every range in one step, all or none
 type Proposal struct { Client ClientID; Confirm [8]byte; Sequence uint32 } // what Propose answers and Connect confirms
 type WatchSpec struct { Dir Handle; Recursive bool; Filter ChangeMask }
 ```
@@ -650,9 +650,10 @@ type Service interface {
 // client's sessions; the gateway routes these calls to it (§2.1, §2.2), except
 // TestState and FreeRevoked, which go to the shard their StateRef names.
 type Clients interface {
-	Propose(ctx context.Context, id Identity, c ClientInfo) (Proposal, error) // SETCLIENTID, EXCHANGE_ID: RFC 14 §2.9's Unconfirmed record, held by this node's server; changes no state
+	Propose(ctx context.Context, id Identity, c ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's server; changes no state
 	Connect(ctx context.Context, id Identity, c ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB NEGOTIATE, an NLM host's first call; again on another node to re-register the callback path: the latest wins (RFC 14 Rebind)
-	CreateSession(ctx context.Context, id Identity, c ClientID, seq uint32, reply []byte) ([]byte, error) // a replay returns the cached reply, seq+1 records this one, any other StateError SeqMisordered
+	AddSession(ctx context.Context, id Identity, c ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
+	Record(ctx context.Context, id Identity, c ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, id Identity, c ClientID) (ClientStatus, error)
 	Disconnect(ctx context.Context, id Identity, c ClientID, s SessionRef) error // an SMB session's last channel ended
 	Destroy(ctx context.Context, id Identity, c ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while state remains
@@ -708,7 +709,7 @@ type Locking interface {
 	CancelLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange) (granted bool, err error)
 	TestLock(ctx context.Context, id Identity, ref OpenRef, r ByteRange, exclusive bool) (*Lock, error)
 	Unlock(ctx context.Context, id Identity, ref OpenRef, rs []ByteRange, q Seqs) error // in order; stops at the first range not held, ErrRangeNotLocked
-	AckBreak(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind) error // to GrantNone: DELEGRETURN, a lease released
+	AckRecall(ctx context.Context, id Identity, c ClientID, g GrantID, to GrantKind) error // to GrantNone: a return
 	Watch(ctx context.Context, id Identity, c ClientID, w WatchSpec) (WatchID, error)
 	Unwatch(ctx context.Context, id Identity, c ClientID, w WatchID) error
 }
@@ -776,9 +777,9 @@ its state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20rele
 only through the state it presents, as an NFSv4.0 stateid does, anyone who
 learns that state could present it. An open's open-time grant
 ([§4.6](#4.6%20One%20chokepoint)) therefore authorises a call only when the
-call's `id` resolves to the principal the open was granted to, or, for an
-NFSv4.1 client under machine-credential state protection, the client's machine
-principal for the operations it protects. A call by any other principal through
+call's `id` resolves to the principal the open was granted to, or to the
+client's `Owner` for a call its state protection (`Protect`) names
+([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). A call by any other principal through
 the same open or lock state **MUST** be refused with `NotYours`
 ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), whatever that principal could
 do to the file on its own: the state is the opener's, and a principal that wants
@@ -844,8 +845,9 @@ type Revocation struct {
 	Share  ShareID
 	Grant  GrantID
 	Shard  ShardID
-	Reason RevokeReason
-	Addr   netip.Addr // RevokedShare: non-zero when the share moved and the move names an address (RFC 27 §2.2)
+	Reason  RevokeReason
+	Addr    netip.Addr // RevokedShare: non-zero when the share moved and the move names an address (RFC 27 §2.2)
+	Adapter []byte     // the client record's adapter bytes, so the adapter can act with no read: an NLM host's notice address (RFC 14 §4.5)
 }
 
 type RevokeReason uint8
@@ -875,7 +877,7 @@ callback that fails or times out **MUST** be treated as the client not answering
 a recall that is not acknowledged by its deadline revokes the grant
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 
-![A recall without a waiting worker: build01's NFS write conflicts with alice-pc's SMB lease, so the service sends RecallGrant, which the SMB adapter turns into a lease break, and answers ErrDelay at once, mapped to NFS4ERR_DELAY or NFS3ERR_JUKEBOX; alice-pc acknowledges, the service gets AckBreak, and build01's retry goes ahead. If alice-pc never answers, the break is forced at 35 s and the lease drops to none; if the conflicting caller is an SMB client, the SMB adapter sends an interim response and re-drives the call itself, held up to smb_pending_deadline, which exceeds the break deadline](img/rfc17-recall.svg)
+![A recall without a waiting worker: build01's NFS write conflicts with alice-pc's SMB lease, so the service sends RecallGrant, which the SMB adapter turns into a lease break, and answers ErrDelay at once, mapped to NFS4ERR_DELAY or NFS3ERR_JUKEBOX; alice-pc acknowledges, the service gets AckRecall, and build01's retry goes ahead. If alice-pc never answers, the break is forced at 35 s and the lease drops to none; if the conflicting caller is an SMB client, the SMB adapter sends an interim response and re-drives the call itself, held up to smb_pending_deadline, which exceeds the break deadline](img/rfc17-recall.svg)
 
 **No worker waits on a client.** An operation that conflicts with a caching
 grant starts the recall and returns `ErrDelay` at once. An NFS adapter answers
@@ -1080,8 +1082,8 @@ and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%
 
 | Method | Metadata calls (RFC 7, RFC 6, RFC 14, RFC 16, RFC 12) | Engine calls (RFC 8) | Runs at |
 | --- | --- | --- | --- |
-| `Propose` | `Clients.Get` by (protocol, owner): an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)) | — | lease owner; it holds the `Unconfirmed` record in memory, so the confirm must reach the same node |
-| `Connect`, `CreateSession`, `Renew`, `Destroy` | `OpenState.Connect` (and `Rebind`), `CreateSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
+| `Propose` | `Clients.Get` by (protocol, name): an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | — | lease owner; it holds the `Client.Pending` proposal in memory, so the confirm must reach the same node |
+| `Connect`, `AddSession`, `Renew`, `Destroy` | `OpenState.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
 | `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `OpenState.Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`; `Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
 | `TestState`, `FreeRevoked` | `OpenState.TestState`; `FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
@@ -1089,7 +1091,7 @@ and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%
 | `Create`, `Link` | `Namespace.Create` / `Link`, `OpenState.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `OpenState.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Release` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
-| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `OpenState.CheckChange`, `SetDisposition`, `SuspendTimes` | `Draw`; `Truncate` for a size | primary |
+| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `OpenState.CheckChange`, `MarkDelete`, `SuspendTimes` | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr` | `Draw` | primary |
@@ -1101,8 +1103,8 @@ and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%
 | `Commit` | `OpenState.Flushed` through an SMB open | `Commit` | primary |
 | `Deallocate`, `Seek` | `OpenState.CheckIO` | `Deallocate`; `Allocation` | primary |
 | `Copy`, `Clone` | `OpenState.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
-| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `OpenState.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.OwnerSeq` |
-| `AckBreak` | `OpenState.AckBreak`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
+| `Lock`, `CancelLock`, `TestLock`, `Unlock` | `OpenState.Lock`, `CancelLock`, `TestLock`, `Unlock` | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
+| `AckRecall` | `OpenState.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
 | `Watch`, `Unwatch` | `OpenState.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
 | `Root`, `SecInfo`, `ListShares` | share records and export policy (gap: RFC 16 declares no read view of the share indexes but `ControlPlane.Shares`), `Files.Root` | — | lease owner |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
@@ -1132,8 +1134,9 @@ Which logic is the adapter's and which the service's is decided by
 two questions, and what an adapter may hold, import and keep is
 [RFC 20 §2.2–§2.4](rfc-20-adapters.md#2.2%20What%20an%20adapter%20may%20hold).
 One placement this RFC adds: the NFSv4.1 `CREATE_SESSION` replay is the
-service's, through `CreateSession`, unlike a session's reply cache, because the
-client record it belongs to is shared across nodes
+adapter's rule, kept in the client record's adapter bytes and written through
+`AddSession`, unlike a session's reply cache, because the client record it
+belongs to is shared across nodes
 ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 
 ### 4.3 Errors are neutral values
@@ -1175,10 +1178,12 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrLost`, `ErrUnavailable`, `ErrCorrupt` | the content errors of [RFC 8](rfc-8-engine.md) | aliases |
 
 `StateError` kinds, each matched by `errors.Is(err, ErrState)`, are RFC 14's
-refusals: `ClientInUse` (an NFSv4 owner another principal holds), `ClientBusy`
-(`Destroy` with state left), `SeqMisordered` (a create-session sequence out of
-order), `StaleClient` (a client that expired, or is marked by a shard's loss
-until it repeats `SETCLIENTID`, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)),
+refusals: `ClientInUse` (a client name another principal holds), `ClientBusy`
+(`Destroy` with state left), `RecordChanged` (a client record's adapter bytes
+changed since the adapter read them: reread and decide again), `AdapterVersion`
+(adapter bytes of a version this node cannot read), `StaleClient` (a client
+that expired, or is marked by a shard's loss until it proposes and confirms
+again, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)),
 `StaleState` (a stateid or `FileId` whose state may have been lost with its
 shard's open state, by the grace-instance rule of §3.4), `OldState` (a stateid
 seqid older than the state's current one), `BadState` (every
@@ -1673,7 +1678,7 @@ it fails against handles nobody is using.
 **Delete on close is a mark and a deferred unlink.** An open sets or clears the
 mark with `SetAttr`, `AttrChange.DeleteOnClose`, through the open, or at create
 (`OpenRequest.DeleteOnClose`); the shard records it with open state's
-`SetDisposition` ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)).
+`MarkDelete` ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)).
 When the file's last open closes, `Close` runs the deferred unlink of the
 recorded entry once it has released the file's open-state step: as §5.4's
 unlink, taking the parent's and the file's steps afresh in file-ID order, and,
@@ -2116,7 +2121,7 @@ func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) e
 	// when waiting), the stateid's seqid (StateError OldState) and the NFSv4.0
 	// owner's sequence (StateError BadSeqID), checked and advanced at the owner's
 	// home primary as RFC 14 §2.8 says: this node on a single node; (cluster)
-	// asked through Peers.OwnerSeq first (§2.3).
+	// asked through Peers.Sequence first (§2.3).
 	return s.open.Lock(ctx, c.Client, fileOf(ref.Handle), toOpenState(ref, r)) // ErrBlocked: a waiter is registered; LockWaitOver answers it
 }
 ```

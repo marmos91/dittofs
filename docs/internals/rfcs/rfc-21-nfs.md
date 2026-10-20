@@ -521,21 +521,40 @@ refused with `NFS4ERR_ENCR_ALG_UNSUPP`.
 **What the client record carries for NFS.** Every node answers `EXCHANGE_ID`,
 `SETCLIENTID` and `DESTROY_CLIENTID` for any client, so everything those calls
 decide **MUST** be in RFC 14's durable client record
-([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), not in one node's memory:
+([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), not in one node's memory.
+The adapter fills each field from the wire:
 
-| NFS state | Held in the client record as | Used by |
+| RFC 14 field | ← NFS field | Used by |
 | --- | --- | --- |
-| the owner string (`co_ownerid`, `nfs_client_id4`) | `Owner`, indexed by (protocol, owner) | `EXCHANGE_ID` / `SETCLIENTID` from a client that rebooted or reconnected through another node finds its record, and its verifier tells which |
-| the boot verifier | `Verifier` | a new verifier under the same owner is a new client instance |
-| an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`, with its confirm verifier or sequence ID | nothing durable: RFC 14's volatile `Unconfirmed` record at the node that answered, whose NFSv4.0 confirm verifier is 64 random bits ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
-| the principal that created the client ID | `Principal` | an `EXCHANGE_ID` or `SETCLIENTID` for the same owner from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Unconfirmed` record |
-| the sequence ID of the last `CREATE_SESSION` applied, and its reply | `CSSeq`, `CSReply`, written in the transaction that applies the `CREATE_SESSION` ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | a `CREATE_SESSION` replay, on any node or after a restart, answered with the first reply (§3.5) |
-| `SP4_MACH_CRED` | `MachCred`: the machine principal and the operations it protects | each node enforces state protection the same way |
-| the back-channel node and whether the path is down | `Callback`, `PathDown` (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
-| the nodes holding a session of this client | `Sessions`: one entry per node, added at `CREATE_SESSION`, removed at the node's last `DESTROY_SESSION` or with the node's loss | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1) |
-| the shards it has held state in, with the grace instance of its last `RECLAIM_COMPLETE` in each, and whether a loss there awaits the client's recovery | `Shards` and the record's per-shard entry ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)) | §5.4 |
+| `Name`, indexed by (protocol, name) | the owner string: `co_ownerid` (`EXCHANGE_ID`), the `nfs_client_id4` id (`SETCLIENTID`); for an NLM host its `caller_name` with the source address it sends from (§6.1) | an `EXCHANGE_ID` / `SETCLIENTID` from a client that rebooted or reconnected through another node finds its record, and `Boot` tells which |
+| `Boot` | the boot verifier; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
+| `Pending` | an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`: nothing durable, held at the node that answered, `Confirm` sent as the NFSv4.0 confirm verifier or, low 32 bits, as the NFSv4.1 `eir_sequenceid` ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
+| `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
+| `Protect` | `SP4_MACH_CRED`'s `spo_must_allow`, as the table calls it names (`CLOSE` → `Close`, `OPEN_DOWNGRADE` → `Downgrade`, `LOCKU` → `Unlock`, `DELEGRETURN` → `AckRecall`, `TEST_STATEID`, `FREE_STATEID`, `WRITE` and `COMMIT` → I/O); zero for `SP4_NONE` | each node admits the machine principal the same way |
+| `Reach.Callback`, `Reach.Down` | the node holding the back channel, and whether it is lost (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
+| `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession`, removed at the node's last `DESTROY_SESSION` or with the node's loss | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1) |
+| `Lease.Node` | the lease owner: the node holding the client's sessions | renewal by `SEQUENCE` and `RENEW` |
+| `Shards` and the record's per-shard entry | the shards it has held state in, the grace instance of its last `RECLAIM_COMPLETE` in each, and whether a loss there awaits the client's recovery ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)) | §5.4 |
 
-The `Sessions` row is cluster-only: on one node the list is local. Without it,
+**What the NFS adapter keeps in `Adapter`.** The record's `Adapter` bytes are
+the NFS adapter's own; open state stores them and never reads them. They start
+with a version byte, and hold:
+
+- the one-slot `CREATE_SESSION` replay: the `csa_sequence` of the last one
+  applied and its reply (§3.5);
+- `SP4_MACH_CRED`'s operation sets as sent, `spo_must_enforce` and
+  `spo_must_allow`, which the adapter checks before it calls the service: an
+  operation in `spo_must_enforce` from any principal but `Owner` is
+  `NFS4ERR_ACCESS`;
+- for NFSv4.0, the callback address and program (`cb_client4`,
+  `callback_ident`), taken from the `Pending` proposal's `Adapter` by the
+  confirm (§4.1);
+- for an NLM host, where its restart notice goes: `mon_name` and the `priv`
+  cookie (§6.2).
+
+A caching grant carries no `Adapter` bytes for NFS.
+
+The `Reach.Sessions` row is cluster-only: on one node the list is local. Without it,
 a node asked to destroy a client would see none of the client's sessions on
 other nodes and release state they still use. The `Shards` row binds on one
 node too, and **MUST** be durable there: every restart opens a new grace
@@ -543,7 +562,7 @@ instance (§5.4), and the record of which instance a client completed is what
 keeps a `RECLAIM_COMPLETE` sent before the restart from ending the grace after
 it.
 
-The lease's expiry time (`Expires`) is not among these: it is volatile, held by
+The lease's expiry time (`Lease.Expires`) is not among these: it is volatile, held by
 the client's lease owner ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)),
 so a renewal — every `SEQUENCE`, every NFSv4.0 `RENEW` — writes no record.
 
@@ -560,7 +579,7 @@ registration names the gateway node holding the client's back channel, and
 the call travels primary → that node → the client's connection.
 
 - The registration **MUST** be held in the durable client record, as the node
-  that holds the client's back channel (`Callback`,
+  that holds the client's back channel (`Reach.Callback`,
   [RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)), so
   every primary routes a callback the same way whichever node it last heard the
   client through. A node's in-memory list is not enough: a primary on another
@@ -573,7 +592,7 @@ the call travels primary → that node → the client's connection.
   `CREATE_SESSION4_FLAG_CONN_BACK_CHAN`) or `BIND_CONN_TO_SESSION` redirects every later callback,
   through the service's `Connect`, made again from the new node, which runs
   RFC 14's `Rebind` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) and writes the new node into
-  the record's `Callback`, and clears `PathDown`, before the reply.
+  the record's `Reach.Callback`, and clears `Reach.Down`, before the reply.
 - Until it does, a callback has nowhere to go and fails. The primary treats that
   as the client not answering, and the recall is revoked at its deadline
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
@@ -596,16 +615,16 @@ it; afterwards the registration names P2 and the recall arrives there.
 
 A client ID is not state until the client confirms it. NFSv4.0 confirms with
 `SETCLIENTID_CONFIRM`, NFSv4.1 with its first `CREATE_SESSION`. Both follow
-[RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients); on
+[RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation); on
 the wire:
 
 - An `EXCHANGE_ID` or `SETCLIENTID` that names a new owner, or a known owner
   with a new verifier, **MUST** change no state: the answering node holds an
-  `Unconfirmed` record in memory, and a rebooted client's old client ID keeps
+  `Pending` proposal in memory, and a rebooted client's old client ID keeps
   its opens and locks until the confirm. An `EXCHANGE_ID` that names a
   confirmed owner with that owner's verifier and principal returns the
   existing client ID at once (RFC 8881 §18.35.5). A `SETCLIENTID` that does so
-  still leaves an `Unconfirmed` record, for the existing client ID under a new
+  still leaves a `Pending` proposal, for the existing client ID under a new
   confirm verifier, and changes no state until its `SETCLIENTID_CONFIRM`,
   which keeps the client ID and its state and takes only the new callback
   (RFC 7530 §16.33.5). An NFSv4.0 client always confirms; with no record to
@@ -613,24 +632,38 @@ the wire:
   repeated `SETCLIENTID`, a loop after every restart.
 - One whose owner a confirmed record holds under another principal **MUST** be
   `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`)), whatever its verifier, and leaves no
-  `Unconfirmed` record (RFC 8881 §18.35.5).
+  `Pending` proposal (RFC 8881 §18.35.5).
 - The confirm is accepted only at the node that answered, from the same
   principal, naming the answered client ID and, for NFSv4.0, the confirm
   verifier, for NFSv4.1 the sequence ID, before one lease period has passed. It
   then writes the client record, expires the old client ID of a rebooted
-  client, and drops the `Unconfirmed` record. A confirm that finds no such
+  client, and drops the `Pending` proposal. A confirm that finds no such
   record — sent to another node, after that node restarted, or late — is
   `NFS4ERR_STALE_CLIENTID`, and the client sends `SETCLIENTID` or
   `EXCHANGE_ID` again. A confirm that finds the record but comes from another
   principal is `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`); RFC 7530 §16.34.5,
   RFC 8881 §18.36.4) and leaves the record in place for its own principal.
-- **`CREATE_SESSION` is sequenced by the record.** A `CREATE_SESSION` whose
-  `csa_sequence` equals the record's `CSSeq` is a replay, answered with
-  `CSReply` whichever node it reaches; one equal to `CSSeq` + 1 is new, and its
-  `CSSeq` and reply are written in the transaction that creates the session;
-  any other is `NFS4ERR_SEQ_MISORDERED` (`ErrState` (`SeqMisordered`), RFC 8881
-  §18.36.4). Without the stored reply, a replay that reaches another node after
-  an address takeover creates a second session.
+- **`CREATE_SESSION` is sequenced by the adapter's record.** The NFS adapter
+  keeps a one-slot replay in the client record's `Adapter` bytes (§3.3): the
+  `csa_sequence` of the last `CREATE_SESSION` applied and its reply. It reads
+  the record (`Record`) and decides, on whichever node the call reaches:
+  - a `csa_sequence` **equal** to the stored one is a replay, answered with the
+    stored reply, and writes nothing;
+  - one equal to the stored one **+ 1** is new: the adapter builds the session
+    and its reply, and calls `AddSession` with the bytes it read and the new
+    sequence and reply, which records the session and writes the new bytes in
+    one step ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); for the
+    confirming `CREATE_SESSION` the sequence compared is the `Pending`
+    proposal's (§3.3);
+  - if `AddSession` answers `ErrRecordChanged`, another node applied a
+    `CREATE_SESSION` first: the adapter drops the session it built, rereads
+    the record it was handed, and decides again, so a racing replay is
+    answered with the winner's reply;
+  - **any other** is `NFS4ERR_SEQ_MISORDERED` (RFC 8881 §18.36.4), the
+    adapter's own answer: open state has no error for it.
+
+  Without the stored reply, a replay that reaches another node after an
+  address takeover, or arrives after a restart, creates a second session.
 
 > decision: the confirm verifier is random and the unconfirmed proposal lives at
 > one node, as RFC 14 §2.9 decides, rather than a digest any node recomputes. A
@@ -653,15 +686,16 @@ gateway node's memory like the reply cache, and fares worse on a node loss.
 ### 4.1 SETCLIENTID and the callback path
 
 - `SETCLIENTID` and `SETCLIENTID_CONFIRM` map onto the client record as
-  `EXCHANGE_ID` and `CREATE_SESSION` do: the client's `nfs_client_id4` is its
-  `Owner`, its verifier tells a reboot
+  `EXCHANGE_ID` and `CREATE_SESSION` do: the client's `nfs_client_id4` id is
+  its `Name`, its verifier its `Boot`, which tells a reboot
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the proposal is
   confirmed as §3.5 says: at the node that answered `SETCLIENTID`, under a
   random confirm verifier, and `NFS4ERR_STALE_CLIENTID` anywhere else.
-- The callback address (`r_addr`) is kept as
-  [RFC 14 §2.9](rfc-14-open-state.md#2.9%20NFSv4.0%20unconfirmed%20clients)
-  keeps it: in the `Unconfirmed` proposal, and taken into the client record
-  only by the confirm, so a `SETCLIENTID` that only names a new callback for a
+- The callback address (`r_addr`) and program are kept in the adapter's own
+  bytes, as
+  [RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)
+  keeps them: in the `Pending` proposal's `Adapter`, and taken into the
+  record's `Adapter` only by the confirm (§3.3), so a `SETCLIENTID` that only names a new callback for a
   confirmed client changes nothing until `SETCLIENTID_CONFIRM`. No callback
   connection is ever opened to it. The NFSv4.0 callback program carries only
   delegation calls (`CB_GETATTR`, `CB_RECALL`), and delegations are not offered
@@ -675,12 +709,12 @@ owner. A `LOCK` that introduces a lock owner carries the open owner's seqid
 beside the new lock owner's first one (`open_to_lock_owner4`), and is
 sequenced and advanced against the open owner; every later `LOCK` of that lock
 owner, and every `LOCKU`, is numbered per lock owner
-([RFC 14 §2.8](rfc-14-open-state.md#2.8%20NFSv4.0%20owner%20sequences)). The
+([RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)). The
 server replays the last reply to a retransmission.
 
 - The **next expected sequence ID** of each owner **MUST** be held in RFC 14's
-  owner sequence record (`OwnerSeq.Next`, at the owner's home primary,
-  [RFC 14 §2.8](rfc-14-open-state.md#2.8%20NFSv4.0%20owner%20sequences)), and
+  owner sequence record (`Sequence.Next`, at the owner's home primary,
+  [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), and
   advanced in the step that answers the operation, so every node agrees on it.
 - **Every in-sequence reply advances it, refusals included.** As RFC 7530
   §9.1.7 requires, an in-sequence request answered `NFS4ERR_DELAY`,
@@ -695,9 +729,9 @@ server replays the last reply to a retransmission.
   Linux counts every other reply; a sequence left behind, or one run ahead,
   answers the owner's next request `NFS4ERR_BAD_SEQID`.
 - Whether a new open owner has been confirmed is held in the same record: the
-  first `OPEN` of an owner creates its `OwnerSeq` with `Confirmed` false, and
+  first `OPEN` of an owner creates its `Sequence` with `Confirmed` false, and
   only `OPEN_CONFIRM` sets it
-  ([RFC 14 §2.8](rfc-14-open-state.md#2.8%20NFSv4.0%20owner%20sequences)).
+  ([RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)).
   Until then only `OPEN_CONFIRM` is accepted from the owner.
 - The **last reply** per owner is held only in the gateway node that sent
   it, as the session reply cache is (§3.2).
@@ -895,7 +929,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
 2. **`other` cannot be guessed.** At least **64 bits** of it **MUST** come from
    a random source, so a client that sees its own stateids learns nothing that
    names another's. `other` has the room: RFC 14 gives an open's stateid its
-   `Nonce`, which `other` carries in place of the `OpenID`, and a lock state,
+   `Token`, which `other` carries in place of the `OpenID`, and a lock state,
    delegation, layout or copy an ID that carries those bits
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); a counter or a
    timestamp in their place makes every neighbouring stateid reachable by
@@ -903,7 +937,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    it; the 8-byte client ID is not one (§5.1).
 3. **`seqid` is held with the state at the primary**, as a field of the record
    the stateid names, changed in the step that applies the request
-   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)): an open's `StateSeq`,
+   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)): an open's `Seq`,
    raised by every `OPEN` upgrade, `OPEN_DOWNGRADE` and `CLOSE`; a lock state's
    `LockState.Seq`, raised by every `LOCK` and `LOCKU` that changes the locks of
    one (open, lock owner) pair; and the layout's `Seq`, raised by every `LAYOUTGET`
@@ -930,7 +964,9 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    The special stateids below name no open and are checked per operation as
    anonymous I/O is. Over NFSv4.1 the same principal check runs beside rule 4,
    as [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) requires of every use of
-   an open, except for the machine principal of a client under `SP4_MACH_CRED`.
+   an open, except for the machine principal of a client under `SP4_MACH_CRED`,
+   which RFC 14 admits as the record's `Owner` for the calls its `Protect`
+   names (§3.3).
 6. **I/O under a delegation stateid belongs to the client, not to a
    principal.** RFC 8881 §9.1.3 lets a client use a delegation's stateid for
    `READ`, `WRITE` and `SETATTR` by any of its open owners, under any principal,
@@ -1215,7 +1251,7 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrInconsistent` — a store invariant the server's own state breaks, such as a constraint or a file's link count below zero, never a directory's subdirectory count, which RFC 7 recounts and reads as 0 meanwhile (App. B) ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the service raises a health condition | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrCross` (`CrossProject`) — a `RENAME` or `LINK` across tree quotas ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_XDEV`; `mv` copies and deletes instead | `NFS3ERR_XDEV` |
 | `ErrState` (`ClientInUse`) | `NFS4ERR_CLID_INUSE` | — |
-| `ErrState` (`SeqMisordered`) | `NFS4ERR_SEQ_MISORDERED` | — |
+| `ErrState` (`RecordChanged`) — another node wrote the client record's adapter bytes first | never sent: the adapter rereads the record and decides again (§3.5); a `CREATE_SESSION` it then finds misordered is its own `NFS4ERR_SEQ_MISORDERED` | — |
 | `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
 | `ErrLost` on a stable `Write` — the sync that write waited on failed (§9.1) | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
@@ -1235,6 +1271,7 @@ NLM codes are for NFSv3 locking (§6).
 | `ErrRangeNotLocked` | never answered: an NFSv4 lock-owner's locks merge and split ([RFC 14 §2.3](rfc-14-open-state.md#2.3%20Lock)), so a `LOCKU` releases what the owner holds of its range and succeeds on a range it holds none of, as a POSIX unlock does. RFC 8881 §18.12.4 and RFC 7530 §16.12.5 let a server answer `NFS4ERR_LOCK_RANGE` there; this one does not, so a client never has to split its unlock into the ranges it holds | NLM: never answered; `NLMPROC4_UNLOCK` likewise succeeds, `NLMPROC4_GRANTED` |
 | `ErrShareViolation` | `NFS4ERR_SHARE_DENIED` for `OPEN`; `NFS4ERR_LOCKED` for I/O; `NFS4ERR_FILE_OPEN` for a `REMOVE` or `RENAME` of a file an SMB open denies delete to (RFC 8881 §18.25.3) | `NFS3ERR_ACCES`, for I/O, `REMOVE` and `RENAME` alike; NLM: `NLM4_DENIED` for `NLMPROC4_SHARE` |
 | `ErrDeletePending` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
+| `ErrState` (`OldState`) — a stateid seqid older than the state's ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) | `NFS4ERR_OLD_STATEID` | — |
 
 The adapter answers the capacity error the service returns and decides none of
 them. A write refused by the journal's capacity or by the share's journal limit
@@ -1257,6 +1294,88 @@ its room ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%2
 it meets an XFS project quota. A user or group quota is `DQUOT`, what
 `rquota` reports against.
 
+### 5.7 Translation to open state
+
+Open state takes only neutral requests and returns neutral results and errors
+([RFC 14 §1.1](rfc-14-open-state.md#1.1%20Non-goals),
+[RFC 20 §2.1](rfc-20-adapters.md#2.1%20Two%20questions%20place%20every%20piece%20of%20logic)).
+Every NFS → neutral mapping it needs is the NFS adapter's, and is stated here or
+in the section this table points to:
+
+| NFS | Neutral (RFC 14) | Where |
+| --- | --- | --- |
+| owner string, verifier, creating principal, `SP4_MACH_CRED`, an NLM host's `caller_name` + address and NSM state number | `Client.Name`, `Boot`, `Owner`, `Protect`; the rest in `Adapter` | §3.3 |
+| `SETCLIENTID` / `EXCHANGE_ID` before its confirm; the confirm verifier, the `eir_sequenceid` | `Client.Pending`, `Pending.Confirm` | §3.3, §3.5 |
+| `CREATE_SESSION` sequencing and replay | the adapter's own, over its `Adapter` bytes; `AddSession` | §3.5 |
+| stateid: `other` (shard, grace-instance bits, token), `seqid` | `StateRef{Type, Shard, Instance, Token, Seq}`; `seqid` 0 → `Seq` 0, current | §5.2 |
+| `share_access` / `share_deny` | `OpenMode.Access` / `Deny`: read and write each way; NFSv4 has no delete bit, so an NFS open never denies delete | below |
+| `OPEN` claim types `CLAIM_FH`, `CLAIM_PREVIOUS`, `CLAIM_DELEG_CUR_FH`, `CLAIM_DELEG_PREV_FH` | an open with `Via` zero: counted under no directory, no delete through a parent ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)); `CLAIM_PREVIOUS` also `Reclaim` | below |
+| read delegation, write delegation | grant kind read; read + write; never handle | §5.3 |
+| `LOCK` / `LOCKU` / `LOCKT`, NLM `LOCK` / `UNLOCK` / `TEST` | `LockReq` of one range; `READW_LT` and `WRITEW_LT` set `Wait` to poll, a blocking NLM lock to callback; `LockOwner.Name` is the `lock_owner4` or the NLM `svid` + `oh`; one owner's locks merge and split | §5.5, §6.1 |
+| NFSv4.0 open-owner and lock-owner seqids | `Seqs` on the call; held as RFC 14's `Sequence`; which replies advance it | §4.2 |
+| `DELEGRETURN` | `AckRecall` to none | Appendix D |
+| `RECLAIM_COMPLETE` | `ReclaimComplete`: the client has finished reclaiming | §5.4 |
+| `Reach.Down` | `SEQ4_STATUS_CB_PATH_DOWN` on the next `SEQUENCE` | §3.4 |
+| `ClientStatus` flags `ReclaimNeeded`, `AdminRevoked`, `RecallableRevoked` | `SEQ4_STATUS_RESTART_RECLAIM_NEEDED`, `SEQ4_STATUS_ADMIN_STATE_REVOKED`, `SEQ4_STATUS_RECALLABLE_STATE_REVOKED`, each until `RECLAIM_COMPLETE` or `FREE_STATEID` clears its cause; for NFSv4.0, a needed reclaim is `NFS4ERR_STALE_CLIENTID` to `RENEW` and to every operation naming the client ID until `SETCLIENTID` and its confirm, while the lost shard's stateids are `NFS4ERR_STALE_STATEID` | §5.1, §5.4 |
+| a lock that waits, granted later | `ErrBlocked`, then `LockWaitOver`: `NLMPROC4_GRANTED` resent until the host answers; an NFSv4.1 waiter may be sent `CB_NOTIFY_LOCK`, which is optional | §5.5, §6.1 |
+| a lock refused while a recall runs | `ErrDelay`: `NFS4ERR_DELAY`; a non-blocking NLM lock `NLM4_DENIED_GRACE_PERIOD` | §5.3 |
+| `DESTROY_CLIENTID` with state or a session left | `ErrClientBusy`: `NFS4ERR_CLIENTID_BUSY` | §5.1 |
+| every neutral error | its NFS status | §5.6 |
+
+**Access and deny.** `OPEN4_SHARE_ACCESS_READ` and `_WRITE` are `Access` read
+and write data (with the attribute reads and writes RFC 7 §7.7 implies);
+`OPEN4_SHARE_DENY_READ` and `_WRITE` are `Deny` of the same bits. The
+`OPEN4_SHARE_ACCESS_WANT_*` flags are not access: they ask for a grant (§5.3).
+An access or deny value outside the protocol's set is `NFS4ERR_INVAL`, never
+truncated to the bits that fit.
+
+**Request IDs.** The request ID a forwarded call carries
+([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) is derived
+from the NFS retry identity, never from the connection, because an NFSv4
+client retries only on a new connection (RFC 7530 §3.1.1) and an NFSv3 one
+may: for NFSv3 and NFSv4.0, (client address, XID, procedure, checksum of the
+arguments), as a server's reply cache keys a retry, tagged NFSv3 or NFSv4.0;
+for NFSv4.1, (gateway node's ID, the node epoch the session was created under,
+session, slot, sequence ID), tagged NFSv4.1, since each gateway node mints its
+own session IDs and nothing makes them unique across gateway nodes. The epoch
+is the session's, not the gateway node's current one: a gateway node marked
+lapsed re-acquires a higher node epoch without restarting, its sessions
+survive, and a retry on the same session, slot and sequence must still carry
+the ID its first send did. So an NFSv3 or NFSv4.0 retry carries the same ID on
+any connection and through any gateway node that holds the client's address,
+and an NFSv4.1 retry on any connection of its session, which lives at one
+gateway node ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)).
+
+> decision: an NFSv4.1 retry after its session was lost is a new request. The
+> session — its slot table and replay cache — lives at the gateway node and dies
+> with it: the client finds the session gone, creates a new one, and resends
+> under a new slot and so a new request ID. A non-idempotent call whose reply was
+> lost can then be applied twice, as after a restart of a server without
+> persistent sessions, which NFS clients already tolerate; an exclusive create
+> stays safe by its stored verifier
+> ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)). NFSv3 and NFSv4.0 retries keep their identity
+> across a gateway node loss, since it names no session. Overturned if re-applied
+> non-idempotent calls across a gateway node loss show up in client-visible errors;
+> then NFSv4.1 sessions are persisted in the store with their replay caches.
+
+**Topology on the wire.** A `LAYOUTCOMMIT` on a layout whose (shard, epoch) is
+stale ([RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS)) is `NFS4ERR_BADLAYOUT`; a
+single node answers `GETDEVICEINFO`, `GETDEVICELIST`, `LAYOUTGET`,
+`LAYOUTCOMMIT` and `LAYOUTRETURN` with `NFS4ERR_NOTSUPP` (§2.1). A `CLONE`
+refused `ErrCross` (`CrossShard`) is `NFS4ERR_XDEV`, never `NFS4ERR_NOTSUPP`,
+which a client records as the operation missing for the whole mount, and a
+`COPY` of the same pair becomes a server-side byte copy (§5.6). A drained node
+answers with `fs_locations` naming another gateway node (§7.4).
+
+**What crosses between nodes.** The NFS adapter translates on the gateway node
+holding the connection; only neutral service calls and the opaque `Adapter`
+bytes cross to the server. Slot tables, reply caches and GSS contexts stay
+volatile on the gateway (§3.2, §10); only what a reconnect must find — the
+`CREATE_SESSION` replay, the NFSv4.0 callback address, the NSM address — goes in
+`Adapter`, whose first byte is the adapter's own version, so a node that cannot
+read a version refuses the request rather than misreading it. The adapter reads
+the record through the service on every decision that needs it and never
+answers from a copy it holds.
 
 ## 6. NFSv3 locking: NLM and NSM
 
@@ -1279,9 +1398,9 @@ client, are RFC 14's.
 - **A host is bound to its address.** NLM carries no credential that proves
   which host sent a request: `caller_name` is whatever the sender writes. The
   client record of an NLM host **MUST** be keyed by `caller_name` together with
-  the source address of the request that created it: both are its `Owner`
+  the source address of the request that created it: both are its `Name`
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), its `ClientID` is minted
-  as any client's is, and the host's NSM state number is its `Verifier`. A request naming that
+  as any client's is, and the host's NSM state number is its `Boot` (§3.3). A request naming that
   `caller_name` from another address is another client, and can neither test,
   unlock nor free the first host's locks. `NLMPROC4_FREE_ALL` and NSM's
   `SM_NOTIFY` for a host release its locks only when they arrive from the
@@ -1376,8 +1495,8 @@ client, are RFC 14's.
 ### 6.2 NSM
 
 The server monitors clients as its peers expect: a host's first NLM call
-registers it for restart notification, its `caller_name` recorded with the
-client as its `Notify`; `SM_MON` and `SM_UNMON` are calls a server makes to its
+registers it for restart notification, its `mon_name` and `priv` cookie kept
+in the client record's `Adapter` bytes (§3.3); `SM_MON` and `SM_UNMON` are calls a server makes to its
 own monitor, never requests a peer sends it
 ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)).
 
@@ -1387,8 +1506,8 @@ own monitor, never requests a peer sends it
   arrives at the new installation, inside the moved shares' grace there
   (§7.4) ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)),
   and the new primary asks the gateway node currently holding each address
-  to send `SM_NOTIFY` to every NLM host whose record names the shard, at its
-  `Notify`, naming the server name the client monitored — the floating
+  to send `SM_NOTIFY` to every NLM host whose record names the shard, at the
+  address its `Adapter` bytes hold, which the `Revoked` report carries, naming the server name the client monitored — the floating
   address's name, not a node's — with the new state number, so the client's
   statd reclaims locks.
 - `SM_NOTIFY` is sent by UDP, as statd peers listen for it. Apart from the port
@@ -1981,7 +2100,7 @@ Authentication and principal mapping are
 | N15 | An NLM host is its name and source address; NLM callbacks are calls to the host's NLM service, on a connection the server opens from the floating address the host used. |
 | N16 | Audit entries are read or changed only by an administrator, on every minor version; the ctime NFS reports moves on every change. |
 | N17 | A stability reply waits for the journal sync of its range and for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's; a capacity refusal is answered as RFC 8 §10.2 classifies it, a transient one retry-later for as long as it lasts, never "no space" because a deadline passed; only a logical quota or a permanent cause is answered at once. |
-| N18 | The owner string, verifier, creating principal, state protection, back-channel node, session holders and last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `OwnerSeq`. |
+| N18 | The owner string (`Name`), verifier (`Boot`), creating principal (`Owner`), state protection (`Protect`), back-channel node, session holders and, in the adapter's own bytes, the last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is a `Pending` proposal, volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `Sequence`. |
 | N19 | A directory's `change_info4` is never reported atomic, and NFSv3 pre-operation attributes are returned only when read from the File and its overlay in the hold of the file's accept lock that accepts the operation, never for a directory. |
 | N20 | A single node advertises no pNFS role and answers every layout operation `NFS4ERR_NOTSUPP`. |
 | N21 | An NLM waiter ends only as RFC 14's lifetime ends it; no adapter timer drops it, and no cancel is answered before `CancelLock` returns; an `NLMPROC4_GRANTED` is resent until the host answers, and a granted lock is never released for a silence. |
@@ -1989,6 +2108,8 @@ Authentication and principal mapping are
 | N23 | A loss of unstable writes reaches the next `COMMIT` as a changed verifier, never as a success under the old one. |
 | N24 | A stateid whose record is gone is `NFS4ERR_STALE_STATEID` when its bits name an earlier grace instance or its shard is in grace, and `NFS4ERR_BAD_STATEID` otherwise; an administrator's revoke keeps the client and its sessions, answers each revoked stateid `NFS4ERR_ADMIN_REVOKED` until it is freed, and outlives a restart, so the revoked state is never reclaimed. |
 | N25 | A moved namespace's named address is served by nothing between A's release and its arrival at B, and the moved shares are in an NFS-only grace at B from publish as RFC 27 §2.2 bounds it. |
+| N26 | Every NFS → neutral translation is the adapter's, total and pure: each wire value maps to one neutral value or a named refusal, every neutral error maps to one NFS status, and nothing the adapter cannot decode is acted on. Open state never reads a protocol value (§5.7). |
+| N27 | The NFS adapter's durable state — the `CREATE_SESSION` replay, the callback and NSM addresses, the state-protection operation sets — lives only in the client record's versioned `Adapter` bytes, written in the step of the change it belongs to and over the bytes the adapter read; per-connection state is volatile on the gateway (§3.3, §3.5, §5.7). |
 
 
 ## 12. Conformance
@@ -2072,6 +2193,14 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §9.1 failed stable write *(1 node)* | Fail the journal sync under a `FILE_SYNC` `WRITE`; assert `NFS4ERR_IO` / `NFS3ERR_IO`. | a stable write answered success over a failed sync |
 | §9.2 close-to-open and WCC *(1 node)* | Two clients on the one node: one writes and closes, the other opens and reads the new data. Two NFSv3 clients write one file in parallel, 10^4 writes each; for every reply that carries `before`, assert it equals the previous write's `after`. | `change` or `before` read outside the accept-lock hold |
 | §8.1 privilege *(1 node)* | An export with `Squash=root` admitting `AUTH_SYS`, and a share grant naming uid 1500 `admin`: over `AUTH_SYS` as uid 1500, `chown` another user's file and read a mode-0600 file of another user; assert `NFS4ERR_PERM` and `NFS4ERR_ACCESS`. As root: assert squashed. Over Kerberos as the `admin` principal: assert both succeed. On a `sec=krb5` export, a principal the ID mapping maps to uid 0 runs `tar xpf` of an archive with other owners: with `no_root_squash` assert the owners restored; with `root_squash` assert squashed and `NFS4ERR_PERM`. | an `admin` grant honoured on an asserted uid, or root over Kerberos treated otherwise than root over `AUTH_SYS` |
+| §5.7 translation golden vectors *(1 node)* | Table-driven, as pure functions with no service: for every NFS input in a golden file — owner strings, verifiers, `share_access`/`share_deny` pairs, claim types, delegation types, `LOCK` types, `lock_owner4` and NLM `svid`/`oh`, stateids — assert NFS → neutral → NFS gives the golden neutral value and back the golden wire value. | |
+| §5.7 total mapping *(1 node)* | Property tests over generated inputs: every NFS input maps to a neutral value or a named refusal, never a default; every neutral error of RFC 17 §4.3 maps to an NFS status (§5.6) for each of NFSv4.0, NFSv4.1 and NLM; where a mapping is invertible, the round trip is the identity. | |
+| §5.7 decoder fuzzing *(1 node)* | Go native fuzzing (`testing.F`) of the stateid ↔ `StateRef` codec, `share_access`/`share_deny` decoding, `LOCK` and NLM lock-request decoding and the `Adapter`-bytes decoder, seeded with truncated, corrupt, older- and newer-version bytes: assert no panic, and either a valid neutral request or a refusal — never a request that decodes to other state. | |
+| §3.5 replay through another node | `CREATE_SESSION` on P1, drop the reply, restart P1, replay the same `csa_sequence` through P2: assert the stored reply from `Adapter` and one session; `csa_sequence` + 2: `NFS4ERR_SEQ_MISORDERED`. Race two `CREATE_SESSION`s of one sequence on P1 and P2: one session, both answered with its reply. | |
+| §3.3 one name, two principals *(1 node)* | Two principals send `EXCHANGE_ID` with one `co_ownerid`: the second is `NFS4ERR_CLID_INUSE` and leaves no `Pending`; over NFSv4.0 the same with `SETCLIENTID`. | |
+| §3.3 reboot racing renew *(1 node)* | An NFSv4.0 client holds a lock; send `SETCLIENTID` with a new verifier and, before its confirm, `RENEW` under the old client ID: assert the renewal succeeds and the lock is held; confirm: the old ID's state released and its `RENEW` `NFS4ERR_STALE_CLIENTID`. | |
+| §6.1 NLM against SMB *(1 node)* | An NLM lock and an SMB byte-range lock over one range of one file, in each order: assert the second refused, and an SMB write into the NLM range admitted (NFS locks are advisory) while an NFSv3 write into the SMB range is refused. | |
+| e2e | pynfs, cthon04 and nfstest through dt ([RFC 29](rfc-29-test-harness.md)) are the end-to-end layer over every row above. | |
 
 **Tests expected to fail.** The suites' tests that the decisions of this RFC
 fail by design. A single-node run passes when exactly these fail; one that
@@ -2115,9 +2244,15 @@ shown without the `dittofs_` prefix the exporter adds.
 | callbacks with no live back channel | `nfs_cb_path_down_total` | counter |
 | GSS contexts held per node | `nfs_gss_contexts` | gauge |
 | NLM blocked waiters | `nfs_nlm_waiters` | gauge |
+| wire inputs refused because they map to no neutral value, by `reason` | `adapter_translation_refused_total{protocol, reason}` | counter |
+| neutral errors answered, by the neutral error | `adapter_status_mapped_total{protocol, error}` | counter |
+| `Adapter` bytes that failed to decode, by `reason` (`truncated`, `unknown_version`); any nonzero is an alert | `adapter_record_decode_failures_total{protocol, reason}` | counter |
+| `CREATE_SESSION` replays answered from the client record | `adapter_record_replays_total{protocol}` | counter |
 
-Operation latency is RFC 17's; grants, recalls and grace are RFC 14's. No share
-or client label.
+Operation latency is RFC 17's; grants, recalls and grace are RFC 14's. The
+`adapter_*` rows are [RFC 20](rfc-20-adapters.md)'s, with `protocol` `nfs3` or
+`nfs4` ([RFC 25 §2](rfc-25-observability.md#2.%20Metrics)); NLM counts under
+`nfs3`. No share, client, owner, file or principal label.
 
 ## 14. Open questions
 
@@ -2244,7 +2379,7 @@ method then calls below is
 | MOUNT `EXPORT` | `ListShares` | |
 | MOUNT `UMNT`, `UMNTALL`, `DUMP` | none (adapter only) | no mount table ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | NLM `TEST` | `TestLock` on an anonymous open | |
-| NLM `LOCK` | `Lock` | `Wait` for a blocking lock; `Reclaim` in grace ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
+| NLM `LOCK` | `Lock` | `Wait` callback for a blocking lock; `Reclaim` in grace ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | NLM `CANCEL` | `CancelLock` | answered only once it returns |
 | NLM `UNLOCK` | `Unlock` | |
 | NLM `GRANTED` (to the host) | the `LockWaitOver` callback | |
@@ -2261,7 +2396,7 @@ method then calls below is
 | --- | --- | --- |
 | `SETCLIENTID`, `EXCHANGE_ID` | `Propose` | an unconfirmed proposal, no state ([§3.5](#3.5%20Confirming%20a%20client)) |
 | `SETCLIENTID_CONFIRM` | `Connect`, naming the `Proposal` | |
-| `CREATE_SESSION` | the first `Connect`, naming the `Proposal`, then `CreateSession` | |
+| `CREATE_SESSION` | `Record`; the first `Connect`, naming the `Proposal`, then `AddSession` (§3.5) | a replay is answered from the record's adapter bytes and calls nothing more |
 | `SEQUENCE` | `Renew`, at most once per renewal interval | the slot table is the adapter's |
 | `RENEW` | `Renew` | |
 | `DESTROY_SESSION` | none (adapter only) | |
@@ -2285,7 +2420,7 @@ method then calls below is
 | `READ`, `WRITE`, `COMMIT` | `Read`, `Write`, `Commit` | |
 | `LOCK`, `LOCKT`, `LOCKU` | `Lock`, `TestLock`, `Unlock` | ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `RELEASE_LOCKOWNER` | `ReleaseLockOwner` | |
-| `DELEGRETURN` | `AckBreak` to `GrantNone` | |
+| `DELEGRETURN` | `AckRecall` to `GrantNone` | |
 | `DELEGPURGE`, `WANT_DELEGATION`, `GET_DIR_DELEGATION`, `OPENATTR`, `SET_SSV` | not supported, answered as this RFC says of each | |
 | `TEST_STATEID` | `TestState` | |
 | `FREE_STATEID` | `FreeRevoked` for a revoked stateid | a lock stateid holding no locks is freed alone, never its owner's other lock state (RFC 8881 §18.38): gap, RFC 14 declares no call for it ([RFC 17 §10](rfc-17-vfs.md#10.%20Open%20questions)) |

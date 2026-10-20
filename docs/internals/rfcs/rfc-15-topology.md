@@ -183,8 +183,8 @@ figure draws the same design with three nodes, where S2 is the gateway:
   and the I/O it admits are never on two nodes.
 - A gateway forwards and never decides.
 - A call that reaches a node no longer in charge is refused, never applied; a
-  change retried through the same gateway node, or replayed by SMB on another
-  channel, returns its first result instead of applying twice
+  change retried under its request ID, or replayed against the open it names,
+  returns its first result instead of applying twice
   ([§4.3](#4.3%20The%20route%20envelope)).
 - When a node is lost, a survivor takes its client addresses and makes its
   clients reconnect at once, and its shards fail over to their replicas.
@@ -211,13 +211,12 @@ crossing.
 
 1. An operator drains P1, which holds the address `10.0.0.50`
    ([§5.3](#5.3%20Client%20addressing)).
-2. NFSv4 clients are given another node's location, and move before P1
-   stops ([§5.3](#5.3%20Client%20addressing)).
-3. SMB clients registered for Witness are told which node to move to
+2. Clients whose protocol can be told where to go are given another node,
+   and move before P1 stops ([§5.3](#5.3%20Client%20addressing)).
+3. P1 stops forwarding, then releases its addresses; every other client
+   follows the address. A drain needs no fencing wait
    ([§5.3](#5.3%20Client%20addressing)).
-4. P1 stops forwarding, then releases its addresses; NFSv3 clients follow the
-   address. A drain needs no fencing wait ([§5.3](#5.3%20Client%20addressing)).
-5. P1 hands the shards it is primary of over to their replicas before it stops
+4. P1 hands the shards it is primary of over to their replicas before it stops
    ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)).
 
 No client waits for a transport timeout, and no open state is lost: the
@@ -241,13 +240,14 @@ rename never changes a file's shard ([RFC 11 §2](rfc-11-ownership.md#2.%20Shard
 
 **A clone across shards becomes a copy.**
 
-1. An NFSv4.2 client asks to `CLONE` a file in shard A into shard B
+1. A client asks to clone a file in shard A into shard B
    ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
 2. Source and destination are in different shards, so admission refuses the
    clone ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
-3. The adapter answers `NFS4ERR_XDEV`, never `NFS4ERR_NOTSUPP`, so the client
-   keeps cloning within one shard ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
-4. A `COPY` of the same pair runs as a server-side byte copy
+3. The adapter answers the refusal as a cross-device one, never as an
+   operation the server lacks, so the client keeps cloning within one shard
+   ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
+4. A copy of the same pair runs as a server-side byte copy
    ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)).
 
 The bytes are right; only the speed of a clone is lost.
@@ -309,7 +309,7 @@ can hold a client's connection, be a shard's primary, or be its replica:
 | `vfs.Server` | the filesystem: decides every call for the shards this node is primary of | [RFC 17](rfc-17-vfs.md) |
 | identity, open state | map identities per share; hold opens, locks, caching grants and layouts | [RFC 18](rfc-index.md), [RFC 14](rfc-14-open-state.md) |
 | content subsystem | engine, journals and their replication, syncer, GC | [RFC 8](rfc-8-engine.md), [RFC 10](rfc-10-journal-replication.md) |
-| client-address agent; **(cluster)** pNFS metadata-server and data-server endpoints | floating addresses and SMB Witness; layouts | [§5](#5.%20Clients) |
+| client-address agent; **(cluster)** pNFS metadata-server and data-server endpoints | floating addresses and move notifications to clients; layouts | [§5](#5.%20Clients) |
 | control plane, management API | settings, shares, principals | [RFC 13](rfc-13-configuration.md) |
 
 Every node therefore needs the metadata store, journal devices and remote-tier
@@ -354,7 +354,12 @@ holds three things behind it, all in package `vfs`:
 | **`vfs.Serve`** — the receive side | refuses a call whose node epoch is fenced, whose shard epoch is not current or whose hop count is not zero, naming the primary it knows; answers a retry from the dedup table by request ID ([§4.3](#4.3%20The%20route%20envelope)); then calls the server. It runs the same checks for a call that arrives over `vfs.Transport` and for the gateway's local path, which it returns as a checked `vfs.Service` | forward a call, or read anything about the file | the dedup table |
 | **`vfs.Server`** — the filesystem | everything else: refusing a file whose recorded shard is not the one named (`ErrWrongShard`), admission to the share, identity resolution, flavour and squash, ordering, open state, metadata and content ([RFC 17](rfc-17-vfs.md)) | route | open state, quota reservations, grace, admitted-call counts |
 
-So adapters sign in, the gateway forwards, and the server decides. The gateway's
+So adapters sign in and translate, the gateway forwards, and the server
+decides. An adapter turns its protocol's request into a neutral `vfs.Service`
+call before the gateway sees it, and turns the neutral result back into its
+protocol's reply ([RFC 20 §2.1](rfc-20-adapters.md#2.1%20Two%20questions%20place%20every%20piece%20of%20logic));
+nothing below the adapter — gateway, transport, `vfs.Serve`, server — parses a
+protocol value. The gateway's
 one choice — which node to send to — decides nothing either: a wrong choice is
 refused by the receiver, never applied ([§6](#6.%20Learning%20primaries)). The
 router's reads of shard records and of a file's recorded shard are routing, not
@@ -390,17 +395,25 @@ file logic, and are made by its implementation outside `vfs`.
   shortcut drops only the network hop: `vfs.Serve` returns its checks as a
   checked `vfs.Service`, and that, never the bare server, is the gateway's
   local `vfs.Service`.
-- The request identity a request ID is derived from ([§4.3](#4.3%20The%20route%20envelope)) — XID,
-  procedure and argument checksum, or session, slot and sequence — is the
-  adapter's, which hands it with the call; the gateway only stamps it.
+- The request ID ([§4.3](#4.3%20The%20route%20envelope)) is the adapter's,
+  derived from its protocol's own retry identity, and handed with the call; the
+  gateway only stamps it.
+- Per-connection state — sessions, slot tables, reply caches, keys — is
+  volatile at the gateway node holding the connection, and dies with it. What a
+  reconnect must find is written at the primary: in RFC 14's records, and in
+  their opaque adapter bytes ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)),
+  which travel in the forwarded call and its result and are read only by the
+  adapter.
 - `vfs.Router`, `vfs.Transport` and `vfs.Peers` **MUST** be declared in `vfs` and
   implemented outside it, so `vfs` imports no network code.
 - A call names its route by its handle, or, with none, by the shard its
   grant, watch or state ID names
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). A call with neither — `Root`,
   `ListShares`, the pseudo-filesystem, a client's lease and session calls —
-  runs at the gateway node's own server. A client's lease owner and back
-  channel are chosen among the nodes holding its sessions
+  runs at the gateway node's own server. A client's record lives at its lease
+  owner, `Lease.Node`, and names its back channel and session holders in
+  `Reach` (`Callback`, `Down`, `Sessions`); the lease owner and back channel are
+  chosen among the nodes holding its sessions
   ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)), so renewal
   costs no hop when the owner is this node.
 - A call that touches two shards is routed by its first handle to its
@@ -489,7 +502,7 @@ service at the gateway and cost:
 | a forwarded `vfs.Service` call | a gateway and `vfs.Serve` at the primary | §2.3, [§4.3](#4.3%20The%20route%20envelope) |
 | a replication message | a primary and its replicas | [RFC 10](rfc-10-journal-replication.md) |
 | a cross-shard prepare, commit or release | two primaries' servers, through `vfs.Peers` | [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) |
-| a server's other call to a second primary: an overlay of an entry in another shard, a cross-shard copy's source read, an NFSv4.0 owner's sequence at its home primary, the lease owner's calls to its client's primaries, and their recalls back | two servers, through `vfs.Peers` | [RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring) |
+| a server's other call to a second primary: an overlay of an entry in another shard, a cross-shard copy's source read, an owner's sequence at its home primary, the lease owner's calls to its client's primaries, and their recalls back | two servers, through `vfs.Peers` | [RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring) |
 | a handover's or move's shipped tail and open-state table | two primaries | [RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) |
 | a newest-version question for a read served off the primary | a node and the primary | [RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes) |
 
@@ -528,7 +541,7 @@ deferred to [RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20l
 
 Because the conflict check of an I/O and the I/O itself run at one primary, no
 grant can land between them and no I/O pays a hop to be checked. `size`,
-write-time times, `LAYOUTCOMMIT`, truncate and release are all local to the
+write-time times, a layout's commit, truncate and release are all local to the
 primary: nothing within one shard crosses between nodes.
 
 ## 4. Where each call runs
@@ -626,12 +639,12 @@ move either: a batch skips a file that is the source or destination of an
 unfinished clone until the clone is done
 ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). On
 `ErrCross` (`CrossShard`) the adapters fall back without telling the client the
-operation is missing: an NFSv4.2 `COPY` and an SMB copychunk become a
-server-side byte copy, reads at the source's primary through `vfs.Peers` and
-writes at the destination's; an NFSv4.2 `CLONE` answers `NFS4ERR_XDEV`, never
-`NFS4ERR_NOTSUPP`, which a client records as the operation missing for the
-whole mount; an SMB `FSCTL_DUPLICATE_EXTENTS_TO_FILE` answers
-`STATUS_NOT_SAME_DEVICE`.
+operation is missing: a copy becomes a server-side byte copy, reads at the
+source's primary through `vfs.Peers` and writes at the destination's; a clone
+is answered as a cross-device refusal, never as an operation the server lacks,
+which a client would record for the whole mount. Each adapter's status is its
+own ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
+[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)).
 
 > ponytail: a cross-shard clone costs a byte copy. Add copy to the calls above,
 > a prepare at the source's primary that freezes the extent and commits the
@@ -644,11 +657,12 @@ Every call a node forwards to a primary carries one envelope:
 
 | Field | Means |
 | --- | --- |
-| request ID | derived from the protocol's own retry identity, not from the connection, because an NFSv4 client retries only on a new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0, (client address, XID, procedure, checksum of the arguments), as a server's reply cache keys a retry; for NFSv4.1, (gateway node's ID, the node epoch the session was created under, session, slot, sequence ID), since each gateway node mints its own session IDs and nothing makes them unique across gateway nodes. Whatever its fields, a request ID is stored as one byte string ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)) whose first byte tags its family — NFSv3, NFSv4.0, NFSv4.1 or SMB — so IDs of two families, whose fields can encode alike, never compare equal. The epoch is the session's, not the gateway node's current one: a gateway node marked lapsed re-acquires a higher node epoch without restarting, its sessions survive, and a retry on the same session, slot and sequence must still carry the ID its first send did. A retry carrying the same identity carries the same ID: for NFSv3 and NFSv4.0 on any connection and through any gateway node that holds the client's address; for NFSv4.1 on any connection of its session, which lives at one gateway node ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)). An SMB request is given an ID the gateway node mints — its node ID and node epoch, the connection, and a number never reused on it — since SMB names its retries by open state instead (below); it is never derived from SMB message IDs, which are per connection, so two channels of one session can send two different requests under one (client GUID, session ID, message ID) |
+| request ID | the adapter's, derived from its protocol's own retry identity and never from the connection, since a client may retry on a new connection; stable across every retry of the same request the protocol lets the client send, on any connection and through any gateway node that holds the client, and unique across the installation for distinct requests. It is one byte string ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)) whose first byte tags the family it was derived in, so IDs of two families never compare equal. How each protocol derives it is its adapter's ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)) |
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the gateway node; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)) |
 | trace context | the sender's trace ID, parent span ID and sampled flag (RFC 25 §6.2); never part of the request ID |
+| adapter bytes (payload) | the opaque `Adapter` bytes of the RFC 14 records a call writes or reads, at most 4 KiB each, starting with the adapter's own version byte ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); they travel in the call and back in its result, and the gateway, the transport and `vfs.Serve` never read them. They are part of the call, not of the envelope's routing fields, so they are fenced, deduplicated and replayed with it |
 
 - The primary **MUST** refuse a call whose epoch is not its current one for the
   shard ([§6](#6.%20Learning%20primaries)), and one whose sending node epoch it has fenced.
@@ -666,12 +680,11 @@ Every call a node forwards to a primary carries one envelope:
   retries it, and is no bound for the window. An entry is recorded when its
   mutation is admitted, so a retry that finds it still running waits for its
   result instead of running a second time. A handover ships only the entries
-  of open-state calls — an SMB `CREATE`, `CLOSE` or `LOCK`, an NFSv4.1 `OPEN`,
-  `OPEN_DOWNGRADE`, `CLOSE`, `LOCK` or `LOCKU`, a sequenced NFSv4.0 operation —
-  with the open-state table they apply to
+  of open-state calls — `Open`, `Downgrade`, `Close`, `Lock`, `Unlock` and every
+  other call that changes open state — with the open-state table they apply to
   ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)), since those calls leave no durable result to
   find again and a retry run twice would conflict with the client's own lock or
-  answer a bad stateid or seqid; they are few next to writes. The rest of the
+  answer a stale state reference or sequence; they are few next to writes. The rest of the
   table is not shipped, since at gigabytes per window it would stretch the
   freeze past its target: the new primary looks a journal operation's or a
   namespace mutation's retry up on a miss in the journal request entries and
@@ -688,7 +701,7 @@ Every call a node forwards to a primary carries one envelope:
   extent, then returns its first result instead of overwriting the second.
 
 > decision: a retry inside the retry window is answered once; one later is
-> applied again, as on any NFSv3 server, and so is one whose entry its
+> applied again, as on a server with a bounded reply cache, and so is one whose entry its
 > client's cap dropped. No finite window covers a client cut
 > off for longer than the window, which resends on reconnect whatever the
 > back-off, so the window is sized to the clients' retransmission behaviour,
@@ -708,34 +721,34 @@ Every call a node forwards to a primary carries one envelope:
   request record with its result in its own transaction
   ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)). A new primary rebuilds the table from both before it
   serves, so a retry after a failover is answered, not applied again.
-- **An SMB replay on another channel is recognised by SMB's own state at the
-  primary**, not by request ID. A request the client flags as a replay carries
-  a new request ID, and the primary, which holds the open ([RFC 14](rfc-14-open-state.md)),
-  matches it as MS-SMB2 does: a create by its create GUID, a lock by the open's
-  lock sequence, and every other operation on an open by the open's channel
-  sequence, refusing with `STATUS_FILE_NOT_AVAILABLE` a `WRITE`, `SET_INFO` or
-  `IOCTL` whose channel sequence is stale, or that replays one still in flight
-  under an earlier sequence — never holding it — and no other request
-  (MS-SMB2 3.3.5.2.10).
-  The channel sequence and the counts of requests outstanding under it are
-  fields of the `Open` record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), held at the primary and handed
-  over with it. For a persistent open the channel sequence is durable, written
-  in the transaction that applies the request, so a stale replayed write is
-  refused after the loss of a gateway node and after a failover alike; the
-  outstanding counts are never written, and a new primary starts them at zero
-  ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
+- **A replay the protocol names by open state is matched at the primary**, not
+  by request ID. Some protocols let a client resend a request on another
+  connection as a flagged replay under a new identity; the primary, which holds
+  the open, matches it against the open's own replay state — its create ID,
+  lock sequence and channel sequence ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open),
+  [§8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens))
+  — handed over with the open, and durable with a persistent open, so a stale
+  replay is refused after the loss of a gateway node and after a failover
+  alike. Which requests carry such a replay, and how a stale one is answered,
+  is the adapter's ([RFC 22 §6.5](rfc-22-smb.md#6.5%20Replay)).
+- **A retry whose connection state died with its gateway node is a new
+  request** when the protocol derives its identity from that state; whether
+  that holds, and what keeps a non-idempotent call safe across it, is the
+  adapter's ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)).
 
-> decision: an NFSv4.1 retry after its session was lost is a new request. The
-> session — its slot table and replay cache — lives at the gateway node and dies
-> with it: the client finds the session gone, creates a new one, and resends
-> under a new slot and so a new request ID. A non-idempotent call whose reply was
-> lost can then be applied twice, as after a restart of a server without
-> persistent sessions, which NFS clients already tolerate; an exclusive create
-> stays safe by its stored verifier
-> ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)). NFSv3 and NFSv4.0 retries keep their identity
-> across a gateway node loss, since it names no session. Overturned if re-applied
-> non-idempotent calls across a gateway node loss show up in client-visible errors;
-> then NFSv4.1 sessions are persisted in the store with their replay caches.
+**Mixed versions (cluster).** During a rolling upgrade a call may be forwarded
+between nodes of different versions. The envelope and the neutral call are
+versioned with the node-to-node schema ([§11](#11.%20Open%20questions) item 3);
+the adapter bytes are versioned by the adapter, by their first byte. A server
+never reads them; the adapter that does — on the gateway node, from a result —
+**MUST** refuse bytes whose version it cannot read with `ErrAdapterVersion`,
+answering the client as its protocol answers a temporary server fault, and
+**MUST NOT** misread or rewrite them. The primary stores and returns them
+unchanged whatever its own version, so bytes written by a newer gateway survive
+a call forwarded through an older primary, and an older gateway that meets them
+refuses that one request rather than corrupting the record. An adapter
+**MUST** keep reading every version it has ever written until no record of it
+can remain.
 
 ### 4.4 Node channels
 
@@ -762,11 +775,13 @@ Collocated, a node channel is a function call and none of this applies.
 ### 5.1 pNFS
 
 pNFS clients get layouts from a node's metadata-server endpoint,
-which forwards `LAYOUTGET` to the primary of the file's shard, through a future
+which forwards a layout request to the primary of the file's shard, through a future
 `Layouts` interface of the filesystem service
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)); the primary grants and
-holds the layout as open state ([RFC 14](rfc-14-open-state.md)). Clients then send `READ` and `WRITE`
-to the data servers the layout names.
+holds the layout as open state ([RFC 14](rfc-14-open-state.md)). Clients then
+read and write at the data servers the layout names. The wire is RFC 21's
+([§2.1](rfc-21-nfs.md#2.1%20Versions%20served),
+[§5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)).
 
 **A layout names one data server: the primary of the file's shard.** A file is
 never split across shards, so a layout never names more than one; striping one
@@ -774,10 +789,10 @@ file across data servers needs per-file or range shards, which are deferred to
 [RFC 11 Appendix C](rfc-11-ownership.md#Appendix%20C%20%E2%80%94%20later%3A%20per-file%20and%20range%20shards).
 
 - **Fencing.** The layout records the (shard, epoch) it was granted under. The
-  data server checks the layout's stateid and that (shard, epoch) on every
-  `READ`, `WRITE` and `COMMIT`, so revoking one layout fences one client, and a
+  data server checks the layout's state reference and that (shard, epoch) on
+  every read, write and commit, so revoking one layout fences one client, and a
   data server that lost its shard refuses what it would once have accepted. A
-  superseded data server **MUST NOT** answer a stable write or `COMMIT` without
+  superseded data server **MUST NOT** answer a stable write or commit without
   its replica set's durability ([RFC 10 §6](rfc-10-journal-replication.md#6.%20Fencing)).
 - **Recall on primary change or move.** When the shard's primary changes, or the
   file moves to another shard, the layout **MUST** be recalled, and revoked at the
@@ -785,20 +800,20 @@ file across data servers needs per-file or range shards, which are deferred to
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 - **Existence** is committed by the primary, fenced by the file's fence records,
   as on any other path: group-committed within a bounded age of the sync, with a
-  stability point — a stable write or `COMMIT` — waiting only for the existence
+  stability point — a stable write or commit — waiting only for the existence
   commit of an overwrite of committed content
   ([RFC 0 §5.1](rfc-0-data-lifecycle.md#5.1%20Write)). Appends and hole fills reach the store lazily, so
-  the store does not reflect every flushed write until that commit lands. A `LAYOUTCOMMIT` for a
-  layout whose epoch is stale **MUST** fail with `NFS4ERR_BADLAYOUT`, so the
-  client rewrites through a fresh layout instead of committing a size over
-  writes a failed primary lost.
+  the store does not reflect every flushed write until that commit lands. A
+  layout commit for a layout whose epoch is stale **MUST** be refused as a bad
+  layout, so the client rewrites through a fresh layout instead of committing a
+  size over writes a failed primary lost.
 
 > [!important] Release 1
 > **A single node serves no pNFS.** It **MUST NOT** advertise itself as a pNFS
-> metadata server, and layout operations — `GETDEVICEINFO`, `LAYOUTGET`,
-> `LAYOUTCOMMIT`, `LAYOUTRETURN` — answer `NFS4ERR_NOTSUPP`. Layouts exist only
-> under the rules above, which need a data server apart from the metadata
-> server's own I/O path; [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) cites this rule.
+> metadata server, and every layout operation is answered not supported
+> ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served) spells both). Layouts
+> exist only under the rules above, which need a data server apart from the
+> metadata server's own I/O path; [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) cites this rule.
 
 ### 5.2 SMB and NFSv3
 
@@ -816,19 +831,16 @@ to one node's address. When that node is lost or drained, something
 **MUST** move the client, or it waits for its transport to time out, long after
 any grace period has ended.
 
-| Protocol | Mechanism | Level |
-| --- | --- | --- |
-| every protocol | **floating addresses.** Clients mount by addresses that belong to the cluster, not to a node. When a node is lost, a surviving one takes its addresses over, announces them on the network, and sends each client with a connection to the old node a TCP acknowledgement that makes it reset and reconnect at once | **MUST** |
-| SMB | **the SMB Witness protocol.** A client registers for the share's address; the cluster notifies it of an address moving or a node draining, and tells it which node to move to | **MUST** on shares that offer continuous availability; **SHOULD** otherwise |
-| NFSv4 | **filesystem locations** (`fs_locations`). A node that is drained answers with the locations of another node, so clients migrate before it stops | **MUST** for a planned drain |
-| NFSv3 | floating addresses only | — |
+| Mechanism | Level |
+| --- | --- |
+| **floating addresses.** Clients mount by addresses that belong to the cluster, not to a node. When a node is lost, a surviving one takes its addresses over, announces them on the network, and sends each client with a connection to the old node a TCP acknowledgement that makes it reset and reconnect at once | **MUST**, for every protocol |
+| **telling the client where to go.** Where the protocol can name another node — a move notification to registered clients, a location answer from a drained node — the cluster names a surviving node, so clients move before the old one stops | **MUST** for a planned drain, and on a share that offers continuous availability; **SHOULD** otherwise. The mechanisms are the adapters' ([RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations), [RFC 22 §14](rfc-22-smb.md#14.%20Witness)) |
 
-**SMB continuous availability** is offered per share, only where persistent opens
-are enabled ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)); it is off by default. A continuously available share
-advertises it to clients and serves the Witness protocol; other shares offer
-durable handles, which a client reconnecting after an address takeover
-reclaims as long as the primary holding them did not change. A durable handle
-does not survive the loss or restart of its primary; only a persistent one does
+**Continuous availability** is offered per share, only where persistent opens
+are enabled ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)); it is off by default. On other shares a
+durable open reconnects after an address takeover as long as the primary
+holding it did not change; only a persistent one survives the loss or restart
+of its primary
 ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
 
 A lost node is two losses at once. Its clients' connections are restored by an
@@ -901,12 +913,12 @@ embedded single-node store gives none.
 | T3 | Every routed call carries a cluster-unique request ID, the shard and epoch it expects, and its sender's node epoch; a call under a stale epoch or a fenced node epoch is refused, and a retried mutation returns its first result from a dedup table keyed by request ID alone. |
 | T4 | Every interface call is value-only and cursor-resumable, collocated or routed. |
 | T5 | A stale route costs a refusal and a retry, never a wrong result. |
-| T6 | A pNFS layout names one data server, the primary of the file's shard, is bound to its (shard, epoch), and is recalled when the shard changes primary or the file moves; `LAYOUTCOMMIT` on a stale layout fails with `NFS4ERR_BADLAYOUT`. |
+| T6 | A pNFS layout names one data server, the primary of the file's shard, is bound to its (shard, epoch), and is recalled when the shard changes primary or the file moves; a layout commit on a stale layout is refused. |
 | T7 | A client-facing address is taken over by a surviving node when its node is lost, and only after that node's lease has lapsed by the margins of [§5.3](#5.3%20Client%20addressing), the marking node has held the claim hold, and every other node refuses its node epoch and has ended every call it admitted under it. |
 | T8 | A coordinator that is not the primary of a file it leaves without entries writes its pending release; only the file's primary releases it. |
 | T9 | Every message between nodes travels on a mutually authenticated, encrypted channel whose authenticated peer is the node the message names. |
-| T10 | An NFS request ID is the protocol's retry identity — (client address, XID, procedure, argument checksum) for NFSv3 and NFSv4.0, (gateway node's ID, the node epoch the session was created under, session, slot, sequence ID) for NFSv4.1 — so an NFSv3 or NFSv4.0 retry on a new connection or through another gateway node, and an NFSv4.1 retry on its session across a new node epoch of its gateway node, carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. A handover ships the open-state calls' entries with the open-state table. An SMB replay on another channel is matched at the primary by its create GUID, lock sequence or the channel sequence and outstanding counts in its `Open`, the channel sequence durable for a persistent open. |
-| T11 | A single node advertises no pNFS and answers every layout operation with `NFS4ERR_NOTSUPP`. |
+| T10 | A request ID is the adapter's, derived from its protocol's retry identity, so every retry the protocol lets a client send — on a new connection, through another gateway node that holds the client — carries the same ID and is answered from a durable record of its first result, across a takeover of the primary too. A handover ships the open-state calls' entries with the open-state table. A replay the protocol names by open state is matched at the primary against the open's own replay state, durable for a persistent open. Adapter bytes travel opaque in the call and its result; a version the reading adapter cannot read is refused `ErrAdapterVersion`, never misread. |
+| T11 | A single node advertises no pNFS and answers every layout operation not supported. |
 | T12 | A client call crosses between nodes only as a whole `vfs.Service` call, forwarded by `vfs.Gateway` and received by `vfs.Serve`. The gateway holds no file state and decides nothing: it makes no admission, identity, permission, ordering, open-state, metadata or engine call; only its router reads shard records and files' recorded shards. Every such decision is made by a `vfs.Server`: the primary's for a call naming a handle, the gateway node's own for one naming none. |
 
 ## 9. Conformance and benchmarks
@@ -914,9 +926,9 @@ embedded single-node store gives none.
 - **Startup:** every configuration [§2.2](#2.2%20Startup%20refuses%20what%20cannot%20work) lists is refused.
 - **Envelope:** drop the reply of a forwarded write, land a second write on the
   same extent, retry the first. Assert the second write's bytes survive (T3).
-- **Stale layouts:** write through a layout, fail the shard's primary over, send
-  `LAYOUTCOMMIT`. Assert `NFS4ERR_BADLAYOUT` and a size no larger than what the
-  new primary holds (T6).
+- **Stale layouts:** write through a layout, fail the shard's primary over,
+  commit the layout. Assert it refused as a bad layout and a size no larger
+  than what the new primary holds (T6).
 - **Release across shards:** open a file in one shard, rename over it from a
   directory in another. Assert the pending release is written and the content
   survives until the open closes (T8).
@@ -942,32 +954,29 @@ embedded single-node store gives none.
   second gateway node that took the client's address over: assert the same (T10). A
   request ID minted per connection applies the NFSv4.0 retry twice.
 - **Request IDs at the edges (cluster):** a retry that finds its first send
-  still running waits and returns its result; two gateway nodes that mint the same
-  NFSv4.1 session ID each have their call applied; a gateway node that takes a new
-  node epoch mid-session answers a retry of a call forwarded under the old one
-  from its first result; an SMB `LOCK`, NFSv4.1 `CLOSE` and NFSv4.0 `LOCKU`
-  whose replies are lost across a handover are each answered once (T3, T10;
-  [RFC 11 §14](rfc-11-ownership.md#14.%20Test%20plan%20and%20benchmarks) runs them as scenarios).
-- **Clone across shards (cluster):** a `CLONE` whose destination lies in
-  another shard answers `NFS4ERR_XDEV`, a `COPY` of it is copied server-side
-  and answers success with its count, and a later same-shard `CLONE` on the
+  still running waits and returns its result; two gateway nodes whose adapters
+  derive an ID from equal connection-local values each have their call applied;
+  a gateway node that takes a new node epoch mid-connection answers a retry of a
+  call forwarded under the old one from its first result; a lock, a close and a
+  sequenced unlock whose replies are lost across a handover are each answered
+  once (T3, T10; [RFC 11 §14](rfc-11-ownership.md#14.%20Test%20plan%20and%20benchmarks) runs them as scenarios).
+  Each adapter's derivations are tested in its own RFC
+  ([RFC 21 §12](rfc-21-nfs.md#12.%20Conformance), [RFC 22 §17](rfc-22-smb.md#17.%20Conformance)).
+- **Clone across shards (cluster):** a clone whose destination lies in
+  another shard is refused as cross-device, a copy of it is copied server-side
+  and answers success with its count, and a later same-shard clone on the
   mount still clones; repeat with the two shards sharing a primary at
   admission ([§4.2](#4.2%20Calls%20that%20touch%20two%20primaries)). Then admit a
   slow same-shard clone and mark its directory per-child while it runs: assert
   the batch skips both files until the clone is done, then moves them.
-- **Multichannel message IDs:** two channels of one SMB session send two
-  different writes under the same message ID. Assert both are applied (T3, T10).
-  A table keyed on (client GUID, session ID, message ID) answers the second with
-  the first's result and fails this.
-- **SMB replay on another channel:** lose the reply of a create and of a lock on
-  one channel, replay each on a second channel. Assert one open and one lock;
-  replay a write with a stale channel sequence and assert it is refused, and a
-  read with a stale one and assert it is served; replay a write whose original
-  is still in flight and assert `STATUS_FILE_NOT_AVAILABLE` at once, not a hold; then
-  fail the primary over and replay the write again on a persistent open, and assert it
-  is still refused (T10).
-- **No pNFS on one node:** against a single node, assert `EXCHANGE_ID` does not
-  advertise a pNFS metadata server and `LAYOUTGET` answers `NFS4ERR_NOTSUPP` (T11).
+- **Replay by open state:** lose the reply of an open and of a lock on one
+  connection and replay each on a second as the protocol flags a replay. Assert
+  one open and one lock; a stale replayed write is refused and a stale read
+  served; then fail the primary over and replay the write again on a persistent
+  open, and assert it is still refused (T10). The wire walk is
+  [RFC 22 §6.5](rfc-22-smb.md#6.5%20Replay)'s.
+- **No pNFS on one node:** against a single node, assert no pNFS metadata
+  server is advertised and a layout request is answered not supported (T11).
 - **Marking after a stall:** stall the store for longer than a node lease
   (15 s at the 10 s default) under two nodes; assert neither marks the other lapsed, both resume, and no address
   moves (T7). A takeover with no claim hold fails this.
@@ -984,6 +993,25 @@ to the store:
   call a stale cache routes to the local path is refused as a forwarded one is. A nightly
   harness runs a cluster under partitions, pauses and node kills, and checks
   the history of client operations for linearizability per file.
+- **Deterministic simulation:** the two-node rig on a fake clock, with the
+  in-memory transport injecting faults at chosen steps, runs each scenario
+  below to the same history on every seed, and checks that the neutral history
+  is linearizable per file:
+  - the primary is lost mid-step, after its store transaction and before its
+    reply: the retry through another node is answered from its first result;
+  - the gateway node is lost and the client reconnects through another: no
+    per-connection state is assumed, and what it reconnects to is found at the
+    primary;
+  - a replay reaches another gateway node: it is answered from the record's
+    adapter bytes, once;
+  - a write from a fenced node epoch or a superseded shard epoch is refused,
+    and adapter bytes it carries are not written;
+  - a call forwarded between nodes of two versions carries adapter bytes of a
+    version the reading adapter cannot read: refused `ErrAdapterVersion`, the
+    record unchanged;
+  - a shard fails over and its clients reclaim in grace: a state reference
+    minted under the previous grace instance is answered stale and its reclaim
+    granted, and a non-reclaim request is refused until grace ends.
 
 **Benchmarks**, forwarded against local, same hardware: per-operation latency
 added by one hop; SMB throughput through the primary's own node and through one
@@ -1004,9 +1032,20 @@ Metric names are shown without the deployment's prefix.
 | hop latency | `topology_hop_seconds{view}` | histogram |
 | primary-map pushes applied | `topology_primary_updates_total` | counter |
 | client addresses taken over | `topology_address_takeovers_total` | counter |
+| calls `vfs.Serve` refused at the fence, by `reason`: `node_epoch`, `shard_epoch`, `hop` | `topology_fence_refusals_total{reason}` | counter |
+| route envelope size, adapter bytes included | `topology_envelope_bytes` | histogram |
 
 Forwarding and epoch refusals are counted here only; other RFCs link to this
-table.
+table. `topology_epoch_refusals_total` is the sum of the fence refusals'
+`shard_epoch` and `node_epoch` reasons. Adapter-bytes decode failures are the
+adapters' (`adapter_record_decode_failures_total{protocol, reason}`,
+[RFC 20](rfc-20-adapters.md)), since only an adapter reads them.
+
+**Spans.** A forwarded call is a child span of the adapter's request span on
+the gateway node, carrying the envelope's trace context (§4.3) to the primary,
+where `vfs.Serve` and the server's step continue it (RFC 25 §6.2). Its
+attributes are the view, the shard and the neutral result; no client, owner,
+file or principal identifier is one.
 
 ## 11. Open questions
 

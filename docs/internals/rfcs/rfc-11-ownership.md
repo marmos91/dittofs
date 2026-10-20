@@ -639,7 +639,7 @@ gateway, so its forwarded calls can be refused before its client addresses are t
   already named, runs grace as after a failover
   ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)), and before it
   serves it writes `GraceInstance` = its incarnation by compare-and-swap on the
-  shard record. A stateid carries the instance's low bits, and a miss is judged
+  shard record. A state reference carries the instance's low bits, and a miss is judged
   against it, never against the incarnation, which a handover raises.
 - **An epoch never decreases for a file.** A shard's epoch **MUST** exceed that of
   every shard that previously held any of its files. A shard that receives files
@@ -901,20 +901,20 @@ one above G's by an ordinary change of R's record and installs it on R's replica
    shipped again under the new epochs.
 4. **Serve.** R's primary re-applies existence for the batch's files, as after a
    takeover ([RFC 10 §9.2](rfc-10-journal-replication.md#9.2%20Takeover) step 5), installs the open-state entries, whose
-   client records already name R, and serves the files. A stateid or SMB
-   persistent FileId names the shard that held its record when it was issued
+   client records already name R, and serves the files. A state reference, or
+   an `OpenID` an adapter carries as a persistent handle, names the shard that
+   held its record when it was issued
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), so the batch's commit also writes, at G, a
    **forwarding entry** for each moved entry naming R, keyed by a tagged
-   reference: the stateid's 64 random bits or, for an SMB persistent `FileId`,
-   its `OpenID` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); G answers a call naming one with a routing error that
+   reference: the state reference's 64-bit token or the `OpenID` ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)); G answers a call naming one with a routing error that
    names R. The forwarding entry also records R's `GraceInstance` at the
    batch's commit, and G's routing error carries it to R with the re-routed
-   call. A moved stateid keeps G's shard number and grace-instance bits, which
+   call. A moved reference keeps G's shard number and grace-instance bits, which
    name G's instance, not R's, so R judges a miss against the recorded
    instance: stale while R is in grace or R's `GraceInstance` has moved past
    it, since R then lost open state the client must reclaim; bad otherwise, as
-   for a moved stateid later freed. Without the entry, G answers a moved
-   stateid as bad, breaking the promise that a move hands state over unseen.
+   for a moved reference later freed. Without the entry, G answers a moved
+   reference as bad, breaking the promise that a move hands state over unseen.
    The state lives at R, so G never sees it end, and deleting the entry on R's
    close would write G's key on the close path
    ([RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)). G deletes it
@@ -1022,20 +1022,15 @@ before it serves, and deletes expired request records through its shards' own
 expiry index, `SH‖shard‖rqx‖expiry‖requestID`, which spreads the inserts over
 every shard's key range ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). A retry
 after a takeover is therefore answered from the operation's own durable record,
-never applied a second time. The request ID is keyed on the protocol's own
-retry identity, not on the connection, because an NFSv4 client retries only on a
-new connection (RFC 7530 §3.1.1) and an NFSv3 one may: for NFSv3 and NFSv4.0 it
-is (client address, XID, procedure, checksum of the arguments), as a server's
-reply cache keys a retry; for NFSv4.1 it is (gateway node ID, the node epoch
-the session was created under, session, slot, sequence ID), since each
-gateway node mints its own session IDs and nothing makes them unique across
-nodes; a gateway node that re-acquires a higher node epoch keeps its sessions,
-so a retry on one carries the ID its first send did. An NFSv3 or NFSv4.0 retry
-carrying the same identity, on any connection and through any gateway node that
-holds the client's address, maps to the same request ID, and an NFSv4.1 retry
-does on any connection of its session ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). An NFSv4.1 retry after its session was lost
-comes under a new session and is a new request, and an SMB replay is matched by
-the primary from its open's own state.
+never applied a second time. The request ID is the adapter's, derived from its
+protocol's own retry identity rather than the connection, so every retry the
+protocol lets a client send carries it again
+([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope); each
+adapter's derivation is [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)'s
+and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)'s). A
+retry whose identity died with its gateway node's connection state is a new
+request, and a replay the protocol names by open state is matched by the
+primary from its open's own state.
 
 **A primary the gateways cannot reach** while it still reaches the store would
 keep its lease forever. Each node records, from its gateway's counts of failed
@@ -1642,9 +1637,9 @@ a claim or address mark waited out the claim hold.
 | `S-shard-retry-running` | a forwarded mutation is admitted and stalls in its transaction; the client's retry arrives through another connection; assert the retry waits for the first's result and returns it, and the mutation is applied once |
 | `S-shard-session-id-collision` | two gateway nodes mint the same NFSv4.1 session ID and send the same slot and sequence to one primary; assert both calls are applied. A request ID without the gateway node's ID answers the second from the first's entry |
 | `S-shard-session-new-epoch` | a gateway node paused past its lease is marked, re-acquires a higher node epoch and keeps its sessions; a call it forwarded under the old epoch lost its reply; the client retries on the same session, slot and sequence; assert it is answered from the first result. A request ID built from the gateway node's current epoch applies it twice |
-| `S-shard-handover-open-state-retry` | an SMB `LOCK`, an NFSv4.1 `CLOSE` and a sequenced NFSv4.0 `LOCKU` each lose their reply while their shard is handed over; each is retried at the new primary; assert each is answered with its first result: no self-conflict, no bad stateid, no `BAD_SEQID`. A handover that ships no dedup entries fails all three |
-| `S-shard-forward-entry-life` | move a file with an open from G to R, close it at R, call G with the moved stateid: assert G re-routes, R answers bad stateid, and G deletes its entry. Move a fourth open G→R, fail R over, and call G with its stateid during R's grace: assert R answers stale, G keeps its entry, and the client's reclaim at R succeeds; a miss judged by G's instance answers bad and loses the lock. Move a second open G→R→Q: assert the call reaches Q. Move a third back to G: assert G's entry is gone after that batch. Remove the share: assert no forwarding entry remains |
-| `S-shard-cross-clone` | clone a file into a directory whose files land in another shard, once with the two shards on different primaries and once on one: assert NFSv4.2 `CLONE` answers `NFS4ERR_XDEV` and a `COPY` of the same range is copied server-side, with the source extent writable throughout |
+| `S-shard-handover-open-state-retry` | a `Lock`, a `Close` and a sequenced `Unlock` each lose their reply while their shard is handed over; each is retried at the new primary; assert each is answered with its first result: no self-conflict, no `ErrBadState`, no `ErrBadSeqID`. A handover that ships no dedup entries fails all three |
+| `S-shard-forward-entry-life` | move a file with an open from G to R, close it at R, call G with the moved state reference: assert G re-routes, R answers bad stateid, and G deletes its entry. Move a fourth open G→R, fail R over, and call G with its stateid during R's grace: assert R answers stale, G keeps its entry, and the client's reclaim at R succeeds; a miss judged by G's instance answers bad and loses the lock. Move a second open G→R→Q: assert the call reaches Q. Move a third back to G: assert G's entry is gone after that batch. Remove the share: assert no forwarding entry remains |
+| `S-shard-cross-clone` | clone a file into a directory whose files land in another shard, once with the two shards on different primaries and once on one: assert the clone is refused `ErrCross` (`CrossShard`) and a copy of the same range is copied server-side, with the source extent writable throughout |
 | `S-shard-hop-loop` | two gateways with crossed stale caches: refused at the hop limit, then routed |
 | `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline, each deleting its hold record; a late commit is refused |
 | `S-shard-cross-hold-release` | a participant releases an expired hold while the coordinator's commit is in flight, the release committing first, on a store that chooses the commit timestamp after the commit's reads; the commit conflicts with the deletion of the hold record and aborts, and the deny-delete open the participant then grants stands |
@@ -1661,7 +1656,7 @@ a claim or address mark waited out the claim hold.
 | `S-shard-repair-one-join` | lose the first replica of a per-child shard's slot; let repair restore the count, then let the node leave the placement set; assert the recomputed slot names the node repair joined, and the shard saw one join and one tail copy |
 | `S-shard-verifier-roundtrip` | hand a shard A → B → A with no restart; assert the write verifier A gives the second time differs from the first. A verifier from node, node epoch and process instance alone repeats |
 | `S-shard-slot-domains` | four nodes in two racks, replica count 2; assert every slot's nodes lie in different racks, and that a rack loss leaves every shard a replica |
-| `S-shard-handover-lost-table` | kill the old primary after a handover's compare-and-swap and before the new one holds the table, with an NFSv4.1 client that sent `RECLAIM_COMPLETE` since the last loss; assert the new primary writes `GraceInstance` before serving and the client's reclaims are accepted. A primary that keeps the old instance answers them `NO_GRACE` |
+| `S-shard-handover-lost-table` | kill the old primary after a handover's compare-and-swap and before the new one holds the table, with a client that called `ReclaimComplete` since the last loss; assert the new primary writes `GraceInstance` before serving and the client's reclaims are accepted. A primary that keeps the old instance refuses them as out of grace |
 | `S-shard-move-request-records` | an `REMOVE` in a directory commits and loses its reply, the directory moves G→R, then R fails over; assert the retry at R is answered from its request record, and that R's recovery finds a moved file's pending release. A request record left under G applies the remove twice (`NOENT`) |
 | `S-shard-move-running-clone` | admit a slow clone with both files in G, then mark their directory per-child; assert the batches skip both files until the clone is done and move them after, and that the source extent is never writable while the clone runs |
 | `S-shard-intent-reclaim` | a primary of a shard with no replica crashes between an intent and its put, restarts and re-claims; assert the intent is superseded by the node epoch and collected |

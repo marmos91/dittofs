@@ -369,6 +369,37 @@ And what looks protocol-only but is not:
 | Delete on close, DOS attributes | NFS observes them |
 | A blocked lock's wait | the waiter is open state; only its wire answer is the adapter's ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
 
+**Adapters translate; open state decides.** Open state receives only neutral
+requests and returns neutral results and errors. Every mapping from a protocol
+to them and back — owner strings and verifiers, the stateid's wire layout and
+`StateRef`, access and deny masks, grant levels, lock semantics into
+`LockReq`, a neutral error into a status — is the adapter's, written down once
+per protocol in [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state) and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state). Translation state
+that must outlive a connection, a gateway or a primary — a setup call's
+one-slot replay, a callback address, a restart-notice address — is in the
+adapter's own format, stored durably in the record's opaque `Adapter` bytes
+([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): open state writes them in the step of the change they
+belong to, only over the bytes the adapter last read, and never interprets
+them. A write that lost the race is answered `ErrRecordChanged`, and the
+adapter rereads and decides again.
+
+**Across nodes.** The adapter translates on the gateway node holding the
+connection; open state decides at the file's primary or the client's lease
+owner ([RFC 14 §3.1](rfc-14-open-state.md#3.1%20Adapters%20translate%3B%20the%20table%20decides)).
+Only neutral calls and `Adapter` bytes cross between them
+([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)):
+
+- a read of `Adapter` bytes is forwarded, and a gateway's copy is never
+  authoritative; a write passes the same fence as every other write;
+- per-connection state — sessions, slots, keys — stays volatile on the
+  gateway; only what a reconnect must find goes into `Adapter`;
+- `Adapter` bytes are at most 4 KiB and begin with a version byte the adapter
+  defines; a node that cannot read a version refuses the call with
+  `ErrAdapterVersion` rather than misread it, and an adapter keeps reading
+  every version it ever wrote, so a rolling upgrade mixes releases safely;
+- a conflict between protocols is decided on neutral state, so each adapter
+  translates only its own side.
+
 ### 2.5 Architecture and package layout
 
 Implementing NFSv3, NFSv4.0–4.2, their auxiliary services and SMB 2.1–3.1.1 is large
@@ -689,7 +720,7 @@ func (c *smbCallbacks) RecallGrant(ctx context.Context, g metadata.CachingGrant,
 ```
 
 The callback returns once the message is queued — never after the client's
-acknowledgement, which arrives later as an ordinary request (`AckBreak`,
+acknowledgement, which arrives later as an ordinary request (`AckRecall`,
 `DELEGRETURN`). `core` does the sending; each protocol
 reaches the client its own way:
 
@@ -970,7 +1001,7 @@ An adapter contributes three things, all from `core`, none from protocol code:
 | --- | --- |
 | **liveness** ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)) | each accept loop reports a turn to the watchdog, or reports idle; a loop that does neither for 60 s fails liveness. A connection's reader legitimately blocks on its socket and is not watched. Nothing else the adapter does can fail it |
 | **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is |
-| **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose socket failed while serving, `unhealthy`; `sidecar_failed` (§3.5), `degraded`. Each derived from current evidence and cleared when it no longer holds |
+| **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose socket failed while serving, `unhealthy`; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode — the usual cause a rolling upgrade across record versions — raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
 
 A sidecar's failure and a single client's trouble are not readiness: a node
 that serves files is ready whether or not mDNS is advertising it.
@@ -2229,6 +2260,18 @@ wire tests'. Its cost is brittleness, so a handler test pins the **mutating**
 call exactly, with its arguments, and read-only calls by name only — a handler
 free to fetch attributes once rather than twice does not break its test.
 
+**Translations are tested as pure functions.** Each protocol's translation to
+open state ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)) is table-driven, with golden
+vectors protocol → neutral → protocol, and property tests: every protocol input
+maps to a neutral value or a named refusal (the mapping is total), every neutral
+error maps to a status in each adapter, and the mapping round-trips where it is
+invertible. Every wire-to-neutral decoder, and each adapter's decoder of its
+`Adapter` bytes — truncated, corrupt, of an older or newer version — has a
+native fuzz target (`testing.F`): it never panics, and yields a valid neutral
+request or a refusal, never a misread. The protocol rows are RFC 21's and
+RFC 22's; pynfs, smbtorture, WPTS, cthon04 and nfstest through `dt`
+([RFC 29](rfc-29-test-harness.md#4.3%20Tiers)) are the end-to-end layer.
+
 These boundary checks run per change:
 
 ### 7.1 Imports and call sites
@@ -2480,6 +2523,10 @@ measures only what happens before and after the service call.
 | How often does an error have no row? | `adapter_unmapped_errors_total{protocol}` | counter |
 | What is held pending, and how often is a request refused past its floor with the hold pool full (§4.6)? | `adapter_held_requests{protocol}`, `adapter_held_bytes{protocol}`, `adapter_hold_pool_bytes`, `adapter_hold_refusals_total{protocol}` | gauge, gauge, gauge, counter |
 | Bytes in and out | `adapter_bytes_total{protocol, direction}` | counter |
+| How often is a protocol input refused as unmappable? | `adapter_translation_refused_total{protocol, reason}` | counter |
+| Which neutral errors reach the wire? | `adapter_status_mapped_total{protocol, error}`, `error` from the service's closed error set | counter |
+| How often do `Adapter` bytes fail to decode? | `adapter_record_decode_failures_total{protocol, reason}`, `reason` = `truncated`, `corrupt`, `unknown_version` | counter |
+| How often is a replay answered from the record? | `adapter_record_replays_total{protocol}` | counter |
 
 `adapter_wire_seconds` takes the `request` bucket set
 ([RFC 25 §2.6](rfc-25-observability.md#2.6%20Histogram%20buckets)). The
@@ -2488,6 +2535,8 @@ measures only what happens before and after the service call.
 `per_address` for connections closed at accept. No metric carries a client,
 principal, share or path label.
 
+`adapter_record_decode_failures_total` is zero on a node of one release; any
+increase is an alert, and raises `adapter_record_unreadable` (§3.7).
 `adapter_unmapped_errors_total` and `adapter_handler_panics_total` are zero in
 a healthy node; any increase is a bug, and alerts as one.
 
@@ -2524,7 +2573,8 @@ nfs4 COMPOUND                      request span: frame → send, opened by the p
 - **A held request** (§4.6) keeps its request span across its re-drives, with
   one child per attempt, so the wait shows as the gaps between them.
 - **Attributes** are the closed-set fields: protocol, version or dialect,
-  operation, status, request and reply bytes, the stage that refused. Never a
+  operation, status, the neutral result the service returned, request and
+  reply bytes, the stage that refused. Never a
   path, a name, a principal or a client address
   ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
 - **Unsampled costs nothing.** With tracing off or a request unsampled, the
