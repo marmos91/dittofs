@@ -449,7 +449,7 @@ one scheduler instance, whose tenants are the (namespace, partition) pairs this
 node leases ([§7.3](#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)). GC holds no state a restart needs: every source rebuilds
 from its index keys and cursors.
 
-![GC on one node. The node builds gc.New(Deps) and drives Start, Add, Remove, Drain and Close. Inside the GC, one context per namespace, added and removed by the node, holds that namespace's View: Blocks, Remote, Store and Keys. Five sources (deleter, compactor, collector, auditor, recheck) and a lease keeper run on GC's own work-scheduler instance, which every namespace shares. Below it sit the RFC 6 Blocks view over the shared metadata store, where every retirement, verification and gate happens; the RFC 4 remote store for direct deletes, listing and control objects, ref-counted per config; GC's RFC 3 syncer flow for compactor transfers and Recheck calls; RFC 5's keys read-back; and the node's clock, health, metrics and logger. A lifecycle strip reads: New starts nothing, Start registers the sources and each Add acquires leases and rebuilds, Drain stops posting and abandons in-flight compactions, Close releases leases with their epochs kept and closes flows](img/rfc9-composition.svg)
+![GC on one node. The node builds gc.New(Deps) and drives Start, Add, Remove, Drain and Close. Inside the GC, one context per namespace, added and removed by the node, holds that namespace's View: Blocks, Remote, Store and Keys. Five sources (deleter, compactor, collector, auditor, recheck) and a lease keeper run on GC's own work-scheduler instance, which every namespace shares. Below it sit the RFC 6 Blocks view over the shared metadata store, where every retirement, verification and gate happens; the RFC 4 remote store for direct deletes, listing and control objects, ref-counted per config; GC's RFC 3 syncer flow for compactor transfers and Recheck calls; RFC 5's keys read-back; and the node's clock, metrics and logger, and its health evaluator, which asks GC for its conditions. A lifecycle strip reads: New starts nothing, Start registers the sources and each Add acquires leases and rebuilds, Drain stops posting and abandons in-flight compactions, Close releases leases with their epochs kept and closes flows](img/rfc9-composition.svg)
 
 | Component | Made of | Depends on | Calls | Injected how | Owned by | Lifecycle |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -462,7 +462,8 @@ from its index keys and cursors.
 | syncer flow | one background flow per namespace store ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | `Deps.Syncer` | `Remote` | opened by GC through `OpenFlow` | GC; the syncer is shared | closed at `Remove` and `Close` |
 | `Keys` | the transform layer's keys-object read-back ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) | RFC 5's key lock | the keys object | `View.Keys` | the root | called once per `Recheck` |
 | work scheduler | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)'s library, GC's own instance | — | the sources | `Deps.Sched` | the root; shared by every context | started by `Start`, drained by `Drain` |
-| clock, health, metrics, logger | the node's | — | — | `Deps` | the root, shared | — |
+| clock, metrics, logger | the node's | — | — | `Deps` | the root, shared | — |
+| health evaluator | the node's ([RFC 25](rfc-index.md) §8.2) | — | `Conditions` on GC | nothing is injected: `*gc.GC` is a `health.Source` the node adds | the root | asks at each evaluation until the node removes GC |
 
 The engine is not a dependency: GC reaches neither its share contexts nor its
 queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
@@ -1929,7 +1930,6 @@ type Deps struct {
 	Syncer   Syncer                     // RFC 3 §1.3, through the root's adapter
 	Settings func(NamespaceID) Settings // live namespace gc.* settings (RFC 13 App. B), read at each pass
 	Clock    clock.Clock                // RFC 8 §2.1
-	Health   health.Reporter            // RFC 25 §3.1 conditions; the type is RFC 25's to declare
 	Metrics  *metrics.Registry
 	Logger   *slog.Logger
 }
@@ -1955,6 +1955,11 @@ func New(d Deps) (*GC, error)
 func (g *GC) Start(ctx context.Context) error // registers the sources; no delete before a passed Recheck
 func (g *GC) Drain(ctx context.Context) error // stops posting; in-flight batches commit or abort
 func (g *GC) Close() error                    // releases leases (epochs kept), closes its flows; closes nothing it was handed
+
+// Conditions makes *GC a health.Source (RFC 25 §8.2): §10's conditions, derived
+// from current evidence at each call. The node adds GC to the health evaluator;
+// a removed namespace's conditions leave with its context.
+func (g *GC) Conditions(dst []health.Condition) []health.Condition
 
 // Add and Remove are the node's (RFC 23 §2.1): a namespace with a remote store is
 // a context, as a share is in the engine (RFC 8 §2.3).
@@ -2139,7 +2144,9 @@ alert on any nonzero value has a series to watch ([RFC 25](rfc-index.md) §2.3).
 and outcome as attributes; its log lines carry `component=gc` and the pass's
 trace ID.
 
-**Health conditions.** GC raises these through `Deps.Health`; each is registered in
+**Health conditions.** GC reports these as a `health.Source`
+([RFC 25](rfc-index.md) §8.2): the evaluator asks for them at each evaluation, and a
+condition GC no longer returns is cleared. Each is registered in
 [RFC 25](rfc-index.md) §3.9.
 
 | Condition | Scope | Raised when | Cleared when |
