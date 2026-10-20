@@ -65,8 +65,8 @@ concurrency:
   # A scheduled run has a group of its own, so it and a push never replace
   # each other. A re-run keeps its event, and so its group.
   group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
-  # This workflow has no pull_request trigger, so the expression is always
-  # false: a develop run is never cancelled. Each develop push is a distinct
+  # Only a superseded pull-request run, which runs the Kerberos tests alone, is
+  # cancelled: a develop run never is. Each develop push is a distinct
   # commit someone wants tested, and cancelling it means it never is -- which
   # left most develop runs cancelled and the develop-red alarm blind. The cost
   # is runner contention: develop runs now queue instead of superseding, bounded
@@ -127,7 +127,8 @@ jobs:
           sudo apt-get update
           # rpcbind: required by the real-NLM lock-interop tests, which run a
           # kernel NFSv3 client (no `nolock`) in an isolated network namespace.
-          sudo apt-get install -y nfs-common cifs-utils smbclient krb5-user rpcbind
+          # nfs4-acl-tools: the NFSv4 ACL tests skip without nfs4_setfacl.
+          sudo apt-get install -y nfs-common cifs-utils smbclient krb5-user rpcbind nfs4-acl-tools
           # No rpc-gssd start here: the unit needs /etc/krb5.keytab, which
           # only exists once a Kerberos test installs it, and those tests
           # restart rpc-gssd themselves.
@@ -145,6 +146,9 @@ jobs:
           # it run out the job.
           E2E_WALL: 45m
           EVENT: ${{ github.event_name }}
+          # The nightly adds the stress tests.
+          # DITTOFS_E2E_NIGHTLY stays off until the dedup tests' setup is fixed.
+          TAGS: ${{ github.event_name == 'schedule' && 'e2e,stress' || 'e2e' }}
         run: |
           # sudo resolves commands via secure_path (which omits the Nix
           # profile), so `nix` was "command not found" under sudo and go test
@@ -169,7 +173,7 @@ jobs:
           fi
           .github/scripts/run-e2e.sh \
             sudo -E env "PATH=$PATH" "DITTOFS_E2E_REQUIRE_NLM=1" "DITTOFS_E2E_REQUIRE_KERBEROS=1" nix develop .#ci --command \
-            go test -tags=e2e -v -timeout 30m "${tests[@]}"
+            go test -tags="$TAGS" -v -timeout 30m "${tests[@]}"
 
       - name: Generate summary
         if: always()
