@@ -22,8 +22,10 @@ import (
 // existing one, and lists as the machine's bridges the JSON in the file
 // bridges in the returned directory. A namespace holds processes 4242 and
 // 4243 from its creation until kill ends them or the namespace goes, and a
-// listing gives one, as when a process forks after a listing. dt runs as an
-// ordinary user. It returns a function giving the calls so far.
+// listing gives one, as when a process forks after a listing. ssh run in a
+// client fails until sshd has been started, as a real one does until sshd
+// listens. dt runs as an ordinary user. It returns a function giving the
+// calls so far.
 func fakeClientTools(t *testing.T) (calls func() []string, dir string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -36,6 +38,7 @@ case "${0##*/} $*" in
 "ip netns add "*) printf '4242\n4243\n' > "$state/netns-$3" ;;
 "ip netns del "*) rm -f "$state/netns-$3" ;;
 "ip netns pids "*) [ ! -f "$state/netns-$3" ] || head -n 1 "$state/netns-$3" ;;
+"nsenter "*" ssh "*" true") grep -q "sshd -D " "$DT_FAKE_LOG" || exit 255 ;;
 "kill -9 "*) shift; for f in "$state"/netns-*; do for p; do grep -vx "$p" "$f" > "$f.new"; mv "$f.new" "$f"; done; done ;;
 esac`
 	for _, name := range []string{"ip", "nsenter", "unshare", "mount", "umount", "iptables", "tc", "kill", "rpcinfo"} {
