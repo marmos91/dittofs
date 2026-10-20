@@ -604,7 +604,7 @@ accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts/operations are refused. (Set `require_kerberos` to also refuse AUTH_NULL and mandate RPCSEC_GSS — `allow_auth_sys=false` alone only gates AUTH_SYS.) |
+| `allow_auth_sys` | `true` | When `false`, every flavor other than RPCSEC_GSS is refused — AUTH_SYS (AUTH_UNIX) and AUTH_NULL alike — so in effect it requires Kerberos, the same as `require_kerberos=true`. |
 | `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
 | `min_kerberos_level` | `krb5` | Minimum GSS protection level a Kerberos session must negotiate (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
 
