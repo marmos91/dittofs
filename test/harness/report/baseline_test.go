@@ -19,7 +19,9 @@ import (
 // excuses, a failure of the connection setup, which has no result, and one
 // name with several results. Their sub-suites and names arrive unsorted,
 // with upper and lower case, and the per-sub-suite rates hold a half that
-// rounds to even, a two-thirds and suites with only skips.
+// rounds to even, a two-thirds and suites with only skips. A cell that didn't
+// run to its end, not run or cut short by a limit, and a run with changes
+// write nothing.
 func TestBaseline(t *testing.T) {
 	pass := func(name string) Test { return Test{Name: name, Status: Passed} }
 	known := func(name string) Test { return Test{Name: name, Status: Skipped, RawStatus: Failed, Grade: Known} }
@@ -52,7 +54,9 @@ func TestBaseline(t *testing.T) {
 	run := Run{Name: "20261019T231500Z-d6223c90", Start: time.Date(2026, 10, 19, 23, 15, 0, 0, time.UTC), Commit: "d6223c90", OS: "linux",
 		Cells: []Cell{
 			{Name: "smbtorture/badger", Result: "not run", Note: "the fixture: dfs didn't start"},
-			{Name: "smbtorture/memory", Result: "failed", Log: "logs/smbtorture-memory.log", Tests: tests},
+			{Name: "smbtorture/badger-s3", Result: "failed", Note: "1 failed: smb2.lock.lock10; smb2.lock: timed out after 5m0s", Tests: tests[:4]},
+			{Name: "smbtorture/memory", Result: "failed", Log: "logs/smbtorture-memory.log", Tests: tests,
+				Note: "3 failed: smb2.lock.lock10, smb2.oplock.stream1, smb2.acls.GENERIC; 1 passed unexpectedly: smb2.rename.simple"},
 		}}
 	if err := run.Write(dir); err != nil {
 		t.Fatal(err)
@@ -78,11 +82,20 @@ func TestBaseline(t *testing.T) {
 		t.Errorf("a log without the version: %v\n%s", err, got)
 	}
 	for cell, want := range map[string]string{
-		"smbtorture/badger-s3": "run 20261019T231500Z-d6223c90 has no cell smbtorture/badger-s3",
-		"smbtorture/badger":    "smbtorture/badger has no results in run 20261019T231500Z-d6223c90: not run",
+		"smbtorture/kerberos":  "run 20261019T231500Z-d6223c90 has no cell smbtorture/kerberos",
+		"smbtorture/badger":    "smbtorture/badger didn't run to its end in run 20261019T231500Z-d6223c90: not run: the fixture: dfs didn't start",
+		"smbtorture/badger-s3": "smbtorture/badger-s3 didn't run to its end in run 20261019T231500Z-d6223c90: failed: 1 failed: smb2.lock.lock10; smb2.lock: timed out after 5m0s",
 	} {
 		if _, err := Baseline(dir, cell); err == nil || err.Error() != want {
 			t.Errorf("%s: got %v, want %q", cell, err, want)
 		}
+	}
+
+	run.Dirty = true
+	if err := run.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Baseline(dir, "smbtorture/memory"); err == nil || err.Error() != "run 20261019T231500Z-d6223c90 ran with changes its commit d6223c90 doesn't have" {
+		t.Errorf("a run with changes: got %v", err)
 	}
 }

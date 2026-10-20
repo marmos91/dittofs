@@ -15,27 +15,41 @@ import (
 // smbtortureVersion is the line smbtorture starts its output with.
 var smbtortureVersion = regexp.MustCompile(`(?m)^smbtorture [^\r\n]*`)
 
+// failures matches a part of a cell's note that counts its failed tests, as
+// dt run writes it: new failures or unexpected passes.
+var failures = regexp.MustCompile(`^\d+ (failed|passed unexpectedly): `)
+
 // Baseline is the results of the cell named cell, in the run in dir, as
 // smbtorture's baseline file: a snapshot of them, which grades nothing. Each
 // result counts as smbtorture's scripts counted it: a failure, known or new,
 // by its grade; a pass by the tool's own status, so an unexpected pass is a
-// pass; and anything else as a skip, an expected skip, the draw its reader
-// excuses and a test with no result included. A sub-suite is a name's first
-// two dot-separated parts, and suites and names sort byte by byte, so the
-// file is the same on every machine. smbtorture's version comes from the
-// cell's log. A cell with no results is an error.
+// pass; and anything else as a skip, an expected skip and the draw its reader
+// excuses included. A sub-suite is a name's first two dot-separated parts,
+// and suites and names sort byte by byte, so the file is the same on every
+// machine. smbtorture's version comes from the cell's log.
+//
+// A run of a checkout with changes is an error, since its commit doesn't say
+// what ran. So is a cell that didn't run to its end, whose lost tests would
+// leave the file without a trace: one whose note gives any reason but its
+// tests' failures, as a cell not run always does, such as a limit that
+// stopped it, a crash or a test that didn't run.
 func Baseline(dir, cell string) ([]byte, error) {
 	r, err := Read(dir)
 	if err != nil {
 		return nil, err
+	}
+	if r.Dirty {
+		return nil, fmt.Errorf("run %s ran with changes its commit %s doesn't have", r.Name, r.Commit)
 	}
 	i := slices.IndexFunc(r.Cells, func(c Cell) bool { return c.Name == cell })
 	if i < 0 {
 		return nil, fmt.Errorf("run %s has no cell %s", r.Name, cell)
 	}
 	c := r.Cells[i]
-	if len(c.Tests) == 0 {
-		return nil, fmt.Errorf("%s has no results in run %s: %s", cell, r.Name, c.Result)
+	for part := range strings.SplitSeq(c.Note, "; ") {
+		if part != "" && !failures.MatchString(part) {
+			return nil, fmt.Errorf("%s didn't run to its end in run %s: %s: %s", cell, r.Name, c.Result, c.Note)
+		}
 	}
 	version := "unknown"
 	if log, err := os.ReadFile(filepath.Join(dir, c.Log)); err == nil {

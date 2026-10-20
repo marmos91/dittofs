@@ -1464,9 +1464,12 @@ manual:
 - `dt known baseline smbtorture/memory` writes the file, in `test/smb-conformance/smbtorture/`,
   from that cell's results in a run, and it lands through a pull request like any change. It counts
   each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
-  the tool's own status, so an unexpected pass is a pass; and anything else as a skip, a test with
-  no result included. Its header gives the run's date, commit and platform, the cell, and the
-  smbtorture version from the cell's log. A cell with no results writes nothing;
+  the tool's own status, so an unexpected pass is a pass; and anything else as a skip. Its header
+  gives the run's date, commit and platform, the cell, and the smbtorture version from the cell's
+  log. It refuses a run of a checkout with changes, whose commit doesn't say what ran, and a cell
+  that didn't run to its end, whose lost tests would leave the file without a trace: one whose
+  note gives any reason but new failures and unexpected passes, as a `not run` cell always does,
+  such as a limit that stopped it, a crash or a test that didn't run;
 - `dt run pynfs --knfsd` runs the comparison.
 
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
