@@ -18,13 +18,15 @@ import (
 
 const (
 	policyShare     = "/secure"
+	policyOpenShare = "/open"
 	policyInsideIP  = "10.1.2.3"
 	policyOutsideIP = "198.51.100.7"
 )
 
 // newSharePolicyHandler builds a handler over a real runtime holding one
 // read-write share that admits only Kerberos and only clients in a netgroup
-// whose single member is policyInsideIP.
+// whose single member is policyInsideIP, and a read-write share
+// (policyOpenShare) with no policy at all.
 func newSharePolicyHandler(t *testing.T) (*Handler, *runtime.Runtime) {
 	t.Helper()
 	rt, bsID := newTestShareRuntime(t)
@@ -40,6 +42,16 @@ func newSharePolicyHandler(t *testing.T) (*Handler, *runtime.Runtime) {
 		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
+	}
+	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
+		Name:              policyOpenShare,
+		MetadataStore:     "test-meta",
+		BlockStoreID:      bsID,
+		Enabled:           true,
+		DefaultPermission: "read-write",
+		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
+	}); err != nil {
+		t.Fatalf("AddShare(%s): %v", policyOpenShare, err)
 	}
 	if err := rt.SetExportAuthPolicyForTesting(policyShare, true, true); err != nil {
 		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
@@ -254,5 +266,49 @@ func TestTreeConnect_SharePolicy_NonIPPeerAdmittedWithoutAllowlist(t *testing.T)
 	}
 	if st := treeConnectFromAddr(t, h, sess, addr); st != types.StatusSuccess {
 		t.Fatalf("non-IP peer on a share without an allowlist: status = %s, want STATUS_SUCCESS", st)
+	}
+}
+
+// COPYCHUNK reads a source reached through a resume key, which may sit on
+// another tree of the session. That tree's share policy must admit the request
+// too: an NTLM re-authentication must not copy a Kerberos-only share's file
+// into an unrestricted one.
+func TestCopyChunk_SharePolicy_AppliesToCrossTreeSource(t *testing.T) {
+	h, _ := newSharePolicyHandler(t)
+	const openShare = policyOpenShare
+
+	sess := kerberosSession(h, policyInsideIP)
+	const srcTree, dstTree uint32 = 10, 11
+	h.StoreTree(&TreeConnection{TreeID: srcTree, SessionID: sess.SessionID, ShareName: policyShare, Permission: models.PermissionReadWrite})
+	h.StoreTree(&TreeConnection{TreeID: dstTree, SessionID: sess.SessionID, ShareName: openShare, Permission: models.PermissionReadWrite})
+
+	srcCtx := NewSMBHandlerContext(context.Background(), policyInsideIP+":50000", sess.SessionID, srcTree, 1)
+	srcCtx.ShareName = policyShare
+	dstCtx := NewSMBHandlerContext(context.Background(), policyInsideIP+":50000", sess.SessionID, dstTree, 2)
+	dstCtx.ShareName = openShare
+	srcFileID := storeSecondHandle(t, h, srcCtx, "src", srcTree)
+	dstFileID := storeSecondHandle(t, h, dstCtx, "dst", dstTree)
+
+	resumeKey, err := h.resumeKeys.issue(srcFileID)
+	if err != nil {
+		t.Fatalf("issue resume key: %v", err)
+	}
+	body := buildIoctlRequestBody(FsctlSrvCopyChunk, dstFileID, copyChunkInput(resumeKey), 4096)
+
+	res, err := h.Ioctl(dstCtx, body)
+	if err != nil {
+		t.Fatalf("Ioctl (Kerberos): %v", err)
+	}
+	if res.Status == types.StatusAccessDenied {
+		t.Fatalf("Kerberos COPYCHUNK from the Kerberos-only share: status = %s, want admitted", res.Status)
+	}
+
+	sess.UpdateIdentity("alice", "CORP", policyUser(), false, false, nil, "")
+	res, err = h.Ioctl(dstCtx, body)
+	if err != nil {
+		t.Fatalf("Ioctl (NTLM): %v", err)
+	}
+	if res.Status != types.StatusAccessDenied {
+		t.Fatalf("COPYCHUNK after NTLM re-authentication with a source on a Kerberos-only share: status = %s, want STATUS_ACCESS_DENIED", res.Status)
 	}
 }
