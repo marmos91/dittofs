@@ -210,8 +210,15 @@ suites:
     tier: pr
     needs: [linux, docker]
     options:
+      # The suite's options, as run.sh --kerberos gives them too. smbtorture finds the KDC in
+      # the fixture's krb5.conf, and asks it for a ticket to cifs/{server}, a name here.
       kerberos:
-        cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        cmd: >-
+          smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required
+          --option=netbiosname=localhost --option=clientminprotocol=SMB2_02
+          --option=clientmaxprotocol=SMB3 --option=torture:smbd=false
+          --option=torture:maxopenfiles=2000 --option=torture:acl_xattr_name=security.NTACL {test}
+        volumes: { "{krb5-conf}": /etc/krb5.conf }
         tests: [smb2.session, smb2.read, smb2.lock]
         timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}

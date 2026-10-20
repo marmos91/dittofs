@@ -551,8 +551,7 @@ jobs:
           cache: false
 
       # This workflow's suites, narrowed as a dispatch naming one narrows the
-      # scripts' jobs. Options are left out: dt can't run smbtorture's Kerberos
-      # one yet.
+      # scripts' jobs. Options are left out, as the harness RFC's parity has them.
       - name: Plan the cells
         id: plan
         env:

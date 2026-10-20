@@ -162,6 +162,7 @@ suites:
   c: { cmd: "true", fixture: { profile: memory, smb: { port: 445 } }, needs: [linux] }
   d: { cmd: "true", fixture: { profile: memory, nfs: { options: "" } } }
   e: { cmd: "true", fixture: { profile: memory, nfs: export, client: namespace, rpcbind: host } }
+  k: { cmd: "true", fixture: { profile: memory, smb: true, kerberos: true } }
 `
 	r, err := registry.Parse(root, []byte(y))
 	if err != nil {
@@ -180,6 +181,7 @@ suites:
 		"c":                  {"linux", "root", "port:445"},
 		"d":                  {"root", "nfs-client"},
 		"e":                  {"root", "nfs-client", "rpcbind"},
+		"k":                  {"docker"},
 	}
 	for _, c := range cells {
 		if !slices.Equal(c.Needs, want[c.Name]) {

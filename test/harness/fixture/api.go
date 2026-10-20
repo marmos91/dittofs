@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,14 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 	}{{User, UserUID}, {User2, User2UID}} {
 		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: u.name, Password: password, UID: &u.id, GID: &u.id}); err != nil {
 			return fmt.Errorf("the test user %s: %w", u.name, err)
+		}
+	}
+	// {user}'s principal maps to {user}, as the scripts' bootstrap maps it: a
+	// client given the principal sends it as its NTLM user name too, which
+	// the server looks up through the mapping.
+	if f.Kerberos {
+		if _, err := c.CreateIdentityMapping("kerberos", User+"@"+Realm, User); err != nil {
+			return fmt.Errorf("the identity mapping of %s@%s: %w", User, Realm, err)
 		}
 	}
 	for _, share := range s.shares {
@@ -192,8 +201,9 @@ func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error)
 // check is the fixture's check before the first test that the server
 // answers: an authenticated call answers, and shows NFS and SMB each served
 // on its port when the fixture asks for it, and no adapter it doesn't ask for.
-// With an S3 profile's bucket b, the server's own check of its block store
-// must find it healthy too.
+// With Kerberos, {server}, a name then, must lead to SMB's port. With an S3
+// profile's bucket b, the server's own check of its block store must find it
+// healthy too.
 func (s *Server) check(c *apiclient.Client, b *bucket) error {
 	adapters, err := c.ListAdapters()
 	if err != nil {
@@ -213,6 +223,13 @@ func (s *Server) check(c *apiclient.Client, b *bucket) error {
 		if ports[a] > 0 && !served[a] {
 			return fmt.Errorf("%s isn't served on port %d", strings.ToUpper(a), ports[a])
 		}
+	}
+	if s.kdc != nil {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(s.kdc.host, strconv.Itoa(s.smbPort)), 5*time.Second)
+		if err != nil {
+			return fmt.Errorf("{server}, the name %s, doesn't lead to SMB's port: %w", s.kdc.host, err)
+		}
+		_ = conn.Close()
 	}
 	if b == nil {
 		return nil
