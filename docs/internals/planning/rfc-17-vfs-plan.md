@@ -97,7 +97,7 @@ What each piece carries:
 7. **Open and close:** opens, deny modes, delete on close and the four moments of release.
 8. **Data:** `Write`, `Read`, `Commit`, `Deallocate` and `Seek` in §5.1's steps, the write
    verifier, and quota reservations.
-9. **Locks, grants, watches:** byte-range locks with waiters, `AckBreak`, `Watch`/`Unwatch`.
+9. **Locks, grants, watches:** byte-range locks with waiters, `AckRecall`, `Watch`/`Unwatch`.
 10. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`.
 11. **Grace and release recovery:** grace per shard at `Start`, and the pending releases run
     when it ends.
