@@ -2,6 +2,7 @@ package run
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -70,9 +71,11 @@ func (p *subunitResult) test() report.Test {
 // stopped it while it ran, which fails it whatever the known list says. A
 // failure in smbtorture's own connection setup is incomplete too: the server
 // gave no result. One failure after the self-contradictory ChannelSequence
-// draw, in the test that printed it, is an expected skip. The exit status
-// decides nothing: a client that crashed left its test with no result. A run
-// that reports no test at all is an error.
+// draw, in the test that printed it, is an expected skip. A client that
+// crashed, exit 129 or more, fails nothing by its exit: the test it left open
+// is incomplete, and with none open, as when it died between two tests, so is
+// the entry, under its own name, since what it would have reported after its
+// last result is lost. A run that reports no test at all is an error.
 func readSubunit(r report.Ran) ([]report.Test, error) {
 	name := func(s string) string {
 		if r.Prefix != "" {
@@ -145,6 +148,9 @@ func readSubunit(r report.Ran) ([]report.Test, error) {
 	}
 	if len(tests) == 0 {
 		return nil, errors.New("no results")
+	}
+	if open == "" && r.Exit > 128 {
+		tests = append(tests, report.Test{Name: r.Test, Status: report.Other, Message: fmt.Sprintf("smbtorture died on signal %d after its last result", r.Exit-128)})
 	}
 	return tests, nil
 }

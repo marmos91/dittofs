@@ -22,10 +22,11 @@ const subunitKnown = `- { test: smb2.lock.lock1, status: fail, fix: wontfix, cat
 // parse-results.sh, case by case from its test, each result graded against
 // the same list: a name with its grade, or its status when nothing graded it.
 // Where dt grades differently, as the RFC says, the case says how: a test with
-// no result is incomplete, a timed-out entry fails the test it had open
-// whatever the list says, a known failure that passes fails, and no timeout is
-// signed off. The grader's cases on its timeouts.txt rows and on its one-byte
-// exit status have no counterpart in dt.
+// no result is incomplete, an entry whose client crashed with no test open is
+// incomplete, a timed-out entry fails the test it had open whatever the list
+// says, a known failure that passes fails, and no timeout is signed off. The
+// grader's cases on its timeouts.txt rows and on its one-byte exit status have
+// no counterpart in dt.
 func TestReadSubunit(t *testing.T) {
 	entries, err := known.Parse("known.yaml", []byte(subunitKnown))
 	if err != nil {
@@ -76,6 +77,9 @@ test: smb2.oplock.batch2
 success: smb2.scan.find
 test: smb2.scan.scan
 `, want: []string{"smb2.scan.find passed", "smb2.scan.scan incomplete"}},
+		{name: "a client that crashed with no test open leaves its entry incomplete", exit: 139, output: `test: smb2.scan.find
+success: smb2.scan.find
+`, want: []string{"smb2.scan.find passed", "smb2.x incomplete"}},
 		{name: "a known failure that passes is unexpected", output: `test: smb2.lock.lock1
 success: smb2.lock.lock1
 test: smb2.oplock.batch1
@@ -212,10 +216,10 @@ skip: smb2.lock.lock1 [ no locks ]
 }
 
 // A run that reports no test, as smbtorture does for a name it doesn't know,
-// is an error, whatever else it printed.
+// is an error, whatever else it printed and however it exited.
 func TestSubunitNoResults(t *testing.T) {
 	for _, output := range []string{"", "smbtorture 4.22.6\nUnknown torture operation 'smb2.notify.security'\n"} {
-		if tests, err := readSubunit(report.Ran{Output: []byte(output), Exit: 1}); err == nil {
+		if tests, err := readSubunit(report.Ran{Output: []byte(output), Exit: 139}); err == nil {
 			t.Errorf("%q: no error, results %+v", output, tests)
 		}
 	}
