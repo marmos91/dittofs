@@ -59,7 +59,9 @@ func ShareRequiresKerberos(share *Share) bool {
 }
 
 // NetgroupChecker reports whether a client address is allowed by a share's
-// netgroup allowlist. *Runtime.CheckNetgroupAccess satisfies it.
+// netgroup allowlist. A nil clientIP is an address that is not an IP literal: it
+// must be allowed by a share with no allowlist and refused by one with any.
+// *Runtime.CheckNetgroupAccess satisfies it.
 type NetgroupChecker func(ctx context.Context, shareName string, clientIP net.IP) (bool, error)
 
 // CheckShareAccess applies the protocol-neutral part of a share's access
@@ -74,8 +76,9 @@ type NetgroupChecker func(ctx context.Context, shareName string, clientIP net.IP
 //
 // The netgroup allowlist gates the client address, and only when a lookup is
 // supplied: a nil netgroup means the caller applies no address gate here (an
-// empty allowlist already means "allow all"). When one is supplied, an
-// unparseable client address and a failed lookup both deny.
+// empty allowlist already means "allow all"). When one is supplied, a failed
+// lookup denies, and a client address that is not an IP (a nil clientIP) is
+// passed to it, so it is refused only by a share that has an allowlist.
 func CheckShareAccess(
 	ctx context.Context,
 	share *Share,
@@ -95,10 +98,6 @@ func CheckShareAccess(
 
 	if netgroup == nil {
 		return nil
-	}
-	if clientIP == nil {
-		return fmt.Errorf("%w: client address for share %q is not an IP, cannot evaluate the netgroup allowlist",
-			ErrExportAccessDenied, share.Name)
 	}
 	allowed, err := netgroup(ctx, share.Name, clientIP)
 	if err != nil {

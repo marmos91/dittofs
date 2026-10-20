@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -482,12 +483,18 @@ func sessionCanEncrypt(sess *session.Session) bool {
 }
 
 // clientIPFromAddr parses the IP out of a peer address of the form host:port,
-// or a bare host. It returns nil when the host is not an IP literal.
+// or a bare host. An IPv6 zone (fe80::1%eth0) is dropped, since netgroup
+// members name addresses, not interfaces. It returns nil when the host is not
+// an IP literal.
 func clientIPFromAddr(addr string) net.IP {
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		addr = host
 	}
-	return net.ParseIP(addr)
+	ip, err := netip.ParseAddr(addr)
+	if err != nil {
+		return nil
+	}
+	return net.IP(ip.WithZone("").AsSlice())
 }
 
 // shouldRejectUnencryptedTreeConnect returns true if a TREE_CONNECT should be

@@ -212,3 +212,47 @@ func TestTreeConnect_SharePolicy_Krb5pRequiresEncryption(t *testing.T) {
 		t.Fatal("krb5p tree was published without requiring encryption")
 	}
 }
+
+func treeConnectFromAddr(t *testing.T, h *Handler, sess *session.Session, addr string) types.Status {
+	t.Helper()
+	ctx := NewSMBHandlerContext(context.Background(), addr, sess.SessionID, 0, 1)
+	result, err := h.TreeConnect(ctx, buildTreeConnectRequestBody(`\\server\secure`))
+	if err != nil {
+		t.Fatalf("TreeConnect: %v", err)
+	}
+	return result.Status
+}
+
+// A link-local IPv6 peer carries its interface zone in the address; the zone
+// must not keep it from matching the netgroup member that names the address.
+func TestTreeConnect_SharePolicy_ScopedIPv6PeerMatchesNetgroup(t *testing.T) {
+	h, rt := newSharePolicyHandler(t)
+	ns := rt.Store().(store.NetgroupStore)
+	if err := ns.AddNetgroupMember(context.Background(), "office", &models.NetgroupMember{Type: "ip", Value: "fe80::1234"}); err != nil {
+		t.Fatalf("AddNetgroupMember: %v", err)
+	}
+	addr := "[fe80::1234%eth0]:50000"
+	sess := h.CreateSessionWithUserAndExpiry(h.GenerateSessionID(), addr, policyUser(), "CORP", time.Now().Add(time.Hour))
+
+	if st := treeConnectFromAddr(t, h, sess, addr); st != types.StatusSuccess {
+		t.Fatalf("TREE_CONNECT from a scoped IPv6 netgroup member: status = %s, want STATUS_SUCCESS", st)
+	}
+}
+
+// A peer address that is not an IP is refused only by a share that has a
+// netgroup allowlist; a share without one admits it.
+func TestTreeConnect_SharePolicy_NonIPPeerAdmittedWithoutAllowlist(t *testing.T) {
+	h, rt := newSharePolicyHandler(t)
+	const addr = "not-an-ip"
+	sess := h.CreateSessionWithUserAndExpiry(h.GenerateSessionID(), addr, policyUser(), "CORP", time.Now().Add(time.Hour))
+
+	if st := treeConnectFromAddr(t, h, sess, addr); st != types.StatusAccessDenied {
+		t.Fatalf("non-IP peer on a share with an allowlist: status = %s, want STATUS_ACCESS_DENIED", st)
+	}
+	if err := rt.SetShareNetgroup(policyShare, ""); err != nil {
+		t.Fatalf("SetShareNetgroup: %v", err)
+	}
+	if st := treeConnectFromAddr(t, h, sess, addr); st != types.StatusSuccess {
+		t.Fatalf("non-IP peer on a share without an allowlist: status = %s, want STATUS_SUCCESS", st)
+	}
+}
