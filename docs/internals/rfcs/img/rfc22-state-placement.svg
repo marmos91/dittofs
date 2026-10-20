@@ -17,7 +17,7 @@
     </style>
   </defs>
   <rect width="900" height="486" fill="#ffffff"/>
-  <text x="16" y="26" class="t">A session lives in one protocol node's memory; the open it made lives at the file's primary.</text>
+  <text x="16" y="26" class="t">A session lives in one gateway node's memory; the open it made lives at the file's primary.</text>
 
   <rect x="120" y="46" width="220" height="40" rx="5" class="cl"/>
   <text x="136" y="64" class="h">alice-pc</text><text x="136" y="79" class="s">Windows, SMB 3.1.1, \\dittofs\profiles</text>
@@ -27,7 +27,7 @@
   <path d="M670,88 L670,114" class="ln"/>
 
   <rect x="24" y="116" width="420" height="190" rx="8" class="pr"/>
-  <text x="40" y="138" class="h">P1 — protocol node</text>
+  <text x="40" y="138" class="h">P1 — gateway node</text>
   <text x="190" y="138" class="s">memory only; rebuilt on reconnect</text>
   <rect x="40" y="150" width="388" height="146" rx="5" class="in"/>
   <text x="52" y="168" class="l">connection: a session's channels are all on P1</text>
@@ -39,7 +39,7 @@
   <text x="100" y="257" class="m">FileId, volatile half: P1's table</text>
 
   <rect x="456" y="116" width="420" height="190" rx="8" class="pr"/>
-  <text x="472" y="138" class="h">P2 — protocol node</text>
+  <text x="472" y="138" class="h">P2 — gateway node</text>
   <text x="472" y="166" class="l">The CREATE conflicts with alice-pc's handle caching.</text>
   <text x="472" y="194" class="l">1  answers STATUS_PENDING at once, frees its worker</text>
   <text x="472" y="218" class="l">2  re-runs the CREATE once the break has ended</text>
