@@ -1122,7 +1122,7 @@ entry, decrements `Nlink`, moves usage and writes the pending release in one
 `Update`, by calling four helpers, never four interface methods that would each
 open a transaction of their own.
 
-The composition root ([RFC 15](rfc-15-topology.md)) calls `Open` and hands each consumer only the
+`node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)) calls `Open` — the one thing it opens, since every view is bound to the open store — and hands each consumer only the
 view it declared ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). A view is always local to its consumer's
 node: what crosses between nodes is a whole filesystem-service call
 ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)), never a view's.
