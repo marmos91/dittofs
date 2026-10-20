@@ -1329,6 +1329,22 @@ and write data (with the attribute reads and writes RFC 7 §7.7 implies);
 An access or deny value outside the protocol's set is `NFS4ERR_INVAL`, never
 truncated to the bits that fit.
 
+**Identity.** The NFS adapter maps each credential to RFC 17's neutral
+`Identity` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)) and names no
+flavour in it:
+
+| Credential | `Strength` | `Principal`, `Claims` |
+| --- | --- | --- |
+| `AUTH_NONE` | `None` | zero; none |
+| `AUTH_SYS` | `Claimed` | zero; the uid, gid and groups it carried, as claims |
+| `RPCSEC_GSS` `krb5` | `Verified` | the ticket's principal, through `Service.SignIn`; none |
+| `RPCSEC_GSS` `krb5i` | `VerifiedIntegrity` | as `krb5` |
+| `RPCSEC_GSS` `krb5p` | `VerifiedPrivacy` | as `krb5` |
+
+An export's flavour policy is checked against `Strength`: "requires Kerberos"
+is at least `Verified`, a minimum Kerberos level the matching strength. Owner
+strings are spelled and parsed through `Service.Spell` and `Service.Find`.
+
 **Request IDs.** The request ID a forwarded call carries
 ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) is derived
 from the NFS retry identity, never from the connection, because an NFSv4

@@ -323,18 +323,20 @@ only caching there is.
 
 ### 2.3 What an adapter may import
 
-An adapter's packages **MUST** import only:
+An adapter imports `pkg/vfs` and nothing else of the core. Its packages
+**MUST** import only:
 
 - the service's interface and value types ([RFC 17 §3](rfc-17-vfs.md#3.%20Interface)),
-  and the neutral types it names;
+  and the neutral types it names — sign-in and principal spellings included,
+  through the service's `Principals` area;
 - the adapter's own codecs, session and connection code;
 - `core`, the shared adapter code of this RFC — listeners, connections, drain,
   pipeline, middleware, buffers (§2.5);
 - the standard library and wire-format libraries that do no file I/O.
 
 They **MUST NOT** import a metadata store, the open-state tables, the content
-engine, the topology or routing code, the configuration store, or another
-adapter. Two adapters that need the same helper — the ACL translation between a
+engine, the topology or routing code, the identity component, the configuration
+store, or another adapter. Two adapters that need the same helper — the ACL translation between a
 security descriptor or an NFSv4 ACL and the neutral ACL
 ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)),
 a time conversion — take it from a shared translation package that itself
@@ -445,7 +447,6 @@ flowchart TB
   subgraph below["contracts the adapter calls"]
     direction LR
     svc["pkg/vfs — vfs.Service (RFC 17)"]
-    auth["identity.Authenticator (RFC 18)"]
     translate["internal/adapter/translate"]
   end
   root -- "nfs.New / smb.New (Deps)" --> core
@@ -811,10 +812,9 @@ package core // internal/adapter/core
 // A field is an interface where it has two implementations, a concrete type
 // where it has one.
 type Deps struct {
-	Service vfs.Service            // RFC 17: the only way to a file (§2.3); the server or the gateway, and the adapter cannot tell which (RFC 17 §2)
-	Auth    identity.Authenticator // RFC 18 §3.1: what a handshake needs a secret or directory for
-	Pools   *resources.Pools       // RFC 24 §2.3: receive, reply, connection state
-	Metrics *metrics.Registry      // RFC 25 §2
+	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the server or the gateway, and the adapter cannot tell which (RFC 17 §2)
+	Pools   *resources.Pools  // RFC 24 §2.3: receive, reply, connection state
+	Metrics *metrics.Registry // RFC 25 §2
 	Logger  *slog.Logger
 	// Dial opens an outbound connection from a given local address: NLM's
 	// callbacks to a host, from the floating address it used (§3.3). A test
@@ -1198,9 +1198,10 @@ The adapter **MUST NOT** map a principal to numeric IDs or SIDs, apply
 squashing, or decide that a principal is privileged. Those are the service's,
 per share, by [RFC 18 §6](rfc-18-identity.md#6.%20Resolution%20per%20share)'s
 resolution. Where the handshake itself needs a directory — verifying an NTLM
-response, a Kerberos ticket against a keytab — the adapter calls the
-authentication interface RFC 18 defines
-([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), and
+response, a Kerberos ticket against a keytab — the adapter calls the service's
+`SignIn`, which the server delegates to the authentication interface RFC 18
+defines ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations),
+[RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)), and
 holds only the result in its security context. A handshake that fails is
 answered as the protocol's logon failure, and never becomes an anonymous or
 guest session.
@@ -1259,15 +1260,15 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 
 | Piece | Where | NFS | SMB | Why there |
 | --- | --- | --- | --- | --- |
-| Kerberos mechanism: AP-REQ through `Authenticator.AcceptKerberos`, AP-REP, subkey | `auth` | `RPCSEC_GSS` `INIT` / `CONTINUE_INIT` | inside SPNEGO in `SESSION_SETUP` | wire format, no secret |
-| NTLM mechanism: challenge, then `Authenticator.VerifyNTLM` | `auth` | — | inside SPNEGO | wire format, no secret |
+| Kerberos mechanism: AP-REQ through `Service.SignIn`, AP-REP, subkey | `auth` | `RPCSEC_GSS` `INIT` / `CONTINUE_INIT` | inside SPNEGO in `SESSION_SETUP` | wire format, no secret |
+| NTLM mechanism: challenge, then `Service.SignIn` | `auth` | — | inside SPNEGO | wire format, no secret |
 | SPNEGO, which composes the two | `auth` | — | `SESSION_SETUP` | wire format, no secret |
 | `Exchanges`: multi-leg state, deadline, cleanup | `auth` | keyed by GSS context handle | keyed by session ID | one exchange machine for both |
 | RFC 4121 per-message tokens (MIC and wrap) | `auth.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | — (SMB derives its own keys from `Key`) | RFC 4121, the Kerberos mechanism's |
 | `Identity`, expiry | `auth` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one |
 | failure handling: every error a logon failure, never guest | `auth` | GSS `CREDPROBLEM` | `STATUS_LOGON_FAILURE` | decided once for both |
-| NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | authenticator, `VerifyNTLM` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
-| Kerberos AP-REQ acceptance, keytab, PAC verification | authenticator, `AcceptKerberos` ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos), [§3.4](rfc-18-identity.md#3.4%20The%20PAC)) | through the Kerberos mechanism | through the Kerberos mechanism | needs the keytab; its rotation is RFC 18's |
+| NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | the server's authenticator behind `SignIn`, `VerifyNTLM` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
+| Kerberos AP-REQ acceptance, keytab, PAC verification | the server's authenticator behind `SignIn`, `AcceptKerberos` ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos), [§3.4](rfc-18-identity.md#3.4%20The%20PAC)) | through the Kerberos mechanism | through the Kerberos mechanism | needs the keytab; its rotation is RFC 18's |
 | SMB signing and encryption keys from the session key | SMB adapter, `smb/session` | — | yes | MS-SMB2's key derivation; the key arrives in the `Proof` |
 | `RPCSEC_GSS` control procedures (`INIT`, `CONTINUE_INIT`, `DESTROY`) | NFS adapter: routed by the RPC router to `auth.Exchanges` | yes | — | the framing is RPC's; the exchange is `auth`'s |
 | GSS context table and sequence window | NFS adapter, `nfs/rpc`, owned by the RPC `Protocol` like sessions (§4.7); in memory only ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) | yes | — | RPCSEC_GSS's own state |
@@ -1301,7 +1302,7 @@ mechanism, used only by tests, so every exchange runs in-process:
   principal, encrypted with the test keytab's own key, and the initiator turns
   it into an AP-REQ. Acceptance, AP-REP, subkeys, PAC parsing, expiry and
   replay detection run against real Kerberos messages, deterministically.
-- **NTLM** from a test user's password, against a fake `Authenticator` that
+- **NTLM** from a test user's password, against a fake service whose `SignIn`
   holds its NT hash; pass-through is the same fake answering as a domain
   controller would.
 - **SPNEGO** over both, including the mechanism-list MIC and a client that
@@ -2277,7 +2278,8 @@ These boundary checks run per change:
 ### 7.1 Imports and call sites
 
 A test walks the import graph of every adapter package and fails, naming the
-package and the import, on anything §2.3 forbids. It is seeded with one
+package and the import, on anything §2.3 forbids: any core package but
+`pkg/vfs`, the identity component's included. It is seeded with one
 deliberate violation in its own test data and must report it, so a check that
 silently matches nothing is caught. The same test lists adapter files over 800
 lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
@@ -2474,7 +2476,7 @@ tests, per change, without waiting for the nightly run.
 
 | # | Invariant |
 | --- | --- |
-| A1 | An adapter imports only what §2.3 lists, and holds no metadata view, open state, engine or routing. |
+| A1 | An adapter imports `pkg/vfs` and nothing else of the core — only what §2.3 lists — and holds no metadata view, open state, engine, routing or identity component. |
 | A2 | Nothing an adapter holds is written to the metadata store or replicated; everything a client can present back after its connection ends is held below the service. |
 | A3 | An adapter caches nothing the service returned beyond the request that read it. |
 | A4 | Every request passes the pipeline's stages in §4.1's order, through one implementation shared by every adapter. |
