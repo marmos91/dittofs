@@ -896,8 +896,8 @@ context's current evidence in `SignInStep.Context`.
   keeps everything else the context holds, its open handles with the access
   each was granted at its open. Why, and its ceiling, is
   [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)'s decision.
-  A re-authentication that would leave the session keyless, as a null or
-  guest one, fails ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
+  A re-authentication as anonymous or guest succeeds like any other; the
+  context keeps the keys its first sign-in derived.
 - Any failed re-authentication ends the context it targeted. The old evidence
   never outlives a failed proof, such as one after a password change.
 - A context past `Expires` still admits its re-authentication and the calls that
