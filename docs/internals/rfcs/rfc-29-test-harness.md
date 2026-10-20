@@ -585,10 +585,11 @@ suites:
     format: subunit                     # smbtorture's test:, success: and failure: lines
     image: quay.io/samba.org/samba-toolbox:v0.8
     cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}%{password} {test}"
-    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's timeout, share and name prefix
+    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's share and name prefix
+    timeout: { test: 5m }               # run.sh's one limit for each test of its list
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
-    fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
+    fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }   # its multichannel test dials 445
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
     needs: [linux, docker]
@@ -596,6 +597,7 @@ suites:
       kerberos:                         # dt run smbtorture --kerberos
         cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
         tests: [smb2.session, smb2.read, smb2.lock]
+        timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}                      # one cell: it pins its profile
         fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
@@ -696,12 +698,16 @@ runs: /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d
 ```
 
 **smbtorture's test list.** `tests.txt` holds what `smbtorture/run.sh` holds today: each test or
-sub-suite and its timeout; `share=` when it runs on a share other than the first, as
-`smb2.acls_non_canonical` runs on `smbnoncanon`; and `prefix=` for the part of a name smbtorture
-leaves off what it reports. Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the
-`smb2.` the reader puts before a name that lacks it, as today's grader does, make that
-`smb2.oplock.batch1`, the name the known list uses. The comments on why some tests aren't run
-stay in the file.
+sub-suite; `share=` when it runs on a share other than the first, as `smb2.acls_non_canonical`
+runs on `smbnoncanon`; and `prefix=` for the part of a name smbtorture leaves off what it reports.
+Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the `smb2.` the reader puts before
+a name that lacks it, as today's grader does, make that `smb2.oplock.batch1`, the name the known
+list uses. `run.sh` gives every test of its list one limit, 5 minutes, so the suite's
+`timeout.test` holds it, and a line gives its own only to differ. A line is a name and then, in
+any order, at most one each of a timeout, `share=` and `prefix=`, as `smb2.acls_non_canonical
+share=smbnoncanon prefix=acls_non_canonical`; anything else on it, an empty `share=` or
+`prefix=` too, is an error, and a line that starts with `#` is a comment. The comments on why
+some tests aren't run stay in the file.
 
 **Scenario timeouts.** A scenario's size class is in its file name (`test/scenarios/README.md`):
 `xs` under 10 s, `s` under 1 min, `m` under 5, `l` under 15, `xl` under 1 h. With `test: size`, its
@@ -769,7 +775,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
@@ -1147,7 +1153,8 @@ grader:
   its exit; the test it left open is incomplete. A failure in the client's own connection setup,
   which the connection-failure filter finds, is incomplete too: there is no server result. The
   self-contradictory `smb2.replay.channel-sequence` draw (`CSN 0x7fff`) is an expected skip the
-  reader grades itself.
+  reader grades itself. An entry that reports no test at all, as smbtorture does for a name it
+  doesn't know, didn't run, so a test the image's smbtorture lacks is lost coverage (exit 2).
 - `trx`: `Passed` passes; `Failed`, `Error`, `Timeout` and `Aborted` fail; `NotExecuted` and any
   other outcome skip, with the outcome kept as `rawStatus`.
 

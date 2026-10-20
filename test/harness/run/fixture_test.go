@@ -18,7 +18,8 @@ import (
 )
 
 // fakeServer is a started fixture that gives fixed placeholders, and
-// {mount} when mount is set. Each reset says so in the cell's output.
+// {mount} when mount is set. Each reset says which share in the cell's
+// output.
 type fakeServer struct {
 	stops    int
 	resets   int
@@ -29,16 +30,16 @@ type fakeServer struct {
 }
 
 func (f *fakeServer) Placeholders() map[string]string {
-	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": "40002", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
+	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": "40002", "share": "one", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
 	if f.mount != "" {
 		vals["mount"] = f.mount
 	}
 	return vals
 }
 
-func (f *fakeServer) Reset() error {
+func (f *fakeServer) Reset(share string) error {
 	f.resets++
-	_, _ = fmt.Fprintln(f.out, "[dt] fake reset")
+	_, _ = fmt.Fprintln(f.out, "[dt] fake reset", share)
 	return f.resetErr
 }
 
@@ -180,27 +181,28 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 	}
 }
 
-// A fixture with reset: each has its share reset before each test of its
-// cell, and a test whose reset fails doesn't run. The fixture finds its
-// shares file from the repository's root, and the commands get {smb-port}
-// and {user2}.
+// A fixture with reset: each has the share of each test of its cell reset
+// before the test, and a test whose reset fails doesn't run. A test's {share}
+// is its share= in a .txt list, else the fixture's first share. The fixture
+// finds its shares file from the repository's root, and the commands get
+// {smb-port} and {user2}.
 func TestFixtureResetEach(t *testing.T) {
 	server := &fakeServer{}
 	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, `suites:
   r:
-    cmd: "echo {test} {smb-port} {user2}"
-    tests: [a, b]
+    cmd: "echo {test} {share} {smb-port} {user2}"
+    tests: list.txt
     fixture: { profile: memory, smb: true, shares: smb/shares.yaml, reset: each }
-`, withBins(map[string]string{"go.mod": goModule["go.mod"], "smb/shares.yaml": "- name: /s\n"}))
+`, withBins(map[string]string{"go.mod": goModule["go.mod"], "smb/shares.yaml": "- name: /one\n- name: /two\n", "list.txt": "a share=two\nb\n"}))
 	rep, out := runTarget(t, root, r, "r", false)
 	var steps []string
 	for _, line := range strings.Split(out, "\n") {
-		if line == "[dt] fake reset" || strings.HasPrefix(line, "[dt] $ echo") {
+		if strings.HasPrefix(line, "[dt] fake reset") || strings.HasPrefix(line, "[dt] $ echo") {
 			steps = append(steps, line)
 		}
 	}
-	want := []string{"[dt] fake reset", "[dt] $ echo a 40002 dt-user2", "[dt] fake reset", "[dt] $ echo b 40002 dt-user2"}
+	want := []string{"[dt] fake reset two", "[dt] $ echo a two 40002 dt-user2", "[dt] fake reset one", "[dt] $ echo b one 40002 dt-user2"}
 	if o := rep.Outcomes[0]; o.Result != Passed || !slices.Equal(steps, want) {
 		t.Errorf("outcome %+v, steps:\n%s\nwant:\n%s", o, strings.Join(steps, "\n"), strings.Join(want, "\n"))
 	}
