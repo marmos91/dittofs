@@ -273,7 +273,7 @@ process, or to its container, are not pooled:
 
 - **the page cache** of journal and store files: the kernel reclaims clean
   pages before it kills a process, and the journal's syncs bound the dirty ones
-  ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy));
+  ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing));
 - **goroutine stacks beyond the flat part §3.1 charges, the runtime's own
   structures and the collector's headroom** — the garbage that lives between
   two collections;

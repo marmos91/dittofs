@@ -369,8 +369,8 @@ interface:
 
 | Declared by | Component | What the engine calls |
 | --- | --- | --- |
-| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal | `Share`, passed the larger of the share's version floor and version limit and the share's sync policy ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)); `Forget` (drops a tag's extents, markers and index entries through one header-only record `Since` never yields, refused while a handle of the tag is open, for a namespace moved away, an import attach or a share's removal, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)); `Strand`; `Stats`; `Draw` and `SetVersionLimit` ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); `Close`, after every handle ([RFC 1 §8.7](rfc-1-journal.md#8.7%20Shutdown)) |
-| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | a share's handle on the journal | `WriteAt`, passed the write's modification time ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Reserve(n, writes)` and the reservation's `WriteAt` and `Close`, for a clone's copies ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), `Close`, before the tag's `Forget`, `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `Repack` with its scope, `Hold`, `Stamp`, `Files`, `DirtyFiles`, and `SetSyncPolicy`, on every handle of a share whose `sync.policy` changes live ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)) |
+| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal | `Share`, passed the larger of the share's version floor and version limit; `Forget` (drops a tag's extents, markers and index entries through one header-only record `Since` never yields, refused while a handle of the tag is open, for a namespace moved away, an import attach or a share's removal, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)); `Strand`; `Stats`; `Draw` and `SetVersionLimit` ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); `Close`, after every handle ([RFC 1 §8.7](rfc-1-journal.md#8.7%20Shutdown)) |
+| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | a share's handle on the journal | `WriteAt`, passed the write's modification time ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Reserve(n, writes)` and the reservation's `WriteAt` and `Close`, for a clone's copies ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), `Close`, before the tag's `Forget`, `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `Repack` with its scope, `Hold`, `Stamp`, `Files` and `DirtyFiles` |
 | [RFC 2 §2](rfc-2-carver.md#2.%20What%20one%20call%20covers), [§5](rfc-2-carver.md#5.%20The%20block%20assembler) | the carver and the block assembler | the carver's `Cut`; the assembler's fold |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | the syncer | `OpenFlow`, one flow per share at attach |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `Drop` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
@@ -451,8 +451,7 @@ scaling device.
 - **Remote side: a flow to the share's store.** The binding holds the syncer flow
   to the share's remote block store, and the key scope, the namespace ID
   ([§2.1](#2.1%20Content%20composition)), under which the blocks it uploads are named.
-- **The rules for using both:** its settings, validated at `Bind` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)), the
-  sync policy among them; its policy state — access pattern, dirty ages,
+- **The rules for using both:** its settings, validated at `Bind` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)); its policy state — access pattern, dirty ages,
   backoff, frontiers ([§3.3](#3.3%20Policy%20state%20is%20memory%2C%20and%20disposable)); its health per direction ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its budgets —
   its share of journal capacity, transfers and pacing; and its state: adding,
   serving, quiesced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
@@ -493,10 +492,7 @@ engine.
 
 **`Bind` adds a binding or changes one.** For a share the engine does not
 serve it attaches it ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). For one it serves it applies the change: a
-state change, quiesced and back; a `sync.policy` change, applied with
-`SetSyncPolicy` on every journal handle the binding holds for the share, within
-RFC 13's live bound ([RFC 13 §5](rfc-13-configuration.md#5.%20Binding%20classes), [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so records written
-after it follow the new policy; or a backend change, which replaces the binding
+state change, quiesced and back, or a backend change, which replaces the binding
 ([§2.1](#2.1%20Content%20composition)). Two changes belong to a re-home ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a `Bind`
 naming a new write namespace returns once every pass captured under the old one
 is joined ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)); one with `State: Closing` counts clones and copies admitted
@@ -1214,7 +1210,7 @@ after a loss, each client resends its recent unstable writes once.
    rebuilt from metadata as for a lost one ([RFC 1 §3.11](rfc-1-journal.md#3.11%20Snapshot%20holds)).
 
 This is the only acknowledgement policy: the journal is required to be durable
-([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so what it has synced survives a crash, recovery rebuilds
+([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)), so what it has synced survives a crash, recovery rebuilds
 existence from it, and offload carries it to the remote on its own schedule. A
 remote-acknowledged commit would bound every `fsync` by a put and turn a remote
 outage into client write errors.
@@ -2715,7 +2711,7 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error // §2.5 steps
 func (e *Engine) Close(ctx context.Context) error                // §2.5 Stop; before the syncer and the store close
 
 // Shares: called by the node (RFC 23 §2.1) and by a share's removal (RFC 16 §2.3.2).
-func (e *Engine) Bind(ctx context.Context, s Share) error                      // attach a new binding above the floor, or apply a change to one already bound: state, sync policy, write namespace, backends
+func (e *Engine) Bind(ctx context.Context, s Share) error                      // attach a new binding above the floor, or apply a change to one already bound: state, write namespace, backends
 func (e *Engine) Unbind(ctx context.Context, id ShareID, keepHolds bool) error // removal step 3: refuse, join; with keepHolds, offload what kept snapshots' holds cover
 func (e *Engine) Drop(ctx context.Context, id ShareID) error                   // after every shard's step 3: Close the handle, Forget the tag, close the flow
 
@@ -2745,7 +2741,6 @@ type Share struct { // fields indicative
 	Namespace NamespaceID // the write namespace: key scope, minting (§2.1, §6.6)
 	Store     StoreID     // its remote block store, as RFC 3 registered it
 	State     ShareState  // Serving, Quiesced, Closing (a re-home's finish)
-	Sync      SyncPolicy
 	Settings  ShareSettings // validated by Bind (§2.4)
 }
 type ShareState uint8
@@ -2762,7 +2757,7 @@ type Overlay struct {
 }
 
 // FileID, ShareID, ShardID, NamespaceID, Version, Verifier, TimeMask, Span:
-// aliases of the metadata types. ShareTag, SyncPolicy, JournalID: RFC 1's.
+// aliases of the metadata types. ShareTag, JournalID: RFC 1's.
 // StoreID: RFC 3's. Errors: the engine declares none (below).
 ```
 

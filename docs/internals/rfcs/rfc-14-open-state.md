@@ -1841,7 +1841,7 @@ its create request; the protocol's rules and their reasons are
 **Writes that survive a restart are stable.** Every write through a persistent
 open, and through any open on a continuously available share, **MUST** be
 stable before it is acknowledged
-([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy); the service's rule,
+([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing); the service's rule,
 [RFC 17](rfc-17-vfs.md#6.%20Invariants%2C%20and%20the%20test%20of%20each) V19).
 
 > decision: continuous availability, and with it persistent opens, is opt-in per
