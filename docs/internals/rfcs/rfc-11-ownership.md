@@ -974,8 +974,8 @@ orders nothing, and calls neither open state, the metadata store nor the engine
 - it looks up the shard of the handle the operation names, and the shard's
   primary, through `vfs.Router` over a cache of shard records read from the
   metadata store ([RFC 15 §6](rfc-15-topology.md#6.%20Learning%20primaries));
-- if the primary is this node, it calls the local `vfs.Service`, with no
-  envelope; otherwise it forwards the operation to that primary through
+- if the primary is this node, it calls the checked `vfs.Service` that
+  `vfs.Serve` returns, which fences and deduplicates it as a forwarded call; otherwise it forwards the operation to that primary through
   `vfs.Transport`. Every routed call is callable across
   a network ([RFC 15 §4.1](rfc-15-topology.md#4.1%20Every%20call%20is%20safe%20to%20route)) and carries the route envelope
   ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)): a request ID, so a retry is answered once; the shard and
