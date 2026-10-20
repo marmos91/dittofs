@@ -393,8 +393,8 @@ file logic, and are made by its implementation outside `vfs`.
 - The request identity a request ID is derived from ([§4.3](#4.3%20The%20route%20envelope)) — XID,
   procedure and argument checksum, or session, slot and sequence — is the
   adapter's, which hands it with the call; the gateway only stamps it.
-- `vfs.Router` and `vfs.Transport` **MUST** be declared in `vfs` and implemented
-  outside it, so `vfs` imports no network code.
+- `vfs.Router`, `vfs.Transport` and `vfs.Peers` **MUST** be declared in `vfs` and
+  implemented outside it, so `vfs` imports no network code.
 - A call names its route by its handle, or, with none, by the shard its
   grant, watch or state ID names
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). A call with neither — `Root`,
@@ -403,12 +403,6 @@ file logic, and are made by its implementation outside `vfs`.
   channel are chosen among the nodes holding its sessions
   ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)), so renewal
   costs no hop when the owner is this node.
-
-> decision: a call naming no file is decided by the gateway node's own
-> `vfs.Server`, not at a primary, because it touches no shard's state: share
-> admission there reads the share records any node reads, and every later call
-> on the share's files is admitted again by its primary's server. Overturned if
-> such a call ever needs state a primary holds.
 - A call that touches two shards is routed by its first handle to its
   coordinator, the source directory's primary or, for a link, the target
   directory's, whose server runs it as [§4.2](#4.2%20Calls%20that%20touch%20two%20primaries) says. A path walk is one `Lookup` per
@@ -416,6 +410,12 @@ file logic, and are made by its implementation outside `vfs`.
 - A single node builds no gateway and no receive side: its adapters call
   `vfs.Server` directly, and none of the envelope, fencing or dedup of a
   forwarded call applies.
+
+> decision: a call naming no file is decided by the gateway node's own
+> `vfs.Server`, not at a primary, because it touches no shard's state: share
+> admission there reads the share records any node reads, and every later call
+> on the share's files is admitted again by its primary's server. Overturned if
+> such a call ever needs state a primary holds.
 
 ### 2.4 Composition
 
@@ -432,18 +432,19 @@ starts nothing:
 | --- | --- | --- |
 | 1 | the metadata store, embedded or a client of the replicated one ([RFC 16](rfc-16-metadata-store.md)) | — |
 | 2 | the remote stores ([RFC 4](rfc-4-remote-tier.md)) | — |
-| 3 | the journal, and **(cluster)** its replication ([RFC 1](rfc-1-journal.md), [RFC 10](rfc-10-journal-replication.md)) | — |
-| 4 | the syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores |
-| 5 | the engine ([RFC 8](rfc-8-engine.md)) | the journal, the syncer, the Existence, Content and Lifecycle views; the carver's `Cut`, which holds no state and is not built ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)) |
-| 6 | GC ([RFC 9](rfc-9-gc.md)), a sibling of the engine, never passed into it | Blocks, the remote stores, the syncer, Keys |
-| 7 | open state ([RFC 14](rfc-14-open-state.md)) | — |
-| 8 | identity ([RFC 18](rfc-index.md)) | — |
-| 9 | `vfs.New`, the `*vfs.Server` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) | identity, open state, the metadata views, the engine |
-| 10 | **(cluster)** `vfs.Serve` over the server, then `vfs.NewGateway` with the checked `vfs.Service` `vfs.Serve` returns as its local one, the router ([§6](#6.%20Learning%20primaries)) and the transport | Serve: the server; the gateway: the checked `vfs.Service`, `vfs.Router`, `vfs.Transport` |
-| 11 | the adapters ([RFC 20](rfc-20-adapters.md)), handed the `vfs.Service` — the gateway in a cluster, the server on one node — and identity as their authenticator | `vfs.Service` |
+| 3 | the syncer ([RFC 3](rfc-3-syncer.md)) | the remote stores |
+| 4 | the engine ([RFC 8](rfc-8-engine.md)), handed the journal opener: it opens each device's journal itself at `Start`, and **(cluster)** its replication ([RFC 1](rfc-1-journal.md), [RFC 10](rfc-10-journal-replication.md)) | the journal, the syncer, the Existence, Content and Lifecycle views; the carver's `Cut`, which holds no state and is not built ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)) |
+| 5 | GC ([RFC 9](rfc-9-gc.md)), a sibling of the engine, never passed into it | Blocks, the remote stores, the syncer, Keys |
+| 6 | open state ([RFC 14](rfc-14-open-state.md)) | — |
+| 7 | identity ([RFC 18](rfc-index.md)) | — |
+| 8 | `vfs.New`, the `*vfs.Server` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) | identity, open state, the metadata views, the engine |
+| 9 | **(cluster)** `vfs.Serve` over the server, then `vfs.NewGateway` with the checked `vfs.Service` `vfs.Serve` returns as its local one, the router ([§6](#6.%20Learning%20primaries)) and the transport | Serve: the server; the gateway: the checked `vfs.Service`, `vfs.Router`, `vfs.Transport` |
+| 10 | the adapters ([RFC 20](rfc-20-adapters.md)), handed the `vfs.Service` — the gateway in a cluster, the server on one node — and identity as their authenticator | `vfs.Service` |
 
-`Node.Start` starts the components in build order, runs the first reconcile,
-and only then starts the adapters: no adapter listens until the node's shares
+`Node.Start` opens the metadata store and registers the node first, so a
+version refusal stops it before anything else starts; then starts the other
+components in build order, except the adapters; runs the first reconcile; and
+only then starts the adapters: no adapter listens until the node's shares
 are open and, in a cluster, the node holds a node epoch to stamp. `Node.Stop`
 stops them in reverse: adapters first, so no client call arrives at a component
 already closed; then **(cluster)** the gateway; then the node hands the shards
@@ -623,8 +624,8 @@ unfinished clone until the clone is done
 ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)). On
 `ErrCross` (`CrossShard`) the adapters fall back without telling the client the
 operation is missing: an NFSv4.2 `COPY` and an SMB copychunk become a
-server-side byte copy, reads at the source's primary and writes at the
-destination's; an NFSv4.2 `CLONE` answers `NFS4ERR_XDEV`, never
+server-side byte copy, reads at the source's primary through `vfs.Peers` and
+writes at the destination's; an NFSv4.2 `CLONE` answers `NFS4ERR_XDEV`, never
 `NFS4ERR_NOTSUPP`, which a client records as the operation missing for the
 whole mount; an SMB `FSCTL_DUPLICATE_EXTENTS_TO_FILE` answers
 `STATUS_NOT_SAME_DEVICE`.

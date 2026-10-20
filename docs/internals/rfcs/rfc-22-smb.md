@@ -66,8 +66,8 @@ connect to them are [RFC 17](rfc-17-vfs.md)'s. Behind the service, writes land
 in a local journal and move to an object store in the background
 ([RFC 0](rfc-0-data-lifecycle.md)); SMB sees none of that.
 
-**The problem, with one example.** Take the cluster: `protocol` nodes **P1**
-and **P2** hold client connections, and storage node **S1** is the primary for
+**The problem, with one example.** Take the cluster: gateway nodes **P1**
+and **P2** hold client connections, and node **S1** is the primary for
 `profiles/alice/` — the one node that orders every change to those files. alice
 signs in to **alice-pc**, and Windows attaches her profile container,
 `profiles/alice/ODFC_alice.vhdx`: a 30 GB virtual disk with about 10.5 GB used,
@@ -113,8 +113,8 @@ walks the same day with alice-pc asking for a persistent handle instead.
 
 **The words you need.**
 
-- **`protocol` node / primary** — a node that holds client connections / the one
-  storage node that orders a shard's writes
+- **gateway node / primary** — the node a client's connection is held by / the
+  one node that orders a shard's writes; every node can be both
   ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
 - **Dialect** — the protocol version a connection agrees at negotiate
   ([§3.1](#3.1%20Dialects)).
@@ -142,7 +142,7 @@ walks the same day with alice-pc asking for a persistent handle instead.
 
 **What this RFC promises.**
 
-- Losing a `protocol` node loses no open state and starts no grace period; the
+- Losing a gateway node loses no open state and starts no grace period; the
   client builds a new session and reconnects its durable and persistent opens.
   Opens that were neither are lost, as after any server failure.
 - Losing a primary loses its durable opens, which are then refused on
@@ -228,7 +228,7 @@ create options, information classes, control codes and the character mapping.
   `ExportPolicy.SMB`; tree connect and enumeration [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees).
   The adapter is built as [RFC 20](rfc-20-adapters.md) describes — its
   lifecycle, request pipeline, codecs and connection handling.
-- Sessions, channels, credits and keys live in one `protocol` node's memory.
+- Sessions, channels, credits and keys live in one gateway node's memory.
   Multichannel binds channels on that node only. After the node is lost the
   client builds a new session and reconnects its durable or persistent opens.
 - Writes on a persistent open, and on any open on a continuously available
@@ -329,7 +329,7 @@ rule. Assume `profiles` requires encryption and is continuously available.
    was on P1, so there is no grace period
    ([§4.3](#4.3%20Reconnect%20after%20a%20node%20is%20lost)). alice-pc
    reconnects as in step 4, through P2.
-6. **S1 fails.** Another storage node becomes primary of `profiles/alice/`. The
+6. **S1 fails.** Another node becomes primary of `profiles/alice/`. The
    persistent open was stored, and every write acknowledged through it was
    synced, so alice-pc reconnects to it with its lease and the disk holds every
    byte it was told was written
@@ -352,7 +352,7 @@ rule. Assume `profiles` requires encryption and is continuously available.
    persistent handle still held ([§9.3](#9.3%20Timestamps%2C%20allocation%20and%20sparse%20files)).
    Then alice-pc closes the handle: the open, its lease and its deny mode end
    at the primary ([RFC 14 §3](rfc-14-open-state.md#3.%20One%20table%20per%20file%2C%20at%20one%20primary)), and the session ends on
-   its `protocol` node.
+   its gateway node.
 
 The conformance check for this walk is the profile-container row of
 [§17](#17.%20Conformance).
@@ -423,7 +423,7 @@ cannot reach a share that requires it ([§5.1](#5.1%20Share%20flags)).
 
 > decision: compression is not offered. Content is already compressed below
 > the protocol where that pays ([RFC 5](rfc-5-transforms.md)); per-message
-> compression would cost the `protocol` node CPU on every read. Offer it when a
+> compression would cost the gateway node CPU on every read. Offer it when a
 > wide-area deployment shows reads limited by link bandwidth, not by the node.
 
 > decision: SMB Direct (over RDMA, remote direct memory access) and SMB over
@@ -447,7 +447,7 @@ flight.
   (below). The server never grants past the target and never revokes credits
   already granted.
 - Sequence windows, credits and outstanding requests are per connection, in the
-  memory of the `protocol` node.
+  memory of the gateway node.
 - **A held request's credits are granted in its interim response.** A request
   answered `STATUS_PENDING` (§6.3, §6.6) is granted its credits in the interim
   response (MS-SMB2 3.3.4.2), not held back until the final one, so the
@@ -491,7 +491,7 @@ flight.
 A session is a user signed in on a connection; it holds the keys that sign and
 encrypt every later message. The standard lets one session span several
 connections (multichannel). We keep each session, with all its connections, in
-one `protocol` node's memory; a client that loses the node signs in again.
+one gateway node's memory; a client that loses the node signs in again.
 
 ### 4.1 Signing in
 
@@ -506,7 +506,7 @@ one `protocol` node's memory; a client that loses the node signs in again.
   unless the connection's address is one of them. Entries of other types,
   such as NetBIOS names, are ignored.
 - The session key, signing key, encryption and decryption keys and the
-  preauthentication hash are held in the memory of the `protocol` node, and
+  preauthentication hash are held in the memory of the gateway node, and
   **MUST NOT** be stored or sent to another node.
 - **Signing is required server-wide, at negotiate.** Every `NEGOTIATE`
   response **MUST** set `SMB2_NEGOTIATE_SIGNING_REQUIRED`, so every client
@@ -549,7 +549,7 @@ Multichannel lets one session use several TCP connections, say one per network
 card. A client asks for the server's addresses
 (`FSCTL_QUERY_NETWORK_INTERFACE_INFO`) and binds new connections to its session.
 
-- A session's channels **MUST** all be on one `protocol` node.
+- A session's channels **MUST** all be on one gateway node.
 - The address query lists only the addresses the answering node holds now, so
   a client never discovers another node's.
 - A bind (`SESSION_SETUP` with `SMB2_SESSION_FLAG_BINDING`) for a session this
@@ -566,7 +566,7 @@ card. A client asks for the server's addresses
 
 ### 4.3 Reconnect after a node is lost
 
-- When a `protocol` node is lost, its sessions, tree connects and the volatile
+- When a gateway node is lost, its sessions, tree connects and the volatile
   halves of FileIds go with it
   ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
 - The client reaches a surviving node through a floating address or Witness
@@ -586,7 +586,7 @@ card. A client asks for the server's addresses
   previous session this node does not hold — its node was lost — names nothing
   and is ignored.
 - **A disconnect is per session, at its last channel.** Each open records the
-  session that made it or last reconnected it, named by the `protocol` node,
+  session that made it or last reconnected it, named by the gateway node,
   the node epoch the session was created under and the session ID together,
   since a session ID is unique only on its node and only within one process:
   a node that restarts takes a new node epoch, so a session it sets up after
@@ -601,13 +601,13 @@ card. A client asks for the server's addresses
   durable and persistent opens start their timeouts. Losing one channel of a
   multichannel session ends nothing while another channel lives, and one
   user's disconnect on a multi-session host starts no timeout on another
-  user's opens. **(cluster)** When the `protocol` node holding a session is
+  user's opens. **(cluster)** When the gateway node holding a session is
   lost, no adapter is left to call `Disconnect`: the primary treats every open
   whose session belongs to a node whose node lease lapsed as disconnected at
   the lapse, and its `Timeout` starts then
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
 - Volatile opens are lost, as after any server failure.
-- A lost `protocol` node loses no open state, so no grace period runs.
+- A lost gateway node loses no open state, so no grace period runs.
 - A lost primary is a failover. Its persistent opens are stored and reconnect;
   its durable opens are gone, and their reconnects are refused
   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)). The primary signals
@@ -745,7 +745,7 @@ up its cache, and how a reconnect finds its open.
   `OpenID`, unique across the installation
   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), and name the open's shard, so any node finds the open from it and routes a
   reconnect to its primary without the path (§6.4).
-- Its volatile half names the entry in the `protocol` node's table and is
+- Its volatile half names the entry in the gateway node's table and is
   invalid on any other node.
 - **Generic rights are mapped before the open.** `GENERIC_READ`,
   `GENERIC_WRITE`, `GENERIC_EXECUTE` and `GENERIC_ALL` in `DesiredAccess`
@@ -1168,7 +1168,7 @@ The server must answer it without doing it twice.
   `ChannelSeq` writes the new value in a transaction before it runs. A raise
   happens only when the client moves the open to a new channel after a
   failure, so this costs one transaction per channel move, not per request.
-  The `protocol` node keeps no replay state of its own.
+  The gateway node keeps no replay state of its own.
 - **No replay is recognised by message ID.** Message IDs are per connection:
   two channels of one session can send two different requests under one
   (`ClientGuid`, session ID, message ID), and a table keyed by that triple would
@@ -1844,11 +1844,11 @@ Example: while alice-pc holds `profiles/alice/ODFC_alice.vhdx` open, renaming
 
 Witness (MS-SWN) tells a client of a continuously available share which server
 addresses are up, and to move before a node is drained, so it reconnects at
-once instead of after a timeout. Every `protocol` node serves it over RPC on
+once instead of after a timeout. Every gateway node serves it over RPC on
 TCP, through the endpoint mapper, for continuously available shares
 ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)):
 
-- `WitnessrGetInterfaceList` lists every `protocol` node's floating addresses,
+- `WitnessrGetInterfaceList` lists every gateway node's floating addresses,
   each marked available or not;
 - `WitnessrRegister` / `WitnessrRegisterEx` record the client, net name, share
   and address in the memory of the node registered with, which the client picks
@@ -1892,7 +1892,7 @@ restore; here they are the share's read-only snapshots
 | # | Invariant |
 | --- | --- |
 | S1 | SMB1 and SMB 2.0.2 are never negotiated. |
-| S2 | Session keys, channels, credits and tree connects live on one `protocol` node and are never stored; a session's channels are all on that node. |
+| S2 | Session keys, channels, credits and tree connects live on one gateway node and are never stored; a session's channels are all on that node. |
 | S3 | A FileId's persistent half names an RFC 14 open resolvable on any node. |
 | S4 | A durable or persistent reconnect succeeds only for the open's principal, share, `CreateGuid`, `ClientGuid` and lease key. |
 | S5 | No worker waits on a break: a conflicting request goes async and the adapter completes it. |
@@ -1932,7 +1932,7 @@ restore; here they are the share's read-only snapshots
 | §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
 | §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |
 | §4.2 multichannel | smbtorture `smb2.multichannel`; then bind a channel to a session on another node and assert `STATUS_USER_SESSION_DELETED`. | channels accepted across nodes |
-| §4.3, §6.4 reconnect | smbtorture `smb2.durable-open`, `smb2.durable-v2-open`; a Windows client copying a large file while its `protocol` node is killed finishes the copy; repeat killing the primary. | sessions assumed durable; reconnect matched on FileId alone |
+| §4.3, §6.4 reconnect | smbtorture `smb2.durable-open`, `smb2.durable-v2-open`; a Windows client copying a large file while its gateway node is killed finishes the copy; repeat killing the primary. | sessions assumed durable; reconnect matched on FileId alone |
 | §6.4 matching | Reconnect with another user, another share, another `CreateGuid`; assert each refused. | |
 | §6.4 durable across primary loss | On a share that is not continuously available, open with a durable v2 handle and write unstable; kill the primary before any flush; reconnect. Assert `STATUS_OBJECT_NAME_NOT_FOUND`. Repeat with only the network dropped and the primary up; assert the reconnect succeeds and every write reads back. | a durable open reclaimed over writes the primary lost |
 | §6.4, §9.4 stable on persistent | On a continuously available share, open persistent and write 10^4 random 64 KiB pieces without write-through, killing the primary at a random moment; reconnect and assert every acknowledged write reads back. | writes on a persistent open answered before the journal sync |
@@ -1978,7 +1978,7 @@ restore; here they are the share's read-only snapshots
 | §6.6 share removal | Remove a share while an SMB client has a tree, a pending `CHANGE_NOTIFY`, a waiting lock and a held write on it: assert `STATUS_NOTIFY_CLEANUP`, `STATUS_NETWORK_NAME_DELETED` for the others, and a tree on another share of the connection unaffected. | `DropShare` never reaching the SMB answer |
 | §11 backup intent | A session whose principal a grant names `admin`: open a file its DACL denies without `FILE_OPEN_FOR_BACKUP_INTENT`, assert `STATUS_ACCESS_DENIED` and `MaximalAccess` without the denied right; with it, assert granted. A guest session with the intent: assert denied. As that `admin`, run `robocopy /B /SECFIX` of a tree whose files' DACLs exclude the `admin`, with other owners and groups: assert every file's owner, group and DACL restored. Set another owner through a handle opened without the intent: assert `STATUS_ACCESS_DENIED`. | privilege applied to every open of an `admin` session, or stopping at the intent `CREATE` so a restore cannot set a DACL |
 | §5.2 IPC$ | smbtorture `rpc.srvsvc`, `rpc.wkssvc`; a hidden share is absent from `NetShareEnumAll`. | |
-| §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a `protocol` node and then a primary failed mid-run: every container mounts again without a repair prompt, and every write acknowledged before the failure reads back. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
+| §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a gateway node and then a primary failed mid-run: every container mounts again without a repair prompt, and every write acknowledged before the failure reads back. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
 
 **Wire tests.** The wire tests of [RFC 20 §8](rfc-20-adapters.md#8.%20Wire%20tests)
 run this adapter and a reference SMB server through the same scripts and
@@ -1991,9 +1991,9 @@ compression ([§3.2](#3.2%20Algorithms%2C%20and%20what%20is%20not%20offered)).
 ([index](rfc-index.md#Test%20harness)), the first release's profile
 ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 Every step that needs a second node — a channel bound at another `protocol`
-node (§4.2), a lost `protocol` node (§4.3), a reconnect or replay through
+node (§4.2), a lost gateway node (§4.3), a reconnect or replay through
 another node (§6.4, §6.5), a write through a second node (§9.3), and the
-profile-container run's `protocol` node failure (§2) — is **(cluster)** and
+profile-container run's gateway node failure (§2) — is **(cluster)** and
 outside the first release's conformance; on the single node a restart of
 the node stands for the primary's loss.
 

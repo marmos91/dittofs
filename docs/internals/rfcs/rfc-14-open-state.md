@@ -1989,6 +1989,13 @@ type OpenRequest struct {
 	Via           FileID        // the directory it was opened through (§9.5)
 }
 
+// LockRange is one range of a LockReq; an SMB LOCK may mix shared and
+// exclusive elements. pkg/vfs aliases it (RFC 17 §3.0).
+type LockRange struct {
+	ByteRange
+	Exclusive bool
+}
+
 // Seqs is what an NFSv4 request presents to be sequenced; zero for SMB, NLM
 // and NFSv3.
 type Seqs struct {

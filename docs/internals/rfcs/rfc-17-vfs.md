@@ -401,10 +401,10 @@ type Transport interface {
 type Peers interface {
 	Prepare(ctx context.Context, to NodeID, p Prepare) (Prepared, error) // RFC 15 §4.2: prepare a two-primary call
 	Outcome(ctx context.Context, to NodeID, op []byte, commit bool) error // RFC 15 §4.2: its commit or abort
-	Overlay(ctx context.Context, hs []Handle) ([]File, error)             // §3.5: a lookup's or listing's entries in another shard, batched per primary
-	ReadAt(ctx context.Context, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
+	Overlay(ctx context.Context, to NodeID, hs []Handle) ([]File, error)  // §3.5: a lookup's or listing's entries in another shard, batched per primary
+	ReadAt(ctx context.Context, to NodeID, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
 	OwnerSeq(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: an NFSv4.0 owner's sequence at its home primary (RFC 14 §2.8)
-	ClientState(ctx context.Context, to NodeID, c ClientID, op vfs.Op, args []any) error // the lease owner to each primary holding its client's state (§3.5)
+	ClientState(ctx context.Context, to NodeID, c ClientID, op Op, args []any) (Reply, error) // the lease owner to each primary holding its client's state, TestState's other refs included (§3.5)
 	Recall(ctx context.Context, to NodeID, c ClientID, ev any) error        // a primary's recall, notify or revoke back to the client's lease owner (RFC 14 §4.1)
 }
 
@@ -428,7 +428,13 @@ The router and the transport are RFC 15's, built over the shard records and
 the node channel; the transport also implements `Peers`, whose methods are every case where a
 server needs a second primary; §3.5's table names each use. `Serve` takes the
 `*Server` because it also hands `Peers` calls to it, which are no `Service`
-methods. The adapters are not this RFC's to build: `node.New` builds
+methods.
+
+> decision: `Serve` takes the `*Server`, not a `Service`, because a `Peers`
+> call (a prepare, an owner sequence, a recall) has no `Service` method to
+> land on. It still calls only the server, so it can never reach the gateway.
+> Overturned if `Peers` calls get a narrow receiving interface of their own;
+> `Serve` then takes that and a `Service`. The adapters are not this RFC's to build: `node.New` builds
 each one last, as [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) and
 [§4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)
 say, and hands it the server or the gateway as `core.Deps.Service` (§2), and
