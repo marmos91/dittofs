@@ -441,8 +441,8 @@ checks the counts and never deletes.
 
 **One GC per node; a namespace is a context.** `node.New` ([RFC 23](rfc-23-control-plane.md)) builds
 one `*gc.GC` from `Deps` ([§8](#8.%20API%20surface)) on every node, as it
-builds one engine per node and a share is a context there
-([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)). The node adds and removes contexts ([RFC 23](rfc-index.md) §2.1): a
+builds one engine per node and a share is a storage binding there
+([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). The node adds and removes contexts ([RFC 23](rfc-index.md) §2.1): a
 context is one namespace with a remote store, holding that namespace's `View`.
 GC runs five sources — deleter, compactor, collector, auditor, recheck — on its
 one scheduler instance, whose tenants are the (namespace, partition) pairs this
@@ -453,7 +453,7 @@ from its index keys and cursors.
 
 | Component | Made of | Depends on | Calls | Injected how | Owned by | Lifecycle |
 | --- | --- | --- | --- | --- | --- | --- |
-| `*gc.GC`, one per node | namespace contexts, five sources, the lease keeper | everything below | `Blocks`, `Remote`, the syncer, `Keys` | `New(Deps)` | the composition root; the node drives it | `New` starts nothing; `Start` after the share contexts; `Drain` and `Close` before they are joined |
+| `*gc.GC`, one per node | namespace contexts, five sources, the lease keeper | everything below | `Blocks`, `Remote`, the syncer, `Keys` | `New(Deps)` | the composition root; the node drives it | `New` starts nothing; `Start` after the storage bindings; `Drain` and `Close` before they are joined |
 | namespace context | a `View` and the partitions this node holds | `Blocks`, `Remote`, `Keys`, its store's flow | its `View` | `Add(ns, View)` | GC, one per namespace with a remote store | added when the namespace's records name a remote store; removed once its `NS‖ns` records are gone ([§7.6](#7.6%20A%20namespace%20no%20share%20names%20is%20drained) step 3), or at `Close` |
 | deleter, compactor, collector, auditor, recheck | one scheduler source each | the context's `Blocks`, `Remote` and flow; `Clock` | `Blocks`, `Remote`, the flow | registered by `Start` | GC | run while a partition of the context is leased; `Recheck` by the holder of the first partition |
 | lease keeper | acquire, renew at a third of the lease, release | `Blocks.Lease`, `Clock` | `Blocks.Lease` | internal | GC | acquires at `Add`, releases at `Remove` and `Close`, never lowering an epoch |
@@ -465,7 +465,7 @@ from its index keys and cursors.
 | clock, metrics, logger | the node's | — | — | `Deps` | the root, shared | — |
 | health evaluator | the node's ([RFC 25](rfc-index.md) §8.2) | — | `Conditions` on GC | nothing is injected: `*gc.GC` is a `health.Source` the node adds | the root | asks at each evaluation until the node removes GC |
 
-The engine is not a dependency: GC reaches neither its share contexts nor its
+The engine is not a dependency: GC reaches neither its storage bindings nor its
 queue ([RFC 8 §10.5](rfc-8-engine.md#10.5%20GC%20is%20not%20scheduled%20here)).
 
 **Start.** The node starts GC in build order: after the metadata store and
@@ -947,7 +947,7 @@ that finds another installation's nonce fences itself as
 
 The settle is a block-metadata operation ([RFC 6](rfc-6-block-metadata.md)), run by the start-time
 claim check of [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim) for each namespace whose claim carries a nonce this
-store never recorded. That check runs before any share context serves or GC
+store never recorded. That check runs before any storage binding serves or GC
 starts ([RFC 23](rfc-index.md) §2.2 step 4).
 
 **An object is deleted only after a claim rewrite later than its `deleted`
@@ -1973,7 +1973,7 @@ func (g *GC) Close() error                    // releases leases (epochs kept), 
 func (g *GC) Conditions(dst []health.Condition) []health.Condition
 
 // Add and Remove are the node's (RFC 23 §2.1): a namespace with a remote store is
-// a context, as a share is in the engine (RFC 8 §2.3).
+// a context, as a share is a storage binding in the engine (RFC 8 §2.3).
 func (g *GC) Add(ctx context.Context, ns NamespaceID, v View) error
 func (g *GC) Remove(ctx context.Context, ns NamespaceID) error
 
