@@ -1184,7 +1184,7 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 | Answers | Metric | Type |
 | --- | --- | --- |
 | calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok` or the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set)) | `remote_requests_total` | counter |
-| time per call, by `op` | `remote_request_seconds` | histogram |
+| time per call, by `op` folded to the five data calls (`put`, `get`, `delete`, `list`, `health`) and `other` for every other `op` | `remote_request_seconds` | histogram |
 | bytes moved, by `op` | `remote_bytes_total` | counter |
 | connections opened; against requests, how well the pool reuses them ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `remote_connections_opened_total` | counter |
 | entries under the block namespace that are not blocks ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | `remote_list_foreign_total` | counter |
@@ -1196,7 +1196,9 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 
 `op` also takes `recheck` (each `RecheckSetting` and `VersionsPage` call), `put_control`, `get_control`, `put_version`,
 `get_version`, `retention`, `extend_retention`, `put_object`, `get_object`,
-`list_objects` and `delete_objects`, and an `ErrDenied` result is labelled with
+`list_objects` and `delete_objects` on the counter, where every `op` keeps its
+own value; the histogram counts them all as `other`, so a store's histogram
+stays at six `op` values times its buckets. An `ErrDenied` result is labelled with
 its cause; a drifted `Recheck`
 sets the drifted setting's `remote_capability` to 0. The gauge also
 carries `conditional_put`, whether the service honoured one at the last check
