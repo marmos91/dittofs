@@ -213,17 +213,6 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 		return models.PermissionNone, false, types.StatusNetworkNameDeleted
 	}
 
-	// The share's access policy: Kerberos-only, the Kerberos protection floor
-	// and the netgroup client allowlist. A floor above what the session already
-	// enforces is met by requiring encryption on this tree when the session can
-	// encrypt; otherwise the session is refused.
-	encryptTree := share.EncryptData || treeEncryptionMeetsKerberosFloor(share, sess)
-	if err := h.checkSharePolicy(ctx.Context, share, sess, ctx.ClientAddr, encryptTree); err != nil {
-		logger.Warn("SMB TREE_CONNECT refused by the share's access policy",
-			"share", share.Name, "sessionID", ctx.SessionID, "client", ctx.ClientAddr, "error", err)
-		return models.PermissionNone, false, types.StatusAccessDenied
-	}
-
 	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
 	permission, user, generation := resolveSharePermission(ctx, sess, share, defaultPerm, h.Registry.GetUserStore())
 	if permission == models.PermissionNone {
@@ -237,6 +226,19 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 		"permission", permission)
 
 	permission = capReadOnlyShare(share, permission)
+
+	// The share's access policy: Kerberos-only, the Kerberos protection floor
+	// and the netgroup client allowlist. A floor above what the session already
+	// enforces is met by requiring encryption on this tree when the session can
+	// encrypt; otherwise the session is refused. It runs after the permission
+	// was resolved so the generation check below also covers it: a
+	// re-authentication that lands after this read refuses the tree there.
+	encryptTree := share.EncryptData || treeEncryptionMeetsKerberosFloor(share, sess)
+	if err := h.checkSharePolicy(ctx.Context, share, sess, ctx.ClientAddr, encryptTree); err != nil {
+		logger.Warn("SMB TREE_CONNECT refused by the share's access policy",
+			"share", share.Name, "sessionID", ctx.SessionID, "client", ctx.ClientAddr, "error", err)
+		return models.PermissionNone, false, types.StatusAccessDenied
+	}
 
 	// Encryption enforcement: in required mode, reject unencrypted sessions
 	// connecting to encrypted shares.
