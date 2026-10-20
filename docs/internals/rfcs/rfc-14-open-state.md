@@ -721,6 +721,14 @@ name a confirmed record holds under another principal is refused
 > (`openstate_proposals_replaced_total`). Refuse it while the pending proposal's
 > principal was proved, if that counter shows it happening.
 
+> decision: where a protocol carries fewer than 64 bits of the confirm, the
+> adapter sends what fits, and the confirm is protected by `Pending.Owner`, which
+> it must also present at the answering node, not by the token's bits; the
+> token then only tells two proposals of one principal apart. Failed confirms
+> are counted (`openstate_calls_total{op="connect"}` by result). Carry the whole
+> token if a protocol with room for it is served, or failed confirms are seen
+> from principals other than the proposer.
+
 > ponytail: a node holds at most 4,096 pending confirmations, and 16 per source
 > address — per /64 for IPv6, since one host holds a whole prefix; past either a
 > proposal is answered `ErrDelay`, charged to RFC 24's connection-state pool.
