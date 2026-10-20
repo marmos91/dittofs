@@ -392,23 +392,27 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 ## Conformance test suites
 
 DittoFS is validated against industry-standard conformance suites for SMB and
-NFS. pynfs runs through `dt` (below); every other one runs through
-`test/conformance/run.sh` and is described in `test/conformance/suites.json`:
+NFS. The table comes from the test registry, `test/suites.yaml`. pynfs runs
+through `dt` (below); every other one runs through `test/conformance/run.sh`, as
+`test/conformance/suites.json` describes, until it moves to `dt`. Until then
+cthon04 runs on pull requests and nightly, not after merge as its tier says:
 
 <!-- conformance-suites:begin -->
-<!-- Generated from test/conformance/suites.json by test/conformance/check-docs.sh. Do not edit by hand. -->
+<!-- Generated from test/suites.yaml by test/harness/bin/dt docs. Do not edit by hand. -->
 
-| Suite | Protocol | Profiles | Variants | Presubmit | Known failures |
+| Suite | Protocol | Profiles | Variants | Tier | Known failures and skips |
 |---|---|---|---|---|---|
-| `wpts` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
-| `smbtorture` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
-| `pjdfstest` | NFS | `badger-s3` | `3`, `4`, `4.1` | `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
-| `cthon04` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `badger-s3` | [`test/nfs-mount/cthon04/KNOWN_FAILURES.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md) |
-| `nfstest` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
+| `pjdfstest` | NFS | `badger-s3` | nfs: `3`, `4`, `4.1` | `pr` | [`test/posix/known.yaml`](../../test/posix/known.yaml) |
+| `pynfs` | NFS | `badger-s3` | minor: `0`, `1` | `pr` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |
+| `pynfs/knfsd` | NFS | none | minor: `0`, `1` | `manual` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |
+| `wpts` | SMB | `badger-s3` | none | `pr` | [`test/smb-conformance/known.yaml`](../../test/smb-conformance/known.yaml) |
+| `smbtorture` | SMB | `badger-s3` | none | `pr` | [`test/smb-conformance/smbtorture/known.yaml`](../../test/smb-conformance/smbtorture/known.yaml) |
+| `smbtorture/kerberos` | SMB | `badger-s3` | none | `merge` | [`test/smb-conformance/smbtorture/known-kerberos.yaml`](../../test/smb-conformance/smbtorture/known-kerberos.yaml) |
+| `cthon04` | NFS | `badger-s3` | mount-options: `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `pr` | [`test/nfs-mount/cthon04/known.yaml`](../../test/nfs-mount/cthon04/known.yaml) |
+| `nfstest` | NFS | `badger-s3` | mount-options: `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `nightly` | [`test/nfs-mount/nfstest/known.yaml`](../../test/nfs-mount/nfstest/known.yaml) |
 
-Tiering, profiles and blacklists come from
-[`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through
-[`test/conformance/run.sh`](../../test/conformance/run.sh).
+From [`test/suites.yaml`](../../test/suites.yaml): its suites graded against a known file, and their options.
+Each runs in its tier and the wider ones, `pr` then `merge` then `nightly`; a `manual` one only when asked.
 <!-- conformance-suites:end -->
 
 ### WPTS (Windows Protocol Test Suites)

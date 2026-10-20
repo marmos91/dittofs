@@ -2,8 +2,7 @@
   "_comment": [
     "Every conformance suite, described once. test/conformance/run.sh dispatches",
     "from this file, .github/workflows/conformance.yml builds its matrix from it,",
-    "ci-health.yml derives the workflows it monitors from it, and",
-    "test/conformance/check-docs.sh keeps the documentation tables honest against it.",
+    "and ci-health.yml derives the workflows it monitors from it.",
     "Adding a suite means adding an entry here, not a workflow plus four tables.",
     "",
     "JSON rather than YAML so GitHub Actions can fromJSON() it directly and the",
@@ -38,7 +37,6 @@
   "suites": {
     "wpts": {
       "description": "Windows Protocol Test Suites FileServer BVT",
-      "protocol": "SMB",
       "profiles": ["badger-s3"],
       "known_failures": "smb-conformance/KNOWN_FAILURES.md",
       "timeout_minutes": 30,
@@ -54,7 +52,6 @@
 
     "smbtorture": {
       "description": "Samba smbtorture SMB2/3 protocol suite",
-      "protocol": "SMB",
       "profiles": ["badger-s3"],
       "known_failures": "smb-conformance/smbtorture/KNOWN_FAILURES.md",
       "timeout_minutes": 45,
@@ -71,7 +68,6 @@
     "pjdfstest": {
       "description": "pjdfstest POSIX filesystem semantics over NFS",
       "host_adapter": true,
-      "protocol": "NFS",
       "profiles": ["badger-s3"],
       "variant": {
         "name": "nfs-version",
@@ -109,7 +105,6 @@
     "cthon04": {
       "description": "Connectathon basic/general/special/lock over named NFS mount option sets",
       "host_adapter": true,
-      "protocol": "NFS",
       "profiles": ["badger-s3"],
       "variant": {
         "name": "mount-options",
@@ -150,7 +145,6 @@
     "nfstest": {
       "description": "NetApp nfstest modules over named NFS mount option sets",
       "host_adapter": true,
-      "protocol": "NFS",
       "profiles": ["badger-s3"],
       "variant": {
         "name": "mount-options",

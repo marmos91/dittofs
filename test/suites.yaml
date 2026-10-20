@@ -34,7 +34,7 @@ suites:
     job: Repo Checks
     tier: pr
     cmd:
-      - test/conformance/check-docs.sh         # the documentation's suite tables match the manifest
+      - test/harness/bin/dt docs --check       # the documentation's suite tables match the registry
       - test/conformance/run_test.sh
       - test/common/known-failures_test.sh
       - test/smb-conformance/compose-env_test.sh

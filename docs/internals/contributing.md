@@ -541,9 +541,11 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 ### Conformance suites
 
-Every suite's profiles, variants and per-event tiering live in
-[`test/conformance/suites.json`](../../test/conformance/suites.json); the rendered table is in
-[testing.md](testing.md#conformance-test-suites).
+Every suite's profiles, variants, tier and known file live in the test registry,
+[`test/suites.yaml`](../../test/suites.yaml). `test/harness/bin/dt docs` renders them as the table
+in [testing.md](testing.md#conformance-test-suites), and Repo Checks fails while it is stale. Until
+a suite moves to `dt`, CI runs it as
+[`test/conformance/suites.json`](../../test/conformance/suites.json) describes.
 
 ### Combined-tree checks
 
