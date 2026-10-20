@@ -389,11 +389,11 @@ kinds of principal follow from this rule.
   No file protocol can present it, no ACL entry or owner can name it, and
   `Find` never returns it.
 
-Giving such a principal a file spelling — any scheme but `krb` on a machine and
-`oidc` — makes it a file user, and allocates the file spellings it still lacks
-in the same transaction. A machine that needs file access is linked to a user
-instead: the operator moves its `krb` spelling to that user (§4.2), and its next
-sign-in binds to the user (§3.1).
+Giving an API-only account a file spelling — any scheme but `oidc` — makes it a
+file user, and allocates the file spellings it still lacks in the same
+transaction. A machine principal is never given one: a machine that needs file
+access is linked to a user instead, by moving its `krb` spelling to that user
+(§4.2), and its next sign-in binds to the user (§3.1).
 
 *Example.* The bootstrap administrator `admin` and a CI account `deployer` can
 create shares and grants, but cannot mount one.
@@ -788,7 +788,7 @@ NTLMv1 and LM are refused ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 
 | The message's domain, compared case-insensitively | Source | How |
 | --- | --- | --- |
-| empty, or the NetBIOS domain the CHALLENGE advertised: the installation's own name, or the directory's domain when pass-through is configured | **local** (own name) | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
+| empty, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
 | the directory's NetBIOS domain, with pass-through configured | **pass-through** | the response is sent once to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), sealed and signed with AES; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4); the evidence maps by that user SID |
 | anything else | — | `ErrLogonFailure` |
 
@@ -887,15 +887,14 @@ re-authenticates a session in place, keeping its trees and opens, to renew a
 ticket ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). The adapter passes the
 context's current evidence in `SignInStep.Context`.
 
-- A re-authentication **MUST** bind to the same `PrincipalID` as the context's
-  evidence. One that binds to another principal fails, and the context ends.
-- A re-authentication to a `None` proof — anonymous or guest — **MUST** be
-  refused, and the context ends: a context never trades its proof for none
-  while keeping what that proof reached.
+- A re-authentication happens in place: a successful one changes the context's
+  identity in one step and keeps everything else the context holds, its open
+  handles with the access each was granted at its open. Which identity it
+  leaves — the new proof's, or the original principal's with a refreshed
+  `Expires` and SIDs — is the protocol's open question
+  ([RFC 22 §20](rfc-22-smb.md#20.%20Open%20questions), item 5).
 - Any failed re-authentication ends the context it targeted. The old evidence
   never outlives a failed proof, such as one after a password change.
-- A successful one replaces the context's evidence — a new `Expires`, new SIDs —
-  in one step, and keeps everything else the context holds.
 - A context past `Expires` still admits its re-authentication and the calls that
   only release state — close, unlock, a break acknowledgement, logoff — so a
   client can release what it holds while it renews
@@ -1511,7 +1510,7 @@ holds the `Caller` with the result of steps 1–3. Identity keeps no cache of
 callers of its own, only the directory's (§5.2). This section says what that
 cache's key must hold and how it behaves.
 
-Its key is keyed first on the **proof key**, `Identity.Key()`: a digest of
+Its key starts with the **proof key**, `Identity.Key()`: a digest of
 everything the request proved and claimed — the proof kind, the protection, the
 bound principal, the verified name, each SID with whether it is deny-only, and
 every claimed uid and gid. The protection is in it, though resolution ignores
@@ -1771,7 +1770,7 @@ alice's still signs in as alice.
 | ID9 | A directory answer is used no longer than the TTL plus the grace after it was given, read directly or through a cached caller. | §10 stale grace; directory deadline |
 | ID10 | A disabled or deleted local principal is refused on every call admitted after the first `State` that follows the change, at most 1 s after it (§7.2), and no caller resolved under an older `State` is cached. | §10 disable takes effect; in-flight disable |
 | ID11 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`. | [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s import test |
-| ID12 | A security context acts as the principal its sign-in bound it to, for its whole life, re-authentications included; its name is never mapped again. | §10 binding; re-authentication |
+| ID12 | A security context acts as the principal its sign-in bound it to until it ends or is re-authenticated; its name is never mapped again. | §10 binding; re-authentication |
 | ID13 | A deny-only SID matches deny entries only; it never grants, through an ACL or a share grant. | §10 deny-only SIDs |
 | ID14 | A grant of `none` is stored, and is distinct from no grant. | §10 `none` is stored |
 
@@ -1841,7 +1840,7 @@ RFC 16's conformance suite's, not repeated here.
 | deny-only SIDs | 2 | A test PAC marks `Finance` deny-only. A file's ACL allows `Finance` read: refused. Another allows alice and denies `Finance` read: refused. A share whose only grant names `Finance`: the share refuses alice. | a deny-only SID dropped, or treated as a group |
 | deny-only lookup error | 1 | Inject a store error on the `sid` index while mapping a PAC's deny-only SID: the call fails, never resolved without the deny. | a deny dropped by an error |
 | binding | 2 | Over SMB, alice holds a Kerberos session. Delete alice and create a user named alice: every call on the old session refused; a fresh sign-in acts as the new principal. Repeat with an NTLM pass-through session, its user SID re-linked. | a live context re-mapped by name |
-| re-authentication | 2 | alice re-authenticates her SMB session as bob: refused, and the session gone. As anonymous: refused, session gone. With a wrong password: session gone. As alice with a new ticket: trees and opens kept, the new `Expires` in force. Past `Expires`, `CLOSE` and an unlock succeed and a read is refused. | a context switched to another principal or to none |
+| re-authentication | 2 | alice re-authenticates her SMB session with a wrong password: the session gone. As alice with a new ticket: trees and opens kept, the new `Expires` in force. Past `Expires`, `CLOSE` and an unlock succeed and a read is refused. | a failed proof leaving the old identity in place; a client unable to release what it holds |
 | pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password reaches the fake domain controller once. | no mapping path; amplified lockouts |
 | no file spelling | 2 | On a share whose only grant is authenticated users read, a machine principal reads a file: refused, not `authenticated`. A second machine's state operation on the first's `SP4_MACH_CRED` client record: refused. A grant naming a machine or an API-only account: refused. | a machine treated as an authenticated file caller |
 | `none` is stored | 2 | Grant `Finance` read-write and alice `none`: alice refused. Remove alice's grant: alice granted through `Finance`. | `none` stored as no grant |
@@ -1971,7 +1970,6 @@ their markers, with what would overturn each.
 | §3.5 | NTLMv2 against the domain as sent; the MIC enforced | five domain spellings are tried in turn (`internal/adapter/smb/handlers/session_setup.go`); the AUTHENTICATE MIC is checked but not enforced; pass-through via NETLOGON is tried only for users not in the store (`internal/auth/netlogon`) |
 | §3.5 | no NT hash with NTLM off | NT hashes are stored hex-encoded on the user record, separate from the bcrypt password hash, whatever the NTLM setting (`pkg/controlplane/models/user.go`) |
 | §3.6 | anonymous only, never on failure | a session is guest when no mechanism is recognised, an NTLM message does not parse, or no user store is configured; guest sessions are on by default (`session_setup.go`); an unknown user with a store is refused |
-| §3.8 | a re-authentication keeps its principal | an SMB re-authentication may switch the session to another user, or to guest while it keeps its trees (`session_setup.go`) |
 | §4.5 | names on Kerberos, numbers on `AUTH_SYS` | owner strings are always numeric in production, since the name mapper is set only in tests (`internal/adapter/nfs/v4/attrs/encode.go`); decoding accepts any domain for a numeric string, and `nobody`, `root`, `wheel` and `nogroup` by name |
 | §4.6 | `lsarpc` name lookups | `LookupSids` answers; there is no `LookupNames`; unknown SIDs give `STATUS_SOME_NOT_MAPPED`, never `NONE_MAPPED` (`internal/adapter/smb/rpc/lsarpc.go`) |
 | §5.1 | an ambiguous answer refuses | an LDAP lookup matching more than one entry warns and uses the first (`pkg/identity/ldap/provider.go`) |

@@ -23,7 +23,7 @@ tags:
 ---
 # RFC 19 — authorization
 
-**Status:** draft. [§12](#12.%20Open%20questions) lists what is known to be undecided.
+**Status:** draft. [§10](#10.%20Open%20questions) lists what is known to be undecided.
 **Audience:** anyone changing how a permission is decided, how `chmod` and an
 ACL agree, or how a new file inherits its parent's entries.
 
@@ -96,7 +96,7 @@ walk (§3.1) and is refused.
 - **the translation** — the one function pair, shared by both adapters, between
   a wire spelling and the stored ACL (§5).
 
-What this RFC guarantees is listed as invariants in [§9](#9.%20Invariants).
+What this RFC guarantees is listed as invariants in [§7](#7.%20Invariants).
 
 ---
 
@@ -150,7 +150,7 @@ the ACL refers to through the special principals `OWNER@` and `GROUP@` (§2.3).
 
 No other kind is held. Object, callback (conditional), mandatory-label,
 resource-attribute and scoped-policy entries, which security descriptors can
-carry, are refused at the translation (§6.4).
+carry, are refused at the translation ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)).
 
 > ponytail: an alarm entry is an audit entry. Neither protocol defines what an
 > alarm does beyond "raise an alarm", and the access-event stream is the one
@@ -253,7 +253,7 @@ request holding one is refused; a set holding one is refused (§2.8).
 
 A mask a client sets is reduced to entry rights before it is stored: every other
 bit outside the fourteen — system security, the maximal flag, the retention bits
-(`0x00000200`, `0x00000400`), reserved bits — is cleared and counted (§10).
+(`0x00000200`, `0x00000400`), reserved bits — is cleared and counted (§8).
 Clearing a bit no request can be granted by narrows neither an allow nor a deny in
 any way a request can observe.
 
@@ -273,7 +273,7 @@ and [RFC 17](rfc-17-vfs.md)'s.
 | failed access | an audit entry selects refused decisions |
 
 The protocols place the last three at different bits, so the translation maps
-each flag by name (§5.1); the bits are §6.2's and §7.2's. An entry flag outside
+each flag by name (§5.1); the bits are [RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)'s and [RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)'s. An entry flag outside
 the table is cleared and counted.
 
 An entry is **effective** on a file when it is not inherit-only. Only effective
@@ -282,7 +282,7 @@ entries are walked, and only effective audit entries select events.
 ### 2.6 ACL flags, null and empty
 
 Each list carries three flags, the same in both protocols (their bits are
-§6.1's and §7.1's):
+RFC 22 §11's and RFC 21 §11.3's):
 
 | Flag | Meaning |
 | --- | --- |
@@ -308,7 +308,7 @@ and read back as that entry.
 The access list is walked in **stored order**, and the stored order is the order
 the client sent. The server **MUST NOT** reorder, merge or deduplicate entries
 a client set: a later allow after a deny means something different from the
-same allow before it, and the client chose. The one exception is §6.3's fold of
+same allow before it, and the client chose. The one exception is RFC 22 §11's fold of
 an owner or group pair into the one `OWNER@` or `GROUP@` entry it spells, which
 changes no decision on the file or on any file created below it. A list need
 not be canonical to be stored or walked.
@@ -319,7 +319,7 @@ The audit list has no order that matters: an audit entry never decides.
 
 A set **MUST** be refused whole, with `ErrInvalid`, and nothing stored, when:
 
-- either list, counted as a security descriptor spells it (§6.3) — an
+- either list, counted as a security descriptor spells it ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)) — an
   effective, inheritable `OWNER@` or `GROUP@` entry counting two — holds more
   than 128 entries, or that spelling is larger than 64 KiB (both fixed values),
   so writing back what was read never exceeds the limit;
@@ -525,7 +525,7 @@ rights it covers that no earlier entry granted.
 > `Files.Authorize` and `Files.Granted` only, so a change to it touches no caller.
 > It does not model object or conditional entries, well-known principals beyond
 > RFC 18's table, or privileges beyond one flag. Overturned by a case of the
-> table above, or of §11, that a reference server of a served protocol answers
+> table above, or of §9, that a reference server of a served protocol answers
 > differently.
 
 ### 3.4 Maximal access and an open's grant
@@ -598,7 +598,7 @@ audit entries — needs the right and also write the ACL in the `C` of the call
 that writes. So under an admission narrowed to read-only an administrator may
 read the audit list, and a set of it is refused. `C` is taken per call, so an
 open made before the admission narrowed cannot write the audit list after it.
-The refusal each protocol answers is RFC 21's and RFC 22's (§6.1, §7.1).
+The refusal each protocol answers is RFC 21's and RFC 22's (RFC 21 §11.3, RFC 22 §11).
 
 ### 3.6 Audit entries select events
 
@@ -765,14 +765,14 @@ the merge — which limits every named allow to the new group bits — is an ide
 on the ACL's own mode. A `cp -p` or `chmod` that sets the mode it just read must
 grant afterwards exactly what was granted before.
 
-Two identities **MUST** hold, and are checked (§11):
+Two identities **MUST** hold, and are checked (§9):
 
 - `ACLFromMode(m, d).Mode(o) == m` for every nine-bit `m`, both file types `d`
   and every owner `o`;
 - for every ACL `a` and owner `o`, `a.WithMode(a.Mode(o), o)` grants every
   caller of a file owned by `o` exactly what `a` grants — for every `a` whose
   allows hold write data wherever they hold another right the write bit adds
-  (§12, item 5).
+  (§10, item 5).
 
 ### 4.3 Setting mode and ACL
 
@@ -807,7 +807,7 @@ Two identities **MUST** hold, and are checked (§11):
 - **Setting an ACL** stores it and stores `Mode` as its `Mode(o)` for the owner
   the file has after the set, with the special bits kept, in one transaction.
 - **A request that sets the ACL and the mode together** stores the ACL, and takes
-  from the mode only setuid, setgid and sticky (§7.4).
+  from the mode only setuid, setgid and sticky.
 - **A `chown` or `chgrp`** changes no entry. `OWNER@` and `GROUP@` follow it.
 - The right each of these asks is §3.1's.
 
@@ -834,7 +834,7 @@ and MS-DTYP 2.5.3.4 compute it:
   (or `GROUP@`) entry, effective and inheritable, never an effective entry beside
   an inherit-only CREATOR OWNER copy: `OWNER@` names whoever owns each file, so a
   file bob later creates below gets an entry for bob, as the CREATOR OWNER copy
-  would give it. RFC 22 spells the one entry as two on the wire (§6.3).
+  would give it. RFC 22 spells the one entry as two on the wire ([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)).
 - **The inherited flag.** A copy carries the inherited flag when the parent's
   list carries the auto-inherited flag, and the new list carries the
   auto-inherited flag when the parent's does. A parent's protected flag does not
@@ -896,7 +896,7 @@ type Names interface {
 	PrincipalByWho(who string, group bool) (metadata.Principal, error)
 }
 
-type Attr uint8 // the NFSv4 attribute: acl, dacl or sacl (§7.1)
+type Attr uint8 // the NFSv4 attribute: acl, dacl or sacl (RFC 21 §11.3)
 
 // NFSv4ACE is one nfsace4, as the NFS adapter's codec decodes it.
 type NFSv4ACE struct {
@@ -904,12 +904,12 @@ type NFSv4ACE struct {
 	Who               string
 }
 
-// Normalised is what a set had cleared or replaced to fit the model; the adapter counts it (§10).
+// Normalised is what a set had cleared or replaced to fit the model; the adapter counts it (§8).
 type Normalised struct{ MaskBits, EntryFlags, DeletedPrincipals, NullDACL int }
 
-// owner, group: the file's before the set (§6.3). a holds only the lists the caller may read (§3.5).
-// p: the parts the request's security-information bits name; for a CREATE's descriptor, the parts it holds (§6.1).
-// flags: the list's aclflag4 for dacl and sacl; zero for acl, which carries none (§7.1).
+// owner, group: the file's before the set (RFC 22 §11). a holds only the lists the caller may read (§3.5).
+// p: the parts the request's security-information bits name; for a CREATE's descriptor, the parts it holds (RFC 22 §11).
+// flags: the list's aclflag4 for dacl and sacl; zero for acl, which carries none (RFC 21 §11.3).
 func DescriptorFromACL(a metadata.ACL, owner, group metadata.Principal, p metadata.ACLParts, n Names) ([]byte, error)
 func ACLFromDescriptor(sd []byte, owner, group metadata.Principal, p metadata.ACLParts, n Names) (metadata.ACLSet, Normalised, error)
 func NFSv4FromACL(a metadata.ACL, attr Attr, n Names) (v []NFSv4ACE, flags uint32, sidWhos int, err error)
@@ -939,7 +939,7 @@ The translation **MUST**:
 
 The translation decides nothing about access: whether the caller may read or
 write a part, and which lists it is handed, are the chokepoint's, asked with the
-rights §6.1 and §7.1 name.
+rights RFC 22 §11 and RFC 21 §11.3 name.
 
 ### 5.2 Principals on the wire
 
@@ -948,22 +948,13 @@ SID and an NFSv4 `who`, so that no entry is ever unprintable in either protocol.
 A principal with no file spelling — a machine or an API-only account
 ([RFC 18 §2.4](rfc-18-identity.md#2.4%20Principals%20with%20no%20file%20spelling))
 — holds no SID and no name an owner string resolves, so no entry can name one.
-The translation spells:
-
-| Principal | SMB SID | NFSv4 `who` |
-| --- | --- | --- |
-| `OWNER@`, `GROUP@` | the file's owner's or group's SID, or CREATOR OWNER and CREATOR GROUP (§6.3) | `OWNER@`, `GROUP@` |
-| `EVERYONE@` | `S-1-1-0` | `EVERYONE@` |
-| Authenticated Users, NETWORK | `S-1-5-11`, `S-1-5-2` | `AUTHENTICATED@`, `NETWORK@` |
-| ANONYMOUS LOGON | `S-1-5-7` | `ANONYMOUS@` |
-| owner rights, BUILTIN\Users, Administrators, SYSTEM, CREATOR OWNER, CREATOR GROUP | their fixed SIDs ([RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)) | the SID's string form at the ID-mapping domain, `S-1-3-4@example.com` |
-| a user or group | from RFC 18 | RFC 18's owner-string spelling for the call's proof kind — `name@domain` on a proven caller, the decimal uid or gid on a claimed one — with the group flag for a group |
-
-On a set, a `who` of the form `S-…@domain` with a well-formed SID resolves
-through `PrincipalBySID`; any other `who` through `PrincipalByWho`, by RFC 18's
-rules for owner strings, in the user or group namespace as the group flag says.
-NFSv4's other special names — `INTERACTIVE@`, `BATCH@`, `DIALUP@`, `SERVICE@` —
-are well-known principals with no row in RFC 18's table, which §2.8 decides.
+How each protocol spells each principal is
+[RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)'s and
+[RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)'s. A principal a protocol has no
+name for is spelled some other way that protocol carries — NFSv4 by its SID — and
+never left out of a read: leaving it out makes every read-modify-write through
+that protocol a silent delete of the entry, a deny included, which is the
+failure of [Start here](#Start%20here).
 
 **A deleted principal** has no spelling left
 ([RFC 18 §4.4](rfc-18-identity.md#4.4%20SIDs) shows it as the null SID
@@ -979,249 +970,7 @@ request is answered differently.
 > dropped entries would then be grants and denies the restore should have
 > revived.
 
-> decision: a principal NFS cannot name is spelled by its SID rather than left
-> out. Leaving it out makes every read-modify-write from an NFS client a silent
-> delete of that entry, a deny included, which is the failure of
-> [Start here](#Start%20here). A `who` that is a SID is legal UTF-8 an NFS tool
-> passes through unread. Overturned if a widely used NFS client is shown to
-> refuse or mangle such a `who`; the fallback then is to refuse the NFS ACL
-> write of a file holding an unspellable entry, never to drop it.
-
-## 6. SMB security descriptors
-
-### 6.1 The parts
-
-| Part | Model | To read | To write |
-| --- | --- | --- | --- |
-| owner SID | the File's `Owner` | read the ACL | change the owner, under [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)'s rules for the value |
-| group SID | the File's `Group` | read the ACL | change the owner, under RFC 7 §7.4 |
-| DACL | the access list and its flags | read the ACL | write the ACL |
-| SACL | the audit list and its flags | system security (§3.5) | system security, and write the ACL in the call's ceiling (§3.5) |
-
-The rights are asked of the chokepoint through the open the request came on
-([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)), so the open's grant
-decides, as Windows' set-security does. A query returns only the parts its
-security-information bits ask for. A set changes only the parts its
-security-information bits name, whatever else the descriptor holds, and the parts
-it names change together, in one transaction, with `Mode` (§4.3).
-
-An owner or group SID on a set resolves through RFC 18 like any SID. One that
-cannot be resolved is refused `ErrInvalid`; it is never ignored with the rest of
-the set applied.
-
-A descriptor sent with a `CREATE` (the `SecD` context) is the new file's ACL,
-owner and group, set under the same rules in the create's transaction, in place
-of the inherited ACL. It carries no security-information bits, so its parts are
-those it holds; a part it does not hold is the one the create would give, so a
-`SecD` without a SACL keeps the inherited audit list (§4.4).
-
-The descriptor's control bits map to §2.6's list flags:
-
-| §2.6 flag | DACL | SACL |
-| --- | --- | --- |
-| protected | `SE_DACL_PROTECTED` | `SE_SACL_PROTECTED` |
-| auto-inherited | `SE_DACL_AUTO_INHERITED` | `SE_SACL_AUTO_INHERITED` |
-| defaulted | `SE_DACL_DEFAULTED` | `SE_SACL_DEFAULTED` |
-
-`SE_DACL_PRESENT` with no DACL is the null list of §2.6. The protected flag of a
-list is its descriptor's control bit, set or clear, for a list the set names. The
-protected and unprotected security-information bits
-(`PROTECTED_DACL_SECURITY_INFORMATION` and its siblings) are an API's, which the
-client turns into that control bit; they are not among the bits a set request
-carries (MS-SMB2 2.2.39).
-
-**Inheritance computed at set.** A set may carry `SE_DACL_AUTO_INHERIT_REQ` or
-`SE_SACL_AUTO_INHERIT_REQ`, asking for inheritance to be computed. Such a set
-recomputes that file's inherited entries from the current lists of the directory
-the open was resolved through (its `via`,
-[RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)),
-by §4.4's rules, read in the set's transaction. It keeps the explicit entries the
-client sent, and stores explicit before inherited. A set with no `via` — on a
-share's root, or through an open by file ID — stores the entries as sent. A set
-without that request stores the entries as sent, inherited flags included.
-
-### 6.2 Entries
-
-- Allow, deny, audit and alarm entries of the basic forms map to §2.2's kinds.
-  The DACL holds allow and deny; the SACL holds audit and alarm. An audit entry in
-  a DACL, or an allow in a SACL, is refused.
-- Masks are entry rights after generic mapping
-  ([RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)) and clearing (§2.4). Each
-  right of §2.4 is the SMB right of the same bit:
-
-  | §2.4 right | SMB name (on a directory) |
-  | --- | --- |
-  | read data | `FILE_READ_DATA` (`FILE_LIST_DIRECTORY`) |
-  | write data | `FILE_WRITE_DATA` (`FILE_ADD_FILE`) |
-  | append | `FILE_APPEND_DATA` (`FILE_ADD_SUBDIRECTORY`) |
-  | read / write extended attributes | `FILE_READ_EA`, `FILE_WRITE_EA` |
-  | execute | `FILE_EXECUTE` (`FILE_TRAVERSE`) |
-  | delete a child | `FILE_DELETE_CHILD` |
-  | read / write attributes | `FILE_READ_ATTRIBUTES`, `FILE_WRITE_ATTRIBUTES` |
-  | delete, read the ACL, write the ACL, change the owner, synchronize | `DELETE`, `READ_CONTROL`, `WRITE_DAC`, `WRITE_OWNER`, `SYNCHRONIZE` |
-  | system security; the maximal flag | `ACCESS_SYSTEM_SECURITY`; `MAXIMUM_ALLOWED` |
-
-- Flags map by name (§2.5):
-
-  | §2.5 flag | SMB bit |
-  | --- | --- |
-  | file inherit | `0x01` (`OI`) |
-  | directory inherit | `0x02` (`CI`) |
-  | no propagate | `0x04` (`NP`) |
-  | inherit only | `0x08` (`IO`) |
-  | inherited | `0x10` |
-  | successful access | `0x40` |
-  | failed access | `0x80` |
-
-- Order is kept (§2.7). An explicit entry after an inherited one is stored where
-  it was sent.
-
-### 6.3 Owner and group entries become `OWNER@` and `GROUP@`
-
-Windows has no word for "whoever owns this file". It names the current owner's
-account directly, and uses CREATOR OWNER, inherit-only, for future children. The
-translation keeps `OWNER@` and a named owner entry apart this way:
-
-- **Read.** An effective `OWNER@` entry with no inherit flags is spelled with the
-  owner's SID. An inherit-only `OWNER@` entry is spelled CREATOR OWNER. An
-  `OWNER@` entry both effective and inheritable is spelled as two: the owner's
-  SID with no inherit flags, then CREATOR OWNER inherit-only with the inherit
-  flags. `GROUP@` likewise, with the group's SID and CREATOR GROUP.
-- **Write.** First, a **pair** is folded into one entry: two adjacent entries
-  of the same kind and mask, and the same flags but the inherit flags, the first
-  naming the SID that will be the file's owner after the set with no inherit
-  flags, the second naming CREATOR OWNER, inherit-only, with at least one inherit
-  flag, are stored as one `OWNER@` entry carrying the second's inherit flags
-  without inherit-only. The group's SID followed by CREATOR GROUP folds to
-  `GROUP@` alike. Then an **allow** with no inherit flags naming the owner's SID
-  is stored as `OWNER@`, and one naming the group's SID as `GROUP@`. A deny
-  naming the owner's or group's SID stays a named deny. Every other entry is
-  stored with the principal it names.
-
-The fold makes a write the inverse of a read for an inheritable `OWNER@`, and
-changes no decision: on the file both forms grant the owner the same rights, and
-below it CREATOR OWNER's copy names `OWNER@` (§4.4), as the folded entry's does.
-Both translations apply the fold (§7.2), so no stored ACL holds an unfolded pair.
-A write is not a read's inverse in one case: a stored named allow with no inherit
-flags for the principal that now owns the file is shown as the owner's SID and
-written back as `OWNER@`, and it grants the same until the next `chown`.
-
-> decision: an effective allow naming the owner's SID is stored as `OWNER@`.
-> Without it, every Explorer edit of a file with a mode-derived ACL turns the
-> owner's entry into a named entry for alice, which a later `chmod 750` limits to
-> the group bits and a `chown` leaves granting alice. The cost: an allow a
-> Windows user meant for alice personally follows the file to its next owner.
-> Denies are left named, so a deny written for alice keeps denying alice after a
-> `chown`; the cost there is that the mode-implied `deny OWNER@` of a rare mode
-> such as 0044 comes back as a named deny, which fails closed for a new owner.
-> Overturned if a workload is shown to `chown` files whose Windows ACLs name the
-> old owner and expect that owner to keep access.
-
-### 6.4 What is not supported
-
-| Descriptor content | Answer |
-| --- | --- |
-| object entries (`ACCESS_ALLOWED_OBJECT_ACE` and its siblings) | the set is refused `ErrInvalid` |
-| callback (conditional) entries, allow, deny or audit | refused `ErrInvalid` |
-| mandatory-label, resource-attribute and scoped-policy entries, and the label, attribute and scope security-information parts | a query returns none; a set carrying any is refused `ErrInvalid` |
-| an entry kind or revision the model does not hold | refused `ErrInvalid` |
-
-Plus everything §2.8 refuses.
-
-The status code each refusal is answered with is RFC 22's.
-
-> decision: an unsupported entry fails the whole set rather than being skipped.
-> Skipping a callback deny grants what it denied; skipping an allow quietly
-> withdraws a grant. Both look like success to the client. Overturned only by
-> supporting the kind; a tool that sets one is told so, and can fall back.
-
-## 7. NFSv4 ACLs
-
-### 7.1 `acl`, `dacl`, `sacl` and `aclsupport`
-
-| Attribute | Versions | Holds | To read | To write |
-| --- | --- | --- | --- | --- |
-| `acl` | 4.0, 4.1, 4.2 | the access list, then the audit list; no flags | read the ACL, and system security for the audit entries | write the ACL, and system security for the audit entries |
-| `dacl` | 4.1, 4.2 | the access list and its flags | read the ACL | write the ACL |
-| `sacl` | 4.1, 4.2 | the audit list and its flags | system security | system security, and write the ACL in the call's ceiling (§3.5) |
-| `aclsupport` | all | allow, deny, audit and alarm | — | — |
-
-The `dacl` and `sacl` attributes carry §2.6's list flags in `aclflag4`: protected
-`ACL4_PROTECTED`, auto-inherited `ACL4_AUTO_INHERIT`, defaulted `ACL4_DEFAULTED`.
-
-- A `GETATTR` of `acl` by a caller without the system-security right returns the
-  access list alone; a `SETATTR` of `acl` by such a caller that holds an audit or
-  alarm entry is refused, and one that holds none leaves the stored audit list
-  as it was ([RFC 21 §8.1](rfc-21-nfs.md#8.1%20Supported)).
-- A `SETATTR` of `acl` leaves both lists' flags as stored: `acl` carries none.
-- A `SETATTR` naming `acl` together with `dacl` or `sacl` is refused
-  `ErrInvalid`: two values for one list.
-- An `acl` or `dacl` in an `OPEN` or `CREATE`'s attributes sets the new file's
-  access list only; the audit list is the inherited one unless the caller holds
-  the system-security right and sends `sacl` or audit entries (§4.4).
-
-### 7.2 Entries and `who`
-
-- `ACE4_ACCESS_ALLOWED_ACE_TYPE`, `ACE4_ACCESS_DENIED_ACE_TYPE`,
-  `ACE4_SYSTEM_AUDIT_ACE_TYPE` and `ACE4_SYSTEM_ALARM_ACE_TYPE` are §2.2's
-  kinds; any other type is refused.
-- Each right of §2.4 is the NFSv4 right of the same bit: `READ_DATA`
-  (`LIST_DIRECTORY`), `WRITE_DATA` (`ADD_FILE`), `APPEND_DATA`
-  (`ADD_SUBDIRECTORY`), `READ_NAMED_ATTRS`, `WRITE_NAMED_ATTRS`, `EXECUTE`,
-  `DELETE_CHILD`, `READ_ATTRIBUTES`, `WRITE_ATTRIBUTES`, `DELETE`, `READ_ACL`,
-  `WRITE_ACL`, `WRITE_OWNER`, `SYNCHRONIZE`.
-- Flags map by name (§2.5):
-
-  | §2.5 flag | NFSv4 bit |
-  | --- | --- |
-  | file inherit | `0x01` |
-  | directory inherit | `0x02` |
-  | no propagate | `0x04` |
-  | inherit only | `0x08` |
-  | successful access | `0x10` |
-  | failed access | `0x20` |
-  | inherited | `0x80` |
-
-- The group flag (`ACE4_IDENTIFIER_GROUP`, `0x40`) is not a flag of the model: it
-  is how NFSv4 spells the principal's kind. It is set on read exactly when the
-  principal is a group or `GROUP@`, and on write selects the namespace a `who` is
-  resolved in (§5.2). It is not stored.
-- Order as §2.7.
-- A `who` that resolves to no principal is refused `ErrInvalid`, which RFC 21
-  answers `NFS4ERR_BADOWNER`.
-- An effective `OWNER@` or `GROUP@` entry with no inherit flags directly
-  followed by CREATOR OWNER's or CREATOR GROUP's inherit-only entry that §6.3
-  would fold with it is folded as §6.3 folds it.
-
-### 7.3 `ACCESS` bits
-
-NFSv3 and NFSv4 `ACCESS` report the bits whose rights are in `G` (§3.4); the
-bits have the same values in both versions.
-
-| `ACCESS` bit | On a file | On a directory |
-| --- | --- | --- |
-| `READ` | read data | list |
-| `LOOKUP` | — | traverse |
-| `MODIFY` | write data | delete a child |
-| `EXTEND` | append, or write data | add a file, or add a subdirectory |
-| `DELETE` | — | delete a child |
-| `EXECUTE` | execute | — |
-| `XAREAD`, `XALIST` | read extended attributes | read extended attributes |
-| `XAWRITE` | write extended attributes | write extended attributes |
-
-A bit with no right on that file type is never reported. The `XAREAD`,
-`XAWRITE` and `XALIST` bits exist only in NFSv4.2
-([RFC 8276](https://www.rfc-editor.org/rfc/rfc8276.html)) and are never reported
-on an earlier version.
-
-### 7.4 `mode` and `acl` in one `SETATTR`
-
-A `SETATTR` naming `mode` and `acl` (or `dacl`) is §4.3's request that sets
-both: its permission bits are not merged, since the client sent the ACL it wants,
-and merging a mode into it would change it. `mode_set_masked` changes only the
-bits its mask names, as a `chmod` of those bits.
-
-## 8. A worked example across protocols
+## 6. A worked example across protocols
 
 alice, bob and the build host's principal `build` are users of the `example.com`
 domain; `build` and bob are members of `builders`. The `builds` share is
@@ -1231,7 +980,7 @@ stored ACL and mode 0775.
 
 **1. alice opens the Security tab from alice-pc.** Her implicit right as owner
 answers the query (§3.1 step 5). She is shown `ACLFromMode(0775)` (§4.1),
-spelled with SIDs (§6.3):
+spelled with SIDs (RFC 22 §11):
 
 | # | Kind | Principal shown | Rights | Flags |
 | --- | --- | --- | --- | --- |
@@ -1249,14 +998,14 @@ protected and auto-inherited flags:
 | 3 | allow | `builders` | `0x1301BF`: modify | `OI CI` |
 
 The set asks write the ACL, which alice holds implicitly. The entries are stored
-in this order (§6.2); entry 2 names the owner's SID with inherit flags, so it
-stays a named entry for alice (§6.3). `Mode(alice)` (§4.2) is 0770: owner `rwx`
+in this order (RFC 22 §11); entry 2 names the owner's SID with inherit flags, so it
+stays a named entry for alice (RFC 22 §11). `Mode(alice)` (§4.2) is 0770: owner `rwx`
 from entry 2, group `rwx` from `builders` (bob's only entry is a deny), other
 nothing.
 
 **3. build01 reads it.** `nfs4_getfacl` on a Kerberos mount, as `build`, which
 reads the ACL through `builders`' modify (§3.3) and holds no system-security
-right, so no audit entry is returned. The translation spells (§5.2, §7.2):
+right, so no audit entry is returned. The translation spells (§5.2, RFC 21 §11.3):
 
 ```text
 D:fd:bob@example.com:waNT
@@ -1299,7 +1048,7 @@ the `builders` allow holds the group class. `Mode(alice)` is 0750. `builders` ca
 no longer add files to `release` itself, and every file created below it still
 inherits modify from the unchanged inherit-only copy.
 
-## 9. Invariants
+## 7. Invariants
 
 | # | Invariant |
 | --- | --- |
@@ -1310,14 +1059,14 @@ inherits modify from the unchanged inherit-only copy.
 | Z5 | No file ACL widens a share ceiling, and no share ceiling is written into a file's ACL, stored or shown. |
 | Z6 | The ACL a client is shown is the ACL the walk reads, `ACLFromMode` of the mode where none is stored. |
 | Z7 | `ACLFromMode(m, d).Mode(o) == m`; `a.WithMode(a.Mode(o), o, d)` grants what `a` grants on a file owned by `o`, for every `a` §4.2 names; and no `chmod` raises an existing allow or places a new one before any other entry. |
-| Z8 | Reading an ACL through either protocol and writing back what was read stores the same ACL, less entries naming deleted principals (§5.2); over SMB, a named allow with no inherit flags for the file's current owner or group comes back as `OWNER@` or `GROUP@` (§6.3). |
+| Z8 | Reading an ACL through either protocol and writing back what was read stores the same ACL, less entries naming deleted principals (§5.2); over SMB, a named allow with no inherit flags for the file's current owner or group comes back as `OWNER@` or `GROUP@` (RFC 22 §11). |
 | Z9 | Every principal an entry can name has a SID and an NFSv4 `who`; no entry is left out of a read for want of a spelling. |
 | Z10 | Audit and alarm entries never change a decision; the system-security right is granted only to a caller with `admin` set. |
 | Z11 | A change to one file's ACL changes no other file's. |
 | Z12 | No list is truncated to fit the size limit, on a set, a `chmod`, a create or a read. |
 | Z13 | A sticky directory refuses a non-owner's removal of another's entry whatever its ACL. |
 
-## 10. Observability
+## 8. Observability
 
 Metric names are shown without the `dittofs_` prefix the exporter adds
 ([RFC 25 §2.1](rfc-25-observability.md#2.1%20Names)). Decision counts and latency
@@ -1345,7 +1094,7 @@ increments the set and spelling counters from what the translation returns
 (§5.1). This RFC opens no span ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)),
 and a refusal is expected and logs at `Debug`.
 
-## 11. Conformance
+## 9. Conformance
 
 Tiers are the harness's ([index](rfc-index.md#Test%20tiers)). Each row runs
 through both adapters on the composed node unless it names one, so the check
@@ -1370,11 +1119,10 @@ server.
 | §4.3 the merge never raises | (a) Explicit `allow EVERYONE@ read`, inherited `deny bob write`, inherited `allow EVERYONE@ write`: `chmod` to the file's own mode over NFS; assert bob still refused write over both protocols and the ACL unchanged. Repeat with `GROUP@` and a member's deny. (b) A directory with `allow EVERYONE@` list and add a file: `chmod` to its own mode; assert the mask unchanged and a non-owner refused delete of another's file. (c) Inherited `deny bob read` and no `EVERYONE@` allow: `chmod o+r`; assert bob still refused, the new allow last. (d) An ACL holding a named-user allow granting write, an inherit-only entry, and an entry both effective and inheritable: `chmod 600`; assert the named user granted nothing, the inherit-only entry unchanged, the other split, and `Mode` the ACL's own. |
 | §4.2 everyone-like principals | A file with `allow Authenticated Users R(rwx)` and `allow builders R(rwx)`: `chmod 750` over NFS. Assert an authenticated non-member is refused read over both protocols, `Mode` reads 0750, and `builders` keep `r-x`. Repeat with NETWORK and an asserted-identity caller. |
 | §4.1 shown is evaluated | On a 0640 file with no stored ACL, query the descriptor over SMB and `acl` over NFSv4: assert both are `ACLFromMode(0640)`, and that each listed principal is granted exactly what its entry says. On 0604: assert a group deny is shown and a group member is refused read over both. |
-| §2.8, §6.4 no partial set | Set over SMB a DACL holding a callback deny for bob and an allow for everyone; assert the set is refused and the stored ACL unchanged, and bob's read still refused or granted as before. Repeat with an object allow, and with 129 entries. |
+| §2.8 no partial set | Set over SMB a DACL holding a callback deny for bob and an allow for everyone; assert the set is refused and the stored ACL unchanged, and bob's read still refused or granted as before. Repeat with an object allow, and with 129 entries. |
 | §2.8 server-built lists | 100 effective and inheritable named entries, then `chmod`: refused `ErrInvalid`, ACL unchanged. 70 inheritable CREATOR OWNER entries with both flags: a `mkdir` below is refused `ErrNoSpace`. A `GETATTR` of `acl` with a small `maxresponsesize`: `NFS4ERR_REP_TOO_BIG`, never a shorter `acl`. |
 | §5.2, Z8 round trip | Set from SMB an ACL naming a SID-only group with a deny, owner rights, CREATOR OWNER inherit-only, and a user with an NFS name. Read it over NFSv4 as an administrator, write back exactly what was read, read it over SMB: assert byte-equal descriptors. Then the reverse, starting from `nfs4_setfacl`. A translation that leaves out an entry it cannot name fails on the deny. |
-| §6.3 owner entries | On a mode-0755 file owned by alice, read the descriptor over SMB, write it back unchanged, `chown` the file to bob: assert bob, not alice, holds the owner's rights. Write a descriptor naming alice's SID with `OI CI` on a directory: assert it stays a named entry. Over NFSv4 set `deny alice write` and `allow EVERYONE@ write` on alice's file, write the descriptor back over SMB unchanged, `chown` to bob: assert alice still refused write. |
-| §6.3 fold | On a directory, set over NFSv4 `A:fd:OWNER@:rwx` and `A:fdg:GROUP@:rx`: read the descriptor over SMB and assert four entries, each owner or group SID followed by CREATOR OWNER or CREATOR GROUP inherit-only; write it back unchanged and read over NFSv4: assert the two original entries, byte-equal. Create a child: assert its entries are `OWNER@` and `GROUP@` either way. |
+| RFC 22 §11 fold | On a directory, set over NFSv4 `A:fd:OWNER@:rwx` and `A:fdg:GROUP@:rx`: read the descriptor over SMB and assert four entries, each owner or group SID followed by CREATOR OWNER or CREATOR GROUP inherit-only; write it back unchanged and read over NFSv4: assert the two original entries, byte-equal. Create a child: assert its entries are `OWNER@` and `GROUP@` either way. |
 | §2.8 count | Set over NFSv4 64 effective, inheritable `OWNER@` entries with distinct masks: assert stored; read over SMB: assert 128 entries; write back: assert accepted and unchanged. Set 65: assert refused `ErrInvalid` over NFSv4 though it carries 65 entries. |
 | §3.2 ceiling | bob's grant `read`; a file's ACL allows him full control: assert `Granted` over both protocols is the read row, a write open is refused, and a maximal open is granted read. As the file's owner on that share, set the ACL, `chmod`, `chgrp` to a group she is in, and `touch -d`: assert each refused over NFS; a DOS-attribute set and a DACL set over SMB: refused. As a privileged caller on a read-only admission: assert no write. |
 | §3.1 read-only cause | On a share whose policy is read-only, a write by a caller whose grant is `read-write`: assert `ErrReadOnly` (a read-only filesystem on the wire). On a read-write share, a write by a caller whose grant is `read`: assert `ErrAccess`. |
@@ -1393,13 +1141,9 @@ server.
 | §3.8 locks outside an open | Over NFSv3's lock manager, as bob on alice's 0600 file: a read lock and a write lock refused. On a 0644 file: both allowed. |
 | §4.4 inheritance | Each row of §4.4's table, over both protocols and against a Windows server. In alice's directory holding an inheritable "CREATOR OWNER: full" and "Finance: modify", bob creates a subdirectory and, in it, a file with mode 0777 and a umask of 022 carried apart from the mode: assert the subdirectory holds one effective and inheritable `OWNER@` full (spelled over SMB as bob's SID and CREATOR OWNER inherit-only), the file holds `OWNER@` full and nothing for alice, and Finance keeps modify on both. In a parent with no inheritable entry: the umask is applied. A parent without the auto-inherited flag: copies carry no inherited flag. A parent's protected flag is not passed down. |
 | §4.4 create-time ACL | Put an inheritable failed-write audit entry on the root. As bob, `OPEN(CREATE)` with an `acl` attribute, and over SMB a `CREATE` with a `SecD` without a SACL: assert the inherited audit entry kept, and another caller's refused write emits one event. A `SecD` carrying a SACL from a non-admin: refused. |
-| §6.1 inheritance at set | A set with the auto-inherit request on a child whose parent changed: assert the child's inherited entries recomputed and its explicit ones kept; assert its siblings unchanged. |
-| §7.1, §7.4 attributes | `SETATTR` of `acl` and `dacl` together: refused. `SETATTR` of `mode` 04750 with an `acl`: assert the ACL stored as sent, setuid set, and `Mode` the ACL's own bits. `SETATTR acl` with an audit entry by a non-admin: refused; without one: the audit list unchanged. |
 | §2.3 kinds | A user entry for a principal whose UID equals a group's GID: assert a member of that group is not matched. |
 | §2.7 stored order | Over SMB set `allow EVERYONE@ write data`, then `deny bob write data`: assert bob granted write over both protocols, and both reads return that order. A build that canonicalises fails. |
-| §6.1 owner SID | Set an owner SID no principal holds together with a DACL: assert `ErrInvalid` and the DACL unchanged. |
 | §5.2 deleted principal | Delete a user named in a deny; read over NFS and SMB: assert the entry spelled with the null SID. Write back what was read: assert accepted, the entry gone, and `acl_set_normalised_total{kind="deleted_principal"}` up by one. |
-| §2.6 null DACL | Set a null DACL: assert everyone granted, and one allow-everyone entry read back. |
 | §2.8 lookup failure | Fail the principal lookup once, with an error other than `ErrUnknownPrincipal`, during an SMB set naming a SID: assert the set refused with that error, not `ErrInvalid`, and the stored ACL unchanged. |
 | Z1, §2.4 masks | Set over NFSv4 an allow whose mask holds `0x200`, `0x01000000` and a reserved bit: assert the stored mask holds none of them, and the clearing counted. |
 | Z9 | For every principal kind an entry can name (§5.2), and every well-known row, read a one-entry ACL over both protocols: assert no error and no entry missing. |
@@ -1410,12 +1154,12 @@ the store between the write and the read, is not evidence for Z8: it proves only
 that the two halves agree with each other. A check against the mode-only path is
 not evidence for the ACL path, and the reverse.
 
-## 12. Open questions
+## 10. Open questions
 
 1. **Maximal requests with generic bits.** Samba grants an SMB `MAXIMUM_ALLOWED`
    open naming `GENERIC_READ` or `GENERIC_EXECUTE` even when not every right
    they map to is granted. Whether Windows does, which §3.4's rule decides
-   against, is to be settled by the §11 run against a Windows server.
+   against, is to be settled by the §9 run against a Windows server.
 2. **A `who` that is a SID.** §5.2's spelling is untested against the NFSv4
    ACL tools of every client the reference profile lists; the decision note
    names the fallback.
@@ -1423,7 +1167,7 @@ not evidence for the ACL path, and the reverse.
    attribute with no flags; whether a client that interleaves audit and access
    entries expects their relative order back is unmeasured. The model drops it.
 4. **Mandatory labels.** Whether any Windows workload on the reference profile
-   sets a mandatory-label entry on files, which §6.4 refuses, is unmeasured.
+   sets a mandatory-label entry on files, which RFC 22 §11 refuses, is unmeasured.
 5. **Allows holding part of what the write bit adds.** `Mode` reads the write
    bit from write data alone, and a merge limiting to bits without write removes
    append, write attributes and write extended attributes too. So an allow
@@ -1432,7 +1176,7 @@ not evidence for the ACL path, and the reverse.
    identity does not hold for it, and is stated without it.
 6. **`dacl` and `sacl`.** Whether any client of the reference profile reads or
    sets them is unmeasured. If none does, serving `acl` alone loses no round
-   trip, because `acl` leaves the stored flags as they were (§7.1). What it does
+   trip, because `acl` leaves the stored flags as they were (RFC 21 §11.3). What it does
    lose is setting the protected flag over NFS.
 7. **Re-deciding a durable or persistent reconnect.** RFC 14's grace reclaim is
    authorised like a new open against the file as it is now; nothing says what
@@ -1467,7 +1211,7 @@ not evidence for the ACL path, and the reverse.
 - **POSIX ACLs** — the mask entry shown in a file's group bits, which §4.2's
   group class follows, and the rule that `chmod` of the group bits sets the mask.
 - **Samba's NFSv4 ACL mapping** — maps an entry for the owner's SID to the NFSv4
-  owner special principal under some of its settings, the model for §6.3; its
+  owner special principal under some of its settings, the model for RFC 22 §11's owner fold; its
   share ACLs are a ceiling intersected with the file ACL, the model for §3.2.
 - **The Linux NFS server** — translates NFSv4 ACLs to POSIX ACLs and refuses
   what POSIX cannot hold, rather than storing less: the model for §2.8; lets its
@@ -1487,7 +1231,7 @@ not evidence for the ACL path, and the reverse.
 | §2.6 | null DACL stored as one allow-everyone entry | stored as a flag the evaluator checks first |
 | §2.6 | the defaulted flag records where a list came from | an `ACL.Source` field records it |
 | §2.8 | a SID no principal holds refuses the set | a foreign-domain SID in a DACL entry is stored as `sid:<SID>` and round-trips |
-| §2.8, §6.4 | an unsupported entry refuses the set | the descriptor parser skips entry types it cannot map, object and callback denies included, and stores the rest |
+| §2.8 | an unsupported entry refuses the set | the descriptor parser skips entry types it cannot map, object and callback denies included, and stores the rest |
 | §3.1 step 5 | the owner's implicit rights are not removable by a deny | an explicit deny removes them per bit; an administrator SID owner also receives change-the-owner implicitly, as a take-ownership privilege (`HasTakeOwnershipPrivilege`, `IsAdminSID`) |
 | §3.1, §3.5 | privilege is a flag of the caller or of an open | privilege is derived from `UID == 0` throughout the permission checks, the access checker, the setattr and create paths and the SMB enumeration fast path |
 | §3.1, RFC 7 §7.1 | the share ceiling is applied at the chokepoint | the SMB write and create handlers test the session's share permission themselves; the metadata layer separately strips write and delete for a read-only grant, and a handle-based write bypass skips the file check unless the ACL holds a deny |
@@ -1502,8 +1246,8 @@ not evidence for the ACL path, and the reverse.
 | §4.4 | no server-side propagation | a propagation function exists with no production caller, and the SMB fidelity guide lists recursive propagation as working (`PropagateACL`) |
 | §5.1, RFC 20 §2.3 | one translation both adapters share | NFS writes stored who strings verbatim; SMB has its own principal-to-SID mapping inside its handler package |
 | §5.1, Z6, Z8 | every enforced entry is shown by both protocols | an entry may carry an `NFSNumericTwin` marker: a hidden enforced entry one protocol shows and the other does not |
-| §6.1 | an unresolvable owner SID refuses the set | it is ignored and the rest of the set applied |
-| §7.1 | `acl`, `dacl`, `sacl` | only `acl` is served; it carries no audit entries on read, and audit entries sent in it are stored in the access list; `aclsupport` reports all four kinds |
-| §7.2 | the group flag from the principal's kind | the group flag is neither set on read nor read on write |
-| §7.3 | `ACCESS` bits by right | a directory's `MODIFY` and `EXTEND` both map to one write permission needing write data and append together |
+| RFC 22 §11 | an unresolvable owner SID refuses the set | it is ignored and the rest of the set applied |
+| RFC 21 §11.3 | `acl`, `dacl`, `sacl` | only `acl` is served; it carries no audit entries on read, and audit entries sent in it are stored in the access list; `aclsupport` reports all four kinds |
+| RFC 21 §11.3 | the group flag from the principal's kind | the group flag is neither set on read nor read on write |
+| RFC 21 §8.1 | `ACCESS` bits by right | a directory's `MODIFY` and `EXTEND` both map to one write permission needing write data and append together |
 | docs | — | `docs/internals/acl-design.md` still states that ACLs are validated for canonical order, which the code no longer does |
