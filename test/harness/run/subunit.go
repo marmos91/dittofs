@@ -74,8 +74,10 @@ func (p *subunitResult) test() report.Test {
 // draw, in the test that printed it, is an expected skip. A client that
 // crashed, exit 129 or more, fails nothing by its exit: the test it left open
 // is incomplete, and with none open, as when it died between two tests, so is
-// the entry, under its own name, since what it would have reported after its
-// last result is lost. A run that reports no test at all is an error.
+// the entry, since what it would have reported after its last result is lost.
+// That result is named for the entry with " (exit)" after it, apart from a
+// test the entry names alone, whose own result a known-failure entry is still
+// judged on. A run that reports no test at all is an error.
 func readSubunit(r report.Ran) ([]report.Test, error) {
 	name := func(s string) string {
 		if r.Prefix != "" {
@@ -150,7 +152,7 @@ func readSubunit(r report.Ran) ([]report.Test, error) {
 		return nil, errors.New("no results")
 	}
 	if open == "" && r.Exit > 128 {
-		tests = append(tests, report.Test{Name: r.Test, Status: report.Other, Message: fmt.Sprintf("smbtorture died on signal %d after its last result", r.Exit-128)})
+		tests = append(tests, report.Test{Name: r.Test + " (exit)", Status: report.Other, Message: fmt.Sprintf("smbtorture exited %d after its last result", r.Exit)})
 	}
 	return tests, nil
 }

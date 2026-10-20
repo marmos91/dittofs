@@ -34,6 +34,7 @@ func TestReadSubunit(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name     string
+		test     string // the entry of tests.txt, smb2.x when empty
 		prefix   string
 		timedOut bool
 		exit     int
@@ -77,9 +78,9 @@ test: smb2.oplock.batch2
 success: smb2.scan.find
 test: smb2.scan.scan
 `, want: []string{"smb2.scan.find passed", "smb2.scan.scan incomplete"}},
-		{name: "a client that crashed with no test open leaves its entry incomplete", exit: 139, output: `test: smb2.scan.find
-success: smb2.scan.find
-`, want: []string{"smb2.scan.find passed", "smb2.x incomplete"}},
+		{name: "a client that crashed with no test open leaves its entry incomplete, apart from the test it names", test: "smb2.lock.lock1", exit: 139, output: `test: smb2.lock.lock1
+success: smb2.lock.lock1
+`, want: []string{"smb2.lock.lock1 unexpected_pass", "smb2.lock.lock1 (exit) incomplete"}},
 		{name: "a known failure that passes is unexpected", output: `test: smb2.lock.lock1
 success: smb2.lock.lock1
 test: smb2.oplock.batch1
@@ -172,7 +173,7 @@ needs kernel oplocks
 `, want: []string{"smb2.oplock.batch1 known", "smb2.oplock.batch2 ungraded"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tests, err := readSubunit(report.Ran{Test: "smb2.x", Prefix: tc.prefix, Output: []byte(tc.output), Exit: tc.exit, TimedOut: tc.timedOut})
+			tests, err := readSubunit(report.Ran{Test: cmp.Or(tc.test, "smb2.x"), Prefix: tc.prefix, Output: []byte(tc.output), Exit: tc.exit, TimedOut: tc.timedOut})
 			if err != nil {
 				t.Fatal(err)
 			}
