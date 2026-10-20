@@ -97,10 +97,10 @@ func TestImageDockerArgs(t *testing.T) {
 	log := fakeDocker(t)
 	t.Setenv("FAKE_IMAGE", "missing")
 	rep, out := runTarget(t, root, r, "img", false)
-	if o := rep.Outcomes[0]; o.Result != Passed {
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
 		t.Fatalf("img: %+v\n%s", o, out)
 	}
-	if rep, out := runTarget(t, root, r, "own", false); rep.Outcomes[0].Result != Passed || !strings.Contains(out, "the image's own command") {
+	if rep, out := runTarget(t, root, r, "own", false); rep.Outcomes[0].Result != report.Passed || !strings.Contains(out, "the image's own command") {
 		t.Fatalf("own: %+v\n%s", rep.Outcomes[0], out)
 	}
 	cellOut := filepath.Join(rep.Dir, "img-a")
@@ -185,7 +185,7 @@ func TestOnlyAKilledContainerIsRemoved(t *testing.T) {
 `, nil)
 	for suite, runs := range map[string]int{"exited": 1, "unstarted": 0} {
 		log := fakeDocker(t)
-		if rep, _ := runTarget(t, root, r, suite, false); rep.Outcomes[0].Result != Failed {
+		if rep, _ := runTarget(t, root, r, suite, false); rep.Outcomes[0].Result != report.Failed {
 			t.Fatalf("%s: %+v", suite, rep.Outcomes[0])
 		}
 		got := map[string]int{}
@@ -207,8 +207,8 @@ func TestImagePull(t *testing.T) {
 	for _, c := range []struct {
 		image, result, note, calls string
 	}{
-		{"", Passed, "", "image run"},
-		{"fail", NotRun, "the image: `docker pull x` exited 1", "image pull"},
+		{"", report.Passed, "", "image run"},
+		{"fail", report.NotRun, "the image: `docker pull x` exited 1", "image pull"},
 	} {
 		log := fakeDocker(t)
 		t.Setenv("FAKE_IMAGE", c.image)
@@ -230,10 +230,9 @@ func TestImagePull(t *testing.T) {
 // start: the test didn't run, and nor did the cell, unless another test
 // failed. In a format a reader reads, that holds whatever the reader finds.
 func TestContainerNotStartedIsNotRun(t *testing.T) {
-	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
+	fakeTAP(t, func(r report.Ran) ([]report.Test, error) {
 		return []report.Test{{Name: r.Test, Status: report.Passed}}, nil
-	}
-	t.Cleanup(func() { delete(readers, "tap") })
+	})
 	root, r := repo(t, `suites:
   exit: { image: x, cmd: "sh {test}", tests: "e/*.sh" }
   read: { image: x, cmd: "sh {test}", tests: "e/*.sh", format: tap }
@@ -253,15 +252,15 @@ func TestContainerNotStartedIsNotRun(t *testing.T) {
 				t.Errorf("%s: note %q lacks %s", suite, o.Note, code)
 			}
 		}
-		if o.Result != NotRun || rep.Status() != 2 {
+		if o.Result != report.NotRun || rep.Status() != 2 {
 			t.Errorf("%s: %+v, status %d", suite, o, rep.Status())
 		}
 	}
-	if rep, _ := runTarget(t, root, r, "mixed", false); rep.Outcomes[0].Result != Failed || rep.Status() != 1 {
+	if rep, _ := runTarget(t, root, r, "mixed", false); rep.Outcomes[0].Result != report.Failed || rep.Status() != 1 {
 		t.Errorf("mixed: %+v, status %d", rep.Outcomes[0], rep.Status())
 	}
 	// A command on the host that exits 125 is its own failure.
-	if rep, _ := runTarget(t, root, r, "host", false); rep.Outcomes[0].Result != Failed {
+	if rep, _ := runTarget(t, root, r, "host", false); rep.Outcomes[0].Result != report.Failed {
 		t.Errorf("host: %+v", rep.Outcomes[0])
 	}
 }
@@ -279,7 +278,7 @@ func TestTemplates(t *testing.T) {
 	})
 	log := fakeDocker(t)
 	rep, out := runTarget(t, root, r, "ok", false)
-	if o := rep.Outcomes[0]; o.Result != Passed {
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
 		t.Fatalf("ok: %+v\n%s", o, out)
 	}
 	cellOut := filepath.Join(rep.Dir, "ok-v")
@@ -291,7 +290,7 @@ func TestTemplates(t *testing.T) {
 	}
 	_ = os.Remove(log)
 	rep, _ = runTarget(t, root, r, "unfilled", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "the templates: b.template: dt doesn't provide {server} yet") {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.Contains(o.Note, "the templates: b.template: dt doesn't provide {server} yet") {
 		t.Errorf("unfilled: %+v", o)
 	}
 	if _, err := os.Stat(log); err == nil {

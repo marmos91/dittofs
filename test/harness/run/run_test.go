@@ -73,7 +73,7 @@ func TestEveryCommandRuns(t *testing.T) {
   lint: { cmd: [ "false", "true", { sh: "echo ran > {out}/marker" } ] }
 `, nil)
 	rep, _ := runTarget(t, root, r, "lint", false)
-	if o := rep.Outcomes[0]; o.Result != Failed || !strings.Contains(o.Note, "`false` exited 1") {
+	if o := rep.Outcomes[0]; o.Result != report.Failed || !strings.Contains(o.Note, "`false` exited 1") {
 		t.Errorf("outcome %+v", o)
 	}
 	if _, err := os.Stat(filepath.Join(rep.Dir, "lint", "marker")); err != nil {
@@ -139,7 +139,7 @@ func TestLeftoversAreKilled(t *testing.T) {
 	start := time.Now()
 	rep, _ := runTarget(t, root, r, "s", false)
 	took := time.Since(start)
-	if o := rep.Outcomes[0]; o.Result != Passed {
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
 		t.Errorf("outcome %+v", o)
 	}
 	if alive(t, filepath.Join(root, "t/a.sh.pid")) {
@@ -176,7 +176,7 @@ func TestCellLimitStopsTheCell(t *testing.T) {
 `, map[string]string{"t/a.sh": "sleep 30\n", "t/b.sh": "exit 0\n", "t/c.sh": "exit 0\n"})
 	rep, _ := runTarget(t, root, r, "s", false)
 	o := rep.Outcomes[0]
-	if o.Result != Failed || !strings.Contains(o.Note, "t/a.sh: stopped at the cell's limit") || !strings.Contains(o.Note, "2 tests not started") {
+	if o.Result != report.Failed || !strings.Contains(o.Note, "t/a.sh: stopped at the cell's limit") || !strings.Contains(o.Note, "2 tests not started") {
 		t.Errorf("outcome %+v", o)
 	}
 }
@@ -191,26 +191,15 @@ suites:
   away: { cmd: "true", needs: [`+other+`] }
   here: { cmd: "true" }
 `, nil)
-	if rep, _ := runTarget(t, root, r, "g", false); rep.Outcomes[0].Result != Skipped || rep.Status() != 0 {
+	if rep, _ := runTarget(t, root, r, "g", false); rep.Outcomes[0].Result != report.Skipped || rep.Status() != 0 {
 		t.Errorf("local: %+v, status %d", rep.Outcomes, rep.Status())
 	}
 	if rep, _ := runTarget(t, root, r, "away", false); rep.Status() != 2 {
 		t.Errorf("nothing ran: status %d, want 2", rep.Status())
 	}
 	rep, out := runTarget(t, root, r, "g", true)
-	if rep.Outcomes[0].Result != NotRun || rep.Status() != 2 || !strings.Contains(out, "::error title=dt away::") {
+	if rep.Outcomes[0].Result != report.NotRun || rep.Status() != 2 || !strings.Contains(out, "::error title=dt away::") {
 		t.Errorf("ci: %+v, status %d\n%s", rep.Outcomes, rep.Status(), out)
-	}
-}
-
-// A suite dt can't run yet is reported as not run, never as passed.
-func TestUnsupportedIsNotRun(t *testing.T) {
-	root, r := repo(t, `suites:
-  g: { cmd: prove t, format: tap }
-`, nil)
-	rep, _ := runTarget(t, root, r, "g", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "tap") {
-		t.Errorf("outcome %+v", o)
 	}
 }
 
@@ -422,7 +411,7 @@ func TestNoBaseSkipsItsCommands(t *testing.T) {
   lint: { cmd: [ "true", "no-such-check {base}" ] }
 `, nil)
 	rep, out := runTarget(t, root, r, "lint", false)
-	if rep.Outcomes[0].Result != Passed || !strings.Contains(out, "[dt] skipped, no change to check: no-such-check {base}") {
+	if rep.Outcomes[0].Result != report.Passed || !strings.Contains(out, "[dt] skipped, no change to check: no-such-check {base}") {
 		t.Errorf("outcome %+v\n%s", rep.Outcomes[0], out)
 	}
 }
@@ -457,7 +446,7 @@ suites:
 // that still lists it, so the fix knows which entry to remove. A known
 // failure isn't annotated, and the cell, having a test to name, isn't either.
 func TestUnexpectedPassAnnotation(t *testing.T) {
-	cell := report.Cell{Name: "s/x", Result: Failed, Note: "1 passed unexpectedly: b", Tests: []report.Test{
+	cell := report.Cell{Name: "s/x", Result: report.Failed, Note: "1 passed unexpectedly: b", Tests: []report.Test{
 		{Name: "a", Status: report.Skipped, Grade: report.Known, Reason: "r1"},
 		{Name: "b", Status: report.Failed, Grade: report.UnexpectedPass, Reason: "r2"},
 	}}
@@ -486,10 +475,10 @@ suites:
 		t.Fatal(err)
 	}
 	slow, next := rep.Outcomes[0], rep.Outcomes[1]
-	if slow.Result != NotRun || !strings.Contains(slow.Note, "t/a.sh: interrupted") || !strings.Contains(slow.Note, "1 tests not started: interrupted") {
+	if slow.Result != report.NotRun || !strings.Contains(slow.Note, "t/a.sh: interrupted") || !strings.Contains(slow.Note, "1 tests not started: interrupted") {
 		t.Errorf("slow: %+v", slow)
 	}
-	if next.Result != NotRun || rep.Status() != 2 {
+	if next.Result != report.NotRun || rep.Status() != 2 {
 		t.Errorf("next: %+v, status %d", next, rep.Status())
 	}
 }
@@ -501,7 +490,7 @@ func TestUnfillableCommandIsNotRun(t *testing.T) {
   s: { cmd: [ "touch ran", "run {bin}" ] }
 `, nil)
 	rep, _ := runTarget(t, root, r, "s", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "{bin}") || rep.Status() != 2 {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.Contains(o.Note, "{bin}") || rep.Status() != 2 {
 		t.Errorf("outcome %+v, status %d", o, rep.Status())
 	}
 	if _, err := os.Stat(filepath.Join(root, "ran")); err == nil {
@@ -542,7 +531,7 @@ func TestPathsHoldFromAnyDir(t *testing.T) {
 			t.Fatal(err)
 		}
 		rep, err := Run(context.Background(), cells, Options{Root: root, Results: "results", Out: &bytes.Buffer{}})
-		if err != nil || rep.Outcomes[0].Result != Passed {
+		if err != nil || rep.Outcomes[0].Result != report.Passed {
 			t.Errorf("%s: %+v, %v", suite, rep.Outcomes, err)
 		}
 		if !filepath.IsAbs(rep.Dir) {

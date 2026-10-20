@@ -305,6 +305,9 @@ func TestRealSMB(t *testing.T) {
 			if info, err := os.Stat(filepath.Join(s.data, "controlplane.db")); err != nil || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
 				t.Errorf("dfs doesn't run as dt's user: %v", err)
 			}
+			if vals["share"] != "smbbasic" {
+				t.Errorf("{share} is %q, not the first share without its /", vals["share"])
+			}
 			smbclient, err := exec.LookPath("smbclient")
 			if err != nil {
 				t.Skip("no smbclient here")
@@ -324,11 +327,11 @@ func TestRealSMB(t *testing.T) {
 					t.Errorf("smbclient -L lacks %s:\n%s", name, list)
 				}
 			}
-			share := "//" + vals["server"] + "/smbbasic"
+			share := "//" + vals["server"] + "/" + vals["share"]
 			if got := run(share, "-c", "mkdir before; ls"); !strings.Contains(got, "before") {
 				t.Fatalf("{user} made no directory at the root:\n%s", got)
 			}
-			if err := s.Reset(); err != nil {
+			if err := s.Reset(vals["share"]); err != nil {
 				t.Fatal(err)
 			}
 			if got := run(share, "-c", "mkdir after; ls"); !strings.Contains(got, "after") {

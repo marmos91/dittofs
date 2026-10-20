@@ -32,14 +32,6 @@ import (
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// How a cell went.
-const (
-	Passed  = "passed"
-	Failed  = "failed"  // a test failed or timed out
-	NotRun  = "not run" // it couldn't run, or its limit left tests unstarted
-	Skipped = "skipped" // without --ci, this machine doesn't meet its needs
-)
-
 // Report is a whole run.
 type Report struct {
 	Dir      string // the run's results directory
@@ -52,11 +44,11 @@ func (r Report) Status() int {
 	ran, notRun := false, false
 	for _, o := range r.Outcomes {
 		switch o.Result {
-		case Failed:
+		case report.Failed:
 			return 1
-		case NotRun:
+		case report.NotRun:
 			notRun = true
-		case Passed:
+		case report.Passed:
 			ran = true
 		}
 	}
@@ -163,7 +155,7 @@ func annotations(c report.Cell) []string {
 			out = append(out, annotation("dt "+c.Name+": "+t.Title(), "passed unexpectedly: remove its known entry ("+t.Reason+")"))
 		}
 	}
-	if len(out) == 0 && (c.Result == Failed || c.Result == NotRun) {
+	if len(out) == 0 && (c.Result == report.Failed || c.Result == report.NotRun) {
 		out = append(out, annotation("dt "+c.Name, c.Result+": "+c.Note))
 	}
 	return out
@@ -181,7 +173,7 @@ func annotation(title, message string) string {
 // its log once it has one, and its tests' results. A cell with a fixture has
 // its server started before its first test and stopped after its last.
 func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res report.Cell) {
-	didntRun := func(why string) report.Cell { return report.Cell{Name: c.Name, Result: NotRun, Note: why} }
+	didntRun := func(why string) report.Cell { return report.Cell{Name: c.Name, Result: report.NotRun, Note: why} }
 	if ctx.Err() != nil {
 		return didntRun("interrupted")
 	}
@@ -200,7 +192,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		// A machine that met the needs could run the cell, so without --ci
 		// it's skipped; what dt can't do yet is never a skip.
 		if len(unmet) > 0 && !o.CI {
-			return report.Cell{Name: c.Name, Result: Skipped, Note: why}
+			return report.Cell{Name: c.Name, Result: report.Skipped, Note: why}
 		}
 		return didntRun(why)
 	}
@@ -248,7 +240,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	w := io.MultiWriter(o.Out, log)
 	// Once the log exists, a cell that doesn't run still points at it.
 	didntRun = func(why string) report.Cell {
-		return report.Cell{Name: c.Name, Result: NotRun, Note: why, Log: logName}
+		return report.Cell{Name: c.Name, Result: report.NotRun, Note: why, Log: logName}
 	}
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
@@ -258,7 +250,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun("the test tools: " + err.Error())
 		}
 	}
-	tests, limits, err := plan.ListTests(o.Root, c.Unit, "")
+	tests, lines, err := plan.ListTests(o.Root, c.Unit, "")
 	if err != nil {
 		return didntRun(err.Error())
 	}
@@ -310,7 +302,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// interrupt stopped the cell first.
 			if err := server.Stop(); err != nil && ctx.Err() == nil {
 				_, _ = fmt.Fprintf(w, "[dt] fixture: %v\n", err)
-				res.Result, res.Note = Failed, strings.TrimSuffix("the fixture: "+err.Error()+"; "+res.Note, "; ")
+				res.Result, res.Note = report.Failed, strings.TrimSuffix("the fixture: "+err.Error()+"; "+res.Note, "; ")
 			}
 		}()
 		maps.Copy(vals, server.Placeholders())
@@ -358,6 +350,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	var failed, notRun []string
 	var cases []report.Test
 	unstarted, interrupted := 0, false
+	first := vals["share"] // the fixture's first share, which a test's share= replaces
 	for _, test := range tests {
 		if cellCtx.Err() != nil {
 			unstarted++
@@ -367,11 +360,14 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if test != "" {
 			prefix = test + ": "
 		}
+		if first != "" {
+			vals["share"] = cmp.Or(lines[test].Share, first)
+		}
 		if spec.Reset == "each" {
 			// decision: a test whose share wasn't reset doesn't run, since it
 			// would run on what the test before it left there. The reset is
 			// one of the fixture's steps, so it isn't retried.
-			if err := server.Reset(); err != nil {
+			if err := server.Reset(vals["share"]); err != nil {
 				notRun = append(notRun, prefix+"its share wasn't reset: "+err.Error())
 				continue
 			}
@@ -381,7 +377,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			t.capture = &output
 		}
 		start := time.Now()
-		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, limits))
+		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, lines))
 		interrupted = interrupted || r.interrupted
 		if len(r.notRun) > 0 {
 			notRun = append(notRun, prefix+strings.Join(r.notRun, ", "))
@@ -391,9 +387,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// exit: each test is a test case, or without tests each command.
 			if test == "" {
 				cases = append(cases, r.steps...)
-			} else if r.result != NotRun {
+			} else if r.result != report.NotRun {
 				tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
-				if r.result == Failed {
+				if r.result == report.Failed {
 					tc.Status, tc.Message = report.Failed, r.note
 				}
 				if r.timedOut {
@@ -404,7 +400,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		case r.interrupted:
 			// Its not-run note says so, and nothing it reported counts.
 		default:
-			got, err := read(report.Ran{Test: test, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Out: out})
+			got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
 			if err != nil {
 				notRun = append(notRun, prefix+err.Error())
 			}
@@ -451,12 +447,12 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	}
 	unexpected, lost := gradeNotes(cases)
 	failed, notRun = append(failed, unexpected...), append(notRun, lost...)
-	cell := report.Cell{Name: c.Name, Result: Passed, Log: logName, Tests: cases}
+	cell := report.Cell{Name: c.Name, Result: report.Passed, Log: logName, Tests: cases}
 	switch {
 	case len(failed) > 0:
-		cell.Result, cell.Note = Failed, strings.Join(append(failed, notRun...), "; ")
+		cell.Result, cell.Note = report.Failed, strings.Join(append(failed, notRun...), "; ")
 	case len(notRun) > 0:
-		cell.Result, cell.Note = NotRun, strings.Join(notRun, "; ")
+		cell.Result, cell.Note = report.NotRun, strings.Join(notRun, "; ")
 	}
 	return cell
 }
@@ -497,7 +493,7 @@ func gradeNotes(cases []report.Test) (failed, notRun []string) {
 
 // readers read the formats whose results a tool writes: every format but
 // exit and go-json, which dt reads itself.
-var readers = map[string]report.Reader{}
+var readers = map[string]report.Reader{"junit": readJUnit, "subunit": readSubunit, "tap": readTAP, "trx": readTRX}
 
 // exitNotRun is the exit status of a command that ran nothing, as the
 // scenarios' setup gives when another run holds their lock.
@@ -562,7 +558,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		var err error
 		if cmd != (registry.Command{}) {
 			if argv, err = fill(cmd, t.vals, t.lists); err != nil {
-				return testRun{result: NotRun, notRun: []string{err.Error()}}
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
 			}
 		}
 		shown := cmp.Or(strings.Join(argv, " "), image)
@@ -572,7 +568,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		printed, container := shown, ""
 		if image != "" {
 			if argv, container, err = t.inImage(argv); err != nil {
-				return testRun{result: NotRun, notRun: []string{err.Error()}}
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
 			}
 			printed = strings.Join(argv, " ")
 		}
@@ -603,7 +599,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
 			step.Message, step.Grade = "stopped at the cell's limit", report.New
 		case t.ctx.Err() != nil:
-			r.result, r.notRun, r.interrupted = NotRun, []string{"interrupted"}, true
+			r.result, r.notRun, r.interrupted = report.NotRun, []string{"interrupted"}, true
 			return r
 		case err != nil:
 			step.Message = fmt.Sprintf("`%s`: %v", firstLine(shown), err)
@@ -622,18 +618,18 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		}
 		r.steps = append(r.steps, step)
 		if ctx.Err() != nil { // the test, or the cell, ran out of time
-			r.result, r.note, r.notRun, r.timedOut = Failed, step.Message, notRun, true
+			r.result, r.note, r.notRun, r.timedOut = report.Failed, step.Message, notRun, true
 			return r
 		}
 	}
 	r.notRun = notRun
 	switch {
 	case len(failed) > 0:
-		r.result, r.note = Failed, strings.Join(failed, ", ")
+		r.result, r.note = report.Failed, strings.Join(failed, ", ")
 	case len(notRun) > 0:
-		r.result = NotRun
+		r.result = report.NotRun
 	default:
-		r.result = Passed
+		r.result = report.Passed
 	}
 	return r
 }
@@ -743,16 +739,11 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 	return strings.Join(reasons, "; "), unmet
 }
 
-// unsupported says why dt can't run the suite yet, or returns "".
+// unsupported says why dt can't run the suite yet, or returns "": only a
+// fixture field dt doesn't do yet, since it reads every format.
 func unsupported(u *registry.Suite) string {
 	if u.Fixture != nil {
-		if why := fixture.Unsupported(u.Fixture); why != "" {
-			return why
-		}
-	}
-	switch {
-	case u.Format != "exit" && u.Format != "go-json" && readers[u.Format] == nil:
-		return fmt.Sprintf("dt doesn't read %s results yet", u.Format)
+		return fixture.Unsupported(u.Fixture)
 	}
 	return ""
 }

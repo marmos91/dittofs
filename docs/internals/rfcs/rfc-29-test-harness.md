@@ -569,7 +569,15 @@ suites:
   wpts:
     format: trx                         # WPTS's own TRX file
     image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8   # its entrypoint runs the tests
-    env: { Usage: RunTestCases, Filter: TestCategory=BVT }
+    env:                                # its entrypoint only lists the tests unless DryRun is false,
+      Usage: RunTestCases               # and writes these over the config's, so they repeat the fixture's
+      Filter: TestCategory=BVT
+      DryRun: "false"
+      SutComputerName: "{server}"
+      SutIPAddress: "{server}"
+      DomainName: "{server}"
+      AdminUserName: "{user}"
+      PasswordForAllUsers: "{password}"
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture:
@@ -585,10 +593,11 @@ suites:
     format: subunit                     # smbtorture's test:, success: and failure: lines
     image: quay.io/samba.org/samba-toolbox:v0.8
     cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}%{password} {test}"
-    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's timeout, share and name prefix
+    tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's share and name prefix
+    timeout: { test: 5m }               # run.sh's one limit for each test of its list
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
-    fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
+    fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }   # its multichannel test dials 445
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
     needs: [linux, docker]
@@ -596,6 +605,7 @@ suites:
       kerberos:                         # dt run smbtorture --kerberos
         cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
         tests: [smb2.session, smb2.read, smb2.lock]
+        timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}                      # one cell: it pins its profile
         fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
@@ -696,12 +706,16 @@ runs: /home/runner/work/dittofs/dittofs/test/harness/results/20261008T160000Z-0d
 ```
 
 **smbtorture's test list.** `tests.txt` holds what `smbtorture/run.sh` holds today: each test or
-sub-suite and its timeout; `share=` when it runs on a share other than the first, as
-`smb2.acls_non_canonical` runs on `smbnoncanon`; and `prefix=` for the part of a name smbtorture
-leaves off what it reports. Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the
-`smb2.` the reader puts before a name that lacks it, as today's grader does, make that
-`smb2.oplock.batch1`, the name the known list uses. The comments on why some tests aren't run
-stay in the file.
+sub-suite; `share=` when it runs on a share other than the first, as `smb2.acls_non_canonical`
+runs on `smbnoncanon`; and `prefix=` for the part of a name smbtorture leaves off what it reports.
+Run as `smb2.oplock`, it reports `batch1`; `prefix=oplock`, and the `smb2.` the reader puts before
+a name that lacks it, as today's grader does, make that `smb2.oplock.batch1`, the name the known
+list uses. `run.sh` gives every test of its list one limit, 5 minutes, so the suite's
+`timeout.test` holds it, and a line gives its own only to differ. A line is a name and then, in
+any order, at most one each of a timeout, `share=` and `prefix=`, as `smb2.acls_non_canonical
+share=smbnoncanon prefix=acls_non_canonical`; anything else on it, an empty `share=` or
+`prefix=` too, is an error, and a line that starts with `#` is a comment. The comments on why
+some tests aren't run stay in the file.
 
 **Scenario timeouts.** A scenario's size class is in its file name (`test/scenarios/README.md`):
 `xs` under 10 s, `s` under 1 min, `m` under 5, `l` under 15, `xl` under 1 h. With `test: size`, its
@@ -769,7 +783,7 @@ carry a script that builds it.
 | `server` | `dfs` (the default), or `knfsd` for the pynfs comparison, whose `{nfs-port}` is 2049 |
 | `profile` | The store profile: `memory`, `badger` or `badger-s3`. Required for a `dfs` fixture. For an S3 profile `dt` creates the bucket |
 | `nfs` | Mount the share over NFS at this version (`3`, `4`, `4.1`), or `{ version, options }` with mount options, which may be a `matrix` placeholder (#3008's named option sets are one axis). An NFSv3 mount adds `nolock`, except from a namespaced `client`, which has NLM of its own. A `nolock` mount answers every lock in the client, so a test of NFSv3 locking runs from a namespaced `client`, or it tests the client rather than the server. `export` exports the share without a mount, for pynfs |
-| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
+| `smb` | `true` enables the SMB adapter; `{ encryption: preferred }` also sets SMB encryption; `{ port: 445 }` serves SMB on that port rather than a free one, for WPTS, which connects over TCP to 445 whatever its configuration says, and smbtorture, whose multichannel test opens its extra connections to 445 whatever `-p` gives, so `dt` starts that server as the user with one capability, `CAP_NET_BIND_SERVICE`, held as an ambient capability: `sudo -n setpriv --reuid=UID --regid=GID --init-groups --inh-caps=+net_bind_service --ambient-caps=+net_bind_service -- {bin}/dfs ...` (§3). Nothing on the host changes, so nothing needs restoring. A file capability on `{bin}/dfs` would put the binary in secure mode, where Go prints no trace when the server panics, and lowering `net.ipv4.ip_unprivileged_port_start` would let every process on the host bind low ports; `{ mount: true }` mounts the share at `{mount}` with the machine's own SMB client: `mount.cifs` on Linux, `mount_smbfs` on macOS, `net use /TCPPORT` on Windows |
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, so a suite's tests run under an ordinary user's permissions rather than root's |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
@@ -1128,28 +1142,43 @@ There are six, each read by one reader in `dt`:
 | `exit` | the exit status | each file or entry in `tests`; without `tests`, each command of a `cmd` list, named by its first line, as the registry writes it | lint, operator, system, fio-verify, bench-smoke, one-line suites |
 | `go-json` | `go test -json` (test2json events); `dt` adds `-json -count=1` after the command's `go test`, so no result is replayed from Go's test cache. A suite whose tests need root (e2e) runs as `go test -json -count=1 -exec 'sudo -n env ...'`, which builds as the user, runs each test binary under `sudo`, and gives the same events | each test and subtest, with skips and their reasons | unit, integration, e2e |
 | `junit` | every JUnit XML file the tool writes under `{out}` | each test case, named by its `code` attribute when it has one, as pynfs's lists are keyed on it, else by `classname.name` | pynfs (`--xml`) |
-| `tap` | the TAP each test file prints | each test file, as the known-failure lists name them | pjdfstest |
+| `tap` | `prove -v`'s report on each test file, the file's TAP included | each test file, as the known-failure lists name them | pjdfstest |
 | `subunit` | smbtorture's `test:`, `success:`, `failure:`, `error:` and `skip:` lines | each smbtorture test | smbtorture; its connection-failure filter and truncation handling move into Go with their test cases |
-| `trx` | WPTS's TRX file, including the tests it didn't execute | each WPTS test | wpts |
+| `trx` | WPTS's TRX file, wherever under `{out}` it writes it, including the tests it didn't execute | each WPTS test | wpts |
 
 **What a reader decides.** For every format but `exit`, the results the tool writes decide, not
 its exit status, which is non-zero whenever a test failed. Each reader keeps the rules of today's
 grader:
-- `tap`: a file whose TAP has a bail-out, a parse error or a plan it didn't meet is incomplete. A
-  file with clean TAP whose run still exits non-zero failed, as `prove` calls it dubious.
+- `tap`: a file whose TAP has a bail-out, a parse error or a plan it didn't meet is incomplete,
+  and so is one whose report `prove` didn't finish, without its `Files=` and `Result:` lines, or
+  that `prove` failed without naming a failed assertion or exit status. A file with clean TAP whose
+  run still exits non-zero failed, as `prove` calls it dubious. A file that timed out failed. A
+  file whose plan skips all its tests, `1..0 # SKIP reason`, which `prove` reports as
+  `skipped: reason` and `Result: NOTESTS`, is skipped with that reason, so it is graded as a skip
+  (§4.7); today's grader, which reads one report for every file, passes it. pjdfstest's own
+  `quick_exit`, for a feature the file system lacks, prints `1..1` and `ok 1` instead, so it reads
+  as a pass, which no reader can tell apart.
 - `junit`: pynfs writes its file only after a clean finish. It lists every test it knows: a
   FAILURE as `<failure>`, an OMIT as `<skipped>`, and WARNING and UNSUPPORTED with no child, so
   they pass, as they do today. The tests its flags didn't select are OMIT too, so pynfs's list
-  names them as expected skips (#2996).
+  names them as expected skips (#2996). A file in which every test skipped ran nothing, and the
+  cell is not run, as today. An `<error>`, which pynfs doesn't write, fails its test as a
+  `<failure>` does.
 - `subunit`: a `test:` line with no result is incomplete. When an entry of `tests.txt` reaches its
   timeout, the test it had open failed, and no known-failure entry excuses it, since the entry's
   later tests never ran. A client that crashes (exit 129 or more) fails nothing by
   its exit; the test it left open is incomplete. A failure in the client's own connection setup,
   which the connection-failure filter finds, is incomplete too: there is no server result. The
   self-contradictory `smb2.replay.channel-sequence` draw (`CSN 0x7fff`) is an expected skip the
-  reader grades itself.
+  reader grades itself. An entry that reports no test at all, as smbtorture does for a name it
+  doesn't know, didn't run, so a test the image's smbtorture lacks is lost coverage (exit 2).
 - `trx`: `Passed` passes; `Failed`, `Error`, `Timeout` and `Aborted` fail; `NotExecuted` and any
-  other outcome skip, with the outcome kept as `rawStatus`.
+  other outcome skip, with the outcome kept as `rawStatus`. A run that `dotnet test` aborted, as
+  when its testhost process crashed, writes no result for the tests it didn't reach, and its
+  counters and test definitions count only the results it wrote, so none of them shows the tests
+  missing. Its run-level message with the outcome `Error` does (`The active test run was aborted.
+  Reason: Test host process crashed`), and the cell is not run, exit 2, unless a result it wrote
+  fails it. Today's grader passes such a run on the tests that reported.
 
 A crash of the code under test is a failure, exit 1, as a hang is (§4.4): a Go test binary that
 panics or dies on a signal fails the test it was running, and the fixture's server exiting during a

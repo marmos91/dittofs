@@ -109,7 +109,7 @@ suites:
 	}
 	final := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
 	x := final.Results.Extra
-	if len(x.Cells) != 3 || x.Cells[0].Result != Failed || x.Cells[0].Log != "logs/first.log" || x.Cells[1].Result != Passed || x.Cells[2].Result != Skipped || x.Cells[2].Log != "" {
+	if len(x.Cells) != 3 || x.Cells[0].Result != report.Failed || x.Cells[0].Log != "logs/first.log" || x.Cells[1].Result != report.Passed || x.Cells[2].Result != report.Skipped || x.Cells[2].Log != "" {
 		t.Errorf("cells %+v", x.Cells)
 	}
 	env := final.Results.Environment
@@ -232,7 +232,7 @@ func TestGoJSONCellLimitResults(t *testing.T) {
 `, "exec sleep 30")
 	rep := runIn(t, root, r, "g")
 	want := []string{"g p > TestDone: passed", "g p > TestWait: failed [new] | stopped at the cell's limit"}
-	if got := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(got, want) || rep.Outcomes[0].Result != Failed {
+	if got := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(got, want) || rep.Outcomes[0].Result != report.Failed {
 		t.Errorf("got %q, %+v\nwant %q", got, rep.Outcomes[0], want)
 	}
 }
@@ -263,19 +263,20 @@ func TestInterruptedCellHasNoResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
-	if got := s.cases(); len(got) != 0 || s.Results.Extra.Cells[0].Result != NotRun {
+	if got := s.cases(); len(got) != 0 || s.Results.Extra.Cells[0].Result != report.NotRun {
 		t.Errorf("tests %q, cells %+v", got, s.Results.Extra.Cells)
 	}
 }
 
 // A format whose tool writes its results is read by its reader, given each
-// test's output, first non-zero exit status, whether it timed out, and {out}.
-// The results decide, not the exit status: a test that exits 1 with passing
-// results passes, a failed result fails the cell, and a cell with no results
-// didn't run. A test that timed out failed, whatever its results say.
+// test's output, first non-zero exit status, whether it timed out, how long
+// it ran, and {out}. The results decide, not the exit status: a test that
+// exits 1 with passing results passes, a failed result fails the cell, and a
+// cell with no results didn't run. A test that timed out failed, whatever its
+// results say.
 func TestReaderResultsDecide(t *testing.T) {
 	var got []report.Ran
-	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
+	fakeTAP(t, func(r report.Ran) ([]report.Test, error) {
 		got = append(got, r)
 		var tests []report.Test
 		for _, line := range strings.Split(string(r.Output), "\n") {
@@ -286,8 +287,7 @@ func TestReaderResultsDecide(t *testing.T) {
 			}
 		}
 		return tests, nil
-	}
-	t.Cleanup(func() { delete(readers, "tap") })
+	})
 	root, r := repo(t, `groups: { g: [pass, fail, none, slow] }
 suites:
   pass: { cmd: "sh {test}", tests: "p/*.sh", format: tap }
@@ -296,14 +296,14 @@ suites:
   slow: { cmd: "sh {test}", tests: "s/*.sh", format: tap, timeout: { test: 1s } }
 `, map[string]string{"p/a.sh": "echo ok one; exit 1\n", "f/a.sh": "echo not ok two\n", "n/a.sh": "true\n", "s/a.sh": "echo ok three; sleep 30\n"})
 	rep, _ := runTarget(t, root, r, "g", false)
-	results := []string{Passed, Failed, NotRun, Failed}
+	results := []string{report.Passed, report.Failed, report.NotRun, report.Failed}
 	notes := []string{"", "1 failed: two", "no results", "s/a.sh: timed out after 1s"}
 	for i, o := range rep.Outcomes {
 		if o.Result != results[i] || o.Note != notes[i] {
 			t.Errorf("%s: %+v, want %s with %q", o.Name, o, results[i], notes[i])
 		}
 	}
-	if len(got) != 4 || got[0].Test != "p/a.sh" || got[0].Exit != 1 || string(got[0].Output) != "ok one\n" || got[0].Out != filepath.Join(rep.Dir, "pass") || got[0].TimedOut || !got[3].TimedOut {
+	if len(got) != 4 || got[0].Test != "p/a.sh" || got[0].Exit != 1 || string(got[0].Output) != "ok one\n" || got[0].Out != filepath.Join(rep.Dir, "pass") || got[0].TimedOut || !got[3].TimedOut || got[3].Took < time.Second {
 		t.Errorf("the reader got %+v", got)
 	}
 	want := []string{"pass > one: passed", "fail > two: failed [new]", "slow > three: passed"}
@@ -527,7 +527,7 @@ suites:
 		t.Fatal(err)
 	}
 	s := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
-	if got, want := s.cases(), []string{"done > true: passed"}; !slices.Equal(got, want) || s.Results.Extra.Cells[1].Result != NotRun {
+	if got, want := s.cases(), []string{"done > true: passed"}; !slices.Equal(got, want) || s.Results.Extra.Cells[1].Result != report.NotRun {
 		t.Errorf("got %q, cells %+v; want %q", got, s.Results.Extra.Cells, want)
 	}
 }
@@ -553,7 +553,7 @@ func TestGoJSONInterruptedCellHasNoResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
-	if got := s.cases(); len(got) != 0 || rep.Outcomes[0].Result != NotRun {
+	if got := s.cases(); len(got) != 0 || rep.Outcomes[0].Result != report.NotRun {
 		t.Errorf("tests %q, outcome %+v", got, rep.Outcomes[0])
 	}
 }
@@ -585,14 +585,13 @@ func TestGoJSONPackageEndAfterTheLimit(t *testing.T) {
 func TestReaderInterrupted(t *testing.T) {
 	var cancel context.CancelFunc
 	var read []string
-	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
+	fakeTAP(t, func(r report.Ran) ([]report.Test, error) {
 		read = append(read, r.Test)
 		if r.Test == "b/a.sh" {
 			cancel() // between the two tests
 		}
 		return []report.Test{{Name: r.Test, Status: report.Passed}}, nil
-	}
-	t.Cleanup(func() { delete(readers, "tap") })
+	})
 	root, r := repo(t, `groups: { g: [during, between] }
 suites:
   during: { cmd: "sh {test}", tests: "d/*.sh", format: tap }
@@ -617,7 +616,7 @@ suites:
 			t.Fatal(err)
 		}
 		s := readSummary(t, filepath.Join(rep.Dir, "summary.json"))
-		if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != c.note || !slices.Equal(read, c.read) || len(s.cases()) != 0 {
+		if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != c.note || !slices.Equal(read, c.read) || len(s.cases()) != 0 {
 			t.Errorf("%s: %+v, read %q, results %q", c.target, o, read, s.cases())
 		}
 		cancel()
@@ -638,7 +637,7 @@ suites:
 	}
 	var out bytes.Buffer
 	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out})
-	if err == nil || len(rep.Outcomes) != 2 || rep.Outcomes[1].Result != Passed || !strings.Contains(out.String(), "[dt] summary.json: ") {
+	if err == nil || len(rep.Outcomes) != 2 || rep.Outcomes[1].Result != report.Passed || !strings.Contains(out.String(), "[dt] summary.json: ") {
 		t.Errorf("error %v, outcomes %+v\n%s", err, rep.Outcomes, out.String())
 	}
 	if _, err := os.Stat(filepath.Join(rep.Dir, "next", "ran")); err != nil {

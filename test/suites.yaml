@@ -158,7 +158,17 @@ suites:
   wpts:
     format: trx
     image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
-    env: { Usage: RunTestCases, Filter: TestCategory=BVT }
+    # Its entrypoint only lists the tests unless DryRun is false, and writes these over the
+    # config's own values, so they repeat the fixture's.
+    env:
+      Usage: RunTestCases
+      Filter: TestCategory=BVT
+      DryRun: "false"
+      SutComputerName: "{server}"
+      SutIPAddress: "{server}"
+      DomainName: "{server}"
+      AdminUserName: "{user}"
+      PasswordForAllUsers: "{password}"
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture:
@@ -173,19 +183,33 @@ suites:
   smbtorture:
     format: subunit
     image: quay.io/samba.org/samba-toolbox:v0.8
-    # Its test list, with each test's limit and the shards that split it on pull requests, is
-    # still built by smb-conformance/smbtorture/run.sh; it comes here as a file of its own.
-    cmd: "smbtorture //{server}/smbbasic -p {smb-port} -U{user}%{password}"
+    # The options, as smbtorture/run.sh gives them. smbtorture's second connections, to IPC$,
+    # fail unless its NetBIOS name resolves, as localhost does. smb2.maxfid opens handles
+    # until the server refuses one, 65520 by default, which no limit fits: 2000 is far past
+    # any real client, so a pass means 2000 handles work, not that the server's ceiling was
+    # found. smb2.ea.acl_xattr writes the xattr name the server keeps for its ACLs. A space
+    # splits arguments, so the options' names have none: smbtorture ignores them in a name.
+    cmd: >-
+      smbtorture //{server}/{share} -p {smb-port} -U{user}%{password}
+      --option=netbiosname=localhost --option=clientminprotocol=SMB2_02
+      --option=clientmaxprotocol=SMB3 --option=torture:smbd=false
+      --option=torture:maxopenfiles=2000 --option=torture:acl_xattr_name=security.NTACL {test}
+    tests: test/smb-conformance/smbtorture/tests.txt
+    # One limit for every line of the list, as run.sh gives: it stops a hang, it doesn't grade
+    # speed. The slowest suite took 193 s, and one suite 22 s on one profile and 112 s on another.
+    timeout: { test: 5m }
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
-    fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
+    # smb2.multichannel.bugs.bug_15346 opens its extra connections to 445, whatever -p says.
+    fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
     needs: [linux, docker]
     options:
       kerberos:
-        cmd: "smbtorture //{server}/smbbasic -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
         tests: [smb2.session, smb2.read, smb2.lock]
+        timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}
         fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml

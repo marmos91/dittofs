@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// notRun is the result of a cell that didn't run.
-const notRun = "not run"
-
 // junitPath is a cell's JUnit file, relative to the run's directory.
 func junitPath(cell string) string {
 	return "junit/" + Slug(cell) + ".xml"
@@ -55,7 +52,7 @@ func (c Cell) junit() ([]byte, error) {
 		}
 		s.Cases = append(s.Cases, tc)
 	}
-	carried := map[string]string{Failed: Failed, notRun: Other}[c.Result]
+	carried := map[string]string{Failed: Failed, NotRun: Other}[c.Result]
 	if carried != "" && !slices.ContainsFunc(c.Tests, func(t Test) bool { return t.Status == carried }) {
 		tc := junitCase{Name: c.Name, Classname: c.Name, Time: seconds(0)}
 		if carried == Failed {

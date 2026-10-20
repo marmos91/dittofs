@@ -187,27 +187,31 @@ func TestConfigureSMB(t *testing.T) {
 	}
 }
 
-// Reset removes {share} and creates it again as configure did, with its
-// settings, owner and grant, and touches no other share.
+// Reset removes the share it's given, a test's {share}, and creates it again
+// as configure did, with its settings, owner and grant, and touches no other
+// share. A share the fixture doesn't have isn't reset.
 func TestReset(t *testing.T) {
 	f, _, url := newFakeAPI(t)
 	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Shares: "shares.yaml"}, url, 0, 40002)
 	on := true
-	s.shares = []apiclient.CreateShareRequest{{Name: "/a", EncryptData: true, StreamsDisabled: &on}, {Name: "/b"}}
-	if err := s.Reset(); err != nil {
+	s.shares = []apiclient.CreateShareRequest{{Name: "/a"}, {Name: "/b", EncryptData: true, StreamsDisabled: &on}}
+	if err := s.Reset("b"); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
 		"POST /api/v1/auth/login",
-		"DELETE /api/v1/shares/a",
-		"POST /api/v1/shares /a owner=dt-user",
-		"PUT /api/v1/shares/a/permissions/users/dt-user admin",
+		"DELETE /api/v1/shares/b",
+		"POST /api/v1/shares /b owner=dt-user",
+		"PUT /api/v1/shares/b/permissions/users/dt-user admin",
 	}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
 	}
 	if sent := f.shares[0]; sent["encrypt_data"] != true || sent["streams_disabled"] != true {
 		t.Errorf("the share recreated as %v", sent)
+	}
+	if err := s.Reset("c"); err == nil || len(f.calls) != len(want) {
+		t.Errorf("a share the fixture lacks: %v, calls %q", err, f.calls)
 	}
 }
 
