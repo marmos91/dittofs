@@ -223,7 +223,7 @@ Outcome: alice-pc slows down gradually instead of hitting a wall, and no acknowl
   first release; re-adding it is a later RFC's ([§6.5](#6.5%20The%20dedup%20oracle)).
 - The write verifier changes exactly when an acknowledged unstable write may
   have been lost ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)).
-- It is a library in the process, not a service, and never on the byte path.
+- It is a library in the process, not a service, and keeps no copy of the bytes.
 - It owns the joins no component can own alone: residency resolution on read, the
   offload pipeline, and the ordering of a write and its stability point. Blocks
   are packed by the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), which the pipeline
@@ -266,7 +266,8 @@ from being either:
   owns the content, reached by a function call. There is no engine server to
   lose: each node runs its own engine, over the shards it is primary of
   ([RFC 15](rfc-15-topology.md), [RFC 11](rfc-11-ownership.md)).
-- **It is never on the byte path.** It sequences; bytes flow from the journal
+- **It keeps no copy of the bytes.** Bytes pass through its calls, but it
+  sequences rather than stores them: they flow from the journal
   through the carver to the syncer and back, and a write is a journal append
   and an acknowledgement ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). No payload is copied through engine state.
 - **Nothing on the request path spans shares or files, but three named points.**
