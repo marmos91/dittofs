@@ -536,7 +536,7 @@ type LockOwner struct {
 Two owners of one client conflict like two clients. A **merging** owner's lock
 over its own range replaces, merges or splits it; a **stacking** owner's locks
 stack, as each of its opens is its own owner. Each adapter fills `Name` and
-`Stack` from its protocol ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)).
+`Stack` from its protocol ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)).
 
 A lock may name no open: it is then held by its owner alone and released by
 unlock, by its host's restart ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)) or by revocation. Every other lock
@@ -777,7 +777,7 @@ type LockWaiter struct {
 A request says how it waits (`LockReq.Wait`): not at all, by **poll** — the
 client sends the request again — or by **callback** — the table grants it later
 and the service reports the grant. Which a protocol uses is its adapter's
-([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)); the table holds only the kind.
+([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)); the table holds only the kind.
 
 A lock request that asks to wait and conflicts **MUST NOT** hold a worker
 ([§5.2](#5.2%20A%20recall%2C%20and%20why%20nothing%20is%20merged)). The
@@ -912,8 +912,8 @@ other views at the file's primary (§11.3).
 The table receives only neutral requests and returns neutral results and
 errors; every mapping from a protocol to them, and back, is its adapter's
 ([RFC 20 §2.1](rfc-20-adapters.md#2.1%20Two%20questions%20place%20every%20piece%20of%20logic),
-[RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state),
-[RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)). Across
+[RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state),
+[RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Across
 nodes:
 
 - **Where each runs.** The adapter translates on the gateway node holding the
@@ -1174,7 +1174,7 @@ the shard, and tell each as its `Recovery` says:
   sends the client a restart notice
   ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)).
 
-Each adapter spells its kind on the wire ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)).
+Each adapter spells its kind on the wire ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)).
 
 A reclaim is accepted only in a shard the client's record names ([§2.1](#2.1%20Client)).
 
@@ -1273,7 +1273,7 @@ ordinary writes and locks as ordinary lock requests, drops or downgrades its
 cache, and acknowledges (`AckRecall`). The conflicting request **MUST NOT** hold
 a worker while it waits: it is answered with `ErrDelay`, carrying its cause,
 `DelayRecall` ([§11](#11.%20Interface)), which each adapter spells as a
-retry-later or a pending reply ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)), and proceeds once the acknowledgement
+retry-later or a pending reply ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)), and proceeds once the acknowledgement
 arrives or the recall is revoked.
 
 Nothing is merged: a write grant means the holder was the only writer, so there
@@ -1422,7 +1422,7 @@ on its files and keeps the count within a **grant budget** of 4096 per client:
   answered without one ([§5.4](#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays));
 - when a client reaches its budget, the primary **MUST** ask it to return grants
   down to half the budget, 2048: in one request naming 2048 as the number to
-  keep, of the kinds it holds, where its protocol has such a request ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)),
+  keep, of the kinds it holds, where its protocol has such a request ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)),
   and otherwise by recalling its least recently used grants one by one;
 - a client still above 2048 one lease period after that one request has its
   least recently used grants recalled one by one down to 2048. Each of these recalls ends
@@ -2320,7 +2320,7 @@ error or `ClientStatus` field. Deleted numbers are not reused.
 | L17 | A lock names an owner, and an NFSv4 or NLM owner's locks never conflict with each other; an NLM lock needs no open. A lock request's ranges are granted all or none at the file's primary; an unlock stops at the first range its owner does not hold, `ErrRangeNotLocked`, which an NFSv4 or NLM owner never meets. A loss of NLM locks raises the durable NSM state number and reports it before grace. | Two NFSv4 lock-owners of one client lock one range: the second refused; one owner's overlapping ranges merge. An NLM lock is held with no open and refuses an overlapping NFSv4 lock. Over SMB, lock three ranges in one call whose third conflicts: refused, none of the three held; unlock three in one call whose second is not held: `ErrRangeNotLocked`, the first released and the third held. An NFSv4 owner unlocking a range it holds none of succeeds. Fail over a shard holding two hosts' NLM locks: assert the number rose before grace, both are reported through `Revoked`, their reclaims granted and a non-reclaim lock `ErrGrace`; a restart notice from one releases its locks at once. |
 | L20 | Each write request is applied whole under one version at the file's primary; overlapping writes resolve byte by byte in the primary's arrival order. | Service layer: two clients, one per protocol, write overlapping 1 MiB extents of distinct patterns 10⁴ times, with commits and offloads between: assert the overlap holds one writer's pattern, whole, the one acknowledged last. |
 | L21 | A write or read through an open never advances a time that open has suspended; through any other open it does. | Suspend `Modify` on the first of two SMB opens; write through each: assert unchanged, then advanced; resume, write: advanced. Repeat on a persistent open across a failover. |
-| L22 | An NFSv4.0 owner's sequence is checked and advanced at its home primary as §2.8 says; no out-of-sequence request changes state. | One open-owner opens files on two primaries with consecutive seqids: both accepted; a stale seqid: `ErrBadSeqID`, no change. An `ErrDelay` open and an `ErrLocked` lock each advance the sequence. Fail the second primary over: a sequenced request is `ErrStaleState` and does not advance. Fail the home primary over: the next request is accepted in grace as a new owner's. RFC 21 §12 asserts the wire values. |
+| L22 | An NFSv4.0 owner's sequence is checked and advanced at its home primary as §2.8 says; no out-of-sequence request changes state. | One open-owner opens files on two primaries with consecutive seqids: both accepted; a stale seqid: `ErrBadSeqID`, no change. An `ErrDelay` open and an `ErrLocked` lock each advance the sequence. Fail the second primary over: a sequenced request is `ErrStaleState` and does not advance. Fail the home primary over: the next request is accepted in grace as a new owner's. RFC 21 §13 asserts the wire values. |
 | L23 | An SMB rename or delete of a directory is refused while an open made through that directory exists; an NFS one is not. | Open a file in D over SMB: an SMB rename of D is `ErrShareViolation`, an NFS one succeeds and the open still reads; an open two levels below D does not refuse it. |
 | L24 | A reclaim restores only modes, locks and grants the client held, authorised like a new open against the file as it is now; it never grants more. Only a reclaim of volatile state is ever refused for memory ([RFC 24 §4.6](rfc-24-resources.md#4.6%20Open%20state)). | Open read-only with deny-none; fail over. Reclaim read-write with deny-write: refused. Remove the principal's read access, fail over, reclaim the original: refused. Reclaim exactly what was held: granted. |
 | L25 | A client record is found by (protocol, name); where it has an `Owner`, the same name from another principal is refused `ErrClientInUse`, and the record keeps its `Boot`, `Owner` and `Protect` durably. An SMB record is found by its name alone and holds no `Owner`. | Connect a name, again with the same `Boot` through another node: the same ID; with a new `Boot`: a new ID and the old state released; from another principal: refused; after a restart: the same ID. Two principals negotiate one SMB name: one record, no `Owner`; the second presenting or reconnecting the first's open is refused. |
@@ -2328,13 +2328,13 @@ error or `ClientStatus` field. Deleted numbers are not reused.
 | L27 | An NFSv4 stateid's seqid and an open-owner's confirmation are held as state and change in the step that applies the request. | Upgrade an open, then `Downgrade` with the pre-upgrade seqid: `ErrOldState`, and `TestState` with it too. A new NFSv4.0 open-owner's read before `ConfirmOpen`: refused; after it: accepted. |
 | L28 | (cluster) One node, the lease owner, renews and expires each client; no primary expires a client on its own. Recalls route to the client's back-channel node, and a lost one is signalled until the client rebinds. | A client holds state at two primaries and talks only to the first for two lease periods: the second does not expire it; kill the client: it is expired once and both release. Kill its back-channel node: `Reach.Down` is reported through another node, no grant is offered until `Rebind`, and a recall then reaches the new node. |
 | L29 | `ReclaimComplete` is tracked per (client, shard, grace instance), every node start raises every shard's incarnation, and a loss signals every client its records name to reclaim. | An NFSv4.1 client completes, its shard fails over: `ClientStatus.ReclaimNeeded`, its reclaim accepted, grace not ended before it completes again; a reclaim at a shard that lost nothing returns its state, delegations included. On one node, restart twice: the incarnation rises each time (the verifier is RFC 8 E27) and each grace waits for a new completion. An NFSv4.0 client is answered `ErrStaleClient` until it confirms again, across a lease-owner restart. A handover whose old primary dies before the table arrives: `GraceInstance` = the new incarnation before serving. |
-| L30 | Only a persistent open survives its primary's restart or failover, and every write through one, or through any open on a continuously available share, is stable before it is acknowledged. | Open SMB durable v2, write unstable, restart, reconnect: assert no open (`ErrNoReclaim`; RFC 22 §17 asserts the wire status). Repeat persistent on a continuously available share: the reconnect succeeds and every acknowledged write reads back. |
+| L30 | Only a persistent open survives its primary's restart or failover, and every write through one, or through any open on a continuously available share, is stable before it is acknowledged. | Open SMB durable v2, write unstable, restart, reconnect: assert no open (`ErrNoReclaim`; RFC 22 §18 asserts the wire status). Repeat persistent on a continuously available share: the reconnect succeeds and every acknowledged write reads back. |
 | L31 | Before a sharing violation is returned to any open, anonymous I/O, remove or rename, handle caching over the conflicting opens is broken and the deny modes checked again. | RFC 17 V21. |
 | L33 | An SMB break that times out downgrades the grant to none and keeps the opens; a revoked NFS delegation's writes are refused. | A write delegation's holder never answers a recall; open conflictingly: the open proceeds after the deadline and the holder's later writes are `ErrRevoked`. Repeat with an SMB read-write-handle lease: the open proceeds at 35 s, the lease is none, and the holder's open still exists and its next write is accepted. |
 | L34 | A deferred delete runs as the principal that marked the file, never as the last closer. | P with delete access opens delete-on-close; Q without opens too; P closes, then Q: the name is removed. Q cannot set delete pending. |
 | L35 | (cluster) A recursive watch whose subtree crosses into another shard is completed with enumerate-directory when a change there matches it. | Register a recursive watch above a child shard on another primary; create a file in the child: the watch completes with enumerate-directory. |
 | L36 | An open of a named stream is an open of its base file for deny modes, delete and keeping the file alive; no open suspends the change time. | Open a stream deny-write over SMB; open the base for write over NFS: refused; unlink the base's name: the stream open keeps the file alive. Suspend the change time on an SMB open and write: the change attribute advanced. |
-| L38 | A proposal changes no state until its confirm; it is volatile in the answering node's open state and confirmed only by its principal within one lease period. | A confirmed client holds a lock; `Propose` its owner with a new verifier: the lock held and no record written; confirm from another principal: refused. RFC 21 §12 holds the wire walk. |
+| L38 | A proposal changes no state until its confirm; it is volatile in the answering node's open state and confirmed only by its principal within one lease period. | A confirmed client holds a lock; `Propose` its owner with a new verifier: the lock held and no record written; confirm from another principal: refused. RFC 21 §13 holds the wire walk. |
 | L39 | No worker waits on a blocked lock: a waiter is volatile, served first in, first out per range, and ends only on what §2.10 lists; an NLM grant is resent, never released for a silence; no adapter answers a waiting request other than as granted before `CancelLock` returns. | Hold an exclusive lock; owners request blocking exclusive A, shared B, exclusive C while a fourth takes non-waiting shared locks; release: A first, B, then C, the fourth refused while A waits, no worker held. An NFSv4 waiter that stops polling loses its reservation after a lease period. An NLM grant whose acknowledgements are dropped for ten minutes is still resent and held; a refusal releases it. An SMB waiter pending five minutes is granted on unlock. Race a cancel against an unlock 10⁴ times: granted and held, or cancelled and none held. |
 | L40 | Each primary holds at most 4096 caching grants per client; a client at the budget is offered none and is asked to return down to 2048, least recently used first. | An NFSv4.1 client opens 5000 files at one primary: grants stop at 4096, a recall-any names 2048, and one that ignores it is recalled down to 2048 within a lease period plus the deadline. Over SMB, writing through the first lease every few seconds: breaks reach 2048 and spare the first lease. |
 | L41 | A client record's `Lease.Expires` is volatile; its `Adapter` is durable, written only in the step of the change it belongs to, and only over the bytes the writer read. | `AddSession` with new bytes, restart, `Record` through another node: the bytes as written and one session. Two `AddSession`s expecting the same bytes race: one writes, the other writes nothing and is answered `ErrRecordChanged` with the first's record. 10⁵ clients renew for two lease periods: no record write; restart the lease owner: none expired within a lease period. RFC 21 N18 holds the `CREATE_SESSION` replay. |

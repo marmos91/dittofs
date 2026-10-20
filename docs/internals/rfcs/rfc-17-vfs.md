@@ -602,7 +602,7 @@ holds.
 
 | Type | What it is |
 | --- | --- |
-| `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Principal`, the proven principal or zero for none; `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, RFC 18's `Proof` fields — `Name`, `Principal`, `SIDs`, `DenyOnly`, `Machine`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)). Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) |
+| `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Principal`, the proven principal or zero for none; `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, RFC 18's `Proof` fields — `Name`, `Principal`, `SIDs`, `DenyOnly`, `Machine`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Every method takes one; the server resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
 | `OpenRef` | `{Client ClientID; Open OpenID; Handle Handle; Kind RefKind; Seq uint32}`: an open, a delegation, or an anonymous open, and the stateid seqid presented with it (zero: current; an older one is `StateError` `OldState`) — a lock stateid's for a `LOCK` or `LOCKU` that names one. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). It carries no identity: the call's `id` is compared with the principal the open was granted to (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(c, g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)) |
@@ -930,7 +930,7 @@ bounded by the hold the adapter allows (`vfs.WithHold`, [§5.9](#5.9%20Copy%20an
 **How long a delayed request may be held** is the adapter's, chosen by the
 `Delay`'s cause and never by the operation: an NFS adapter answers its retry
 signal at once, and SMB's bounds and final statuses are
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)'s. Two
+[RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)'s. Two
 bounds there follow from this RFC and **MUST** hold: a request held behind a
 recall or a clone is held past the break deadline —
 [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)'s
@@ -1182,8 +1182,8 @@ importing the layer above. `vfs.Errors()` returns every sentinel and one value
 of every typed kind, so an adapter's error table can be checked total
 ([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
 How each reaches the wire is
-[RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire) and the
+[RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+[RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors) and the
 adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)).
 
 | Error | Means | Kind |
@@ -1632,8 +1632,8 @@ then an error (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`) for the chunk after
 them. An adapter answers a short read of the `n` bytes when `n > 0` and its
 protocol allows, and the error otherwise; `ErrUnavailable` is transient
 (held, as §3.2 says). The wire statuses are
-[RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire)'s
-and [RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)'s. A
+[RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)'s
+and [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)'s. A
 reply is never padded with zeros for the bytes that failed.
 
 `SEEK_DATA`, `SEEK_HOLE` and the allocated ranges of `READ_PLUS` and SMB's
@@ -1956,7 +1956,7 @@ result that carries a `File`. A `WCC`'s `Before` is returned only when the
 primary captured it and accepted the operation in one hold of the file's accept
 lock — not under the commit serialisation, which lets another write be accepted
 between the capture and the operation — and never for a directory over NFSv3
-([RFC 21 §11](rfc-21-nfs.md#11.%20Invariants)'s N19); where the lock cannot be
+([RFC 21 §12](rfc-21-nfs.md#12.%20Invariants)'s N19); where the lock cannot be
 taken it is nil: for a write that waited on a recall, a contended lock, or
 **(cluster)** a call whose two files sit at two primaries. `After` is read in the same hold once
 the change is staged. An adapter answers a reply's attributes from the `WCC` and

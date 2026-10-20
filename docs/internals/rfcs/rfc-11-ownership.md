@@ -1026,8 +1026,8 @@ never applied a second time. The request ID is the adapter's, derived from its
 protocol's own retry identity rather than the connection, so every retry the
 protocol lets a client send carries it again
 ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope); each
-adapter's derivation is [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)'s
-and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)'s). A
+adapter's derivation is [RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state)'s
+and [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)'s). A
 retry whose identity died with its gateway node's connection state is a new
 request, and a replay the protocol names by open state is matched by the
 primary from its open's own state.

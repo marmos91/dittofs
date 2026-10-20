@@ -649,8 +649,8 @@ operation is missing: a copy becomes a server-side byte copy, reads at the
 source's primary through `vfs.Peers` and writes at the destination's; a clone
 is answered as a cross-device refusal, never as an operation the server lacks,
 which a client would record for the whole mount. Each adapter's status is its
-own ([RFC 21 §5.6](rfc-21-nfs.md#5.6%20Open-state%20and%20capacity%20errors%20on%20the%20wire),
-[RFC 22 §6.6](rfc-22-smb.md#6.6%20Service%20errors%20on%20the%20wire)).
+own ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+[RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)).
 
 > ponytail: a cross-shard clone costs a byte copy. Add copy to the calls above,
 > a prepare at the source's primary that freezes the extent and commits the
@@ -663,7 +663,7 @@ Every call a node forwards to a primary carries one envelope:
 
 | Field | Means |
 | --- | --- |
-| request ID | the adapter's, derived from its protocol's own retry identity and never from the connection, since a client may retry on a new connection; stable across every retry of the same request the protocol lets the client send, on any connection and through any gateway node that holds the client, and unique across the installation for distinct requests. It is one byte string ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)) whose first byte tags the family it was derived in, so IDs of two families never compare equal. How each protocol derives it is its adapter's ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state), [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state)) |
+| request ID | the adapter's, derived from its protocol's own retry identity and never from the connection, since a client may retry on a new connection; stable across every retry of the same request the protocol lets the client send, on any connection and through any gateway node that holds the client, and unique across the installation for distinct requests. It is one byte string ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)) whose first byte tags the family it was derived in, so IDs of two families never compare equal. How each protocol derives it is its adapter's ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)) |
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the gateway node; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)) |
@@ -741,7 +741,7 @@ Every call a node forwards to a primary carries one envelope:
 - **A retry whose connection state died with its gateway node is a new
   request** when the protocol derives its identity from that state; whether
   that holds, and what keeps a non-idempotent call safe across it, is the
-  adapter's ([RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)).
+  adapter's ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state)).
 
 **Mixed versions (cluster).** During a rolling upgrade a call may be forwarded
 between nodes of different versions. The envelope and the neutral call are
@@ -795,7 +795,7 @@ which forwards a layout request to the primary of the file's shard, through a fu
 holds the layout as open state ([RFC 14](rfc-14-open-state.md)). Clients then
 read and write at the data servers the layout names. The wire is RFC 21's
 ([§2.1](rfc-21-nfs.md#2.1%20Versions%20served),
-[§5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state)).
+[§11.4](rfc-21-nfs.md#11.4%20Open%20state)).
 
 **A layout names one data server: the primary of the file's shard.** A file is
 never split across shards, so a layout never names more than one; striping one
@@ -975,7 +975,7 @@ embedded single-node store gives none.
   sequenced unlock whose replies are lost across a handover are each answered
   once (T3, T10; [RFC 11 §14](rfc-11-ownership.md#14.%20Test%20plan%20and%20benchmarks) runs them as scenarios).
   Each adapter's derivations are tested in its own RFC
-  ([RFC 21 §12](rfc-21-nfs.md#12.%20Conformance), [RFC 22 §17](rfc-22-smb.md#17.%20Conformance)).
+  ([RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance)).
 - **Clone across shards (cluster):** a clone whose destination lies in
   another shard is refused as cross-device, a copy of it is copied server-side
   and answers success with its count, and a later same-shard clone on the
