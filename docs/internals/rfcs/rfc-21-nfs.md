@@ -1723,6 +1723,96 @@ What a client sees depends on whether the move carries the address it mounts:
 > into `EIO` at its timeout. Revisit with a referral, or with client records
 > carried to B, when a move without lost locks is required of NFS clients.
 
+### 7.5 Namespace translation
+
+[RFC 7](rfc-7-namespace-metadata.md) is protocol-neutral: its records, rules and errors name no NFS
+field. This section is where NFS's fields, verifiers and statuses meet them. The
+NFSv4 attribute list is §8 and [Appendix B](#Appendix%20B%20%E2%80%94%20attributes); the table below adds what
+NFSv3 carries, and the rules after it bind both versions.
+
+| RFC 7 field | NFSv3 (`fattr3`, `sattr3`) | NFSv4 |
+| --- | --- | --- |
+| `Type` | `ftype3`; a `Stream` is never reached (§8.2) | `type`, likewise |
+| `Mode` | `mode` | `mode`, `mode_set_masked` |
+| `Owner`, `Group` | `uid`, `gid`, through [RFC 18 §4.3](rfc-18-identity.md#4.3%20uid%20and%20gid) | `owner`, `owner_group`, through [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings) |
+| `Nlink`; a directory's `Subdirs` | `nlink`: a file's `Nlink`, a directory's 2 + `Subdirs` and never below 2 | `numlinks`, likewise |
+| `Size`, `Charged` | `size`, `used` | `size`, `space_used` |
+| `Device` | `rdev` | `rawdev` |
+| `Number` | `fileid` | `fileid` |
+| the share's filesystem identity | `fsid`, derived from the `ShareID` | `fsid`, likewise |
+| `Access`, `Modify`, `Change` | `atime`, `mtime`, `ctime` | `time_access`, `time_modify`, `time_metadata` |
+| `Birth` | none | `time_create` |
+| `Version` | none: NFSv3 clients validate by `ctime` and `mtime` | `change` |
+| the stored markers hidden, system, archive | none | `hidden`, `system`, `archive` |
+| the stored markers read-only, sparse | none | none |
+| `CreateVerifier` | `createverf3` of an `EXCLUSIVE` `CREATE` | `verifier4` of an `EXCLUSIVE4` or `EXCLUSIVE4_1` `OPEN` |
+
+- **Times.** `SET_TO_SERVER_TIME` and `SET_TO_SERVER_TIME4` set a server-chosen
+  time, clamped as [RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) says. `SET_TO_CLIENT_TIME` and
+  `SET_TO_CLIENT_TIME4` are a client-given time, stored as given. NFS sets
+  times on no open, so a client-given time needs ownership, an ACL's write
+  attributes or privilege
+  ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)).
+- **Exclusive create.** The verifier of an NFSv3 `EXCLUSIVE` create and of an
+  NFSv4 `EXCLUSIVE4` or `EXCLUSIVE4_1` open is RFC 7's create verifier
+  ([RFC 7 §2.10](rfc-7-namespace-metadata.md#2.10%20Exclusive%20create)), stored in `CreateVerifier` and never in `atime` or
+  `mtime`. The `SETATTR` a client sends after an `EXCLUSIVE` or `EXCLUSIVE4`
+  create is the first `SetAttrs`, which clears it. The attributes an
+  `EXCLUSIVE4_1` open carries (`suppattr_exclcreat`, Appendix B) are applied by
+  the create's own transaction, not by a `SetAttrs`, and leave the verifier in
+  place.
+- **The credential's group.** An `AUTH_SYS` credential's `gid` is the group
+  RFC 7 gives a new file
+  ([RFC 7 §2.4](rfc-7-namespace-metadata.md#2.4%20Attributes%2C%20and%20who%20writes%20them)), resolved by [RFC 18 §4.3](rfc-18-identity.md#4.3%20uid%20and%20gid); a gid
+  no principal holds counts as none. `AUTH_NONE` and `RPCSEC_GSS` carry no group
+  on the wire, so the principal's primary group applies.
+- **Asserted identities.** `AUTH_SYS` and `AUTH_NONE` callers are asserted, so
+  `authenticated` is unset and Authenticated Users and BUILTIN\Users entries do
+  not match them
+  ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)): a tree whose ACL grants only those, as some
+  tools write it, needs a named entry, a group's or everyone's for these
+  clients. `RPCSEC_GSS` callers are authenticated
+  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20flavour%20proved%3A%20authenticated%2C%20admin%2C%20privileged)); which NFS callers are privileged is §8.1.
+- **umask.** NFSv4.2's `mode_umask` ([RFC 8275](https://www.rfc-editor.org/rfc/rfc8275.html)) is the umask RFC 7 says a
+  create carries apart from the mode: ignored when the parent holds
+  inheritable entries, applied to the mode when it holds none (Appendix B).
+- **The ACL rules RFC 7 states are RFC 8881's.** The ordered walk is
+  [RFC 8881 §6.2.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.2.1)'s; removing an entry with delete on the file or
+  delete a child on its directory is §6.2.1.3.2's; mode and ACL agree as §6.4
+  requires; the `chmod` merge is §6.4.1.1's; inheritance at create is
+  §6.4.3's.
+- **Listings.** `READDIR` is `Entries`, `READDIRPLUS` and an NFSv4 `READDIR`
+  asking for attributes are `EntriesPlus`; cookies and the verifier are §7.2.
+- **Change info and weak cache consistency.** `change_info4`'s `before` and
+  `after` are the directory's `Version` read just before and just after the
+  operation, and `atomic` is always false; NFSv3 `wcc_data` omits `before` for
+  a directory always, and for a file unless it was captured under the file's
+  accept lock
+  ([RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps)).
+- **Delete pending.** NFS cannot set it, but meets it: an `OPEN` of a
+  delete-pending file, and a `CREATE`, `LINK` or `RENAME` into a delete-pending
+  directory, are `ErrDeletePending`
+  ([RFC 7 §8.2](rfc-7-namespace-metadata.md#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later)), answered as an access error (§5.6): NFS has no
+  delete-pending status, and a client told "no such entry" would create again.
+
+**Errors.** RFC 7's neutral errors
+([RFC 7 §11.3](rfc-7-namespace-metadata.md#11.3%20Neutral%20errors)) reach the wire as below; the rows §5.6 already
+holds — `ErrStale` for a share being removed, `ErrNameTooLong`, `ErrPerm`,
+`ErrCross` (`CrossProject`), `ErrInconsistent`, `ErrDeletePending`, `ErrDelay` —
+are not repeated.
+
+| RFC 7 error | NFSv4 | NFSv3 |
+| --- | --- | --- |
+| `ErrNotFound` | `NFS4ERR_NOENT` | `NFS3ERR_NOENT` |
+| `ErrExist` | `NFS4ERR_EXIST` | `NFS3ERR_EXIST` |
+| `ErrNotEmpty` | `NFS4ERR_NOTEMPTY` | `NFS3ERR_NOTEMPTY` |
+| `ErrNotDir`, `ErrIsDir` | `NFS4ERR_NOTDIR`, `NFS4ERR_ISDIR` | `NFS3ERR_NOTDIR`, `NFS3ERR_ISDIR` |
+| `ErrAccess` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
+| `ErrInvalid` | `NFS4ERR_BADNAME` for a name RFC 7 refuses (§7.3); `NFS4ERR_INVAL` otherwise, a rename into its own descendant included | `NFS3ERR_INVAL` |
+| `ErrStale` — a released file's handle | `NFS4ERR_STALE` | `NFS3ERR_STALE` |
+| `ErrWrongShare` — a handle of another share than the one asked | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
+| `ErrCross` (`CrossShare`) — a `RENAME` or `LINK` between shares | `NFS4ERR_XDEV` | `NFS3ERR_XDEV` |
+
 ## 8. Attributes
 
 NFSv4 attributes are a numbered list: some required, some recommended; the

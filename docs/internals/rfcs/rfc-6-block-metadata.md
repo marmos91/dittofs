@@ -56,8 +56,8 @@ files still use that chunk. The read path asks it where bytes are; GC (garbage
 collection) asks it what is safe to delete. It lives in the metadata store, the
 same transactional database as the names and directories ([RFC 7](rfc-7-namespace-metadata.md)).
 
-In outline: clients write over NFS (Network File System) or SMB (Server Message
-Block) into a local journal and are acknowledged from there; later the bytes
+In outline: clients write over a file protocol, whichever adapter serves it
+([RFC 20](rfc-20-adapters.md)), into a local journal and are acknowledged from there; later the bytes
 are cut into chunks of about 256 KiB, each named by the hash of its content,
 packed into blocks of about 4 MiB and uploaded to an S3 (Simple Storage Service)
 bucket; then the local copy may be dropped ([RFC 0](rfc-0-data-lifecycle.md)).
@@ -71,7 +71,7 @@ bucket `dfs-data`. Every write the journal stages gets a **version**, higher
 than any before it for that file.
 
 1. **09:00.** alice-pc writes 1 MiB at offset 4 GiB, version v1, into a part of
-   the disk never written before, then sends an SMB flush. The flush is answered
+   the disk never written before, then sends a flush. The flush is answered
    once the journal has synced the bytes; within a second the journal's group
    commit records in metadata that the extent exists. Only the journal holds the
    bytes.
