@@ -1724,7 +1724,8 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    consecutive runs, every profile, and every CI job that runs a suite through `dt`, the lint jobs
    and the parity jobs, publishes through `dt report`.
    - **The same results,** per cell: the same verdict (green or not), the same new failures, the
-     same known failures and the same tests run, counted as the tests that passed or failed. A
+     same known failures and the same tests run, counted as the tests that passed or failed,
+     expected skips excluded, as smbtorture's failed `CSN 0x7fff` draw is (§4.6). A
      difference whose cause is listed beforehand doesn't reset the count: what `dt` grades that
      the scripts don't, such as skips and tests with no result (§4.6, §4.7), and where the server
      runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they

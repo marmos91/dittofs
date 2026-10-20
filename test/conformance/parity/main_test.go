@@ -26,6 +26,9 @@ func TestCompare(t *testing.T) {
 	unexpectedPass := report.Test{Name: "u", Status: report.Failed, RawStatus: report.Passed, Grade: report.UnexpectedPass}
 	skipped := report.Test{Name: "s", Status: report.Other, RawStatus: report.Skipped, Grade: report.UnexpectedSkip}
 	expectedSkip := report.Test{Name: "e", Status: report.Skipped, RawStatus: "NotExecuted", Grade: report.ExpectedSkip}
+	// smbtorture fails the self-contradictory ChannelSequence draw, its reader
+	// grades it an expected skip and its scripts rewrite it to a skip.
+	draw := report.Test{Name: "smb2.replay.channel-sequence", Status: report.Skipped, RawStatus: report.Failed, Grade: report.ExpectedSkip}
 	noResult := report.Test{Name: "i", Status: report.Other, Grade: report.Incomplete}
 	cell := func(name, result string, tests ...report.Test) report.Cell {
 		return report.Cell{Name: name, Result: result, Tests: tests}
@@ -59,6 +62,9 @@ func TestCompare(t *testing.T) {
 		{"skips only dt grades", []report.Cell{cell("wpts/memory", "not run", pass, known, skipped, expectedSkip)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
 			true, "(dt: not run, scripts: exit 0): the same", nil},
+		{"the ChannelSequence draw", []report.Cell{cell("smbtorture/memory", report.Passed, pass, draw)},
+			map[string]script{"smbtorture/memory": {"0", "ran 1\n"}},
+			true, "(dt: passed, scripts: exit 0): the same", nil},
 		{"tests with no result only dt grades", []report.Cell{cell("wpts/memory", "not run", pass, known, noResult)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
 			true, "(dt: not run, scripts: exit 0): the same", nil},

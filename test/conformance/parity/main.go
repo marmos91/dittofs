@@ -58,7 +58,7 @@ type side struct {
 	// test, as it does when one has no result: only the verdict compares.
 	graded     bool
 	new, known []string // the names of the new and the known failures, sorted, each once
-	ran        int      // the tests that passed or failed
+	ran        int      // the tests that passed or failed, expected skips excluded
 }
 
 func main() {
@@ -184,7 +184,8 @@ func scriptsName(cell string) string {
 }
 
 // fromDT is a cell's results through dt. A test ran when the tool gave it a
-// pass or a failure, whatever its grade made of it.
+// pass or a failure, whatever its grade made of it, but for an expected skip,
+// which the scripts count as a skip.
 func fromDT(c report.Cell) side {
 	d := side{result: c.Result, green: c.Result == report.Passed, graded: true}
 	onlyDT := false
@@ -197,7 +198,7 @@ func fromDT(c report.Cell) side {
 		case t.Grade == report.UnexpectedSkip || t.Grade == report.Incomplete:
 			onlyDT = true
 		}
-		if raw := cmp.Or(t.RawStatus, t.Status); raw == report.Passed || raw == report.Failed {
+		if raw := cmp.Or(t.RawStatus, t.Status); t.Grade != report.ExpectedSkip && (raw == report.Passed || raw == report.Failed) {
 			d.ran++
 		}
 	}
