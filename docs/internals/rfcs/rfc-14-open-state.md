@@ -2329,8 +2329,9 @@ accepts.
 ## Appendix B — where the current code differs
 
 *Informative.* Each line names a requirement above and what the code does
-today. [RFC 17 §9](rfc-17-vfs.md#9.%20Migration) slice 3 closes them, as
-`pkg/metadata/lock` becomes `pkg/openstate`.
+today. [RFC 17 §9](rfc-17-vfs.md#9.%20Migration) closes them: `pkg/openstate` is built
+new from this RFC, its `*openstate.Table` replaces `pkg/metadata/lock` behind
+slice 3's lock interface, and `pkg/metadata/lock` is then deleted, not ported.
 
 | Requirement | Today |
 | --- | --- |
