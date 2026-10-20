@@ -267,7 +267,11 @@ This RFC **MUST NOT** be read as specifying:
   [RFC 22](rfc-22-smb.md) own;
 - the management API's tokens, sessions, roles and sign-in throttle, which are
   [RFC 23 §5](rfc-23-control-plane.md#5.%20Authentication%20and%20authorization)'s;
-  this RFC only checks the password and the account (§8.1);
+  this RFC only checks the password, an OpenID Connect ID token and the
+  account (§8.1, §8.2);
+- OpenID Connect on a file protocol: neither NFS nor SMB can carry a bearer
+  token, so an identity provider reaches file access only as a directory or a
+  Kerberos realm it backs (§5);
 - which protocol flavour gives which proof kind and protection (§6.1), which
   [RFC 21 §5.7](rfc-21-nfs.md#5.7%20Translation%20to%20open%20state) and [RFC 22 §6.7](rfc-22-smb.md#6.7%20Translation%20to%20open%20state) own;
 - where secrets are stored and how they rotate, which is
@@ -320,6 +324,7 @@ The schemes are:
 | `sid` | a Windows SID, binary form | users and groups together | every user and group but an API-only account (§8), always (§4.4) |
 | `krb` | `name@REALM`, as the KDC spells it | users and machines | users that sign in with Kerberos under a name §4.2's rule does not derive; every machine |
 | user or group name | the record's `Name` | users; groups | every user and group |
+| `oidc` | (issuer, subject): an ID token's `iss` and `sub`, as the issuer spells them | users | API accounts linked to an issuer (§8.2); no file protocol carries it |
 
 - Every spelling **MUST** be unique in its scheme. A write that would give a
   second principal a spelling another holds **MUST** fail, as RFC 16's index
@@ -346,8 +351,9 @@ It is never required and never defaulted.
   or, for a directory principal, taken from the directory entry when it has
   one — its `mail` attribute, for example — and written through
   `Minter.SetEmail` at the mint and at each later answer that changes it
-  (§5.1). A directory principal's address is read-only to the API, as its
-  other directory fields are.
+  (§5.1), or from a verified `email` claim of an OpenID Connect issuer the
+  account is linked to (§8.2). An address from a directory or an issuer is
+  read-only to the API, as a directory principal's other fields are.
 - It is stored as given, case preserved. The API refuses a value that is not a
   syntactically valid address. If a lookup is ever added, it compares the
   domain case-insensitively and the local part as stored.
@@ -507,6 +513,7 @@ type Deps struct {
 	Mint       Minter              // the only writes (§2.4, §5.1)
 	Secrets    SecretProvider      // RFC 13 §7: keytab, NT hashes, API password hashes, the bind credential, the machine-account password
 	Logons     LogonSink           // RFC 25 §4.1's logon stream
+	Issuers    IssuerKeys          // fetches each OpenID Connect issuer's signing keys over TLS (§8.2)
 	Clock      clock.Clock
 	Metrics    *metrics.Registry
 	Logger     *slog.Logger
@@ -647,7 +654,7 @@ type SignInResult struct {
 type Keys struct{ Session, Subkey, APRep []byte }
 
 type Service uint8 // NFS, CIFS, Host: the keytab service name a ticket is for
-type Scheme uint8  // UID, GID, SID, Krb, UserName, GroupName, Owner (name@domain), Qualified (DOMAIN\name)
+type Scheme uint8  // UID, GID, SID, Krb, UserName, GroupName, Owner (name@domain), Qualified (DOMAIN\name), OIDC (issuer and subject; §8.2)
 // Spelling is one protocol's name for a principal: Num, SID or Text is set, by Scheme.
 type Spelling struct{ Scheme Scheme; Num uint32; SID SID; Text string }
 // NTLMAuthenticate is the decoded AUTHENTICATE message the adapter's NTLM mechanism hands over.
@@ -1545,7 +1552,7 @@ check is identity's, which the API calls directly (§8.1). This RFC fixes only w
   account ([RFC 23 §5.1](rfc-23-control-plane.md#5.1%20API%20accounts%20are%20principals%20with%20a%20role)) — is given none: no uid, gid
   or SID is allocated for it (§2.3), no NT hash is kept, `Find` never returns
   it, and no ACL entry or owner can name it, so it can sign in over no file
-  protocol. Giving it any spelling makes it a file user, and allocates the
+  protocol. Giving it any file spelling — any scheme but `oidc` (§8.2) — makes it a file user, and allocates the
   spellings it still lacks in the same transaction; its NT hash is stored at
   its next password set (§3.5).
 - An API user and a file principal **MAY** be one `User` record, sharing a
@@ -1583,6 +1590,20 @@ type APISignIn interface {
 	// only while identity.ntlm is on and the account holds file spellings, the
 	// NT hash (§3.5). It writes nothing; the API writes both with the record.
 	Hashes(ctx context.Context, p metadata.Principal, password []byte) (PasswordHashes, error)
+	// VerifyToken verifies an OpenID Connect ID token and returns the principal
+	// its (issuer, subject) is linked to, minting an API-only one where the
+	// issuer allows it, with the claims the API reads (§8.2). ErrLogonFailure
+	// for a token that fails any check or an unlinked subject; ErrUnavailable
+	// when the issuer's keys cannot be had.
+	VerifyToken(ctx context.Context, raw []byte) (metadata.Principal, TokenClaims, error)
+}
+
+// TokenClaims are the claims of a verified ID token the API reads. None of
+// them identifies the account.
+type TokenClaims struct {
+	Issuer string
+	Groups []string // the values of the issuer's configured role claim, for RFC 23's role map
+	Email  string   // set only when the token says email_verified
 }
 ```
 
@@ -1594,6 +1615,68 @@ type APISignIn interface {
   ([RFC 23 §6](rfc-23-control-plane.md#6.%20The%20audit)).
 - `Hashes` is the one place the NT-hash rule of §3.5 is applied, so the API
   cannot store an NT hash that identity would refuse to keep.
+
+### 8.2 OpenID Connect sign-in
+
+An installation **MAY** configure OpenID Connect issuers (`identity.oidc`),
+for management-API sign-in only. The API obtains an ID token
+([RFC 23 §5.5](rfc-23-control-plane.md#5.5%20OpenID%20Connect%20sign-in)) and
+calls `VerifyToken`, which **MUST** refuse the token unless every check holds
+(OpenID Connect Core 1.0 §3.1.3.7):
+
+- its signature verifies under a key of the issuer's key set (RFC 7517), named
+  by the token's `kid`, with an algorithm the issuer's configuration allows,
+  never `none`;
+- `iss` is a configured issuer, exactly as configured;
+- `aud` holds the issuer's configured audience, the installation's client ID
+  unless set otherwise;
+- `exp` is in the future and `nbf` and `iat`, when present, are not, each
+  within `identity.oidc_clock_skew`;
+- `nonce` matches, where the flow that got the token sent one; the device
+  grant sends none.
+
+**The issuer's keys.** Identity fetches each issuer's key set from the
+`jwks_uri` its discovery document names, over TLS only, and caches it for
+`identity.oidc_jwks_ttl`. A token naming a `kid` the cache lacks refetches
+once, at most once a minute per issuer. When a fetch fails, a cached key set
+no older than the TTL plus `identity.oidc_jwks_stale_grace` **MAY** be used,
+each use counted; past it the sign-in fails `ErrUnavailable`, as §5.3 bounds a
+directory answer. An unfetchable key set never yields a session, anonymous or
+otherwise.
+
+**From token to principal.** The subject is the `oidc` spelling (issuer,
+`sub`) (§2.2), looked up in the protocol-ID index. Nothing else in the token
+identifies the account: `email` and `preferred_username` can be reassigned at
+the issuer, and **MUST NOT** be used to find or link a principal.
+
+- An operator links an (issuer, subject) to an existing user by writing that
+  spelling on its record
+  ([RFC 23 §3.5](rfc-23-control-plane.md#3.5%20Users%2C%20groups%2C%20grants%20and%20netgroups)),
+  and unlinks it by removing it. The `oidc` spelling is not a file spelling:
+  it allocates nothing and gives the account no file access (§8).
+- An unlinked subject is refused `ErrLogonFailure`, unless the issuer's `mint`
+  is on (default off). Then the first sign-in mints an API-only user through
+  `Minter`, holding the `oidc` spelling and no other, with no role of its own
+  and a generated name the operator may change — never the token's
+  `preferred_username` or `email`. A lost mint race binds to the winner, as
+  §5.1 says.
+- A verified `email` fills `User.Email` through `Minter.SetEmail` when it
+  differs. An account linked to an issuer takes its address from it, read-only
+  to the API (§2.2). A changed address at the issuer changes no principal.
+- Group or role claims are handed back as `Groups`; the API maps them to roles
+  ([RFC 23 §5.5](rfc-23-control-plane.md#5.5%20OpenID%20Connect%20sign-in)).
+  A role still grants nothing on files (§8).
+
+> decision: the `oidc` spelling keys on (issuer, subject) only. OpenID Connect
+> Core guarantees that pair stable and never reassigned; an address or a user
+> name can pass to another person at the issuer, who would then inherit the
+> account. Overturned if an issuer is shown to reissue subjects, which no
+> conforming issuer does.
+
+> ponytail: SAML is not supported. Its bindings are browser redirects and
+> posts, and the installation has no web interface; most identity providers
+> that offer SAML also offer OpenID Connect. Revisit when a web console is
+> added.
 
 ## 9. Failure modes
 
@@ -1612,6 +1695,9 @@ type APISignIn interface {
 | wrong password, unknown NTLM user | `ErrLogonFailure`, never guest | §3.6 |
 | `Anonymous` principal deleted | calls that would be squashed are refused | §6.2 |
 | owner string or SID with no principal | `NFS4ERR_BADOWNER`; over SMB RFC 19 decides | §4.4, §4.5 |
+| ID token fails a check, or its subject is unlinked and minting is off | `ErrLogonFailure`; no session | §8.2 |
+| issuer's key set unfetchable, cached set within grace | the cached keys are used, counted | §8.2 |
+| issuer's key set unfetchable past the grace | `ErrUnavailable`; the sign-in fails | §8.2 |
 
 ## 10. Invariants and observability
 
@@ -1648,12 +1734,17 @@ type APISignIn interface {
 | Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `reason` = `disabled`, `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing` | counter |
 | Directory lookups by result | `identity_directory_lookups_total{question, result}`: `question` = `name`, `sid`, `groups`, `group`; `result` = `fresh`, `queried`, `not_found`, `stale`, `refused` | counter |
 | Directory query latency | `identity_directory_seconds` | histogram (`request`) |
+| ID-token verifications by result | `identity_oidc_verifications_total{result}`: `ok`, `invalid`, `unlinked`, `minted`, `unavailable` | counter |
+| Key-set fetches that failed, and stale key sets used | `identity_oidc_jwks_fetch_failures_total`, `identity_oidc_jwks_stale_total` | counter |
 | Cache effectiveness | `identity_cache_lookups_total{cache, result}`: `cache` = `caller`, `directory`; `result` = `hit`, `miss` | counter |
 | Age of the principals generation served | `config_generation_lag_seconds{kind="principals"}`, RFC 13's gauge | gauge |
 
 | Condition | Scope | Raised |
 | --- | --- | --- |
 | `directory_unreachable` | installation | degraded while lookups are served stale within the grace; unhealthy once one is refused past it; cleared by the first query the directory answers |
+
+No metric label or span attribute carries an issuer's subject, an address or a
+user name.
 
 **Spans.** `identity.authenticate` is a child of the adapter's request span. `identity.resolve` is a child of
 the service-call span, opened only on a cache miss. Each directory query is a child of whichever opened it.
@@ -1702,6 +1793,10 @@ with the directory and KDC as local test services.
 | §4.4 anonymous lookup | Over an anonymous session on `IPC$`, `LookupSids` of an unminted directory SID: assert no record written. | an unauthenticated caller minting principals |
 | §4.6 name case | Create two users whose names differ only in case: assert the second refused as a duplicate. | names unique byte for byte |
 | §5.5 `AUTH_SYS` from the directory | In `rfc2307` mode, an `AUTH_SYS` call sends the `uidNumber` of a directory entry with no record: assert the caller is that entry's minted principal, with its directory groups, and not `authenticated`. | a directory that serves names but never maps a claimed uid |
+| §8.2 token checks | Against a test issuer, present ID tokens with the wrong issuer, the wrong audience, an expired `exp`, an `nbf` ahead past the skew, a corrupted signature and `alg` `none`: assert each refused `ErrLogonFailure`. | a check skipped |
+| §8.2 key-set outage | Sign in once, then make the issuer's key set unreachable under a fake clock: within the TTL plus the grace assert sign-in succeeds, counted stale; past it assert `ErrUnavailable` and no session. | fail-open on an outage, or no grace |
+| §8.2 unlinked subject | Sign in a subject linked to no user: assert refused with minting off; turn `mint` on: assert an API-only user minted with the `oidc` spelling only and no uid, gid or SID. | a subject let in unlinked; a minted file user |
+| §8.2 address change | Link alice's subject, sign in; change her `email` at the issuer and give her old address to bob's subject: assert alice's next sign-in is the same principal with the new address, and bob's is refused. | linking by e-mail |
 | §5.5 NTLM without a domain controller | With a directory and no pass-through configured, an NTLM sign-in for a user only in the directory: assert `ErrLogonFailure`, and no anonymous or guest session. | a directory-only user let in, or mapped to guest |
 | §5.1 mint conflict | In `rfc2307` mode, mint directory user alice, then sign in bob, whose entry has another SID and alice's `uidNumber`: assert the sign-in fails, bob is bound to no principal, and alice's record is unchanged. | a lost mint bound to whichever principal holds the row |
 
