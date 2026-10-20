@@ -991,8 +991,8 @@ with a PAC is then checked against the record §3.4 says.
   the `gid` index; uid and gid 0 map to root and 65534 to anonymous (§2.1). With
   a directory configured, a claimed uid or gid with no row is asked of the
   directory by `uidNumber` or `gidNumber`, and an entry that answers is minted
-  as a directory principal (§5.5). Such lookups are capped per client address
-  (§7.3).
+  as a directory principal under §5.5's guards. Such lookups are capped per
+  client address, and such mints per node (§7.3).
 - **An `AUTH_SYS` uid with no principal behind it**, after that lookup, acts as
   the share's anonymous principal, and the call is counted
   (`identity_unmapped_total{scheme="uid"}`).
@@ -1245,15 +1245,36 @@ cannot sign in.** The supported path without one is the directory for
 `AUTH_SYS`, and a KDC wherever a proof is needed. Giving such a user a local
 password is refused: two passwords for one principal drift apart.
 
-> decision: a claimed uid mints the directory principal that holds it, although
-> §4.4 never mints for an unauthenticated `Find`. A mint here is bounded by the
-> directory's own entries, not by the 2^32 numbers a client may send, only hosts
-> the share's client rules admit can trigger one, and the lookups are capped per
-> client address (§7.3). Without it no directory user is ever minted where
-> nothing signs in with a proof. Overturned if
-> `identity_directory_lookups_total{question="uid"}` shows a client enumerating
-> `uidNumber`s; mints then need a proof, and `AUTH_SYS` users a record the
-> operator creates. Whether this is acceptable at all is open (§12).
+**A claimed uid the directory confirms mints its principal**, under three
+guards:
+
+1. **Only on the directory's word.** A record is minted only when the
+   directory answers with an entry holding that `uidNumber`. A uid it does not
+   know acts as anonymous (§4.3) and writes nothing.
+2. **At a bounded rate.** Mints a `Claimed` caller triggers are capped per node
+   (§7.3), on top of the per-address cap on the lookups, so a scan of claimed
+   uids mints at most what the directory holds, at the cap's pace, whichever
+   hosts send it.
+3. **As a copy of the directory's entry.** The record is bound to the entry's
+   permanent ID, never its name, refreshed on the directory cache's TTL, and
+   disabled when the directory says the entry is disabled or answers that it
+   is gone, exactly as for any directory principal
+   ([§5.1](#5.1%20What%20a%20directory%20provides),
+   [§3.7](#3.7%20Disabled%20and%20deleted%20principals)).
+
+> decision: a claimed uid mints the directory principal that holds it,
+> although §4.4 never mints for an unauthenticated `Find`. Owners, ACL
+> entries, quotas and audit all key on one internal principal ID, so an
+> `AUTH_SYS` user who also signs in over Kerberos or SMB must be one record,
+> not a number beside it; without the mint no directory user is ever minted
+> where nothing signs in with a proof. The guards keep the claim from buying
+> more than the directory already says: no record for a number it does not
+> know, a mint rate no client can raise, and a record that follows the entry.
+> Windows Server's NFS service and NetApp ONTAP map a claimed uid to the
+> directory account the same way. Overturned if
+> `identity_mints_total{kind="user"}` is shown rising at the node cap while
+> no user signs in; mints then need a proof, and `AUTH_SYS` users a record
+> the operator creates.
 
 > ponytail: NT hashes are never read from the directory (an attribute such as a
 > Samba-style schema's NT password). Reading one needs a privileged bind, an NT
@@ -1620,6 +1641,7 @@ connection-state pool, and past its share:
 | replay cache | holds entries younger than the clock skew; a sign-in that would need one more fails `ErrUnavailable` |
 | logon throttle | the oldest pair is evicted, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
+| records a `Claimed` caller's lookup mints (§5.5) | at most 100 a minute per node, whatever the client; past it the call is refused with a retryable error, never mapped to anonymous, and nothing is written |
 
 GSS contexts are the NFS adapter's table, bounded where RFC 21 keeps them
 ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)).
@@ -1629,8 +1651,9 @@ GSS contexts are the NFS adapter's table, bounded where RFC 21 keeps them
 > §3.1's ponytail already concedes. Refuse new pairs while every pair is at its
 > limit when the logon stream shows a spray that eviction let through.
 
-> ponytail: the per-address lookup cap is a constant. Make it a setting when a
-> legitimate client is shown to trip it.
+> ponytail: the per-address lookup cap and the per-node mint cap are constants.
+> Make them settings when a legitimate client, or a first-day migration of
+> `AUTH_SYS` users, is shown to trip them.
 
 ## 8. Management-API users
 
@@ -1890,6 +1913,7 @@ RFC 16's conformance suite's, not repeated here.
 | anonymous lookup | 2 | Over an anonymous session on `IPC$`, `LookupSids` of an unminted directory SID: no record written. | an unauthenticated caller minting principals |
 | name case | 1 | Two users whose names differ only in case: the second refused as a duplicate. | names unique byte for byte |
 | `AUTH_SYS` from the directory | 2 | An `AUTH_SYS` call sends the `uidNumber` of a directory entry with no record: the caller is that entry's minted principal, not `authenticated`. | a directory that never maps a claimed uid |
+| mint from a claim, guarded | 2 | Send `AUTH_SYS` calls for 10^4 uids the directory does not hold: assert each acts as anonymous and no record is written. Send calls for 500 `uidNumber`s it holds, from 50 addresses at once: assert no more than the node cap minted per minute, the rest refused retryably, never anonymous. Rename a minted entry in the directory: assert the same `PrincipalID` with the new name after the TTL. Disable one entry and delete another: assert both refused after the TTL. | a mint on the client's word, a scan bounded only per address, or a record that follows the entry's name |
 | mint conflict | 1 | Mint directory user alice, then sign in bob, whose entry has another SID and alice's `uidNumber`: the sign-in fails, bob is bound to no principal, alice's record unchanged. Two concurrent mints of one entry: both bind to one principal. | a lost mint bound to whoever holds the row |
 | NTLM without a domain controller | 2 | With a directory and no pass-through, an NTLM sign-in for a user only in the directory: `ErrLogonFailure`, and no session. | a directory-only user let in |
 | token checks | 1 | Against a test issuer, ID tokens with the wrong issuer, the wrong audience, several audiences and another `azp`, an expired `exp`, an `nbf` ahead past the skew, a corrupted signature, `alg` `none`, `alg` `HS256` keyed with the issuer's public key bytes, `RS256` naming an EC key, and no `kid` against a two-key set: each refused `ErrLogonFailure`. A discovery document whose `issuer` differs: refused. | a check skipped; algorithm confusion |
@@ -1933,11 +1957,7 @@ their markers, with what would overturn each.
 1. **Name case.** Whether case-insensitive uniqueness of names (§4.6) holds for
    every directory a deployment uses, or a directory with case-distinct names
    needs an exception.
-2. **Minting from a claimed uid.** Whether an `AUTH_SYS` uid with no record
-   should mint the directory principal holding its `uidNumber` (§5.5) at all, or
-   only principals that sign in with a proof should be minted, leaving `AUTH_SYS`
-   users to records an operator creates.
-3. **One machine account, several nodes.** Whether two nodes holding secure
+2. **One machine account, several nodes.** Whether two nodes holding secure
    channels to domain controllers under one machine account invalidate each
    other's channels (§3.5) is unmeasured; if they do, pass-through needs one
    machine account per node, or one node holding the channel for all.
