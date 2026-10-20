@@ -9,6 +9,7 @@ package known
 import (
 	"os"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -73,7 +74,7 @@ func (l *List) parse(text string) {
 		}
 		if !strings.HasPrefix(line, "|") {
 			tests = false
-			if strings.HasPrefix(line, "#") {
+			if atx.MatchString(line) {
 				heading = strings.Trim(line, "#"+space)
 			}
 			continue
@@ -96,6 +97,10 @@ func (l *List) parse(text string) {
 		l.add(Row{name, reason, field(fields, 2), field(fields, 4), heading, tests})
 	}
 }
+
+// atx matches a heading line, so that prose wrapped onto a line starting with
+// an issue number, such as "#N, an intermittent hang", isn't read as one.
+var atx = regexp.MustCompile(`^#{1,6}([ \t]|$)`)
 
 // isFence reports whether line opens or closes a fence: it starts with ```
 // or ~~~ after any indentation. Either marker closes a fence the other

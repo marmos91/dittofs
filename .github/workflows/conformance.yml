@@ -526,64 +526,6 @@ jobs:
           path: test/smb-conformance/results/smbtorture-*/
           retention-days: 30
 
-  smbtorture-baseline-refresh:
-    name: smbtorture baseline refresh
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # Nightly only. Regenerates baseline-results.md from a clean develop
-    # memory-profile run so the documentation snapshot cannot drift. NOT a CI
-    # gate — grading is done against KNOWN_FAILURES.md by parse-results.sh.
-    # Checks out develop explicitly rather than relying on scheduled runs firing
-    # on the default branch, so this keeps working if the default moves.
-    if: github.event_name == 'schedule'
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout develop
-        uses: actions/checkout@v7
-        with:
-          ref: develop
-          # GITHUB_TOKEN cannot push past branch protection on develop. If that
-          # branch requires PRs or reviews, set a PAT secret BASELINE_PUSH_TOKEN
-          # with bypass rights.
-          token: ${{ secrets.BASELINE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Run smbtorture (memory profile)
-        run: |
-          cd test/smb-conformance/smbtorture
-          # A known-failure red run must not stop the baseline refresh.
-          ./run.sh --profile memory --verbose || true
-
-      - name: Regenerate baseline-results.md
-        run: |
-          cd test/smb-conformance/smbtorture
-          RESULTS_DIR=$(ls -td ../results/smbtorture-*/ 2>/dev/null | head -1 || true)
-          if [ -z "$RESULTS_DIR" ] || [ ! -f "$RESULTS_DIR/smbtorture-output.txt" ]; then
-            echo "no smbtorture output to snapshot"
-            exit 0
-          fi
-          BASELINE_PROFILE=memory \
-          BASELINE_COMMIT="$(git rev-parse --short HEAD)" \
-          BASELINE_PLATFORM="$(uname -sm) (GitHub Actions)" \
-            ./parse-results.sh --emit-baseline "$RESULTS_DIR/smbtorture-output.txt" KNOWN_FAILURES.md > baseline-results.md
-
-      - name: Commit the refreshed baseline
-        run: |
-          BASELINE=test/smb-conformance/smbtorture/baseline-results.md
-          if git diff --quiet "$BASELINE"; then
-            echo "baseline-results.md unchanged"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$BASELINE"
-          git commit -m "docs(smb-conformance): refresh smbtorture baseline-results.md [skip ci]"
-          # A PR may merge into develop during the run; rebase the lone baseline
-          # commit on top so the push fast-forwards instead of reddening the job
-          # on a non-fast-forward rejection.
-          git pull --rebase origin develop
-          git push origin HEAD:develop
-
   # ---------------------------------------------------------------------------
   summary:
     name: Conformance summary

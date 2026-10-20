@@ -949,6 +949,10 @@ dt docs [--check]                              write the documentation's suite t
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
 and `dtc` for the container.
 
+**Which run.** RUN is a run's directory in `test/harness/results/`, or the path to one. Without it,
+`dt report` and `dt known baseline` read the latest run there: the last by name, since a run's
+name begins with the time it started.
+
 **Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the
 order the axes are written, then, for tests a `needs_by_test` entry sends elsewhere, the place they
 go to, and last `shard-I` when the suite has shards: `pjdfstest/badger-s3/4.1`,
@@ -1457,8 +1461,15 @@ green PRs that break each other. If the repository moves to an organization: ena
 `memory`, and the pynfs knfsd run compares the same tests against the kernel's server. Neither
 changes from one night to the next: the smbtorture file last changed on 2026-06-22. Both are
 manual:
-- `dt known baseline smbtorture/memory` writes the file, and it lands through a pull request like
-  any change;
+- `dt known baseline smbtorture/memory` writes the file, in `test/smb-conformance/smbtorture/`,
+  from that cell's results in a run, and it lands through a pull request like any change. It counts
+  each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
+  the tool's own status, so an unexpected pass is a pass; and anything else as a skip. Its header
+  gives the run's date, commit and platform, the cell, and the smbtorture version from the cell's
+  log. It refuses a run of a checkout with changes, whose commit doesn't say what ran, and a cell
+  that didn't run to its end, whose lost tests would leave the file without a trace: one whose
+  note gives any reason but new failures and unexpected passes, as a `not run` cell always does,
+  such as a limit that stopped it, a crash or a test that didn't run;
 - `dt run pynfs --knfsd` runs the comparison.
 
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
