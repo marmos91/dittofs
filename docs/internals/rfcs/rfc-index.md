@@ -44,7 +44,7 @@ order: each part builds on the ones before it.
 | **Configuration** | | | |
 | [RFC 13](rfc-13-configuration.md) | configuration | draft | what is a setting and what is fixed, scopes, which settings bind content, validation, change, secrets |
 | **Security** | | | |
-| RFC 18 | identity and authentication | planned | principals, authentication flavours, identity mapping, squashing |
+| [RFC 18](rfc-18-identity.md) | identity and authentication | draft | principals and their stable IDs, the authentication interface and flavours, identity mapping in both directions and owner strings, directory integration and its cache, squashing, groups and share-grant resolution, identity cache keys |
 | RFC 19 | authorization | planned | one abstract ACL model, its protocol mappings, evaluation |
 | **Protocols** | | | |
 | [RFC 20](rfc-20-adapters.md) | adapter model | draft | what an adapter may hold and import, the adapter and sidecar interfaces, the common lifecycle, live settings, health and probes, the dispatch pipeline, one auth package for both protocols, reaching a share, codecs, NFS over TLS, connection concurrency, metrics and spans, boundary tests and wire tests against reference servers |
@@ -96,6 +96,7 @@ graph LR
   R15["15 topology"] --> R8 & R10 & R11 & R14 & R16 & R17
   R16["16 metadata store"] --> R6 & R7 & R13 & R14 & R15
   R17["17 vfs"] --> R7 & R8 & R11 & R13 & R14 & R15 & R16
+  R18["18 identity"] --> R7 & R13 & R14 & R16 & R17 & R19 & R20 & R21 & R22 & R23 & R24 & R25 & R26
   R20["20 adapters"] --> R7 & R13 & R14 & R15 & R17 & R18 & R19 & R21 & R22 & R23 & R24 & R25 & R27 & R29
   R21["21 nfs"] --> R7 & R8 & R11 & R12 & R13 & R14 & R15 & R16 & R17 & R18 & R19 & R20 & R22 & R24 & R25 & R27 & R28
   R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R18 & R19 & R20 & R21 & R24 & R25 & R27 & R28

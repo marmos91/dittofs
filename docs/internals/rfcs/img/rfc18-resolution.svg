@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 460" width="900" height="460" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="460" fill="#ffffff"/>
+  <text x="16" y="26" class="t">From a credential to the caller: the adapter proves; the service maps, squashes and grants.</text>
+
+  <rect x="24" y="44" width="236" height="290" rx="8" class="zone"/>
+  <text x="36" y="62" class="s">adapter — memory of the gateway node</text>
+  <rect x="40" y="76" width="204" height="50" rx="5" class="pr"/>
+  <text x="54" y="96" class="m">handshake</text><text x="54" y="114" class="s">AUTH_SYS, GSS, SPNEGO</text>
+  <rect x="40" y="166" width="204" height="50" rx="5" class="pr"/>
+  <text x="54" y="186" class="m">Proof</text><text x="54" y="204" class="s">flavour, bound principal, SIDs</text>
+  <rect x="40" y="256" width="204" height="50" rx="5" class="pr"/>
+  <text x="54" y="276" class="m">Identity, per request</text><text x="54" y="294" class="s">what was proved, no more</text>
+  <path d="M142,128 L142,162" class="ln"/><path d="M142,218 L142,252" class="ln"/>
+
+  <rect x="290" y="76" width="230" height="50" rx="5" class="sv"/>
+  <text x="304" y="96" class="m">authenticator (§3.1)</text><text x="304" y="114" class="s">verifies, then binds a principal</text>
+  <path d="M246,94 L286,94" class="ln"/><path d="M288,110 L248,110" class="ln"/>
+  <rect x="560" y="76" width="150" height="50" rx="5" class="st"/>
+  <text x="574" y="96" class="m">Secret records</text><text x="574" y="114" class="s">keytab, NT hash</text>
+  <rect x="730" y="76" width="146" height="50" rx="5" class="am"/>
+  <text x="744" y="96" class="m">domain controller</text><text x="744" y="114" class="s">NTLM pass-through</text>
+  <path d="M522,101 L556,101" class="ln"/>
+  <path d="M500,128 L500,142 L803,142 L803,130" class="ln"/>
+<path d="M380,128 L345,188" class="ln"/>
+<path d="M470,128 L560,188" class="ln"/>
+
+  <rect x="276" y="160" width="600" height="250" rx="8" class="zone"/>
+  <rect x="284" y="167" width="500" height="15" fill="#ffffff"/>
+  <text x="288" y="178" class="s">identity server and filesystem service — every call, after share state, flavour and client rules</text>
+  <rect x="290" y="190" width="170" height="36" rx="5" class="st"/><text x="304" y="212" class="m">protocol-ID index</text>
+  <rect x="478" y="190" width="214" height="36" rx="5" class="st"/><text x="492" y="212" class="m">directory cache: TTL, grace</text>
+  <path d="M345,228 L345,246" class="ln"/><path d="M500,228 L384,248" class="ln"/>
+
+  <rect x="290" y="250" width="110" height="70" rx="5" class="sv"/>
+  <text x="300" y="270" class="m">1 map</text><text x="300" y="288" class="s">bound principal,</text><text x="300" y="304" class="s">or AUTH_SYS uid</text>
+  <rect x="408" y="250" width="110" height="70" rx="5" class="sv"/>
+  <text x="418" y="270" class="m">2 squash</text><text x="418" y="288" class="s">uid 0, all, or</text><text x="418" y="304" class="s">machine → anon</text>
+  <rect x="526" y="250" width="110" height="70" rx="5" class="sv"/>
+  <text x="536" y="270" class="m">3 groups</text><text x="536" y="288" class="s">the closure,</text><text x="536" y="304" class="s">whole or none</text>
+  <rect x="644" y="250" width="110" height="70" rx="5" class="sv"/>
+  <text x="654" y="270" class="m">4 grant</text><text x="654" y="288" class="s">own, groups,</text><text x="654" y="304" class="s">authn, everyone</text>
+  <rect x="762" y="250" width="110" height="70" rx="5" class="sv"/>
+  <text x="772" y="270" class="m">5 flags</text><text x="772" y="288" class="s">authenticated,</text><text x="772" y="304" class="s">admin, privilege</text>
+  <path d="M246,281 L286,281" class="ln"/>
+  <path d="M400,285 L406,285" class="ln"/><path d="M518,285 L524,285" class="ln"/>
+  <path d="M636,285 L642,285" class="ln"/><path d="M754,285 L760,285" class="ln"/>
+
+  <path d="M320,322 L320,334" class="ex"/><text x="294" y="348" class="e">error → refuse,</text><text x="294" y="362" class="e">never guest</text>
+  <path d="M556,322 L556,334" class="ex"/><text x="530" y="348" class="e">over cap → refuse</text>
+
+  <rect x="560" y="364" width="312" height="36" rx="5" class="sv"/>
+  <text x="574" y="386" class="m">caller → chokepoint (RFC 7 §7.4)</text>
+  <path d="M817,322 L817,360" class="ln"/>
+  <text x="294" y="392" class="s">then RFC 19 decides the file</text>
+
+  <text x="16" y="440" class="s">Adapters map, squash and grant nothing. Every cache of identity is keyed by the whole proof (§7.1).</text>
+</svg>
