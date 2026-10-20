@@ -27,7 +27,9 @@ func (c tcpPeerConn) RemoteAddr() net.Addr { return c.peer }
 
 // A tree connected by a Kerberos session to a Kerberos-only share is refused at
 // dispatch once the session re-authenticates over NTLM — MS-SMB2 keeps the tree
-// across that — while CLOSE still reaches its handler.
+// across that — while the release-only commands (CLOSE, an OPLOCK_BREAK
+// acknowledgment, and LOCK, whose handler refuses an acquisition itself) still
+// reach their handlers.
 func TestPrepareDispatch_ReappliesSharePolicyPerRequest(t *testing.T) {
 	rt, bsID := testruntime.NewWithShareStore(t)
 	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
@@ -89,5 +91,11 @@ func TestPrepareDispatch_ReappliesSharePolicyPerRequest(t *testing.T) {
 	}
 	if st := dispatch(types.SMB2Close); st != 0 {
 		t.Fatalf("CLOSE after NTLM re-authentication: status = %s, want dispatched so the handle can be released", st)
+	}
+	if st := dispatch(types.SMB2OplockBreak); st != 0 {
+		t.Fatalf("OPLOCK_BREAK after NTLM re-authentication: status = %s, want dispatched so the break can be acknowledged", st)
+	}
+	if st := dispatch(types.SMB2Lock); st != 0 {
+		t.Fatalf("LOCK after NTLM re-authentication: status = %s, want dispatched so the handler can let an unlock through", st)
 	}
 }

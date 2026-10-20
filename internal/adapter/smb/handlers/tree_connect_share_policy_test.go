@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -310,5 +311,51 @@ func TestCopyChunk_SharePolicy_AppliesToCrossTreeSource(t *testing.T) {
 	}
 	if res.Status != types.StatusAccessDenied {
 		t.Fatalf("COPYCHUNK after NTLM re-authentication with a source on a Kerberos-only share: status = %s, want STATUS_ACCESS_DENIED", res.Status)
+	}
+}
+
+// lockBody encodes a one-element SMB2 LOCK request [MS-SMB2] 2.2.26.
+func lockBody(fileID [16]byte, offset, length uint64, flags uint32) []byte {
+	b := make([]byte, 48)
+	binary.LittleEndian.PutUint16(b[0:], 48)
+	binary.LittleEndian.PutUint16(b[2:], 1)
+	copy(b[8:24], fileID[:])
+	binary.LittleEndian.PutUint64(b[24:], offset)
+	binary.LittleEndian.PutUint64(b[32:], length)
+	binary.LittleEndian.PutUint32(b[40:], flags)
+	return b
+}
+
+// LOCK is exempt from the dispatch-level policy gate so a refused client can
+// still release its locks; the handler refuses an acquisition itself.
+func TestLock_SharePolicy_RefusesAcquireAdmitsUnlock(t *testing.T) {
+	h, _ := newSharePolicyHandler(t)
+	sess := kerberosSession(h, policyInsideIP)
+	const treeID uint32 = 12
+	h.StoreTree(&TreeConnection{TreeID: treeID, SessionID: sess.SessionID, ShareName: policyShare, Permission: models.PermissionReadWrite})
+	ctx := NewSMBHandlerContext(context.Background(), policyInsideIP+":50000", sess.SessionID, treeID, 1)
+	ctx.ShareName = policyShare
+	fileID := storeSecondHandle(t, h, ctx, "locked", treeID)
+
+	lock := lockBody(fileID, 0, 10, SMB2LockFlagSharedLock|SMB2LockFlagFailImmediately)
+	if res, err := h.Lock(ctx, lock); err != nil || res.Status != types.StatusSuccess {
+		t.Fatalf("Kerberos LOCK: status = %v, err = %v, want STATUS_SUCCESS", res.Status, err)
+	}
+
+	sess.UpdateIdentity("alice", "CORP", policyUser(), false, false, nil, "")
+
+	res, err := h.Lock(ctx, lockBody(fileID, 20, 10, SMB2LockFlagSharedLock|SMB2LockFlagFailImmediately))
+	if err != nil {
+		t.Fatalf("Lock (NTLM acquire): %v", err)
+	}
+	if res.Status != types.StatusAccessDenied {
+		t.Fatalf("LOCK acquisition after NTLM re-authentication on a Kerberos-only share: status = %s, want STATUS_ACCESS_DENIED", res.Status)
+	}
+	res, err = h.Lock(ctx, lockBody(fileID, 0, 10, SMB2LockFlagUnlock))
+	if err != nil {
+		t.Fatalf("Lock (NTLM unlock): %v", err)
+	}
+	if res.Status != types.StatusSuccess {
+		t.Fatalf("UNLOCK after NTLM re-authentication: status = %s, want STATUS_SUCCESS so the range is released", res.Status)
 	}
 }

@@ -397,7 +397,8 @@ func (h *Handler) checkSharePolicy(ctx context.Context, share *runtime.Share, se
 // TreeSharePolicyStatus re-applies the share's access policy to one request on
 // an established disk tree, returning the status to refuse it with, or zero
 // when it may proceed. The dispatcher calls it for every tree-scoped command
-// except CLOSE and TREE_DISCONNECT, so a policy change, a re-authentication
+// except CLOSE, TREE_DISCONNECT and LOCK (whose handler calls it for a request
+// that acquires a range), so a policy change, a re-authentication
 // from Kerberos to NTLM, and a channel bound from an address outside the
 // netgroup all take effect on the next request, as the NFS per-operation gate
 // does, rather than at the next TREE_CONNECT. A netgroup membership edit lands

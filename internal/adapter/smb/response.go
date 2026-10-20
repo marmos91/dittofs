@@ -551,9 +551,20 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 			return nil, nil, types.StatusNetworkNameDeleted
 		}
 		// The share's access policy is re-applied per request, not only at
-		// TREE_CONNECT. CLOSE and TREE_DISCONNECT are exempt so a client the
-		// policy now refuses can still release what it holds.
-		if reqHeader.Command != types.SMB2Close && reqHeader.Command != types.SMB2TreeDisconnect {
+		// TREE_CONNECT.
+		//
+		// decision: commands that only release state are exempt, so a client
+		// the policy now refuses can still give back what it holds: CLOSE,
+		// TREE_DISCONNECT, and LOCK, whose handler applies the policy itself to
+		// any request that acquires a range and lets an unlock through.
+		// OPLOCK_BREAK never reaches this gate because it is not tree-scoped
+		// (NeedsTree is false), so a refused client can still acknowledge a
+		// break and the clients waiting on it are not held for the break
+		// timeout. The ceiling is that an exempt command still reaches its
+		// handler on a share the client may no longer use; withdraw an
+		// exemption if its command ever returns file data or grants new state.
+		if reqHeader.Command != types.SMB2Close && reqHeader.Command != types.SMB2TreeDisconnect &&
+			reqHeader.Command != types.SMB2Lock {
 			if st := connInfo.Handler.TreeSharePolicyStatus(ctx, tree, handlerCtx.ClientAddr); st != 0 {
 				return nil, nil, st
 			}
