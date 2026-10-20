@@ -86,9 +86,11 @@ func TestLDAPResolveDomainUser(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Retry on transient connect errors: the entrypoint re-execs samba into the
-	// foreground shortly after provisioning, so LDAP (389) has a brief down
-	// window right when the test first connects ("connection reset by peer").
+	// Retry on transient connect errors: setupADDCForLDAP returns once alice
+	// exists, but LDAP is the last listener samba opens and can come up after
+	// alice is created. The published port can accept before samba listens, so
+	// the port wait does not cover it, and the first StartTLS then reads a reset
+	// or EOF.
 	var res *identity.ResolvedIdentity
 	for attempt := 1; attempt <= 15; attempt++ {
 		if ctx.Err() != nil {

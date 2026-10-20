@@ -414,23 +414,10 @@ func getADAPREQ(t *testing.T, krb5ConfPath string) []byte {
 	}
 
 	// kinit equivalent. DisablePAFXFAST avoids an unnecessary preauth round.
-	// Retry on transient KDC errors: the entrypoint exports the keytab (which
-	// setupADDC waits for) and only THEN stops the provisioning samba and
-	// re-execs it in the foreground, so the KDC has a brief down window right
-	// when the test first reaches kinit ("connection reset by peer"). A short
-	// retry loop rides that restart gap out.
 	cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
-	var loginErr error
-	for attempt := 1; attempt <= 15; attempt++ {
-		if loginErr = cl.Login(); loginErr == nil {
-			break
-		}
-		t.Logf("kinit attempt %d/15 not ready yet: %v", attempt, loginErr)
-		time.Sleep(2 * time.Second)
-	}
-	if loginErr != nil {
+	if err := cl.Login(); err != nil {
 		dumpADLogs(t)
-		t.Fatalf("kinit as alice failed after retries: %v", loginErr)
+		t.Fatalf("kinit as alice: %v", err)
 	}
 	defer cl.Destroy()
 	t.Log("alice obtained a TGT from the AD-DC")
