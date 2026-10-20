@@ -344,7 +344,7 @@ type (
 // (§4.2); no file, ACL or usage record holds one, and this layer compares IDs
 // and never interprets a spelling.
 type Principal struct {
-	Kind PrincipalKind // User, Group, Machine (a host or service signing in for itself, RFC 18 §2.4), Special (a well-known principal: a fixed ID, below)
+	Kind PrincipalKind // User, Group, Machine (RFC 18 §2.4), Special (a well-known principal: a fixed ID, below)
 	ID   PrincipalID
 }
 ```
@@ -353,28 +353,29 @@ type Principal struct {
 principal by ID, so every well-known principal an entry can name has one, fixed
 for all installations: fifteen zero bytes, then the byte below. No minted ID
 takes that form, since a minted ID is a random UUID with its version bits set.
+Which principal each is, and which callers it matches, is
+[RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)'s;
+this table is only the encoding.
 
-| Byte | Principal | Matches (RFC 7 §2.6 owns the rule) |
-| --- | --- | --- |
-| 0x01 | owner (`OWNER@`) | the file's owner |
-| 0x02 | group (`GROUP@`) | members of the file's group |
-| 0x03 | everyone (`EVERYONE@`, Everyone) | every caller |
-| 0x04 | owner rights | the file's owner, limiting what ownership grants |
-| 0x05 | creator owner | nothing at access time: an inheritable placeholder, replaced at create |
-| 0x06 | creator group | nothing at access time: an inheritable placeholder, replaced at create |
-| 0x07 | authenticated users | a caller whose identity the service marked `authenticated` |
-| 0x08 | administrators | a caller whose identity the service marked `admin` |
-| 0x09 | system | nothing a client can present |
-| 0x0A | network | every remote caller, which is every caller |
-| 0x0B | built-in users | a caller marked `authenticated` |
-| 0x0C | anonymous | a caller acting as the anonymous principal: an `AUTH_NONE` caller, an anonymous SMB session, a caller squashed under a policy whose `Anonymous` is this one (RFC 18 §2.1, §6.2); its uid and gid, 65534, are fixed by RFC 18 §2.1 and never `PX` rows; a `PutUser` or `PutGroup` naming 65534 is refused `ErrInvalid` |
+| Byte | Principal |
+| --- | --- |
+| 0x01 | owner (`OWNER@`) |
+| 0x02 | group (`GROUP@`) |
+| 0x03 | everyone |
+| 0x04 | owner rights |
+| 0x05 | creator owner |
+| 0x06 | creator group |
+| 0x07 | authenticated users |
+| 0x08 | administrators |
+| 0x09 | system |
+| 0x0A | network |
+| 0x0B | built-in users |
+| 0x0C | anonymous |
+| 0x0D | root |
 
-How each is spelled on the wire — a SID, an NFSv4 `who` — is the adapters'
-([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). A deny entry naming a
-well-known principal with no row above is refused when it is stored. An
-inheritable deny naming creator owner or creator group is kept, inherit-only,
-since inheritance makes it an effective deny for the creator; a deny naming
-system is stored and never matches. The rule is RFC 7 §2.6's.
+uid and gid 0 are root's and 65534 anonymous's, held by rule and never as `PX`
+rows; a `PutUser`, `PutGroup` or `Minter` write naming either is refused
+`ErrInvalid`.
 
 Every other identity type sits beside the only entities that use it: the
 content identities (`ChunkHash`, `BlockName`, `JournalVersion`) and
@@ -403,7 +404,7 @@ what moves with a share:
 type User struct {
 	Principal  Principal
 	Name       string
-	IDs        ProtocolIDs // UID, SID, Kerberos principal, OpenID Connect (issuer, subject): the mapping RFC 18 owns; each also a PX‖ row
+	IDs        ProtocolIDs // UID, SID, Kerberos principal, directory entry ID, OpenID Connect (issuer, subject): RFC 18 §2.2's stored spellings; each also a PX‖ row
 	Email      string      // optional, never defaulted, never a spelling: no PX‖ row, no lookup by it (RFC 18 §2.2)
 	Primary    Principal   // the group a new file gets (RFC 7 §2.4, RFC 18); zero, or a group deleted or being deleted: none, and a new file's group is then its creator's own principal
 	Disabled   bool
@@ -421,7 +422,7 @@ type User struct {
 type Group struct {
 	Principal  Principal
 	Name       string
-	IDs        ProtocolIDs // GID, SID; each also a PX‖ row
+	IDs        ProtocolIDs // GID, SID, directory entry ID; each also a PX‖ row
 	Generation uint64      // raised by every PutGroup, as User's is
 }
 
@@ -488,11 +489,11 @@ type ExportPolicy struct {
 	Flavors     []AuthFlavor  // admitted, in preference order: SECINFO's answer
 	MinKerberos KerberosLevel // krb5, krb5i, krb5p; zero when Kerberos is not required
 	Clients     []ClientRule  // first match decides; no match refuses. Empty admits every client
-	Squash      Squash        // none, root, all; root by default; root squashes uid 0 — an AUTH_SYS caller's, and a Kerberos or SMB principal whose uid is 0, alike (RFC 18 §6.2: squashing applies to every protocol), which is privileged exactly when root is left unsquashed (RFC 7 §7.4) — and an AUTH_SYS caller is never privileged by an admin grant (ShareGrant)
+	Squash      Squash        // none, root, all; root by default (RFC 18 §6.2)
 	Anonymous   Principal     // what a squashed, AUTH_NONE or anonymous-session caller acts as; by default the well-known anonymous principal (§2.2, 0x0C). A deleted one fails closed: calls it would serve are refused (RFC 18 §6.2)
 	ManageGIDs  bool          // false by default; true replaces an AUTH_SYS caller's gids with its principal's store memberships (RFC 18 §3.2)
 	ReadOnly    bool          // false by default; true narrows every caller's share access to read-only at admission, whatever its grant or client rule (RFC 17 §4.9, RFC 7 §7.4)
-	SMB         SMBShareFlags // encrypt, hidden from enumeration, continuously available
+	SMB         SMBShareFlags // encrypt, hidden from enumeration, continuously available, access-based enumeration (RFC 19 §3.7)
 	Version     uint64        // raised by every change; the authorisation cache key carries it
 }
 
@@ -1047,7 +1048,7 @@ The views are defined where their semantics are:
 | `Namespace`, `Files`, `Capacity` | names, attributes, ACLs, xattrs, streams, statfs and usage | [RFC 7](rfc-7-namespace-metadata.md) |
 | `Existence`, `Content`, `Blocks` | the write path, the engine's commits and refs, GC | [RFC 6](rfc-6-block-metadata.md) |
 | `OpenRecords` (`metadata.Clients`, `metadata.Opens`, not open state's `openstate.Clients` and `openstate.Opens` views over them) | client records, durable opens and their locks, delete pending, the restart-notice number; never caching grants or watches, which are never durable | [RFC 14](rfc-14-open-state.md) |
-| `Principals`, `Records`, `Minter` | identity's lookups, its reads of one record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
+| `Principals`, `Records`, `Minter` | identity's lookups and a share's policy, its reads of one record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
 | `Lifecycle` | a device's journal identity, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
 | `ControlPlane`, `Inspect` | the management API, trusted reads by ID | this RFC |
 
@@ -1063,6 +1064,20 @@ type Principals interface {
 	Groups(ctx context.Context, p Principal) iter.Seq2[Principal, error]
 	// A caller of Grant reads S‖id‖gv before the grants it keys a cache entry on.
 	Grant(ctx context.Context, share ShareID, p Principal) (ShareAccess, bool, error) // false: no grant names p; a stored none is (none, true)
+	// SharePolicy reads what resolution needs of one share in one snapshot, so a
+	// squash, an anonymous principal and the versions a cache keys on never come
+	// from two different commits.
+	SharePolicy(ctx context.Context, share ShareID) (SharePolicy, error)
+}
+
+// SharePolicy is a share's identity policy as resolution reads it (RFC 18 §6).
+type SharePolicy struct {
+	Share         ShareID
+	Squash        Squash
+	Anonymous     Principal
+	ManageGIDs    bool
+	PolicyVersion uint64 // ExportPolicy.Version
+	GrantVersion  uint64 // S‖id‖gv
 }
 
 // Records reads one principal's record by ID: the spellings, the Disabled flag
@@ -1072,18 +1087,24 @@ type Records interface {
 	Group(ctx context.Context, p Principal) (Group, error)
 }
 
-// Minter is identity's only write path: the records a first sign-in mints
-// (RFC 18 §2.4, §5.1). It never overwrites. Each write is one transaction and
-// fails with ErrExist when another principal holds a row it would write.
-// Every Minter write, like every other User or Group record change, raises
-// the principals generation (PGEN, §4.2) in the same transaction, so cached
-// resolutions are dropped (RFC 18 §7.2).
+// Minter is identity's only write path: the records a first sign-in or lookup
+// mints (RFC 18 §2.4, §5.1). It never overwrites. Each write is one transaction,
+// draws the IDs a names from their counters inside it, and fails with ErrExist
+// when another principal holds a row it would write. Every Minter write, like
+// every other User or Group record change, raises the principals generation
+// (PGEN, §4.2) in the same transaction (RFC 18 §7.2).
 type Minter interface {
-	CreateUser(ctx context.Context, u User) error
-	CreateGroup(ctx context.Context, g Group) error
-	Rename(ctx context.Context, p Principal, name string) error // the record's Name and its name index only
-	SetEmail(ctx context.Context, p Principal, email string) error // the record's Email only, from the directory or issuer (RFC 18 §2.2)
+	CreateUser(ctx context.Context, u User, a Alloc) error
+	CreateGroup(ctx context.Context, g Group, a Alloc) error
+	Rename(ctx context.Context, p Principal, name string) error    // the record's Name and its name index only
+	SetEmail(ctx context.Context, p Principal, email string) error // the record's Email only, from the directory (RFC 18 §5.1)
 }
+
+// Alloc names the IDs the store draws from its uid, gid and RID counters in the
+// write's own transaction (RFC 18 §2.3). An ID not named here is written as the
+// record holds it, and a zero one is refused ErrInvalid: zero never means
+// "allocate".
+type Alloc struct{ UID, GID, RID bool }
 
 // Lifecycle is the engine's store access outside block metadata's views and
 // Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over S‖id‖vl and the incarnation keys.
@@ -1117,10 +1138,10 @@ type ControlPlane interface {
 	// record's changes and is not comparable with the counters; a node reports
 	// the counter value it has reconciled through (NodeStatus), and RFC 23 §2.4
 	// says when that makes a record applied.
-	PutUser(ctx context.Context, u User, expect uint64) error
+	PutUser(ctx context.Context, u User, expect uint64, a Alloc) error // a applies only to a create (expect zero), as Minter's does; a later put allocates nothing
 	DeleteUser(ctx context.Context, p Principal, expect uint64) error // as DeleteGroup: the first transaction deletes the indexes (NX, PX) and marks the record deleted, bounded batches a restart resumes from that mark drop its grants (through GR), memberships (MR, M) and quota records, and the last transaction deletes the record with every version of the secret it names (SEC‖id‖*, through RFC 13 §7), so no password or NT hash outlives its user; a marked user is admitted nowhere
 	Groups(ctx context.Context, after string) iter.Seq2[Group, error]
-	PutGroup(ctx context.Context, g Group, expect uint64) error
+	PutGroup(ctx context.Context, g Group, expect uint64, a Alloc) error
 	AddMember(ctx context.Context, m Membership) error
 	RemoveMember(ctx context.Context, m Membership) error
 	DeleteGroup(ctx context.Context, p Principal, expect uint64) error // all its rows: the group, its name and protocol-ID indexes (NX, PX), grants (through GR), memberships both ways (M, MR) and quota records; the first transaction deletes the indexes and marks the group record deleted, bounded batches a restart resumes from that mark drop the rest, and the record goes last; a membership of a marked group grants nothing, and a User.Primary naming one counts as zero
@@ -1128,7 +1149,7 @@ type ControlPlane interface {
 	PutShare(ctx context.Context, s Share, expect uint64) error // Name, Path, Root, Config only
 	SetShareState(ctx context.Context, share ShareID, from, to ShareState) error
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition, expect uint64) error // §2.3.2
-	SetGrant(ctx context.Context, g ShareGrant, expect uint64) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a machine principal is refused; Version, and the share's grant-list version S‖id‖gv written in the same transaction, are the writing commit's, so neither ever repeats a value a cache keyed on
+	SetGrant(ctx context.Context, g ShareGrant, expect uint64) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a principal with no file spelling — a machine or an API-only account (RFC 18 §2.4) — is refused; Version, and the share's grant-list version S‖id‖gv written in the same transaction, are the writing commit's, so neither ever repeats a value a cache keyed on
 	DeleteGrant(ctx context.Context, share ShareID, p Principal, expect uint64) error // deletes the grant and its GR key, so the principal falls through to its groups' grants, and sets S‖id‖gv to the writing commit's version, so a cache keyed before the deletion misses
 	PutExportPolicy(ctx context.Context, p ExportPolicy, expect uint64) error // raises Version, as SetGrant does
 	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, the user and group defaults, per principal and per project
@@ -1178,6 +1199,8 @@ entity reads is the name index. `PutUser`, `PutGroup`, `PutShare`,
 model where a whole-record put is allowed, each checked against `expect` inside
 its transaction, and only the management API makes one. Identity never calls
 `PutUser`: what a sign-in mints goes through `Minter`, which never overwrites.
+Both create paths name the IDs they allocate (`Alloc`), so an allocation commits
+or aborts with the record that holds it.
 `PutShare` writes `S‖id‖info` alone — name, path,
 root, configuration — and the name and path indexes. The two parts of a `Share`
 that a background path changes are records of their own: `S‖id‖st`, the state,
@@ -1565,7 +1588,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `IN` | Installation: the installation's identity, written once by the explicit initialisation step, which writes the same ID into every journal's `format` file ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)); its instance part and recorded machine-generation identifier; and the active version of every shared format but the store format, which `\x00format` holds, each raised only by the control plane's gate (§2.3, §4.6) |
 | | `NSM` | the restart-notice number, one per installation; raised durably before the grace of any failover that lost locks of clients that recover by notice, and at a moved address's arrival above the larger of the move delta's number and its own ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) |
 | | `PGEN` | principals generation: one installation-wide counter, raised in the transaction of every `User`, `Group` or `Membership` write and every `PX‖` row written or deleted; every node reads it at least once a second and stops serving identity it cached under an older one (RFC 18 §7.2) |
-| | `PX‖scheme‖id` | protocol-ID index → `PrincipalID`, unique per scheme; `scheme` is one of `uid`, `gid`, `sid` (binary form) `krb`, a Kerberos principal as `name@REALM`, compared byte for byte as the KDC spells it, and `oidc`, an OpenID Connect (issuer, subject) as the issuer spells them, held only by API accounts ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)); with the User or Group record, the only place a protocol spelling is stored (§2.2) |
+| | `PX‖scheme‖id` | protocol-ID index → `PrincipalID`, unique per scheme; `scheme` is one of `uid`, `gid`, `sid` (binary form) `krb`, a Kerberos principal as `name@REALM`, compared byte for byte as the KDC spells it, `dir`, a directory entry's immutable ID ([RFC 18 §5.1](rfc-18-identity.md#5.1%20What%20a%20directory%20provides)), and `oidc`, an OpenID Connect (issuer, subject) as the issuer spells them, held only by accounts linked to an issuer ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)); with the User or Group record, the only place a protocol spelling is stored ([RFC 18 §2.2](rfc-18-identity.md#2.2%20Spellings)) |
 | | `N‖node`, `N‖node‖exp`, `N‖node‖clk` | Node: its roles, binary version, the version range it reads and writes for every shared format, failure domain, node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease (cluster): the lease's expiry, which a renewal writes with its journals' generations and nothing else, and a resume rewrites with the node record ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). On a single node the node record's epoch rises at every start and no lease is written ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). Clock ceiling, only on a backend without a timestamp oracle: the bound `Now` stays under, raised once a second (§4.1); its own key, so raising it conflicts with no fenced commit |
 | | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, join incarnation), its epoch, its shard incarnation, its grace instance and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
 | | `SH‖shard‖rq‖requestID` | (cluster) request record: a namespace mutation's request ID and result, written in its transaction and expiring after the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)), so a retry after a takeover is answered, not applied again ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)); a batch move's commit re-keys the shipped ones under the receiving shard ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) step 3) |
