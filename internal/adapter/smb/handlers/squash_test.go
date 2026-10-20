@@ -170,3 +170,59 @@ func TestSquash_AllToGuest_CallerBecomesAnonymous(t *testing.T) {
 			file.UID, file.GID, squashAnonID, squashAnonID)
 	}
 }
+
+// A delete-on-close carried out by a teardown that has no session of its own —
+// an AppInstanceId failover closing another client's opens — runs as the
+// squashed principal that opened the file, not as root. In a sticky directory
+// the squashed caller may open another user's file with DELETE, but may not
+// unlink it, so the file must survive the teardown.
+func TestSquash_SessionlessTeardownDeletesAsTheOpener(t *testing.T) {
+	h, rt, ctx, rootHandle := setupSquashShare(t, models.SquashRootToGuest, 2000, 0)
+
+	rootUID := uint32(0)
+	rootCtx := &metadata.AuthContext{
+		Context:  context.Background(),
+		Identity: &metadata.Identity{UID: &rootUID, GID: &rootUID},
+	}
+	metaSvc := rt.GetMetadataService()
+	dir, _, err := metaSvc.CreateDirectory(rootCtx, rootHandle, "tmp", &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory, Mode: 0o1777,
+	})
+	if err != nil {
+		t.Fatalf("CreateDirectory(tmp): %v", err)
+	}
+	dirHandle, err := metadata.EncodeFileHandle(dir)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle(tmp): %v", err)
+	}
+	owner := uint32(2000)
+	if _, _, err := metaSvc.CreateFile(&metadata.AuthContext{
+		Context:  context.Background(),
+		Identity: &metadata.Identity{UID: &owner, GID: &owner},
+	}, dirHandle, "theirs.txt", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o666, UID: owner, GID: owner,
+	}); err != nil {
+		t.Fatalf("CreateFile(theirs.txt): %v", err)
+	}
+
+	resp, err := h.Create(ctx, &CreateRequest{
+		FileName:          "tmp\\theirs.txt",
+		DesiredAccess:     uint32(types.Delete | types.FileReadAttributes),
+		FileAttributes:    types.FileAttributeNormal,
+		ShareAccess:       0x07,
+		CreateDisposition: types.FileOpen,
+		CreateOptions:     types.FileDeleteOnClose,
+	})
+	if err != nil || resp.Status != types.StatusSuccess {
+		t.Fatalf("Create(tmp\\theirs.txt, DELETE_ON_CLOSE): status 0x%08x err %v", uint32(resp.Status), err)
+	}
+
+	// The failover's call: session 0, matching the open by FileID.
+	h.closeFilesWithFilter(context.Background(), 0, func(f *OpenFile) bool {
+		return f.FileID == resp.FileID
+	}, "test", false)
+
+	if _, err := metaSvc.Lookup(rootCtx, dirHandle, "theirs.txt"); err != nil {
+		t.Fatalf("uid 2000's file in a sticky directory after a squashed caller's delete-on-close teardown: %v, want it to survive", err)
+	}
+}
