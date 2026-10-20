@@ -35,7 +35,7 @@ loss of the node that accepted it.
 >   ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions));
 > - the node epoch and the shard incarnation carried in the NFS write verifier
 >   ([RFC 11 §7](rfc-11-ownership.md#7.%20Protocol%20state), rule 3);
-> - one binary, with roles chosen by configuration ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)).
+> - one binary and one node type ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)).
 >
 > Adding nodes does migrate each journal's format, one way: the extension's
 > record kinds ([§2.3](#2.3%20The%20journal%20extension)) are not in the first
@@ -78,7 +78,7 @@ log of recent writes on a fast local disk — and uploads it to the object store
 ([RFC 0 §5](rfc-0-data-lifecycle.md#5.%20The%20write%20path)). On a single node that is the design: if
 its disk dies, the server is gone too. In a cluster it is not enough.
 
-Take a cluster with storage nodes S1, S2 and S3. Shard A is the set of files
+Take a cluster with nodes S1, S2 and S3. Shard A is the set of files
 under `profiles/alice/`; its **primary**, the one node allowed to write them, is
 S1 ([RFC 11](rfc-11-ownership.md) says how that is decided).
 
@@ -116,7 +116,7 @@ the metadata store refuses its commits, because the takeover marked S1's lease
 lapsed. The fence is enforced by every receiver, never by S1's own check.
 
 ```text
-  alice-pc ── SMB ──► protocol node ── forwards ──┐
+  alice-pc ── SMB ──► gateway node ─── forwards ──┐
                                                   ▼
  ┌─────────────────────── shard A, epoch 5 ───────────────────────┐
  │  S1 (primary)                                                  │
@@ -137,10 +137,10 @@ lapsed. The fence is enforced by every receiver, never by S1's own check.
 
 **The words you need.**
 
-- **primary** — the one storage node that orders and accepts a shard's writes
+- **primary** — the one node that orders and accepts a shard's writes
   ([glossary](rfc-0-data-lifecycle.md#Glossary)); which node it is, and how it
   moves, is [RFC 11](rfc-11-ownership.md)'s.
-- **replica** / **replica set** — a storage node whose journal receives every
+- **replica** / **replica set** — a node whose journal receives every
   write of the shard / the primary and its replicas. The default is three
   copies in all, and writes stop below two ([§7.1](#7.1%20Count%2C%20floor%20and%20placement)).
 - **epoch** — a fencing number in the shard's record in the metadata store;
@@ -155,7 +155,7 @@ lapsed. The fence is enforced by every receiver, never by S1's own check.
 - **learner** — a replica that has just joined: it receives every new write at
   once, but not yet the older content still waiting for upload, so it cannot
   take over ([§7.3](#7.3%20Joining)).
-- **node lease** — one lease per storage node, renewed in the metadata store; a
+- **node lease** — one lease per node, renewed in the metadata store; a
   node whose lease has lapsed serves nothing ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement)).
 - **takeover** / **handover** — a replica becoming primary after the primary's
   lease lapsed ([§9.2](#9.2%20Takeover)) / a planned change of primary that waits
@@ -171,8 +171,8 @@ lapsed. The fence is enforced by every receiver, never by S1's own check.
 - Nothing a replaced primary sends or commits takes effect after the takeover.
 - A read never returns bytes older than the last acknowledged write, nor bytes a
   takeover later takes back: the primary serves only what the whole replica set
-  holds, and any other node confirms the version with the primary or forwards
-  the read.
+  holds, and any other node, once one serves reads, confirms the version with
+  the primary or refuses the read.
 - Adding a replica never pauses writes, and a single node runs the same code
   with a replica set of one.
 
@@ -242,14 +242,15 @@ dirty-region map is the recorded upgrade ([§7.3](#7.3%20Joining)).
 A never runs on one isolated copy. If both replicas are truly lost, only an
 operator's acknowledgement lets S1 claim A alone.
 
-**A client's read lands on a replica.**
+**A read is served by a replica (deferred).** The gateway forwards every read to
+the primary today ([RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes)); once a path delivers one to a replica:
 
-1. A read of a file in A reaches S2 ([§8](#8.%20Reads)).
+1. A read of a file in A reaches S2's server ([§8](#8.%20Reads)).
 2. S2 asks S1 for the newest version of each extent the read covers. The
    answer carries no bytes ([§8](#8.%20Reads)).
 3. S2 serves its own bytes only if each extent carries exactly that version,
    and the answer is still fresh by S2's own clock ([§8](#8.%20Reads)).
-4. Otherwise S2 forwards the read to S1.
+4. Otherwise S2 refuses it, naming S1, and the gateway re-routes it there.
 
 One round trip spreads reads over the replicas without ever serving stale bytes.
 
@@ -279,9 +280,10 @@ moves operations between them, and fences the ones that must no longer count.
 
 1. **Durability across node loss.** An acknowledged write survives the loss of
    every node of its replica set but one that is not a learner.
-2. **Reads anywhere.** Any storage node **MAY** serve recently written bytes it
+2. **Reads anywhere (deferred).** Once a path delivers reads off the primary
+   ([RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes)), any node **MAY** serve recently written bytes it
    holds, after one round trip to the primary that carries no bytes ([§8](#8.%20Reads)).
-3. **No consensus among storage nodes.** The metadata store is the only consensus
+3. **No consensus among nodes.** The metadata store is the only consensus
    ([§3](#3.%20What%20it%20assumes%20of%20shard%20placement)); it is consulted when the replica set changes, never per write.
 4. **A new node takes writes at once**, with no pause in the shard's writes ([§7.3](#7.3%20Joining)).
 5. **One code path** on one node as on many ([§10](#10.%20A%20single%20node)).
@@ -298,9 +300,9 @@ This layer **MUST NOT**:
 - replicate metadata — the metadata store has its own durability;
 - erasure-code journal content ([Appendix B](#Appendix%20B%20%E2%80%94%20alternatives%20considered)).
 
-Which process runs which role is [RFC 15](rfc-15-topology.md#2.1%20One%20binary%2C%20roles%20chosen%20at%20deployment)'s. This document speaks only of
-**storage nodes** — nodes with the `storage` role, each with a journal per device
-— and of the metadata store.
+What a node runs is [RFC 15](rfc-15-topology.md#2.1%20One%20node%20type)'s: every node
+runs everything. This document speaks only of nodes, each with a journal per
+device, and of the metadata store.
 
 ## 2. Model
 
@@ -313,7 +315,7 @@ does not replicate.
 
 | Term | Means |
 | --- | --- |
-| **replica** | a storage node whose journal receives a copy of every operation the primary assigns for the shard |
+| **replica** | a node whose journal receives a copy of every operation the primary assigns for the shard |
 | **replica set** | the primary and its replicas |
 | **learner** | a replica that joined at a **join point** and has not yet been given the shard's older content ([§7.3](#7.3%20Joining)) |
 | **holds durably** | a node holds an operation durably once its journal has synced the record of it to the journal's device ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so the operation survives a crash or power loss of that node. It says nothing of the remote tier: content synced there is *offloaded* |
@@ -357,7 +359,7 @@ a takeover resolves those extents ([§9.2](#9.2%20Takeover)).
 
 ### 2.2 One journal carries many shards
 
-A storage node keeps one journal per device ([RFC 1](rfc-1-journal.md)), holding files of every shard
+A node keeps one journal per device ([RFC 1](rfc-1-journal.md)), holding files of every shard
 the node is primary or replica of. Nothing in this layer is per journal:
 
 - every journal call and every procedure acts per file, and only on the files the
@@ -578,13 +580,13 @@ every late operation below it out.
 1. **One primary per shard, named in its shard record** as (node, node epoch,
    journal identity, join incarnation), with the shard incarnation. The metadata
    store is the only consensus. It **MUST** provide linearizable compare-and-swap
-   on a shard record and be reachable from every storage node, and a change to a
+   on a shard record and be reachable from every node, and a change to a
    record raises its epoch as [§2.1](#2.1%20Terms) states. Records change only when the
    primary or the replica set changes, or by an operator's override or
    acknowledgement ([§2.1](#2.1%20Terms)), never on lease renewal.
 2. **A file's epoch never decreases**, including when it moves between shards
    ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
-3. **One node lease per storage node**, with a node epoch. The node lease
+3. **One node lease per node**, with a node epoch. The node lease
    duration and the drift bound are installation settings
    ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) (proposals: 10 s and 500 ms), and the
    renewal period is a third of the lease, not a setting (the ratios are
@@ -1027,7 +1029,7 @@ whole replica set holds: a read overlapping an operation still being replicated
 waits for it. Otherwise a failover could remove content a client had already
 read.
 
-**Every other storage node**, replica or not, follows [RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes): it asks the
+**Every other node**, replica or not, follows [RFC 11 §6](rfc-11-ownership.md#6.%20Reads%20on%20other%20nodes): it asks the
 primary, for the extent it reads, the newest version the whole replica set holds
 **at each extent within it** — a list of (extent, version) covering it, since one
 read can span bytes written at many versions — and the answer carries the primary's epoch
@@ -1532,7 +1534,7 @@ seed **MUST** reproduce the failure exactly. It runs in two modes:
 **Whole-system fault injection** against real processes, checking the histories
 clients observe for linearizability of acknowledged writes.
 
-**Benchmarks**, on three storage nodes on one local network, each the reference
+**Benchmarks**, on three nodes on one local network, each the reference
 box ([Test tiers](rfc-index.md#Test%20tiers)):
 
 | Benchmark | Measures | Target |
@@ -1599,7 +1601,7 @@ set and an epoch, and every message is fenced by it.
 
 | Alternative | Why not |
 | --- | --- |
-| Every storage node writes, and journals order operations differently | Two writers of one extent leave journals holding different bytes with no version comparable across them. Ordering needs one writer per shard or consensus per write. |
+| Every node writes, and journals order operations differently | Two writers of one extent leave journals holding different bytes with no version comparable across them. Ordering needs one writer per shard or consensus per write. |
 | Consensus per write through the metadata store's timestamp service | Moves consensus from rare events to every write. Reads of recent data then need a quorum or a metadata lookup, several nodes offload overlapping content, and `size` becomes contended. It buys nothing over forwarding to the primary, which costs the same hop replication already pays. |
 | Total-order agreement on every operation among all nodes by gossip, tolerating Byzantine members (hashgraph) | Pays for faults this design does not have: nodes are mutually authenticated ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)), so a member that misbehaves is a crash or a bug, not an adversary. It orders every operation across every node — the consensus per write above at a higher price — with finality in seconds where a write is acknowledged in milliseconds. |
 | Acknowledge at a quorum of the replica set | Hides a slow replica, but a replica can then miss acknowledged writes, so failover needs a read quorum and a durable truncation record. A slow replica is removed on lag instead ([§7.2](#7.2%20Removal)); acknowledgement at *k* of *n* is kept as the upgrade [§4](#4.%20The%20write%20path) sketches. |
@@ -1610,7 +1612,7 @@ set and an epoch, and every message is fenced by it.
 | A seal from the claimant's view alone | Re-issues a removal wherever the claimant holds nothing, including content it evicted after offload: an acknowledged write is destroyed. The seal takes the union above the highest committed point ([§9.2](#9.2%20Takeover)). |
 | Replicas read another's writes only after offload | Metadata shows a new size at once; reading the un-offloaded extent elsewhere must then wait for offload or ask the primary anyway. It also breaks close-to-open visibility unless close waits for offload. |
 | Erasure-coded journal content | Journal content is small, overwritten and short-lived: stripes need read-modify-write on partial writes, failover must reconstruct, and no replica holds whole data to serve reads. Erasure coding belongs at rest, where blocks are sealed. |
-| A shared journal on storage every node can reach, or a replicated log service | Either requires shared-access storage or another service to deploy and keep healthy. Replication among storage nodes needs neither. |
+| A shared journal on storage every node can reach, or a replicated log service | Either requires shared-access storage or another service to deploy and keep healthy. Replication among nodes needs neither. |
 | Journal in a key-value store or an in-memory cache | Weaker durability or capacity, write amplification on large values, and the journal's semantics rebuilt on top. |
 
 ## Appendix C — test catalogue

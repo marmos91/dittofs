@@ -36,7 +36,7 @@
   <path d="M124,94 L124,128" class="ln"/><path d="M350,94 L350,128" class="ln"/><path d="M576,94 L576,128" class="ln"/>
 
   <rect x="24" y="130" width="652" height="150" rx="8" class="sv"/>
-  <text x="36" y="150" class="m">vfs.Service</text><text x="126" y="150" class="s">— six area interfaces; its front admits and routes, its per-file part runs at the primary</text>
+  <text x="36" y="150" class="m">vfs.Service</text><text x="126" y="150" class="s">— six area interfaces; a gateway routes each call, the server at the primary decides it</text>
   <rect x="36" y="162" width="150" height="48" rx="4" class="pr"/>
   <text x="46" y="180" class="h">clients</text><text x="46" y="197" class="s">Connect, Renew, Destroy</text>
   <rect x="196" y="162" width="150" height="48" rx="4" class="pr"/>
@@ -77,11 +77,11 @@
   <rect x="358" y="320" width="152" height="58" rx="5" class="st"/>
   <text x="370" y="340" class="h">open state</text><text x="370" y="356" class="s">RFC 14 · opens, locks,</text><text x="370" y="370" class="s">deny modes, grants</text>
   <rect x="525" y="320" width="152" height="58" rx="5" class="st"/>
-  <text x="537" y="340" class="h">routing</text><text x="537" y="356" class="s">RFC 15 · primaries,</text><text x="537" y="370" class="s">the shard service</text>
+  <text x="537" y="340" class="h">identity</text><text x="537" y="356" class="s">RFC 18 · resolves the</text><text x="537" y="370" class="s">caller per share</text>
   <text x="700" y="340" class="s">the service is the only</text>
   <text x="700" y="356" class="s">caller of all four; an</text>
   <text x="700" y="372" class="s">adapter never sees them</text>
 
   <text x="16" y="400" class="s">Adapters are wire only: framing, compounds, replay caches, error codes — no share list, no permission logic (§4.2).</text>
-  <text x="16" y="418" class="s">Whether a file's primary is this process or another node is decided under routing and never reaches an adapter (§4.8).</text>
+  <text x="16" y="418" class="s">Whether a file's primary is this node or another is the gateway's to route and never reaches an adapter (§2).</text>
 </svg>
