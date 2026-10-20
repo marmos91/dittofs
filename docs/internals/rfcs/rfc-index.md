@@ -51,7 +51,7 @@ order: each part builds on the ones before it.
 | [RFC 21](rfc-21-nfs.md) | NFS | draft, rebased | decisions the NFS standards leave open; rebased on this set, its stable-write, grace and error rules following RFC 8, RFC 14 and RFC 17 |
 | [RFC 22](rfc-22-smb.md) | SMB | draft, rebased | decisions the SMB standards leave open; rebased beside RFC 21 |
 | **Operations** | | | |
-| RFC 23 | control plane | planned | runtime, share lifecycle, management API; applies RFC 13's configuration |
+| [RFC 23](rfc-23-control-plane.md) | control plane | draft | the node that builds its components and applies records; resource lifecycles, shares above all; the management API — concurrency, idempotency, long-running operations, errors, versioning; API accounts, roles, tokens and the bootstrap administrator; the management audit; the CLI as an API client |
 | [RFC 24](rfc-24-resources.md) | resources and concurrency | draft | the node memory budget: one process memory limit divided into fixed pools with floors and ceiling rules, request and reply buffer classes and where they are charged, fairness across clients and shares, the queue inventory and backpressure chain, goroutine, CPU and file-descriptor bounds |
 | RFC 25 | observability | planned | metric and label conventions, health derivation, and the event streams: delivery, retention and export of the access-audit and quota events [RFC 17](rfc-17-vfs.md) emits |
 | **Testing** | | | |
@@ -101,6 +101,7 @@ graph LR
   R20["20 adapters"] --> R7 & R13 & R14 & R15 & R17 & R18 & R19 & R21 & R22 & R23 & R24 & R25 & R27 & R29
   R21["21 nfs"] --> R7 & R8 & R11 & R12 & R13 & R14 & R15 & R16 & R17 & R18 & R19 & R20 & R22 & R24 & R25 & R27 & R28
   R22["22 smb"] --> R1 & R5 & R6 & R7 & R8 & R12 & R13 & R14 & R15 & R16 & R17 & R18 & R19 & R20 & R21 & R24 & R25 & R27 & R28
+  R23["23 control plane"] --> R8 & R9 & R11 & R12 & R13 & R15 & R16 & R17 & R18 & R19 & R20 & R24 & R25 & R26 & R27 & R30
   R24["24 resources"] --> R1 & R3 & R8 & R9 & R13 & R14 & R15 & R17 & R20 & R21 & R22 & R23 & R25 & R29
   R26["26 backups"] --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R9 & R12 & R13 & R16 & R27 & R28
   R27["27 migration"] --> R1 & R2 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13 & R16 & R17 & R26 & R28
