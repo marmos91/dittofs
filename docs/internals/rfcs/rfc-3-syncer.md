@@ -792,7 +792,7 @@ S17); the order calls reached it (S13, S18); attempts per block; bytes it holds.
 **Memory is checked by holding, then measuring.** With every call held and every
 pool full, the heap in use above the idle baseline **MUST** stay within the bound
 of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) plus a stated slack. The test chooses the chunk `Max` and pool size large
-enough that the runtime's own noise stays under that slack.
+enough that the Go runtime's own noise stays under that slack.
 
 The fake covers the syncer's logic. It does not cover the adapter from the remote
 tier to `Store`, nor a real backend's failure modes; those run the same checks
