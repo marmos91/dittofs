@@ -43,10 +43,6 @@ import (
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// noScript are the cells no script runs, so they need only be green through
-// dt.
-var noScript = []string{"smbtorture/badger-s3"}
-
 // side is a cell's results through dt or through the scripts.
 type side struct {
 	result string // how the cell went, in the side's words
@@ -147,10 +143,6 @@ func compare(dir string, planned, suites []string) (string, bool, error) {
 		switch {
 		case !inDT:
 			diffs = []string{"no results through dt"}
-		case slices.Contains(noScript, name):
-			if !d.green {
-				diffs = []string{"no script runs it, so it must be green"}
-			}
 		case !inScripts:
 			diffs = []string{"no results through the scripts"}
 		default:
