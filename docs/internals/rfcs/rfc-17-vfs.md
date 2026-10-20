@@ -575,7 +575,7 @@ Signatures are indicative; the obligations are normative.
 
 Every type an adapter passes or receives is in `pkg/vfs`. Types the metadata
 store and open state define — `ClientID`, `OpenID`, `GrantID`, `WatchID`,
-`SessionRef`, `StateRef`, `Seqs`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
+`SessionRef`, `StateRef`, `Seqs`, `ClientStatus`, `Revocation`, `RevokeReason`, `LockOwner`, `ByteRange`, `LockRange`, `File`, `Attrs`, `ACL`,
 `Xattr`, `Principal`, `FilesystemInfo`, `Usage`, `Quota`, `CachingGrant`,
 `LockWaiter`, `ChangeMask`, `ShareID` — are re-declared there as aliases
 (`type File = metadata.File`), so an adapter imports one package and the
@@ -821,6 +821,9 @@ type Callbacks interface {
 	LockWaitOver(ctx context.Context, w LockWaiter, granted bool) (refused bool, err error) // NLM_GRANTED, SMB lock completion (granted); NFSv4.1 CB_NOTIFY_LOCK, optional; refused: the NLM host refused the grant, and the primary releases the lock
 }
 
+// Revocation and RevokeReason are RFC 14's (§11.1), aliased in pkg/vfs; shown
+// here because the adapters act on them.
+//
 // Revocation names state the service ended without the client asking. Share
 // is set for RevokedShare, where only that share's state ends; Grant for
 // RevokedGrant; Shard for RevokedShardState (RFC 14 §4.4). RevokedLeaseExpired
