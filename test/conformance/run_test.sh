@@ -630,7 +630,7 @@ OUT="$(run_fake --suite privileged --profile memory --dry-run)"
 assert_contains "a root step is elevated" "setup: sudo -E" "$OUT"
 assert_not_contains "a non-root step is not" "run: sudo -E" "$OUT"
 
-OUT="$("$RUNNER" --suite pynfs --profile memory --variant 4.1 --dry-run 2>&1)"
+OUT="$("$RUNNER" --suite pynfs --profile badger-s3 --variant 4.1 --dry-run 2>&1)"
 assert_not_contains "no step of pynfs asks for root" "sudo" "$OUT"
 assert_contains "pynfs pins its minor version" "--minor-version 4.1" "$OUT"
 

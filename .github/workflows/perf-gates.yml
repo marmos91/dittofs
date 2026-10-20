@@ -1,0 +1,46 @@
+name: Performance Gates
+
+on:
+  schedule:
+    # Nightly at 22:55 UTC, after the other nightly suites.
+    - cron: '55 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A scheduled run has a group of its own, so it and a manual run never
+  # replace each other. A re-run keeps its event, and so its group.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  # Every run is a schedule or a manual dispatch, each a commit someone wants
+  # measured. This protects a run that is already executing, not one still
+  # queued: a newer run replaces the pending one.
+  cancel-in-progress: false
+
+jobs:
+  # The throughput and allocation gates skip under -race, and every unit run
+  # uses it, so they run here without it, in a workflow of their own so that a
+  # tripped gate doesn't turn Unit Tests red. Only gates that can fail run: the
+  # aggregate random-write gate has no baseline yet, so it passes whatever it
+  # measures, and joins once it has one.
+  gates:
+    name: Performance and allocation gates (no -race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Run the gates
+        run: >-
+          go test -v -timeout=25m
+          -run '^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$'
+          ./pkg/block/ ./pkg/block/middleware/compression/

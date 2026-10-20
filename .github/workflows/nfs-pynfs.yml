@@ -8,9 +8,7 @@
 # to shared code (a metadata store, the runtime) can break the protocol from
 # underneath, so this runs on all non-docs PRs. Path filters skip docs only.
 #
-#   presubmit (pull_request): memory + badger-s3 x 2 minor versions = 4 jobs
-#   postsubmit (push develop/main) + nightly:
-#     memory, badger, badger-s3 x 2 minor versions = 6 jobs
+#   every event: badger-s3, the production profile, x 2 minor versions = 2 jobs
 #
 # Graded against KNOWN_FAILURES_V40.md / KNOWN_FAILURES_V41.md the same way the
 # POSIX and SMB suites are graded: red only on a failure that is not on the list.
@@ -39,8 +37,10 @@ on:
       - '**.jpg'
       - '**.svg'
   schedule:
-    # Nightly at 04:31 UTC, staggered from the other protocol suites.
-    - cron: '31 4 * * *'
+    # Nightly at 22:31 UTC, staggered from the other protocol suites. GitHub
+    # starts scheduled runs hours late, which lands this one before the
+    # working day rather than inside it.
+    - cron: '31 22 * * *'
   workflow_dispatch:
     inputs:
       baseline:
@@ -52,7 +52,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A scheduled run has a group of its own, so it and a push never replace
+  # each other. A re-run keeps its event, and so its group.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   # Cancel a superseded PR run: a new commit replaces the old one, and only the
   # tip matters. Do NOT cancel a develop run: each push is a distinct commit
   # someone wants tested, and cancelling it means it never is -- which left most
@@ -213,7 +215,7 @@ jobs:
   baseline:
     name: knfsd baseline
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || inputs.baseline
+    if: inputs.baseline
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -223,8 +225,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       # Read-only. This job measures a third-party server, so what it realizes
-      # is nothing the cache should ever serve back, and a scheduled run has no
-      # business writing to it.
+      # is nothing the cache should ever serve back.
       - name: Setup Nix cache
         uses: ./.github/actions/nix-cache
 

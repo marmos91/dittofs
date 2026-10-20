@@ -485,8 +485,7 @@ suites:
         needs: [windows]
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
       nonrace:                          # the throughput and allocation gates that skip under -race
-        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
-        env: { DITTOFS_BENCH_LANE: "1" }
+        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
   integration:
     job: Integration Tests (1.26.x)
@@ -530,17 +529,16 @@ suites:
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
 
-  # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix` and
-  # `select.pr` replace suites.json's profiles and PR lists. Commands are shortened: the flags each
-  # tool needs are in its script today, and move here with it. On PRs only the production profile,
-  # badger-s3, runs (§4.3).
+  # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix`
+  # replaces suites.json's profiles. Commands are shortened: the flags each tool needs are in its
+  # script today, and move here with it. Conformance runs the production profile, badger-s3,
+  # only (§4.3).
   pjdfstest:
     format: tap                         # each test file prints TAP; no prove summary to parse
     cmd: prove -v {test}
     dir: "{mount}"                      # run in the mounted share
     tests: "{tools}/pjdfstest/tests/*/*.t"
-    matrix: { profile: [memory, badger, badger-s3], nfs: ["3", "4", "4.1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], nfs: ["3", "4", "4.1"] }
     fixture:
       profile: "{profile}"
       nfs: { version: "{nfs}", options: "noac,sync,lookupcache=none" }   # mounted at {mount}; v3 adds nolock
@@ -554,8 +552,7 @@ suites:
     format: junit                       # pynfs writes JUnit itself with --xml
     cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
     names: all                          # what {names} holds when a run names no tests
-    matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], minor: ["0", "1"] }
     fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # pynfs mounts nothing; uid 1 is its second client
     known: test/nfs-conformance/pynfs/known.yaml
     tier: pr
@@ -578,8 +575,7 @@ suites:
       DomainName: "{server}"
       AdminUserName: "{user}"
       PasswordForAllUsers: "{password}"
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     fixture:
       profile: "{profile}"
       smb: { encryption: preferred, port: 445 }   # WPTS connects to 445 only
@@ -595,8 +591,7 @@ suites:
     cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}%{password} {test}"
     tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's share and name prefix
     timeout: { test: 5m }               # run.sh's one limit for each test of its list
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }   # its multichannel test dials 445
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
@@ -642,7 +637,7 @@ suites:
     tests: test/nfs-mount/nfstest/tests.txt   # the modules, each with the option sets it runs on
     cmd: "{tools}/nfstest/bin/nfstest_{test} --server {server} --port {nfs-port} --export /export --nfsversion {nfs} --mtpoint /tmp/dittofs-test --mtopts {mtopts} --rmtraces --notty {test-args}"
     matrix:
-      profile: [memory]
+      profile: [badger-s3]
       mount-options:                    # the same sets as nfstest's flags: it mounts by itself
         - default: { nfs: "4.2", mtopts: hard }
         - v3: { nfs: "3", mtopts: "hard,tcp,mountproto=tcp" }
@@ -810,8 +805,8 @@ a scenario's size is in its file name, a fio job's parameters in its job file.
 read it with `jq`. Workflows never parse the file itself, though; they parse `run.sh --matrix`
 output. `dt plan --json` gives them the same, from YAML.
 
-`suites.json` goes with `run.sh`: its profiles become `matrix`, its PR lists `select.pr`, and its
-known-failure paths `known`. `test/conformance/check-docs.sh`, which renders the documentation's
+`suites.json` goes with `run.sh`: its profiles become `matrix`, and its known-failure paths
+`known`. `test/conformance/check-docs.sh`, which renders the documentation's
 tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance suites move: the
 tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
@@ -953,11 +948,11 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 Each tier contains the one below it: a quick run on every PR, the full set after every merge, and
 the long and heavy suites each night.
 
-**PRs run the production profile only.** On PRs, pjdfstest, pynfs, WPTS, smbtorture and cthon04
-run only `badger-s3`, the profile production uses. Since the bucket fix (#3013, for #2986) they
-reach S3; before it they tested nothing more than `badger`. `memory` and `badger` run after merge
-and nightly. smbtorture gains a `badger-s3` profile for this, and cthon04, which runs on `memory`
-on PRs today, moves to it.
+**Conformance runs the production profile only.** In every tier, pjdfstest, pynfs, WPTS,
+smbtorture, cthon04 and nfstest run only `badger-s3`, the profile production uses: the team
+decided on 2026-10-19 to drop `memory` and `badger` from the conformance matrix. Since the bucket
+fix (#3013, for #2986) they reach S3; before it they tested nothing more than `badger`. smbtorture
+gains a `badger-s3` profile for this, and cthon04 and nfstest, which ran on `memory`, move to it.
 
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
@@ -1112,11 +1107,11 @@ There are three places to run:
 | Dedicated test host | a large disk and long run times | nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file |
 
 **Windows clients on a hosted runner.** The runner's own system owns TCP port 445, which is why
-`smb-client-compat.yml`'s Windows job has skipped `net use` on most runs since mid-September
-(#2994). Since Windows Server 2025, which the hosted runners are, the SMB client can connect on
-another port: `net use \\localhost\share /TCPPORT:12445`, or `New-SmbMapping -TcpPort`. So the
-fixture mounts on DittoFS's own port, and port 445 isn't needed. This still needs one run to prove
-it end to end.
+`smb-client-compat.yml`'s Windows job skipped `net use` on most runs from mid-September (#2994),
+until it was dropped: it tested nothing. Since Windows Server 2025, which the hosted runners are,
+the SMB client can connect on another port: `net use \\localhost\share /TCPPORT:12445`, or
+`New-SmbMapping -TcpPort`. So the fixture mounts on DittoFS's own port, and port 445 isn't needed.
+This still needs one run to prove it end to end.
 
 **Scenarios on a runner.** They need podman 5.6 or later (`test/scenarios/README.md`), and the
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:
@@ -1528,10 +1523,10 @@ green PRs that break each other. If the repository moves to an organization: ena
 `merge_group` to `tests.yml`'s triggers, and drop the up-to-date rule.
 
 **Baselines.** smbtorture's `baseline-results.md` is a snapshot of DittoFS's own results on
-`memory`, and the pynfs knfsd run compares the same tests against the kernel's server. Neither
-changes from one night to the next: the smbtorture file last changed on 2026-06-22. Both are
-manual:
-- `dt known baseline smbtorture/memory` writes the file, in `test/smb-conformance/smbtorture/`,
+`badger-s3`, the one profile conformance runs (§4.3), and the pynfs knfsd run compares the same
+tests against the kernel's server. Neither changes from one night to the next: the smbtorture
+file last changed on 2026-06-22, from `memory`. Both are manual:
+- `dt known baseline smbtorture/badger-s3` writes the file, in `test/smb-conformance/smbtorture/`,
   from that cell's results in a run, and it lands through a pull request like any change. It counts
   each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
   the tool's own status, so an unexpected pass is a pass; and anything else as a skip. Its header
@@ -1545,9 +1540,9 @@ manual:
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
 
-**What moves when.** The AD-DC, Kerberos and Windows runs are options of registered suites, and
-their workflows move into `tests.yml` after the main ones (§8 step 3); until then they keep running
-as they are.
+**What moves when.** The AD-DC, Kerberos and Windows runs and the performance gates are options of
+registered suites, and their workflows move into `tests.yml` after the main ones (§8 step 3); until
+then they keep running as they are.
 
 Three things stay outside the registry:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
@@ -1603,7 +1598,8 @@ a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
   needing no secrets) runs on PRs, non-blocking, as `bench-smoke.yml` does today. `unit --nonrace`
   runs nightly: the throughput and allocation gates that skip under `-race` and `-short` today
-  (#2999).
+  (#2999). The aggregate random-write gate joins once it has a baseline: without one it passes
+  whatever it measures.
 - **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
   below its 7-day median for three nights in a row adds a note to the develop-status issue.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
@@ -1733,13 +1729,12 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      A last job compares the two sides' results per cell.
-   - smbtorture's `badger-s3` cell is new (§4.3), so no script runs it: it needs 5 green runs.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
-     Then AD-DC, the Kerberos runs and `bench-smoke.yml`.
+     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.
@@ -1824,7 +1819,7 @@ Carried over from earlier reviews:
 
 Settled before revision 4:
 - CTRF: decided in the 2026-10-08 call.
-- Which profiles run on PRs: `badger-s3` only.
+- Which profiles conformance runs: `badger-s3` only, on PRs, and since 2026-10-19 in every tier.
 - WPTS's setup: it fits the fixture's fields.
 - The NFS `sec=krb5` job: it goes.
 - Real Windows and macOS mounts: the `clients` suite, on hosted runners, on the `memory` profile.

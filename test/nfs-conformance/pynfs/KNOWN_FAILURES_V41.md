@@ -55,8 +55,8 @@ another fails is a diagnosis worth keeping, not a flake worth re-running.
 This table was last walked out from the presubmit v4.1 run on both backends
 the suite covered there before the SQL metadata stores were removed, memory and
 postgres-s3, with the `: PASS` verdict read from each `pynfs.log` artifact. The
-presubmit now runs `memory` and `badger-s3`; the per-backend bar above still
-applies to future walk-outs.
+suite now runs `badger-s3` only; the per-backend bar above still applies to
+future walk-outs.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|

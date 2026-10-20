@@ -40,8 +40,10 @@ on:
       - '**.jpg'
       - '**.svg'
   schedule:
-    # Nightly at 04:19 UTC, staggered from the other protocol suites.
-    - cron: '19 4 * * *'
+    # Nightly at 22:19 UTC, staggered from the other protocol suites. GitHub
+    # starts scheduled runs hours late, which lands this one before the
+    # working day rather than inside it.
+    - cron: '19 22 * * *'
   workflow_dispatch:
     inputs:
       suite:
@@ -60,7 +62,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A scheduled run has a group of its own, so it and a push never replace
+  # each other. A re-run keeps its event, and so its group.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   # Cancel a superseded PR run: a new commit replaces the old one, and only the
   # tip matters. Do NOT cancel a develop run: each push is a distinct commit
   # someone wants tested, and cancelling it means it never is -- which left most
@@ -124,7 +128,9 @@ jobs:
 
   # The graders decide whether a suite is red at all, so they are guarded on
   # their own in about a second rather than only through a 40-minute run that
-  # would have to fail first to reveal a grading regression.
+  # would have to fail first to reveal a grading regression. The common
+  # runner's, the known-failures parser's and the admission lease's tests run
+  # in Repo Checks (lint.yml).
   graders:
     name: Grading logic
     runs-on: ubuntu-latest
@@ -132,12 +138,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Test the common runner
-        run: ./test/conformance/run_test.sh
-
-      - name: Test the shared known-failures parser
-        run: ./test/common/known-failures_test.sh
 
       - name: Test the POSIX grader
         run: ./test/posix/parse-results_test.sh
@@ -156,9 +156,6 @@ jobs:
 
       - name: Test grader exit-status boundaries
         run: ./test/conformance/grader-exit-status_test.sh
-
-      - name: Test the conformance admission lease
-        run: ./test/smb-conformance/compose-env_test.sh
 
   # ---------------------------------------------------------------------------
   # SMB — Docker Compose, no host services, no root.
@@ -385,7 +382,7 @@ jobs:
   # each named option set in test/nfs-mount/option-sets.sh. Same shape as
   # pjdfstest: a dfs on the host adapter, sudo for the mount. Both suites run
   # in this one job; the matrix cell names which. Mostly nightly: PRs get
-  # cthon04 on memory only, merges get nothing (tiers in suites.json).
+  # cthon04, merges get nothing (tiers in suites.json).
   # ---------------------------------------------------------------------------
   nfs-mount:
     name: ${{ matrix.suite }} ${{ matrix.variant }} / ${{ matrix.profile }}
@@ -530,8 +527,10 @@ jobs:
   summary:
     name: Conformance summary
     runs-on: ubuntu-latest
-    if: always()
-    needs: [wpts, smbtorture, pjdfstest, nfs-mount]
+    # Not on a cancelled run: its cells report `cancelled`, which says nothing
+    # about the code.
+    if: ${{ !cancelled() }}
+    needs: [matrix, graders, wpts, smbtorture, pjdfstest, nfs-mount, smbtorture-kerberos]
     steps:
       - name: Checkout
         uses: actions/checkout@v7

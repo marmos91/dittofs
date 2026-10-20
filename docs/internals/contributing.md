@@ -561,7 +561,7 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
 | `conformance.yml` | PR, push, nightly | WPTS BVT, smbtorture, pjdfstest, NFS `sec=krb5` | ~45 min |
-| `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux SMB client testing | ~10 min |
+| `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
 | `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
@@ -602,7 +602,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
 - **conformance.yml** -- The presubmit profiles of each suite (see the table above)
-- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + badger-s3)
+- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (badger-s3)
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)
@@ -610,13 +610,13 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **conformance.yml** -- Every profile of every suite
-- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS, Windows)
+- **conformance.yml** -- The same cells as on PRs except cthon04, plus Kerberos smbtorture
+- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS)
 - **integration-tests.yml** -- Backend-specific integration tests
 
 ### What Runs Weekly (Full Matrix)
 
-The weekly cron runs the complete test matrix (Monday mornings UTC):
+The weekly cron runs the complete test matrix (Sunday evenings UTC):
 
 - Everything from push checks
 - **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
@@ -661,12 +661,7 @@ Follow this template pattern for new workflow jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: >-
-          ${{
-            github.event_name == 'pull_request'
-              && fromJson('["memory"]')
-            || fromJson('["memory", "badger"]')
-          }}
+        profile: [badger-s3]
     steps:
       - uses: actions/checkout@v4
       - name: Run tests
@@ -681,7 +676,7 @@ Follow this template pattern for new workflow jobs:
 ```
 
 Key guidelines:
-- Use matrix strategy with tiered profiles (memory-only on PR, all on push/weekly)
+- Use a matrix strategy; conformance runs the production profile, `badger-s3`, in every tier
 - Always set `timeout-minutes` to prevent runaway jobs
 - Use `fail-fast: false` so one profile failure does not cancel others
 - Upload artifacts with `if: always()` so results are available even on failure
