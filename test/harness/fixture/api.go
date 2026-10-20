@@ -156,7 +156,7 @@ func ids(user string) (uid, gid uint32) {
 	if user == "self" {
 		return uint32(os.Getuid()), uint32(os.Getgid())
 	}
-	n, _ := strconv.Atoi(user) // the registry checks it's a UID
+	n, _ := strconv.ParseUint(user, 10, 32) // the registry checks it's a UID
 	return uint32(n), uint32(n)
 }
 
