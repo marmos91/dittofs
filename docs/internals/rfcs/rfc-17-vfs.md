@@ -644,7 +644,6 @@ type Service interface {
 	Data
 	Locking
 	Shares
-	Identities
 }
 
 // Clients (RFC 14). The lease owner is the server of the node holding the
@@ -722,17 +721,6 @@ type Shares interface {
 	StatFS(ctx context.Context, id Identity, h Handle) (FilesystemInfo, error)                // the share's, or the tighter of it and h's project
 	Quota(ctx context.Context, id Identity, h Handle, p Principal) (Usage, Quota, error)      // p's own, else the share's default for its kind
 	Snapshots(ctx context.Context, id Identity, h Handle) ([]SnapshotInfo, error)             // the snapshots visible at h's path (RFC 12 §2.5)
-}
-
-// Identities: how an adapter encodes and decodes a principal — a file's owner,
-// an ACL entry's who, a quota's target, a name in an lsarpc lookup. It holds
-// no policy: squashing and grants are applied at admission (§4.9), not here.
-// The mapping is RFC 18 §4's; an adapter never derives one spelling from
-// another, and an error other than not-found reaches the client as a server
-// failure, never as an unknown principal.
-type Identities interface {
-	Spell(ctx context.Context, p metadata.Principal, scheme Scheme) (Spelling, error) // p's spelling in scheme: uid, gid, SID, Kerberos name, owner string; ErrNoSpelling when it has none
-	Find(ctx context.Context, s Spelling) (metadata.Principal, error)                 // the principal holding s; ErrUnknownPrincipal when none does
 }
 ```
 

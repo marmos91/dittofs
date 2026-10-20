@@ -1928,7 +1928,7 @@ What a bucket reader can still see:
 | Answers | Metric | Type |
 | --- | --- | --- |
 | chunks encrypted | `encryption_chunks_total` | counter |
-| the data key ID new chunks use, per namespace | `encryption_current_key` | gauge (1 on the current key's label) |
+| how long the namespace's current data key has been current; the key ID itself is read through the management API | `encryption_current_key_age_seconds` | gauge, labelled `namespace` |
 | configured keys the provider cannot currently return with a matching fingerprint, a count; the `material_unavailable` health condition names the keys (RFC 25) | `encryption_keys_unavailable` | gauge |
 
 ## Appendix C — example, a parity transform

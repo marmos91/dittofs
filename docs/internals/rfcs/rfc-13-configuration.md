@@ -247,7 +247,7 @@ only these, come from the host — a file or the environment:
 | how to reach the metadata store, and the credential for it                                                            | needed to read anything else                                                                                                              |
 | the local devices the node may use, and their paths                                                                   | a path means something only on its host ([§3](#3.%20Scopes))                                                                              |
 | the scratch paths beside them: `backups.spill_path`, where copy staging spills ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and `salvage.path`, where stranded journal tags are exported ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
-| the process memory limit — the soft limit the language runtime enforces (on Go, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes every node memory pool (RFC 24 §2.3), the hold pool ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)) among them, and what memory a process has only its host knows; read once at start, as RFC 24 §2.1 orders the sources |
+| the process memory limit — the soft limit the language runtime enforces (on Go, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes every node memory pool, the hold pool among them (RFC 24 §2.3, [§4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)), read once at start in RFC 24 §2.1's order, and what memory a process has only its host knows |
 | listen addresses                                                                                                      | a port conflict is a host's problem                                                                                                       |
 | the management API's TLS certificate and key (RFC 23 §5.3) | the API is served over TLS before anything is read from the control plane, and a certificate names its host |
 | `events.path`, where the node spools its event streams (RFC 25 §4.6) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
@@ -292,7 +292,8 @@ only, and **MUST NOT** be on by default.
 ### 2.3 A record is versioned
 
 Each record carries a **generation**, raised by every change, and a **schema
-version**. A node reports, per kind (`settings`, `shares`, `principals`), the position it has reconciled through, the records it refused and those awaiting a restart; a record is applied once that position reaches the record's own (RFC 23 §2.4)
+version**. Which nodes have applied it is [RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)'s, read from each
+node's reconciled position and its refused and restart-pending sets
 ([§8](#8.%20Observability)). A reader that meets a schema version it does not know refuses
 the record rather than reading the fields it recognises: a field it skipped may
 be the one that mattered.
@@ -818,7 +819,7 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| the position a node has reconciled through per kind — `settings`, `shares`, `principals` — read against the store's current counter per kind; a record is applied once it reaches the record's own | RFC 23's `runtime_applied_generation{kind}` | gauge |
+| the position a node has reconciled through per kind — `settings`, `shares`, `principals` — read against the store's current counter per kind | RFC 23's `runtime_applied_generation{kind}` | gauge |
 | how long a node's reconciled position has been behind the store's counter, per kind — `settings` (`CFGGEN`), `shares` (`SL`), `principals` (`PGEN`) | `config_generation_lag_seconds{kind}` | gauge |
 | secrets a node holds at an older version than the current one | `config_secrets_behind` | gauge, a count |
 | each format's active version, and the range each node registers | `format_active_version`, `format_supported_range` | gauges, labelled by format |
@@ -1120,9 +1121,9 @@ supplies one before the setting is built.
 | `identity.directory_ttl`, `identity.directory_negative_ttl`: how long a positive and a "no such entry" directory answer stay fresh | RFC 18 §5.2 | installation | live | 5 min; 30 s, so a user just created in the directory signs in soon after |
 | `identity.directory_timeout`: a directory query unanswered this long is an error, never "no such entry" | RFC 18 §5.2 | installation | live | 5 s |
 | `identity.directory_stale_grace`: how long past the TTL an entry may be served while the directory fails | RFC 18 §5.3 | installation | live | 15 min; a policy, not a measurement: the window an operator accepts a disabled directory account keeping access through an outage, 0 where it must stop within the TTL |
-| export policy `Squash`, `Anonymous`, `ManageGIDs`, `ReadOnly`: who is squashed, the principal a squashed or anonymous caller acts as, whether an `AUTH_SYS` caller's gids are replaced by its store memberships, and whether every caller is narrowed to read-only | RFC 18 §6.2, §3.2; [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) | share | live: the policy's version is in every resolved caller's key | `root`; the well-known anonymous principal; off; off |
+| export policy defaults (fields of RFC 16's `ExportPolicy` record, written by `PutExportPolicy`, not `Setting` rows): `Squash`, `Anonymous`, `ManageGIDs`, `ReadOnly` — who is squashed, the principal a squashed or anonymous caller acts as, whether an `AUTH_SYS` caller's gids are replaced by its store memberships, and whether every caller is narrowed to read-only; its other fields default empty | RFC 18 §6.2, §3.2; [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) | share | live: the policy's version is in every resolved caller's key | `root`; the well-known anonymous principal; off; off |
 | process memory limit *L*: the language runtime's soft limit, else the container's, else the host's memory | RFC 24 §2.1 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), read once at start | the first source set |
-| node memory pools: share of *L*, and floor | RFC 24 §2.3, §2.4 | — | fixed | receive, reply, hold, connection state, open state 1/16 each; metadata store 3/16; journal index 1/8; transfers 1/8; a quarter unpooled. Floors: receive and reply 16 MiB, connection and open state 4 MiB, metadata store 64 MiB. The metadata store's share is proposed, settled by: RFC 24 §8's M3; the unpooled quarter by M4 |
+| node memory pools: share of *L*, and floor | RFC 24 §2.3, §2.4 | — | fixed | receive, reply, hold, connection state, open state 1/16 each; metadata store 3/16; journal index 1/8; transfers 1/8; a quarter unpooled. Floors: receive and reply 16 MiB, connection and open state 4 MiB, metadata store 64 MiB, transfers eight workers per half and the staging they imply. The metadata store's share is proposed, settled by: RFC 24 §8's M3; the unpooled quarter by M4 |
 | buffer classes | RFC 24 §3.1 | — | fixed | 4 KiB, 64 KiB, 1 MiB, 8 MiB |
 | per-request overhead charged beside a request's buffer | RFC 24 §3.1 | — | fixed | proposed: 8 KiB; settled by: RFC 24 §8's M1 |
 | connection cost charged at accept | RFC 24 §4.4 | — | fixed | proposed: 64 KiB; settled by: RFC 24 §8's M2 |
@@ -1150,7 +1151,14 @@ supplies one before the setting is built.
 | `tracing.sample_ratio`: the fraction of requests sampled at the adapter | RFC 25 §6.3 | node | live | proposed: 0.01 |
 | metric limits: values per entity label per metric per node; series per node and per metric at the reference profile | RFC 25 §2.4, §2.5 | — | fixed | 64; 50 000 and 10 000 |
 | histogram bucket sets | RFC 25 §2.6 | — | fixed | `request`, `background`, `size`, `count`, as RFC 25 §2.6 lists them |
-| event rings: entries per stream, size per entry | RFC 25 §4.3 | — | fixed | 16 384 for `access`, 4 096 for `quota`; 1 KiB |
+| event rings: entries per stream, size per entry | RFC 25 §4.3 | — | fixed | 16 384 for `access`, 4 096 each for `quota` and `logon`; 1 KiB |
 | event spool: rotation; sync interval; high-water warning | RFC 25 §4.3, §4.6 | — | fixed | 64 MiB or one hour, whichever first; 1 s; 80% of `events.max_bytes` |
 | quota hard-refusal coalescing window | RFC 25 §4.4 | — | fixed | 60 s |
 | liveness watchdog: how long an internal loop may go without a turn before liveness fails | RFC 25 §3.5 | — | fixed | 60 s |
+
+> ponytail: proposed, not yet agreed — the fixed rows copy values RFC 23, 24 and 25 tabulate
+> themselves — about 25 rows, a count not yet checked against those tables — so
+> that this appendix stays the one list of every number inside a MUST, as the
+> index requires. A copy drifts: replace the trust in the copy with a test that
+> diffs these rows against the owners' tables once a copied row is found
+> drifted again.

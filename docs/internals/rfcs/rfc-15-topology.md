@@ -503,7 +503,10 @@ lost node before taking its addresses ([§5.3](#5.3%20Client%20addressing)) —
 the health condition it records from its gateway's failed forwards to a primary it cannot reach
 ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)),
 the client records it is lease owner of ([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)),
-and control-plane records through `ControlPlane.*`.
+its own node-status record (RFC 23 §2.4), the principals a first sign-in mints
+through `Minter`, with their `PX` rows, allocated IDs and `PGEN`, and a
+directory principal's name refresh, conditional on the generation it read
+(RFC 18 §2.4, §5.1), and control-plane records through `ControlPlane.*`.
 
 **What a write crosses.** A client write that reaches a node which is not its
 shard's primary crosses the network four times before it is acknowledged —

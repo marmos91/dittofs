@@ -902,6 +902,7 @@ type Quota struct {
 	Soft      Limit         // allowed beyond it for Grace, then refused as Hard
 	Grace     time.Duration // how long usage may stay above Soft
 	Advisory  Limit         // never refused: crossing it only produces a quota event, which the filesystem service emits (§7.6)
+	Version   uint64        // the writing commit's, as ShareGrant's; RFC 23's entity tag
 }
 
 // Limit is a byte and a file count; zero in either means no limit on it.

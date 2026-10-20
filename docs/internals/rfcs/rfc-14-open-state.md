@@ -93,7 +93,7 @@ alice-pc chose.
 6. **N1 restarts.** The in-memory table is gone. Without a rule, the second
    desktop could open the file before alice-pc comes back, and both would think
    they hold it. Instead N1, whose start raised the shard's incarnation, runs a
-   new **grace period**: for one lease period it refuses every new open, lock, deny mode, grant or layout, and every read or write a lost lock or deny mode might have forbidden, and lets clients its durable
+   new **grace period**: for one lease period it refuses anything a lost lock, deny mode, grant or layout might have forbidden, and lets clients its durable
    records name reclaim what they held. alice-pc reclaims its persistent open,
    whose record survived the restart, with every write it was told was done;
    grace then ends on its own, early once every recorded client has reclaimed.
@@ -359,7 +359,7 @@ layer would then import an adapter.
 type Open struct {
 	ID            OpenID // unique across the installation, never reused
 	Client        ClientID
-	Principal     Principal // who opened it; a reconnect by anyone else is refused (§8.1)
+	Principal     Principal // who opened it: the caller's mapped principal, before squashing (RFC 18 §6.1), as Client.Principal is; a reconnect or a call through the open by any other is refused (§8.1, L26)
 	File          FileID
 	Access        Access     // granted at open: the full mask of RFC 7 §7.7, WRITE_DAC, WRITE_OWNER and a DELETE granted through the parent included
 	Privileged    bool       // opened with backup or restore intent by a caller privileged for it (RFC 7 §7.4); every request through the open keeps it
@@ -960,10 +960,10 @@ reclaim that asks for more access than its claimed open had, or whose principal
 may no longer open the file that way, is refused. Grace suspends conflict
 checks against lost state; it does not suspend permission checks.
 
-A reclaim of volatile state **MAY** be refused with `ErrDelay` when the node's
-open-state reclaim allowance is spent (RFC 24 §4.6); the client retries it
-within grace. A reclaim of a durable or persistent open is never refused for
-memory.
+A reclaim of volatile state past the node's open-state reclaim allowance is
+refused `ErrDelay` (`DelayResources`), and a reclaim of a durable or persistent
+open and its locks never is, as RFC 24 §4.6 states; the client retries within
+grace.
 
 The window **MUST** end on its own ([RFC 0 §10.2](rfc-0-data-lifecycle.md#10.2%20No%20state%20requires%20intervention%20to%20leave)). A server that will not leave a
 grace period until an operator acts has replaced one wedge with another. It
@@ -1025,10 +1025,9 @@ period for the client, and runs whether or not the shard is in grace.
 Every open-state operation reaches the file's primary
 ([§3](#3.%20One%20table%20per%20file%2C%20at%20one%20primary)), so a grace
 period is scoped to the RFC 11 shards, the unit whose primary changes, that
-lost state, and the rest of the cluster keeps granting. Only losing the table
-loses state — a restart of the primary, a failover, or a handover whose old
-primary is lost before the new one holds the table, as listed below; a handover
-or a batch move of files that hands the table over runs no grace ([§10](#10.%20Shard%20placement)).
+lost state, and the rest of the cluster keeps granting. State is lost only with
+the table — each case is a grace instance, below; a handover or a batch move of
+files that hands the table over runs no grace ([§10](#10.%20Shard%20placement)).
 
 ![(cluster) Grace per shard after a failover: N1 dies and its in-memory table for shard A is lost; after N1's node lease lapses plus the drift bound, N2 serves A under a raised incarnation and a new grace instance, granting only reclaims, while shard B keeps granting; alice-pc's connection is broken and it reclaims its persistent open, build01 sees ReclaimNeeded on its next renewal, reclaims and completes, another client's new lock gets ErrGrace and its retry is granted once grace ends early; grace is capped at 90 s and runs that long if an NFSv4.0 client or NLM host is recorded](img/rfc14-grace.svg)
 
@@ -2139,7 +2138,7 @@ error or `ClientStatus` field. Deleted numbers are not reused.
 | L21 | A write or read through an open never advances a time that open has suspended; through any other open it does. | Suspend `Modify` on the first of two SMB opens; write through each: assert unchanged, then advanced; resume, write: advanced. Repeat on a persistent open across a failover. |
 | L22 | An NFSv4.0 owner's sequence is checked and advanced at its home primary as §2.8 says; no out-of-sequence request changes state. | One open-owner opens files on two primaries with consecutive seqids: both accepted; a stale seqid: `ErrBadSeqID`, no change. An `ErrDelay` open and an `ErrLocked` lock each advance the sequence. Fail the second primary over: a sequenced request is `ErrStaleState` and does not advance. Fail the home primary over: the next request is accepted in grace as a new owner's. RFC 21 §12 asserts the wire values. |
 | L23 | An SMB rename or delete of a directory is refused while an open made through that directory exists; an NFS one is not. | Open a file in D over SMB: an SMB rename of D is `ErrShareViolation`, an NFS one succeeds and the open still reads; an open two levels below D does not refuse it. |
-| L24 | A reclaim restores only modes, locks and grants the client held, authorised like a new open against the file as it is now; it never grants more. Only a reclaim of volatile state is ever refused for memory, `ErrDelay` once the reclaim allowance is spent. | Open read-only with deny-none; fail over. Reclaim read-write with deny-write: refused. Remove the principal's read access, fail over, reclaim the original: refused. Reclaim exactly what was held: granted. |
+| L24 | A reclaim restores only modes, locks and grants the client held, authorised like a new open against the file as it is now; it never grants more. Only a reclaim of volatile state is ever refused for memory ([RFC 24 §4.6](rfc-24-resources.md#4.6%20Open%20state)). | Open read-only with deny-none; fail over. Reclaim read-write with deny-write: refused. Remove the principal's read access, fail over, reclaim the original: refused. Reclaim exactly what was held: granted. |
 | L25 | A client record is found by (protocol, owner); for NFSv4 the same owner from another principal is refused `ErrClientInUse`, and the record keeps its verifier, principal and state protection durably. An SMB record is keyed by `ClientGuid` alone and holds no principal. | Connect an owner, again with the same verifier through another node: the same ID; with a new verifier: a new ID and the old state released; from another principal: refused; after a restart: the same ID. Two principals negotiate one `ClientGuid`: one record, no principal; the second presenting or reconnecting the first's open is refused. |
 | L26 | Every call using an open or lock state is refused unless its caller is the opener's principal or a machine principal state protection names; every bearer ID with room carries at least 64 random bits, and an ID without room is honoured only with its principal and session. | Mint 2¹⁶ stateids and flip each of the 64 random bits of each: assert no flip names a record. A counter fails at the low bits. The opener-only half is RFC 17 V18. |
 | L27 | An NFSv4 stateid's seqid and an open-owner's confirmation are held as state and change in the step that applies the request. | Upgrade an open, then `Downgrade` with the pre-upgrade seqid: `ErrOldState`, and `TestState` with it too. A new NFSv4.0 open-owner's read before `ConfirmOpen`: refused; after it: accepted. |
