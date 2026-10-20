@@ -139,7 +139,7 @@ With this RFC:
 **How the rest is organised.** §1 gives the purpose and non-goals. §2 defines
 principals and the rule that keeps their IDs stable. §3 is authentication:
 the interface the service calls for an adapter's sign-in, and each flavour's rules. §4 is mapping in both
-directions. §5 is the directory, its cache and what a stale entry may grant.
+directions. §5 is the directory, its cache, what a stale entry may grant, and what works without a domain controller.
 §6 is resolution per share: squashing, groups, grants and the caller's flags.
 §7 is caches. §8 separates management-API users from file principals. §9
 collects failure modes. §10 and §11 are invariants, metrics and conformance;
@@ -964,8 +964,10 @@ A name with a service part (`nfs/build01`) never matches step 2 or 3.
 ### 4.3 uid and gid
 
 - A uid maps to the user holding it in the `uid` index; a gid to the group in
-  the `gid` index.
-- **An `AUTH_SYS` uid with no principal behind it** acts as the share's
+  the `gid` index. In `rfc2307` mode, a claimed uid or gid with no row is
+  asked of the directory by `uidNumber` or `gidNumber`, and an entry that
+  answers is minted as a directory principal (§5.1, §5.5).
+- **An `AUTH_SYS` uid with no principal behind it**, after that lookup, acts as the share's
   anonymous principal, and the call is counted
   (`identity_unmapped_total{scheme="uid"}`).
 - **A credential gid with no principal** is no group at all: it is dropped
@@ -1102,6 +1104,8 @@ finished fails whole (§2.5):
 | what are this principal's groups, nested? | resolving a directory principal's groups (§2.5) |
 | is this account enabled? | with every lookup of a directory user |
 | what is this group's SID and gid? | minting a group a member's lookup names |
+| who holds this `uidNumber` or `gidNumber`? | in `rfc2307` mode, a claimed uid or gid with no record (§4.3) |
+| what is this user's e-mail address? | with every lookup of a directory user, when the entry has one — its `mail` attribute, for example; read-only to the API, like the entry's other fields (§2.2) |
 
 - A directory principal's **record** is minted once, from the first answer,
   and holds its `PrincipalID`, name, SID, uid and gid from then on (§4.3).
@@ -1185,6 +1189,42 @@ which is the store's, takes effect within §7.2's bound regardless.
 - An error **MUST NOT** fall back to the share's everyone grant, to a guest,
   or to a cached negative answer.
 - Every such refusal is counted with its cause (§10.2).
+
+### 5.5 A directory without Active Directory or Kerberos
+
+A directory is a source of names, never a proof: it says who holds a name, a
+uid or a SID, and which groups they are in, and it verifies no credential. The
+proof comes from the sign-in path (§3). With a plain RFC 2307 directory, no
+domain controller and no KDC:
+
+| Path | Works? | Why |
+| --- | --- | --- |
+| NFS `AUTH_SYS` | yes, as a claim | in `rfc2307` mode a claimed uid maps by `uidNumber` to the directory principal, and its groups come from the directory (§4.3, §2.5); the caller is `Claimed`, never `authenticated`, so no `admin` or authenticated-users grant reaches it (§3.2, §6.5) |
+| NFS or SMB Kerberos | only with a KDC | any KDC serving the same users will do; a ticket's name resolves through the directory by §4.2 step 3 when its realm is the directory's |
+| SMB NTLMv2 | no, for a user only in the directory | NTLMv2 is challenge and response, so no password reaches the server to check against the directory; a local check needs an NT hash, which the store holds for no directory user (§3.5); pass-through needs a domain controller |
+| management-API sign-in | local users only | the API checks a stored password hash (§8.1); a directory user has none |
+
+**So an SMB user who exists only in a directory without a domain controller
+cannot sign in.** The supported path without one is the directory for
+`AUTH_SYS`, and a KDC wherever a proof is needed. Giving such a user a second,
+local SMB password is refused: two passwords for one principal drift apart.
+
+> decision: a claimed uid in `rfc2307` mode mints the directory principal that
+> holds it, although §4.4 never mints for an unauthenticated `Find`. A mint
+> here is bounded by the directory's own entries, not by the 2^32 numbers a
+> client may send (§4.3), and only hosts the share's client rules admit can
+> trigger one. Without it no directory user is ever minted where nothing signs
+> in with a proof. Overturned if `identity_directory_lookups_total` shows a
+> client enumerating `uidNumber`s; mints then need a proof, and `AUTH_SYS`
+> users a record the operator creates.
+
+> ponytail: NT hashes are never read from the directory (an attribute such as
+> a Samba-style schema's NT password). Reading one needs a privileged bind, an
+> NT hash is equivalent to the password, and §3.5 lets NT hashes exist only
+> while `identity.ntlm` is on. Add it when a deployment needs NTLM for
+> directory users without a domain controller, with a sealed bind credential
+> that may read only that attribute and the hash held only in memory, dropped
+> when `identity.ntlm` turns off.
 
 ## 6. Resolution per share
 
@@ -1649,6 +1689,8 @@ with the directory and KDC as local test services.
 | §5.2 one query per key | 100 concurrent lookups of one key against a counting fake directory: assert 1 query. | a sign-in storm multiplied per connection |
 | §4.4 anonymous lookup | Over an anonymous session on `IPC$`, `LookupSids` of an unminted directory SID: assert no record written. | an unauthenticated caller minting principals |
 | §4.6 name case | Create two users whose names differ only in case: assert the second refused as a duplicate. | names unique byte for byte |
+| §5.5 `AUTH_SYS` from the directory | In `rfc2307` mode, an `AUTH_SYS` call sends the `uidNumber` of a directory entry with no record: assert the caller is that entry's minted principal, with its directory groups, and not `authenticated`. | a directory that serves names but never maps a claimed uid |
+| §5.5 NTLM without a domain controller | With a directory and no pass-through configured, an NTLM sign-in for a user only in the directory: assert `ErrLogonFailure`, and no anonymous or guest session. | a directory-only user let in, or mapped to guest |
 | §5.1 mint conflict | In `rfc2307` mode, mint directory user alice, then sign in bob, whose entry has another SID and alice's `uidNumber`: assert the sign-in fails, bob is bound to no principal, and alice's record is unchanged. | a lost mint bound to whichever principal holds the row |
 
 **Fuzz.** `FuzzPAC`, `FuzzAPReq`, `FuzzSID` and `FuzzOwnerString` never panic, never
@@ -1674,7 +1716,7 @@ API's sign-in is tested against the real identity server, called directly, never
 
 ## 13. Open questions
 
-The deferrals of §3.5, §4.3, §4.4, §5.1 and §7.2 are recorded at their markers, with what would overturn each.
+The deferrals of §3.5, §4.3, §4.4, §5.1, §5.5 and §7.2 are recorded at their markers, with what would overturn each.
 
 1. **Name case.** Whether case-insensitive uniqueness of names (§4.6) holds for
    every directory a deployment uses, or a directory with case-distinct names
