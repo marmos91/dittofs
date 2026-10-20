@@ -434,8 +434,8 @@ through the delegation.
 state's; a request naming an older seqid than the current one is refused
 `ErrOldState`, a newer one `ErrBadState`, and seqid zero means the current one
 (RFC 8881 §8.2.2). `StateSeq` and `LockState.Seq` hold them, and change in the
-step that applies the request; the presented seqid reaches that step as
-`StateRef.Seq`, `OpenRef.Seq` or `Seqs.State` (§11.3).
+step that applies the request; the presented seqid reaches that step once, as
+`StateRef.Seq` or `OpenRef.Seq` (§11.3). `Seqs` carries only owner seqids.
 
 **A time can be suspended per open.** `Suspended` names `Modify` and `Access`
 only, never the change time
@@ -1841,7 +1841,6 @@ package openstate // pkg/openstate
 
 type Deps struct {
 	Store   *metadata.Store   // RFC 16: the OpenRecords view only — client records, durable opens and their locks, delete pending, the NSM number
-	Sink    Sink              // implemented by the filesystem service (below)
 	Pool    *resources.Pool   // RFC 24 §4.6: the open-state pool
 	Clock   clock.Clock       // the only time source
 	Metrics *metrics.Registry
@@ -1851,6 +1850,11 @@ type Deps struct {
 // New builds an empty table and starts nothing. *Table is the only
 // implementation; the service holds it as a concrete type (RFC 17 §2.3).
 func New(d Deps) (*Table, error)
+
+// Start takes the Sink: the service is built after the table and holds it,
+// so a Sink in Deps would make the two constructors need each other.
+func (t *Table) Start(ctx context.Context, sink Sink) error
+func (t *Table) Stop()
 
 // Sink is how open state reaches clients. The service implements it and
 // routes each event to the client's Callbacks (RFC 17 §3.2). Every method
@@ -1909,8 +1913,8 @@ runs in the package ([§12](#12.%20Invariants%2C%20and%20the%20test%20of%20each)
 
 ### 11.2 Lifecycle
 
-The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which `node.New` builds it into, calls `Start(ctx)`
-after the store and before the service's `Start`
+The node ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), which `node.New` builds it into, calls `Start(ctx, sink)`
+with the built `*vfs.Server` as the `Sink`, after the store and before the service's `Start`
 ([RFC 17 §2.5](rfc-17-vfs.md#2.5%20Lifecycle)), and `Stop` after the
 service's `Close`, before the store's. `Start` reads each served shard's
 `GraceInstance` and incarnation, already raised by the node's start
@@ -1941,19 +1945,19 @@ Rebind(ctx, c ClientID, node NodeID) error                      // clears PathDo
 // Per-file — at the file's primary.
 Open(ctx, c ClientID, f FileID, r OpenRequest) (OpenResult, error)
 Reconnect(ctx, c ClientID, id Identity, o OpenID, m ReconnectMatch, s SessionRef) (Open, error)
-Downgrade(ctx, c ClientID, o OpenID, q Seqs, access, deny Access) error
+Downgrade(ctx, c ClientID, o OpenRef, q Seqs, access, deny Access) error
 ConfirmOpen(ctx, c ClientID, o OpenID, seq uint32) error
 SetDisposition(ctx, c ClientID, o OpenID, delete bool) error
 SuspendTimes(ctx, c ClientID, o OpenID, suspend, resume TimeMask) error
-Close(ctx, c ClientID, o OpenID, q Seqs) (CloseResult, error)   // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
+Close(ctx, c ClientID, o OpenRef, q Seqs) (CloseResult, error)  // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
 Flushed(ctx, c ClientID, o OpenID, loss uint64) error
 Disconnect(ctx, c ClientID, s SessionRef) error                 // closes the session's volatile opens; starts the rest's Timeout
 
-Lock(ctx, c ClientID, f FileID, r LockReq) error                // LockReq{Owner; Open; Ranges []LockRange; Wait, Reclaim bool; Seq *LockSequence; NFS Seqs}: one step
+Lock(ctx, c ClientID, f FileID, r LockReq) error                // LockReq{Owner; Open OpenRef; Ranges []LockRange; Wait, Reclaim bool; Seq *LockSequence; NFS Seqs}: one step
 CancelLock(ctx, c ClientID, f FileID, o LockOwner, r ByteRange) (granted bool, err error)
 WaitAnswered(ctx, c ClientID, w LockWaiter, refused bool) error // the NLM host's answer to LockWaitOver
 TestLock(ctx, c ClientID, f FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
-Unlock(ctx, c ClientID, f FileID, o LockOwner, rs []ByteRange, q Seqs) error
+Unlock(ctx, c ClientID, f FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error
 ReleaseLockOwner(ctx, c ClientID, o LockOwner) error
 
 AckBreak(ctx, c ClientID, g GrantID, to GrantKind) error        // to GrantNone: a return (DELEGRETURN, a lease released)
@@ -1996,10 +2000,10 @@ type LockRange struct {
 	Exclusive bool
 }
 
-// Seqs is what an NFSv4 request presents to be sequenced; zero for SMB, NLM
-// and NFSv3.
+// Seqs is the owner seqids an NFSv4.0 request presents; zero for NFSv4.1, SMB,
+// NLM and NFSv3. The stateid's own seqid is never here: it travels once, as the
+// OpenRef's or StateRef's Seq.
 type Seqs struct {
-	State    uint32  // the seqid of the stateid presented; zero: current
 	Owner    *uint32 // NFSv4.0: the owner's seqid (§2.8) — the lock-owner's, or the open-owner's for a LOCK introducing its lock-owner, an OPEN_DOWNGRADE or a CLOSE
 	NewOwner uint32  // NFSv4.0, a LOCK introducing its lock-owner: that lock-owner's first seqid
 }
@@ -2020,7 +2024,8 @@ type ClientStatus struct {
 ```
 
 `OpenRef` names an open (`OpenID`), a delegation (`GrantID`) or the anonymous
-open, with the handle and the seqid presented (`Seq`, zero: current);
+open, with the handle and the seqid presented (`Seq`, zero: current) — for a
+`LOCK` or `LOCKU` naming a lock stateid, that stateid's seqid;
 `StateRef` ([§2.1](#2.1%20Client)) is its stateid form.
 `LockReq` is passed by value; `Owner.Owner` is copied only when a lock or
 waiter is stored, so a refused or tested request allocates nothing. A request
