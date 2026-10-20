@@ -1136,13 +1136,14 @@ and raising drift on it would answer a share at its journal limit with no space
 caller does two things before its next call to the store:
 
 - it issues no delete, puts nothing at a backup location, and prunes nothing for the store;
-- it raises the store's **drift condition**, through the syncer's `SetDrift`
+- it records drift in the namespace's `Recheck` record, from which each
+  process's GC raises the store's **drift condition** through its syncer's `SetDrift`
   ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), which the syncer reads as part of
   the store's health ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)): while the condition stands, the put
   direction is unhealthy and the syncer refuses puts to the store. Gets go on,
   since drift endangers what is written and deleted, not what is read.
 
-A later `Recheck` that passes clears the condition, by `SetDrift(store, nil)`. A folder store's holder that
+A later `Recheck` that passes is recorded, and each process's GC then clears the condition, by `SetDrift(store, nil)` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). A folder store's holder that
 finds drift fails the copy or sweep it was about to start, which then follows
 [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step)'s failure path. The store itself keeps
 neither the result nor the condition ([§4.9](#4.9%20No%20state%20across%20calls)). Each profile names the settings

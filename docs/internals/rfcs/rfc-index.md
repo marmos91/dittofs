@@ -36,7 +36,7 @@ order: each part builds on the ones before it.
 | **Cluster**, deferred past the first release ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) | | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | deferred | a primary and its replicas, fencing, seal, joining learners, catch-up, reads |
 | [RFC 11](rfc-11-ownership.md) | shards | deferred | shards (a share by default, subtree and automatic per-child shards; per-file and range shards deferred), the primary of each, node leases, handover, batched moves, cross-shard operations, failover, forwarding |
-| [RFC 15](rfc-15-topology.md) | topology and roles | deferred | one binary, two roles chosen at deployment (`protocol` and `storage`, both by default), the composition root: what each role composes, one primary per shard, the route envelope, routing calls to the primary that serves them, split and collocated deployments, pNFS metadata and data servers |
+| [RFC 15](rfc-15-topology.md) | topology and roles | deferred | one node type that runs everything, `node.New`'s build order, the gateway forwarding to the primary and the server deciding, one primary per shard, the route envelope, pNFS metadata and data servers |
 | **Data management** | | | |
 | [RFC 12](rfc-12-snapshots.md) | snapshots and clones | draft | snapshots (a per-share cut number plus counted history refs; read-only, writable clones, scheduled with retention, subtree snapshots); a snapshot's deletion honours the use records [RFC 26](rfc-26-catalog-backups.md) defines |
 | [RFC 26](rfc-26-catalog-backups.md) | catalog backups | draft | catalog and copying backups, backup locations, the use records that hold a snapshot while it is read, restore to a new share, recovery import, the export format and staged import |
@@ -124,7 +124,7 @@ every RFC of this set are to be interpreted as in RFC 2119.
   `reviewed` (an external review's findings are closed in the normative text);
   `frozen` (reviewed, and a change to it is made only together with every RFC
   that cites the changed rule); `deferred` (not built in the first release; its
-  rules bind only once a second storage node can serve a share,
+  rules bind only once a second node can serve a share,
   [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). An RFC is never marked `reviewed` or `frozen` while an RFC
   it builds on is `draft`: a reviewed rule resting on a moving one is not
   reviewed. The pairwise cycles under the graph join into one strongly
