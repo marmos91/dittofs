@@ -25,8 +25,9 @@ it in stage 5.
 **D1. Route B: the server is built over the new store, not over today's `metadata.Service`.**
 `Deps.Meta` is `*kvstore.Store` from the first piece. RFC 17 §9's slices 1–3, which first
 delegate to today's `metadata.Service` and lock manager, are a migration of today's server;
-on `feat/storage-v2` they would build a second server that route B then deletes. Open
-question 1 asks Marco to confirm.
+on `feat/storage-v2` they would build a second server that route B then deletes. RFC 17 §9 now
+says the same in a `decision:`: slice 1's delegation and slice 3's shim are skipped, and slice 0's
+types come from the new store.
 
 **D2. Single node only.** The server and nothing else of §2: no `Gateway`, `Serve`, `Router`,
 `Transport` or `Peers`, which RFC 17 §9 puts in its own cluster slice. `Deps.Peers` is nil, and
@@ -84,8 +85,11 @@ What each piece carries:
 3. **Shares and admission:** `Root`, `SecInfo`, `ListShares`, the pseudo-filesystem as a pure
    function of the share list, admission on every call with its cache key, and `authz` as the
    one caller of `Authorize`.
-4. **Clients and callbacks:** the `Clients` area over open state's client area, the per-client
-   `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the server's `Sink`, handed to `Table.Start`.
+4. **Clients and callbacks:** the `Clients` area over open state's `Clients` view, the per-client
+   `Callbacks` registry, which `Connect` fills and a second `Connect` replaces, and the server's
+   `Sink`, handed to `Table.Start` with the server's admission lock. Each area holds only the open
+   state views it calls (`Opens`, `Locks`, `Grants`, `Watches`, `Recovery`, `Checks`), and fakes
+   only those in its unit tests.
 5. **Names:** `Lookup`, `ReadDir`, `Create`, `Link`, `Unlink`, `Rmdir` and `Rename` over the
    store's `Namespace`, with open state's `CheckChange` before each change.
 6. **Attributes:** `GetAttr`, `SetAttr` with size changes, ACLs, xattrs, streams, `Access` and
@@ -109,7 +113,7 @@ build against before either is done. From RFC 17 §3.5 and RFC 8 §12.1:
 | `Write`, `Overlay`, `Commit` | the write path (§5.1) and stable commits (§5.8) |
 | `Read`, `Allocation` | reads, SEEK and READ_PLUS (§5.2) |
 | `Truncate`, `Deallocate` | size changes and hole punching (§5.5) |
-| `Release` | an orphaned file's content, at its last close or unlink (§5.3). RFC 8 §12.1 names it `Delete`, kept apart from the journal's own `Release`, which evicts; one name has to win |
+| `Delete` | an orphaned file's content, at its last close or unlink (§5.3); kept apart from the journal's own `Release`, which evicts |
 | `Copy`, `Clone` | server-side copy and clone (§5.9) |
 
 Proposal: stage 2 writes the fake and a short check that any `Content` passes, such as
@@ -126,19 +130,16 @@ Stage 3's engine runs the same check, so the fake cannot drift from the engine. 
 
 ## 6. Open questions
 
-1. **D1:** is route B the right reading of RFC 17 §9 for `feat/storage-v2`? If §9's slices 0–2
-   also land on `develop` for today's server, `pkg/vfs` should be written once and shared, not
-   twice.
-2. **The engine contract (§4):** who writes the fake, and when is `Content` frozen against
+1. **The engine contract (§4):** who writes the fake, and when is `Content` frozen against
    E11 of #3152?
-3. **D4:** when does RFC 18's resolver land, and is the store-backed fake enough until then?
-4. **Gaps below the server** (RFC 17 §10.4): RFC 16 has no read view of the share indexes or
+2. **D4:** when does RFC 18's resolver land, and is the store-backed fake enough until then?
+3. **Gaps below the server** (RFC 17 §10.4): RFC 16 has no read view of the share indexes or
    of quota records other than `ControlPlane`, which the server must not call. Both are store
    work, and so ours, before pieces 3 and 8. RFC 16 on #3142 now adds `SharePolicy`, read
    through identity's `Records` view: a share's squash, anonymous principal and cache versions
    in one snapshot. That covers admission's policy read; the share list and path index, and
    quota records, are still without one.
-5. **ID widths** (RFC 17 §10.3): the shard and `OpenID` widths in the stateid and the SMB
+4. **ID widths** (RFC 17 §10.3): the shard and `OpenID` widths in the stateid and the SMB
    `FileId` are one choice, which stage 1's stateid layout also depends on.
 
 ## 7. Size and what sets the pace
@@ -146,7 +147,6 @@ Stage 3's engine runs the same check, so the fake cannot drift from the engine. 
 About fifteen PRs, roughly one per piece and two for the larger ones (5, 8, 9). Review sets the
 pace, as for stage 1. What blocks what:
 
-- open question 1 before piece 2;
 - the `Content` contract agreed before piece 8;
 - stage 1 pieces 2, 3, 4, 5 and 6 before stage 2 pieces 4, 5, 7, 9 and 11;
-- the store's share and quota read views (open question 4) before pieces 3 and 8.
+- the store's share and quota read views (open question 3) before pieces 3 and 8.
