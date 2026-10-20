@@ -824,7 +824,10 @@ Two further limits are permitted, each with its interaction stated:
 - the **throttle limit** of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports), one per store and direction. It is never above
   the store's cap, is lowered only by a throttling response and raised only by
   successes, and binds only on a store that has throttled; on a store that has
-  not, it equals the cap and the pool and caps decide as before.
+  not, it equals the cap and the pool and caps decide as before;
+- the **background CPU token** of RFC 24 §6.2, taken per chunk's encode and
+  returned before the next network wait; it bounds CPU, not transfers, so the
+  pool still decides how many run.
 
 ### 2.2 The pool size is a memory bound
 
@@ -1482,6 +1485,9 @@ The syncer exposes exactly two settings, both process-wide:
 | `upload_workers` | the uploader's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 | `fetch_workers` | the fetcher's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
+Unset, both are reduced in equal proportion to fit the node's transfers pool, at
+least eight each (RFC 24 §7.2).
+
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
 Little's law, workers ≈ throughput × time per transfer ÷ block size. A request
@@ -1583,11 +1589,13 @@ needs, and its cost **MUST NOT** grow with the number of transfers in flight.
 Metric names are shown without the deployment's prefix. Every metric is labelled with `half` (`upload` or `fetch`) and `store`; the half
 is also the direction the health metrics describe. Queue metrics also carry
 `class` (`demand`, `background` or `speculation`, [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). Queue
-metrics are also reported per flow; the syncer knows a flow by its id, and the
-engine replaces it with the share when it exports ([§1.3](#1.3%20Interface)). The syncer also
-reports each queue metric summed over all flows, so the total needs no query
-across series and survives the engine capping how many shares it exports one by
-one. The syncer
+gauges (`syncer_queue_depth`, `syncer_waiters`) are also reported per flow, which
+the engine exports by share under RFC 25's worst-n rule; the syncer knows a flow
+by its id, and the engine replaces it with the share when it exports
+([§1.3](#1.3%20Interface)). Queue histograms and counters are reported summed
+only. The syncer reports each queue gauge summed over all flows too, so the
+total needs no query across series and survives the engine capping how many
+shares it exports one by one. The syncer
 **MUST** make every metric below observable:
 
 **Pools** — is the syncer the limit?
@@ -1614,8 +1622,8 @@ one. The syncer
 | `syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `verify`, `floor`, `stalled` or `trickle` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_retry_budget_exhausted_total` | counter | failed attempts reported rather than retried because the store's budget was empty ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_throttle_limit` | gauge | the store's throttle limit per direction, against its cap ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, per flow; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `syncer_store_throughput_bytes` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, summed over flows; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_store_throughput_bytes_per_second` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
 **Fetches** — are reads being shared?
 

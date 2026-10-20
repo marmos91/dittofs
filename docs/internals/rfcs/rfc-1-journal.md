@@ -1299,9 +1299,10 @@ failing — **MUST** be readable from one `Stats` call.
 ### 3.9 Metrics
 
 The journal exports nothing itself: its dependency set excludes any metrics
-library ([§1.1](#1.1%20Non-goals)). The engine exports every `Stats` field of [§3.7](#3.7%20State%20introspection), and the
-counters below, labelled with the journal, and the per-share fields labelled with
-the share too. A metric is listed only if the journal alone knows it; the caller
+library ([§1.1](#1.1%20Non-goals)). The engine exports every `Stats` field of [§3.7](#3.7%20State%20introspection) and the
+counters below: each counter as `journal_<field>_total` (`written_bytes` as
+`journal_written_bytes_total`), each gauge as `journal_<field>`, labelled with
+the journal; per-share fields follow RFC 25's worst-n rule. A metric is listed only if the journal alone knows it; the caller
 times `WriteAt` and counts read hits and misses itself. The counters live in
 `Stats` and reset on open.
 
@@ -1567,7 +1568,7 @@ retained extents included.
 
 **The index is bounded, and the bound refuses.** An implementation **MUST NOT**
 silently degrade when the index grows. A configured entry bound (`ExtentLimit`,
-sized against a memory budget at about 51 bytes per entry; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
+sized from RFC 24's index pool at about 51 bytes per entry; [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)) caps the entries of
 all files of the journal together. A `WriteAt` or `Fill` that would raise the
 count above the bound is refused at once, with the same named refusal as a
 capacity refusal, naming the index as the limit ([§6](#6.%20Capacity)), and counted in

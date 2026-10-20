@@ -247,22 +247,26 @@ only these, come from the host — a file or the environment:
 | how to reach the metadata store, and the credential for it                                                            | needed to read anything else                                                                                                              |
 | the local devices the node may use, and their paths                                                                   | a path means something only on its host ([§3](#3.%20Scopes))                                                                              |
 | the scratch paths beside them: `backups.spill_path`, where copy staging spills ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and `salvage.path`, where stranded journal tags are exported ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
-| the process memory limit — the soft limit the language runtime enforces (on Go, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes the node's hold pool ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)), and what memory a process has only its host knows |
+| the process memory limit — the soft limit the language runtime enforces (on Go, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes every node memory pool, the hold pool among them (RFC 24 §2.3, [§4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)), read once at start in RFC 24 §2.1's order, and what memory a process has only its host knows |
 | listen addresses                                                                                                      | a port conflict is a host's problem                                                                                                       |
+| the management API's TLS certificate and key (RFC 23 §5.3) | the API is served over TLS before anything is read from the control plane, and a certificate names its host |
+| `events.path`, where the node spools its event streams (RFC 25 §4.6) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
 | log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |
 | the node's **roles** — `protocol` and `storage`, and both is the only accepted value ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)) | kept as a flag so a later split of the roles needs no new setting; a node configured with one refuses to start ([RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%20work)); fixed for the life of the process |
 | the location of each wrapping key for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing |
 
 **A scratch path is checked against the journals at every start, in both
-directions.** The node refuses `backups.spill_path` or `salvage.path` if it
+directions.** The node refuses `backups.spill_path`, `salvage.path` or
+`events.path` if it
 shares a device, a filesystem or free space with any of its journals — the path
 checked against every journal, and every journal, one added since included,
 against the path — since a scratch write that fills a journal's space answers
 its writers no space ([RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Free space is shared when
 the two lie in one filesystem, one pool or one thinly provisioned volume group,
-not only on one device. A refused path does not stop the node: a refused spill
+not only on one device. A refused spill or salvage path does not stop the node: a refused spill
 path spills nothing, and a refused salvage path fails each export as
-[RFC 1 §3](rfc-1-journal.md#3.%20Interface) has it. A value set for the whole
+[RFC 1 §3](rfc-1-journal.md#3.%20Interface) has it; a refused events path refuses the start, as
+RFC 25 §4.6 requires. A value set for the whole
 installation could not be checked this way, since one node's scratch disk can
 be another's journal filesystem.
 
@@ -288,7 +292,8 @@ only, and **MUST NOT** be on by default.
 ### 2.3 A record is versioned
 
 Each record carries a **generation**, raised by every change, and a **schema
-version**. A component reports, per record, the generation it runs
+version**. Which nodes have applied it is [RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)'s, read from each
+node's reconciled position and its refused and restart-pending sets
 ([§8](#8.%20Observability)). A reader that meets a schema version it does not know refuses
 the record rather than reading the fields it recognises: a field it skipped may
 be the one that mattered.
@@ -453,7 +458,7 @@ A setting has exactly one scope, the smallest thing it must be the same across:
 | **node** | what describes one host's resources | its journals, one per device, and each one's maximum footprint ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) |
 | **namespace** | what decides stored bytes and their identity, and where they sit | prefix, chunk-ID key, chunking key, data keys, `Target`, whether the chain encrypts, the counting domain |
 | **remote store** | the store configuration every namespace created on it shares: how blocks reach and sit on a service ([RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20locations%20kept%20inside)) | endpoint, bucket, credential reference, storage class, transform chain, block target, material provider, master keys |
-| **share** | what a client sees | case sensitivity, name length, `atime`, per-share journal limit, snapshot policy |
+| **share** | what a client sees, and what orders its names | case sensitivity, entry-digest key, name length, `atime`, per-share journal limit, snapshot policy, export policy |
 
 ![The five scopes nested inside one installation: node N1 holds its journals and their footprints; a remote store configuration holds endpoint, bucket dfs-data, credential reference, storage class, transform chain, block target, material provider and master keys, and is shared by several namespaces, each opening its own store under its own prefix with its own prefix, chunk-ID key, chunking key, data keys, Target, encryption choice and counting domain; shares such as profiles hang off a namespace and hold what a client sees; bootstrap facts, fixed and derived values have no scope; what decides a chunk's boundaries or identity is a namespace setting because deduplication compares chunks across a namespace](img/rfc13-scopes.svg)
 
@@ -481,7 +486,9 @@ above. [Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings) writes it in one
 - *scope* **default**, *narrower scope* **override** — a value at the wider
   scope that one narrower record **MAY** replace, such as a replica count with
   an installation default and a per-shard value in the shard record. The two are
-  one setting, validated by one rule.
+  one setting, validated by one rule. A shard is not a sixth scope: it is a
+  part of one share ([RFC 11](rfc-11-ownership.md)), so a shard override is a refinement of the share
+  scope, the narrowest record a value may be written in.
 
 A quantity that is **fixed** or **derived** ([§4.1](#4.1%20Fixed%20by%20default)), or a **bootstrap** fact
 ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), has no scope, and Appendix B says so in its class column instead.
@@ -571,7 +578,7 @@ store's configuration ([RFC 4 §4.2](rfc-4-remote-tier.md#4.2%20Names%20in%2C%20
 deduplicates nothing against what is stored ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 So the control plane **MUST** refuse a change to a bound setting while the
-namespace or store holds content, and a share's binding to its namespace
+namespace, store or share it is scoped to holds content, and a share's binding to its namespace
 **MUST NOT** change while the share holds content, except by a re-home
 ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the one sanctioned change of that binding: it copies the
 share's content into a new namespace while the share serves, and rebinds it only
@@ -694,8 +701,8 @@ both keys in its bootstrap:
 
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
-| `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials | authentication |
-| `storage` | remote-tier credentials, references to master keys | the remote tier and the material provider |
+| `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | authentication |
+| `storage` | password hashes, which only the management API's sign-in verifies (RFC 23 §5.3); remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3) | the remote tier, the material provider and the management API |
 
 A deployment **MAY** split a key further by secret kind.
 
@@ -735,7 +742,7 @@ type SecretProvider interface {
   credential writes a new value under the same reference, as a new version of
   the `Secret` record; the previous version stays resolvable. The change raises
   the settings generation ([§5](#5.%20Binding%20classes)), so every node using the reference
-  resolves it again within the live bound and reports the version it now holds
+  resolves it again within the live bound and records the version it now holds in its node-status record (RFC 23 §2.4)
   ([§8](#8.%20Observability)). Only once every such node reports the new version does the
   provider delete the old one, and the control plane report that the old
   credential may be revoked at its service; revoking it earlier fails the nodes
@@ -750,7 +757,7 @@ type SecretProvider interface {
   copy of it.
 - **A wrapping key rotates the same way.** A node's bootstrap **MAY** name two
   keys for one role, the current and the next. Re-sealing every `Secret` of that
-  role under the next key is one pass; each record names the key ID it is sealed
+  role under the next key is one pass, run by a node of that role, since it opens each; each record names the key ID it is sealed
   under, and the current key is removed from bootstraps only once no record
   names it.
 - **Material is a secret with a lifecycle.** Encryption keys are resolved through
@@ -812,16 +819,18 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| the generation of each record a node runs, against the store's current one | `config_generation` | gauge, labelled by record |
-| the version of each secret a node holds, against the current one | `config_secret_version` | gauge, labelled by reference |
+| the position a node has reconciled through per kind — `settings`, `shares`, `principals` — read against the store's current counter per kind | RFC 23's `runtime_applied_generation{kind}` | gauge |
+| how long a node's reconciled position has been behind the store's counter, per kind — `settings` (`CFGGEN`), `shares` (`SL`), `principals` (`PGEN`) | `config_generation_lag_seconds{kind}` | gauge |
+| secrets a node holds at an older version than the current one | `config_secrets_behind` | gauge, a count |
 | each format's active version, and the range each node registers | `format_active_version`, `format_supported_range` | gauges, labelled by format |
 | records refused, by component and reason | `config_refused_total` | counter |
 | changes refused because a setting is bound | `config_bound_refusals_total` | counter |
 | the provisioning file hash each node applied, and applies refused by reason | `config_provisioning_applied`, `config_provisioning_refused_total` | gauge, counter |
 
-A node whose generation for a live record stays behind the store's for longer
-than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node, not
-only a gauge.
+A node whose reconciled position stays behind a live record's own for longer
+than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node,
+`config_generation_behind`, which names the records behind; no metric is
+labelled by record or by secret.
 
 ## 9. Test plan
 
@@ -836,14 +845,14 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) refused | For every setting, feed one value out of range and one of the wrong type, through the API and directly to the component. Assert both refuse, with the field named; assert no component runs a default in its place. |
 | [§6](#6.%20Validation) one validator | Assert the API and the component return the same error for every invalid record in the fixture set. |
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
-| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and a password hash. Assert each unseals under its own wrapping key and fails under the other. |
+| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and an NT hash. Assert each unseals under its own wrapping key and fails under the other. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) explicit initialisation | Start a node against an empty metadata store and empty journal directories: assert it refuses, creating nothing. Initialise: assert the store's Installation record and every journal's `format` file carry one installation ID. Start with the store volume unmounted: assert it reports the metadata store lost and creates nothing; with the journal directory emptied, the journal missing. Only with initialise-if-empty set does a start on empty storage create an installation. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) location deletion | Delete a location record holding one unexpired backup: refused `ErrLocation`, naming it. Expire it; delete again: accepted. Make a second location unreachable for good with one backup there: deletion refused. State it lost, crashing after the lost mark and after the first batch: assert the statement resumes from the mark, the backup reads `lost` in the store, its folder record's census and block count are empty, the statement is in the audit log, deletion is accepted, and a master key only that backup's export named can be destroyed. Leave a third location unreachable for a day without the statement: still refused. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) break-glass principal | Create an `immutable` record naming a break-glass principal whose policy exempts exactly it: accepted. Exempt a second principal as well, or name the location's credential or the inspection credential as the break-glass one: refused. Omit the field with a policy that exempts anyone: refused. Let the break-glass role's trust admit the installation's account, or scope the legal-hold deny to the bucket rather than its objects, or add a condition to it: each refused. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) health object re-put | Rotate an `immutable` location's credential and prove it; make the health object's recorded version missing — on a fault-injecting test service, since no principal can delete a compliance-locked version before its retain-until; open: assert a new version is put under the rotated credential and recorded. Open under a credential never proven: refused, nothing put. |
 | [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) backup location credential | Rotate an immutable and a mutable backup location's credential: assert both accepted, proven by the health object's recorded version and nonce. Point the record at another bucket: refused. A design that looks for a namespace claim at a backup location refuses every rotation. |
-| [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) scratch paths | Start a node with `backups.spill_path` on a journal's filesystem, then on a second subvolume of the journal's pool, then on a separate filesystem and add a journal on it before the next start; assert each is refused at start, the node serves, nothing spills, and a stranded tag's export with `salvage.path` refused the same way is a failed export reported as a health condition. Set either path as a record field: refused. |
+| [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) scratch paths | Start a node with `backups.spill_path` on a journal's filesystem, then on a second subvolume of the journal's pool, then on a separate filesystem and add a journal on it before the next start; assert each is refused at start, the node serves, nothing spills, and a stranded tag's export with `salvage.path` refused the same way is a failed export reported as a health condition. Set either path as a record field: refused.  Start one with `events.path` on a journal's filesystem: assert the start is refused. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) no host override | Set a record field in the host's environment. Assert it is refused at start, not applied. |
 | [§2.3](#2.3%20A%20record%20is%20versioned) schema | Present a record with a newer schema version. Assert refused. |
 | [§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) provisioning | Start a node with a file declaring a namespace, a share and a setting. Assert all three exist and are marked managed. Edit the share through the API; assert refused, naming the file. Change the file and reload; assert applied. Remove the share from the file; assert it stays, unmanaged; add `prune: true`; assert deleted. |
@@ -863,7 +872,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) version gate | Run two nodes; register a third whose range excludes an active version; assert it refuses to start, naming the format. Upgrade one node's binary; raise an active version; assert refused, naming the other node. Upgrade it; assert the raise is accepted. Start the old binary; assert it refuses. A design without a recorded active version accepts the first raise. |
 | [§7](#7.%20Secrets) user secrets | Create a user with a password, rotate it once, delete the user. Read the store's raw keys: assert no version of either secret remains, and a restart mid-`DeleteUser` still leaves none once it resumes. |
 | [§7](#7.%20Secrets) rotation | Rotate a credential while two nodes use it. Assert both report the new version within 5 s, the old version stays resolvable until both do, and only then is it deleted. Rotate a wrapping key with both keys in every bootstrap; assert every `Secret` names the new key ID before the old key can be removed. |
-| [§3](#3.%20Scopes) scope forms | Parse Appendix B's scope column. Assert every entry is one of the five scopes in one of §3's three forms, or "—" with a class of fixed, derived or bootstrap. |
+| [§3](#3.%20Scopes) scope forms | Parse Appendix B's scope column. Assert every entry is one of the five scopes in one of §3's three forms, a shard override counting as a refinement of share (§3), or "—" with a class of fixed, derived or bootstrap. |
 | [§6](#6.%20Validation) block target range | Set the block target to 512 KiB and to 128 MiB. Assert both refused, naming the field and the range; assert 1 MiB and 64 MiB accepted. |
 
 ## 10. Edits this document asks of other RFCs
@@ -932,14 +941,14 @@ Descriptive, for the refactor.
 | C3 | Refused, never replaced ([§6](#6.%20Validation)) | several settings fall back silently: an invalid chunk profile keeps the default, an out-of-range upload parallelism turns adaptive, an empty compression algorithm becomes zstd, a non-boolean durability flag is ignored, a zero backpressure wait becomes 60 s (its own range check can never fire), a zero Kerberos uid or gid becomes 65534 |
 | C4 | Unknown fields refused ([§6](#6.%20Validation)) | unknown host-file keys are warnings; store settings are an untyped document |
 | C5 | No secret in configuration ([§7](#7.%20Secrets)) | remote store credentials, the LDAP bind password and Kerberos settings are stored in the configuration database in plain text; reads redact them |
-| C6 | Node-local facts only on the host ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | the machine SID and the token-signing secret are per-host and must be copied between nodes by hand; key-file paths held in the shared database must exist on every node |
+| C6 | Node-local facts only on the host ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)); the management API's token-signing key is an installation-wide `Secret` sealed under the `storage` wrapping key (RFC 23 §5.3), not a host fact | the machine SID and the token-signing secret are per-host and must be copied between nodes by hand; key-file paths held in the shared database must exist on every node |
 | C7 | Every setting read by something | a generic settings table and its CLI have no reader; the SMB encryption adapter setting is a stub |
 | C8 | One default per setting ([§4.2](#4.2%20Every%20setting%20has%20a%20default%2C%20or%20is%20required)) | log retention defaults differ between the file path and the built-in defaults; a documented journal log limit is described as gating writes and does not |
 | C9 | Host fields not overridable, flags or otherwise | the documented order names command-line flags as the highest source; none binds to a setting |
 
 ## Appendix B — the settings
 
-Every setting the storage RFCs name, with its scope and class. A default marked
+Every setting the RFCs name, with its scope and class. A default marked
 "proposed" is a starting value awaiting a measurement, which every such row names
 after "settled by"; the first reference-box run replaces it under the index's rule
 ([Test tiers](rfc-index.md#Test%20tiers)), read for a setting default as the
@@ -959,7 +968,7 @@ supplies one before the setting is built.
 | segment size | [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments) | — | fixed: a constant of the implementation, never a setting | value open in RFC 28 §5, question 2 |
 | `sync.policy`: `bounded`, every written record synced within the sync bound by the journal's timer, or `standard`, synced only when a client asks, the timer off | [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy) | share | live: a change is handed to the journal through `SetSyncPolicy`, per stream, and applies to every record written after it ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), within the live bound ([§5](#5.%20Binding%20classes)) | proposed: `bounded`; settled by: J1 without a `Sync` after each write under both policies, syncs per second and throughput against the data a crash loses ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)'s decision) |
 | sync bound: under `bounded`, longest a written record waits for a sync | [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy) | — | fixed | proposed in RFC 1: 1 s; settled by: J1 without a `Sync` after each write, at 1 s and at a longer bound ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)) |
-| `ExtentLimit`: placement-index entries per journal | [RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) | node, per journal | restart | proposed: 2²⁶ entries (about 3.4 GB at 51 bytes each); settled by: index memory in [RFC 1](rfc-1-journal.md)'s soak against the reference box's memory, the bound set so every journal of a node fits beside the process's other budgets |
+| `ExtentLimit`: placement-index entries per journal | [RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) | node, per journal | restart | derived: the journal's part of the node's journal-index pool, an eighth of the process memory limit given to the node's journals in proportion to each one's maximum footprint, divided by the entry cost and by nine eighths so the bound and its excess fit (RFC 24 §7.1) — about 19 million entries for one journal on an 8 GiB node; a value set so that the node's journals together exceed the pool is refused at start, naming the journals and the pool |
 | index excess: how far removals and releases may take the placement index above `ExtentLimit` before a release or deallocate that would split a held extent is refused retry-later | [RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes) | — | derived | an eighth of `ExtentLimit`; eviction releases whole extents, which split nothing, so the cap never wedges a full journal |
 | drop ranges per (file, segment): past it the two closest ranges merge, keeping the lower pair | [RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack) | — | fixed | 8; settled, since a merge only keeps a removal longer and never drops one, so the value trades memory against repack's cost, never safety; its ponytail names the evidence that would replace it |
 | append streams per journal | [RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments) | node, per journal | restart | proposed: 16; settled by: J1's throughput across stream counts with 16 concurrent writers |
@@ -978,7 +987,7 @@ supplies one before the setting is built.
 | data key, current | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | namespace | next write | created with the namespace when the chain encrypts; wrapped, by (ID, fingerprint) ([§7](#7.%20Secrets)) |
 | master keys | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) | remote store | live: rotates by re-wrapping; never destroyed while a retained export names it | required on every store configuration, held where [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) requires; a key file needs verified escrow where B.2 says (`ErrNotEscrowed`); references only ([§7](#7.%20Secrets)) |
 | block format version to write | [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) | namespace | next write | the newest version every node reads |
-| `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | installation | restart | proposed: 128 each, or the sizing tool's figure; settled by: the sizing tool's put curve (upload) and ranged-get curve (fetch) per supported service ([RFC 4 §7.5](rfc-4-remote-tier.md#7.5%20Benchmarks%20and%20targets)), and B5 at that size |
+| `upload_workers`, `fetch_workers` | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | node | restart | derived: 128 each, or the sizing tool's figure, reduced in equal proportion until both halves' peak and the staging budget fit the node's transfers pool, an eighth of the process memory limit, and at least eight each (RFC 24 §7.2) — about 100 each on an 8 GiB node; counts set explicitly that do not fit are refused at start, naming the pool; the 128 is proposed, settled by: the sizing tool's put curve (upload) and ranged-get curve (fetch) per supported service ([RFC 4 §7.5](rfc-4-remote-tier.md#7.5%20Benchmarks%20and%20targets)), and B5 at that size |
 | slow-tail retry share: most slow-tail retries per store and direction, as a share of its transfers over a fixed window | [RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports) | — | fixed | proposed in RFC 3: 5% over 60 s; settled by: the slow-tail retry rate on each supported service under the sizing tool's load, and a store slowed fourfold, against first-attempt latency ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 | retry budget demand reserve; throttled-attempt bound | [RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports) | — | fixed | proposed in RFC 3: a quarter of each bucket; eight throttled attempts per transfer; settled by: a copying backup and a reader's cold fetches sharing one failing path, and a throttling service's burst replies |
 | endpoint, credential reference | [RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface) | remote store | live, under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) | required |
@@ -1083,6 +1092,7 @@ supplies one before the setting is built.
 | staging budget: raw transfers held between fetch and upload by every copy and by GC's relocation, one pool per process, in memory and then spilled to disk | [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound), [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | — | derived | as [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) derives it, from the copy flow's cap in the fetcher's pool; staging above it spills under `backups.spill_path`, and a reservation waits once memory plus spill reach `backups.spill_max`, or at the budget when no spill path is set; the spill is cleared at start |
 | `backups.spill_path`: directory staging spills to above its memory budget | [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | none: unset, nothing spills and staging waits at the memory budget. Checked against the journals at every start in both directions and refused if it shares space with one ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)); a deployment choice, not a measurement |
 | `salvage.path`: directory stranded journal tags are exported to | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | none: unset, every export fails and is reported, and the tags stay stranded. Checked as `backups.spill_path` is; a deployment choice, not a measurement |
+| `events.path`: directory the node spools its event streams to | RFC 25 §4.6 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required; refused on a journal's filesystem, which refuses the start |
 | `backups.spill_max`: memory plus spill at which a staging reservation waits for staging to drain, one total per process across every copy and GC's relocation ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | installation | live | proposed: 64 GiB; settled by: the spill [RFC 26 §6.5](rfc-26-catalog-backups.md#6.5%20Benchmarks%20and%20targets)'s daily copying backup reaches from a source faster than its folder |
 | `backups.max_copy_time`: bound on one copy attempt; a successor builds on a failed one | [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step) | installation | live | proposed: 48 h; settled by: the longest incremental copy attempt in [RFC 26 §6.5](rfc-26-catalog-backups.md#6.5%20Benchmarks%20and%20targets)'s daily copying backup at `backups.copy_rate`, which selects the value, since an attempt cut short fails into a successor that builds on it rather than losing its work; a first copy spans as many attempts as it needs, so it does not size this |
 | `existence_age`: longest a synced write's existence waits for the group commit | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) | installation | live | proposed: 1 s; settled by: the sync bound it matches under the `bounded` policy ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), and E5/E7's existence transactions per second at 1 s and shorter. A `standard` share has no sync bound; its cut syncs the share's streams with the gate open, so the gate covers only the residue ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), and this row assumes that pre-sync |
@@ -1097,6 +1107,58 @@ supplies one before the setting is built.
 | eviction occupancy target: allocated occupancy, under the journal's maximum, that eviction frees down to | [RFC 8 §10.1](rfc-8-engine.md#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record) | node, per journal | live | proposed: 85% of the maximum footprint; settled by: repack bytes copied per byte freed under the profile workload ([RFC 8 §10.1](rfc-8-engine.md#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)), across targets |
 | fill low-water mark: free journal capacity, reserved for writes, below which a demanded extent is not filled and pre-warm pauses | [RFC 8 §7.3](rfc-8-engine.md#7.3%20Filling%20is%20a%20decision) | node, per journal | live | proposed: 10% of the maximum footprint; settled by: [RFC 8 §16](rfc-8-engine.md#16.%20Open%20questions) item 1, hit rate and write refusals for fill-always, this rule and fill-never on a large-file workload |
 | write pacing: soft threshold *S*, rate window, rate floor *r*₀ | [RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) | — | fixed | proposed: half of the limit *L*; 10 s; 1 MiB/s; settled by: E3's submission latency and offloaded throughput across thresholds and floors |
-| **(cluster)** quota reservation slack `S`, per principal or project per primary, applied only where a quota's writers span primaries | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | proposed: 1 GiB; settled by: one principal's write throughput over `existence_age` on the reference box, below which its writes wait for a commit ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
+| **(cluster)** quota reservation slack `S`, per principal, project or share per primary, applied only where a quota's writers span primaries | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | proposed: 1 GiB; settled by: one principal's write throughput over `existence_age` on the reference box, below which its writes wait for a commit ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) |
 | **(cluster)** quota slack fraction `f`: a quota's slack is `min(S, f × Hard.Bytes)` | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | proposed: 1 %; settled by: the overshoot of a 1 GiB quota written through two primaries against its write latency, across fractions |
-| audit policy: which operations emit an access event | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks) | share | live | none: no access events |
+| audit policy: which operations emit an access event — every decision, denials only, or writes and namespace changes — and whether the file's audit entries are honoured (honour file audit entries) | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks), RFC 19 §3.7 | share | live | none: no access events, and no audit entry selects anything |
+| ACL list bounds: entries per access or audit list, encoded size per list; a set past either is refused whole | RFC 19 §2.8 | — | fixed | 128 entries; 64 KiB |
+| `identity.id_range`: the range uids and gids are allocated from when a principal has none | RFC 18 §2.3 | installation | live: a change applies to later allocations; an allocated ID never changes | 1 000 000 to 1 999 999 999 |
+| `identity.ntlm`: whether NTLMv2 is accepted; off deletes every stored NT hash | RFC 18 §3.5 | installation | live | on: workgroup deployments have no KDC (RFC 18 §3.5's decision) |
+| `identity.local_realms`: Kerberos realms whose user part names a local user | RFC 18 §4.2 | installation | live | the realms of the keytab's service names |
+| `identity.nfs4_domain`: the domain of NFSv4 owner strings | RFC 18 §4.5 | installation | live | the first local realm in lower case, or `localdomain` with none |
+| `identity.clock_skew`: how far a Kerberos ticket's times may be off | RFC 18 §3.3 | installation | live | 5 min, as Kerberos implementations use |
+| `identity.max_groups`: groups a principal may be in before resolution refuses it | RFC 18 §2.5 | installation | live | 1 024, just above what a Windows token carries by default |
+| `identity.directory`: the one directory — address, base, bind credential reference, realm, NetBIOS domain, uid mode | RFC 18 §5.1 | installation | live | none: no directory |
+| `identity.directory_ttl`, `identity.directory_negative_ttl`: how long a positive and a "no such entry" directory answer stay fresh | RFC 18 §5.2 | installation | live | 5 min; 30 s, so a user just created in the directory signs in soon after |
+| `identity.directory_timeout`: a directory query unanswered this long is an error, never "no such entry" | RFC 18 §5.2 | installation | live | 5 s |
+| `identity.directory_stale_grace`: how long past the TTL an entry may be served while the directory fails | RFC 18 §5.3 | installation | live | 15 min; a policy, not a measurement: the window an operator accepts a disabled directory account keeping access through an outage, 0 where it must stop within the TTL |
+| export policy defaults (fields of RFC 16's `ExportPolicy` record, written by `PutExportPolicy`, not `Setting` rows): `Squash`, `Anonymous`, `ManageGIDs`, `ReadOnly` — who is squashed, the principal a squashed or anonymous caller acts as, whether an `AUTH_SYS` caller's gids are replaced by its store memberships, and whether every caller is narrowed to read-only; its other fields default empty | RFC 18 §6.2, §3.2; [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) | share | live: the policy's version is in every resolved caller's key | `root`; the well-known anonymous principal; off; off |
+| process memory limit *L*: the language runtime's soft limit, else the container's, else the host's memory | RFC 24 §2.1 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), read once at start | the first source set |
+| node memory pools: share of *L*, and floor | RFC 24 §2.3, §2.4 | — | fixed | receive, reply, hold, connection state, open state 1/16 each; metadata store 3/16; journal index 1/8; transfers 1/8; a quarter unpooled. Floors: receive and reply 16 MiB, connection and open state 4 MiB, metadata store 64 MiB, transfers eight workers per half and the staging they imply. The metadata store's share is proposed, settled by: RFC 24 §8's M3; the unpooled quarter by M4 |
+| buffer classes | RFC 24 §3.1 | — | fixed | 4 KiB, 64 KiB, 1 MiB, 8 MiB |
+| per-request overhead charged beside a request's buffer | RFC 24 §3.1 | — | fixed | proposed: 8 KiB; settled by: RFC 24 §8's M1 |
+| connection cost charged at accept | RFC 24 §4.4 | — | fixed | proposed: 64 KiB; settled by: RFC 24 §8's M2 |
+| NFSv4.1 session cost; slot cost, per slot of each channel | RFC 24 §4.5 | — | fixed | proposed: 4 KiB; 256 bytes; settled by: RFC 24 §8's M2 |
+| open-state costs: per open; per lock range, waiter, grant or reservation | RFC 24 §4.6 | — | fixed | proposed: 1 KiB; 256 bytes; settled by: RFC 24 §8's M6 |
+| open-state reclaim allowance: how far a reclaim during grace may take the open-state pool | RFC 24 §4.6 | — | fixed | the pool at twice its share, the excess taken from the unpooled quarter; a reclaim of durable state is never refused ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) |
+| work-scheduler pending entries per instance | RFC 24 §5.1, [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler) | — | fixed | proposed: 262,144; settled by: RFC 24 §8's M8 |
+| client and share caps on the receive and reply pools | RFC 24 §4.1, §4.2 | — | fixed | three quarters of a pool per client key while another waits; three quarters per share while the pool is more than half full |
+| `connection_limit`: client connections one node accepts | RFC 24 §4.4 | node | restart | derived: the least of the connection-state pool's ceiling over the connection cost and half the open-file limit; a value above either is refused at start |
+| connections per address | RFC 24 §4.4 | — | fixed | a quarter of `connection_limit` |
+| requests in flight per connection, for protocols without flow control | RFC 24 §3.4 | — | fixed | proposed: 64, one NFSv4.1 session's fore channel; settled by: RFC 24 §8's M7 |
+| background CPU: work holding a CPU token at once | RFC 24 §6.2 | — | fixed | proposed: three quarters of the language runtime's parallelism, at least one; settled by: RFC 24 §8's M5 |
+| open-file limit split: journal segments, client connections, the rest | RFC 24 §6.3 | — | fixed | a quarter; a half; a quarter, of the soft limit raised to the hard limit |
+| `api.session_lifetime`: how long a sign-in's refresh token lasts | RFC 23 §5.3 | installation | live | proposed: 12 h, a working day of one sign-in |
+| `api.token_max_lifetime`: the latest expiry a service account's API token may have | RFC 23 §5.3 | installation | live | proposed: 365 days |
+| `audit.retention`: how long a management audit record is kept before it is deleted in bounded batches | RFC 23 §6 | installation | live | proposed: 400 days, a year and a quarter, so one annual review finds the whole year |
+| management API limits: access token lifetime; idempotency records kept; finished operations kept; an operation runner's claim | RFC 23 §4.5, §4.6, §5.3 | — | fixed | 15 min; 24 h; 7 days; 30 s ahead, renewed every 10 s |
+| management API paging and waits: page size; `?wait` cap | RFC 23 §4.2, §4.6 | — | fixed | 100 by default, at most 1 000; 60 s |
+| API calls one node runs at once, the next answered `503` | RFC 23 §4.3 | — | fixed | 64 |
+| sign-in throttle: consecutive failures per account or source address before waits begin; the wait | RFC 23 §5.3 | — | fixed | 5; 1 s, doubling to 5 min |
+| generated first password | RFC 23 §5.4 | — | fixed | 24 random bytes |
+| `metrics.top_shares`: shares exported with a `share` label per per-share gauge, the worst by it | RFC 25 §2.5 | installation | live | 20 |
+| `events.retention`, `events.max_bytes`: the event spool's age and size bounds, past which the oldest file is deleted | RFC 25 §4.6 | node | live | proposed: 7 days; 4 GiB |
+| `tracing.endpoint`: the trace collector; none turns tracing off | RFC 25 §6.3 | node | live | none: tracing off |
+| `tracing.sample_ratio`: the fraction of requests sampled at the adapter | RFC 25 §6.3 | node | live | proposed: 0.01 |
+| metric limits: values per entity label per metric per node; series per node and per metric at the reference profile | RFC 25 §2.4, §2.5 | — | fixed | 64; 50 000 and 10 000 |
+| histogram bucket sets | RFC 25 §2.6 | — | fixed | `request`, `background`, `size`, `count`, as RFC 25 §2.6 lists them |
+| event rings: entries per stream, size per entry | RFC 25 §4.3 | — | fixed | 16 384 for `access`, 4 096 each for `quota` and `logon`; 1 KiB |
+| event spool: rotation; sync interval; high-water warning | RFC 25 §4.3, §4.6 | — | fixed | 64 MiB or one hour, whichever first; 1 s; 80% of `events.max_bytes` |
+| quota hard-refusal coalescing window | RFC 25 §4.4 | — | fixed | 60 s |
+| liveness watchdog: how long an internal loop may go without a turn before liveness fails | RFC 25 §3.5 | — | fixed | 60 s |
+
+> ponytail: proposed, not yet agreed — the fixed rows copy values RFC 23, 24 and 25 tabulate
+> themselves — about 25 rows, a count not yet checked against those tables — so
+> that this appendix stays the one list of every number inside a MUST, as the
+> index requires. A copy drifts: replace the trust in the copy with a test that
+> diffs these rows against the owners' tables once a copied row is found
+> drifted again.
