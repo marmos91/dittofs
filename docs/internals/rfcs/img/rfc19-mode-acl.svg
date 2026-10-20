@@ -1,61 +1,85 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 486" width="900" height="486" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 570" width="900" height="570" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
     <style>
-      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
-      .s{font-size:11px;fill:#5b6472}
-      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24;white-space:pre}
-      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.3}
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .s{font-size:12px;fill:#5b6472}.e{font-size:12px;fill:#b04a4a}.z{font-size:11px;font-weight:700;fill:#5b6472}
+      .k{font-size:12px;fill:#1b1f24}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24}
+      .ms{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
       .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
       .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rd{fill:#fbecec;stroke:#b04a4a;stroke-width:1.3}
       .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#r)}
+      .lane{stroke:#c3c9d0;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+      .mp{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24;white-space:pre}
     </style>
   </defs>
-  <rect width="900" height="486" fill="#ffffff"/>
-  <text x="16" y="26" class="t">Mode and ACL never disagree: each is computed from the other in the transaction that changes either.</text>
+  <rect width="900" height="570" fill="#ffffff"/>
+  <text x="16" y="26" class="t">Mode and ACL agree: the ACL is derived on read when none is stored; the mode is derived on every ACL set.</text>
 
   <rect x="24" y="48" width="250" height="150" rx="6" class="st"/>
   <text x="40" y="72" class="h">File.Mode</text>
-  <text x="40" y="96" class="s">nine permission bits</text>
-  <text x="40" y="116" class="s">setuid, setgid, sticky: here only,</text>
-  <text x="40" y="132" class="s">kept across every ACL set</text>
-  <text x="40" y="156" class="s">GETATTR reads only this</text>
-  <text x="40" y="180" class="s">ls -l shows this</text>
+  <text x="40" y="94" class="s">nine permission bits</text>
+  <text x="40" y="114" class="s">setuid, setgid, sticky: here only,</text>
+  <text x="40" y="130" class="s">kept across a set of the ACL alone</text>
+  <text x="40" y="154" class="s">GETATTR reads only this</text>
+  <text x="40" y="174" class="s">ls -l shows this</text>
 
   <rect x="626" y="48" width="250" height="150" rx="6" class="st"/>
   <text x="642" y="72" class="h">the ACL</text>
-  <text x="642" y="96" class="s">access list, audit list, flags</text>
-  <text x="642" y="116" class="s">stored, or ACLFromMode(Mode)</text>
-  <text x="642" y="132" class="s">when none is stored</text>
-  <text x="642" y="156" class="s">the walk reads only this</text>
-  <text x="642" y="180" class="s">both protocols are shown this</text>
+  <text x="642" y="94" class="s">access list, audit list, flags</text>
+  <text x="642" y="114" class="s">stored, or ACLFromMode(Mode)</text>
+  <text x="642" y="130" class="s">when none is stored</text>
+  <text x="642" y="154" class="s">the walk reads only this</text>
+  <text x="642" y="174" class="s">both protocols are shown this</text>
 
-  <path d="M278,98 L622,98" class="ln"/>
-  <text x="300" y="88" class="h">ACLFromMode (§4.1)</text>
-  <text x="300" y="116" class="s">a file with no stored ACL, read or walked</text>
+  <path d="M278,84 L622,84" class="ln"/>
+  <text x="300" y="76" class="h">ACLFromMode (§4.1), on read</text>
+  <text x="300" y="100" class="s">a file with no stored ACL, shown or walked</text>
 
-  <path d="M622,162 L278,162" class="ln"/>
-  <text x="300" y="152" class="h">ACL.Mode(owner) (§4.2)</text>
-  <text x="300" y="180" class="s">every ACL set, in the set's transaction</text>
+  <path d="M622,132 L278,132" class="ln"/>
+  <text x="300" y="124" class="h">ACL.Mode(owner) (§4.2), on every ACL set</text>
+  <text x="300" y="148" class="s">in the set's transaction</text>
 
-  <rect x="24" y="222" width="852" height="72" rx="6" class="am"/>
-  <text x="40" y="244" class="h">chmod of a file with a stored ACL — RFC 7's merge (§4.3)</text>
-  <text x="40" y="264" class="s">rewrites or adds OWNER@ and EVERYONE@; denies untouched; Mode = merged ACL's Mode(owner)</text>
-  <text x="40" y="282" class="s">group bits: with a named allow, a mask limiting named allows and GROUP@, nothing added; with none, GROUP@ rewritten or added</text>
+  <path d="M278,178 C 400,200 500,200 622,178" class="ln"/>
+  <text x="300" y="206" class="h">chmod: WithMode (§4.3)</text>
+  <text x="300" y="222" class="s">merged into a stored ACL, and Mode re-derived;</text>
+  <text x="300" y="238" class="s">with no stored ACL, chmod changes only Mode</text>
 
-  <rect x="24" y="316" width="416" height="70" rx="6" class="sv"/>
-  <text x="40" y="338" class="h">ACLFromMode(0640) — classes only narrow</text>
-  <text x="40" y="358" class="m">allow OWNER@ R(rw-) · allow GROUP@ R(r--)</text>
-  <text x="40" y="376" class="s">no deny entry: the Security tab shows two allows</text>
+  <rect x="24" y="258" width="852" height="236" rx="6" class="am"/>
+  <text x="40" y="280" class="h">chmod 750 release, which holds a stored ACL (§8 step 7)</text>
+  <text x="40" y="304" class="z">BEFORE</text>
+  <text x="40" y="324" class="mp">1 deny  bob       waNT  fd</text>
+  <text x="40" y="342" class="mp">2 allow alice     full  fd</text>
+  <text x="40" y="360" class="mp">3 allow builders  modify fd</text>
+  <text x="40" y="382" class="s">Mode 0770</text>
 
-  <rect x="460" y="316" width="416" height="70" rx="6" class="sv"/>
-  <text x="476" y="338" class="h">ACLFromMode(0604) — other has more than group</text>
-  <text x="476" y="358" class="m">allow OWNER@ R(rw-) · deny GROUP@ R(r--)</text>
-  <text x="476" y="376" class="m">allow EVERYONE@ R(r--)</text>
+  <path d="M290,340 L340,340" class="ln"/>
 
-  <rect x="24" y="408" width="852" height="60" rx="6" class="sv"/>
-  <text x="40" y="430" class="h">two identities, checked (§11)</text>
-  <text x="40" y="450" class="m">ACLFromMode(m, d).Mode(o) == m   for every m and d</text>
-  <text x="440" y="450" class="m">a.WithMode(a.Mode(o), o, d) grants what a grants (§4.2's ACLs)</text>
+  <text x="356" y="304" class="z">AFTER</text>
+  <text x="356" y="324" class="mp">1 deny  bob       waNT        fd      untouched</text>
+  <text x="356" y="342" class="mp">2 allow alice     full        fd, io  inherit-only, unchanged</text>
+  <text x="356" y="360" class="mp">  allow alice     R(r-x)              effective, limited</text>
+  <text x="356" y="378" class="mp">3 allow builders  modify      fd, io  inherit-only, unchanged</text>
+  <text x="356" y="396" class="mp">  allow builders  R(r-x)              effective, limited</text>
+  <text x="356" y="414" class="mp">4 allow OWNER@    R(-w-)              appended at the end</text>
+  <text x="356" y="436" class="s">Mode 0750: owner r-x from alice, -w- from OWNER@; group r-x from builders</text>
+  <text x="40" y="462" class="s">The group bits are a mask on the named allows. The merge only narrows the allows that exist; whatever it must add goes in one new</text>
+  <text x="40" y="478" class="s">allow at the end of the list, so no deny before it, explicit or inherited, is overridden. Denies are never touched.</text>
+
+  <rect x="24" y="508" width="416" height="48" rx="6" class="sv"/>
+  <text x="40" y="526" class="h">ACLFromMode(0604): other has more than group</text>
+  <text x="40" y="544" class="mp">allow OWNER@ rw- · deny GROUP@ r-- · allow EVERYONE@ r--</text>
+  <rect x="460" y="508" width="416" height="48" rx="6" class="sv"/>
+  <text x="476" y="526" class="h">ACLFromMode(m, d).Mode(o) == m</text>
+  <text x="476" y="544" class="s">for every m, d and o: a no-op chmod changes nothing</text>
 </svg>

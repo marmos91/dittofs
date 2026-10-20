@@ -1,55 +1,89 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" width="900" height="480" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 690" width="900" height="690" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
     <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
     <style>
-      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
-      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
-      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24;white-space:pre}
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .s{font-size:12px;fill:#5b6472}.e{font-size:12px;fill:#b04a4a}.z{font-size:11px;font-weight:700;fill:#5b6472}
+      .k{font-size:12px;fill:#1b1f24}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24}
+      .ms{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
       .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
       .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
       .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
-      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
-      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a);marker-start:url(#a)}
-      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rd{fill:#fbecec;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#r)}
+      .lane{stroke:#c3c9d0;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+      .mp{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24;white-space:pre}
+      .bi{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a);marker-start:url(#a)}
     </style>
   </defs>
-  <rect width="900" height="480" fill="#ffffff"/>
-  <text x="16" y="26" class="t">One stored ACL, two spellings: the translation changes names and flag bits, never rights or order.</text>
+  <rect width="900" height="690" fill="#ffffff"/>
+  <text x="16" y="26" class="t">One stored ACL, two spellings: the translation changes names and flag bits, never rights or order (owner pairs aside).</text>
 
-  <rect x="24" y="46" width="410" height="134" rx="6" class="pr"/>
-  <text x="38" y="68" class="h">SMB security descriptor — alice-pc, Security tab</text>
-  <text x="38" y="94" class="m">D  bob's SID        0x00000116  OI CI</text>
-  <text x="38" y="114" class="m">A  alice's SID      0x001F01FF  OI CI</text>
-  <text x="38" y="134" class="m">A  builders' SID    0x001301BF  OI CI</text>
-  <text x="38" y="160" class="s">principals as SIDs; inherited flag is 0x10; control: protected</text>
+  <rect x="16" y="44" width="424" height="118" rx="6" class="pr"/>
+  <text x="30" y="64" class="h">SMB security descriptor — alice-pc, Security tab</text>
+  <text x="30" y="90" class="mp">D  bob's SID       0x00000116  OI CI</text>
+  <text x="30" y="110" class="mp">A  alice's SID     0x001F01FF  OI CI</text>
+  <text x="30" y="130" class="mp">A  builders' SID   0x001301BF  OI CI</text>
+  <text x="30" y="152" class="s">principals as SIDs; control: protected</text>
 
-  <rect x="466" y="46" width="410" height="134" rx="6" class="pr"/>
-  <text x="480" y="68" class="h">NFSv4 acl — build01, nfs4_getfacl</text>
-  <text x="480" y="94" class="m">D:fd:bob@example.com:waNT</text>
-  <text x="480" y="114" class="m">A:fd:alice@example.com:rwaDdxtTnNcCoy</text>
-  <text x="480" y="134" class="m">A:fdg:builders@example.com:rwadxtTnNcy</text>
-  <text x="480" y="160" class="s">principals as who; inherited flag is 0x80; g from the kind</text>
+  <rect x="460" y="44" width="424" height="118" rx="6" class="pr"/>
+  <text x="474" y="64" class="h">NFSv4 acl — build01, nfs4_getfacl</text>
+  <text x="474" y="90" class="mp">D:fd:bob@example.com:waNT</text>
+  <text x="474" y="110" class="mp">A:fd:alice@example.com:rwaDdxtTnNcCoy</text>
+  <text x="474" y="130" class="mp">A:fdg:builders@example.com:rwadxtTnNcy</text>
+  <text x="474" y="152" class="s">principals as who; g from the principal's kind</text>
 
-  <path d="M229,184 L330,212" class="ln"/>
-  <path d="M671,184 L570,212" class="ln"/>
+  <path d="M120,166 L120,190" class="bi"/>
+  <path d="M780,166 L780,190" class="bi"/>
+  <rect x="40" y="192" width="160" height="40" rx="5" class="pr"/><text x="52" y="210" class="h">SMB adapter</text><text x="52" y="226" class="s">codec: bytes ⇄ entries</text>
+  <rect x="700" y="192" width="160" height="40" rx="5" class="pr"/><text x="712" y="210" class="h">NFS adapter</text><text x="712" y="226" class="s">codec: XDR ⇄ entries</text>
 
-  <rect x="190" y="214" width="520" height="50" rx="6" class="sv"/>
-  <text x="206" y="236" class="h">one shared translation, used by both adapters (§5)</text>
-  <text x="206" y="254" class="s">spells principals and flag bits; kinds, rights and order cross unchanged</text>
+  <rect x="290" y="186" width="320" height="52" rx="6" class="sv"/>
+  <text x="304" y="206" class="h">one shared translation, a library (§5)</text>
+  <text x="304" y="224" class="s">spells principals and flag bits; refuses, never drops</text>
+  <path d="M202,212 L286,212" class="bi"/>
+  <path d="M698,212 L614,212" class="bi"/>
+  <rect x="330" y="252" width="240" height="26" rx="5" class="st"/>
+  <text x="340" y="269" class="s">names: Spell and Find, via vfs.Service</text>
+  <path d="M450,252 L450,242" class="ln"/>
 
-  <path d="M450,266 L450,290" class="ln"/>
+  <path d="M120,234 L120,300" class="ln"/>
+  <path d="M780,234 L780,300" class="ln"/>
+  <rect x="40" y="302" width="820" height="34" rx="6" class="sv"/>
+  <text x="54" y="324" class="m">vfs.Service</text><text x="150" y="324" class="s">SetACL and every file call, with the caller's Identity; the store never sees a SID or a who</text>
 
-  <rect x="190" y="292" width="520" height="116" rx="6" class="st"/>
-  <text x="206" y="314" class="h">stored ACL of builds/release — principals by ID, in sent order</text>
-  <text x="206" y="340" class="m">1  deny   bob       0x00000116  file + dir inherit</text>
-  <text x="206" y="360" class="m">2  allow  alice     0x001F01FF  file + dir inherit</text>
-  <text x="206" y="380" class="m">3  allow  builders  0x001301BF  file + dir inherit</text>
-  <text x="206" y="400" class="s">flags: protected · Mode implied: 0770</text>
+  <path d="M640,338 L640,358" class="ln"/>
+  <rect x="440" y="360" width="420" height="112" rx="6" class="st"/>
+  <text x="454" y="380" class="h">stored ACL of builds/release: by ID, in sent order</text>
+  <text x="454" y="404" class="mp">1 deny  bob      0x00000116  file+dir inh.</text>
+  <text x="454" y="424" class="mp">2 allow alice    0x001F01FF  file+dir inh.</text>
+  <text x="454" y="444" class="mp">3 allow builders 0x001301BF  file+dir inh.</text>
+  <text x="454" y="464" class="s">flags: protected · Mode implied: 0770</text>
 
-  <path d="M190,350 L120,350 L120,420" class="ex"/>
-  <rect x="24" y="424" width="852" height="40" rx="6" class="bad"/>
-  <text x="38" y="448" class="e">bob writes, over SMB or NFSv4: entry 1 is walked first and refuses write data → STATUS_ACCESS_DENIED · NFS4ERR_ACCESS</text>
+  <rect x="40" y="380" width="340" height="72" rx="6" class="sv"/>
+  <text x="54" y="400" class="m">Authorize</text><text x="134" y="400" class="h">— the one decision (§3)</text>
+  <text x="54" y="420" class="s">bob asks write data; the walk reads entry 1</text>
+  <text x="54" y="438" class="s">first, which refuses it: ErrAccess</text>
+  <path d="M438,416 L384,416" class="ln"/>
+
+  <path d="M210,454 L210,482" class="ln"/>
+  <rect x="40" y="484" width="820" height="32" rx="6" class="rd"/>
+  <text x="54" y="505" class="e">bob's write is refused over both: STATUS_ACCESS_DENIED from the SMB adapter, NFS4ERR_ACCESS from the NFS adapter</text>
+
+  <text x="40" y="548" class="h">Three flags move between the protocols, so the translation maps flags by name, never by bit:</text>
+  <rect x="40" y="558" width="820" height="96" rx="6" class="st"/>
+  <text x="56" y="580" class="h">flag</text><text x="330" y="580" class="h">SMB bit</text><text x="560" y="580" class="h">NFSv4 bit</text>
+  <line x1="50" y1="588" x2="850" y2="588" stroke="#c3c9d0"/>
+  <text x="56" y="606" class="s">inherited</text><text x="330" y="606" class="mp">0x10</text><text x="560" y="606" class="mp">0x80</text>
+  <text x="56" y="626" class="s">successful access (audit)</text><text x="330" y="626" class="mp">0x40</text><text x="560" y="626" class="mp">0x10</text>
+  <text x="56" y="646" class="s">failed access (audit)</text><text x="330" y="646" class="mp">0x80</text><text x="560" y="646" class="mp">0x20</text>
+  <text x="40" y="678" class="s">Copied byte for byte, NFSv4's inherited flag would become Windows' failed-access flag.</text>
 </svg>
