@@ -952,7 +952,7 @@ without writing any: the chain exports them around each call.
 | bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `transform_bytes_total` | counter |
 | time per call, by direction | `transform_seconds` | histogram |
 | decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts | `transform_decode_failures_total` | counter |
-| bodies written per transform ID, version and material ID, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | `transform_census_blocks` | gauge |
+| bodies written per transform ID and version, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); the census per material is read through the management API, not exported, so rotations add no series | `transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
 refuses the store ([§2.7](#2.7%20Failures)). A transform logs nothing per chunk: its outcomes
@@ -1927,9 +1927,9 @@ What a bucket reader can still see:
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| chunks encrypted, labelled by data key ID | `encryption_chunks_total` | counter |
-| the data key ID new chunks use, per namespace | `encryption_current_key` | gauge (1 on the current key's label) |
-| whether the provider can currently return each configured key with a matching fingerprint | `encryption_key_available` | gauge (0/1) |
+| chunks encrypted | `encryption_chunks_total` | counter |
+| how long the namespace's current data key has been current; the key ID itself is read through the management API | `encryption_current_key_age_seconds` | gauge, labelled `namespace` |
+| configured keys the provider cannot currently return with a matching fingerprint, a count; the `material_unavailable` health condition names the keys (RFC 25) | `encryption_keys_unavailable` | gauge |
 
 ## Appendix C — example, a parity transform
 

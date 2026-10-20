@@ -232,14 +232,32 @@ given a fresh volume is a new node.
 
 The resource's `Ready` condition **MUST** be false while the pool has no live
 pod or the metadata store is unreachable. Readiness probes gate traffic: a pod
-is ready once it has rejoined the store, holds no shard it cannot serve, and
-its adapters accept clients, which they do only after everything under them
-serves ([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition)).
+is ready once it has rejoined the store and its adapters accept clients, which
+they do only after everything under them serves
+([RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition)). A shard it cannot serve
+is that shard's `shard_relinquished` or `replication_under_floor` condition,
+which §5.1's upgrade waits on beside readiness, not a reason to be unready.
 
 Liveness and readiness probes **MUST** be HTTP, on `/health/live` and
 `/health/ready`, never TCP on 2049 or 445: a TCP probe on a protocol port opens
 a connection the adapter charges and logs
 ([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)).
+
+The probes are RFC 23 §2.5's endpoints, unauthenticated and answering one word:
+the liveness probe is `GET /health/live` and the readiness probe
+`GET /health/ready`, and they answer different questions. Liveness fails only
+when RFC 25 §3.5's watchdog does — an internal loop has stopped turning, which
+a restart may clear — and reads no dependency, so the metadata store, the
+remote tier or a journal device failing never restarts a pod. Readiness may
+fail on a dependency, the metadata store lost among them (RFC 25 §3.6), and
+then takes the pod out of traffic without restarting it.
+
+The operator calls the management API as a service account (RFC 23 §5.1): a
+user record with role `admin`, no password and no protocol spelling, signing in
+with an API token. It needs `admin` because draining is not all it does: it
+decommissions node records (§5.3, §5.4), which RFC 23 §5.2 gives to `admin`
+only. The role grants nothing on
+files.
 
 ## 5. Lifecycle
 
@@ -247,7 +265,7 @@ a connection the adapter charges and logs
 
 Pods **MUST** be upgraded one at a time, each draining its clients (§5.2 step 1) and handing its shards over
 before it stops ([RFC 10 §9.4](rfc-10-journal-replication.md#9.4%20Handover)) and the next waiting until the upgraded pod is
-ready and holds no under-replicated shard. The operator runs this itself
+ready and has no shard with the `replication_under_floor` or `shard_relinquished` condition (RFC 25 §3.9). The operator runs this itself
 (`updateStrategy: OnDelete`) rather than the StatefulSet's rolling update,
 which waits for readiness but not for handovers. A pod's `preStop`
 hook **MUST** run the same drain and handover, so an eviction the operator did not start

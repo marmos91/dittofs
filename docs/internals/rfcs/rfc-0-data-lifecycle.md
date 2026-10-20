@@ -220,9 +220,9 @@ seven carry this document:
 | what is a setting and what is fixed | [RFC 13](rfc-13-configuration.md), configuration |
 | more than one node: replicated journals, shards, forwarding — deferred past the first release ([§1.4](#1.4%20The%20single-node%20profile)) | [RFC 10](rfc-10-journal-replication.md), [RFC 11](rfc-11-ownership.md), [RFC 15](rfc-15-topology.md) |
 
-Identity, authorization, the adapter model and operations are RFC 18–20 and
-23–25, planned; the NFS and SMB adapters are RFC 21 and 22, in draft and
-rebased on this set. A first pass can follow the write path: this RFC, then 1, 2, 3, 6 and
+Identity, authorization and operations are RFC 18, 19 and 23–25; the adapter
+model and the NFS and SMB adapters are RFC 20–22, in draft and rebased on this
+set. A first pass can follow the write path: this RFC, then 1, 2, 3, 6 and
 8; then 7 and 14 for what clients see; then 15 for how it spreads over nodes,
 once the cluster is built.
 
@@ -644,7 +644,7 @@ Four layers, each calling only the one below:
 
 | Layer | What it does | Specified in |
 | --- | --- | --- |
-| **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20 (planned); RFC 21, NFS, and RFC 22, SMB (draft) |
+| **Adapters** | speak one wire protocol each: framing, compounds, replay, error codes | RFC 20, the adapter model; RFC 21, NFS, and RFC 22, SMB (draft) |
 | **Filesystem service** | the one protocol-neutral API adapters call, `vfs.Service`; `vfs.Server` decides and orders every client operation across the parts below, at the primary; in a cluster `vfs.Gateway` forwards each call there and decides nothing | [RFC 17](rfc-17-vfs.md) |
 | **Metadata store**, **open state**, **content subsystem** | the store holds every fact about files, content, identity and configuration ([RFC 6](rfc-6-block-metadata.md), [RFC 7](rfc-7-namespace-metadata.md), [RFC 16](rfc-16-metadata-store.md)); open state holds opens, locks and caching grants ([RFC 14](rfc-14-open-state.md)); the content subsystem is the content data path, made of the engine ([RFC 8](rfc-8-engine.md)), the journal, carver, syncer and GC ([RFC 1](rfc-1-journal.md)–[3](rfc-3-syncer.md), [RFC 9](rfc-9-gc.md)) | as named |
 | **Persistence** | a transactional KV (embedded on one node, replicated in a cluster), journal devices, the remote tier | [RFC 16](rfc-16-metadata-store.md), [RFC 1](rfc-1-journal.md), [RFC 4](rfc-4-remote-tier.md) |
