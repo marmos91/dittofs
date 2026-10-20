@@ -115,9 +115,9 @@ What each piece also carries, and its §13.1 rows:
    `Downgrade` and `ConfirmOpen`. *Rows:* no downgrade, anonymous
    I/O, cross-protocol, open-unlinked (and across protocols), lazy, delete pending, remove against
    deny-delete.
-4. **Byte-range locks and waiters:** `Lock` and `Unlock` keep RFC 14's single range; the service
-   takes an SMB LOCK's elements one at a time and releases what it took when a later one fails
-   (RFC 17 §5.11); FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM; the calls
+4. **Byte-range locks and waiters:** `Lock` takes every range of a request, each shared or
+   exclusive, in one step, all or none, and only a single range may wait (RFC 14 §11.3, RFC 17
+   §5.11); FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM; the calls
    behind RFC 17's `TestState` and `ReleaseLockOwner`, and freeing one lock stateid. *Rows:* owners, NLM restart, the
    waiter rows.
 5. **Caching grants and recalls:** grants offered at open; recalls with deadlines; revocation into
