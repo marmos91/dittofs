@@ -589,44 +589,11 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Add share to runtime if runtime is available
+	// Load the share from the row just written, through the same builder a
+	// startup load uses, so a setting is in force from creation rather than from
+	// the first edit or restart that happens to re-read the row.
 	if h.runtime != nil {
-		shareConfig := &runtime.ShareConfig{
-			Name:                             req.Name,
-			MetadataStore:                    metaStore.Name,
-			RootAttr:                         rootAttr,
-			ReadOnly:                         req.ReadOnly,
-			Enabled:                          share.Enabled,
-			EncryptData:                      req.EncryptData,
-			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
-			AccessBasedEnumeration:           share.AccessBasedEnumeration,
-			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
-			StreamsDisabled:                  share.StreamsDisabled,
-			ContinuousAvailability:           share.ContinuousAvailability,
-			AllowMFsymlink:                   share.AllowMFsymlink,
-			TrashEnabled:                     share.TrashEnabled,
-			TrashRetentionDays:               share.TrashRetentionDays,
-			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,
-			TrashMaxBytes:                    share.TrashMaxBytes,
-			TrashExcludePatterns:             share.GetTrashExcludePatterns(),
-			DefaultPermission:                defaultPerm,
-			Squash:                           nfsOpts.GetSquashMode(),
-			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
-			AnonymousGID:                     nfsOpts.GetAnonymousGID(),
-			AllowAuthSys:                     nfsOpts.AllowAuthSys,
-			AllowAuthSysSet:                  true,
-			RequireKerberos:                  nfsOpts.RequireKerberos,
-			MinKerberosLevel:                 nfsOpts.MinKerberosLevel,
-			BlockedOperations:                share.GetBlockedOps(),
-			JournalSize:                      journalSize,
-			ReadBufferSize:                   readBufferSize,
-			QuotaBytes:                       quotaBytes,
-			BlockStoreID:                     blockStore.ID,
-			RetentionPolicy:                  retPolicy,
-			RetentionTTL:                     retTTL,
-		}
-
-		if err := h.runtime.AddShare(r.Context(), shareConfig); err != nil {
+		if err := h.runtime.AddShareFromStore(r.Context(), share.Name); err != nil {
 			// Share created in DB but failed to load into runtime
 			// Log but don't fail the request - share can be loaded on restart
 			logger.Warn("Share created but failed to add to runtime",
