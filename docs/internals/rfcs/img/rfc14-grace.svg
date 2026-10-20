@@ -1,89 +1,90 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="900" height="560" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
-<defs><style>
-.t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
-.l{font-size:12px;fill:#3d444d}.s{font-size:11px;fill:#5b6472}
-.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
-.pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}.sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.3}
-.st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}.pe{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
-.rf{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}.box{fill:#ffffff;stroke:#5b6472;stroke-width:1}
-.arr{stroke:#5b6472;stroke-width:1.3;fill:none;marker-end:url(#h)}
-.rarr{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#hr)}
-.garr{stroke:#4c8a58;stroke-width:1.5;fill:none;marker-end:url(#hg)}
-.aarr{stroke:#b07a2a;stroke-width:1.3;fill:none;marker-end:url(#ha)}
-.lane{stroke:#c3cad3;stroke-width:1;stroke-dasharray:3 3}
-.rt{font-size:11px;fill:#b04a4a}.gt{font-size:11px;fill:#4c8a58}.at{font-size:11px;fill:#b07a2a}
-</style>
-<marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker>
-<marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b04a4a"/></marker>
-<marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4c8a58"/></marker>
-<marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b07a2a"/></marker>
-</defs>
-<rect width="900" height="560" fill="#ffffff"/>
-<text x="16" y="26" class="t">Grace is per shard: only the shard that lost its table refuses new state, and it ends on its own.</text>
-<text x="20" y="74" class="h">shard A</text>
-<rect x="100" y="56" width="220" height="30" rx="4" class="sv"/>
-<text x="210" y="75" class="s" text-anchor="middle">N1 primary, granting</text>
-<path d="M330 48V96" stroke="#b04a4a" stroke-width="2"/>
-<text x="334" y="108" class="rt">N1 dies; N2 takes A over</text>
-<rect x="340" y="56" width="300" height="30" rx="4" class="pe"/>
-<text x="490" y="75" class="s" text-anchor="middle">N2 in grace: reclaims only, at most 90 s</text>
-<rect x="650" y="56" width="230" height="30" rx="4" class="sv"/>
-<text x="765" y="75" class="s" text-anchor="middle">N2 granting</text>
-<text x="20" y="140" class="h">shard B</text>
-<rect x="100" y="122" width="780" height="30" rx="4" class="sv"/>
-<text x="490" y="141" class="s" text-anchor="middle">other shards keep granting: no grace, no refusals</text>
-<rect x="20" y="172" width="270" height="184" rx="4" class="st"/>
-<text x="32" y="192" class="h">1. A new grace instance</text>
-<text x="32" y="212" class="s">The transaction that starts serving</text>
-<text x="32" y="228" class="s">copies the incarnation N2 serves</text>
-<text x="32" y="244" class="s">under into A's GraceInstance.</text>
-<text x="32" y="268" class="s">A stateid minted under an earlier</text>
-<text x="32" y="284" class="s">instance now misses as stale, not</text>
-<text x="32" y="300" class="s">bad, so its client reclaims.</text>
-<text x="32" y="324" class="s">A handover that ships the table</text>
-<text x="32" y="340" class="s">keeps the instance and runs no grace.</text>
-<rect x="305" y="172" width="290" height="184" rx="4" class="pr"/>
-<text x="317" y="192" class="h">2. Tell every client A's records name</text>
-<text x="317" y="214" class="h">NFSv4.1</text>
-<text x="380" y="214" class="s">RESTART_RECLAIM_NEEDED</text>
-<text x="380" y="229" class="s">on its next SEQUENCE reply</text>
-<text x="317" y="252" class="h">NFSv4.0</text>
-<text x="380" y="252" class="s">STALE_CLIENTID until it</text>
-<text x="380" y="267" class="s">repeats SETCLIENTID</text>
-<text x="317" y="290" class="h">SMB</text>
-<text x="380" y="290" class="s">break the connection; it</text>
-<text x="380" y="305" class="s">reconnects persistent opens</text>
-<text x="317" y="328" class="h">NLM</text>
-<text x="380" y="328" class="s">raise the NSM state number,</text>
-<text x="380" y="343" class="s">then send a restart notification</text>
-<rect x="610" y="172" width="270" height="184" rx="4" class="box"/>
-<text x="622" y="192" class="h">3. While A is in grace</text>
-<rect x="622" y="202" width="246" height="66" rx="4" class="sv"/>
-<text x="632" y="220" class="gt">admitted: reclaims</text>
-<text x="632" y="238" class="s">from clients whose record names A,</text>
-<text x="632" y="254" class="s">checked against the current ACL and mode</text>
-<rect x="622" y="274" width="246" height="74" rx="4" class="rf"/>
-<text x="632" y="291" class="rt">refused with ErrGrace</text>
-<text x="632" y="308" class="s">new opens, locks, deny modes, grants,</text>
-<text x="632" y="323" class="s">layouts; anonymous I/O a lost lock or</text>
-<text x="632" y="338" class="s">deny mode might have forbidden</text>
-<rect x="20" y="372" width="860" height="122" rx="4" class="sv"/>
-<text x="32" y="392" class="h">4. Grace ends on its own: after one lease period, or early once every client A's records name has finished</text>
-<rect x="32" y="404" width="268" height="78" rx="4" class="box"/>
-<text x="44" y="424" class="h">NFSv4.1: finished</text>
-<text x="44" y="442" class="s">after RECLAIM_COMPLETE for this</text>
-<text x="44" y="458" class="s">grace instance; one sent at mount</text>
-<text x="44" y="474" class="s">does not count</text>
-<rect x="316" y="404" width="268" height="78" rx="4" class="box"/>
-<text x="328" y="424" class="h">SMB: finished</text>
-<text x="328" y="442" class="s">once every persistent open A holds</text>
-<text x="328" y="458" class="s">for its ClientGuid is reconnected</text>
-<text x="328" y="474" class="s">or its Timeout has passed</text>
-<rect x="600" y="404" width="268" height="78" rx="4" class="pe"/>
-<text x="612" y="424" class="h">NFSv4.0 or NLM: never</text>
-<text x="612" y="442" class="s">no completion signal, so a shard</text>
-<text x="612" y="458" class="s">such a client names keeps grace</text>
-<text x="612" y="474" class="s">the full 90 s</text>
-<text x="16" y="520" class="l">No operator is needed to leave grace. Nobody takes what another client held: the state a request</text>
-<text x="16" y="538" class="l">would be checked against is what was lost, so only its former holders may take it back.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c8a58"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
+      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}.ok{font-size:11px;font-weight:600;fill:#4c8a58}
+      .no{font-size:12px;font-weight:700;fill:#b04a4a}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.4}
+      .dr{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.4}
+      .bad{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .gl{stroke:#4c8a58;stroke-width:1.8;fill:none;marker-end:url(#g)}
+      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .life{stroke:#9aa3ad;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="470" fill="#ffffff"/>
+  <text x="16" y="26" class="t">(cluster) N1 takes shard A's table with it: only A runs grace, and each recorded client is told to reclaim.</text>
+
+  <path d="M180,50 L180,320" class="zone"/><path d="M290,50 L290,320" class="zone"/><path d="M700,50 L700,320" class="zone"/>
+  <path d="M860,50 L860,128" class="zone"/>
+  <text x="180" y="46" class="s" text-anchor="middle">N1 dies</text>
+  <text x="296" y="46" class="s">N2 serves A: incarnation raised, a new grace instance</text>
+  <text x="700" y="46" class="s" text-anchor="middle">grace ends early</text>
+  <text x="860" y="46" class="s" text-anchor="middle">cap: 90 s</text>
+
+  <text x="16" y="70" class="h">N1, primary of A</text>
+  <rect x="150" y="58" width="30" height="20" rx="3" class="sv"/>
+  <path d="M174,62 L186,74 M186,62 L174,74" stroke="#b04a4a" stroke-width="2"/>
+  <text x="300" y="72" class="e">its table was in memory, so it is lost</text>
+
+  <text x="16" y="116" class="h">N2, new primary</text>
+  <path d="M150,112 L290,112" class="life"/>
+  <rect x="290" y="102" width="410" height="20" rx="3" class="dr"/>
+  <text x="300" y="116" class="h">grace for A: only reclaims are granted</text>
+  <rect x="700" y="102" width="180" height="20" rx="3" class="sv"/>
+  <text x="710" y="116" class="ok">granting</text>
+  <text x="300" y="138" class="s">begins only after N1's node lease has lapsed, plus the drift bound</text>
+
+  <text x="16" y="162" class="h">shard B's primary</text>
+  <rect x="150" y="150" width="730" height="20" rx="3" class="sv"/>
+  <text x="300" y="164" class="ok">keeps granting throughout: grace is per shard</text>
+
+  <text x="16" y="218" class="h">alice-pc (SMB)</text>
+  <path d="M150,214 L880,214" class="life"/>
+  <circle cx="300" cy="214" r="4" fill="#3d444d"/>
+  <text x="308" y="206" class="s">connection broken</text>
+  <circle cx="440" cy="214" r="4" fill="#4c8a58"/>
+  <text x="448" y="206" class="ok">reconnects, reclaims its persistent open</text>
+
+  <text x="16" y="262" class="h">build01 (NFSv4.1)</text>
+  <path d="M150,258 L880,258" class="life"/>
+  <circle cx="300" cy="258" r="4" fill="#3d444d"/>
+  <text x="308" y="250" class="s">next SEQUENCE: reclaim needed</text>
+  <circle cx="495" cy="258" r="4" fill="#4c8a58"/>
+  <text x="503" y="250" class="ok">reclaims, RECLAIM_COMPLETE</text>
+
+  <text x="16" y="306" class="h">another client</text>
+  <path d="M150,302 L880,302" class="life"/>
+  <circle cx="330" cy="302" r="4" fill="#b04a4a"/>
+  <text x="338" y="294" class="e">new LOCK: ErrGrace</text>
+  <circle cx="720" cy="302" r="4" fill="#4c8a58"/>
+  <text x="728" y="294" class="ok">retry: granted</text>
+
+  <rect x="24" y="336" width="420" height="96" rx="6" class="dr"/>
+  <text x="36" y="355" class="h">How each client is told to reclaim</text>
+  <text x="36" y="372" class="s">NFSv4.1: ClientStatus.ReclaimNeeded, next reply</text>
+  <text x="36" y="387" class="s">NFSv4.0: ErrStaleClient until it confirms again</text>
+  <text x="36" y="402" class="s">SMB: connection broken; RFC 21 and RFC 22 spell each</text>
+  <text x="36" y="417" class="s">NLM: restart notice after the NSM number rises</text>
+
+  <rect x="456" y="336" width="420" height="96" rx="6" class="pr"/>
+  <text x="468" y="355" class="h">When grace ends</text>
+  <text x="468" y="372" class="s">Early, once every client its records name has finished:</text>
+  <text x="468" y="387" class="s">NFSv4.1 by RECLAIM_COMPLETE, SMB by reconnecting or</text>
+  <text x="468" y="402" class="s">letting each Timeout pass. An NFSv4.0 client or NLM host</text>
+  <text x="468" y="417" class="s">never finishes, so then grace runs the full 90 s.</text>
+
+  <text x="16" y="454" class="s">Only a loss runs grace: a handover or a batch move ships the table, keeps the grace instance and tells no client (§10).</text>
 </svg>
