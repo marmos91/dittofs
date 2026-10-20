@@ -1231,7 +1231,11 @@ grader:
 - `subunit`: a `test:` line with no result is incomplete. When an entry of `tests.txt` reaches its
   timeout, the test it had open failed, and no known-failure entry excuses it, since the entry's
   later tests never ran. A client that crashes (exit 129 or more) fails nothing by
-  its exit; the test it left open is incomplete. A failure in the client's own connection setup,
+  its exit; the test it left open is incomplete. One that crashes with no test open, as between
+  two tests, loses what the entry would have reported after its last result, so the entry is
+  incomplete, named `<entry> (exit)`, apart from a test the entry names alone, whose own result a
+  known-failure entry is still judged on; today's grader never sees the exit status and passes it
+  on the tests that reported. A failure in the client's own connection setup,
   which the connection-failure filter finds, is incomplete too: there is no server result. The
   self-contradictory `smb2.replay.channel-sequence` draw (`CSN 0x7fff`) is an expected skip the
   reader grades itself. An entry that reports no test at all, as smbtorture does for a name it
