@@ -442,11 +442,10 @@ Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, erro
 // probes and its counters end with it.
 Unregister(store StoreID) error
 // SetDrift raises the store's drift condition, err naming the drifted
-// setting, or clears it when err is nil (§2.8). The store's one Recheck
-// caller (RFC 4 §4.11) calls it after a Recheck whose read found a setting
-// that differs, or after two periods in a row whose Recheck could not read
-// at all; a transient Recheck failure alone never raises it. Nothing else
-// calls it.
+// setting, or clears it when err is nil (§2.8). The process's GC is its one
+// caller, from the namespace's Recheck record (RFC 9 §7.5): raised while the
+// record holds drift, cleared once it holds a passed Recheck, on every node,
+// whichever node ran the Recheck. Nothing else calls it.
 SetDrift(store StoreID, err error)
 // A background flow's fetches run in the background class (§2.9); GC, copying
 // backups and re-homes open one.
@@ -1269,9 +1268,10 @@ each direction on its own:
 - a probe **MUST** be bounded in time like any call, and one that does not
   return within its bound is a failed probe. A hung probe that left the store
   healthy would keep sending traffic to a dead store;
-- **a store's drift condition makes its put direction unhealthy.** GC raises the
-  condition when its `Recheck` finds a service setting drifted — versioning,
-  object lock, a lifecycle rule — and clears it when a later `Recheck` passes
+- **a store's drift condition makes its put direction unhealthy.** Each
+  process's GC raises the condition from the namespace's `Recheck` record when
+  a `Recheck` found a service setting drifted — versioning, object lock, a
+  lifecycle rule — and clears it once the record holds a later pass
   ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), through `SetDrift` ([§1.3](#1.3%20Interface)). While it stands the syncer **MUST** treat the
   put direction as unhealthy whatever its probes say, since a put into a drifted
   store may be expired or kept as a version nothing deletes; the get direction
