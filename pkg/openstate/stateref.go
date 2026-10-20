@@ -17,19 +17,40 @@ const (
 	StateOpen StateType = iota + 1
 	StateLock
 	StateGrant
+
+	// stateWatch keys a watch in the index. No stateid names a watch, so it
+	// never appears in a StateRef a client holds; only a WatchID names one.
+	stateWatch
 )
 
 // StateRef names one piece of state without a file handle: its type, its
 // shard, the low bits of the grace instance it was minted under, and a token
 // of 64 random bits unique within the shard. It resolves by shard, then token.
 // A client that sees one cannot derive another's, so it is a bearer ID with
-// room: it carries no counter.
+// room: it carries no counter. Seq is the sequence presented with it, judged
+// against the state's own: zero is the current one, an older one ErrOldState,
+// a newer one ErrBadState.
 type StateRef struct {
 	Type     StateType
 	Shard    ShardID
 	Instance uint8
 	Token    uint64
+	Seq      uint32
 }
+
+// GrantID and WatchID name a caching grant and a watch by their shard and
+// token, as a StateRef does, so a call naming one with no file handle, such as
+// AckBreak or Unwatch, resolves from the ID alone.
+type (
+	GrantID struct {
+		Shard ShardID
+		Token uint64
+	}
+	WatchID struct {
+		Shard ShardID
+		Token uint64
+	}
+)
 
 type refKey struct {
 	shard ShardID
@@ -41,6 +62,7 @@ type holder struct {
 	typ    StateType
 	file   entity.FileID
 	client entity.ClientID
+	seq    uint32 // the state's current sequence; the first is 1
 }
 
 // shardGrace is a shard's grace state, as a miss is judged against it. Set
@@ -64,9 +86,39 @@ func (t *Table) mint(e *entry, f entity.FileID, c entity.ClientID, s ShardID, ty
 			break
 		}
 	}
-	t.refs[refKey{s, ref.Token}] = holder{typ: typ, file: f, client: c}
+	t.refs[refKey{s, ref.Token}] = holder{typ: typ, file: f, client: c, seq: 1}
 	e.states++
+	ref.Seq = 1
 	return ref
+}
+
+// mintGrant issues a caching grant's ID, which is also its delegation stateid's
+// reference, under file f's step, which e is.
+func (t *Table) mintGrant(e *entry, f entity.FileID, c entity.ClientID, s ShardID) (GrantID, StateRef) {
+	ref := t.mint(e, f, c, s, StateGrant)
+	return GrantID{ref.Shard, ref.Token}, ref
+}
+
+// mintWatch issues a watch's ID under directory f's step, which e is.
+func (t *Table) mintWatch(e *entry, f entity.FileID, c entity.ClientID, s ShardID) WatchID {
+	ref := t.mint(e, f, c, s, stateWatch)
+	return WatchID{ref.Shard, ref.Token}
+}
+
+// advance raises the sequence of the state ref names, under its file's step,
+// which e is, and returns the new one. It runs in the step that applies an
+// upgrade, a downgrade, a close or a lock change. It wraps from the highest
+// value to 1, never to zero, which means the current one.
+func (t *Table) advance(_ *entry, ref StateRef) uint32 {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	k := refKey{ref.Shard, ref.Token}
+	h := t.refs[k]
+	if h.seq++; h.seq == 0 {
+		h.seq = 1
+	}
+	t.refs[k] = h
+	return h.seq
 }
 
 // release drops the piece of state ref names, under its file's step, which e
@@ -91,6 +143,33 @@ func (t *Table) resolve(c entity.ClientID, f entity.FileID, ref StateRef) (holde
 		return holder{}, t.miss(ref)
 	}
 	if !f.IsZero() && h.file != f {
+		return holder{}, ErrBadState
+	}
+	if h.client != c {
+		return holder{}, ErrNotYours
+	}
+	if ref.Seq != 0 && ref.Seq != h.seq {
+		// Sequences wrap, so older is judged on the distance, not the value.
+		if int32(h.seq-ref.Seq) > 0 {
+			return holder{}, ErrOldState
+		}
+		return holder{}, ErrBadState
+	}
+	return h, nil
+}
+
+// resolveID finds the grant or watch an ID names, for client c.
+//
+// decision: a miss is always ErrBadState, never stale: the ID carries no grace
+// instance to judge it against. A grant or watch lost with its shard's state is
+// gone either way, and AckBreak and Unwatch of one change nothing, so answering
+// bad costs the client nothing. Carry the instance in the ID if a protocol ever
+// needs to tell a lost grant from a forged one.
+func (t *Table) resolveID(c entity.ClientID, typ StateType, s ShardID, token uint64) (holder, error) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	h, ok := t.refs[refKey{s, token}]
+	if !ok || h.typ != typ {
 		return holder{}, ErrBadState
 	}
 	if h.client != c {
