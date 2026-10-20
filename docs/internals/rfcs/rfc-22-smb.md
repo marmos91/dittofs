@@ -528,22 +528,31 @@ one gateway node's memory; a client that loses the node signs in again.
   encrypted. Only a client that cannot encrypt at all is refused at tree
   connect.
 
-- **A session without a key reaches only `IPC$`.** An anonymous session, and a
-  guest one, which
-  [RFC 18 §3.6](rfc-18-identity.md#3.6%20Anonymous%20and%20guest%20sessions)
-  sets up as anonymous, holds no session key and cannot sign, so it is exempt
-  from the signing requirement (MS-SMB2 3.3.5.5.3). Its `TREE_CONNECT` to any
-  share but `IPC$` **MUST** be `STATUS_ACCESS_DENIED`, whatever the share's
-  grants or policy would otherwise admit, and on `IPC$` it reaches only §5.2's
-  services. A session setup whose credential fails is never made anonymous or
-  guest; it fails. How this confinement meets guest access to disk shares is
-  open (§20, item 5); this rule is unchanged.
+- **A session without a key reaches only what admits it.** An anonymous (null)
+  session and a guest one are both set up as anonymous
+  ([RFC 18 §3.6](rfc-18-identity.md#3.6%20Anonymous%20and%20guest%20sessions)),
+  hold no session key and cannot sign or encrypt, so they are exempt from the
+  signing requirement (MS-SMB2 3.3.5.5.3). That exemption reaches only as far
+  as this rule lets them:
+  - a **null** session's `TREE_CONNECT` to any share but `IPC$` **MUST** be
+    `STATUS_ACCESS_DENIED`, always;
+  - a **guest** session's `TREE_CONNECT` **MUST** be `STATUS_ACCESS_DENIED`
+    unless the share's policy enables guest access (§5.1), which is off by
+    default, and the share does not encrypt: a share that requires encryption
+    never admits a guest, whatever its guest flag;
+  - on `IPC$` either reaches only §5.2's services.
+
+  A session setup whose credential fails is never made anonymous or guest; it
+  fails. A re-authentication whose result would be a null or guest session
+  fails too, and so tears the session down as any failed re-authentication
+  does, so a session never keeps, without a key, a tree it connected with one.
 - **Re-authentication in place.** A `SESSION_SETUP` naming an existing
   `SessionId` without `SMB2_SESSION_FLAG_BINDING` re-authenticates that session
   ([RFC 18 §3.8](rfc-18-identity.md#3.8%20Re-authentication)): the adapter
   passes the session's current evidence in `SignInStep`, and a success keeps the
   session's trees, opens and keys and replaces the session's identity with the
-  one the new proof establishes, in one step, whoever it names. Every open
+  one the new proof establishes, in one step, whoever it names, unless it
+  would leave the session keyless (above). Every open
   handle keeps the access granted at its open. Any failed re-authentication
   tears the session down as
   MS-SMB2 3.3.5.5.3 requires: its opens close, pending change notifications
@@ -567,13 +576,20 @@ one gateway node's memory; a client that loses the node signs in again.
   `NEGOTIATE`, `CHALLENGE` and `AUTHENTICATE` bytes exactly as they crossed
   the wire and passes them in `SignInStep`.
 
-> decision: a keyless session is exempt from signing and confined to `IPC$`,
-> rather than refused outright, because the exemption is then worth only a
-> share list and name lookups, which carry no file data, and pre-sign-in tools
-> that browse shares keep working. The confinement is this RFC's, not RFC 18's,
-> so no admission rule elsewhere can widen it. Refuse such sessions outright if
-> §5.2's services are ever shown to leak what an unauthenticated caller must
-> not see.
+> decision: a keyless session is exempt from signing rather than refused
+> outright, and the exemption's ceiling is the shares that admit it: `IPC$`
+> for both kinds, and for a guest only a share whose guest flag is set and that
+> does not encrypt. A null session reaches `IPC$` alone because it is worth only
+> a share list and name lookups, which carry no file data, and pre-sign-in tools
+> that browse shares keep working. A guest reaches data only where an operator
+> chose to publish it unsigned, as with `guest ok` on a Samba share; Windows
+> Server and the common NAS products ship with guest access off, as this
+> default is. An encrypting share is excluded because its promise is that no
+> byte travels in clear, and a keyless session cannot keep it. The confinement
+> is this RFC's, not RFC 18's, so no admission rule elsewhere can widen it.
+> Refuse keyless sessions outright if §5.2's services are shown to leak what an
+> unauthenticated caller must not see; withdraw the guest flag if guest shares
+> are shown to be reached by sessions that meant to sign.
 
 ### 4.2 Multichannel only within one node
 
@@ -723,6 +739,8 @@ Its response carries the share's `ExportPolicy.SMB`:
   > the tree connect reply itself, which carries no file data. Revisit if a
   > deployment must refuse any session that does not encrypt from its first
   > message; that is a session-level setting, not this share flag.
+- **Guest.** A guest session may connect to the share (§4.1); off by
+  default, and of no effect on a share that encrypts. Nothing on the wire.
 - **Continuously available.** The share is marked continuously available and
   clustered (`SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`,
   `SMB2_SHARE_CAP_CLUSTER`, 3.0 and later); persistent handles are granted
@@ -2397,7 +2415,7 @@ name, a SID, a principal or a client address
 | S16 | A recursive watch reports a change in every shard below its directory, with its detail in the watched shard and as `STATUS_NOTIFY_ENUM_DIR` from another (cluster). |
 | S17 | No name with a character MS-FSCC forbids, and no device name, is created from SMB. |
 | S18 | Each snapshot reports its own volume serial and file ids, never the live share's or another snapshot's. |
-| S19 | A session without a session key reaches no share but `IPC$`. |
+| S19 | A null session reaches no share but `IPC$`; a guest session reaches `IPC$` and only shares whose policy enables guest access and that do not encrypt; no re-authentication leaves a session keyless. |
 | S20 | An SMB client record is one `ClientGuid` and holds no principal; every check of who may use an open is against the open's principal. |
 | S21 | A waiting lock has no deadline, and is answered other than as granted only after `CancelLock` returns; a request refused `ErrGrace` is held until grace ends plus 35 s. |
 | S22 | A stability reply waits for the journal sync of its range and the existence commit of every pending overwrite of committed content in it; a loss of acknowledged writes fails the next `FLUSH` of every open across it, once. |
@@ -2415,7 +2433,7 @@ name, a SID, a principal or a client address
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §3.1 dialects | An SMB1-only and a 2.0.2-only negotiate are refused; a 3.1.1 client gets SHA-512 and its first shared cipher. | an SMB1 fallback left in |
-| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up an anonymous session, and a guest one, which RFC 18 §3.6 makes anonymous: assert `TREE_CONNECT` to a data share is `STATUS_ACCESS_DENIED` and to `IPC$` succeeds. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a keyless session reaching data, or a bad signature dropped unanswered |
+| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up a null session and a guest one: assert each `TREE_CONNECT` to `IPC$` succeeds and to a data share without the guest flag is `STATUS_ACCESS_DENIED`. Set the share's guest flag: assert the guest's `TREE_CONNECT` succeeds unsigned and the null session's is still `STATUS_ACCESS_DENIED`; set the share to encrypt as well: assert the guest refused. Re-authenticate a signed session as guest: assert the session torn down. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a null session or a guest without the share's flag reaching data, a guest on an encrypting share, or a bad signature dropped unanswered |
 | §4.4 client record | From one machine, sign in as alice and then bob on two connections with one `ClientGuid`: assert both sessions succeed under one client record, and that bob's durable reconnect naming alice's FileId is refused. | a principal kept on the SMB client record, or opens checked against it |
 | §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
 | §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |
@@ -2536,11 +2554,6 @@ client label.
 3. **SMB 3.1.1 POSIX extensions** for Linux clients over SMB.
 4. **Directory leases**, with NFS directory delegations and RFC 14's open
    question 4.
-5. **Keyless sessions and disk shares.** S19 ("a session without a session key
-   reaches no share but `IPC$`") contradicts guest access to disk shares where
-   a deployment enables guest, and a session re-authenticated as anonymous
-   (§4.1) keeps the trees it had. S19 is left as written, not strengthened;
-   whether it narrows to keyless null sessions is undecided.
 
 ## Appendix A — prior art
 

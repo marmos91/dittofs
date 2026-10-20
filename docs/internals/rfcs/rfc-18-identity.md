@@ -854,19 +854,23 @@ An SMB client may set up a session that proves nothing: an anonymous one, with
 no user, or a guest one, naming the guest account.
 
 - Both **MUST** be set up as **anonymous** sessions: the identity is `None`, the
-  caller is the anonymous principal, and the session holds no secret key.
-- [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in) confines such a session to
-  `IPC$`. This RFC widens nothing: no setting lets a keyless session reach a
-  share.
+  caller is the share's `Anonymous` principal (§6.2), and the session holds no
+  secret key.
+- Which shares each may reach is
+  [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)'s: a null session `IPC$`
+  only, a guest also a share whose policy enables guest access and does not
+  encrypt. This RFC widens nothing.
 - A session setup whose credential fails **MUST** fail. It **MUST NOT** become
   an anonymous or guest session — not for an unknown user, not for a wrong
   password, not for a directory error.
 
-> decision: no "map to guest". A server that answers a wrong password with a
-> guest session turns every typo into a session the client did not ask for, and
-> a directory outage into access. Because keyless sessions reach only `IPC$`,
-> there is nothing a guest could reach that anonymous cannot, so one anonymous
-> principal covers both. Revisit only if `IPC$` confinement is ever withdrawn.
+> decision: no "map to guest", and guest is proof `None`. A server that answers
+> a wrong password with a guest session turns every typo into a session the
+> client did not ask for, and a directory outage into access. A guest proves
+> nothing a null session does not, so one anonymous principal covers both, and
+> the only difference between them, which shares admit a guest, is a share
+> setting RFC 22 applies. Revisit if a deployment needs a guest told apart from
+> anonymous in a file's owner or an ACL entry.
 
 ### 3.7 Disabled and deleted principals
 
@@ -892,6 +896,8 @@ context's current evidence in `SignInStep.Context`.
   keeps everything else the context holds, its open handles with the access
   each was granted at its open. Why, and its ceiling, is
   [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)'s decision.
+  A re-authentication that would leave the session keyless, as a null or
+  guest one, fails ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 - Any failed re-authentication ends the context it targeted. The old evidence
   never outlives a failed proof, such as one after a password change.
 - A context past `Expires` still admits its re-authentication and the calls that
