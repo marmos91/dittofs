@@ -558,7 +558,7 @@ type Snapshot struct {
 type Node struct {
 	ID      NodeID
 	Address string
-	Roles   Roles  // protocol, storage; both by default (RFC 15)
+	Roles   Roles  // protocol, storage; both, the only accepted value (RFC 15 §2.1)
 	Binary  string // the binary version it runs; the replication gate opens only when every node's knows the extension (RFC 10 §2.3)
 	Domain  string // (cluster) its failure domain, for slot placement (RFC 11 §2.2)
 	Epoch   uint64 // raised at every start on a single node; in a cluster each time the node acquires its lease anew
@@ -623,7 +623,7 @@ type Setting struct {
 // is envelope-encrypted under a key held outside the KV, so a copy of the
 // store alone reveals nothing. Referenced by SecretRef from User and Setting.
 // Each secret kind is sealed under the wrapping key of the role that needs it
-// (RFC 13 §7), so a node holds only its own roles' keys.
+// (RFC 13 §7); every node holds both keys.
 type Secret struct {
 	ID    SecretRef
 	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, remote credential, key, node credential (RFC 15 §4.4)
@@ -633,11 +633,10 @@ type Secret struct {
 }
 ```
 
-A protocol node needs authentication secrets and a storage node needs remote-tier
-credentials and key material; neither needs the other's. With one wrapping key,
-a compromised protocol node could unseal the bucket credential. The KV still
-lets any node read the sealed bytes; confidentiality rests on the key a node's
-bootstrap names, and restricting what a node may *write* is [RFC 15](rfc-15-topology.md)'s.
+Every node holds both wrapping keys; they stay separate so a later split of the
+roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)) re-seals
+nothing. The KV lets any node read the sealed bytes; confidentiality rests on
+the keys a node's bootstrap names.
 
 Adapter settings and identity-provider configuration follow the same pattern
 and are left out of this list; neither changes a file or content key.
@@ -1092,9 +1091,9 @@ entry, decrements `Nlink`, moves usage and writes the pending release in one
 open a transaction of their own.
 
 The composition root ([RFC 15](rfc-15-topology.md)) calls `Open` and hands each consumer only the
-view it declared ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). In a split deployment ([RFC 15](rfc-15-topology.md)) a view may instead be
-a network client satisfying the same interface; the consumer cannot tell, which
-is why every method must be safe to call remotely ([RFC 15](rfc-15-topology.md)).
+view it declared ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). A view is always local to its consumer's
+node: what crosses between nodes is a whole filesystem-service call
+([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)), never a view's.
 
 ## 4. Persistence pattern
 
@@ -1400,7 +1399,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `PX‖scheme‖id` | protocol-ID index → `PrincipalID`, unique per scheme; `scheme` is one of `uid`, `gid`, `sid` (binary form) and `krb`, a Kerberos principal as `name@REALM`, compared byte for byte as the KDC spells it; with the User or Group record, the only place a protocol spelling is stored (§2.2) |
 | | `N‖node`, `N‖node‖exp`, `N‖node‖clk` | Node: its roles, binary version, the version range it reads and writes for every shared format, failure domain, node epoch and whether a takeover marked it lapsed, guarded by every fenced commit; NodeLease (cluster): the lease's expiry, which a renewal writes with its journals' generations and nothing else, and a resume rewrites with the node record ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). On a single node the node record's epoch rises at every start and no lease is written ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). Clock ceiling, only on a backend without a timestamp oracle: the bound `Now` stays under, raised once a second (§4.1); its own key, so raising it conflicts with no fenced commit |
 | | `SH‖shard` | Shard, with its primary as (node, node epoch, journal identity, join incarnation), its epoch, its shard incarnation, its grace instance and its replicas ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) |
-| | `SH‖shard‖rq‖requestID` | (cluster) request record: a namespace mutation's request ID and result, written in its transaction and expiring after the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)), so a retry after a takeover is answered, not applied again ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary)); a batch move's commit re-keys the shipped ones under the receiving shard ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) step 3) |
+| | `SH‖shard‖rq‖requestID` | (cluster) request record: a namespace mutation's request ID and result, written in its transaction and expiring after the retry window ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)), so a retry after a takeover is answered, not applied again ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)); a batch move's commit re-keys the shipped ones under the receiving shard ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) step 3) |
 | | `SH‖shard‖rqx‖expiry‖requestID` | (cluster) request-record expiry index: one empty key per request record, written and deleted with it, so the shard's primary sweeps its own expired records on the retry window by one ordered scan of its own range ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). Keyed per shard, so each primary inserts at the tail of its own range only, at its own shard's mutation rate; one installation-wide time-ordered range would put every namespace mutation of the installation on one region; a batch move's commit re-keys an entry with its request record ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries) step 3) |
 | | `SH‖shard‖fw‖ref` | (cluster) forwarding entry: a tagged reference to a record a batch move took to another shard — a stateid's 64 random bits, or an SMB persistent `FileId`'s `OpenID` — → the receiving shard; written by the batch's commit at the giving shard, deleted lazily once the receiving shard reports no such record, by a periodic sweep, and by a move back of the record (RFC 14 §10) ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries), [RFC 14 §10](rfc-14-open-state.md#10.%20Shard%20placement)) |
 | | `SH‖shard‖xh‖opID` | (cluster) cross-shard hold record: a participant's hold for one prepared operation, with its deadline, written by a fenced transaction that also rewrites, at the shard's current epoch, the fences of the files it holds that still name an older one, so a primary that stayed through a raise leaves the coordinator's commit no stale fence to fail on; every commit of the operation guards it, and a release deletes it before the participant grants what it refused ([RFC 11 §8.1](rfc-11-ownership.md#8.1%20Operations%20across%20shards)) |
@@ -1805,7 +1804,7 @@ it, to a benchmark (Appendix A). Sources are linked once per system.
 | 6 | Share in per-file keys? | **Yes**: `F‖ShareID‖FileID` (§4.2). | JuiceFS volume prefix; TiKV range deletion drops a share in seconds, not hours |
 | 7 | Nested groups? | **Walk with a depth cap and cache.** Kerberos and AD already deliver the flattened list in the ticket, so no walk for them. Local groups are walked at login, depth ≤ 8 with cycle detection, cached under a key naming every membership it read (RFC 7 §7.5). No stored closure table. | Kerberos PAC; SSSD nesting level; Zanzibar's flattened index shows the closure's write cost |
 | 8 | Deleted principals? | Deleting a user removes the User, its memberships and grants, the grants found through their reverse keys (`GR‖principal`, §4.2) without a scan of every share; the principal stays in ownership, ACLs and usage. An admin **reassign** job moves files and their charge through `chown`. A deleted principal's ID is never reissued, because IDs are minted, not derived from a UID or SID (§2.2); a new account reusing the UID gets a new principal. | ONTAP shows raw SIDs in quota reports; NTFS refuses to drop a quota entry while the SID owns files; MS-SMB2 returns zeroed entries for unknown SIDs |
-| 9 | Where credentials live? | **In the KV, as `Secret` records** (§2.3), envelope-encrypted under a key held outside it (a file or a KMS), never dumped or exported. Password hashes use a slow hash; an NT hash exists only when NTLM is enabled. A keytab is a `Secret` of kind keytab, sealed under the `protocol` role's key like every authentication secret ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), so every `protocol` node reads the one keytab from the store; a node whose Kerberos library needs a path writes it at start to a file only that node's process can read, and never back. | Samba `tdbsam`, TrueNAS and ONTAP all keep credentials in their replicated config store; Samba warns NT hashes are cleartext-equivalent |
+| 9 | Where credentials live? | **In the KV, as `Secret` records** (§2.3), envelope-encrypted under a key held outside it (a file or a KMS), never dumped or exported. Password hashes use a slow hash; an NT hash exists only when NTLM is enabled. A keytab is a `Secret` of kind keytab, sealed under the `protocol` role's key like every authentication secret ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), so every node reads the one keytab from the store; a node whose Kerberos library needs a path writes it at start to a file only that node's process can read, and never back. | Samba `tdbsam`, TrueNAS and ONTAP all keep credentials in their replicated config store; Samba warns NT hashes are cleartext-equivalent |
 | 10 | What must a guard promise, and must the embedded store sync every commit? | **A guard binds only its own transaction, is shared in every commit order, and has a range form; the embedded store group-commits and never acknowledges before its sync** (§4.1). No optimistic store checks a later writer against an earlier guard, so a rule that needs the writer to fail tracks a key on both sides; a removal uses `GuardRange`. Relaxed background sync is unsupported, because a released journal extent or a GC deletion cannot be undone. | Measured against §4.1: FoundationDB 7.3.77 and Badger both commit a writer after an earlier-committed guard of its key, and both leave an entry under a removed directory without a range guard; TiKV 8.5.8's shared locks fail a guard taken after another guarding transaction committed, queuing one-directory creates at 26–85/s; Badger with every commit synced and little sharing of syncs reached ~400 commits/s (6.2 ms per sync, consumer NVMe); FoundationDB refuses a value over 100,000 B, a key over 10,000 B and a transaction over ~10 MB counted with conflict ranges, and aborts one older than 5 s; its read version is not time, and it detects no blind write-write conflict without an added read conflict |
 
 > ponytail: nested local groups are walked at login, depth ≤ 8, and cached

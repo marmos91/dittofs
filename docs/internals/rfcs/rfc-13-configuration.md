@@ -131,8 +131,7 @@ Other settings of the same share change differently:
   unhealthy.
 - A node joins only an installation whose format and protocol versions it
   supports, and no version is raised until every node supports it.
-- No secret value appears in any record, API answer, export, log or metric, and
-  a node without the `storage` role cannot unseal the remote store's credentials.
+- No secret value appears in any record, API answer, export, log or metric.
 
 **How the rest is organised.** §2 says where configuration lives, including the
 backup location's record, §3 the scopes, §4 what is fixed and what is a setting.
@@ -251,8 +250,8 @@ only these, come from the host — a file or the environment:
 | the process memory limit — the soft limit the runtime enforces (on the Go runtime, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes the node's hold pool ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)), and what memory a process has only its host knows |
 | listen addresses                                                                                                      | a port conflict is a host's problem                                                                                                       |
 | log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |
-| the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md))                          | they decide what the node composes, including whether it writes control-plane records, which only `storage` does ([RFC 15 §2.5](rfc-15-topology.md#2.5%20The%20cut)); fixed for the life of the process |
-| the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak                     |
+| the node's **roles** — `protocol` and `storage`, and both is the only accepted value ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)) | kept as a flag so a later split of the roles needs no new setting; a node configured with one refuses to start ([RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%20work)); fixed for the life of the process |
+| the location of each wrapping key for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing |
 
 **A scratch path is checked against the journals at every start, in both
 directions.** The node refuses `backups.spill_path` or `salvage.path` if it
@@ -689,21 +688,21 @@ wrapping key held outside that KV — a host file or an external key service,
 named by the bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)). A copy of the store alone reveals no
 secret.
 
-**Wrapping keys are per role.** Each secret kind is sealed under the wrapping
-key of the role that uses it, and a node's bootstrap names only the keys of its
-own roles:
+**Two wrapping keys, one per role.** Each secret kind is sealed under the
+wrapping key of the role that uses it, and every node runs both roles and names
+both keys in its bootstrap:
 
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
-| `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials | the `protocol` role: authentication |
-| `storage` | remote-tier credentials, references to master keys | the `storage` role: the remote tier and the material provider |
+| `protocol` | password hashes, NT hashes, keytabs, identity-provider bind credentials | authentication |
+| `storage` | remote-tier credentials, references to master keys | the remote tier and the material provider |
 
-![Secret records in the metadata store are sealed per role: a protocol-only node holds only the protocol wrapping key, so it unseals password hashes, NT hashes, keytabs and identity-provider bind credentials but cannot open the storage-sealed remote-tier credentials it reads; a storage node unseals those with the storage key; rotating the bucket credential seals a new version under the same reference while the old stays resolvable, raises the generation so each node re-resolves within 5 s, proves the value and reports it, waits until every node reports the new version, then deletes the old one and reports it may be revoked](img/rfc13-secrets.svg)
+A deployment **MAY** split a key further by secret kind.
 
-So a compromised protocol-only node, which must read the KV, holds sealed
-remote-tier credentials it cannot open. A deployment **MAY** split a role's key
-further by secret kind; it **MUST NOT** merge the two roles' keys unless every
-node runs both roles, which is the single-node default.
+> decision: the two keys stay separate although every node holds both, so a
+> later split of the roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type))
+> re-seals nothing and a disk-less protocol node is handed the `protocol` key
+> alone. Overturned if that split is ruled out; the keys then merge.
 
 **One interface, two providers.** Every secret is resolved through one
 interface. The built-in provider above — sealed `Secret` records under the role
@@ -716,7 +715,8 @@ record. Signatures are indicative:
 // values and never returns one through any other path.
 type SecretProvider interface {
 	// Resolve returns the current value of ref, unsealed with the wrapping key
-	// of role. It fails if this node does not hold that role's key.
+	// of role. It fails if this node does not hold that role's key, which
+	// never happens while every node holds both.
 	Resolve(ctx context.Context, role Role, ref SecretRef) ([]byte, error)
 	// Seal stores value under ref, sealed with role's wrapping key, and
 	// returns the reference to record in configuration.
@@ -803,7 +803,7 @@ type SecretProvider interface {
   retired key is refused, and is encrypted and authenticated under the export key ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)).
 
 - The only secrets on a host are the bootstrap credential for the configuration
-  store and the wrapping keys of its own roles, or references to them in an
+  store and its wrapping keys, or references to them in an
   external key service ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
 
 ## 8. Observability
@@ -836,7 +836,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) refused | For every setting, feed one value out of range and one of the wrong type, through the API and directly to the component. Assert both refuse, with the field named; assert no component runs a default in its place. |
 | [§6](#6.%20Validation) one validator | Assert the API and the component return the same error for every invalid record in the fixture set. |
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
-| [§7](#7.%20Secrets) role keys | Start a protocol-only node. Assert its bootstrap names no `storage` wrapping key and that unsealing a remote-tier credential from it fails. |
+| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and a password hash. Assert each unseals under its own wrapping key and fails under the other. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) explicit initialisation | Start a node against an empty metadata store and empty journal directories: assert it refuses, creating nothing. Initialise: assert the store's Installation record and every journal's `format` file carry one installation ID. Start with the store volume unmounted: assert it reports the metadata store lost and creates nothing; with the journal directory emptied, the journal missing. Only with initialise-if-empty set does a start on empty storage create an installation. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) location deletion | Delete a location record holding one unexpired backup: refused `ErrLocation`, naming it. Expire it; delete again: accepted. Make a second location unreachable for good with one backup there: deletion refused. State it lost, crashing after the lost mark and after the first batch: assert the statement resumes from the mark, the backup reads `lost` in the store, its folder record's census and block count are empty, the statement is in the audit log, deletion is accepted, and a master key only that backup's export named can be destroyed. Leave a third location unreachable for a day without the statement: still refused. |
@@ -1035,9 +1035,9 @@ supplies one before the setting is built.
 | copy chunk: the length one atomic clone of a `COPY` or copychunk covers; the copy runs as a series of them and may answer a short count | [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | — | fixed | proposed: 64 MiB; settled by: the longest a writer to the source waits behind one chunk on the reference box, against the copy's throughput ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)'s decision) |
 | version block: versions one durable raise of a share's version limit covers; the next raise runs on [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)'s trigger, evaluated at each draw: the larger of half a block and the peak rate × the margin, 30 s + `existence_age` + 1 s (the trigger's own sampling), the peak being the highest count of versions drawn in any one second of the last 60 s | [RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward) | — | fixed | proposed: 2²⁴ versions, so the half left when a raise falls due covers about 260,000 versions a second for the 32 s margin at the proposed `existence_age`; the 60 s peak window and the 1 s sampling are fixed with it ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); settled by: stall tolerance first — writes still acknowledged through a metadata stall of the self-fence's length at the reference box's peak version rate — then versions a crash skips, which the 64-bit counter absorbs |
 | object bound: largest versioned object put at a backup location | [RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location), [RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout) | — | derived | the largest encoded block, so every versioned object, an export part included, is scheduled as a block is. An export is cut into parts at it, and a head that would exceed it is cut into head parts the same way, listed by a small root ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)), so no export is too large to put |
-| retry window **(cluster)**: how long a mutation's request ID and result are kept to answer a retry — the dedup table, a journal request entry, a request record | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) | installation | live: a change applies to entries written after it | proposed: 15 min, above a Linux hard-mount client's retransmission back-off, which starts at 60 s and caps at 600 s; a value below 600 s plus the takeover bound — the node lease, plus the drift bound, plus one renewal period, plus the gather interval ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) — is refused; settled by: retry traces of hard-mounted NFS clients across a takeover and a front-end loss, against the entries the window keeps at the peak mutation rate (about 1.8×10⁷ at 20,000 a second) |
+| retry window **(cluster)**: how long a mutation's request ID and result are kept to answer a retry — the dedup table, a journal request entry, a request record | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) | installation | live: a change applies to entries written after it | proposed: 15 min, above a Linux hard-mount client's retransmission back-off, which starts at 60 s and caps at 600 s; a value below 600 s plus the takeover bound — the node lease, plus the drift bound, plus one renewal period, plus the gather interval ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)) — is refused; settled by: retry traces of hard-mounted NFS clients across a takeover and a gateway node's loss, against the entries the window keeps at the peak mutation rate (about 1.8×10⁷ at 20,000 a second) |
 | dedup entries per client **(cluster)**: most entries the dedup table keeps for one client within the retry window, the oldest dropped first | [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) | — | fixed | proposed: 65,536; settled by: the same retry traces as the retry window, the most mutations one client sends between a call and its last retransmission at the peak per-client rate. A retry whose entry the cap dropped is applied again ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)'s decision) |
-| hold budget per transport: requests and bytes an adapter may hold at once for one session or connection, counted by the adapter from a request's first hold until it is answered, whether it waits inside the service behind a clone under `vfs.WithHold` or between re-drives | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | — | derived | NFSv4.1: max(1, a quarter of the session's slots) calls waiting behind a clone, a hard cap past which the adapter passes `WithHold(0)`, answered `NFS4ERR_DELAY`; SMB: 256 requests and 32 MiB per connection, constants, a floor past which a connection draws on the node's hold pool, a sixteenth of the process memory limit (a bootstrap fact, [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), derived; a test sizes the pool by setting that limit, 128 MiB giving 8 MiB ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)); a request past a floor with the pool full is answered `STATUS_INSUFFICIENT_RESOURCES` at once. NFSv3, NFSv4.0 and NLM count nothing; the request deadline bounds every hold. The count is at the protocol node holding the request, so it is exact in a cluster too |
+| hold budget per transport: requests and bytes an adapter may hold at once for one session or connection, counted by the adapter from a request's first hold until it is answered, whether it waits inside the service behind a clone under `vfs.WithHold` or between re-drives | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) | — | derived | NFSv4.1: max(1, a quarter of the session's slots) calls waiting behind a clone, a hard cap past which the adapter passes `WithHold(0)`, answered `NFS4ERR_DELAY`; SMB: 256 requests and 32 MiB per connection, constants, a floor past which a connection draws on the node's hold pool, a sixteenth of the process memory limit (a bootstrap fact, [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), derived; a test sizes the pool by setting that limit, 128 MiB giving 8 MiB ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)); a request past a floor with the pool full is answered `STATUS_INSUFFICIENT_RESOURCES` at once. NFSv3, NFSv4.0 and NLM count nothing; the request deadline bounds every hold. The count is at the gateway node holding the request, so it is exact in a cluster too |
 | default request deadline, for an operation that arrives with none | [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) | — | fixed | 30 s |
 | single-node self-fence: time with a write transaction outstanding or failing and none committed before a node stops acknowledging writes | [RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile) | — | fixed | 30 s, the default request deadline |
 | small-call bound: longest one Small attempt, its one request or one read-then-write | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | — | fixed | proposed in RFC 3: 30 s; settled by: the small-body cap at a working link's floor share, moved together with the cap ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)'s decision) |
@@ -1056,7 +1056,7 @@ supplies one before the setting is built.
 | `shard.follow_writer`, `.window`, `.share` **(cluster)** | [RFC 11 §3.3](rfc-11-ownership.md#3.3%20The%20primary%20follows%20the%20writer) | installation | live | on; proposed: 5 min; 0.9; settled by: forwarded-byte shares observed on reference workloads |
 | `shard.dwell` **(cluster)** | [RFC 11 §3.3](rfc-11-ownership.md#3.3%20The%20primary%20follows%20the%20writer) | installation | live | proposed: 30 min; settled by: handover cost (tail shipped) against measured writer-alternation periods |
 | `shard.replace_delay`: **(cluster)** the re-placement delay | [RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards) | installation | live | proposed: 10 min; settled by: the distribution of node return times after a lapse (restarts, reboots) |
-| `shard.unreachable_delay`, `shard.unreachable_handover_bound`: **(cluster)** how long front-ends may fail to reach a primary that reaches the store before its shards are handed away, and how long that handover may take before it becomes a failover | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Front-ends%20forward%20to%20the%20primary) | installation | live | proposed: 30 s; 60 s; settled by: the client stall a deployment tolerates against brief front-end losses, and handover times of the share limit's tail |
+| `shard.unreachable_delay`, `shard.unreachable_handover_bound`: **(cluster)** how long gateways may fail to reach a primary that reaches the store before its shards are handed away, and how long that handover may take before it becomes a failover | [RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary) | installation | live | proposed: 30 s; 60 s; settled by: the client stall a deployment tolerates against brief gateway losses, and handover times of the share limit's tail |
 | share's namespace | [RFC 12 §2.1](rfc-12-snapshots.md#2.1%20A%20namespace%20is%20the%20unit%20that%20moves) | share | bound | the share's own |
 | oldest unoffloaded extent alert | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) | share | live | proposed: 1 h; settled by: the oldest-unoffloaded age's p99 under the profile workload with a healthy store, the alert set above it |
 | snapshot policy: schedule, retention and the backup location it names | [RFC 12 §3.2](rfc-12-snapshots.md#3.2%20Configuration) | share | live | none |

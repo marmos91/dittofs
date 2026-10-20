@@ -286,8 +286,8 @@ must find the thing still there.
 
 ### 2.2 What an adapter may hold
 
-An adapter **MAY** hold, in the memory of the `protocol` node serving the
-connection, and nothing else:
+An adapter **MAY** hold, in the memory of the node serving the connection, and
+nothing else:
 
 | Kind | Examples |
 | --- | --- |
@@ -386,7 +386,7 @@ thin with four rules:
    a handler is one function that makes one service call (§4.3). Neither holds
    a connection.
 4. **An interface only where there are two implementations.** `vfs.Service`
-   (the service, the recording fake, the null service), the authenticator (the
+   (the server, the gateway, the recording fake, the null service), the authenticator (the
    local store, a domain, a fake), a protocol and its stages (NFS's RPC
    protocol, SMB), a sidecar (§3.5). Everything else is a concrete type.
 
@@ -557,7 +557,7 @@ The adapter **MUST NOT** answer it with an error the client would treat as
 final, since the service may still apply it. An NFSv3 or NFSv4.0 retry
 carries the same request ID, but meets the service's dedup
 ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)) only
-where the call was forwarded, in a cluster; on one node exactly-once is lost
+where the gateway forwarded the call, in a cluster; on one node exactly-once is lost
 for it, as for an NFSv4.1 or SMB retry, which carries a new ID. Exactly-once
 is lost for abandoned requests as on a node loss
 ([RFC 21 §3.2](rfc-21-nfs.md#3.2%20The%20reply%20cache%20is%20per%20session%2C%20in%20memory)),
@@ -777,7 +777,7 @@ package core // internal/adapter/core
 // A field is an interface where it has two implementations, a concrete type
 // where it has one.
 type Deps struct {
-	Service vfs.Service            // RFC 17: the only way to a file (§2.3)
+	Service vfs.Service            // RFC 17: the only way to a file (§2.3); the server or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Auth    identity.Authenticator // RFC 18 §3.1: what a handshake needs a secret or directory for
 	Pools   *resources.Pools       // RFC 24 §2.3: receive, reply, connection state
 	Metrics *metrics.Registry      // RFC 25 §2
@@ -966,7 +966,7 @@ An adapter contributes three things, all from `core`, none from protocol code:
 | Answer | What the adapter supplies |
 | --- | --- |
 | **liveness** ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)) | each accept loop reports a turn to the watchdog, or reports idle; a loop that does neither for 60 s fails liveness. A connection's reader legitimately blocks on its socket and is not watched. Nothing else the adapter does can fail it |
-| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node's `protocol` role is ready when every enabled adapter is |
+| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is |
 | **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose socket failed while serving, `unhealthy`; `sidecar_failed` (§3.5), `degraded`. Each derived from current evidence and cleared when it no longer holds |
 
 A sidecar's failure and a single client's trouble are not readiness: a node
@@ -1444,7 +1444,7 @@ at `NewConn`. A connection's `OnClose` drops its reference to each session it
 carried; for an SMB session the last drop calls `Disconnect`, and the
 per-session cleanup wait of §3.2 lives in the registry. An NFSv4.1 session
 outlives its connections and ends only by `DESTROY_SESSION` or its client's
-expiry. A lost protocol node's sessions are treated as disconnected at its node
+expiry. A lost node's sessions are treated as disconnected at its node
 lease's lapse ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), so no one calls
 `Disconnect` for them. ID tables that belong to a session — `FileId`s,
 stateids — live with the session, not the connection.
@@ -1660,7 +1660,7 @@ adapter each entry point is one handler and one call:
 **Finding it in the code.** Each entry is a file named after its wire
 operation, and the entry methods — `Root`, `SecInfo`, `ListShares` — are called
 from those files and nowhere else in an adapter. So "what runs when a client mounts" is one search for the method,
-which lands on one handler, whose one call leads into the service's front ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
+which lands on one handler, whose one call leads into the service's server ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
 where resolution, admission and the pseudo-filesystem are. The import test
 (§7.1) keeps it so: it lists every call of an entry method from adapter code
 and fails on one outside the files above, so a second path to a share — how
@@ -1966,6 +1966,12 @@ the same for every protocol; the request deadline is fixed
 is fixed. A connection holding state the client relies on — an NFSv4.1
 back channel, an SMB session with durable opens — is not idle while that
 state lives.
+
+Beside the deadline, the pipeline puts each call's request ID in the context
+with `vfs.WithRequestID`, built from the protocol's retry identity as
+[RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) says; the
+gateway copies it into the route envelope
+([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)).
 
 ### 6.5 Cancellation
 

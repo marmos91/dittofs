@@ -67,9 +67,9 @@ service, writes land in a local journal and move to an object store in the
 background ([RFC 0](rfc-0-data-lifecycle.md)); NFS sees none of that.
 
 **The problem, with one example.** How a client talks to the server, and what
-goes wrong. Take the cluster: `protocol` nodes **P1** and **P2** hold client
-connections, and a storage node **S1** is the primary for `builds` — the one
-node that orders every change to its files. The Linux build server **build01**
+goes wrong. Take a cluster of nodes **P1**, **P2** and **S1**. Every node
+holds client connections and is the primary of some shards; **S1** is the
+primary for `builds`, the one node that orders every change to its files. The Linux build server **build01**
 mounts `builds` over NFSv4.1 and untars a source tree of 40,000 small files.
 
 1. **Mount.** build01 connects to the cluster's floating address, which P1
@@ -105,12 +105,14 @@ this untar — to cover an event whose visible result matches an NFSv3 server
 reboot, which clients already tolerate. This RFC takes neither: state at the
 primary, reply cache in memory.
 
-![build01 mounts builds through a floating address held by protocol node P1, whose memory holds session 1 with up to 64 slots and its reply cache. P1 dies; the address moves to P2, which answers NFS4ERR_BADSESSION, and build01 opens session 2 under the same client ID with an empty reply cache. Both nodes forward every call to S1, the primary of builds, which holds RFC 14's client record, opens, locks, delegations and stateids and RFC 7's names, file handles, attributes and directory cookies, untouched by the loss, so no grace runs. What is lost is exactly-once for the three requests in flight](img/rfc21-node-loss.svg)
+![build01 mounts builds through a floating address held by P1, its gateway node, whose memory holds session 1 with up to 64 slots and its reply cache. P1 dies; the address moves to P2, which answers NFS4ERR_BADSESSION, and build01 opens session 2 under the same client ID with an empty reply cache. Both nodes forward every call to S1, the primary of builds, which holds RFC 14's client record, opens, locks, delegations and stateids and RFC 7's names, file handles, attributes and directory cookies, untouched by the loss, so no grace runs. What is lost is exactly-once for the three requests in flight](img/rfc21-node-loss.svg)
 
 **The words you need.**
 
-- **`protocol` node / primary** — a node that holds client connections / the one
-  storage node that orders a shard's writes ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
+- **gateway node / primary** — the node a client's call arrives at, which
+  forwards it to the primary when it is not the primary itself
+  ([RFC 17 §2](rfc-17-vfs.md#2.%20Gateway%20and%20server)) / the one node that
+  orders a shard's writes ([RFC 0 glossary](rfc-0-data-lifecycle.md#Glossary)).
 - **File handle** — an opaque name for a file, the same on every node and after
   restart ([§7.1](#7.1%20File%20handles),
   [RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)).
@@ -134,8 +136,10 @@ primary, reply cache in memory.
 
 **What this RFC promises.**
 
-- Losing a `protocol` node loses no open, lock or delegation and starts no grace
-  period; the client opens a new session and carries on.
+- Losing a client's gateway node loses none of the opens, locks or delegations
+  held at other primaries and starts no grace period there; the client opens a
+  new session and carries on. The shards the lost node was primary of fail
+  over with their own grace (§5.4).
 - It does lose exactly-once for the requests in flight: a resent create, remove
   or rename may answer "exists" or "not found" for work that was done.
 - A file handle, a stateid and a directory listing position are valid on every
@@ -164,7 +168,7 @@ for it.
 **build01 holds a delegation on `builds/Makefile` from S1, and P1 dies.**
 
 1. The delegation is held at S1, so it survives; the recall path does not. S1
-   reaches build01 through the `protocol` node the client record names for its
+   reaches build01 through the gateway node the client record names for its
    back channel, which was P1 ([§3.4](#3.4%20The%20back%20channel%20and%20where%20callbacks%20go)).
 2. A second client's conflicting request makes S1 send `CB_RECALL`. Until
    build01 opens a session with a back channel on P2, the recall has nowhere to
@@ -180,7 +184,7 @@ channel on.
 1. The NLM lock is an RFC 14 lock under an anonymous open, so it conflicts with
    NFSv4 and SMB locks like any other ([§6.1](#6.1%20NLM)).
 2. The shard's new primary raises the installation's NSM state number, durably,
-   before the shard's grace begins, and has the `protocol` node holding the
+   before the shard's grace begins, and has the gateway node holding the
    floating address send `SM_NOTIFY` to build01 ([§6.2](#6.2%20NSM)).
 3. build01's statd reclaims the lock in grace. NLM never says it has finished
    reclaiming, so the shard runs its whole grace period.
@@ -213,11 +217,11 @@ Appendix C every NFSv4.2 operation.
   It is built as [RFC 20](rfc-20-adapters.md) describes every adapter: its
   lifecycle, request pipeline, codecs and connection handling.
 - NFSv4.1 sessions, their slot tables and reply caches live in the memory of
-  the `protocol` node holding the connection. They are not durable: when that
+  the gateway node holding the connection. They are not durable: when that
   node dies, exactly-once execution is lost for the requests in flight, and a
   client that retries a non-idempotent operation on its new session may run it
   twice.
-- Callbacks run from the file's primary to the `protocol` node holding the
+- Callbacks run from the file's primary to the gateway node holding the
   client's back channel, through the callbacks the client registered last.
 - No courtesy clients: a lease that expires releases everything at once.
 - Labeled NFS, named attributes (`OPENATTR`), inter-server copy and referrals to
@@ -365,7 +369,7 @@ fixed number of **slots** with a sequence number, and the server keeps the last
 reply per slot — the **reply cache** — so a resend gets the stored answer. The
 server chooses how many slots, how much reply to keep, and whether the cache
 survives a crash. This one grants up to 64 slots and keeps the cache in the
-memory of the `protocol` node holding the connection, accepting that a node loss
+memory of the gateway node holding the connection, accepting that a node loss
 turns resends of in-flight requests into second runs.
 
 ### 3.1 Slot tables
@@ -413,7 +417,7 @@ a channel is how many requests may be in flight on it at once.
 ### 3.2 The reply cache is per session, in memory
 
 - The reply cache — the last reply per slot, by sequence ID — **MUST** be held
-  in the memory of the `protocol` node that holds the session, and **MUST NOT**
+  in the memory of the gateway node that holds the session, and **MUST NOT**
   be written to the metadata store or replicated.
 
 When that node dies, its sessions go with it. The client reconnects to a
@@ -423,7 +427,8 @@ surviving node through the floating address
 existing client ID, which every node accepts because the client record is
 durable ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)), and carries on. Its opens, locks and
 delegations are untouched: they are held by the primaries, not by the
-`protocol` node ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)), and no grace runs.
+gateway node ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)), and
+no grace runs but in the shards the lost node was primary of.
 
 What the client loses is exactly-once for the requests that were in flight. It
 resends them on the new session, in new slots, and they run again. For build01
@@ -443,7 +448,7 @@ The duplicate filter on forwarded calls (the route envelope's dedup table,
 [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope),
 [RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)) does
 **not** help here. It recognises a request by the protocol's own retry
-identity — for NFSv4.1 the front-end's node ID and the node epoch its
+identity — for NFSv4.1 the gateway node's ID and the node epoch its
 session was created under, with the request's session, slot and sequence ID
 ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) — and
 build01's resend arrives through P2 on a new session, in a new slot, so it
@@ -452,14 +457,14 @@ names another. It catches retries on one session, not a resend on a new one.
 > decision: the reply cache is not durable. Storing it would cost one
 > replicated write per non-idempotent request — every create and rename, about
 > 40,000 extra writes for build01's untar — to protect against one event, a
-> `protocol` node dying with requests in flight, whose visible result is the
+> gateway node dying with requests in flight, whose visible result is the
 > same as an NFSv3 server reboot, which every client already tolerates. Revisit
-> when users report client-visible errors after a `protocol` node loss. Keying
+> when users report client-visible errors after a gateway node loss. Keying
 > the primary's dedup table by (client ID, session, slot,
 > sequence ID) is no fix: an NFSv4.1 session lives in one node's memory and dies
 > with it, so the resend arrives on a new session, in a new slot, and names
 > neither. The request ID a forwarded call carries is built from that same
-> retry identity, front-end node and the session's node epoch included ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)),
+> retry identity, gateway node and the session's node epoch included ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)),
 > so it too names the old session, and nothing in it lets a primary match a
 > resend on the new one. The
 > fix then is persistent sessions: the slot table and its cached replies stored
@@ -473,10 +478,10 @@ addresses, at once. The client decides what it may combine from what each
 address reports when it identifies itself (`EXCHANGE_ID`): a **server scope**
 (`server_scope`) and a **server owner** whose major ID (`so_major_id`) says "one
 client ID is valid across these" and minor ID (`so_minor_id`) "one session is".
-All `protocol` nodes here are one server for client IDs and separate servers for
+All gateway nodes here are one server for client IDs and separate servers for
 sessions, because a session's slots live in one node's memory (§3.2).
 
-- Every `protocol` node of an installation **MUST** return the same
+- Every gateway node of an installation **MUST** return the same
   `server_scope` and the same `so_major_id`, and **MUST** return a
   `so_minor_id` unique to the node: the major ID and scope are the
   installation's identity
@@ -549,9 +554,9 @@ Sometimes the server must call the client: to take back a delegation
 (`CB_RECALL`) or a pNFS layout (`CB_LAYOUTRECALL`), to report a finished copy
 (`CB_OFFLOAD`), or to ask for some delegations back when it holds too many
 (`CB_RECALL_ANY`). These **callbacks** start at the primary of the file's shard,
-but the client's back channel is held by a `protocol` node, so the primary goes
+but the client's back channel is held by a gateway node, so the primary goes
 through the `Callbacks` the client registered ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)). The
-registration names the `protocol` node holding the client's back channel, and
+registration names the gateway node holding the client's back channel, and
 the call travels primary → that node → the client's connection.
 
 - The registration **MUST** be held in the durable client record, as the node
@@ -563,7 +568,7 @@ the call travels primary → that node → the client's connection.
   [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)
   has one node and one list).
 - A client's registration **MUST** be replaced, not added to, when it binds a
-  back channel on another node: the latest wins. After a `protocol` node loss,
+  back channel on another node: the latest wins. After a gateway node loss,
   the client's new session with a back channel (`CREATE_SESSION` with
   `CREATE_SESSION4_FLAG_CONN_BACK_CHAN`) or `BIND_CONN_TO_SESSION` redirects every later callback,
   through the service's `Connect`, made again from the new node, which runs
@@ -643,7 +648,7 @@ also names an address where the server could call it back; and instead of slots,
 **open owner** and **lock owner** (an identity on the client holding opens or
 locks) numbers its requests, and the server replays its last reply to a resend.
 All of it maps onto the same records as NFSv4.1. The replay lives in a
-`protocol` node's memory like the reply cache, and fares worse on a node loss.
+gateway node's memory like the reply cache, and fares worse on a node loss.
 
 ### 4.1 SETCLIENTID and the callback path
 
@@ -694,10 +699,10 @@ server replays the last reply to a retransmission.
   only `OPEN_CONFIRM` sets it
   ([RFC 14 §2.8](rfc-14-open-state.md#2.8%20NFSv4.0%20owner%20sequences)).
   Until then only `OPEN_CONFIRM` is accepted from the owner.
-- The **last reply** per owner is held only in the `protocol` node that sent
+- The **last reply** per owner is held only in the gateway node that sent
   it, as the session reply cache is (§3.2).
 
-**(cluster)** After a `protocol` node loss, a retransmission of an owner's last
+**(cluster)** After a gateway node loss, a retransmission of an owner's last
 operation is still answered once. An NFSv4.0 request ID is the client's
 address, XID, procedure and argument checksum, never the connection, so the
 retransmission reaches the primary through the node that took the address over
@@ -836,8 +841,8 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
 
 1. **`other` names a record, not a table slot.** It **MUST** be a type tag and
    the RFC 14 identifier it stands for — open, a lock owner's lock state,
-   delegation, layout or copy — so any `protocol` node resolves it without a
-   table of its own, and a stateid survives a `protocol` node loss. Its
+   delegation, layout or copy — so any gateway node resolves it without a
+   table of its own, and a stateid survives a gateway node loss. Its
    non-random part carries the number of the shard that holds the record, and
    its random bits are unique within that shard, whose primary keeps an index
    from them to the record
@@ -1261,7 +1266,7 @@ Monitor) handles crashes: each side's status daemon (`statd`) records whom it
 holds locks with and, after a restart, sends them `SM_NOTIFY` so they reclaim.
 Here NLM locks are RFC 14 locks, conflicting with NFSv4 and SMB locks, and
 `SM_NOTIFY` is sent when a shard fails over or its primary restarts, not when a
-`protocol` node dies.
+client's gateway node dies.
 
 ### 6.1 NLM
 
@@ -1381,7 +1386,7 @@ own monitor, never requests a peer sends it
   shard's grace begins; for a moved namespace it is raised when its address
   arrives at the new installation, inside the moved shares' grace there
   (§7.4) ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)),
-  and the new primary asks the `protocol` node currently holding each address
+  and the new primary asks the gateway node currently holding each address
   to send `SM_NOTIFY` to every NLM host whose record names the shard, at its
   `Notify`, naming the server name the client monitored — the floating
   address's name, not a node's — with the new state number, so the client's
@@ -1389,8 +1394,8 @@ own monitor, never requests a peer sends it
 - `SM_NOTIFY` is sent by UDP, as statd peers listen for it. Apart from the port
   mapper's answers and the NLM and NSM replies served over UDP for parity
   (§2.2), it is the only UDP the server sends, and it carries no file operation.
-- A `protocol` node loss alone is not a restart for NLM: no lock was lost, so no
-  `SM_NOTIFY` is sent ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)).
+- Losing a client's gateway node is not a restart for NLM: no lock held at
+  another primary was lost, so no `SM_NOTIFY` is sent for it ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)).
 
 ### 6.3 MOUNT
 
@@ -1510,8 +1515,8 @@ and adds no export of its own:
 reached — is returned only for a drain
 ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)):
 
-- a draining `protocol` node answers operations on a share with
-  `NFS4ERR_MOVED`, and `fs_locations` names another `protocol` node of the same
+- a draining gateway node answers operations on a share with
+  `NFS4ERR_MOVED`, and `fs_locations` names another gateway node of the same
   installation and the same path;
 - every other time the attribute lists no location;
 - a referral to another installation is never returned
@@ -1787,8 +1792,8 @@ guarantees what that needs:
   value below one the overlay reported
   ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)).
   Nothing reports a value derived from the clock alone.
-- **`GETATTR` is answered at the primary** when the engine holds uncommitted
-  writes, so a `protocol` node never answers from a committed record that lags
+- **`GETATTR` is answered at the primary**, where the engine holds the
+  uncommitted writes, so no node answers from a committed record that lags
   them.
 - A `GETATTR` after a client's `CLOSE` or `COMMIT` returns a `size` and `change`
   covering every write that client was answered for.
@@ -1926,8 +1931,8 @@ of accepted sequence numbers — and every later call is checked against it.
 Authentication and principal mapping are
 [RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos)'s. On the wire:
 
-- a GSS context **MUST** be held in the memory of the `protocol` node that
-  created it, and is not shared or stored. After a `protocol` node loss, the
+- a GSS context **MUST** be held in the memory of the gateway node that
+  created it, and is not shared or stored. After a gateway node loss, the
   client's next call on the old handle is answered `RPCSEC_GSS_CREDPROBLEM`,
   and it establishes a new context;
 - the sequence window is 128. A call whose sequence number is below the
@@ -1960,8 +1965,8 @@ Authentication and principal mapping are
 | # | Invariant |
 | --- | --- |
 | N1 | No NFS program is served over UDP, except NLM and NSM while RFC 20 §11's UDP question stands (§2.2). |
-| N2 | Every `protocol` node returns the same `server_scope` and `so_major_id`, and its own `so_minor_id`. |
-| N3 | Sessions, reply caches and GSS contexts live on one `protocol` node and are never stored; a session is never bound to connections on two nodes. |
+| N2 | Every gateway node returns the same `server_scope` and `so_major_id`, and its own `so_minor_id`. |
+| N3 | Sessions, reply caches and GSS contexts live on one gateway node and are never stored; a session is never bound to connections on two nodes. |
 | N4 | A stateid's `other` names an RFC 14 record, resolvable on any node; its `seqid` is held with the state at the primary. |
 | N5 | An expired client's state is released at expiry; nothing is kept as a courtesy. |
 | N6 | A client's latest back-channel registration receives every later callback. |
@@ -1991,7 +1996,7 @@ Authentication and principal mapping are
 Every check runs over the wire against one single node composed as in
 production, as the index's protocol-suite tiers run
 ([Test harness](rfc-index.md#Test%20harness)); a check that names two nodes,
-P1 and P2, a `protocol` node's loss or a shard failover between nodes is a
+P1 and P2, a gateway node's loss or a shard failover between nodes is a
 cluster check, deferred with the cluster
 ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), and
 on a single node a failover is the node's restart. **Deferring a row defers
@@ -2009,11 +2014,11 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §2.2 TCP only | Probe NFS and MOUNT by UDP. Assert no reply; mount with `proto=udp` falls back or fails. While NLM and NSM are served over UDP (§2.2), assert they answer there. | a UDP listener left enabled |
-| §3.2 reply cache | pynfs `nfs4.1` session and `SEQUENCE` replay tests; then kill the `protocol` node with a `REMOVE` in flight and assert the client sees `NFS4ERR_NOENT` on retry and recovers its session with no grace. | a session assumed durable, or a grace started on `protocol` node loss |
+| §3.2 reply cache | pynfs `nfs4.1` session and `SEQUENCE` replay tests; then kill the gateway node with a `REMOVE` in flight and assert the client sees `NFS4ERR_NOENT` on retry and recovers its session with no grace. | a session assumed durable, or a grace started on gateway node loss |
 | §3.3 trunking | `EXCHANGE_ID` on two nodes: same `so_major_id` and scope, different `so_minor_id`; `BIND_CONN_TO_SESSION` across nodes is `NFS4ERR_BADSESSION`. | one scope per node, or a session bound across nodes |
-| §3.4 callback routing | Hold a delegation, kill the client's `protocol` node, reconnect through another, conflict from a second client. Assert `CB_RECALL` arrives on the new connection. | callbacks registered once at first `Connect` |
+| §3.4 callback routing | Hold a delegation, kill the client's gateway node, reconnect through another, conflict from a second client. Assert `CB_RECALL` arrives on the new connection. | callbacks registered once at first `Connect` |
 | §3.4 path down | Block the back channel. Assert `SEQ4_STATUS_CB_PATH_DOWN` and no delegation offered. | |
-| §4.2 v4.0 owners | pynfs `nfs4.0` open-owner and lock replay tests; then move the client to another node mid-sequence and assert the next sequenced `OPEN` is accepted. Kill the client's `protocol` node with a `CLOSE` in flight whose reply is lost; assert the retransmission through the node that took the address over is answered with the first result, the owner's next `OPEN` accepted, and no `NFS4ERR_BAD_SEQID`. Open with a new owner and, before `OPEN_CONFIRM`, send `READ` and `CLOSE` under it through another node; assert both refused and `OPEN_CONFIRM` then accepted. | seqids or confirmation held in the `protocol` node |
+| §4.2 v4.0 owners | pynfs `nfs4.0` open-owner and lock replay tests; then move the client to another node mid-sequence and assert the next sequenced `OPEN` is accepted. Kill the client's gateway node with a `CLOSE` in flight whose reply is lost; assert the retransmission through the node that took the address over is answered with the first result, the owner's next `OPEN` accepted, and no `NFS4ERR_BAD_SEQID`. Open with a new owner and, before `OPEN_CONFIRM`, send `READ` and `CLOSE` under it through another node; assert both refused and `OPEN_CONFIRM` then accepted. | seqids or confirmation held in the gateway node |
 | §3.5 confirm | `SETCLIENTID` on P1, `SETCLIENTID_CONFIRM` on P2: assert `NFS4ERR_STALE_CLIENTID`; repeat both on P2 and assert confirmed. `SETCLIENTID` on P1 then the confirm on P1 from another principal: assert `NFS4ERR_CLID_INUSE`, and the confirm from the first principal then accepted. A client holding a lock reboots and sends `EXCHANGE_ID` with a new verifier but no `CREATE_SESSION`: assert its old client ID still holds the lock. `EXCHANGE_ID` for a confirmed owner from another principal: assert `NFS4ERR_CLID_INUSE`. Collect 10^4 confirm verifiers for one client ID and verifier: assert no two equal. | a confirm value derived from the client ID and verifier, or a client ID that acts before it is confirmed |
 | §3.5 `CREATE_SESSION` sequence | Send `CREATE_SESSION`, drop the reply, move the address to P2 and resend it: assert the first reply and one session. Send one with `csa_sequence` two ahead: assert `NFS4ERR_SEQ_MISORDERED`. Restart the node between a `CREATE_SESSION` and its replay; assert the replay answered from the record. | `CREATE_SESSION`'s sequence held in one node's memory |
 | §3.3 renewal writes nothing | Count metadata store writes while one client sends 10^4 `SEQUENCE`s with no other operation; assert none. | a durable `Expires` |

@@ -15,7 +15,7 @@
 .cp{stroke:#1b1f24;stroke-width:2}.jp{stroke:#a8741f;stroke-width:1.6;stroke-dasharray:4 3}
 </style><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6472"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a33a4d"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f6f4f"/></marker></defs>
 <rect width="900" height="562" fill="#ffffff"/>
-<text x="16" y="26" class="t">A share split into shards: each has one primary node and replicas; front-ends forward to it.</text>
+<text x="16" y="26" class="t">A share split into shards: each has one primary node and replicas; any node's gateway forwards to it.</text>
 <rect x="300" y="44" width="110" height="26" rx="4" class="ext"/>
 <text x="355" y="61" class="s" text-anchor="middle">NFS client</text>
 <rect x="455" y="44" width="110" height="26" rx="4" class="ext"/>
@@ -49,10 +49,10 @@
 <rect x="290" y="100" width="130" height="180" rx="5" class="ext"/>
 <text x="298" y="118" class="h">node A</text>
 <rect x="300" y="128" width="110" height="40" rx="4" class="vfs"/>
-<text x="355" y="145" class="s" text-anchor="middle">front-end</text>
-<text x="355" y="159" class="s" text-anchor="middle">(protocol role)</text>
+<text x="355" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
+<text x="355" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="300" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="355" y="197" class="s" text-anchor="middle">storage role</text>
+<text x="355" y="197" class="s" text-anchor="middle">vfs.Server</text>
 <text x="308" y="220" class="s">primary: S, U2</text>
 <text x="308" y="238" class="s">replica: P, U3</text>
 <text x="308" y="256" class="s">one journal</text>
@@ -60,10 +60,10 @@
 <rect x="445" y="100" width="130" height="180" rx="5" class="ext"/>
 <text x="453" y="118" class="h">node B</text>
 <rect x="455" y="128" width="110" height="40" rx="4" class="vfs"/>
-<text x="510" y="145" class="s" text-anchor="middle">front-end</text>
-<text x="510" y="159" class="s" text-anchor="middle">(protocol role)</text>
+<text x="510" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
+<text x="510" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="455" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="510" y="197" class="s" text-anchor="middle">storage role</text>
+<text x="510" y="197" class="s" text-anchor="middle">vfs.Server</text>
 <text x="463" y="220" class="s">primary: P</text>
 <text x="463" y="238" class="s">replica: S, U2</text>
 <text x="463" y="256" class="s">one journal</text>
@@ -71,10 +71,10 @@
 <rect x="600" y="100" width="130" height="180" rx="5" class="ext"/>
 <text x="608" y="118" class="h">node C</text>
 <rect x="610" y="128" width="110" height="40" rx="4" class="vfs"/>
-<text x="665" y="145" class="s" text-anchor="middle">front-end</text>
-<text x="665" y="159" class="s" text-anchor="middle">(protocol role)</text>
+<text x="665" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
+<text x="665" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="610" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="665" y="197" class="s" text-anchor="middle">storage role</text>
+<text x="665" y="197" class="s" text-anchor="middle">vfs.Server</text>
 <text x="618" y="220" class="s">primary: U1</text>
 <text x="618" y="238" class="s">replica: S, P, U3</text>
 <text x="618" y="256" class="s">one journal</text>
@@ -82,16 +82,16 @@
 <rect x="755" y="100" width="130" height="180" rx="5" class="ext"/>
 <text x="763" y="118" class="h">node D</text>
 <rect x="765" y="128" width="110" height="40" rx="4" class="vfs"/>
-<text x="820" y="145" class="s" text-anchor="middle">front-end</text>
-<text x="820" y="159" class="s" text-anchor="middle">(protocol role)</text>
+<text x="820" y="145" class="s" text-anchor="middle">vfs.Gateway</text>
+<text x="820" y="159" class="s" text-anchor="middle">forwards only</text>
 <rect x="765" y="180" width="110" height="86" rx="4" class="data"/>
-<text x="820" y="197" class="s" text-anchor="middle">storage role</text>
+<text x="820" y="197" class="s" text-anchor="middle">vfs.Server</text>
 <text x="773" y="220" class="s">primary: U3</text>
 <text x="773" y="238" class="s">replica: U1, U2</text>
 <text x="773" y="256" class="s">one journal</text>
 <path d="M820 72V126" class="arr"/>
 <path d="M455 170C420 176 420 214 412 214" class="garr"/>
-<text x="356" y="300" class="gt">B's front-end forwards a write to /data/x</text>
+<text x="356" y="300" class="gt">B's gateway forwards a write to /data/x</text>
 <text x="356" y="314" class="gt">to S's primary, node A</text>
 <rect x="20" y="356" width="860" height="150" rx="5" class="meta"/>
 <text x="34" y="376" class="h">metadata store — one shard record per shard, never per file; changed only by compare-and-swap</text>

@@ -315,7 +315,7 @@ than a private one per RFC.
    check that skews time across components, such as RFC 0's clock made 5% fast.
 2. **One composed single-node harness.** The production composition root
    ([RFC 8 §2](rfc-8-engine.md#2.%20Composition), which a first-release node follows without the deferred
-   [RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition%20by%20role)) builds the node, with the journal's
+   [RFC 15 §2.4](rfc-15-topology.md#2.4%20Composition)) builds the node, with the journal's
    storage seam, the fault-injecting metadata store and the fault transport put
    in place of the device, the store and the network, and nothing else swapped.
    Every first-release check that crosses components runs on it:
