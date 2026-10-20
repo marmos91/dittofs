@@ -534,7 +534,10 @@ Every adapter runs through the same four states, driven by the node
   first request.
 - **serving** — listeners open, connections accepted. Start succeeds only once
   every configured listener is bound; a partial bind is a failed start, and
-  closes what it opened.
+  closes what it opened. The node starts an adapter last, after its first
+  reconcile has opened the shares and, in a cluster, it holds a node epoch
+  ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), so no
+  request arrives before the service can answer it.
 - **draining** — no new connection is accepted. Open connections are still
   read: a request that ends state the service is waiting on — a break or lease
   acknowledgement, `DELEGRETURN`, a callback reply, `CLOSE`, an unlock, and the
