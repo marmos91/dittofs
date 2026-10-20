@@ -869,8 +869,8 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
 2. **Snapshots.** With `delete`, each snapshot is deleted through RFC 12's
    serial deletion. With `detach`, nothing is deleted yet: step 4 keeps what the
    snapshots see.
-3. **Live state and journal**, per shard. The engine moves the share's context
-   to `removing` ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)), which stops admission and joins every call, clone,
+3. **Live state and journal**, per shard. The engine moves the share's storage binding
+   to `removing` ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), which stops admission and joins every call, clone,
    pass and batch already in flight, and waits for the filesystem service's
    count of calls admitted to the share to reach zero
    ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), which joins the namespace calls admitted before the

@@ -557,7 +557,7 @@ Two families of unit. The **bytes** units say where content is; the
 | Term | Means | Defined in |
 | --- | --- | --- |
 | **filesystem service** | the one protocol-neutral interface every adapter calls; it orders each client operation and routes it to the primary that serves it | [§1.3](#1.3%20The%20layers), [RFC 17](rfc-17-vfs.md) |
-| **engine** | the content path at a node: it drives the journal, carver, syncer and block metadata, and decides their policy; one per node, with a share context per share | [RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context) |
+| **engine** | the content path at a node: it drives the journal, carver, syncer and block metadata, and decides their policy; one per node, with a storage binding per share | [RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) |
 | **policy component** | a small decision function in the engine — when to offload, whether to fill, what to evict; the mechanism it picks is safe on its own | [RFC 8 §3](rfc-8-engine.md#3.%20Policy) |
 | **carver** / **chunker** | the component that cuts a stretch into chunks and hashes each / the boundary function it runs | [RFC 2 §1.2](rfc-2-carver.md#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver) |
 | **block assembler** | the part of the carver that packs whole chunks into block plans | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) |

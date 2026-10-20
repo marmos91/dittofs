@@ -56,7 +56,7 @@ protocols listen. It has two halves.
   ([RFC 16](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)).
   It never reaches into a running component.
 - The **node** — the one object each process builds — reads those records and
-  makes its components match them: it adds a share's context to the engine,
+  makes its components match them: it adds a share's storage binding to the engine,
   starts or drains an adapter, applies a live setting. It builds every
   component once at start and then follows the records.
 
@@ -284,8 +284,8 @@ constructor takes settings: each component's first settings arrive through its
 before it calls that component's `Start`. From then on the node is the only
 code that starts, changes or stops a component:
 
-- it adds, replaces and removes a share's context in the engine
-  ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)) — adding, removing and quiescing a share never restarts
+- it adds, replaces and removes a share's storage binding in the engine
+  ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)) — adding, removing and quiescing a share never restarts
   the engine;
 - it moves each adapter between configured, serving, draining and stopped, and
   reconfigures its listeners ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states));
@@ -326,7 +326,7 @@ and the gateway.
 **What `New` builds, in order.** Each row is built from its own `Deps`; the
 Calls column is the call graph once it is built. The node owns every row and
 closes it at the stop step named (§2.2); the remote stores are ref-counted per
-store configuration, and the last share's context to close one releases it.
+store configuration, and the last storage binding to close one releases it.
 
 | # | Component | `Deps` | Calls | Start / stop step (§2.2) |
 | --- | --- | --- | --- | --- |
@@ -396,7 +396,7 @@ address (§2.5, §4) are built after row 9 and stop after the adapters; the
 sidecars ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) come with the adapters; and, **(cluster)**, shard placement
 ([RFC 11](rfc-11-ownership.md)) comes before the engine, and the client-address agent and the pNFS data server
 ([RFC 15](rfc-15-topology.md)) with row 9. Two things are not built by `New`, because records decide
-them: share contexts, which the node attaches through the engine, and each
+them: storage bindings, which the node attaches through the engine, and each
 adapter the records enable, which the node builds through its factory
 ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)).
 
@@ -437,7 +437,7 @@ type Records interface {
 }
 
 // Reconcile's three calls (§2.3). Unexported, so nothing but reconcile makes them.
-func (n *Node) addShare(ctx context.Context, s metadata.Share) error      // a share context in the engine, its namespace in GC, the share open in *vfs.Server
+func (n *Node) addShare(ctx context.Context, s metadata.Share) error      // a storage binding in the engine, its namespace in GC, the share open in *vfs.Server
 func (n *Node) removeShare(ctx context.Context, id metadata.ShareID) error // the same three, in reverse
 func (n *Node) apply(ctx context.Context, c Counters) error                // Apply on identity, *vfs.Server, the engine and GC, each with the values it reads
 ```
@@ -521,7 +521,7 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
 6. `*vfs.Server`'s `Drain`, then its `Close` ([RFC 17](rfc-17-vfs.md)).
 7. The event sink, identity and open state close, and then GC.
 8. The engine stops in RFC 8 §2.5's reverse order, which joins and closes every
-   share context, its journals and its flows; then the syncer and the remote
+   storage binding, its journals and its flows; then the syncer and the remote
    stores close.
 9. The metadata store closes last.
 
@@ -544,11 +544,11 @@ The node holds two pictures: the **desired** one, read from records, and the
 
 | Record changed | The node, on each node it concerns |
 | --- | --- |
-| a share created | `addShare`: a share context in the engine, the share's namespace in GC, the share open in `*vfs.Server`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
+| a share created | `addShare`: a storage binding in the engine, the share's namespace in GC, the share open in `*vfs.Server`; admission reads the share list through `ShareList.Version` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | a share removed | `removeShare`, at the step its removal names ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): the same three, in reverse |
-| a share's state changed | moves the share's context to quiescing and back ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)); admission reads the state itself on every call ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a removal's steps run in their owner ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
-| a share's live setting | hands the new value to the context, within RFC 13's live bound |
-| a remote store's live or next-write setting — endpoint, credential reference, storage class, block target, the transform chain but its encrypt stage, as [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) classes them | is applied once per store, to the component that reads it: endpoint, credential reference and storage class to the one store client every context on that store shares ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), after [RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) has proven a new endpoint or credential; the block target to the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)) and the transform chain to the engine's codec ([RFC 5 §2.2](rfc-5-transforms.md#2.2%20Where%20it%20runs)), GC's relocation included, for the store's contexts. No share context is replaced |
+| a share's state changed | moves the share's storage binding to quiescing and back ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); admission reads the state itself on every call ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), and a removal's steps run in their owner ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) |
+| a share's live setting | hands the new value to the storage binding, within RFC 13's live bound |
+| a remote store's live or next-write setting — endpoint, credential reference, storage class, block target, the transform chain but its encrypt stage, as [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) classes them | is applied once per store, to the component that reads it: endpoint, credential reference and storage class to the one store client every context on that store shares ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), after [RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) has proven a new endpoint or credential; the block target to the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)) and the transform chain to the engine's codec ([RFC 5 §2.2](rfc-5-transforms.md#2.2%20Where%20it%20runs)), GC's relocation included, for the store's contexts. No storage binding is replaced |
 | a `Secret`'s new version | the component holding the reference resolves it again within the live bound, and the node reports the version it holds (§2.4, [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)) |
 | a change [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) counts as a change of a share's backends | builds the new context beside the old, switches admission to it, then joins and closes the old one. A new context that fails to build leaves the old one serving and the record refused |
 | an adapter enabled or disabled | starts it, or drains and stops it |
@@ -683,7 +683,7 @@ moves it between them and what the API returns.
 
 | Call | From | To | Answer |
 | --- | --- | --- | --- |
-| `POST /shares` | — | `enabled` | `201`; serving once its context is (below) |
+| `POST /shares` | — | `enabled` | `201`; serving once its binding is (below) |
 | `POST /shares/{id}:quiesce` | `enabled` | `quiesced` | `200`; admission answers `ErrDelay` |
 | `POST /shares/{id}:resume` | `quiesced` | `enabled` | `200` |
 | `PATCH /shares/{id}` name or path | `enabled`, `quiesced` | same | `200`; one transaction raising `ShareList` |
@@ -706,8 +706,8 @@ A new share is reachable by nobody until an operator grants it.
 > Revisit if a provisioning workflow shows the extra grant call to be the common
 > error, and then make the default a named template, not an open one.
 
-A share is **serving** on a node once that node has added its context
-and the context reports serving ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)). Create returns at commit,
+A share is **serving** on a node once that node has added its storage binding
+and the binding reports serving ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Create returns at commit,
 before that; the share's status shows each node's state, and `?wait=serving`
 on a `GET` returns when every node that serves it reports serving or a node
 refuses it.
@@ -1558,7 +1558,7 @@ builds a node any other way, and an architecture test fails on a caller of
 
 | Requirement | Check | Catches |
 | --- | --- | --- |
-| §2.1 API writes only records | Fault the metadata store's commit of a share create; assert `503`, no share context exists, and none appears after the store recovers and a full reconcile runs. Then let the commit succeed and kill the node before it reads the share list; restart: assert the share serves. | a handler calling the engine directly |
+| §2.1 API writes only records | Fault the metadata store's commit of a share create; assert `503`, no storage binding exists, and none appears after the store recovers and a full reconcile runs. Then let the commit succeed and kill the node before it reads the share list; restart: assert the share serves. | a handler calling the engine directly |
 | §2.2 order | Record each component's start and stop. Assert the order of §2.2, that the health endpoints answered `starting` before step 5 ended, that a refused registration started no component, that no adapter listened before the first reconcile completed, that **(cluster)** the shards were handed over before `vfs.Serve` stopped, and that an operation readable before stop is readable through the API until step 3. | an API that stops before the drain it reports |
 | §2.3 reconcile | Change a live share setting while the store is unreachable to the node's reads but not its writes; restore reads: assert the change applies at the next read, not at the next generation move. | a missed generation lost for good |
 | §2.4 applied | Freeze one node's reconcile after a share setting changes. Assert the resource's status names that node as behind and, after 5 s, a health condition names it. Change a setting whose own generation is 2 while the settings generation stands at 100, and freeze a node at 100: assert the setting reads not applied there. Change a node-scoped restart-class setting, then a live one: assert the first reads not applied and the second applied on that node until it restarts. | "applied" inferred from the writing node, from a record's own generation, or past a pending restart |

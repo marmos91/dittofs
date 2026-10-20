@@ -36,7 +36,7 @@
 <text x="592" y="158" class="s">at the file's primary</text>
 
 <path d="M40 168V216" class="arr"/>
-<text x="48" y="186" class="m">Start · SetShare · StopShare · ForgetShare</text>
+<text x="48" y="186" class="m">Start · Bind · Unbind · Drop</text>
 <text x="48" y="201" class="m">PreWarm · WaitOffloaded · Close</text>
 <path d="M360 168V216" class="arr"/>
 <text x="368" y="194" class="m">PrepareCut · CommitCut</text>
@@ -63,15 +63,15 @@
 <rect x="472" y="252" width="392" height="190" rx="4" class="ext"/>
 <text x="484" y="272" class="h">share table: copy-on-write, read without a lock</text>
 <rect x="488" y="282" width="360" height="108" rx="4" class="p"/>
-<text x="500" y="300" class="h">share context (unexported), one per share</text>
+<text x="500" y="300" class="h">storage binding (unexported), one per share</text>
 <text x="500" y="318" class="m">journal handles</text><text x="640" y="318" class="s">from the journal's Share</text>
-<text x="500" y="334" class="m">syncer flow</text><text x="640" y="334" class="s">opened by Start or SetShare</text>
+<text x="500" y="334" class="m">syncer flow</text><text x="640" y="334" class="s">opened by Start or Bind</text>
 <text x="500" y="350" class="m">settings, budgets</text><text x="640" y="350" class="s">refused if invalid</text>
 <text x="500" y="366" class="m">policy, health</text><text x="640" y="366" class="s">memory, disposable</text>
 <text x="500" y="382" class="m">state</text><text x="640" y="382" class="s">adding → serving → removing</text>
-<text x="484" y="406" class="s">ForgetShare closes handle and flow, forgets the tag;</text>
+<text x="484" y="406" class="s">Drop closes handle and flow, forgets the tag;</text>
 <text x="484" y="420" class="s">Close closes handles and keeps tags. A failed</text>
-<text x="484" y="434" class="s">SetShare undoes in reverse and publishes nothing.</text>
+<text x="484" y="434" class="s">Bind undoes in reverse and publishes nothing.</text>
 
 <path d="M85 494V456" class="lend"/><text x="91" y="478" class="s">views</text>
 <path d="M225 494V456" class="lend"/><text x="231" y="478" class="s">Cut, fold</text>
@@ -121,7 +121,7 @@
 <text x="218" y="632" class="m">Start(ctx, shares)</text><text x="218" y="648" class="s">§2.5 steps 1–8 over the</text><text x="218" y="662" class="s">shares; all or nothing</text>
 <path d="M400 643H420" class="arr"/>
 <rect x="422" y="612" width="240" height="62" rx="4" class="data"/>
-<text x="432" y="632" class="h">serving</text><text x="432" y="648" class="m">SetShare · StopShare</text><text x="432" y="662" class="m">ForgetShare</text>
+<text x="432" y="632" class="h">serving</text><text x="432" y="648" class="m">Bind · Unbind</text><text x="432" y="662" class="m">Drop</text>
 <path d="M664 643H684" class="arr"/>
 <rect x="686" y="612" width="180" height="62" rx="4" class="p"/>
 <text x="696" y="632" class="m">Close(ctx)</text><text x="696" y="646" class="s">refuse calls, last group</text><text x="696" y="658" class="s">commit, join; then flows,</text><text x="696" y="670" class="s">handles and journals</text>

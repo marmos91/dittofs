@@ -15,7 +15,7 @@
 
 <rect x="20" y="42" width="860" height="40" rx="5" class="vfs"/>
 <text x="34" y="60" class="h">node (RFC 23 §2.2) — node.New builds gc.New(Deps); the node drives Start · Add · Remove · Drain · Close</text>
-<text x="34" y="75" class="s">starts GC after the content subsystem and the share contexts; drains and closes it before they are joined</text>
+<text x="34" y="75" class="s">starts GC after the content subsystem and the storage bindings; drains and closes it before they are joined</text>
 <path d="M450 84V100" class="arr"/>
 
 <rect x="20" y="102" width="860" height="250" rx="5" class="data"/>

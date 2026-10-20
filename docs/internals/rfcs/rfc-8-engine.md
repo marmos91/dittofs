@@ -132,9 +132,9 @@ only copy ([§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed)).
 - **Policy component** — a small decision function (when to offload, whether
   to fill, what to evict); the mechanism it picks is safe on its own
   ([§3](#3.%20Policy)).
-- **Share context** — the little the engine keeps per share: settings, policy
+- **Storage binding** — the little the engine keeps per share, the content side only: settings, policy
   state, health, budgets; one engine serves every share on the node
-  ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)).
+  ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
 
 **What this RFC promises.**
 
@@ -279,9 +279,9 @@ from being either:
   which only a stability point covering an overwrite waits on, and joins rather
   than issues ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); and the
   capacity reservation, an atomic counter taken without a lock ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)).
-  Per-file state is keyed by file and per-share state by share ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)).
+  Per-file state is keyed by file and per-share state by share ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
   Background work runs per journal ([§6.1](#6.1%20The%20work%20queue)), and the events that feed it
-  never block the request that posts them. The table of share contexts is read
+  never block the request that posts them. The table of storage bindings is read
   without a lock on the hot path.
 
   > decision: the share table is copy-on-write: a share's attach or removal
@@ -312,15 +312,15 @@ The engine **MUST NOT**:
 
 ## 2. Composition
 
-![The engine on one node: the filesystem service above; the engine in the middle with its share contexts, five policy functions and three modules; one work queue per device journal; the journal, carver, assembler, syncer and metadata store below](img/rfc8-engine-node.svg)
+![The engine on one node: the filesystem service above; the engine in the middle with its storage bindings, five policy functions and three modules; one work queue per device journal; the journal, carver, assembler, syncer and metadata store below](img/rfc8-engine-node.svg)
 
 ### 2.1 Content composition
 
 The process's one composition root is `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)), and
 it alone names concrete component types. This section specifies what it builds
 for content, on every node: one **journal per device**, the
-syncer, block metadata's view, and one engine over them with a context per share
-([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)). Everything else holds a concrete type where there is one
+syncer, block metadata's view, and one engine over them with a binding per share
+([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Everything else holds a concrete type where there is one
 implementation — `*vfs.Server` holds `*engine.Engine`
 ([RFC 17](rfc-17-vfs.md)) — and an interface the consumer declares only where
 [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) requires one: the engine declares one per component it calls, in
@@ -335,7 +335,7 @@ target, clone always adopts refs, and an offload report always has a commit
 behind it. A deployment that wants no remote service configures a remote block
 store of its own ([RFC 4](rfc-4-remote-tier.md)).
 
-**The key scope is the namespace.** Each share context carries its namespace ID as
+**The key scope is the namespace.** Each storage binding carries its namespace ID as
 its key scope ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)): block names are minted under it ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) and
 deduplication, once re-added, would answer within it ([§6.5](#6.5%20The%20dedup%20oracle)). Content-addressed
 records are partitioned by namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)), so two shares of one namespace
@@ -347,7 +347,7 @@ one its chunk is read from.
 
 Composition **MUST** happen at construction. A capability **MUST NOT** be wired
 onto a serving engine by a setter: that makes "this capability is absent" a
-reachable state of a live share. Changing a share's backends replaces its context.
+reachable state of a live share. Changing a share's backends replaces its binding.
 
 The engine supplies and consumes, at construction:
 
@@ -370,10 +370,10 @@ interface:
 | Declared by | Component | What the engine calls |
 | --- | --- | --- |
 | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal | `Share`, passed the larger of the share's version floor and version limit and the share's sync policy ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)); `Forget` (drops a tag's extents, markers and index entries through one header-only record `Since` never yields, refused while a handle of the tag is open, for a namespace moved away, an import attach or a share's removal, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)); `Strand`; `Stats`; `Draw` and `SetVersionLimit` ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); `Close`, after every handle ([RFC 1 §8.7](rfc-1-journal.md#8.7%20Shutdown)) |
-| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | a share's handle on the journal | `WriteAt`, passed the write's modification time ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Reserve(n, writes)` and the reservation's `WriteAt` and `Close`, for a clone's copies ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), `Close`, before the tag's `Forget`, `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `Repack` with its scope, `Hold`, `Stamp`, `Files`, `DirtyFiles`, and `SetSyncPolicy`, on every handle of a share whose `sync.policy` changes live ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)) |
+| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | a share's handle on the journal | `WriteAt`, passed the write's modification time ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Reserve(n, writes)` and the reservation's `WriteAt` and `Close`, for a clone's copies ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), `Close`, before the tag's `Forget`, `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `Repack` with its scope, `Hold`, `Stamp`, `Files`, `DirtyFiles`, and `SetSyncPolicy`, on every handle of a share whose `sync.policy` changes live ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)) |
 | [RFC 2 §2](rfc-2-carver.md#2.%20What%20one%20call%20covers), [§5](rfc-2-carver.md#5.%20The%20block%20assembler) | the carver and the block assembler | the carver's `Cut`; the assembler's fold |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | the syncer | `OpenFlow`, one flow per share at attach |
-| [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `ForgetShare` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
+| [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `Drop` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views, held as two interfaces | every method of both, except `Offloaded` while deduplication is deferred |
 | [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for a device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseIncarnations`, in the start transaction or at attach (step 2) |
 | [RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them) | the metadata store's `Inspect` view | `Refs`, for the reseed only ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)); every other engine transaction goes through block metadata's views or `Lifecycle` |
@@ -430,22 +430,26 @@ yields a working share and no error: an assertion failing on the remote tier
 disables offload, on a transform chain uploads plaintext, on a lookup makes every
 cold read linear.
 
-### 2.3 One engine per node; a share is a context
+### 2.3 One engine per node; a share is a storage binding
 
 Every node runs **one engine**, and each share it serves is a
-**share context** in it, not an engine of its own. The context is the engine's
+**storage binding** in it, not an engine of its own. The binding is the engine's
 own, unexported; no caller sees it. It holds the share's ID; its key scope, the
-namespace ID ([§2.1](#2.1%20Content%20composition)); its settings, validated at `SetShare` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)); its
+namespace ID ([§2.1](#2.1%20Content%20composition)); its settings, validated at `Bind` ([§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)); its
 policy state — access pattern, dirty ages, backoff, frontiers ([§3.3](#3.3%20Policy%20state%20is%20memory%2C%20and%20disposable)); its
 health per direction ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)); its budgets — its share of journal capacity,
 transfers and pacing; its journal handles and syncer flow; and its state:
 adding, serving, quiesced, closing or removing ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)).
+The binding is the content side only: the filesystem service decides who may
+reach a share ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); the binding says where its bytes go, and exists so
+that recovery and background offload, which run with no file call, can find
+each share's store, namespace and budgets.
 
 Everything below the engine is already shared: the journal is per device and
 accounts capacity per share ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), the syncer's pools are shared and schedule
 by class ([RFC 3](rfc-3-syncer.md)), and the remote store and the metadata store **MAY** serve many
 shares. What is truly per share is small — settings, policy state, lifecycle,
-health and budgets — and the context holds exactly that.
+health and budgets — and the binding holds exactly that.
 
 **Background work runs per journal, not per share.** Each device journal has one
 work queue ([§6.1](#6.1%20The%20work%20queue)), which drives offload, removal batches, eviction, repack
@@ -456,26 +460,26 @@ not 10⁴ sets.
 **Isolation comes from state, budgets and fairness, not from separate
 engines.** A share cannot starve another because its capacity, transfers and
 pacing draw on its own budgets and the queue serves shares fairly
-([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)); a share's failure is its context's health, not the engine's. Adding,
-removing or quiescing a share changes one context and never restarts the
+([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)); a share's failure is its binding's health, not the engine's. Adding,
+removing or quiescing a share changes one binding and never restarts the
 engine.
 
-**`SetShare` adds a context or changes one.** For a share the engine does not
+**`Bind` adds a binding or changes one.** For a share the engine does not
 serve it attaches it ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). For one it serves it applies the change: a
 state change, quiesced and back; a `sync.policy` change, applied with
-`SetSyncPolicy` on every journal handle the context holds for the share, within
+`SetSyncPolicy` on every journal handle the binding holds for the share, within
 RFC 13's live bound ([RFC 13 §5](rfc-13-configuration.md#5.%20Binding%20classes), [RFC 1 §5.2](rfc-1-journal.md#5.2%20Sync%20policy)), so records written
-after it follow the new policy; or a backend change, which replaces the context
-([§2.1](#2.1%20Content%20composition)). Two changes belong to a re-home ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a `SetShare`
+after it follow the new policy; or a backend change, which replaces the binding
+([§2.1](#2.1%20Content%20composition)). Two changes belong to a re-home ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)): a `Bind`
 naming a new write namespace returns once every pass captured under the old one
 is joined ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)); one with `State: Closing` counts clones and copies admitted
 from then on as refused, and returns once those admitted before it are done
 ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 
-**`StopShare` ends the share's work; `ForgetShare` ends its journal tag.** The
-share's removal calls `StopShare(id, keepHolds)` at its step 3
+**`Unbind` ends the share's work; `Drop` ends its journal tag.** The
+share's removal calls `Unbind(id, keepHolds)` at its step 3
 ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)), on each shard's primary, after admission has begun refusing
-the share with `ErrStale`. `StopShare` moves the context to `removing` and
+the share with `ErrStale`. `Unbind` moves the binding to `removing` and
 **MUST**, in this order: admit no new call, clone, copy, offload pass or removal
 batch for the share, other than the offload of the hold marks below and the
 phase-2 batches of a clone the join below waits on; join every call admitted before the refusal, every clone with the
@@ -489,11 +493,11 @@ service counts the calls it has admitted per share and the removal's step 3
 waits for that count to reach zero as well ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)). Only then does the removal end the share's open
 state and drop the tag, in RFC 16's order ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)): once every shard of
 the share has recorded its step 3 offload done (a removal that keeps no
-snapshots records it with nothing to offload), it calls `ForgetShare`, which
+snapshots records it with nothing to offload), it calls `Drop`, which
 closes the share's journal handle on the tag (`Close`, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)), runs the
 whole-tag `Forget`, which is refused while a handle is open, and closes the
 share's flow, **before** the shard's `rm` row is advanced to forgotten. Node
-stop never calls `ForgetShare`: `Close` closes handles and keeps tags. `Forget` is durable and idempotent, so a crash between
+stop never calls `Drop`: `Close` closes handles and keeps tags. `Forget` is durable and idempotent, so a crash between
 the two only repeats it, and at every start the engine runs `Forget` again for
 each tag `Stats` still names whose share's `rm` rows read forgotten, before that share could attach ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1). On one
 node a journal holds one shard per tag, and the `rm` row is the only record of
@@ -503,7 +507,7 @@ durable per-(shard, tag) forget record for each first, runs the whole-tag
 live, through repack, until the whole-tag record exists.
 Without the join, a create admitted before the mark could commit a File record
 after step 4 has passed it, and nothing would delete it. From then on the
-context runs nothing that takes a journal version: step 4's file drops are
+binding runs nothing that takes a journal version: step 4's file drops are
 metadata transactions alone.
 
 Per-file state is keyed by file within its shard, and held at that shard's
@@ -548,7 +552,7 @@ attached, and `Stats` names it and its device.
    ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) — is never attached at start ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)): once the
    journal is open and before any share attaches, the engine runs `Forget` for
    the tag of each whose rows read forgotten, wherever `Stats` still names it
-   ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)), which no open handle then refuses; one whose rows read
+   ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), which no open handle then refuses; one whose rows read
    offloaded is forgotten by its resumed removal. The journal recovers its index and its
    offloaded-bit ledger alone, and verifies in place every record past the
    point a sync is proven to have reached before it serves, re-appending only
@@ -650,9 +654,9 @@ attached, and `Stats` names it and its device.
    the extent is offered again; `MarkOffloaded` only ever sets bits.
 8. **Serve.** No file is served before step 3 has run for it.
 
-**`SetShare` attaches a share above its floor.** Before a journal serves a share
+**`Bind` attaches a share above its floor.** Before a journal serves a share
 it did not serve when it opened — a share added to the node, moved to it,
-recovered onto it, or made by a clone or a restore — `SetShare` reads that
+recovered onto it, or made by a clone or a restore — `Bind` reads that
 share's version floor ([RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)) and its version limit, passes the larger to
 the journal's `Share` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), which raises the version counter above it
 before it returns, and writes the share's limit at the journal's, as a tracked
@@ -660,7 +664,7 @@ max-write — raising every served share's first, as [§2.7](#2.7%20The%20versio
 raised counter leaves fewer versions than its raise trigger; for an imported
 share, it then strands the journal's unclaimed tags as step 5 does. It opens the
 share's flow and raises the shard's incarnation before it publishes the
-context; a failure undoes these in reverse and publishes nothing. Only then is
+binding; a failure undoes these in reverse and publishes nothing. Only then is
 the share served. Imported refs keep the versions they
 were written at, and a new write staged at a lower version than an imported ref
 would lose to it: reported offloaded, released, and read back as the older,
@@ -707,7 +711,7 @@ can land.
 
 ### 2.6 Dependencies and wiring
 
-![Who builds, owns, starts and closes what: the composition root builds and owns the metadata store, the carver, the cut gate, the syncer, the ref-counted remote block stores, the clock and the filesystem service; the node starts and stops the engine and sets and stops its shares, the snapshot cut calls PrepareCut and CommitCut, and the filesystem service alone calls the content methods; the root lends the store's views, the carver, the cut gate, the syncer and the clock to the engine through Deps, and the remote block stores are reached only through the syncer's flows; the engine opens and owns the journals, one work queue per journal, the offload passes and a share table whose contexts each own their journal handles and a syncer flow; the engine moves from New, which opens nothing, through Start with its shares, serving with SetShare, StopShare and ForgetShare, to Close, and closes only what it opened](img/rfc8-composition.svg)
+![Who builds, owns, starts and closes what: the composition root builds and owns the metadata store, the carver, the cut gate, the syncer, the ref-counted remote block stores, the clock and the filesystem service; the node starts and stops the engine and binds and unbinds its shares, the snapshot cut calls PrepareCut and CommitCut, and the filesystem service alone calls the content methods; the root lends the store's views, the carver, the cut gate, the syncer and the clock to the engine through Deps, and the remote block stores are reached only through the syncer's flows; the engine opens and owns the journals, one work queue per journal, the offload passes and a share table whose bindings each own their journal handles and a syncer flow; the engine moves from New, which opens nothing, through Start with its shares, serving with Bind, Unbind and Drop, to Close, and closes only what it opened](img/rfc8-composition.svg)
 
 `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)) builds the engine with `New(Deps)`. `New`
 takes no settings and opens nothing; the engine closes only what it opens:
@@ -759,15 +763,15 @@ primary of the file's shard.
 | Component | Composed of | Depends on | Calls | Injected | Built by → owned by | Lifecycle |
 | --- | --- | --- | --- | --- | --- | --- |
 | engine, `*Engine` | the share table, the journals, a work queue per journal, the passes, the speculator, verifier and fence state, the policy functions | everything in `Deps` | the journals and their handles, the carver and assembler, the share flows, `Existence`, `Content`, `Lifecycle`, `Refs`, the cut gate, `Clock` | `Deps` | root, `New` → root | `New` opens nothing → `Apply` → `Start(shares)` → serving → `Close`, after the filesystem service and before the syncer and the store |
-| share table | the share contexts, copy-on-write ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | — | — | internal | engine → engine | swapped by `SetShare` and `ForgetShare` |
-| share context | its journal handles and flow, settings, budgets, policy state, health, state, the clones and copies admitted into it ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) | journal, syncer, metadata store | its journal handles and flow | internal | engine at `Start` or `SetShare` → engine | adding → serving → removing → forgotten ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)) |
+| share table | the storage bindings, copy-on-write ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | — | — | internal | engine → engine | swapped by `Bind` and `Drop` |
+| storage binding | its journal handles and flow, settings, budgets, policy state, health, state, the clones and copies admitted into it ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) | journal, syncer, metadata store | its journal handles and flow | internal | engine at `Start` or `Bind` → engine | adding → serving → removing → forgotten ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)) |
 | journal, one per device | [RFC 1](rfc-1-journal.md) | its directory, `Clock`, its fault seam | its directory, `Clock` | `Deps.Devices`, `Deps.Open` | engine at `Start` step 1, once it has read the floor and identity → engine | closed by `Close` after every handle; never after a failed join ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), stop step 5) |
-| journal handle, one per share per journal | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | its journal | — | the journal's `Share` | engine → share context | `Close` then the tag's `Forget` in `ForgetShare`; `Close` alone at node stop |
+| journal handle, one per share per journal | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | its journal | — | the journal's `Share` | engine → storage binding | `Close` then the tag's `Forget` in `Drop`; `Close` alone at node stop |
 | work queue, one per journal | one instance of the shared work scheduler with the engine's source ([§6.1](#6.1%20The%20work%20queue)) | journal statistics, the policy functions | the policy functions, the offload pipeline | internal | engine at `Start` step 6 → engine | its consumer starts at step 7; it stops dispatching at `Close` |
 | offload pipeline | one state machine per pass ([§6.3](#6.3%20The%20offload%20pipeline)) | the offer, carver, assembler, flow, `Existence`, `Content` | the carver, assembler, flow, `Existence`, `Content` | internal | work queue → the pass | joined by `Close`; a pass outlives no component (E13) |
 | speculator | per-open-file frontiers, pre-warm plans ([§7.4](#7.4%20The%20speculator)) | journal statistics, the flow's `Prefetch` | the flow's `Prefetch` | internal | engine → engine | memory only; cancelled by `Close` |
 | carver and block assembler | [RFC 2](rfc-2-carver.md) | — | — | `Deps.Carver` | a value, not a component | stateless; the offload pipeline calls `Cut` |
-| syncer | [RFC 3](rfc-3-syncer.md), shared pools | the remote block stores | the remote block stores | `Deps.Syncer` | root → root | the engine opens one flow per share at attach and closes it in `ForgetShare` or `Close`; the root closes the syncer after the engine |
+| syncer | [RFC 3](rfc-3-syncer.md), shared pools | the remote block stores | the remote block stores | `Deps.Syncer` | root → root | the engine opens one flow per share at attach and closes it in `Drop` or `Close`; the root closes the syncer after the engine |
 | remote block store | [RFC 4](rfc-4-remote-tier.md)'s codec, [RFC 5](rfc-5-transforms.md)'s transforms | — | the remote service | reached only through the share's flow | root, registered with the syncer, ref-counted per configuration → root | open while any flow names it |
 | metadata store | [RFC 16](rfc-16-metadata-store.md), with [RFC 6](rfc-6-block-metadata.md)'s views | — | — | `Deps.Existence`, `Deps.Content`, `Deps.Lifecycle`, `Deps.Refs` | root → root | never closed by the engine |
 | cut gate, one per shard | [RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate) | — | — | `Deps.Gate` | root → root | — |
@@ -826,7 +830,7 @@ limit first is refused as retry-later ([§10.2](#10.2%20A%20capacity%20refusal%2
 pkg/block/engine/            the engine (this RFC)
   engine.go                  New, Start, Close (§2.5, §2.6)
   deps.go                    Deps and the interfaces it holds, each with the methods §2.1's table names
-  share.go                   SetShare, StopShare, ForgetShare, the share table (§2.3)
+  share.go                   Bind, Unbind, Drop, the share table (§2.3)
   recover.go                 Start steps 1–8, the reseed (§2.5); the version limit (§2.7)
   write.go commit.go         Write, Draw (§4); Commit, the verifier, the loss sequence (§5.1)
   groupcommit.go             the group commit and its split (§5.2)
@@ -1430,8 +1434,8 @@ A pass is run by the **offload pipeline**: an explicit state machine per pass,
 with one sub-machine per block from the intent on. It is the one place bytes
 become offloaded, so every transition names what happens when it fails.
 
-**Inputs:** a pass from `offloadDue` (files, `limit`, `widen`), the share
-context, and the components it drives — journal, carver, block assembler,
+**Inputs:** a pass from `offloadDue` (files, `limit`, `widen`), the storage
+binding, and the components it drives — journal, carver, block assembler,
 syncer flow, block metadata; a deduplication lookup joins them only once
 deduplication is re-added ([§6.5](#6.5%20The%20dedup%20oracle)). **Outputs:** per block, a report of the
 extents it made offloaded; per pass, an outcome for `health`; `RetryDue`
@@ -1611,8 +1615,8 @@ the chunk. Until then the engine declares no oracle, and `Offloaded` stays out o
   captured namespace is no longer the share's write namespace; its content is
   re-offered and carved again. When a re-home switches the write namespace
   ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)), the primary joins every pass captured under the old one
-  before it acknowledges the switch: the `SetShare` naming the new write
-  namespace returns only then ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)). A pass carved under one namespace whose
+  before it acknowledges the switch: the `Bind` naming the new write
+  namespace returns only then ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). A pass carved under one namespace whose
   blocks were put in the next would hold chunk IDs keyed under the first, which
   every later read, hashing under the second's key, fails as corrupt.
 - Before the put, it durably records a **put intent** for the name, carrying the
@@ -2153,7 +2157,7 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   left **MUST** be refused the same way. How admission is ordered against
   `closing`, and what the finish waits for, is [RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)'s; the
   engine counts, per share, the clones and copies admitted into it, as it counts
-  calls for a removal ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)), so a `SetShare` with `State: Closing` can
+  calls for a removal ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), so a `Bind` with `State: Closing` can
   return once those admitted before it are done.
 - **An incomplete source is refused.** A clone or copy whose source File is
   `Incomplete` ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)) is refused with `ErrIncomplete` before anything
@@ -2358,8 +2362,8 @@ refusal of the first chunk returns the error.
 ![The life of a held extent: Dirty, offered, offloaded, released; a fill brings it back held, clean and offloaded; a write over any of them starts a new Dirty version](img/rfc8-extent-lifecycle.svg)
 
 Capacity is the device journal's, shared by the shares on it with per-share
-accounting and fair limits ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). The engine decides per share, from each share
-context's budgets ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)); pressure on the journal is pressure on every share using it. An
+accounting and fair limits ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). The engine decides per share, from each storage
+binding's budgets ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)); pressure on the journal is pressure on every share using it. An
 upload holds one chunk per worker in memory and needs no local space.
 
 **Space returns only through repack.** A release frees nothing until its segment
@@ -2632,7 +2636,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | Method | Section |
 | --- | --- |
 | `Start(shares)`, `Close()` | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
-| `SetShare(s)`, `StopShare(id, keepHolds)`, `ForgetShare(id)` | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
+| `Bind(s)`, `Unbind(id, keepHolds)`, `Drop(id)` | [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) |
 | `Write(file, off, p)` | [§4](#4.%20Write) |
 | `Draw(file)` | the version of a change stored outside the journal, [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) |
 | `Commit(file, off, n)` | the stability point, [§5](#5.%20Commit%3A%20the%20stability%20point) |
@@ -2684,9 +2688,9 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error // §2.5 steps
 func (e *Engine) Close(ctx context.Context) error                // §2.5 Stop; before the syncer and the store close
 
 // Shares: called by the node (RFC 23 §2.1) and by a share's removal (RFC 16 §2.3.2).
-func (e *Engine) SetShare(ctx context.Context, s Share) error                     // attach above the floor, or apply a change: state, sync policy, write namespace, backends
-func (e *Engine) StopShare(ctx context.Context, id ShareID, keepHolds bool) error // removal step 3: refuse, join; with keepHolds, offload what kept snapshots' holds cover
-func (e *Engine) ForgetShare(ctx context.Context, id ShareID) error               // after every shard's step 3: Close the handle, Forget the tag, close the flow
+func (e *Engine) Bind(ctx context.Context, s Share) error                      // attach a new binding above the floor, or apply a change to one already bound: state, sync policy, write namespace, backends
+func (e *Engine) Unbind(ctx context.Context, id ShareID, keepHolds bool) error // removal step 3: refuse, join; with keepHolds, offload what kept snapshots' holds cover
+func (e *Engine) Drop(ctx context.Context, id ShareID) error                   // after every shard's step 3: Close the handle, Forget the tag, close the flow
 
 // Content: called only by *vfs.Server, at the file's primary (RFC 17 §2.1).
 func (e *Engine) Write(ctx context.Context, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
@@ -2715,7 +2719,7 @@ type Share struct { // fields indicative
 	Store     StoreID     // its remote block store, as RFC 3 registered it
 	State     ShareState  // Serving, Quiesced, Closing (a re-home's finish)
 	Sync      SyncPolicy
-	Settings  ShareSettings // validated by SetShare (§2.4)
+	Settings  ShareSettings // validated by Bind (§2.4)
 }
 type ShareState uint8
 
@@ -2834,7 +2838,7 @@ pipeline states, `count` for operations per commit.
 | evictions and bytes freed; pacing delays; refusals ([§10](#10.%20Local%20space)) | `engine_evicted_bytes_total`, `engine_pacing_seconds`, `engine_write_refusals_total` | counter, histogram, counter |
 | self-fences, labelled `reason` = `store` (no write transaction committed for 30 s, [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) and, (cluster), `lease`, `unreachable` or `clock`; the one count of self-fences, which RFC 10 and RFC 11 read rather than count again | `engine_self_fences_total` | counter |
 | offloaded bits cleared by the consistency check ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) | `engine_ledger_mismatches_total` | counter |
-| time waiting on engine-internal locks, labelled `area` (file state, share context table, work queue); not labelled by share ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | `engine_lock_wait_seconds` | histogram |
+| time waiting on engine-internal locks, labelled `area` (file state, storage binding table, work queue); not labelled by share ([§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck)) | `engine_lock_wait_seconds` | histogram |
 | self-fences, labelled `reason` = `store`, and **(cluster)** `lease`, `unreachable` or `clock` ([§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here)) | `engine_self_fences_total` | counter |
 | work items dropped at the scheduler's fixed total, labelled `source` ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler), [RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)) | `engine_work_items_dropped_total` | counter |
 
@@ -2865,7 +2869,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | Requirement | Check |
 | --- | --- |
 | [§3.2](#3.2%20Policy%20never%20makes%20an%20action%20safe) no gate is safety | Disable suspension, pins and health gating; evict as eagerly as possible; run every other Group A check. Assert all pass. |
-| [§2.1](#2.1%20Content%20composition) remote required | Add a share whose configuration names no remote block store. Assert the add fails naming the share, and no context is created. |
+| [§2.1](#2.1%20Content%20composition) remote required | Add a share whose configuration names no remote block store. Assert the add fails naming the share, and no binding is created. |
 | [§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed) per-block reporting | Fail the second of three block commits. Assert the journal marks exactly the first and third blocks' extents. |
 | [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) journal authority | Write without a stability point; assert `Overlay`, `Allocation` and reads reflect the write. Crash; assert recovery re-applies it before the file is served. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) incarnation at start | On one node, restart the process with no journal attach. Assert every served shard's incarnation rose in one transaction before any verifier was returned, and a client's NFSv4.1 `RECLAIM_COMPLETE` from before the restart does not end the new grace. A start that raises incarnations only on journal attach repeats the grace instance. |
@@ -2932,7 +2936,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§10.3](#10.3%20Repack%20is%20triggered%20here) repack reserve | Fill one share to its limit with dirty bytes and another share's segments with released bytes. Assert repack of those segments proceeds and frees space for a third share's writes. A repack that reserves against its share's limit is refused. |
 | [§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) pacing law | Hold *M* half-way between *S* and *L* at a measured drain rate *r*; write *n* bytes. Assert the delay is *n* / 2*r* within 10 %, and zero below *S*. |
 | [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) group commit | Run 64 writers with `fsync` while `chmod` hits random files of the same journal. Assert no `fsync` waits on a conflict of another file beyond the split bound. Make one file's File record undecodable: assert the other files' overwrite flushes succeed, that file alone answers `ErrDelay`, and a health condition names it. |
-| [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context) shared journal | Two shares on one device journal; fill one. Assert the other's writes are not refused. |
+| [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) shared journal | Two shares on one device journal; fill one. Assert the other's writes are not refused. |
 | [§1.1](#1.1%20Neither%20a%20single%20point%20of%20failure%20nor%20a%20bottleneck) no cross-share slowdown | Run N shares with M writers each on one node; saturate one share with writes and cold reads. Assert every other share's p99 write and read latency stays within its unloaded baseline's bound, and `engine_lock_wait_seconds` shows no area whose wait grows with the loaded share's rate. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) join | Close with an offload parked in a stalled put. Assert no component is closed while the pass runs. |
 | [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) self-fence threshold | Stall the store for 10 s: assert writes are still acknowledged. Stall it for 31 s: assert writes and stability points answer `ErrDelay`, reads are served, a condition names the store, and once a write commits, writes resume with the verifier unchanged. |
@@ -3032,7 +3036,7 @@ One line per requirement.
 | [§2.1](#2.1%20Content%20composition) one composition root, no setters | split between today's control-plane runtime and the engine; setters wire the remote store and metrics on a serving engine |
 | [§2.1](#2.1%20Content%20composition) every share has a remote store | a share may run with a local sink that reports extents offloaded |
 | [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no type assertions | about fifteen capabilities negotiated by assertion, each with a silent fallback |
-| [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context) one journal per device | one journal per share |
+| [§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding) one journal per device | one journal per share |
 | [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings refused | invalid chunking settings replaced by defaults; no profile record |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) start order | no floor, no existence replay, no ledger; a bounded join, then close under running loops |
 | [§2.7](#2.7%20The%20version%20limit) version limit | none: no version counter is shared with metadata, so nothing bounds versions a crash may reissue |
@@ -3066,7 +3070,7 @@ Ordered so the code stops lying first:
 
 1. One composition root, no setters ([Appendix A](#Appendix%20A%20%E2%80%94%20where%20the%20current%20code%20differs), its first three rows).
 2. `Deps`, `New`, `Start` and `Close` on today's engine ([§2.6](#2.6%20Dependencies%20and%20wiring)).
-3. One journal per device ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)).
+3. One journal per device ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
 4. The interface of [§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service) beside the old one, and the filesystem service
    moved to it.
 5. Policy out of the journal ([§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below)).

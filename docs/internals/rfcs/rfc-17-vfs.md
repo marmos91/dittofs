@@ -1448,7 +1448,7 @@ admits, the file's primary. Once the removal's mark commits, its
 step 3 ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share))
 waits for the count to reach zero before it ends the share's open state,
 alongside the engine's own join
-([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20context)).
+([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
 Counting before checking closes the window: a call that read the state before
 the mark had counted itself first, so the join waits for it, and one that
 counts after the mark reads the mark and is refused. A create, link or rename
