@@ -543,16 +543,15 @@ one gateway node's memory; a client that loses the node signs in again.
   - on `IPC$` either reaches only §5.2's services.
 
   A session setup whose credential fails is never made anonymous or guest; it
-  fails. A re-authentication whose result would be a null or guest session
-  fails too, and so tears the session down as any failed re-authentication
-  does, so a session never keeps, without a key, a tree it connected with one.
+  fails. These rules gate `TREE_CONNECT`; a session re-authenticated as null or
+  guest keeps the trees and keys it already has (re-authentication, below).
 - **Re-authentication in place.** A `SESSION_SETUP` naming an existing
   `SessionId` without `SMB2_SESSION_FLAG_BINDING` re-authenticates that session
   ([RFC 18 §3.8](rfc-18-identity.md#3.8%20Re-authentication)): the adapter
   passes the session's current evidence in `SignInStep`, and a success keeps the
   session's trees, opens and keys and replaces the session's identity with the
-  one the new proof establishes, in one step, whoever it names, unless it
-  would leave the session keyless (above). Every open
+  one the new proof establishes, in one step, whoever it names, null and
+  guest included. Every open
   handle keeps the access granted at its open. Any failed re-authentication
   tears the session down as
   MS-SMB2 3.3.5.5.3 requires: its opens close, pending change notifications
@@ -563,9 +562,11 @@ one gateway node's memory; a client that loses the node signs in again.
 > the reference servers behave this way, and the reference suite's
 > `smb2.session.reauth2`–`reauth4` depend on it. The ceiling: a handle opened by
 > the earlier identity keeps that identity's grant, whoever the session now
-> acts as; every new open and path call is decided for the new identity.
-> Overturned by a client shown to rely on a re-authentication narrowing an
-> existing handle's access.
+> acts as; every new open and path call is decided for the new identity. A
+> session re-authenticated as null or guest keeps its trees and the keys its
+> first sign-in derived, so it is never keyless, and a new `TREE_CONNECT` from
+> it follows the null and guest rules above. Overturned by a client shown to
+> rely on a re-authentication narrowing an existing handle's access.
 - **An expired session keeps its release commands.** On a session past its
   evidence's expiry, every command but `SESSION_SETUP` (re-authentication),
   `LOGOFF`, `CLOSE`, an unlocking `LOCK` and an oplock or lease break
@@ -2426,7 +2427,7 @@ name, a SID, a principal or a client address
 | S16 | A recursive watch reports a change in every shard below its directory, with its detail in the watched shard and as `STATUS_NOTIFY_ENUM_DIR` from another (cluster). |
 | S17 | No name with a character MS-FSCC forbids, and no device name, is created from SMB. |
 | S18 | Each snapshot reports its own volume serial and file ids, never the live share's or another snapshot's. |
-| S19 | A null session reaches no share but `IPC$`; a guest session reaches `IPC$` and only shares whose policy enables guest access and that do not encrypt; no re-authentication leaves a session keyless. |
+| S19 | A null session reaches no share but `IPC$`; a guest session reaches `IPC$` and only shares whose policy enables guest access and that do not encrypt, decided at `TREE_CONNECT`. |
 | S20 | An SMB client record is one `ClientGuid` and holds no principal; every check of who may use an open is against the open's principal. |
 | S21 | A waiting lock has no deadline, and is answered other than as granted only after `CancelLock` returns; a request refused `ErrGrace` is held until grace ends plus 35 s. |
 | S22 | A stability reply waits for the journal sync of its range and the existence commit of every pending overwrite of committed content in it; a loss of acknowledged writes fails the next `FLUSH` of every open across it, once. |
@@ -2444,7 +2445,7 @@ name, a SID, a principal or a client address
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §3.1 dialects | An SMB1-only and a 2.0.2-only negotiate are refused; a 3.1.1 client gets SHA-512 and its first shared cipher. | an SMB1 fallback left in |
-| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up a null session and a guest one: assert each `TREE_CONNECT` to `IPC$` succeeds and to a data share without the guest flag is `STATUS_ACCESS_DENIED`. Set the share's guest flag: assert the guest's `TREE_CONNECT` succeeds unsigned and the null session's is still `STATUS_ACCESS_DENIED`; set the share to encrypt as well: assert the guest refused. Re-authenticate a signed session as guest: assert the session torn down. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a null session or a guest without the share's flag reaching data, a guest on an encrypting share, or a bad signature dropped unanswered |
+| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up a null session and a guest one: assert each `TREE_CONNECT` to `IPC$` succeeds and to a data share without the guest flag is `STATUS_ACCESS_DENIED`. Set the share's guest flag: assert the guest's `TREE_CONNECT` succeeds unsigned and the null session's is still `STATUS_ACCESS_DENIED`; set the share to encrypt as well: assert the guest refused. Re-authenticate a signed session as guest: assert it succeeds and its trees remain. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a null session or a guest without the share's flag reaching data, a guest on an encrypting share, or a bad signature dropped unanswered |
 | §4.4 client record | From one machine, sign in as alice and then bob on two connections with one `ClientGuid`: assert both sessions succeed under one client record, and that bob's durable reconnect naming alice's FileId is refused. | a principal kept on the SMB client record, or opens checked against it |
 | §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
 | §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |
