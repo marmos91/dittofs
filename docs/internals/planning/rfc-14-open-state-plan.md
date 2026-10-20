@@ -31,9 +31,13 @@ has the older text until #3142 merges.
 
 ## 2. Decisions to settle
 
-**D1. Package `pkg/openstate`.** RFC 14's errors are named `openstate: …`. It imports `entity`
-and `kvstore`, never an adapter or the filesystem service; recalls and lock grants go up through
-an interface of its own (D5). Adapters never import it (RFC 20 §2.3): only the filesystem service
+**D1. Package `pkg/openstate`, one `*Table` behind seven views.** RFC 14's errors are named
+`openstate: …`. It imports `entity` and `kvstore`, never an adapter or the filesystem service;
+recalls and lock grants go up through its `Sink` (D5). `*Table` exports `New`, `Start`, `Stop` and
+seven view accessors, `Clients()`, `Opens()`, `Locks()`, `Grants()`, `Watches()`, `Recovery()` and
+`Checks()`, and nothing else, so each area of the service fakes only the calls it makes (RFC 14
+§11.3). Its `Deps` are the store's `Clients` and `Opens` (`Records`), RFC 24's `Budget`, the
+`Clock`, `Rand` for every random bit, `Metrics` and `Logger`. Adapters never import it (RFC 20 §2.3): only the filesystem service
 calls it, and the service maps each `openstate` error once to RFC 17 §4.3's neutral errors. So every
 `ErrDelay` carries its cause (RFC 17 §4.3's `Delay…` values), or the mapping is not total and an
 adapter answers it as a server fault (RFC 20 §7.3).
@@ -62,36 +66,41 @@ Today's manager is replaced, not moved. Until stage 1 lands, RFC 17 §9's slice 
 Nothing imports `pkg/openstate` before then, and stage 4 carries none of today's lock persistence over:
 RFC 14 keeps a lock volatile unless its open is persistent, and rebuilds the rest by reclaim.
 
-**D4. Concurrency: one table per file, one step per file.** A sharded map from `FileID` to the
-file's table; each table has its own mutex, the "open-state step" of RFC 14 §11. A call touching
-several files takes their steps in `FileID` order, then fold admission, then accept locks, as
-RFC 17 §5.0 orders every call. No call waits on a recall or a client while holding a step: a
-conflict with a caching grant starts the recall and returns `ErrDelay` at once (RFC 17 §3.2,
-"no worker waits on a recall"). The recall is handed up after the step is released and before the
-call returns `ErrDelay`, so the break is queued ahead of the reply that triggered it (RFC 20 §6.2).
+**D4. Concurrency: one entry per file, decided, persisted, applied.** The file map is split 256
+ways by `FileID`; each entry has its own mutex, the open-state step (RFC 14 §3). Each operation is
+a pure `decide(state, request) → (mutations, events, result)`, which the entry runs, persists
+through `Records` and applies, and which the model fuzzer calls directly (RFC 14 §11.1). A call
+touching several files takes their steps in `FileID` order, then fold admission, then accept
+locks, as RFC 17 §5.0 orders every call. No call waits on a recall or a client while holding a
+step: a conflict with a caching grant starts the recall and returns `ErrDelay` at once. Events
+are queued in the step and handed to the `Sink` after the entry mutex is released, so the break
+is queued ahead of the reply that triggered it (RFC 20 §6.2). The pure parts are leaf packages
+tested alone: `ranges`, `conflict`, `grantfsm`, `sequence`, `deadline` and `grace`.
 
 **D5. Open state reports to the service through RFC 14's `Sink`.** Adapters implement RFC 17
 §3.2's `Callbacks` and may not import `openstate` (RFC 20 §2.3), so the service keeps the
 per-client registry: an adapter registers a client's `Callbacks` with RFC 17's `Connect`, and calls
-`Connect` again to replace them. RFC 14's `Sink` has five events, `RecallGrant`, `Notify`,
-`Revoked`, `LockWaitOver` and `Closed`; each queues and returns nothing, and a failed or late
-delivery counts as the client not answering. The service implements it, and the node hands it to
-`Table.Start`, not to `Deps`, since the table is built before the service:
+`Connect` again to replace them. The `Sink` is an outbox with six events, `RecallGrant`,
+`Notify`, `Revoked`, `LockWaitOver`, `Closed` and `ClientEnded`; each queues and returns, and a
+failed or late delivery counts as the client not answering. The node hands the service to
+`Start` as the `Sink`, with its per-file admission lock as `order` for the one timer step that adds
+state, since the table is built before the service:
 
 ```go
-func New(d Deps) (*Table, error)                            // starts nothing; open state takes no settings
-func (t *Table) Start(ctx context.Context, sink Sink) error // enters grace per shard, arms the timers
+func New(d Deps) (*Table, error)                                       // starts nothing; open state takes no settings
+func (t *Table) Start(ctx context.Context, sink Sink, order Order) error // starts the deadline goroutine
 func (t *Table) Stop()
 ```
 
-RFC 14's `Rebind(ctx, c, node, by)` is a different call: it records a client's new back channel
-and clears `PathDown`.
+The service's own `Start` then calls `Recovery.ServeShard` for each shard, which installs its
+durable opens and enters grace. RFC 14's `Rebind(ctx, who, node)` is a different call: it
+records a client's new back channel and clears `Reach.Down`.
 
 **D6. Time through the shared clock.** Leases (90 s), grace, recall deadlines (35 s for an SMB
-break, one lease for NFS) and NFSv4 waiter polls all run on `Deps.Clock`, the shared `clock.Clock`
-of RFC 8 and #3189. Until `pkg/clock` exists, `openstate` declares the subset it reads (`Now`,
-`After`) and switches to the shared type when it lands. Tests drive a fake clock, so a 90 s lease
-runs in microseconds.
+break, one lease for NFS) and NFSv4 waiter polls are `Deps.Clock.Elapsed` readings, monotonic;
+`Now` is read only for a time a record stores, and a handover ships remaining durations. The clock
+is RFC 8's; until `pkg/clock` exists, `openstate` declares the subset it reads and switches to the
+shared type when it lands. Tests drive a fake clock, so a 90 s lease runs in microseconds.
 
 **D7. Durable writes only through `kvstore`'s views.** The service never writes keys itself. A
 volatile open is never written (RFC 14 §8); `Unlink`/`Rename` already make an open durable when
@@ -102,27 +111,31 @@ it is the file's last holder.
 Each piece lands as one or two PRs into `feat/storage-v2`, with its tests (§4). Rows are RFC 14
 §12's L-numbers.
 
-| # | Piece | RFC 14 | Main calls |
+| # | Piece | RFC 14 | Main calls (view) |
 |---|---|---|---|
-| 1 | Skeleton and state references | §2.1, §3, §11 | (none of §11.3; the table and its references) |
-| 2 | Clients and leases | §2.1, §2.9, §4.1, §4.3 | `Propose`, `Connect`, `CreateSession`, `Renew`, `Expire`, `Destroy` |
-| 3 | Opens and deny modes | §2.2, §6, §7, §9 | `Open`, `Downgrade`, `ConfirmOpen`, `SetDisposition`, `SuspendTimes`, `Close`, `Flushed`, `CheckIO`, `CheckChange` |
-| 4 | Byte-range locks and waiters | §2.3, §2.8, §2.10, §4.5 | `Lock`, `CancelLock`, `WaitAnswered`, `TestLock`, `Unlock`, `ReleaseLockOwner` |
-| 5 | Caching grants and recalls | §2.4, §5 | `AckBreak`, `Revoke`, `Rebind`, `TestState`, `FreeState`; the `RecallGrant` and `Revoked` events |
-| 6 | Grace and reclaim | §4.2, §4.4, §8, §9.2 | `ReclaimComplete`; grace at `Start` |
-| 7 | SMB durable and persistent opens | §8.1 | `Reconnect`, `Disconnect` |
-| 8 | The rest | §2.5, §2.7, §4.3 | `Watch`, `Unwatch`, `DropShare`; the `Notify` and `Closed` events |
+| 1 | Skeleton and state references | §2.11, §3, §11 | the table, its entries and references; `Start`, `Stop` |
+| 2 | Clients and leases | §2.1, §2.9, §4.1, §4.3 | `Clients`: `Propose`, `Connect`, `Record`, `AddSession`, `Renew`, `Expire`, `Destroy` |
+| 3 | Opens and deny modes | §2.2, §6, §7, §9 | `Opens`: `Open`, `Downgrade`, `ConfirmOpen`, `Update`, `Close`, `Flushed`, `Durable`; `Checks`: `CheckIO`, `CheckChange` |
+| 4 | Byte-range locks and waiters | §2.3, §2.8, §2.10, §4.5 | `Locks`: `Lock`, `CancelLock`, `WaitAnswered`, `TestLock`, `Unlock`, `ReleaseLockOwner` |
+| 5 | Caching grants and recalls | §2.4, §5 | `Grants`: `AckRecall`; `Clients`: `Revoke`, `Rebind`; `Recovery`: `TestState`, `FreeState`; the `RecallGrant`, `Revoked` and `ClientEnded` events |
+| 6 | Grace and reclaim | §4.2, §4.4, §8, §9.2 | `Recovery`: `ServeShard`, `ReleaseShard`, `ReclaimComplete`; `Opens`: `CloneOpen`, `CloneClose` |
+| 7 | SMB durable and persistent opens | §8.1 | `Opens`: `Reconnect`; `Clients`: `Disconnect` |
+| 8 | The rest | §2.5, §2.7, §4.3 | `Watches`: `Watch`, `Unwatch`, `Changed`; `Recovery`: `DropShare`; the `Notify` and `Closed` events |
 
 What each piece also carries, and its §12 rows:
 
 1. **Skeleton and state references:** the errors, the per-file table and its step; `StateRef`
    (`Type`, `Shard`, `Instance`, `Token`, `Seq`) minted with its shard and grace instance, and
-   `GrantID` and `WatchID` minted with their shard, so `AckBreak` and `Unwatch` route with no
+   `GrantID` and `WatchID` minted with their shard, so `AckRecall` and `Unwatch` route with no
    handle; the per-shard index, how a miss is classified, and the stateid seqid check
-   (`ErrOldState`). The wire layout is `pkg/vfs`'s (RFC 17 §3.4). *Rows:* L1, L13, L26, L27, L49.
-2. **Clients and leases:** `Propose` holds an unconfirmed NFSv4 client in the client area, at the
-   client's lease owner (RFC 14 §2.9), and `Connect` confirms it; an NLM host's restart notice is
-   `Connect` with a new verifier (§4.5). *Rows:* L25, L38, L41.
+   (`ErrOldState`); every random bit from `Deps.Rand`, and the file map split 256 ways. The wire
+   layout is `pkg/vfs`'s (RFC 17 §3.4). *Rows:* L1, L13, L26, L27, L49.
+2. **Clients and leases:** `Propose` holds a client pending confirmation at the node that answered
+   it, capped per node and per source address (RFC 14 §2.9), and `Connect` confirms it; an NLM
+   host's restart notice is `Connect` with a new `Boot` (§4.5). `CREATE_SESSION`'s sequence and
+   reply are the adapter's, kept in the record's opaque `Adapter` field and written through
+   `AddSession` as a compare-and-swap. It needs the store's client record reshaped first (§8).
+   *Rows:* L25, L38, L41.
 3. **Opens and deny modes:** deny modes at open; open-unlinked kept alive; delete on close; open
    children refuse an SMB rename or delete of their directory; `CheckIO` and `CheckChange`, which
    have something to check once opens exist. *Rows:* L6, L7, L14, L21, L23, L31, L34, L36.
@@ -130,7 +143,7 @@ What each piece also carries, and its §12 rows:
    exclusive, in one step, all or none, and only a single range may wait (RFC 14 §11.3, RFC 17
    §5.11); FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM. *Rows:* L17, L22,
    L39, L44.
-5. **Caching grants and recalls:** grants offered at open; a return is `AckBreak(…, GrantNone)`;
+5. **Caching grants and recalls:** grants offered at open; a return is `AckRecall(…, GrantNone)`;
    recalls with deadlines; revocation into the revoked set; no grant to a client for a lease
    period after one is revoked; the per-client budget. *Rows:* L5, L16, L33, L40, L42, L45, L50,
    L51.
@@ -218,6 +231,9 @@ Rough size per piece, code and tests together, so reviewers can plan:
 | 8 | The rest | 1 | 1,500 |
 
 What blocks what: #3142 merged, since this plan follows its RFC 14; then each piece after the one
-before it, pieces 3 to 8 needing piece 1's references.
+before it, pieces 3 to 8 needing piece 1's references. Before piece 2's rework, the store's client
+record becomes RFC 14's `ClientRecord` (`Name`, `Boot`, `Owner`, `Protect`, `Recovery`, `Lease`,
+`Reach`, `Shards`, `Ended`, `Adapter`), with RFC 16's `NextID`, Done marks and install-before-serve
+for the open records.
 
 For teams planning against stage 2, the useful answer is these merges and decisions, not a date.
