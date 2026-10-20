@@ -455,8 +455,10 @@ for entry in "${ALL_RESULTS[@]}"; do
                 else
                     printf "  ${YELLOW}%-68s KNOWN${NC}\n" "$local_display"
                 fi
+                kf_record known "$test_name"
             else
                 printf "  ${RED}%-68s FAIL${NC}\n" "$local_display"
+                kf_record new "$test_name"
             fi
             ;;
         skip)
@@ -466,6 +468,7 @@ for entry in "${ALL_RESULTS[@]}"; do
             ;;
     esac
 done
+kf_record ran "$((PASS_COUNT + FAIL_COUNT))"
 
 # --------------------------------------------------------------------------
 # Summary — written to both the terminal and summary.txt (which the CI

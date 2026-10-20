@@ -27,7 +27,7 @@ STACK_OWNED=false
 # shellcheck source=../compose-env.sh
 source "${CONFORMANCE_DIR}/compose-env.sh"
 
-VALID_PROFILES=("memory" "badger" "memory-kerberos")
+VALID_PROFILES=("memory" "badger" "badger-s3" "memory-kerberos")
 
 # Name given to every one-off smbtorture container so it stays addressable (see
 # run_smbtorture). Scoped to this harness process so a container leaked by an
@@ -105,6 +105,7 @@ Options:
 Profiles:
   memory           In-memory BadgerDB metadata + memory payload (fastest)
   badger           On-disk BadgerDB metadata + memory payload
+  badger-s3        On-disk BadgerDB metadata + S3 payload (Localstack)
   memory-kerberos  Memory profile with Kerberos auth enabled (auto-selected by --kerberos)
 
 Examples:
@@ -330,6 +331,18 @@ if $KERBEROS; then
     # klist parses the full keytab; only succeeds once kadmin has finished
     # writing and flushing the file, avoiding a partial-read race.
     wait_until "docker compose exec kdc klist -k /keytabs/dittofs.keytab > /dev/null 2>&1" 60 "KDC keytab"
+fi
+
+# An -s3 profile stores its blocks in the "s3" compose profile's Localstack.
+# The S3 block store never creates its bucket, so it must exist before
+# DittoFS's first PUT.
+if [[ "$PROFILE" == *-s3 ]]; then
+    export COMPOSE_PROFILES="s3"
+
+    log_step "Starting Localstack..."
+    docker compose up -d localstack
+    wait_until "docker compose exec localstack curl -sf http://localhost:4566/_localstack/health" 30 "Localstack"
+    docker compose exec -T localstack awslocal s3api create-bucket --bucket dittofs-test >/dev/null
 fi
 
 # Build and start DittoFS

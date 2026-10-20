@@ -497,6 +497,7 @@ assert_contains "profile placeholder is substituted" "args: --profile memory" "$
 OUT="$(run_fake --suite graded --profile memory --variant 4.0)"
 rc=$?
 assert_eq "a grader's failure count survives to the caller" "3" "$rc"
+assert_eq "the exit status is saved beside the results" "3" "$(cat "${WORK}/results/graded/memory-4.0/status")"
 assert_contains "teardown runs after a failed step" "TEARDOWN RAN" "$OUT"
 assert_not_contains "steps after a failure are skipped" "ran pass.sh" "$OUT"
 
@@ -630,7 +631,7 @@ OUT="$(run_fake --suite privileged --profile memory --dry-run)"
 assert_contains "a root step is elevated" "setup: sudo -E" "$OUT"
 assert_not_contains "a non-root step is not" "run: sudo -E" "$OUT"
 
-OUT="$("$RUNNER" --suite pynfs --profile memory --variant 4.1 --dry-run 2>&1)"
+OUT="$("$RUNNER" --suite pynfs --profile badger-s3 --variant 4.1 --dry-run 2>&1)"
 assert_not_contains "no step of pynfs asks for root" "sudo" "$OUT"
 assert_contains "pynfs pins its minor version" "--minor-version 4.1" "$OUT"
 
