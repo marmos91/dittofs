@@ -229,12 +229,17 @@ func (s *Server) check(c *apiclient.Client, b *bucket) error {
 
 // registered waits until the host's rpcbind lists the server's lock manager
 // and MOUNT on its NFS port, which rpcbind: host has the server register.
+//
+// decision: the host has one NLM and one MOUNT registration, and a server
+// takes them over from another that registered them as it does, so two
+// fixtures with rpcbind: host at once would take each other's. dt runs such
+// cells one at a time, as those whose fixtures set the same port.
 func (s *Server) registered(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, clientWaits[0])
 	defer cancel()
 	for {
 		table, err := exec.CommandContext(ctx, "rpcinfo", "-p").Output()
-		missing := unregistered(string(table), s.nfsPort)
+		missing, nlm := unregistered(string(table), s.nfsPort)
 		if err == nil && len(missing) == 0 {
 			return nil
 		}
@@ -243,20 +248,29 @@ func (s *Server) registered(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("the host's rpcbind: rpcinfo -p: %w", err)
 			}
-			return fmt.Errorf("the host's rpcbind doesn't list the server's %s on port %d", strings.Join(missing, " and "), s.nfsPort)
+			err = fmt.Errorf("the host's rpcbind doesn't list the server's %s on port %d", strings.Join(missing, " and "), s.nfsPort)
+			if nlm != "" {
+				err = fmt.Errorf("%w: it gives NLM to port %s, held by a lock manager the server can't take it from, such as the host's own lockd, which runs while the host serves NFS or has an NFSv3 mount that locks", err, nlm)
+			}
+			return err
 		case <-time.After(clientWaits[1]):
 		}
 	}
 }
 
 // unregistered names what of NLM 4 and MOUNT 3 over TCP on port an rpcinfo
-// -p table doesn't list.
-func unregistered(table string, port int) []string {
+// -p table doesn't list, and the port it gives NLM 4 to instead, if any.
+func unregistered(table string, port int) (missing []string, nlm string) {
 	want := map[string]string{"100021 4": "lock manager", "100005 3": "MOUNT"}
 	for _, line := range strings.Split(table, "\n") {
-		if f := strings.Fields(line); len(f) >= 4 && f[2] == "tcp" && f[3] == strconv.Itoa(port) {
+		f := strings.Fields(line)
+		switch {
+		case len(f) < 4 || f[2] != "tcp":
+		case f[3] == strconv.Itoa(port):
 			delete(want, f[0]+" "+f[1])
+		case f[0]+" "+f[1] == "100021 4":
+			nlm = f[3]
 		}
 	}
-	return slices.Sorted(maps.Values(want))
+	return slices.Sorted(maps.Values(want)), nlm
 }

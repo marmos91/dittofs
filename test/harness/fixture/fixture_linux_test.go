@@ -142,8 +142,9 @@ func TestRealClients(t *testing.T) {
 	// decision: no lock is taken, since the server refuses new locks for
 	// its grace period after it starts, and the first would wait it out.
 	port, _ := strconv.Atoi(s.Placeholders()["nfs-port"])
-	if got := run("rpcinfo", "-p", s.Placeholders()["server"]); len(unregistered(got, port)) > 0 {
-		t.Errorf("from the client, the host's rpcbind lacks the server's %q:\n%s", unregistered(got, port), got)
+	table := run("rpcinfo", "-p", s.Placeholders()["server"])
+	if missing, _ := unregistered(table, port); len(missing) > 0 {
+		t.Errorf("from the client, the host's rpcbind lacks the server's %q:\n%s", missing, table)
 	}
 	if got := run("rpcinfo", "-p"); !strings.Contains(got, " status") {
 		t.Errorf("the client's own rpcbind lists no rpc.statd:\n%s", got)

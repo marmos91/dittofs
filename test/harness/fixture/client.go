@@ -3,6 +3,7 @@ package fixture
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -30,7 +32,13 @@ type clients struct {
 	n       int
 	forward bool // a FORWARD rule lets the clients reach each other
 	out     io.Writer
+	// userSSHConfig is the user's own ssh configuration, when the user has
+	// one and there are two clients.
+	userSSHConfig string
 }
+
+// currentUser is the user dt runs as; the tests replace it.
+var currentUser = user.Current
 
 // clientWaits is how long a client's checks retry, and how often; the tests
 // shorten it.
@@ -65,7 +73,7 @@ func (c *clients) asUser(argv []string, dir string, env []string) ([]string, err
 	if geteuid() == 0 {
 		return c.in(1, dir, argv...), nil
 	}
-	u, err := user.Current()
+	u, err := currentUser()
 	if err != nil {
 		return nil, err
 	}
@@ -77,14 +85,16 @@ func (c *clients) asUser(argv []string, dir string, env []string) ([]string, err
 // upClients sets up n namespaced clients, which reach the server on port at
 // the bridge's address, and with two, the second one's sshd, which the user dt
 // runs as reaches from the first with a key of the fixture's own; its output
-// goes to sshd-client2.log in logs. On an error, what was set up stays for
-// down to remove.
+// goes to sshd-client2.log in logs. It first removes the clients of a dt that
+// died without removing them. On an error, what was set up stays for down to
+// remove.
 func upClients(ctx context.Context, n, port int, logs string, out io.Writer) (*clients, error) {
 	c := &clients{n: n, out: out}
 	var err error
 	if c.dir, err = os.MkdirTemp("", "dt-clients-"); err != nil {
 		return nil, err
 	}
+	c.reap()
 	if err := c.claimBridge(ctx); err != nil {
 		return c, err
 	}
@@ -120,7 +130,13 @@ func upClients(ctx context.Context, n, port int, logs string, out io.Writer) (*c
 			c.in(i, "", "mount", "--bind", filepath.Join(c.dir, "hosts"), "/etc/hosts"),
 		)
 		if i == 1 && n == 2 {
-			steps = append(steps, c.in(i, "", "mount", "--bind", filepath.Join(c.dir, "ssh_config"), "/etc/ssh/ssh_config"))
+			// ssh reads the user's own configuration first, where a Host *
+			// entry would win.
+			config := filepath.Join(c.dir, "ssh_config")
+			steps = append(steps, c.in(i, "", "mount", "--bind", config, "/etc/ssh/ssh_config"))
+			if c.userSSHConfig != "" {
+				steps = append(steps, c.in(i, "", "mount", "--bind", config, c.userSSHConfig))
+			}
 		}
 		steps = append(steps, c.in(i, "", "rpcbind"), c.in(i, "", "rpc.statd", "--no-notify", "-P", "/run/statd"))
 	}
@@ -154,7 +170,8 @@ func upClients(ctx context.Context, n, port int, logs string, out io.Writer) (*c
 
 // claimBridge creates the bridge dtnfsX for the first X whose subnet,
 // 10.51.X.0/24, no address of this machine is in and whose bridge doesn't
-// exist yet, which another fixture's would.
+// exist yet, which another fixture's would. Its alias names its owner, dt's
+// process, and the clients' directory, for reap.
 func (c *clients) claimBridge(ctx context.Context) error {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -174,6 +191,9 @@ func (c *clients) claimBridge(ctx context.Context) error {
 		bridge := "dtnfs" + strconv.Itoa(x)
 		if c.run(ctx, asRoot("ip", "link", "add", bridge, "type", "bridge")) == nil {
 			c.bridge, c.subnet = bridge, fmt.Sprintf("10.51.%d", x)
+			if err := c.run(ctx, asRoot("ip", "link", "set", bridge, "alias", fmt.Sprintf("dt-%d %s", os.Getpid(), c.dir))); err != nil {
+				return err
+			}
 			// With br_netfilter, traffic between two ports of the bridge
 			// passes the FORWARD chain, whose policy may drop it.
 			c.forward = c.run(ctx, asRoot("iptables", "-I", "FORWARD", "-i", bridge, "-o", bridge, "-j", "ACCEPT")) == nil
@@ -181,6 +201,28 @@ func (c *clients) claimBridge(ctx context.Context) error {
 		}
 	}
 	return errors.New("no bridge dtnfs0 to dtnfs255 could be made for the clients")
+}
+
+// reap removes the clients of every bridge whose alias names a dt that no
+// longer runs, as claimBridge writes it.
+func (c *clients) reap() {
+	out, err := exec.Command("ip", "-j", "link", "show", "type", "bridge").Output()
+	var links []struct{ Ifname, Ifalias string }
+	if err != nil || json.Unmarshal(out, &links) != nil {
+		return
+	}
+	for _, l := range links {
+		var pid int
+		var dir string
+		if _, err := fmt.Sscanf(l.Ifalias, "dt-%d %s", &pid, &dir); err != nil || !strings.HasPrefix(filepath.Base(dir), "dt-clients-") {
+			continue
+		}
+		if p, err := os.FindProcess(pid); err == nil && !errors.Is(p.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+			continue
+		}
+		_, _ = fmt.Fprintf(c.out, "[dt] fixture: removing %s, whose dt (pid %d) is gone\n", l.Ifname, pid)
+		(&clients{bridge: l.Ifname, dir: dir, n: 2, forward: true, out: c.out}).down()
+	}
 }
 
 // writeFiles writes the clients' hosts file, and with two, the first one's
@@ -195,7 +237,7 @@ func (c *clients) writeFiles() error {
 	}
 	files := map[string]string{"hosts": hosts}
 	if c.n == 2 {
-		u, err := user.Current()
+		u, err := currentUser()
 		if err != nil {
 			return err
 		}
@@ -209,6 +251,10 @@ func (c *clients) writeFiles() error {
 			return err
 		}
 		files["authorized_keys"] = string(pub)
+		config := filepath.Join(u.HomeDir, ".ssh", "config")
+		if _, err := os.Stat(config); err == nil {
+			c.userSSHConfig = config
+		}
 		// The second client is new on every run, with a new host key.
 		files["ssh_config"] = fmt.Sprintf("Host %s\n  IdentityFile %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  BatchMode yes\n  LogLevel ERROR\n",
 			c.addr(2), filepath.Join(c.dir, "id"))
@@ -283,11 +329,21 @@ func (c *clients) startSSHD(ctx context.Context, log string) error {
 func (c *clients) down() {
 	quiet := func(argv ...string) { _ = runFor(context.Background(), 0, asRoot(argv...)) }
 	for i := 1; i <= c.n && c.bridge != ""; i++ {
+		// A process that forks between the listing and the kill, as sshd
+		// does, leaves its child, so the listing is repeated until it's
+		// empty, for clientWaits.
 		pids := asRoot("ip", "netns", "pids", c.name(i))
-		if out, err := exec.Command(pids[0], pids[1:]...).Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+		for end := time.Now().Add(clientWaits[0]); time.Now().Before(end); {
+			out, err := exec.Command(pids[0], pids[1:]...).Output()
+			if err != nil || len(bytes.TrimSpace(out)) == 0 {
+				break
+			}
 			quiet(append([]string{"kill", "-9"}, strings.Fields(string(out))...)...)
 		}
 		quiet("umount", c.ns(i, "mnt"), c.ns(i, "uts"))
+		// The kernel removes a namespace, and the veth pair in it, only
+		// later, while the next fixture may claim the bridge's name at once.
+		quiet("ip", "link", "del", c.bridge+"h"+strconv.Itoa(i))
 		quiet("ip", "netns", "del", c.name(i))
 	}
 	if c.bridge != "" {

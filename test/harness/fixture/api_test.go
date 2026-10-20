@@ -296,13 +296,13 @@ func TestUnregistered(t *testing.T) {
     100021    4   tcp  33421  nlockmgr
     100005    3   tcp  40001  mountd
 `
-	if got := unregistered(table, 40001); !slices.Equal(got, []string{"lock manager"}) {
-		t.Errorf("another lock manager's registration: missing %q", got)
+	if got, nlm := unregistered(table, 40001); !slices.Equal(got, []string{"lock manager"}) || nlm != "33421" {
+		t.Errorf("another lock manager's registration: missing %q, NLM at %q", got, nlm)
 	}
-	if got := unregistered(table+"    100021    4   tcp  40001  nlockmgr\n", 40001); len(got) != 0 {
-		t.Errorf("both registered: missing %q", got)
+	if got, nlm := unregistered(strings.Replace(table, "tcp  33421", "tcp  40001", 1), 40001); len(got) != 0 || nlm != "" {
+		t.Errorf("both registered: missing %q, NLM at %q", got, nlm)
 	}
-	if got := unregistered(table, 40002); !slices.Equal(got, []string{"MOUNT", "lock manager"}) {
+	if got, _ := unregistered(table, 40002); !slices.Equal(got, []string{"MOUNT", "lock manager"}) {
 		t.Errorf("another port: missing %q", got)
 	}
 }

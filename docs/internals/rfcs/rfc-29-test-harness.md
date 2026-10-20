@@ -842,9 +842,9 @@ carry a script that builds it.
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
 | `kerberos` | `true` starts the KDC service, writes the keytabs, restarts `rpc.gssd` once the keytab is in place, puts a test user's ticket where the kernel's upcall reads it, and turns Kerberos on |
 | `reset` | `each`: remove a test's share and create it again, with its settings and grants, before the test runs, as smbtorture's runner does today. A test whose share fails to reset doesn't run; like every fixture step, the reset isn't retried |
-| `client` | `namespace`: the cell's mounts and commands run on a client in a network namespace of its own, with its own rpcbind, `rpc.statd`, hostname and NFS client identifier, joined to the host by a bridge. A client on the server's own stack loses NLM, since its lockd takes the server's registration, and its traffic can't be told from the server's. Its mount and UTS namespaces, with a private `/run`, are kept in files, and each command enters them through `sudo -n nsenter`, in the cell's `dir`, as the user `dt` runs as, with the suite's `env` given explicitly |
-| `clients` | `2` adds a second namespaced client at `{client2}`, which the user `dt` runs as can reach over ssh, with a key of the fixture's own that only the first client's ssh configuration names, for suites that drive two clients, such as nfstest's cache and delegation tests. Its traffic is copied into the first client's interface, as on a shared segment |
-| `rpcbind` | `host`: the server registers MOUNT and NLM with the host's rpcbind, so an NFSv3 client on another network stack can lock, and serves them over UDP too, as NSM needs. The fixture checks that the host's rpcbind lists them on the server's port |
+| `client` | `namespace`: the cell's mounts and commands run on a client in a network namespace of its own, with its own rpcbind, `rpc.statd`, hostname and NFS client identifier, joined to the host by a bridge. A client on the server's own stack loses NLM, since its lockd takes the server's registration, and its traffic can't be told from the server's. Its mount and UTS namespaces, with a private `/run`, are kept in files, and each command enters them through `sudo -n nsenter`, in the cell's `dir`, as the user `dt` runs as, with the suite's `env` given explicitly. The bridge's alias names the `dt` process that owns it, and a fixture first removes the clients of a `dt` that is gone, as one that was killed leaves them |
+| `clients` | `2` adds a second namespaced client at `{client2}`, which the user `dt` runs as can reach over ssh, with a key of the fixture's own that only the first client's ssh configuration names, which there takes the place of the user's own too, since ssh reads the user's first, for suites that drive two clients, such as nfstest's cache and delegation tests. Its traffic is copied into the first client's interface, as on a shared segment |
+| `rpcbind` | `host`: the server registers MOUNT and NLM with the host's rpcbind, so an NFSv3 client on another network stack can lock, and serves them over UDP too, as NSM needs. The fixture checks that the host's rpcbind lists them on the server's port, and names the port another lock manager holds NLM on, as the host's own lockd does while the host serves NFS or has an NFSv3 mount that locks. The host has one registration of each, which a second such server would take, so cells with `rpcbind: host` run one at a time |
 
 There is no field for a setup script. A suite that needs something these fields can't say gets a
 new field in `dt`, with a test, so the setup stays in one place that has tests. WPTS shows this
@@ -905,7 +905,7 @@ The fixture gives the command these placeholders:
   address, so a difference in the delegation tests isn't hidden behind the address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
-  port run one at a time.
+  port, or `rpcbind: host`, run one at a time.
 - `{client2}`: the second client's address, with `clients: 2`.
 - `{mount}`: where the share is mounted, a path as short as today's `/tmp/dittofs-test`, so a
   test of path length such as pjdfstest's `open/03.t` measures the server, not the mount point.
