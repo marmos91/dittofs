@@ -25,7 +25,7 @@
     </style>
   </defs>
   <rect width="900" height="440" fill="#ffffff"/>
-  <text x="16" y="26" class="t">Every call meets the same four admission checks, then Authorize, however it entered the share.</text>
+  <text x="16" y="26" class="t">Every call meets the same five admission steps, then Authorize, however it entered the share.</text>
 
   <rect x="24" y="44" width="272" height="52" rx="5" class="pr"/>
   <text x="36" y="64" class="h">NFSv4 PUTFH of a held handle</text><text x="36" y="82" class="s">a saved handle, or one a moved client brings</text>
@@ -39,34 +39,48 @@
   <text x="36" y="136" class="s">the share of the handle or open the call names — admission is a property of the share reached, not of the path; no call skips it</text>
   <path d="M104,148 L104,168" class="ln"/>
 
-  <rect x="24" y="170" width="160" height="54" rx="5" class="pr"/>
-  <text x="36" y="190" class="h">1 share state</text><text x="36" y="208" class="s">RFC 16 §2.3.1</text>
-  <rect x="197" y="170" width="160" height="54" rx="5" class="pr"/>
-  <text x="209" y="190" class="h">2 flavour rule</text><text x="209" y="208" class="s">the share's ExportPolicy</text>
-  <rect x="370" y="170" width="160" height="54" rx="5" class="pr"/>
-  <text x="382" y="190" class="h">3 client rules</text><text x="382" y="208" class="s">address and netgroups</text>
-  <rect x="543" y="170" width="160" height="54" rx="5" class="pr"/>
-  <text x="555" y="190" class="h">4 squash</text><text x="555" y="208" class="s">Identity → principal</text>
-  <rect x="716" y="170" width="160" height="54" rx="5" class="sv"/>
-  <text x="728" y="190" class="h">Authorize</text><text x="728" y="208" class="s">share grant and file, §4.6</text>
-  <path d="M185,197 L195,197" class="ln"/><path d="M358,197 L368,197" class="ln"/>
-  <path d="M531,197 L541,197" class="ln"/><path d="M704,197 L714,197" class="ln"/>
-
-  <path d="M60,226 L60,248" class="ex"/>
-  <text x="36" y="262" class="e">ErrDelay while quiesced</text><text x="36" y="277" class="e">ErrStale once being</text><text x="36" y="292" class="e">removed or retired</text>
-  <path d="M233,226 L233,248" class="ex"/>
-  <text x="209" y="262" class="e">ErrWrongSecurity</text>
-  <path d="M406,226 L406,248" class="ex"/>
-  <text x="382" y="262" class="e">ErrAccess, or a narrowing</text><text x="382" y="277" class="e">to read-only</text>
-  <text x="555" y="262" class="s">refuses nothing: sets who</text><text x="555" y="277" class="s">the call acts as on this</text><text x="555" y="292" class="s">share</text>
-  <path d="M752,226 L752,248" class="ex"/>
-  <text x="728" y="262" class="e">refused when no grant</text><text x="728" y="277" class="e">admits the caller</text>
+  <rect x="24" y="170" width="132" height="54" rx="5" class="pr"/>
+  <text x="34" y="190" class="h">1 share state</text><text x="34" y="208" class="s">RFC 16 §2.3.1</text>
+  <path d="M157,197 L166,197" class="ln"/>
+  <path d="M54,226 L54,248" class="ex"/>
+  <text x="34" y="262" class="e">ErrDelay while quiesced</text>
+  <text x="34" y="277" class="e">ErrStale once being</text>
+  <text x="34" y="292" class="e">removed or retired</text>
+  <rect x="168" y="170" width="132" height="54" rx="5" class="pr"/>
+  <text x="178" y="190" class="h">2 proof, protection</text><text x="178" y="208" class="s">MinProof, MinProtection</text>
+  <path d="M301,197 L310,197" class="ln"/>
+  <path d="M198,226 L198,248" class="ex"/>
+  <text x="178" y="262" class="e">ErrWrongSecurity</text>
+  <rect x="312" y="170" width="132" height="54" rx="5" class="pr"/>
+  <text x="322" y="190" class="h">3 client rules</text><text x="322" y="208" class="s">address, netgroups</text>
+  <path d="M445,197 L454,197" class="ln"/>
+  <path d="M342,226 L342,248" class="ex"/>
+  <text x="322" y="262" class="e">ErrAccess, or a</text>
+  <text x="322" y="277" class="e">narrowing to read-only</text>
+  <rect x="456" y="170" width="132" height="54" rx="5" class="pr"/>
+  <text x="466" y="190" class="h">4 resolution</text><text x="466" y="208" class="s">map, squash, grants</text>
+  <path d="M589,197 L598,197" class="ln"/>
+  <text x="466" y="262" class="s">refuses nothing: sets</text>
+  <text x="466" y="277" class="s">who the call acts as</text>
+  <text x="466" y="292" class="s">on this share</text>
+  <rect x="600" y="170" width="132" height="54" rx="5" class="pr"/>
+  <text x="610" y="190" class="h">5 share cap</text><text x="610" y="208" class="s">request buffers</text>
+  <path d="M733,197 L742,197" class="ln"/>
+  <path d="M630,226 L630,248" class="ex"/>
+  <text x="610" y="262" class="e">ErrDelay at once;</text>
+  <text x="610" y="277" class="e">not for release</text>
+  <text x="610" y="292" class="e">or reclaim</text>
+  <rect x="744" y="170" width="132" height="54" rx="5" class="sv"/>
+  <text x="754" y="190" class="h">Authorize</text><text x="754" y="208" class="s">share grant, file §4.6</text>
+  <path d="M774,226 L774,248" class="ex"/>
+  <text x="754" y="262" class="e">refused when no</text>
+  <text x="754" y="277" class="e">grant admits it</text>
 
   <rect x="24" y="312" width="852" height="96" rx="6" class="dr"/>
-  <text x="36" y="332" class="s">A compound crossing from one share into another is re-admitted, and re-squashed, at the crossing.</text>
+  <text x="36" y="332" class="s">A compound crossing from one share into another is re-admitted, and re-resolved, at the crossing.</text>
   <text x="36" y="350" class="s">Root — for MNT, PUTROOTFH and TREE_CONNECT — resolves, admits and authorises too: that is where a client fails early, not where it is</text>
   <text x="36" y="366" class="s">gated, since every later call is admitted again.</text>
-  <text x="36" y="384" class="s">An admission result may be cached per (share, identity) only with ExportPolicy.Version, the netgroups' versions and</text>
-  <text x="36" y="400" class="s">ShareList.Version in the key.</text>
+  <text x="36" y="384" class="s">Steps 1–4 may be cached per (share, identity) only with ExportPolicy.Version, the netgroups', ShareList and grant-list</text>
+  <text x="36" y="400" class="s">versions and the principals generation in the key — and the client address when a client rule decided. Step 5 is never cached.</text>
   <text x="16" y="430" class="s">A client removed from a share is refused on its next call, whatever handles it holds.</text>
 </svg>

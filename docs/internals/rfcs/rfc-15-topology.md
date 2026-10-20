@@ -303,7 +303,7 @@ can hold a client's connection, be a shard's primary, or be its replica:
 
 | Component | What it does on every node | Specified in |
 | --- | --- | --- |
-| adapters | sign clients in with the authenticator ([RFC 18](rfc-index.md)), speak the wire, hold sessions; call `vfs.Service` and nothing else | [RFC 20](rfc-20-adapters.md) |
+| adapters | speak the wire, hold sessions, and sign clients in through `vfs.Service`'s `SignIn` ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)); call `vfs.Service` and nothing else, identity included ([RFC 18](rfc-index.md)) | [RFC 20](rfc-20-adapters.md) |
 | `vfs.Gateway` **(cluster)** | routes each call to the primary of its file's shard; decides nothing | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides) |
 | `vfs.Serve` **(cluster)** | receives forwarded calls: fences and deduplicates them, then calls the local server | [§2.3](#2.3%20The%20gateway%20forwards%2C%20the%20server%20decides), [§4.3](#4.3%20The%20route%20envelope) |
 | `vfs.Server` | the filesystem: decides every call for the shards this node is primary of | [RFC 17](rfc-17-vfs.md) |
@@ -458,7 +458,7 @@ starts nothing:
 | 7 | identity ([RFC 18](rfc-index.md)) | — |
 | 8 | `vfs.New`, the `*vfs.Server` ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring)) | identity, open state, the metadata views, the engine |
 | 9 | **(cluster)** `vfs.Serve` over the server, then `vfs.NewGateway` with the checked `vfs.Service` `vfs.Serve` returns as its local one, the router ([§6](#6.%20Learning%20primaries)) and the transport | Serve: the server; the gateway: the checked `vfs.Service`, `vfs.Router`, `vfs.Transport` |
-| 10 | the adapters ([RFC 20](rfc-20-adapters.md)), handed the `vfs.Service` — the gateway in a cluster, the server on one node — and identity as their authenticator | `vfs.Service` |
+| 10 | the adapters ([RFC 20](rfc-20-adapters.md)), handed the `vfs.Service` — the gateway in a cluster, the server on one node — and nothing of identity: they sign in through its `SignIn` | `vfs.Service` |
 
 `Node.Start` opens the metadata store and registers the node first, so a
 version refusal stops it before anything else starts; then starts the other
@@ -667,6 +667,7 @@ Every call a node forwards to a primary carries one envelope:
 | shard and epoch | the shard the sender routed by and the primary epoch it expects |
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the gateway node; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)) |
+| identity | the adapter's neutral `Identity` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), carried as a value: the gateway never reads it, and the primary resolves it per share; trusted only over the mutually authenticated node channels of [§4.4](#4.4%20Node%20channels) |
 | trace context | the sender's trace ID, parent span ID and sampled flag (RFC 25 §6.2); never part of the request ID |
 | adapter bytes (payload) | the opaque `Adapter` bytes of the RFC 14 records a call writes or reads, at most 4 KiB each, starting with the adapter's own version byte ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); they travel in the call and back in its result, and the gateway, the transport and `vfs.Serve` never read them. They are part of the call, not of the envelope's routing fields, so they are fenced, deduplicated and replayed with it |
 

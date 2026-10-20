@@ -1075,6 +1075,9 @@ type Records interface {
 // Minter is identity's only write path: the records a first sign-in mints
 // (RFC 18 §2.4, §5.1). It never overwrites. Each write is one transaction and
 // fails with ErrExist when another principal holds a row it would write.
+// Every Minter write, like every other User or Group record change, raises
+// the principals generation (PGEN, §4.2) in the same transaction, so cached
+// resolutions are dropped (RFC 18 §7.2).
 type Minter interface {
 	CreateUser(ctx context.Context, u User) error
 	CreateGroup(ctx context.Context, g Group) error

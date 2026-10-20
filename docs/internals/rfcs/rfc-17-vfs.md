@@ -353,8 +353,8 @@ type Deps struct {
 	Open     *openstate.Table  // RFC 14: open state and client records (§2.2); New keeps only its views
 	Engine   Content           // RFC 8's engine, or a fake in unit tests (§8)
 	Identity identity.Resolver // RFC 18 §6: real, or a fake in unit tests; internal to the server
-	Auth     identity.Authenticator // RFC 18 §3.1: behind Principals.SignIn
-	Names    identity.Identities    // RFC 18 §4.1: behind Principals.Spell and Find
+	Auth     identity.Authenticator // RFC 18 §3.1: behind vfs.Service's SignIn (the Principals area)
+	Names    identity.Identities    // RFC 18 §4.1: behind vfs.Service's Spell and Find (the Principals area)
 	Peers    Peers             // (cluster) the transport; nil on a single node, where every primary is this one
 	Events   Events            // the node's event sink, or the null sink (§3.3)
 	Clock    clock.Clock
@@ -1426,7 +1426,7 @@ drops a cached resolution when a principal, a group or a mapping changes
 so a disabled user's next call resolves afresh. Step 5 reads the pools as they
 are and is never cached.
 
-![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same four checks — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the MinProof and MinProtection minimums (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only) and squash — then Authorize; a compound crossing shares is re-admitted, and a cached admission result is keyed with the policy, netgroup and share-list versions](img/rfc17-admission.svg)
+![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same five steps — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the MinProof and MinProtection minimums (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only), resolution (map, squash, grants; refuses nothing) and the share cap on request buffers (ErrDelay at once, except for release or reclaim) — then Authorize; a compound crossing shares is re-admitted and re-resolved, and a cached result of steps 1–4 is keyed with the policy, netgroup, share-list and grant-list versions and the principals generation, plus the client address when a client rule decided](img/rfc17-admission.svg)
 
 **A share's removal joins the calls admitted before it.** Admission counts
 the call against its share *before* it reads the share's state, and uncounts it
