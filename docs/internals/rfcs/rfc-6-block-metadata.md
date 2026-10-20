@@ -2867,18 +2867,19 @@ requires of it: one file's per-file records form one contiguous range under
 `F‖ShareID‖FileID`; live refs scan in offset order (the covering lookup reads
 from an offset down, [§8.1](#8.1%20Covering%20lookup)); history records scan by offset, then `died`; chunk, block and put
 intent records are keyed by namespace, then by hash-like values, so within a
-namespace they spread evenly. The GC index is the exception: the retired index
-`BR‖ns‖not_before‖name` is ordered by time, so every retirement inserts near the
-same key range's tail, and the compaction index `BC‖ns‖bucket‖name` buckets by
-dead ratio in sixteenths, so its writes fall in a handful of ranges. Each is one insert or delete
-per retirement, resurrection or bucket change, written in that transaction
-([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)); the keys are distinct, so they contend on no record, only on a
-range-splitting backend's tail range.
-
-> ponytail: a time-ordered retired index puts every retirement in one namespace
-> on one key range. Upgrade to a hash-bucketed prefix (`BR‖ns‖h‖not_before‖name`,
-> the deleter scanning the buckets in parallel) when that range's write rate
-> shows in a profile of a delete-heavy workload.
+namespace they spread evenly. The GC index is ordered within a partition: the
+retired index `BR‖ns‖b‖not_before‖name` and the compaction index
+`BC‖ns‖b‖bucket‖name` lead with `b`, the block name's first byte, which is the
+unit GC partitions by
+([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
+Within one `b`, retirements insert near that range's tail and compaction
+candidates fall into its handful of dead-ratio buckets, in sixteenths; across
+`b`, writes spread over up to 256 ranges per namespace. Each is one insert or
+delete per retirement, resurrection or bucket change, written in that
+transaction
+([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt));
+the keys are distinct, so they contend on no record, only on a
+range-splitting backend's tail ranges.
 
 ### B.2 Records
 

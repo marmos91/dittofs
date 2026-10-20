@@ -1405,7 +1405,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | **Per namespace** — content-addressed, one partition per remote key namespace ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)) | `C‖ns‖hash`, `B‖ns‖name` | Chunk, Block (with its GC state: `live`, `retired`, `deleted`, the store time of its move to `deleted` (`marked_at`, [RFC 9 §3.1](rfc-9-gc.md#3.1%20Retire%20the%20records%2C%20then%20delete%20the%20object)), and its carried chunk list) |
 | | `CR‖ns‖hash‖ShareID‖FileID‖offset‖died` | reverse ref index: one empty-valued key per live (`died` zero), history or parked ref, written in the ref's transaction and deleted by the transaction that drops it or by the parked-ref prune; authoritative for "which refs name this chunk", and the refcount is its cache ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
 | | `I‖ns‖name` | put intent: domain, domain ID, epoch, and the writer's node epoch for a shard ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |
-| | `BR‖ns‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖bucket‖name` | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
+| | `BR‖ns‖b‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖b‖bucket‖name`, `b` the block name's first byte | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 | | `NS‖ns‖gc‖lease‖partition`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per GC partition with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
 | | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, and the last one it wrote; a `Recheck` reads the claim and compares it with these before any rewrite. Every claim put on any path — start, `Recheck`, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
@@ -1503,19 +1503,18 @@ Consequences:
 - Content-addressed keys carry the namespace, so two namespaces never share a
   chunk record, a count, a candidate or a GC pass, although one database holds
   them all ([RFC 6 §2.6](rfc-6-block-metadata.md#2.6%20The%20scope%20of%20a%20count)).
-- Two GC index kinds are **sequential, by design**: `BR‖ns‖not_before‖name`
-  orders retired blocks by time, so every retirement inserts at the tail of the
-  namespace's range, and `BC‖ns‖bucket‖name` puts every candidate of one
-  dead-ratio bucket in one range. That is what lets GC read the due blocks and
-  the best candidates with one ordered scan each. The cost is one hot range per
-  namespace for each kind: on the replicated store its inserts land on one
-  region, at the rate blocks retire or change bucket — a background rate,
-  batched, never a client operation's. Every other content-addressed key leads
-  with a hash or a nonce-unique name and spreads evenly.
-
-  > ponytail: `BR‖` and `BC‖` insert at one point of their range. Lead each key
-  > with the block name's first byte as a partition, and scan the partitions in
-  > parallel, when a region split on those ranges shows in a GC profile.
+- Two GC index kinds are **sequential within a partition, by design**:
+  `BR‖ns‖b‖not_before‖name` orders one partition's retired blocks by time, and
+  `BC‖ns‖b‖bucket‖name` puts one partition's candidates of a dead-ratio bucket
+  in one range. `b` is the block name's first byte, the unit GC partitions by
+  ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)),
+  so a partition's holder reads only its own range, and the layout does not
+  depend on the partition count. Within a partition GC reads the due blocks and
+  the best candidates with one ordered scan each; across partitions the inserts
+  spread over up to 256 tail ranges per namespace, at the rate blocks retire or
+  change bucket — a background rate, batched, never a client operation's.
+  Every other content-addressed key leads with a hash or a nonce-unique name
+  and spreads evenly.
 
 #### 4.2.1 Key encoding
 
@@ -1554,6 +1553,10 @@ are the prefix's. No separator byte is written.
   string, since it is composed of several fields
   ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)). `ChunkHash` and `BlockName` are raw
   at the fixed lengths [RFC 6](rfc-6-block-metadata.md#2.%20The%20records) gives them.
+- **Name byte** — the `b` of `BR‖ns‖b‖…` and `BC‖ns‖b‖…`: one raw byte, the
+  block name's first, repeated ahead of the time or bucket, so a contiguous
+  range of `b` is one GC partition's keys whatever the partition count
+  ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
 - **Byte string** — an entry's folded key, an xattr name, a user, group, share
   or netgroup name, a path, a setting key, a SID, a Kerberos principal, a
   client owner, a backup location's name (`NS‖ns‖bk‖location`, and `NS‖ns‖keyseq‖target`, empty for the namespace's own object), a namespace key ID (up to 255 bytes, [RFC 5](rfc-5-transforms.md)), a master key ID
