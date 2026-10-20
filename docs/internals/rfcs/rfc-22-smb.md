@@ -1566,7 +1566,7 @@ translation both adapters use
   file's owner holds `READ_CONTROL` and `WRITE_DAC` whatever the DACL denies,
   unless an entry for owner rights applies, so an owner can always repair a
   DACL that locks it out. An open asking `MAXIMUM_ALLOWED`
-  ([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximum%20allowed)), the `MxAc` create
+  ([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), the `MxAc` create
   context and `MaximalAccess` are answered from `Files.Granted`, through the
   service's `Access`
   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), to which the adapter

@@ -174,7 +174,7 @@ questions. Appendix A is prior art; Appendix B where the current code differs.
 1. The share's audit policy selects denials. bob-pc's `CREATE` reaches the
    chokepoint, which refuses it; the service emits an `AccessEvent` with
    `Allowed` false ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks),
-   [RFC 19 §3.7](rfc-19-authorization.md#3.7%20Audit%20entries%20select%20events)).
+   [RFC 19 §3.6](rfc-19-authorization.md#3.6%20Audit%20entries%20select%20events)).
 2. The event goes into the access stream's in-memory ring and the call returns at
    once (§4.3). The writer appends it to the spool within a second.
 3. The external shipper that tails the spool has been down for a day. The spool
@@ -231,7 +231,7 @@ not specified here has its owner in §1.2.
 | where access and quota events are emitted, and their fields | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks) |
 | which operations produce an access event: the share's audit policy | [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings), applied by [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks) |
 | where logon events are emitted, and logon throttling | [RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface) |
-| which decisions an audit entry selects | [RFC 19 §3.7](rfc-19-authorization.md#3.7%20Audit%20entries%20select%20events) |
+| which decisions an audit entry selects | [RFC 19 §3.6](rfc-19-authorization.md#3.6%20Audit%20entries%20select%20events) |
 | delivery, bounds, drops, retention, format and access of the streams | this RFC, §4 |
 | the management audit records, their content, durability and retention | [RFC 23 §6](rfc-23-control-plane.md#6.%20The%20audit) |
 | the roles that may read health detail and the audit | [RFC 23 §5.2](rfc-23-control-plane.md#5.2%20Roles) |
@@ -713,7 +713,7 @@ row.
 | `namespace_count_underflow` | [RFC 7 §11.2](rfc-7-namespace-metadata.md#11.2%20Observability) | share, naming the directory's FileID | degraded | ticket |
 | `snapshot_policy_skipping` | [RFC 12 §6](rfc-12-snapshots.md#6.%20Observability) | share, at 3 skipped ticks | degraded | ticket |
 | `backup_failing`, `backup_location_mismatch` | [RFC 26 §7](rfc-26-catalog-backups.md#7.%20Observability) | share; location | degraded | ticket |
-| `directory_unreachable` | [RFC 18 §10.2](rfc-18-identity.md#10.2%20Metrics) | installation | degraded within the stale grace; unhealthy past it, since sign-ins are refused | ticket; page at 5 min when unhealthy |
+| `directory_unreachable` | [RFC 18 §9.2](rfc-18-identity.md#9.2%20Metrics) | installation | degraded within the stale grace; unhealthy past it, since sign-ins are refused | ticket; page at 5 min when unhealthy |
 | `adapter_listener_lost` | [RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes) | node, naming the adapter and address | unhealthy: a listener's socket failed while serving | page at 5 min |
 | `start_failed` | [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) | node, naming the step and its error | unhealthy; held until the process exits, since a failed start does not retry, and a restart starts it again | page at once |
 | `sidecar_failed` | [RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars) | node, naming the sidecar | degraded: the adapters keep serving | ticket |
@@ -737,7 +737,7 @@ row.
 
 | Stream | Emitted by | Carries | Selected by |
 | --- | --- | --- | --- |
-| `access` | the filesystem service, where it consults the chokepoint ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)) | one authorisation decision | the share's audit policy and the file's audit entries ([RFC 19 §3.7](rfc-19-authorization.md#3.7%20Audit%20entries%20select%20events)) |
+| `access` | the filesystem service, where it consults the chokepoint ([RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks)) | one authorisation decision | the share's audit policy and the file's audit entries ([RFC 19 §3.6](rfc-19-authorization.md#3.6%20Audit%20entries%20select%20events)) |
 | `quota` | the filesystem service, where it enforces quota ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)) | a threshold crossed, a soft limit exceeded, a grace expired, a hard refusal, a return under the limit | always |
 | `logon` | the authenticator, at each logon attempt ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) | one sign-in, over either protocol: success or failure, flavour, principal, client address; never the credential | always |
 | `admin` | the control plane's audit records ([RFC 23 §6](rfc-23-control-plane.md#6.%20The%20audit)) | one management action or refusal: actor, target, change, outcome — a governance-lock override, a statement that a location is lost, a share's audit policy changed | always |
@@ -1371,7 +1371,7 @@ been removed.
 
 Tables found to follow §2 as written: [RFC 14](rfc-14-open-state.md#14.%20Observability),
 [RFC 15](rfc-15-topology.md#10.%20Observability) and
-[RFC 18](rfc-18-identity.md#10.2%20Metrics), with their histograms to take
+[RFC 18](rfc-18-identity.md#9.2%20Metrics), with their histograms to take
 the `request` or `background` set of §2.6.
 
 ## 12. Conformance
