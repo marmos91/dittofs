@@ -375,7 +375,7 @@ interface:
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | the syncer | `OpenFlow`, one flow per share at attach |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `ForgetShare` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views, held as two interfaces | every method of both, except `Offloaded` while deduplication is deferred |
-| here, over [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s keys | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for a device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseIncarnations`, in the start transaction or at attach (step 2) |
+| [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for a device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseIncarnations`, in the start transaction or at attach (step 2) |
 | [RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them) | the metadata store's `Inspect` view | `Refs`, for the reseed only ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)); every other engine transaction goes through block metadata's views or `Lifecycle` |
 
 A call to a method no row names is a build failure, not a review comment, and a
@@ -383,12 +383,9 @@ component method no row names is unreachable from the engine. The journal's
 `Init` and `Restamp` are not the engine's: the explicit initialisation step and
 the recovery import ([RFC 26](rfc-26-catalog-backups.md)) call them ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1).
 
-> decision: `Lifecycle` is declared here, over RFC 16's keys, because no
-> view RFC 6 or RFC 16 declares reads a device's recorded journal identity,
-> writes the version limit or raises an incarnation, and the engine needs all
-> three. Its four methods are the engine's only store access outside block
-> metadata's views and `Refs`. Move it into RFC 16's views once another
-> component needs one of them.
+`Lifecycle` is declared in [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer).
+Its four methods are the engine's only store access outside block metadata's
+views and `Refs`.
 
 **One clock and one fault interface, declared here.** The root composes the
 node, so it declares the two interfaces every component takes at construction

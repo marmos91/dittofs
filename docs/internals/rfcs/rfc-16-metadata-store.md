@@ -947,7 +947,9 @@ The views are defined where their semantics are:
 | `Namespace`, `Files`, `Capacity` | names, attributes, ACLs, xattrs, streams, statfs and usage | [RFC 7](rfc-7-namespace-metadata.md) |
 | `Existence`, `Content`, `Blocks` | the write path, the engine's commits and refs, GC | [RFC 6](rfc-6-block-metadata.md) |
 | `OpenState` | opens, locks, caching grants, watches | [RFC 14](rfc-14-open-state.md) |
-| `Principals`, `ControlPlane`, `Inspect` | identity lookups, the management API, trusted reads by ID | this RFC |
+| `Principals`, `Records`, `Minter` | identity's lookups, its reads of one record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
+| `Lifecycle` | a device's journal identity, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
+| `ControlPlane`, `Inspect` | the management API, trusted reads by ID | this RFC |
 
 ```go
 // Principals is what authentication and the chokepoint read (RFC 18). Groups
@@ -960,6 +962,31 @@ type Principals interface {
 	ByProtocolID(ctx context.Context, id ProtocolID) (Principal, error)
 	Groups(ctx context.Context, p Principal) iter.Seq2[Principal, error]
 	Grant(ctx context.Context, share ShareID, p Principal) (ShareAccess, error)
+}
+
+// Records reads one principal's record by ID: the spellings, the Disabled flag
+// and the deleted mark that Principals, which answers a Principal only, lacks.
+type Records interface {
+	User(ctx context.Context, p Principal) (User, error)
+	Group(ctx context.Context, p Principal) (Group, error)
+}
+
+// Minter is identity's only write path: the records a first sign-in mints
+// (RFC 18 §2.4, §5.1). It never overwrites. Each write is one transaction and
+// fails with ErrExist when another principal holds a row it would write.
+type Minter interface {
+	CreateUser(ctx context.Context, u User) error
+	CreateGroup(ctx context.Context, g Group) error
+	Rename(ctx context.Context, p Principal, name string) error // the record's Name and its name index only
+}
+
+// Lifecycle is the engine's store access outside block metadata's views and
+// Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over S‖id‖vl and the incarnation keys.
+type Lifecycle interface {
+	// JournalID: the journal identity recorded for a device, for Open.
+	// VersionLimits: each share's limit, read for Open's floor.
+	// RaiseVersionLimits: a tracked max-write of S‖id‖vl, within K keys a transaction.
+	// RaiseIncarnations: in the start transaction, or at attach.
 }
 
 // ControlPlane is the management API's view (RFC 23). Every write names what
@@ -997,9 +1024,9 @@ What each consumer holds:
 | --- | --- |
 | NFS and SMB adapters | `vfs.Service` only ([RFC 17](rfc-17-vfs.md)) |
 | Filesystem service ([RFC 17](rfc-17-vfs.md)) | `Namespace`, `Files`, `Capacity`, `OpenState`, and the engine's content facade |
-| Engine | `Existence`, `Content` |
+| Engine | `Existence`, `Content`, `Lifecycle`; `Inspect.Refs` for the reseed only |
 | GC | `Blocks` |
-| Authentication (session setup, Kerberos contexts) | `Principals`; tree connect and mount go through the filesystem service's `Shares` calls ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
+| Identity: authentication and resolution ([RFC 18](rfc-18-identity.md)) | `Principals`, `Records`, `Minter`; tree connect and mount go through the filesystem service's `Shares` calls ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | Management API | `ControlPlane` |
 | Shard placement (RFC 11) | `Node` and `Shard` records through its own view, fenced by epoch |
 | Debug tooling | `Dump` (§4.5) |
@@ -1011,10 +1038,11 @@ filesystem service's `GetAttr` joins `Files.Get` with the engine's overlay of
 else answers size or times, and `Existence` offers no read of them.
 
 `User` and `Share` here are entities, not wire types: `PutUser` receives a
-`User`, and the only field it writes that another entity reads is the name
-index. That is the one place in the model where a whole-entity put is
-allowed, and only over records whose one writer is the management API, with no
-background path. `PutShare` therefore writes `S‖id‖info` alone — name, path,
+`User` and overwrites it whole, and the only field it writes that another
+entity reads is the name index. That is the one place in the model where a
+whole-entity put is allowed, and only the management API makes one. Identity
+never calls `PutUser`: what a sign-in mints goes through `Minter`, which never
+overwrites. `PutShare` writes `S‖id‖info` alone — name, path,
 root, configuration — and the name and path indexes. The two parts of a `Share`
 that a background path changes are records of their own: `S‖id‖st`, the state,
 which cuts, deletions and the management API all change through
@@ -1069,6 +1097,9 @@ var (
 	_ Content      = st.Content()
 	_ Blocks       = st.Blocks()
 	_ Principals   = st.Principals()
+	_ Records      = st.Records()
+	_ Minter       = st.Minter()
+	_ Lifecycle    = st.Lifecycle()
 	_ ControlPlane = st.ControlPlane()
 	_ Inspect      = st.Inspect()
 )
