@@ -31,7 +31,7 @@ order: each part builds on the ones before it.
 | [RFC 14](rfc-14-open-state.md) | open state and locks | draft | client leases, opens and deny modes, byte-range locks, caching grants (delegations, oplocks, leases), pNFS layouts, grace and per-shard reclaim, conflicts across protocols |
 | **Composition** | | | |
 | [RFC 17](rfc-17-vfs.md) | filesystem service (VFS) | draft | the one protocol-neutral API adapters call: operations, callbacks, errors, what stays in adapters; orchestration at one primary, quota enforcement by in-memory reservation, soft-quota and access-audit event hooks |
-| [RFC 8](rfc-8-engine.md) | engine | draft | the content data path: the facade over journal, carver, syncer and block metadata, and its policy |
+| [RFC 8](rfc-8-engine.md) | engine | draft | the content data path: one concrete engine over journal, carver, syncer and block metadata — its interface, composition, lifecycle and policy |
 | [RFC 9](rfc-9-gc.md) | GC | draft | retirement and resurrection, trash, verified remote deletion, compaction policy, audit against the reverse ref index |
 | **Cluster**, deferred past the first release ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) | | | |
 | [RFC 10](rfc-10-journal-replication.md) | journal replication | deferred | a primary and its replicas, fencing, seal, joining learners, catch-up, reads |

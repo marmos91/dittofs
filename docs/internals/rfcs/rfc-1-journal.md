@@ -487,7 +487,7 @@ re-mint, or a move back whose drop never ran `Forget`, would otherwise serve one
 share's extents through another's handle after every permission check had
 passed, let its writes supersede them, and let an offload commit them under the
 wrong share's refs. The engine answers it with `ErrCorrupt`, never retried
-([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service)). A recovery that rebuilds one `FileID` under two tags, which
+([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)). A recovery that rebuilds one `FileID` under two tags, which
 only such a fault leaves, **MUST** refuse every call on that file through
 either tag, and name it in `Stats`, until one of the two is forgotten.
 
@@ -957,7 +957,7 @@ make that determination and the write atomic with respect to concurrent
 `WriteAt` on the same file.
 
 **A Fill older than the file is refused.** `asOf` is the change version `ReadAt` returned
-when the caller found the extent missing ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The journal keeps, per file, the
+when the caller found the extent missing ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)). The journal keeps, per file, the
 highest content version of any operation that changed its extents — `WriteAt`,
 `Truncate`, `Deallocate`, `Delete` and `CloneTarget`, each of which assigns a new
 one; a `Release` carries a version already counted. If it

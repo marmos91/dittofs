@@ -236,7 +236,7 @@ clone. Two other components hold narrow views, wired by whoever composes them
 ([RFC 15](rfc-15-topology.md)): the filesystem service reads `size` and write-time attributes as fields of
 `File`, joined with the engine's overlay ([RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)), and GC retires blocks, relocates and audits ([§7](#7.%20What%20sweep%20needs%20from%20this%20component)). Releasing a
 file reaches this component only through the engine's `Release`, which drops the
-refs and the journal's copy together ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20facade%2C%20called%20by%20the%20filesystem%20service), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)).
+refs and the journal's copy together ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service), [RFC 7 §4.3](rfc-7-namespace-metadata.md#4.3%20Release%20is%20what%20block%20metadata%20sees)).
 
 ### 1.1 Non-goals
 

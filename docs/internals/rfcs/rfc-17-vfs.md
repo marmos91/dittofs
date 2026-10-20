@@ -1432,7 +1432,7 @@ once (§5.6).
 
 Steps 1–3 as for a write, with read access; then the engine's `Read`, which
 resolves residency and streams verified chunks
-([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)).
+([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)).
 It never returns an unverified byte, but it can return `n` verified bytes and
 then an error (`ErrLost`, `ErrUnavailable`, `ErrCorrupt`) for the chunk after
 them. An adapter answers a short read of the `n` bytes when `n > 0` and its

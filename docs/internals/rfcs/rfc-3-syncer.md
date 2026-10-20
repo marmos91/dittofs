@@ -715,7 +715,7 @@ the caller needs, each by its hash and the `Range` block metadata recorded for i
 chunk by chunk, each body checked against its own hash and yielded as soon as it
 passes, never buffered whole first, and the block's name recomputed from the header
 ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec),
-[RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The store merges ranges adjacent in the block into one ranged get
+[RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)). The store merges ranges adjacent in the block into one ranged get
 ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)), so a packed small file, or a run of one file's chunks, costs one
 request ([RFC 2 §5.3](rfc-2-carver.md#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from)); ranges that are not adjacent cost one request each, or
 the engine asks for the whole block instead. A range is always a whole chunk: a
@@ -1736,7 +1736,7 @@ A fetch of chunks held only remotely — some ranges of one block, or all of it 
 produces verified chunks, one at a time, and yields them to its caller. The caller
 is the engine, which uses them twice: to answer the read that caused the fetch,
 and, where its fill policy says so, to fill the journal so the next read is local
-([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time), [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)). The syncer imports no journal and fills nothing ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)).
+([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order), [RFC 0 §2.3](rfc-0-data-lifecycle.md#2.3%20Operations)). The syncer imports no journal and fills nothing ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)).
 
 Both uses **MUST** read the same bytes and **MUST NOT** modify them. Each chunk is
 verified before it is yielded, which is what makes one buffer safe for both. A
@@ -1748,7 +1748,7 @@ whole range has.
 ### 4.2 The reply neither waits on the fill nor fails with it
 
 That the reply neither waits on the fill nor fails with it is the engine's rule
-([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20streams%2C%20one%20verified%20chunk%20at%20a%20time)). The syncer's part is to yield each chunk as soon as it is verified,
+([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)). The syncer's part is to yield each chunk as soon as it is verified,
 valid until the caller's next iteration ([§1.3](#1.3%20Interface)).
 
 ### 4.3 Concurrent demand for one chunk is one fetch
