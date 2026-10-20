@@ -903,11 +903,11 @@ The fixture gives the command these placeholders:
   server at `localhost`, and WPTS and smbtorture reach it inside the server's container. When
   step 2's exit criterion compares results through `dt` with the scripts' (§8), a difference that
   comes from the address, or from where the server runs, has its cause listed beforehand. The
-  scripts stay as they are, except that pynfs's reference run is given the host's address as its
-  `--server`, through `PYNFS_SERVER`, so a difference in the delegation tests isn't hidden behind
-  the address, and that they save each cell's exit status and grades for the comparison (§8).
-  With `kerberos`, `{server}` is the machine's name instead, which a Kerberos client names the
-  server's principal after: Samba's client never uses Kerberos with an address.
+  scripts stay as they are, except that they save each cell's exit status and grades for the
+  comparison (§8), and that pynfs's, until they went in step 3, gave its reference run the host's
+  address as its `--server`, so a difference in the delegation tests wasn't hidden behind the
+  address. With `kerberos`, `{server}` is the machine's name instead, which a Kerberos client
+  names the server's principal after: Samba's client never uses Kerberos with an address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
   port, or `rpcbind: host`, run one at a time.
@@ -1040,9 +1040,9 @@ to Ubuntu. `dt plan --json` prints the tier and its cells:
     "notes": ["cell timeout raised from 90m to 5h7m: the sum of its tests' limits plus 5m for the fixture"] } ] }
 ```
 
-A cell lists `tests` only when it runs part of its suite's; `matrix`, `option` and `job` appear
-when the cell has them. CI turns `place` into the job's runner and `timeout_minutes` into its
-`timeout-minutes`.
+A cell lists `tests` only when it runs part of its suite's; `matrix`, `option`, `job` and `tools`,
+the test tools it takes from `{tools}`, appear when the cell has them. CI turns `place` into the
+job's runner and `timeout_minutes` into its `timeout-minutes`.
 
 **Selecting what runs.** `dt run conformance` runs every suite in the group, and
 `dt run conformance --skip wpts` or `--only wpts,pynfs` narrows it. `--parallel N` runs up to N
@@ -1511,6 +1511,9 @@ One workflow, `tests.yml`, runs every registered suite:
     named (`ubuntu-latest` for `ubuntu`), with `--retry 1` on develop and the schedule, never on
     PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
     artifact `dt-run-CELL-ATTEMPT`, the cell's name with `-` for `/`, without `{bin}` and `{tools}`.
+    A cell with `tools` gets nix and the shared nix cache; on a push it builds them as
+    `.#NAME` and publishes them to the cache, as the old jobs did, and a pull request or a
+    dispatch only reads it.
   - `gate` needs every job that runs a blocking cell, and always runs. It merges the summaries
     into one report: its job summary is each blocking cell's `report.md`, one after another. It
     fails unless `plan` and every `run` job passed, which a `run` job does only when its cell
@@ -1518,7 +1521,9 @@ One workflow, `tests.yml`, runs every registered suite:
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
     and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
-    `dt-non-blocking-CELL-ATTEMPT`, so the gate's report doesn't take them.
+    `dt-non-blocking-CELL-ATTEMPT`, so the gate's report doesn't take them. It has
+    `continue-on-error`, so a failed one doesn't fail the workflow run, whose result is what
+    `ci-health.yml` reads as develop's.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
   any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
@@ -1772,7 +1777,7 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
      alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
      grading each test, as it does when one has no result, compares only its verdict, and differs
-     when the scripts pass it. pynfs's scripts reach the server at the host's address, as `dt`
+     when the scripts pass it. pynfs's scripts reached the server at the host's address, as `dt`
      does (§4.2); a test whose difference comes from where its server runs is named, with the
      cause, in the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
@@ -1783,17 +1788,21 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      compares the two sides' results for each planned cell, writes the comparison to its summary,
      and fails when a cell differs, as a planned cell missing on either side does, or when there
      is none to compare: its result is what the 5 runs count. None of these jobs fails the
-     workflow run, so develop's status is still the scripts'.
+     workflow run, so develop's status is still the scripts'. A suite's parity jobs go with its
+     scripts, when it moves into `tests.yml` (step 3).
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
-     name, as the scripts' results directories name them (`pynfs/badger-s3-4.1` for `dt`'s
-     `pynfs/badger-s3/1`). For it, `run.sh` saves each cell's exit status, and each grader its
+     name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
+     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
      grades: each failure, known or new, and the tests run.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
-     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`.
+     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`. When pynfs's
+     cells move, `nfs-pynfs.yml` keeps only its knfsd baseline, on dispatch, until
+     `dt run pynfs --knfsd` replaces it (§4.8), and leaves `ci-health.yml`'s lists, since it no
+     longer tests a commit.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.

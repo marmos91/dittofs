@@ -80,8 +80,8 @@ tier_profiles() {
 
 # known_failures SUITE VARIANT — the blacklists, one path relative to test/ per
 # line, or nothing when the suite has none. Suites that grade each variant
-# against its own table carry an object here rather than a string; pynfs is the
-# reason that shape exists. A table may also be a list, graded together: a
+# against its own table carry an object here rather than a string, as
+# pjdfstest does per NFS version. A table may also be a list, graded together: a
 # shared table plus a small overlay per variant, so a row the variants share is
 # written once and a row only one of them needs cannot excuse the others.
 known_failures() {
@@ -351,9 +351,9 @@ run_one() {
         local runner="${TEST_DIR}/${cmd}"
         [[ -x "$runner" ]] || die "step ${name}: ${cmd} is not executable"
 
-        # Privilege is declared per step, never hoisted to the whole run: pynfs
-        # is its own NFSv4 client and must stay runnable with no mount and no
-        # root, and a root precondition at the top would take that away.
+        # Privilege is declared per step, never hoisted to the whole run: a
+        # step that needs no root must stay runnable without it, and a root
+        # precondition at the top would take that away.
         local -a prefix=()
         if [[ "$needs_root" == "true" && "$EUID" -ne 0 ]]; then
             prefix=(sudo -E)
@@ -414,7 +414,7 @@ run_one() {
 # parser starts writing one.
 suite_writes_verdict() {
     case "$1" in
-    wpts | pynfs | pjdfstest) return 1 ;;
+    wpts | pjdfstest) return 1 ;;
     *) return 0 ;;
     esac
 }

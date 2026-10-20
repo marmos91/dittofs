@@ -534,8 +534,8 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
 | `conformance.yml` | PR, push, nightly | WPTS BVT, smbtorture, pjdfstest, NFS `sec=krb5` | ~45 min |
 | `smb-client-compat.yml` | push, weekly | macOS/Linux SMB client testing | ~10 min |
-| `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
 | `tests.yml` | PR, push, nightly | The suites of `test/suites.yaml` through `dt`, pynfs so far, decided by one `gate` check | ~20 min |
+| `nfs-pynfs.yml` | manual | pynfs against Linux knfsd, the evidence for its known failures | ~30 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
 | `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
 
@@ -575,7 +575,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
 - **conformance.yml** -- The presubmit profiles of each suite (see the table above)
-- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (badger-s3)
+- **tests.yml** -- pynfs NFSv4.0 + NFSv4.1 protocol conformance (badger-s3), through `dt`
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)

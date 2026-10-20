@@ -71,7 +71,8 @@ jobs:
       - name: Build dt
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
-      # Each cell gets its name as one path element, for its artifact's name.
+      # Each cell gets its name as one path element, for its artifact's name,
+      # and the tools dt builds for it as nix installables, for the cache.
       - name: Plan the cells
         id: plan
         env:
@@ -79,7 +80,8 @@ jobs:
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c '[(.cells // [])[] | select(.suite == "pynfs") | .slug = (.name | gsub("/"; "-"))]' > "$RUNNER_TEMP/cells.json"
+            jq -c '[(.cells // [])[] | select(.suite == "pynfs")
+              | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           echo "blocking=$(jq -c 'map(select(.blocking))' "$RUNNER_TEMP/cells.json")" >> "$GITHUB_OUTPUT"
           echo "non-blocking=$(jq -c 'map(select(.blocking | not))' "$RUNNER_TEMP/cells.json")" >> "$GITHUB_OUTPUT"
@@ -125,12 +127,23 @@ jobs:
           go-version: "1.26.x"
 
       # dt builds the test tools a cell names under {tools} with nix, at the
-      # revisions flake.lock pins.
+      # revisions flake.lock pins. On a push the cache's setup realizes them
+      # and publishes them; a pull request or a dispatch only reads the cache.
+      # Only a publishing job receives the credentials: an unused input can
+      # still be read by the checked-out action.
       - name: Install Nix
+        if: matrix.nix != ''
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Setup Nix cache
+        if: matrix.nix != ''
         uses: ./.github/actions/nix-cache
+        with:
+          push: ${{ github.event_name == 'push' }}
+          paths: ${{ matrix.nix }}
+          access-key-id: ${{ github.event_name == 'push' && secrets.NIX_CACHE_ACCESS_KEY_ID || '' }}
+          secret-access-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SECRET_ACCESS_KEY || '' }}
+          signing-key: ${{ github.event_name == 'push' && secrets.NIX_CACHE_SIGNING_KEY || '' }}
 
       - name: Build dt
         id: build
@@ -159,12 +172,14 @@ jobs:
             !test/harness/results/*/tools/
           if-no-files-found: ignore
 
-  # Reported and annotated like the blocking cells, and a failed one shows on
-  # the pull request, but gate doesn't wait for it.
+  # Reported and annotated like the blocking cells, and a failed one shows as
+  # failed on the pull request, but gate doesn't wait for it, and it doesn't
+  # fail the run, whose result is what CI Health reads for develop.
   non-blocking:
     name: ${{ matrix.name }} (non-blocking)
     needs: plan
     if: needs.plan.outputs.non-blocking != '[]'
+    continue-on-error: true
     runs-on: ${{ matrix.place }}-latest
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:

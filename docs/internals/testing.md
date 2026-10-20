@@ -392,8 +392,8 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 ## Conformance test suites
 
 DittoFS is validated against industry-standard conformance suites for SMB and
-NFS. Every one of them runs through `test/conformance/run.sh` and is described
-in `test/conformance/suites.json`:
+NFS. pynfs runs through `dt` (below); every other one runs through
+`test/conformance/run.sh` and is described in `test/conformance/suites.json`:
 
 <!-- conformance-suites:begin -->
 <!-- Generated from test/conformance/suites.json by test/conformance/check-docs.sh. Do not edit by hand. -->
@@ -403,7 +403,6 @@ in `test/conformance/suites.json`:
 | `wpts` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
 | `smbtorture` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
 | `pjdfstest` | NFS | `badger-s3` | `3`, `4`, `4.1` | `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
-| `pynfs` | NFS | `badger-s3` | `4.0`, `4.1` | `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
 | `cthon04` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `badger-s3` | [`test/nfs-mount/cthon04/KNOWN_FAILURES.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md) |
 | `nfstest` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
 
@@ -455,20 +454,18 @@ NFSv4 client, so it needs no kernel mount and no root — `test/posix/` and `tes
 through a kernel client, which only ever sends the subset of the protocol it needs.
 
 - **Suite:** pynfs NFSv4.0 (689 tests) and NFSv4.1 (269 tests)
-- **Known failures:** see
-  [`../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md)
-  and [`KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md)
-- **Baseline:** [`baseline-knfsd.md`](../../test/nfs-conformance/pynfs/baseline-knfsd.md) —
+- **Known failures and expected skips:**
+  [`../../test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml)
+- **Baseline:** [`baseline-knfsd.md`](../../test/nfs-conformance/pynfs/baseline-knfsd.md):
   the same suite against the Linux kernel server, which is what distinguishes an assertion
   no server satisfies from one DittoFS fails alone
 - **Run locally:**
   ```bash
-  cd test/nfs-conformance/pynfs
-  ./run-pynfs.sh --minor-version 4.0     # provisions and tears down a server
-  ./run-pynfs.sh --minor-version 4.1
+  test/harness/bin/dt run pynfs/badger-s3/0     # NFSv4.0; badger-s3 needs Localstack
+  test/harness/bin/dt run pynfs/badger-s3/1     # NFSv4.1
   ```
 
-Runs in CI via `.github/workflows/nfs-pynfs.yml` on every non-docs PR. See
+Runs in CI through `dt`, in `.github/workflows/tests.yml`, on every PR. See
 [`test/nfs-conformance/pynfs/README.md`](../../test/nfs-conformance/pynfs/README.md).
 
 ### cthon04 and nfstest (NFS mount options)

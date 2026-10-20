@@ -31,7 +31,8 @@ func names(cells []Cell) []string {
 
 // The pr tier is today's pull-request checks, with the conformance suites on
 // the production profile, badger-s3, only. With no change given, the Kerberos
-// e2e run, which has paths, is planned too.
+// e2e run, which has paths, is planned too. A cell names the test tools it
+// takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
 	if err != nil {
@@ -56,6 +57,13 @@ func TestPRTier(t *testing.T) {
 		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke"
 		if c.Blocking == nonBlocking {
 			t.Errorf("%s: blocking %t", c.Name, c.Blocking)
+		}
+		var tools []string
+		if c.Suite == "pjdfstest" || c.Suite == "pynfs" || c.Suite == "cthon04" {
+			tools = []string{c.Suite}
+		}
+		if !slices.Equal(c.Tools, tools) {
+			t.Errorf("%s: tools %q, want %q", c.Name, c.Tools, tools)
 		}
 	}
 }

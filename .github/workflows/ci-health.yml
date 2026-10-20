@@ -22,13 +22,12 @@ name: CI Health
 on:
   workflow_run:
     # A GitHub trigger cannot be computed, so these names are repeated from the
-    # "workflows" map in test/conformance/suites.json. The monitored-file list
-    # below is read from that map rather than repeated a second time.
+    # "workflows" map in test/conformance/suites.json, less Tests, which
+    # retries itself. The monitored-file list below is read from that map
+    # rather than repeated a second time.
     workflows:
       - "Conformance Suites"
-      - "NFS Protocol Conformance"
       - "E2E Tests"
-      - "Tests"
     types: [completed]
     # The retry acts on develop only, so a run on any other branch would
     # start a run that skips every job.
@@ -61,7 +60,6 @@ jobs:
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.head_branch == 'develop' &&
-      github.event.workflow_run.name != 'Tests' &&
       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule') &&
       github.event.workflow_run.conclusion != 'success' &&
       github.event.workflow_run.conclusion != 'cancelled' &&
