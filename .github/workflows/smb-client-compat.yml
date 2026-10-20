@@ -18,7 +18,7 @@ on:
       - 'internal/adapter/smb/**'
       - '.github/workflows/smb-client-compat.yml'
   schedule:
-    - cron: '55 4 * * 1'  # Weekly Monday 04:55 UTC, staggered from the nightly suites.
+    - cron: '55 21 * * 0'  # Weekly, Sunday 21:55 UTC, before the nightly suites.
   workflow_dispatch:
 
 permissions:

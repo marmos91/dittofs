@@ -25,7 +25,7 @@ on:
       - '**.jpg'
       - '**.svg'
   schedule:
-    - cron: '43 4 * * *'  # Nightly 04:43 UTC, staggered from the protocol suites.
+    - cron: '43 22 * * *'  # Nightly 22:43 UTC, staggered from the protocol suites.
   workflow_dispatch:
 
 permissions:

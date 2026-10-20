@@ -52,8 +52,10 @@ on:
       - 'test/integration/kerberos/**'
       - '.github/workflows/e2e-tests.yml'
   schedule:
-    # Nightly at 04:07 UTC, staggered from the other protocol suites.
-    - cron: '7 4 * * *'
+    # Nightly at 22:07 UTC, staggered from the other protocol suites. GitHub
+    # starts scheduled runs hours late, which lands this one before the
+    # working day rather than inside it.
+    - cron: '7 22 * * *'
   workflow_dispatch:
 
 permissions:

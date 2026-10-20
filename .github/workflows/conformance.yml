@@ -40,8 +40,10 @@ on:
       - '**.jpg'
       - '**.svg'
   schedule:
-    # Nightly at 04:19 UTC, staggered from the other protocol suites.
-    - cron: '19 4 * * *'
+    # Nightly at 22:19 UTC, staggered from the other protocol suites. GitHub
+    # starts scheduled runs hours late, which lands this one before the
+    # working day rather than inside it.
+    - cron: '19 22 * * *'
   workflow_dispatch:
     inputs:
       suite:
