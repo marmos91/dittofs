@@ -270,10 +270,9 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	t.Log("Waiting for KDC TCP port...")
 	waitForADPort(t, kdcHostPort, 6*time.Minute)
 
-	// Wait for the entrypoint to export the keytab, the last artifact it writes.
 	// The samba that served the setup keeps running, so the DC stays up from here.
-	t.Log("Waiting for service keytab export...")
-	waitForKeytab(t, 4*time.Minute)
+	t.Log("Waiting for the AD-DC setup to finish...")
+	waitForADReady(t, 4*time.Minute)
 
 	// Copy the keytab out of the container. docker cp reads as root inside the
 	// container, so the fixture's chmod 0400 / chown to the dittofs uid does
@@ -331,20 +330,25 @@ func findADDockerfileDir(t *testing.T) string {
 	}
 }
 
-// waitForKeytab polls until dittofs.keytab exists and is non-empty inside the
-// container (the entrypoint exports it after provisioning completes).
-func waitForKeytab(t *testing.T, timeout time.Duration) {
+// waitForADReady polls until the entrypoint writes its ready marker, the last
+// step of its setup: the users, groups and complete keytab exist and the KDC,
+// LDAP and DNS accept connections. A failed setup stops the container, which
+// fails the test at once instead of at the timeout.
+func waitForADReady(t *testing.T, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := adDockerExec("sh", "-c", "test -s /keytabs/dittofs.keytab && echo ok")
-		if err == nil && strings.TrimSpace(string(out)) == "ok" {
+		if _, err := adDockerExec("test", "-f", "/keytabs/.ready"); err == nil {
 			return
+		}
+		if out, _ := adDockerOutput("inspect", "-f", "{{.State.Running}}", adContainerName); strings.TrimSpace(string(out)) == "false" {
+			dumpADLogs(t)
+			t.Fatal("AD-DC container stopped before its setup finished")
 		}
 		time.Sleep(2 * time.Second)
 	}
 	dumpADLogs(t)
-	t.Fatalf("keytab not exported within %s", timeout)
+	t.Fatalf("AD-DC setup not finished within %s", timeout)
 }
 
 func waitForADPort(t *testing.T, port int, timeout time.Duration) {

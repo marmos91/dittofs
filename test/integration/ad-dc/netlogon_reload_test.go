@@ -5,7 +5,7 @@ package ad_dc_test
 import (
 	"context"
 	"os/exec"
-	"strings"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -15,11 +15,13 @@ import (
 	"github.com/oiweiwei/go-msrpc/ssp/ntlm"
 )
 
-// serverAuthenticateDenied is how a DC's refusal of the machine credential
-// reaches the caller: NetrServerAuthenticate3 returned STATUS_ACCESS_DENIED
-// (0xC0000022, printed as a signed 32-bit value). go-msrpc folds the status into
-// the error text instead of wrapping it, so the text is all there is to match.
-const serverAuthenticateDenied = "NetrServerAuthenticate3: error: -1073741790"
+// serverAuthenticateDenied matches a DC's refusal of the machine credential:
+// NetrServerAuthenticate3 returned STATUS_ACCESS_DENIED (0xC0000022). go-msrpc
+// folds the status into the error text instead of wrapping it, so the text is
+// all there is to match. It prints the signed 32-bit value, or the status name
+// once anything linked in imports its ntstatus error table; both count.
+var serverAuthenticateDenied = regexp.MustCompile(
+	`NetrServerAuthenticate3: (error: -1073741790|ntstatus: STATUS_ACCESS_DENIED \(0xc0000022\))`)
 
 // ntlmResponseFor computes a deterministic NTLMv2 NT/LM response for the given
 // AD user against a fixed 8-byte server challenge, mirroring the helper inlined
@@ -288,7 +290,7 @@ func TestNetlogonHotReload_PasswordRotation(t *testing.T) {
 		t.Fatal("logon SUCCEEDED with the stale machine password after rotation — " +
 			"the secure channel is not presenting the reloaded credential to the DC")
 	}
-	if !strings.Contains(errStale.Error(), serverAuthenticateDenied) {
+	if !serverAuthenticateDenied.MatchString(errStale.Error()) {
 		t.Fatalf("stale-password logon failed, but not with the DC's credential refusal (%s): %v",
 			serverAuthenticateDenied, errStale)
 	}

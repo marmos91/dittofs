@@ -79,33 +79,13 @@ func TestLDAPResolveDomainUser(t *testing.T) {
 		t.Fatalf("ldap.New: %v", err)
 	}
 
-	// The deadline must exceed the whole retry window below (up to 15 attempts ×
-	// (15s per-attempt LDAP timeout + 2s backoff)), otherwise the context would
-	// expire mid-loop and the remaining attempts would fail with a misleading
-	// "context deadline exceeded" instead of the real connectivity error.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	// Retry on transient connect errors: setupADDCForLDAP returns once alice
-	// exists, but LDAP is the last listener samba opens and can come up after
-	// alice is created. The published port can accept before samba listens, so
-	// the port wait does not cover it, and the first StartTLS then reads a reset
-	// or EOF.
-	var res *identity.ResolvedIdentity
-	for attempt := 1; attempt <= 15; attempt++ {
-		if ctx.Err() != nil {
-			break
-		}
-		res, err = provider.Resolve(ctx, &identity.Credential{ExternalID: "alice@" + adRealm})
-		if err == nil {
-			break
-		}
-		t.Logf("Resolve(alice) attempt %d/15 not ready yet: %v", attempt, err)
-		time.Sleep(2 * time.Second)
-	}
+	res, err := provider.Resolve(ctx, &identity.Credential{ExternalID: "alice@" + adRealm})
 	if err != nil {
 		dumpADLogs(t)
-		t.Fatalf("Resolve(alice) failed after retries: %v", err)
+		t.Fatalf("Resolve(alice): %v", err)
 	}
 	t.Logf("Resolved alice: %+v", res)
 
@@ -219,30 +199,14 @@ func setupADDCForLDAP(t *testing.T) (ldapPort int, cleanup func()) {
 	t.Log("Waiting for LDAP TCP port...")
 	waitForADPort(t, ldapPort, 6*time.Minute)
 
-	// alice's RFC2307 attrs + group nesting are stamped after the LDAP stack is
-	// up; wait until alice is queryable so the test sees a fully provisioned dir.
-	t.Log("Waiting for alice provisioning...")
-	waitForADUser(t, "alice", 4*time.Minute)
+	t.Log("Waiting for the AD-DC setup to finish...")
+	waitForADReady(t, 4*time.Minute)
 
 	cleanup = func() {
 		t.Log("Cleaning up AD-DC container...")
 		_ = exec.Command("docker", "rm", "-f", container).Run()
 	}
 	return ldapPort, cleanup
-}
-
-// waitForADUser polls until samba-tool reports the given user exists.
-func waitForADUser(t *testing.T, user string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := adDockerExec("samba-tool", "user", "show", user); err == nil {
-			return
-		}
-		time.Sleep(2 * time.Second)
-	}
-	dumpADLogs(t)
-	t.Fatalf("user %s not provisioned within %s", user, timeout)
 }
 
 // lookupGroupRIDAsGID returns the RID (final SID sub-authority) of a group,
