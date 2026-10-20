@@ -304,7 +304,7 @@ type File struct {
 	// Owner and permissions. Mode agrees with the ACL when one exists (§2.6).
 	Owner, Group Principal
 	Mode         uint32    // permission bits only; the type is Type
-	Flags        FileFlags // enforced: immutable, append-only (§7.8); stored markers: hidden, system, archive, read-only, sparse
+	Flags        FileFlags // enforced: immutable, append-only (§7.8); stored markers: hidden, system, archive, read-only (enforced, §7.9), sparse
 
 	// Times. Birth is set once at create; Change advances on every metadata
 	// or content change; Modify only on content change (§9.2).
@@ -430,18 +430,14 @@ changed only by an explicit set.
 append-only, are rules this component applies to every caller and protocol
 ([§7.8](#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)). The **stored markers** — hidden, system, archive, read-only and sparse
 — are an attribute set the namespace stores, returns and changes on a
-set-attribute, and never interprets beyond that: no marker grants, refuses or
-changes any other operation here, read-only included. An adapter maps its
+set-attribute. Hidden, system, archive and sparse are never interpreted beyond
+that; read-only is the one marker that refuses anything, the writes and deletes
+[§7.9](#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)
+names, for every protocol. An adapter maps its
 protocol's attribute bits onto them ([RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace), [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)); a protocol with no spelling
 for a marker leaves it unchanged. A link a protocol represents as a special
 kind of file is a `Symlink`; a special-file kind no `FileType` holds is refused
 by its adapter before it reaches this component.
-
-> decision: the read-only marker refuses nothing, for every protocol: the
-> namespace stores and returns it, and enforces only the immutable and
-> append-only flags. A protocol whose own servers refuse writes and deletes of
-> a read-only file sees them succeed here. Enforce it, as a rule here for every
-> protocol, when an application is shown to rely on the refusal.
 
 **There is no generation.** A generation exists where file IDs are reused, to
 tell a handle to a released file from one to its successor. A `FileID` is a
@@ -1906,8 +1902,58 @@ A refusal is `ErrPerm`, never an I/O error. Only a privileged caller ([§7.4](#7
 **MAY** set or clear either flag, and clearing it is the one change an immutable
 file accepts. An open granted before a flag was set does not outlive it: the
 grant is evaluated against the file's current `Flags` on every write it gates
-([§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always)). The read-only marker ([§2.1](#2.1%20File)) is not one of these flags and
-refuses nothing.
+([§7.2](#7.2%20Two%20timings%2C%20both%20allowed%3B%20one%20owner%2C%20always)). The read-only marker ([§2.1](#2.1%20File)) is not one of these flags;
+what it refuses is §7.9's.
+
+### 7.9 The read-only marker refuses writes and deletes
+
+The read-only marker ([§2.1](#2.1%20File)) is enforced here, in `Authorize`,
+`Granted` and the transactions of
+[§7.7](#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs),
+for every caller, privileged included, and every protocol:
+
+| Operation | A file with the marker | A directory with the marker |
+| --- | --- | --- |
+| a request for write data or append: an open for writing, an open that overwrites or replaces the content, a write or truncate decided on its own call | refused `ErrAccess` | allowed: on a directory those rights add entries |
+| maximal access (`Granted`) | omits write data and append | unchanged |
+| delete: an unlink, or a delete-on-close mark set at open or later ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) | refused `ErrAccess`, its cause `ReadOnly` | refused likewise |
+| a rename or link that replaces it | refused `ErrAccess` | refused likewise |
+| read; rename or link of it; an attribute, ACL or xattr change, clearing the marker included | allowed | allowed |
+
+- **A delete mark may ask to ignore the marker.** A delete-on-close mark set
+  through an open whose grant holds write attributes, with the request's
+  ignore-read-only option, is not refused; no other operation has the option.
+- **The marker is read when the access is decided.** A write through an open
+  is decided by the open's grant (§7.2), so an open granted write before the
+  marker was set keeps writing, unlike §7.8's flags; a write or truncate
+  decided on its own call meets the marker every time. A delete-on-close mark
+  set before the marker is not refused at the close: the deferred unlink is
+  authorised by the mark's open (§8.2).
+- **The delete refusal says why.** It is `ErrAccess` with its cause
+  `ReadOnly` ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)),
+  so a protocol that answers a read-only delete apart from a denied one can.
+  Each adapter's mapping, and what its protocol can show of the marker, is
+  [RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace)'s and
+  [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace)'s.
+
+> decision: the read-only marker refuses writes and deletes for every
+> protocol, as the one file system model that defines the attribute states it
+> (MS-FSA 2.1.5.1.2.1 steps 1 and 2 at open, 2.1.5.15.3 and 2.1.5.15.4 for the
+> delete disposition, 2.1.5.15.12 for a replaced rename target; MS-FSCC 2.6),
+> so a file one protocol's client marked read-only is read-only through the
+> other. Windows applications rely on it to protect a file from a save or a
+> delete, and an NTFS server refuses both. On a directory MS-FSA refuses only
+> the delete, since the write rights there add entries. The cost: a protocol
+> that cannot show or clear the marker meets refusals its client cannot
+> explain or undo; NFS is one (RFC 21 §11.3). Overturned if NFS users are shown
+> stuck on files an SMB client marked, which would call for an NFS spelling of
+> the marker rather than withdrawing the rule.
+
+> ponytail: a read-only directory's maximal access is not narrowed. MS-FSA
+> clears add a file, add a subdirectory and delete a child from a
+> maximal-access open of one while granting them to an explicit request; this
+> server reports them in both. Mirror it when a client is shown to read a
+> read-only directory's maximal access as "cannot add".
 
 ## 8. Open state, as the namespace sees it
 
@@ -2488,7 +2534,7 @@ here. Each adapter maps every row through its one error table
 | `ErrExist` | the name a create, link or rename asks for is taken, or folds onto a taken one ([§3.3](#3.3%20Case)); an exclusive create whose verifier differs ([§2.10](#2.10%20Exclusive%20create)) |
 | `ErrNotEmpty` | removing a directory, or renaming over one, that holds an entry; `SetProject` on a directory that holds one |
 | `ErrNotDir`, `ErrIsDir` | a directory operation on a non-directory, or the reverse; a rename pairing a directory with a non-directory ([§5.4](#5.4%20Rename%20over%20an%20existing%20entry)) |
-| `ErrAccess` | the share grant, the mode or the ACL refuses the caller ([§7](#7.%20Permissions)) |
+| `ErrAccess` | the share grant, the mode or the ACL refuses the caller ([§7](#7.%20Permissions)); the read-only marker refuses a write or a delete ([§7.9](#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)), with its cause `ReadOnly` on a delete |
 | `ErrPerm` | refused whatever the caller's access: the flags of [§7.8](#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint); an owner, group, mode-bit or marker change only the owner or a privileged caller may make ([§7.4](#7.4%20The%20identity%20arrives%20resolved)); `SetProject` by an unprivileged caller |
 | `ErrInvalid` | a name [§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary) or the share's name rule ([§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)) refuses; a rename of a directory into its own descendant ([§5.2](#5.2%20The%20loop%20check%20is%20inside%20the%20transaction)); a deny naming a well-known principal with no row in [RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)'s table ([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)); `SetProject` on a non-directory or inside another project |
 | `ErrNameTooLong` | a name past the share's `MaxNameBytes` ([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)) |
@@ -2567,6 +2613,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) setgid for a non-member | In `/srv/drop`, mode 3777, group `finance`, create a file with mode 2755 as a user outside `finance`: assert the file's group is `finance` and setgid clear. Repeat as a member: assert setgid kept. Create a directory there as the non-member: assert it is setgid. `chmod 2755` a file of group `finance` as its non-member owner: assert setgid clear. A build that inherits the bit unchecked fails the first assertion. |
 | [§2.4](#2.4%20Attributes%2C%20and%20who%20writes%20them) no group at all | Create a file as a principal with no primary group whose credential names no group, and as one whose credential's group maps to no principal and who has no primary group. Assert both creates succeed and the file's `Group` is the creator's own principal. Give the second principal a primary group and repeat: assert the file's `Group` is that primary group. |
 | [§7.8](#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint) flags | Set immutable on a file as a privileged caller; as its owner, write, truncate, `chmod`, rename, link and unlink it, and write through an open taken before the flag was set: assert each refused with a permission error. Set append-only: assert an append succeeds and an overwrite, a truncate and an unlink are refused. Clear either flag as the unprivileged owner: assert refused. A build that stores the flags without checking them fails every assertion. |
+| [§7.9](#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes) read-only marker | Set the marker on a file and on an empty directory. As the file's owner and as a privileged caller: open the file for write, for append, and overwriting it: assert each `ErrAccess`; write and truncate it on no open: assert `ErrAccess`; read it, rename it, set an xattr and clear the marker: assert each succeeds. Set it again; unlink it, mark it delete on close at open and through an open, and rename another file over it: assert each `ErrAccess`, the deletes with cause `ReadOnly`. Mark it delete on close with the ignore-read-only option through an open holding write attributes: assert the file goes at the close. On the directory, create in it: assert success; remove it: assert `ErrAccess` with cause `ReadOnly`. Open the file for write, then set the marker: assert writes through that open succeed. |
 | [§9.2](#9.2%20Timestamps) file pre-operation attributes | Two clients write one file in a loop at its primary. Assert every result that carries pre-operation attributes has `before` equal to the attributes after the change immediately preceding it in the file's `Version` order. Capture under the commit serialisation only: the check fails. |
 | [§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later) delete-pending directory | Mark a directory delete on close; while the mark stands, create in it through each adapter, and rename a file into it. Assert each refused `ErrDeletePending`, and the directory removed at close. Race a create past the check: assert the close-time unlink fails as not empty and is reported. |
 | [§4.1](#4.1%20%60nlink%60%20is%20exactly%20its%20entries) name freed | Unlink a name and create it again as soon as the unlink is acknowledged, on every backend including a slow remote one. Assert the create never sees the name as taken and the parent's `Version` moved. |

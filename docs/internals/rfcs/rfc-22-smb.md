@@ -2132,11 +2132,21 @@ onto them and onto the file's type:
 > reported, because residency is not an attribute
 > ([RFC 7 §9.3](rfc-7-namespace-metadata.md#9.3%20Residency%20is%20not%20an%20attribute));
 > the others are not stored. Store a further marker when a client is shown to
-> read back one it set. The read-only marker is stored, reported and refuses
-> nothing, as for every protocol
-> ([RFC 7 §2.1](rfc-7-namespace-metadata.md#2.1%20File)); a Windows server
-> refuses writes and deletes of a read-only file, and this one does not.
+> read back one it set.
 
+- **Read-only.** `FILE_ATTRIBUTE_READONLY` is the read-only marker, which
+  refuses writes and deletes for every protocol as
+  [RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)
+  states. On a file, a `CREATE` asking `FILE_WRITE_DATA` or `FILE_APPEND_DATA`,
+  or with an overwrite or supersede disposition, is `STATUS_ACCESS_DENIED`,
+  and `MaximalAccess` omits both rights. On a file or a directory, a `CREATE`
+  with `FILE_DELETE_ON_CLOSE` and a `SET_INFO` of `FileDispositionInformation`
+  or `FileDispositionInformationEx` setting delete are `STATUS_CANNOT_DELETE`;
+  `FileDispositionInformationEx` with
+  `FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE` through an open holding
+  `FILE_WRITE_ATTRIBUTES` is the neutral ignore-read-only option. A rename
+  replacing it is `STATUS_ACCESS_DENIED`. Reads, renames of it, EA and
+  attribute sets, clearing the flag included, succeed.
 - **Times.** In `FileBasicInformation`, 0 leaves a time unchanged and −1 and −2
   suspend and resume it (§9.3); any other value is a client-given time, stored
   as given ([RFC 7 §9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward)). A time set travels on an open, so a client-given
@@ -2291,6 +2301,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrNotEmpty` | `STATUS_DIRECTORY_NOT_EMPTY` |
 | `ErrNotDir`, `ErrIsDir` | `STATUS_NOT_A_DIRECTORY`, `STATUS_FILE_IS_A_DIRECTORY` |
 | `ErrAccess` | `STATUS_ACCESS_DENIED` |
+| `ErrAccess` with cause `ReadOnly` — the read-only marker refused a delete ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `STATUS_CANNOT_DELETE` |
 | `ErrWrongShare` | `STATUS_ACCESS_DENIED` |
 | `ErrStale` — a released file | `STATUS_OBJECT_NAME_NOT_FOUND`: an open holds its file, so only a durable reconnect meets it (§6.4) |
 | `ErrCross` (`CrossShare`) | `STATUS_NOT_SAME_DEVICE`; it does not arise from a rename, whose target is resolved within the tree |
@@ -2476,6 +2487,7 @@ name, a SID, a principal or a client address
 | §3.1 capabilities | Negotiate 2.1, 3.0, 3.0.2 and 3.1.1, each once with every capability bit set in the request and once with none; assert `Capabilities` equals the §3.1 table's column for each dialect, the "if asked" bits clear when the request left them clear. On a continuously available share, a Windows client asks for a persistent handle. | a continuously available share whose clients ask only for durable handles |
 | §4.3 per-session disconnect | Bind two channels of one session; drop one: assert no volatile open closes and no durable timeout starts. On one `ClientGuid`, alice and bob each hold a durable open; alice reconnects with `PreviousSessionId`: assert bob's open stays connected. | a disconnect or previous-session teardown scoped to the machine |
 | §6.1 generic rights | Linux `mount.cifs` opens, reads and writes a file mode 0644 owned by its user; assert success. A `CREATE` with `GENERIC_READ` on a file the user may read: granted. As a member of the file's group, not its owner, `mount.cifs` opens, reads and writes a file mode 0664: assert success; set its DOS attributes through the open: assert `STATUS_ACCESS_DENIED`. As a group member, open a file mode 0620 with `GENERIC_WRITE`: assert granted, with `READ_CONTROL` and `SYNCHRONIZE`. | `GENERIC_*` passed through unmapped, a mapped set's minor rights granted to the owner only, or `READ_CONTROL` and `SYNCHRONIZE` granted from the read bit only |
+| §16.3 read-only attribute | Set `FILE_ATTRIBUTE_READONLY` on a file. `CREATE` asking `FILE_WRITE_DATA`, asking `FILE_APPEND_DATA`, and with `FILE_OVERWRITE_IF` and `FILE_SUPERSEDE`: assert each `STATUS_ACCESS_DENIED`; with `MAXIMUM_ALLOWED`: assert granted and `MaximalAccess` without either right. `CREATE` with `FILE_DELETE_ON_CLOSE`, and `SET_INFO` `FileDispositionInformation` with delete: assert `STATUS_CANNOT_DELETE`; `FileDispositionInformationEx` with `FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE` through an open holding `FILE_WRITE_ATTRIBUTES`: assert the file goes at close. Rename another file over it with `ReplaceIfExists`: `STATUS_ACCESS_DENIED`. Read it, rename it, set an EA, clear the flag: assert success. On a read-only directory, create a file in it: success; delete it: `STATUS_CANNOT_DELETE`. The same steps against a Windows server give the same statuses. | a read-only file written, truncated or deleted, a delete answered `STATUS_ACCESS_DENIED`, or the flag enforced on a directory's contents |
 | §6.1 times through an open | On a 2775 directory, bob creates `report.docx` mode 0664 over NFS. As alice, a member of the group and not the owner, overwrite it with Explorer and with `robocopy /COPY:DT /IS`, then `SET_INFO` a past `LastWriteTime` through alice's open: assert each time she set is stored. Over NFS as alice, `touch -d` a past date on bob's file: assert `NFS4ERR_PERM`; as bob: assert success. | a non-owner writer refused a time set SMB cannot express any other way, or NFS's owner rule relaxed with it |
 | §13, §9.5 through the handle | As an `admin`, open with `FILE_OPEN_FOR_BACKUP_INTENT` and `FILE_DELETE_ON_CLOSE` a file whose DACL excludes the `admin`, set an EA through the handle, and close: assert the EA stored and the file gone. Make the deferred unlink fail at the close (the directory made immutable meanwhile): assert the `CLOSE` succeeded, the file stays, and `vfs_deferred_unlink_refusals_total` rose by one. | a delete-on-close or an EA set re-checked without the open's grant, or a refused deferred unlink lost silently |
 | §6.1 delete through the parent | In a 0775 directory, a group member deletes and renames another member's file from Explorer, and over NFS; assert both succeed, and both fail in a 0755 directory. | `DELETE` at open decided on the file alone |
