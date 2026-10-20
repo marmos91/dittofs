@@ -60,9 +60,5 @@ applies to future walk-outs.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| CSESS16a | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| CSESS26 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| CSESS27 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| RECC3 | bug | non-reclaim op before RECLAIM_COMPLETE must draw NFS4ERR_GRACE | #2340 |
 | DELEG24 | suite | knfsd fails this too — needs FATTR4_OPEN_ARGUMENTS (v4.2) | - |
 | DELEG25 | suite | knfsd fails this too — needs FATTR4_OPEN_ARGUMENTS (v4.2) | - |

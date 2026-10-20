@@ -145,6 +145,7 @@ suites:
       squash: none                      # root keeps its privileges, as pjdfstest needs
       users: [65532, 65533, 65534]
       delegations: false
+    known: test/posix/known.yaml
     tier: pr
     needs: [linux, root, nfs-client]
   pynfs:
@@ -153,6 +154,7 @@ suites:
     matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
     select: { pr: { profile: [badger-s3] } }
     fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # uid 1 is pynfs's second client
+    known: test/nfs-conformance/pynfs/known.yaml
     tier: pr
     needs: [linux]
     options:
@@ -173,6 +175,7 @@ suites:
       shares: test/smb-conformance/shares.yaml
     templates: test/smb-conformance/ptfconfig/*.template
     volumes: { "{out}/config": /data/fileserver }
+    known: test/smb-conformance/known.yaml
     tier: pr
     needs: [linux, docker]
   smbtorture:
@@ -184,6 +187,7 @@ suites:
     matrix: { profile: [memory, badger, badger-s3] }
     select: { pr: { profile: [badger-s3] } }
     fixture: { profile: "{profile}", smb: true, shares: test/smb-conformance/shares.yaml, reset: each }
+    known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
     needs: [linux, docker]
     options:
@@ -192,6 +196,7 @@ suites:
         tests: [smb2.session, smb2.read, smb2.lock]
         matrix: {}
         fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
+        known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
 
   # Each OS's own clients mount the fixture's share, and the workloads run over the mount.

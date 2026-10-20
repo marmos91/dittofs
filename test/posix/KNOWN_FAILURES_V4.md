@@ -21,14 +21,11 @@ Categories:
 |-----------|----------|--------|-------|
 | open/etxtbsy | proto | ETXTBSY cannot be enforced over NFS — server has no execution visibility | - |
 | open::etxtbsy | proto | ETXTBSY cannot be enforced over NFS — server has no execution visibility | - |
-| chflags/* | feature | BSD-specific file flags, not in POSIX | - |
 | lchflags/* | feature | BSD-specific file flags, not in POSIX | - |
 | fallocate/* | feature | No ALLOCATE operation in NFSv4.0 (requires NFSv4.2) | - |
-| posix_fallocate/* | feature | No ALLOCATE operation in NFSv4.0 (requires NFSv4.2) | - |
 | xattr/* | feature | NFSv4 named attributes (OPENATTR) not implemented | - |
 | getxattr/* | feature | NFSv4 named attributes not implemented | - |
 | setxattr/* | feature | NFSv4 named attributes not implemented | - |
 | listxattr/* | feature | NFSv4 named attributes not implemented | - |
 | removexattr/* | feature | NFSv4 named attributes not implemented | - |
-| open/03.t | env | PATH_MAX test fails: mount-point prefix pushes the absolute path over PATH_MAX in the Linux VFS before NFS sees it — client-side, affects any non-root mount | - |
 | unlink/14.t | proto | NFSv4 silly-rename: open file + unlink triggers rename instead of remove, nlink stays 1 (same as Linux knfsd) | - |
