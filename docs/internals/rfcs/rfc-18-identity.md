@@ -993,9 +993,15 @@ with a PAC is then checked against the record §3.4 says.
   directory by `uidNumber` or `gidNumber`, and an entry that answers is minted
   as a directory principal under §5.5's guards. Such lookups are capped per
   client address, and such mints per node (§7.3).
-- **An `AUTH_SYS` uid with no principal behind it**, after that lookup, acts as
-  the share's anonymous principal, and the call is counted
+- **An `AUTH_SYS` uid with no principal behind it**, after that lookup, maps
+  to anonymous at mapping time, before any squash applies (§6.1): `Mapped` is
+  the anonymous principal, the caller then acts as the share's `Anonymous` as
+  a `None` caller does (§6.2), and the call is counted
   (`identity_unmapped_total{scheme="uid"}`).
+- **A call that names no share** — a client registration such as NFSv4's
+  `EXCHANGE_ID` or `SETCLIENTID` — is mapped under the installation's
+  defaults, never a share's mapping, since no share's policy applies to it
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 - **A credential gid with no principal** is no group at all: it is dropped from
   the caller's groups, and a create falls back to the principal's primary group
   ([RFC 7 §2.4](rfc-7-namespace-metadata.md#2.4%20Attributes%2C%20and%20who%20writes%20them)).
@@ -1297,9 +1303,13 @@ the file. It runs five steps, and each fills part of the `Caller`:
 
 1. **Map** — who proved this? With proof kind `Secret` or above, the principal
    sign-in bound the evidence to (§3.1), never by its name again; with
-   `Claimed`, by the claimed uid (§4.3); with `None`, anonymous. A disabled or
-   deleted principal is refused (§3.7). Fills `Mapped`, which state protection
-   compares and which never changes for the life of a connection.
+   `Claimed`, by the claimed uid (§4.3), an unmapped uid being anonymous here,
+   before step 2; with `None`, anonymous. A disabled or deleted principal is
+   refused (§3.7). Fills `Mapped`, which state protection compares and which
+   never changes for the life of a connection. A call that names no share,
+   such as `EXCHANGE_ID` or `SETCLIENTID`, runs this step alone, under the
+   installation's defaults and never a share's
+   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 2. **Squash** — does this share want the caller treated as somebody else
    (§6.2)? Fills `Principal`: the mapped one, or the share's `Anonymous`.
 3. **Collect** — which groups is it in (§6.3)? Fills `Groups` and `DenyOnly`.
