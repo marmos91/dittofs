@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,11 +28,15 @@ func newKnownImport() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var w map[string][]string
 			if where != "" {
-				axis, values, ok := strings.Cut(where, "=")
-				if !ok || axis == "" || values == "" {
+				axis, list, ok := strings.Cut(where, "=")
+				values := strings.Split(list, ",")
+				for i := range values {
+					values[i] = strings.TrimSpace(values[i])
+				}
+				if !ok || axis == "" || slices.Contains(values, "") {
 					return fmt.Errorf("--where %q: expected AXIS=V or AXIS=V1,V2", where)
 				}
-				w = map[string][]string{axis: strings.Split(values, ",")}
+				w = map[string][]string{axis: values}
 			}
 			left, err := known.Import(args[0], args[1], w)
 			for _, name := range left {

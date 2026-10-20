@@ -28,6 +28,9 @@ const list = `# Known failures
 
 ## Permanently Unimplementable (Out of Scope)
 
+Prose may wrap onto a line starting with an issue, like
+#99, which isn't a heading.
+
 | Test Name | Category | Reason |
 |-----------|----------|--------|
 | smb2.twrp.listdir | Previous Versions / TWRP | needs shadow copies |

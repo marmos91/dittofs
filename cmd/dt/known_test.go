@@ -9,10 +9,11 @@ import (
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// A suite's lists per version are imported one by one, each with --where:
-// an entry that differs only in where's values merges into one, and a list
-// imported without --where adds its own entries. Rows outside a table of
-// tests are reported.
+// A suite's lists per version are imported one by one, each with --where,
+// whose values are trimmed: an entry that differs only in where's values
+// merges into one, and a list imported without --where adds its own entries.
+// Rows outside a table of tests are reported, and a --where with no axis or
+// an empty value is refused.
 func TestKnownImport(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "known.yaml")
@@ -32,7 +33,7 @@ func TestKnownImport(t *testing.T) {
 	if want := "left out \"Status\": not in a table of tests\nleft out \"**Expected**\": not in a table of tests\n"; out != want {
 		t.Errorf("output %q, want %q", out, want)
 	}
-	for _, args := range [][]string{{v4, file, "--where", "nfs=4,4.1"}, {all, file}} {
+	for _, args := range [][]string{{v4, file, "--where", "nfs=4, 4.1"}, {all, file}} {
 		if _, err := dt(t, append([]string{"known", "import"}, args...)...); err != nil {
 			t.Fatal(err)
 		}
@@ -52,8 +53,10 @@ func TestKnownImport(t *testing.T) {
 		t.Errorf("known file\n%s\nwant\n%s", data, want)
 	}
 
-	if _, err := dt(t, "known", "import", v3, file, "--where", "nfs"); err == nil || !strings.Contains(err.Error(), "expected AXIS=V") {
-		t.Errorf("--where nfs: got %v", err)
+	for _, where := range []string{"nfs", "nfs=3,"} {
+		if _, err := dt(t, "known", "import", v3, file, "--where", where); err == nil || !strings.Contains(err.Error(), "expected AXIS=V") {
+			t.Errorf("--where %s: got %v", where, err)
+		}
 	}
 }
 
