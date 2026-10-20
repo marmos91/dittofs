@@ -398,7 +398,7 @@ func New(cfg Config) (*Node, error) {
 	n.engine = engine.New(engine.Deps{
 		Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(), ...})
-	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
+	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, cfg.Watchdog.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
 	n.open   = openstate.New(openstate.Deps{Store: n.meta, ...})         // its Sink, the server, is handed to its Start (§2.2 step 5)
 	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
 	n.server = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,

@@ -2124,7 +2124,10 @@ settings, each with its `decision:` where it is set.
 Metric names are shown without the deployment's prefix.
 
 Every metric is labelled by namespace. Per-block outcomes are metrics, not log
-lines.
+lines. GC's scheduler instance also exports the scheduler library's series
+([RFC 8 §14](rfc-8-engine.md#14.%20Observability)) — entries, the oldest due, runs in flight and overdue, drops and
+expiries — labelled by `source` (`gc_deleter`, `gc_compactor`, `gc_audit`,
+`gc_collect`) and tenant namespace, so a stalled GC source is seen as one.
 
 | Answers | Metric | Type |
 | --- | --- | --- |

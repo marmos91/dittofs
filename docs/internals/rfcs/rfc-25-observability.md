@@ -590,7 +590,8 @@ owner.
 
 **Liveness answers one question: is the process making progress?** It **MUST**
 fail only when a fixed set of internal loops — each adapter's accept loop, the
-request scheduler, the engine's work scheduler and the health evaluator — has
+request scheduler, each work-scheduler instance (one per engine journal, and
+GC's) and the health evaluator — has
 not completed a turn, or reported itself idle, within 60 s. An idle report is a
 heartbeat, not a state: a waiting loop wakes at least every 30 s to report again, an
 accept loop through an accept deadline, so a loop that wakes and stalls before its
@@ -599,7 +600,9 @@ or the disk.
 
 > decision: an idle loop is live. The watchdog catches a loop stuck mid-turn, not one
 > that never wakes: a lost wakeup with work queued passes liveness and shows as a queue
-> that only grows. Overturned by an incident where a lost wakeup needed a restart;
+> that only grows. The work scheduler is the one loop that already reports more: it
+> is idle only with nothing due ([RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)), so a lost wakeup there fails
+> liveness. Overturned by an incident where a lost wakeup needed a restart;
 > then the loop reports its queue's oldest entry, and an old entry fails liveness.
 
 > decision: no dependency fails liveness. A liveness failure asks the
@@ -694,7 +697,8 @@ row.
 | `offload_stalled` | [RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) | share | degraded | ticket at 15 min |
 | `file_offload_failing` | [RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) | share, naming the FileID | degraded | ticket at 1 h |
 | `offload_age_exceeded` | [RFC 8 §11.4](rfc-8-engine.md#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) | share | degraded | ticket at once |
-| `work_queue_stalled` | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler) | node, naming the scheduler instance, source and tenant | degraded: a run has outlived twice its run timeout and still holds its slot | ticket at 15 min |
+| `work_queue_stalled` | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler) | journal for the engine, node for GC, naming the source and tenant | degraded: a run has outlived twice its run timeout, or entries have been due with none dispatched for 5 min | ticket at 15 min |
+| `removal_stalled` | [RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches) | share, naming the FileID and the removal's kind | degraded; unhealthy for a clone, whose destination's writes are held | ticket at 1 h; page at 15 min for a clone |
 | `journal_full` | [RFC 1 §6](rfc-1-journal.md#6.%20Capacity) | journal | unhealthy: writes held or refused at capacity | page at 5 min |
 | `journal_sync_failed` | [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync) | journal | unhealthy: acknowledged writes lost | page at once |
 | `journal_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | journal | unhealthy; waits for an operator | page at once |
@@ -1363,7 +1367,6 @@ been removed.
 | [RFC 11 §13](rfc-11-ownership.md#13.%20Observability) | `shard_capacity_share` is a fraction without `_ratio` | `shard_capacity_ratio` |
 | [RFC 13 §8](rfc-13-configuration.md#8.%20Observability) | `config_provisioning_applied`: a hash is no gauge value and no fixed info label | `config_provisioning_applied_timestamp_seconds`; the hash goes in the node-status record ([RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)) |
 | [RFC 13 §8](rfc-13-configuration.md#8.%20Observability) | `format_supported_range`: one gauge cannot hold a range | `format_supported_min`, `format_supported_max` |
-| [RFC 8 §14](rfc-8-engine.md#14.%20Observability) | `engine_oldest_unoffloaded_seconds` breaks §2.2's age suffix | `engine_unoffloaded_oldest_seconds` |
 | [RFC 2 §2.3](rfc-2-carver.md#2.3%20What%20a%20pass%20makes%20observable) | `carver_chunk_size_bytes` buckets at a per-namespace `Target`, which one labelled vector cannot hold | the `size` set (§2.6); the average against `Target` is already `carver_bytes_total` ÷ `carver_chunks_total` |
 | [RFC 26 §7](rfc-26-catalog-backups.md#7.%20Observability) | `backup_folder_*` are "per block folder", with the label unnamed | label `location` |
 | [RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics) | `adapter_requests_in_flight` spells what `vfs_inflight_calls` and `syncer_inflight_bytes` spell otherwise | `adapter_inflight_requests` (one rename instead of two) |
