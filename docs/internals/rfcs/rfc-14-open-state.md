@@ -703,8 +703,9 @@ is new, and its first sequenced request sets `Next`, as for any new owner.
 
 ```go
 // Pending is a proposed client instance awaiting its confirm: Client.Pending.
-// Volatile, held by open state's client area (§11) in *vfs.Server on the node
-// that answered, never by its gateway, and never written to the store.
+// Volatile, held by the table in *vfs.Server on the node that answered and
+// reached through its Clients view (§11.3); never by its gateway, and never
+// written to the store.
 type Pending struct {
 	ID      ClientID  // the ID a confirm makes current: this client's, or a new one for a new Boot
 	Boot    [8]byte   // the instance proposed
@@ -903,8 +904,8 @@ service's `Deps`, built and wired as
 lock manager
 ([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)).
 The gateway and the adapters hold none of it: open state lives only in
-`*vfs.Server`, its per-file area at the file's primary and its client area at
-the client's lease owner (§11.3).
+`*vfs.Server`: its `Clients` view runs at the client's lease owner and the
+other views at the file's primary (§11.3).
 
 ### 3.1 Adapters translate; the table decides
 
@@ -1958,8 +1959,10 @@ type Deps struct {
 	Logger  *slog.Logger
 }
 
-// New builds an empty table and starts nothing. *Table is the only
-// implementation; the service holds it as a concrete type (RFC 17 §2.3).
+// New builds an empty table and starts nothing. *Table is the one
+// component: one state, one step per file. The service holds it as a
+// concrete type and hands each of its areas only the views it calls (§11.3,
+// RFC 17 §2.3).
 func New(d Deps) (*Table, error)
 
 // Start takes the Sink: the service is built after the table and holds it,
@@ -2003,19 +2006,25 @@ request's ranges into it whole (§11.3). The import rule — only the filesystem
 — is held by the architecture test
 ([RFC 20](rfc-20-adapters.md)), not by the package's location.
 
-The package is laid out as method sets over the per-file entry:
+The package's files follow the views of §11.3, over one per-file entry and
+one step; the logic that holds no state is a subpackage of its own, a pure leaf
+that imports nothing of the table and is tested alone:
 
 ```text
 pkg/openstate/
   doc.go deps.go types.go errors.go sink.go
-  table.go step.go            per-file entries and the step
-  clients.go lease.go         Propose, Connect, Renew, Expire, Revoke; the lease clock
-  open.go deny.go reconnect.go delete.go
-  lock.go waiters.go grant.go recall.go
-  grace.go reclaim.go stateref.go ownerseq.go
-  watch.go check.go
-  ranges/                     pure leaf
-  leasefsm/                   pure leaf, the grant state machine, ported
+  table.go step.go            Table, New, Start, Stop and the seven views; the per-file entry and its step
+  clients.go                  Clients: proposals, sessions, the lease clock, expiry and revoke (§2.1, §2.9, §4.1, §4.3)
+  opens.go                    Opens: opens, reconnect, delete pending, suspended times (§2.2, §6, §8.1, §9.4)
+  locks.go                    Locks: byte-range locks and their waiters (§2.3, §2.10)
+  grants.go                   Grants: caching grants, recalls, the budget and the fence (§5)
+  watches.go                  Watches (§2.5)
+  recovery.go                 Recovery: grace, reclaim, state references, a share's drop (§4.2, §4.4)
+  checks.go                   Checks: CheckIO and CheckChange (§6, §7, §9.5)
+  ranges/                     lock-range arithmetic over [offset, end] in 64 bits
+  grantfsm/                   the grant state machine, ported
+  conflict/                   the access × deny matrix; a grant against an open or a lock
+  sequence/                   the per-owner sequence slot and which answer advances it (§2.8); the lock replay index (§8.1)
 ```
 
 There is no durable-store interface of open state's own and no separate test
@@ -2040,53 +2049,128 @@ timers; `Close` is the per-open call of §11.3.
 
 ### 11.3 Methods
 
-Methods are grouped by area, and each area names where it runs. Every call
-names its client, and the primary refuses one that names another client's
-state ([§10](#10.%20Shard%20placement)).
+The table is one component with seven views, each an interface of the calls
+one group of rules makes. `*Table` implements all seven and is their only
+implementation. The node holds the `*Table` to build, start and stop it
+(§11.2) and hands it to the service, which keeps only the views each of its
+areas calls ([RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring));
+a test of such a caller fakes only those views. Every call names its client, and the
+primary refuses one that names another client's state
+([§10](#10.%20Shard%20placement)).
 
 ```go
-// Clients — in *vfs.Server at the client's lease owner (RFC 17 §2.2).
-Propose(ctx, c Client) (Proposal, error)                        // §2.9; changes no state
-Connect(ctx, c Client, p *Proposal) (ClientID, error)           // §2.1; nil p: confirmed in one step; a new Boot under a known name is a reboot, a restart notice included
-Record(ctx, c ClientID) (Client, error)                         // the record as written, Adapter included; changes nothing
-AddSession(ctx, c ClientID, node NodeID, prev, next []byte) (Client, error) // §2.1: records node's session and writes next as Adapter if it still equals prev; else ErrRecordChanged with the current record
-Renew(ctx, c ClientID) (ClientStatus, error)
-Expire(ctx, c ClientID) error                                   // releases everything; the record goes (§4.3)
-Revoke(ctx, c ClientID) error                                   // releases everything; keeps the record, sessions and revoked set (§5.3)
-Destroy(ctx, c ClientID, by Principal) error                    // ErrClientBusy while a session or state remains; releases nothing
-Rebind(ctx, c ClientID, node NodeID, by Principal) error        // a new back channel: sets Reach.Callback, clears Reach.Down; node is (cluster)
-
-// Per-file — at the file's primary.
-Open(ctx, c ClientID, f FileID, r OpenRequest) (OpenResult, error)
-Reconnect(ctx, c ClientID, id Identity, o OpenID, m ReconnectMatch, s SessionRef) (Open, error)
-Downgrade(ctx, c ClientID, o OpenRef, q Seqs, access, deny Access) error
-ConfirmOpen(ctx, c ClientID, o OpenID, seq uint32) error
-MarkDelete(ctx, c ClientID, o OpenID, delete bool) error   
-SuspendTimes(ctx, c ClientID, o OpenID, suspend, resume TimeMask) error
-Close(ctx, c ClientID, o OpenRef, q Seqs) (CloseResult, error)  // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
-Flushed(ctx, c ClientID, o OpenID, loss uint64) error
-Disconnect(ctx, c ClientID, s SessionRef) error                 // closes the session's volatile opens; starts the rest's Timeout
-
-Lock(ctx, c ClientID, f FileID, r LockReq) error                // LockReq{Owner; Open OpenRef; Ranges []LockRange; Wait WaitKind; Reclaim bool; Replay *LockSequence; Seqs Seqs}: one step
-CancelLock(ctx, c ClientID, f FileID, o LockOwner, r ByteRange) (granted bool, err error)
-WaitAnswered(ctx, c ClientID, w LockWaiter, refused bool) error // the client's answer to LockWaitOver
-TestLock(ctx, c ClientID, f FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
-Unlock(ctx, c ClientID, f FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error
-ReleaseLockOwner(ctx, c ClientID, o LockOwner) error
-
-AckRecall(ctx, c ClientID, g GrantID, to GrantKind) error       // to GrantNone: a return
-Watch(ctx, c ClientID, dir FileID, recursive bool, m ChangeMask) (WatchID, error)
-Unwatch(ctx, c ClientID, w WatchID) error
-
-ReclaimComplete(ctx, c ClientID) error                          // ends the client's part of every grace instance its shards are in
-TestState(ctx, c ClientID, s []StateRef) []error                // nothing changed
-FreeState(ctx, c ClientID, s StateRef) error                    // a revoked entry, or a lock state holding no locks
-DropShare(ctx, share ShareID, why DropReason) error             // §4.3
-CheckIO(ctx, o OpenRef, r ByteRange, write bool) error
-CheckChange(ctx, f FileID, by ClientID, what ChangeMask) error
+func (t *Table) Clients() Clients
+func (t *Table) Opens() Opens
+func (t *Table) Locks() Locks
+func (t *Table) Grants() Grants
+func (t *Table) Watches() Watches
+func (t *Table) Recovery() Recovery
+func (t *Table) Checks() Checks
 ```
 
-The `ctx` arguments are `context.Context`; every method is on `*Table`. The
+**Clients** — client records, proposals, sessions and the lease
+([§2.1](#2.1%20Client), [§2.9](#2.9%20Clients%20pending%20confirmation),
+[§4.1](#4.1%20A%20client%20lease),
+[§4.3](#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere));
+in `*vfs.Server` at the client's lease owner
+([RFC 17 §2.2](rfc-17-vfs.md#2.2%20Who%20owns%20open%20state%20and%20locks)).
+
+```go
+type Clients interface {
+	Propose(ctx, c Client) (Proposal, error)                        // §2.9; changes no state
+	Connect(ctx, c Client, p *Proposal) (ClientID, error)           // §2.1; nil p: confirmed in one step; a new Boot under a known name is a reboot, a restart notice included
+	Record(ctx, c ClientID) (Client, error)                         // the record as written, Adapter included; changes nothing
+	AddSession(ctx, c ClientID, node NodeID, prev, next []byte) (Client, error) // §2.1: records node's session and writes next as Adapter if it still equals prev; else ErrRecordChanged with the current record
+	Renew(ctx, c ClientID) (ClientStatus, error)
+	Expire(ctx, c ClientID) error                                   // releases everything; the record goes (§4.3)
+	Revoke(ctx, c ClientID) error                                   // releases everything; keeps the record, sessions and revoked set (§5.3)
+	Destroy(ctx, c ClientID, by Principal) error                    // ErrClientBusy while a session or state remains; releases nothing
+	Rebind(ctx, c ClientID, node NodeID, by Principal) error        // a new back channel: sets Reach.Callback, clears Reach.Down; node is (cluster)
+	Disconnect(ctx, c ClientID, s SessionRef) error                 // closes the session's volatile opens; starts the rest's Timeout
+}
+```
+
+**Opens** — opens and their deny modes, reconnect, delete pending and
+suspended times ([§2.2](#2.2%20Open),
+[§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open),
+[§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens),
+[§9.4](#9.4%20Delete%20on%20close)); at the file's primary.
+
+```go
+type Opens interface {
+	Open(ctx, c ClientID, f FileID, r OpenRequest) (OpenResult, error)
+	Reconnect(ctx, c ClientID, id Identity, o OpenID, m ReconnectMatch, s SessionRef) (Open, error)
+	Downgrade(ctx, c ClientID, o OpenRef, q Seqs, access, deny Access) error
+	ConfirmOpen(ctx, c ClientID, o OpenID, seq uint32) error
+	MarkDelete(ctx, c ClientID, o OpenID, delete bool) error
+	SuspendTimes(ctx, c ClientID, o OpenID, suspend, resume TimeMask) error
+	Close(ctx, c ClientID, o OpenRef, q Seqs) (CloseResult, error)  // CloseResult{Orphan bool; Unlink *PendingUnlink}: open state never unlinks; the service runs it
+	Flushed(ctx, c ClientID, o OpenID, loss uint64) error
+}
+```
+
+**Locks** — byte-range locks and their waiters
+([§2.3](#2.3%20Lock), [§2.10](#2.10%20Lock%20waiters)); at the file's primary.
+
+```go
+type Locks interface {
+	Lock(ctx, c ClientID, f FileID, r LockReq) error                // LockReq{Owner; Open OpenRef; Ranges []LockRange; Wait WaitKind; Reclaim bool; Replay *LockSequence; Seqs Seqs}: one step
+	CancelLock(ctx, c ClientID, f FileID, o LockOwner, r ByteRange) (granted bool, err error)
+	WaitAnswered(ctx, c ClientID, w LockWaiter, refused bool) error // the client's answer to LockWaitOver
+	TestLock(ctx, c ClientID, f FileID, o LockOwner, r ByteRange, exclusive bool) (*Lock, error)
+	Unlock(ctx, c ClientID, f FileID, ref OpenRef, o LockOwner, rs []ByteRange, q Seqs) error
+	ReleaseLockOwner(ctx, c ClientID, o LockOwner) error
+}
+```
+
+**Grants** — a holder's answer to a recall
+([§5](#5.%20Caching%20grants)); at the primary of the shard the `GrantID`
+names. A grant is offered by `Open` and recalled through the `Sink`.
+
+```go
+type Grants interface {
+	AckRecall(ctx, c ClientID, g GrantID, to GrantKind) error       // to GrantNone: a return
+}
+```
+
+**Watches** — directory change notification ([§2.5](#2.5%20Watch)); at the
+directory's primary, and `Unwatch` at the shard the `WatchID` names.
+
+```go
+type Watches interface {
+	Watch(ctx, c ClientID, dir FileID, recursive bool, m ChangeMask) (WatchID, error)
+	Unwatch(ctx, c ClientID, w WatchID) error
+}
+```
+
+**Recovery** — grace, reclaim and state references
+([§4.2](#4.2%20Grace%20makes%20volatile%20state%20safe),
+[§4.4](#4.4%20Grace%20is%20per%20shard)); at the shards the client's state
+or the reference names.
+
+```go
+type Recovery interface {
+	ReclaimComplete(ctx, c ClientID) error                          // ends the client's part of every grace instance its shards are in
+	TestState(ctx, c ClientID, s []StateRef) []error                // nothing changed
+	FreeState(ctx, c ClientID, s StateRef) error                    // a revoked entry, or a lock state holding no locks
+	DropShare(ctx, share ShareID, why DropReason) error             // §4.3
+}
+```
+
+**Checks** — what an I/O or a namespace change must pass
+([§6](#6.%20A%20deny%20mode%20is%20checked%20at%20open),
+[§7](#7.%20Conflicts%20across%20protocols),
+[§9.5](#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory));
+at the file's primary.
+
+```go
+type Checks interface {
+	CheckIO(ctx, o OpenRef, r ByteRange, write bool) error
+	CheckChange(ctx, f FileID, by ClientID, what ChangeMask) error
+}
+```
+
+The `ctx` arguments are `context.Context`. The
 types the methods name:
 
 ```go
@@ -2161,11 +2245,20 @@ with `ErrDeletePending`, and an SMB rename or delete of a directory with
 [§9.4](#9.4%20Delete%20on%20close),
 [§9.5](#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)).
 
-> decision: one `*Table` with two areas, not two types. The client area runs at
-> the lease owner and the per-file area at the file's primary; on one node both
-> are one process and the boundary is per method, as RFC 17 §2.1 keeps its own.
-> Overturned when the cluster's remote primary lands: the client area becomes
-> its own type in `*vfs.Server` at the lease owner.
+> decision: the seven views are views of one component, built by one `New`,
+> not seven components each with its own. The areas share per-file state that
+> must change in one step: a deny mode is checked against the file's locks and
+> opens, a write open starts the recall of a conflicting caching grant in the
+> step that answers it, and a client's expiry releases its opens, locks,
+> grants, waiters and watches together. Split constructors would turn each of
+> those into a call from one component's step into another's, where a check
+> could separate from the change it admits. The views split
+> only who may call what, so a caller and its test see the few methods they
+> use. Overturned if a view is found whose state no other view's step reads or
+> changes — then it becomes its own component; the `Clients` view, which runs
+> at the lease owner, is the candidate once the cluster's remote primary lands,
+> if expiry and revoke can release the per-file state through calls of their
+> own without a second step.
 
 ```go
 // DelayError is a retry-later. errors.Is(err, ErrDelay) holds for it, and
@@ -2271,8 +2364,8 @@ The table is tested in layers, cheapest first, as
 
 | Layer | What it covers |
 | --- | --- |
-| pure units | range algebra, the deny × access matrix, the owner sequence, the grant state machine |
-| table suite | §12's rows: `*Table`, the in-memory store, a recording `Sink`, the fake clock |
+| pure units | each subpackage of §11.1 alone: `ranges` (range algebra), `conflict` (the access × deny matrix, a grant against an open or a lock), `sequence` (the owner sequence and the lock replay index), `grantfsm` (the grant state machine) |
+| table suite | §12's rows: the whole `*Table` through its seven views, the in-memory store, a recording `Sink`, the fake clock |
 | fault injection | below the real table, not in place of it: a fault KV under the store, a failing `Sink`, the fake clock |
 | model | interleavings of open, lock, recall and expiry under `-race`, against a sequential model; model-based fuzzing, below |
 | fuzz | every client-chosen input, below |
@@ -2281,17 +2374,23 @@ The table is tested in layers, cheapest first, as
 | adapter | RFC 21 and RFC 22: each translation a pure function with golden vectors, protocol → neutral → protocol; property tests that every protocol input maps to a neutral value or a named refusal, that every neutral error has a status in each adapter, and that the mapping round-trips where it is invertible |
 | e2e | RFC 29, below |
 
+A consumer of open state fakes only the view it uses: a test of the service's
+lock area fakes `Locks`, never the other six. Only the table suite runs the
+whole `*Table`, since a rule that crosses views — a deny mode against a lock, an
+expiry releasing every kind — is a property of the one step, which no fake of
+one view can show.
+
 **Fuzzing.** Every client-chosen input has a `testing.F` target, seeded with
 the suite's values; the stateid codecs are `pkg/vfs`'s, fuzzed by
 [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance):
 
-- **range algebra**: lock and unlock sequences over two owners and ranges in
+- **range algebra** (`ranges`): lock and unlock sequences over two owners and ranges in
   [0, 2⁶⁴), drawn from the input, agree with a per-byte model over a 256-byte
   window plus the endpoints 2⁶⁴−1 and length 0 = to end of file; no
   offset+length overflow is accepted;
-- **owner sequence**: a request stream for one sequenced owner, including wrap
+- **owner sequence** (`sequence`): a request stream for one sequenced owner, including wrap
   at 2³² and every exempt answer, agrees with a model of §2.8;
-- **lock replay sequence**: `LockSeq` index and value from arbitrary bytes,
+- **lock replay sequence** (`sequence`): `LockSeq` index and value from arbitrary bytes,
   replayed or not, agree with a model of §8.1;
 - **adapter records**: `Adapter` bytes truncated, corrupt, past the bound, or
   of an older or newer version reach the table and come back unchanged or are
@@ -2471,7 +2570,8 @@ registry:
 *Informative.* Each line names a requirement above and what the code does
 today. [RFC 17 §9](rfc-17-vfs.md#9.%20Migration) closes them: `pkg/openstate` is built
 new from this RFC, its `*openstate.Table` replaces `pkg/metadata/lock` behind
-slice 3's lock interface, and `pkg/metadata/lock` is then deleted, not ported.
+slice 3's seam — the §11.3 views, first served by a shim over the current lock
+manager — and `pkg/metadata/lock` is then deleted, not ported.
 
 | Requirement | Today |
 | --- | --- |
