@@ -186,7 +186,7 @@ Windows user hits it.
 - Every adapter has one lifecycle — configured, serving, draining, stopped — and
   one pipeline: frame, decode, admit, replay check, resolve, call, map, encode,
   send.
-- The composition root builds each adapter once from its `Deps`; handlers are
+- The node (`node.New`) builds each adapter once from its `Deps`; handlers are
   methods on per-version handler sets that hold the service. A protocol version
   is an operation table, chosen from the request's header, never a branch in a
   handler.
@@ -202,7 +202,7 @@ Windows user hits it.
   connection's requests, no payload copies, no shared lock on the request path.
   Buffers are pooled by size class, replies are sent in gathered writes, and
   Nagle's algorithm is off.
-- Tests run in layers: codecs, the shared runtime on NFSv3 over a null
+- Tests run in layers: codecs, the shared `core` on NFSv3 over a null
   service, handlers against a recording service, the boundary checks,
   third-party suites, kernel clients end to end, and wire tests that compare
   with a reference server field by field, every accepted difference recorded.
@@ -392,8 +392,8 @@ thin with four rules:
 
 ```mermaid
 flowchart TB
-  root["composition root — cmd/dfs (RFC 15 §2.4)"]
-  cp["control-plane runtime (RFC 23)"]
+  root["node.New — builds (RFC 23 §2.1)"]
+  cp["node.Node — starts, reconciles, stops (RFC 23 §2.2)"]
   subgraph core["internal/adapter/core — written once"]
     direction LR
     srv["Server<br/>lifecycle · listeners · drain"]
@@ -434,9 +434,9 @@ flowchart TB
   hand-written recording fake and null service and the service's conformance
   suite (§7.2, §6.10, [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Nothing adapter-
   specific is in `pkg/`.
-- **`internal/adapter/`** holds every line of adapter code. Only the
-  composition root, in `cmd/dfs`, imports a protocol's `New`; no package under
-  `pkg/` imports anything under `internal/adapter/`. The control plane drives
+- **`internal/adapter/`** holds every line of adapter code. Only
+  `internal/node` imports a protocol's `New`; no package under
+  `pkg/` imports anything under `internal/adapter/`. The node drives
   adapters through an interface it declares itself (§3.4), so it needs no
   import of them.
 
@@ -460,7 +460,7 @@ internal/adapter/
     buf.go                  reference-counted buffers over RFC 24's pools (§6.8)
   translate/                ACL, access-mask, time and attribute translation: neutral types only
   auth/                     Kerberos, NTLM and SPNEGO mechanisms, exchanges, per-request Identity (§4.4); test initiators
-  adaptertest/              import test, golden-vector and capture helpers, the runtime harness: NFSv3 over the null service (§7)
+  adaptertest/              import test, golden-vector and capture helpers, the `core` harness: NFSv3 over the null service (§7)
   nfs/
     nfs.go                  New: builds the stages, handler sets and operation tables; returns a *core.Server
     wire/                   pure codecs, generated from the XDR: the RPC header and credentials, one file per program
@@ -504,7 +504,7 @@ window — is in `rpc/` or `session/`, the protocol's stages.
 | Pattern | Where | Why here |
 | --- | --- | --- |
 | composition root, constructor injection | `New(Deps, Settings)` (§3.4) | every dependency visible in one struct; a test builds an adapter from fakes |
-| consumer-defined interface | `runtime.Adapter` in the control plane; `vfs.Service` in `pkg/vfs` | the side that calls declares what it needs; implementations return concrete types |
+| consumer-defined interface | `node.Adapter` in the node; `vfs.Service` in `pkg/vfs` | the side that calls declares what it needs; implementations return concrete types |
 | table-driven dispatch, typed by generics | `Op`, `Bind` (§4.7) | one row per operation; the decoder, handler and encoder of a row are type-checked together; versions are data (§4.8) |
 | small strategies, nil for the default | `Stages` (§4.7) | each stage is one job and one unit test; a protocol without replay or credits leaves that stage nil |
 | middleware chain | `core` (§4.7) | cross-cutting work in one fixed order, written once |
@@ -513,7 +513,7 @@ window — is in `rpc/` or `session/`, the protocol's stages.
 
 | Not used | Because |
 | --- | --- |
-| a service locator or runtime registry handed to handlers | a handler reaching "the stores" through it is how the boundary leaked (Appendix B) |
+| a service locator or registry handed to handlers | a handler reaching "the stores" through it is how the boundary leaked (Appendix B) |
 | a base adapter type to embed and override | the shared part is a component the protocol is given, not a parent it inherits from |
 | capabilities discovered by type assertion | a capability that silently does not exist passes every test; a stage is a field, present or nil |
 | a worker pool | §6.6's ponytail |
@@ -524,8 +524,8 @@ window — is in `rpc/` or `session/`, the protocol's stages.
 
 ### 3.1 The adapter's states
 
-Every adapter runs through the same four states, driven by the control plane
-([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20runtime%20reconciles%3B%20it%20does%20not%20take%20orders)):
+Every adapter runs through the same four states, driven by the node
+([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)):
 
 ![The adapter's states — configured, serving, draining, stopped, with reconfigure looping on serving — and below them one connection's life: accept, negotiate, authenticate, serve with the pipeline per request, close](img/rfc20-lifecycle.svg)
 
@@ -687,7 +687,7 @@ func (c *smbCallbacks) RecallGrant(ctx context.Context, g metadata.CachingGrant,
 
 The callback returns once the message is queued — never after the client's
 acknowledgement, which arrives later as an ordinary request (`AckBreak`,
-`DELEGRETURN`). The shared connection runtime does the sending; each protocol
+`DELEGRETURN`). `core` does the sending; each protocol
 reaches the client its own way:
 
 - **SMB and NFSv4.1** send on a connection the client opened: a lease break or
@@ -724,7 +724,7 @@ request it holds on the share's state; over SMB, a tree of the share reached
 through any other address is ended `STATUS_NETWORK_NAME_DELETED`, or, for a
 continuously available share, every connection carrying a tree of it is closed
 so the client's reconnect runs ([RFC 22 §6.3](rfc-22-smb.md#6.3%20Breaks)). The
-address itself is not the callback's: the control-plane runtime's reconfigure
+address itself is not the callback's: the node's reconfigure
 removes it, which closes its listener and every connection on it (§3.1,
 [RFC 23 §3.4](rfc-23-control-plane.md#3.4%20Adapters)), so no NFS call there is
 answered stale and a hard mount retries until the client reaches the new owner
@@ -733,15 +733,15 @@ answered stale and a hard mount retries until the client reaches the new owner
 ### 3.4 Interface
 
 Signatures are indicative; the obligations are normative. Two surfaces: what
-the control plane drives, here, and what a protocol plugs into `core` (§4.7).
+the node drives, here, and what a protocol plugs into `core` (§4.7).
 
-The control plane declares the interface it drives, beside its own code, so
-it imports no adapter (§2.5):
+The node declares the interface it drives, beside its own code, so it imports
+no adapter's internals (§2.5):
 
 ```go
-package runtime // pkg/controlplane/runtime (RFC 23)
+package node // internal/node (RFC 23)
 
-// Adapter is what the runtime moves through RFC 20 §3.1's states. *core.Server
+// Adapter is what the node moves through RFC 20 §3.1's states. *core.Server
 // implements it for every protocol.
 type Adapter interface {
 	// Start moves configured to serving: every listener bound, or none, and
@@ -750,7 +750,7 @@ type Adapter interface {
 
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns (§3.1). A restart-only setting is
-	// refused; the runtime applies it by Stop and Start.
+	// refused; the node applies it by Stop and Start.
 	Reconfigure(ctx context.Context, s config.Adapter) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
@@ -773,7 +773,7 @@ What an adapter is built from:
 ```go
 package core // internal/adapter/core
 
-// Deps is what an adapter is handed. It builds no other component (RFC 23 §2.1).
+// Deps is what an adapter is handed by node.New. It builds no other component (RFC 23 §2.1).
 // A field is an interface where it has two implementations, a concrete type
 // where it has one.
 type Deps struct {
@@ -816,12 +816,12 @@ a file. Each is tied to the adapters it serves:
 | port mapper | `nfs` is serving, on a host without its own rpcbind | answers `GETPORT` over UDP and TCP with the ports of NFS and its auxiliary services |
 | system rpcbind registration | `nfs` is serving, on a host that runs its own rpcbind | registers the NFS auxiliary services' ports, and unregisters them before the adapter drains |
 
-The control-plane runtime runs sidecars, not an adapter: it already knows
-which adapters are serving, and a sidecar that serves both protocols belongs to
-neither. The runtime declares what it drives:
+The node runs sidecars, not an adapter: it already knows which adapters are
+serving, and a sidecar that serves both protocols belongs to neither. The node
+declares what it drives:
 
 ```go
-package runtime // pkg/controlplane/runtime
+package node // internal/node
 
 // Sidecar runs beside adapters, reaches no service and holds no client state.
 type Sidecar interface {
@@ -840,7 +840,7 @@ type Serving struct {
 }
 ```
 
-- **Order.** The runtime calls `Sync` after an adapter is serving and before it
+- **Order.** The node calls `Sync` after an adapter is serving and before it
   starts draining, so nothing is advertised that cannot be reached, and an
   advertisement is withdrawn while the adapter still answers.
 - **A failing sidecar fails only itself.** It raises `sidecar_failed` naming it
@@ -849,7 +849,7 @@ type Serving struct {
 - **Enabled is a live setting** of each sidecar
   ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)):
   a disabled one is synced with the empty set.
-- Sidecars are built by the composition root, one package each under
+- Sidecars are built by `node.New`, one package each under
   `internal/sidecar/`, and import no adapter; one that speaks a protocol's
   encoding, as the port mapper speaks XDR, imports that protocol's `wire`
   package, which is pure (§2.5). One is tested by calling `Sync` with each set
@@ -860,7 +860,7 @@ type Serving struct {
 | | Auxiliary service (§3.1) | Sidecar |
 | --- | --- | --- |
 | Reaches the service, or holds client state the adapter's protocol depends on? | yes | no |
-| Belongs to | one adapter, built by its `New` | the control-plane runtime, built by the composition root |
+| Belongs to | one adapter, built by its `New` | the node, built by `node.New` |
 | Runs through | the adapter's pipeline, stages and operation tables | its own code |
 | Serves | its one adapter | one adapter or several |
 | If it fails | the adapter fails to start | it alone, `sidecar_failed` (§3.7) |
@@ -876,15 +876,15 @@ type Serving struct {
 ### 3.6 Changing settings while serving
 
 An operator changes an adapter through the management API, and the API never
-calls the adapter: it writes a record, and the control-plane runtime applies
-the difference on every node it concerns
-([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20runtime%20reconciles%3B%20it%20does%20not%20take%20orders)):
+calls the adapter: it writes a record, and each node it concerns applies the
+difference
+([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)):
 
 ```mermaid
 sequenceDiagram
   participant O as dfsctl → API
   participant M as records (metadata store)
-  participant R as control-plane runtime
+  participant R as node (reconcile)
   participant A as adapter (*core.Server)
   participant S as sidecars
   O->>M: PATCH /adapters/smb — new settings, generation G
@@ -933,7 +933,7 @@ func (s *Server) Reconfigure(ctx context.Context, next config.Adapter) error {
 		return err // refused; what is running is unchanged
 	}
 	if restartOnly(*s.settings.Load(), next) {
-		return ErrRestartRequired // the runtime drains and starts instead
+		return ErrRestartRequired // the node drains and starts instead
 	}
 	if err := s.listeners.open(added(next)); err != nil {
 		return err // all or none
@@ -949,8 +949,8 @@ func (s *Server) Reconfigure(ctx context.Context, next config.Adapter) error {
   lock is on the request path.
 - New listeners open before the snapshot changes and removed ones close after,
   so a moved address is never unserved between the two.
-- A refusal leaves the running adapter as it was; the runtime reports it on the
-  node's status record
+- A refusal leaves the running adapter as it was; the node reports it on its
+  status record
   ([RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)).
 - `core`'s tests cover it on NFSv3 over the null service: an open connection keeps its
   settings, a new one gets the new ones, a removed address's connections close,
@@ -1109,7 +1109,7 @@ func (h *Handlers) Write(ctx context.Context, r *core.Request, a *WRITE3args) (*
 }
 ```
 
-The service is a field of the handler set, given once by the composition root
+The service is a field of the handler set, given once by `node.New`
 (§4.7), not reached through the connection or the context: a connection holds
 connection state only (§2.2), and a handler test builds `Handlers{svc: fake}`
 with no connection at all (§7.2).
@@ -1364,7 +1364,7 @@ it holds — the service counts nothing about holds:
 
 ### 4.7 Wiring: what a protocol plugs into `core`
 
-**Who builds what.** The composition root builds the service, the
+**Who builds what.** `node.New` builds the service, the
 authenticator and the pools, then each adapter with `New(Deps, Settings)`
 (§3.4). `New` builds the protocol's stages, its handler sets — one per program
 and version for NFS, one for SMB — each holding `Deps.Service`, and their
@@ -2195,7 +2195,7 @@ the ones above it cannot, and none stands in for another:
 | --- | --- | --- | --- |
 | codec | bytes ↔ fields, as the specification and the reference server have them | golden vectors, round trips, fuzzing (§5.4) | per change |
 | stages | each protocol stage alone (§4.7): header codecs and security on golden and specification vectors; flow control and replay caches as state machines; routers on a table of versions | unit tests, no socket | per change |
-| runtime | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | the real NFSv3 adapter over loopback against the **null service** (§6.10), given scripted delays, driven by §8.2's scripted client | per change |
+| `core` | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | the real NFSv3 adapter over loopback against the **null service** (§6.10), given scripted delays, driven by §8.2's scripted client | per change |
 | handler | translation: the right service call with the right arguments, and the right reply for each answer | a recording service (§7.2) | per change |
 | boundary | imports, error-table totality, one mutating call | §7.1, §7.2, §7.3 | per change |
 | in-process | an adapter on the real service and in-memory stores, driven by §8.2's scripted client over loopback; no root, no kernel client | Go tests | per change |
@@ -2203,9 +2203,9 @@ the ones above it cannot, and none stands in for another:
 | end to end | the scenarios of this RFC with kernel clients on a composed node (§7.5) | `test/e2e` | after merge and nightly |
 | wire diff | field-by-field agreement with reference servers | §8 | nightly |
 
-The runtime layer runs NFSv3, the simplest protocol, over the null service, so
+The `core` layer runs NFSv3, the simplest protocol, over the null service, so
 what it finds is `core`'s and not a store's: a drain bug found there is a
-runtime bug, and both adapters share its fix.
+`core` bug, and both adapters share its fix.
 
 **What the recording service is worth, and what it is not.** A handler test
 against a fake service catches what no other layer does cheaply:
@@ -2605,7 +2605,7 @@ which.
 | §2.4, RFC 17 §4.9 | admission is the service's | share admission runs in four places — NFSv3 dispatch, the NFSv4 auth-context builder, MOUNT, SMB tree connect — and share-permission policy is written twice |
 | §2.3 | one shared translation | ACL translation, access-mask conversion and attribute conversion are each written per protocol, access masks twice within NFS |
 | §3.1 | one lifecycle | one accept-and-drain shell is shared; each protocol's stop sequence and auxiliary listeners are hand-ordered per adapter |
-| §3.5 | sidecars run by the control plane, each declaring its adapters | each adapter runs its own sidecar group: NFS the port mapper, system rpcbind registration and NSM notify (which stays with the NFS adapter as an auxiliary service), SMB mDNS and WS-Discovery; mDNS is wired separately in each adapter; the port mapper is already a sidecar that fails soft, as §3.5 has it |
+| §3.5 | sidecars run by the node, each declaring its adapters | each adapter runs its own sidecar group: NFS the port mapper, system rpcbind registration and NSM notify (which stays with the NFS adapter as an auxiliary service), SMB mDNS and WS-Discovery; mDNS is wired separately in each adapter; the port mapper is already a sidecar that fails soft, as §3.5 has it |
 | §2.5 | `wire/` pure codecs in both protocols | NFS codecs under `xdr/` and the RPC layer mixed with dispatch; SMB codecs split between `smbenc`, `header` and handlers |
 | §4.2 | a crashed handler is answered server fault | recovered and logged per connection; the slot is freed, no reply is sent, nothing is counted — **replace** with the recovery middleware |
 | §3.1 | draining lets requests finish | stop cancels every request's context at once and sets a 100 ms read deadline on every connection — **replace** |
