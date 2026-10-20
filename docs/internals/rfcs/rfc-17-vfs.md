@@ -273,7 +273,7 @@ is data, one row per kind of argument:
 | a handle, or an open (by `OpenRef.Handle`) | the primary of that handle's shard |
 | two handles: `Rename`, `Link` | the coordinator that [RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries) names: the source directory's primary, or the target directory's for a link |
 | two handles: `Copy`, `Clone` | the destination's primary |
-| an ID that names its shard ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) and no handle: `AckRecall`'s `GrantID`, `Unwatch`'s `WatchID`, `TestState`'s and `FreeRevoked`'s `StateRef` | the primary of that shard; for `TestState`, of its first `StateRef`'s, whose server asks each other one's primary through `Peers` |
+| an ID that names its shard ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) and no handle: `AckRecall`'s `GrantID`, `Unwatch`'s `WatchID`, `TestState`'s and `FreeState`'s `StateRef` | the primary of that shard; for `TestState`, of its first `StateRef`'s, whose server asks each other one's primary through `Peers` |
 | no file: the rest of the `Clients` area, the `Principals` area, `Root`, `SecInfo`, `ListShares`; or a pseudo-filesystem handle | the local server, which is the lease owner of the clients connected to its node; a call that names no file runs on the node that received it and is never forwarded |
 | a handle the router cannot place | the local server, which admits the call before it answers `ErrStale` (V39), so the gateway refuses nothing |
 
@@ -440,7 +440,11 @@ The router and the transport are RFC 15's, built over the shard records and
 the node channel; the transport also implements `Peers`, whose methods are every case where a
 server needs a second primary; §3.5's table names each use. `Serve` takes the
 `*Server` because it also hands `Peers` calls to it, which are no `Service`
-methods.
+methods. The open-state table is node-local and calls no other node: when the
+table at a client's lease owner ends the client, it calls the server's
+`Sink.ClientEnded`, and the server ends the client at each primary its record
+names through `Peers.ClientState`
+([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)).
 
 > decision: `Serve` takes the `*Server`, not a `Service`, because a `Peers`
 > call (a prepare, an owner sequence, a recall) has no `Service` method to
@@ -544,7 +548,9 @@ The server moves through four states, **built**, **serving**, **draining** and
 what the earlier ones started, and `Start` returns its error, so the server is
 either serving or as it was built.
 
-1. **Open state.** For each shard this node is primary of, enter grace
+1. **Open state.** For each shard this node is primary of, call RFC 14's
+   `Recovery.ServeShard`, which installs the shard's persistent opens before
+   anything is answered, and enter grace
    ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)):
    a call that needs, or conflicts with, state that may still be reclaimed
    answers `ErrGrace` until the shard's grace ends. Arm the lease, recall and
@@ -615,7 +621,7 @@ holds.
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
-| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, the state-protection call set, the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
+| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, whether state protection is on, the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
 
 The rest carry no meaning beyond their shape:
 
@@ -635,7 +641,7 @@ type Extent struct { SrcOff, DstOff, Len int64 }
 type CopyArgs struct { Src, Dst OpenRef; Extents []Extent } // Copy: in order, as copychunk's chunks; Clone: exactly one
 type CopyResult struct { N int64; WCC WCC }
 type LockReq struct { Ranges []LockRange; Wait WaitKind; Reclaim bool; Owner LockOwner; Replay *LockSequence; Seqs Seqs } // §5.11: every range in one step, all or none
-type Proposal struct { Client ClientID; Confirm [8]byte; Sequence uint32 } // what Propose answers and Connect confirms
+type Proposal struct { Client ClientID; Confirm [8]byte } // what Propose answers and Connect confirms; no protocol sequence (RFC 14 §11.3)
 type WatchSpec struct { Dir Handle; Recursive bool; Filter ChangeMask }
 ```
 
@@ -661,7 +667,7 @@ type Service interface {
 
 // Clients (RFC 14). The lease owner is the server of the node holding the
 // client's sessions; the gateway routes these calls to it (§2.1, §2.2), except
-// TestState and FreeRevoked, which go to the shard their StateRef names.
+// TestState and FreeState, which go to the shard their StateRef names.
 type Clients interface {
 	Propose(ctx context.Context, id Identity, c ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's server; changes no state
 	Connect(ctx context.Context, id Identity, c ClientInfo, cb Callbacks) (ClientID, error)      // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB NEGOTIATE, an NLM host's first call; again on another node to re-register the callback path: the latest wins (RFC 14 Rebind)
@@ -671,7 +677,7 @@ type Clients interface {
 	Disconnect(ctx context.Context, id Identity, c ClientID, s SessionRef) error // an SMB session's last channel ended
 	Destroy(ctx context.Context, id Identity, c ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while state remains
 	ReclaimComplete(ctx context.Context, id Identity, c ClientID) error
-	FreeRevoked(ctx context.Context, id Identity, c ClientID, s StateRef) error
+	FreeState(ctx context.Context, id Identity, c ClientID, s StateRef) error // a revoked reference, or a lock state holding no locks
 	TestState(ctx context.Context, id Identity, c ClientID, s []StateRef) []error // TEST_STATEID: one answer per stateid, nothing changed
 	ReleaseLockOwner(ctx context.Context, id Identity, c ClientID, o LockOwner) error
 	HostRestarted(ctx context.Context, id Identity, host []byte, state uint32) error // NSM SM_NOTIFY, NLMPROC4_FREE_ALL: expires the host's old client
@@ -864,7 +870,7 @@ type Callbacks interface {
 // is set for RevokedShare, where only that share's state ends; Grant for
 // RevokedGrant; Shard for RevokedShardState (RFC 14 §4.4). RevokedLeaseExpired
 // and RevokedByAdmin end every piece of state the client holds (RFC 14 §4.3,
-// §5.3). Until the client frees what was revoked (FreeRevoked), Renew reports
+// §5.3). Until the client frees what was revoked (FreeState), Renew reports
 // it by cause in ClientStatus, and a call naming it is refused ErrState (Revoked).
 // A removed or moved share's state is the exception: DropShare deletes the
 // records that could list it, so a call naming it is StateError BadState and
@@ -944,7 +950,8 @@ deadline: it ends only as its waiter does
 that answers it other than as granted calls `CancelLock` first.
 
 **Recalls after one is revoked.** After one of a client's recalls is revoked, the
-service **MUST** stop offering that client grants and recall the others it holds
+primary **MUST** stop offering that client grants for one lease period; the
+others it holds end by their own deadlines when something conflicts
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 An SMB break that times out is forced — the lease downgraded to none — and the
 request held behind it proceeds; the break keeps the opens it covered, with
@@ -1096,7 +1103,7 @@ func DecodeFileID(persistent uint64) (OpenRef, error)
 > while the client still holds the name. Overturned if a protocol is found whose
 > client-held name has no room for what decoding needs.
 
-> ponytail: the stateid's and the `FileId`'s shard-number and `OpenID` widths are not yet one choice (§10, question 3).
+The stateid's and the `FileId`'s widths — a 24-bit shard number, 5 grace-instance bits, a 40-bit `OpenID` — are one choice, [RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)'s.
 
 ### 3.5 What each method calls
 
@@ -1118,13 +1125,13 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Propose` | `Clients.Get` by (protocol, name): an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | — | lease owner; it holds the `Client.Pending` proposal in memory, so the confirm must reach the same node |
 | `Connect`, `AddSession`, `Renew`, `Destroy` | `openstate.Clients.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
 | `Disconnect`, `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `openstate.Clients.Disconnect`, `Recovery.ReclaimComplete`, `Locks.ReleaseLockOwner`; `openstate.Clients.Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
-| `TestState`, `FreeRevoked` | `Recovery.TestState`; `FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
+| `TestState`, `FreeState` | `Recovery.TestState`; `Recovery.FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
 | `Lookup` | `Namespace.Lookup` (authorised inside, [RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | `Overlay` | the directory's primary; the entry's primary for the overlay, through `Peers.Overlay` |
 | `ReadDir` | `Namespace.Entries` or `EntriesPlus` | `Overlay` per entry, batched per primary through `Peers.Overlay` | the directory's primary |
 | `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename` | `Draw`; `Release` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
-| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange`; `Opens.MarkDelete`, `SuspendTimes` | `Draw`; `Truncate` for a size | primary |
+| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange`; `Opens.Update` for delete on close and suspended times | `Draw`; `Truncate` for a size | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr` | `Draw` | primary |
@@ -1203,7 +1210,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrDeletePending` | the file is marked delete on close ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) | — |
 | `ErrGrace` | the shard is in grace and the request needs, or conflicts with, state that may still be reclaimed | — |
 | `ErrDelay` | retry shortly | `*Delay{Cause; Until; Moved}`, below |
-| `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver` | — |
+| `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver`: the service's answer for RFC 14's `LockResult{Waiting: true}` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
 | `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind}`, below |
 | `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShare` (a rename or link between shares, [RFC 7 §5.1](rfc-7-namespace-metadata.md#5.1%20One%20transaction)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)), `OtherShard` (**(cluster)** a clone whose source and destination lie in different shards, [§5.9](#5.9%20Copy%20and%20clone)) — the first three name the boundary a client can see; `OtherShard` names placement, which a client cannot, so adapters fall back rather than report it |
@@ -1222,8 +1229,10 @@ again, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)),
 shard's open state, by the grace-instance rule of §3.4), `OldState` (a stateid
 seqid older than the state's current one), `BadState` (every
 other stateid or `FileId` whose record is missing — expired, freed, a removed or
-moved share's, never issued), `NoReclaim`, `ReclaimRevoked` (an NFSv4 reclaim
-in a shard where an administrator revoked the client's state), `BadSeqID` (an
+moved share's, never issued), `NoReclaim` (a reclaim in a shard the client's
+record does not list, an administrator's revoke having emptied it included),
+`ReclaimConflict` (a reclaim that conflicts with one already reclaimed in the
+same grace), `BadSeqID` (an
 NFSv4.0 owner sequence out of order), `NotYours` (state another client or
 principal holds, §3.1) and `Revoked` (the call names state in its client's
 revoked set, not yet freed; `Admin` tells an administrator's revoke from a
@@ -1501,9 +1510,12 @@ the RFC that owns each step rather than restating it.
 ### 5.0 One lock order
 
 **One lock order, for every call.** A call takes what it needs in this order,
-and never the reverse: first the open-state serialisation of every file it
-touches — the step in which open state checks and admits it (§4.8,
-[RFC 14 §11](rfc-14-open-state.md#11.%20Interface)) — in file-ID order; then fold
+and never the reverse: first the admission lock of every file it touches — the
+open-state step's outer level, which `lockorder` keys by file ID whether or not
+the file has open state, and under which the call makes every mutating
+open-state call and every check on that file (§4.8,
+[RFC 14 §3](rfc-14-open-state.md#3.%20One%20table%20per%20file%2C%20at%20one%20primary))
+— in file-ID order; then fold
 admission at every directory whose deltas it writes, and at a directory whose
 own attributes it changes, that a rename moves, or whose `Subdirs` it recounts,
 which run behind fold admission as a fold does; fold admission at several
@@ -1519,6 +1531,18 @@ file's last name, which needs the same open-state step in one step with its
 commit, never each hold what the other waits for.
 [RFC 7](rfc-7-namespace-metadata.md), [RFC 8](rfc-8-engine.md) and
 [RFC 14](rfc-14-open-state.md) cite this order rather than restate it.
+
+**The open-state step has two levels.** The admission lock above is the
+service's, held across a compound operation — a check and the I/O or change it
+admits. The table's own entry mutex is a leaf inside one table call or one
+timer step, and is never held when a call returns. Timer-driven table changes
+take the entry mutex alone, so one can land between a `CheckIO` and the write it
+admits; each only removes or relaxes state, which no admitted write depends on.
+The one timer step that adds state, granting a callback waiter, takes the file's
+admission lock through the `order` function the node hands the table at
+`Start` ([RFC 14 §11.2](rfc-14-open-state.md#11.2%20Lifecycle)). Every table
+call in the sketches below passes `c.Who()`: the call's client and mapped
+principal, as RFC 14's `Caller`.
 
 **A held call holds nothing.** A call the service holds behind a clone or a copy's
 chunk (§5.9) releases its accept lock, every open-state step it took and its
@@ -1578,7 +1602,7 @@ func (s *Server) writeOnce(ctx context.Context, c Caller, ref OpenRef, f File, o
 	if err = s.authz.IO(ctx, c, ref, f, Write); err != nil { // step 2: §4.6
 		return wr, false, err
 	}
-	if err = s.checks.CheckIO(ctx, ref, span(off, src), true); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
+	if err = s.checks.CheckIO(ctx, c.Who(), ref, span(off, src), true); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(f), f, growth(f, off, src)) // step 4: §5.6
@@ -1693,12 +1717,12 @@ func (s *Server) openLocked(ctx context.Context, c Caller, r OpenRequest, seen F
 	if err := s.authz.Check(ctx, c, f.Handle, r.Parent, r.Access); err != nil { // §4.6: via the parent, so DELETE comes from delete-child
 		return OpenResult{}, false, err
 	}
-	o, g, err := s.opens.Open(ctx, c.Client, f.ID, toOpenState(r)) // RFC 14 §6: deny modes; a handle-caching grant over a
+	o, err := s.opens.Open(ctx, c.Who(), f.ID, toOpenState(r))    // RFC 14 §6: deny modes; a handle-caching grant over a
 	if err != nil {                                                  //   conflict is broken first, ErrDelay(DelayRecall): no worker waits (§3.2)
 		return OpenResult{}, false, err
 	}
 	max, _ := s.authz.Granted(ctx, c, f.Handle, r.Parent) // MaximalAccess, without a backup intent's privilege
-	return OpenResult{Ref: refOf(o, f.Handle), File: f, MaximalAccess: max, Grant: g, Created: dir != nil, Dir: dir}, false, nil
+	return OpenResult{Ref: refOf(o.Open, f.Handle), File: f, MaximalAccess: max, Grant: o.Grant, Created: dir != nil, Dir: dir}, false, nil
 }
 ```
 
@@ -1716,7 +1740,7 @@ it fails against handles nobody is using.
 **Delete on close is a mark and a deferred unlink.** An open sets or clears the
 mark with `SetAttr`, `AttrChange.DeleteOnClose`, through the open, or at create
 (`OpenRequest.DeleteOnClose`); the shard records it with open state's
-`MarkDelete` ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)).
+`Opens.Update` ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)).
 When the file's last open closes, `Close` runs the deferred unlink of the
 recorded entry once it has released the file's open-state step: as §5.4's
 unlink, taking the parent's and the file's steps afresh in file-ID order, and,
@@ -1789,7 +1813,7 @@ func (s *Server) unlinkLocked(ctx context.Context, c Caller, dir Target, name []
 	// Opens of others: a deny-delete refuses after handle caching is broken (§5.3);
 	// a grant on the file is recalled (ErrDelay); an SMB delete of a directory with
 	// an open child is ErrShareViolation (RFC 14 §9.5).
-	if err := s.checks.CheckChange(ctx, f.ID, c.Client, ChangeRemove); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), f.ID, ChangeRemove); err != nil {
 		return UnlinkResult{}, false, err
 	}
 	var r UnlinkResult
@@ -1831,17 +1855,17 @@ func (s *Server) renameAt(ctx context.Context, c Caller, from Target, fromName [
 	if err := s.authz.Rename(ctx, c, from, src, to, dst); err != nil { // delete-child at from, add-entry at to; through an open its grant
 		return RenameResult{}, err
 	}
-	if err := s.checks.CheckChange(ctx, fileOf(to), c.Client, ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
+	if err := s.checks.CheckChange(ctx, c.Who(), fileOf(to), ChangeAddEntry); err != nil { // ErrDeletePending: the target directory is marked (§5.4)
 		return RenameResult{}, err
 	}
 	// A rename of a delete-pending file, a deny-delete on src or a replaced dst, and an
 	// SMB rename of a directory with an open child are refused; grants are recalled
 	// (RFC 14 §7, §9.4, §9.5). An SMB rename over a target open by anyone is refused (RFC 22 §13).
-	if err := s.checks.CheckChange(ctx, src.ID, c.Client, ChangeRename); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), src.ID, ChangeRename); err != nil {
 		return RenameResult{}, err
 	}
 	if exists {
-		if err := s.checks.CheckChange(ctx, dst.ID, c.Client, ChangeRemove); err != nil {
+		if err := s.checks.CheckChange(ctx, c.Who(), dst.ID, ChangeRemove); err != nil {
 			return RenameResult{}, err
 		}
 	}
@@ -2119,7 +2143,7 @@ func (s *Server) createLocked(ctx context.Context, c Caller, dir Handle, name []
 	if err := s.authz.Check(ctx, c, dir, Handle{}, addRight(a.Kind)); err != nil {
 		return CreateResult{}, err
 	}
-	if err := s.checks.CheckChange(ctx, fileOf(dir), c.Client, ChangeAddEntry); err != nil {
+	if err := s.checks.CheckChange(ctx, c.Who(), fileOf(dir), ChangeAddEntry); err != nil {
 		return CreateResult{}, err // ErrDeletePending (§5.4)
 	}
 	res, err := s.quota.Reserve(ctx, c, ownerOf(c, a), File{}, inode) // one inode, charged to the new file's owner (§5.6)
@@ -2160,7 +2184,11 @@ func (s *Server) lockAt(ctx context.Context, c Caller, ref OpenRef, r LockReq) e
 	// owner's sequence (StateError BadSeqID), checked and advanced at the owner's
 	// home primary as RFC 14 §2.8 says: this node on a single node; (cluster)
 	// asked through Peers.Sequence first (§2.3).
-	return s.locks.Lock(ctx, c.Client, fileOf(ref.Handle), toOpenState(ref, r)) // ErrBlocked: a waiter is registered; LockWaitOver answers it
+	res, err := s.locks.Lock(ctx, c.Who(), fileOf(ref.Handle), toOpenState(ref, r)) // a conflict is *LockedError, naming the holder
+	if err == nil && res.Waiting {
+		return ErrBlocked // a waiter is registered; LockWaitOver answers it
+	}
+	return err
 }
 ```
 
@@ -2412,8 +2440,9 @@ tree working:
    ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)). When a pNFS RFC lands, a separate `Layouts` interface joins the
    service, its calls over RFC 14's layout state; a layout is bound to the
    (shard, epoch) it was granted under ([RFC 14](rfc-14-open-state.md)).
-3. **ID widths.** The shard-number and `OpenID` widths of the stateid and the
-   SMB `FileId` must be one choice (§3.4's ponytail).
+3. **ID widths.** Settled: [RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)
+   fixes the stateid's and the SMB `FileId`'s shard, instance and `OpenID`
+   widths (§3.4).
 4. **Gaps in the layers below**, found by §3.5's table: RFC 7's `Attrs` has no exclusive-create
    verifier though §2.10 stores one, and no call turns an empty file into a
    symlink (SMB `SET_REPARSE_POINT`); RFC 16 declares no read view of the share
