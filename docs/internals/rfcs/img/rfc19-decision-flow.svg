@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d444d"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
+    <style>
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .s{font-size:12px;fill:#5b6472}.e{font-size:12px;fill:#b04a4a}.z{font-size:11px;font-weight:700;fill:#5b6472}
+      .k{font-size:12px;fill:#1b1f24}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24}
+      .ms{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
+      .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
+      .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
+      .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
+      .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
+      .rd{fill:#fbecec;stroke:#b04a4a;stroke-width:1.3}
+      .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#r)}
+      .lane{stroke:#c3c9d0;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
+    </style>
+  </defs>
+  <rect width="900" height="640" fill="#ffffff"/>
+  <text x="16" y="26" class="t">One decision in three lanes: the adapter translates, the service admits and audits, the chokepoint decides.</text>
+
+  <rect x="12" y="40" width="238" height="590" rx="8" class="zone"/><text x="24" y="58" class="z">ADAPTER — WIRE ONLY</text>
+  <rect x="260" y="40" width="238" height="590" rx="8" class="zone"/><text x="272" y="58" class="z">SERVICE — vfs.Server</text>
+  <rect x="508" y="40" width="380" height="590" rx="8" class="zone"/><text x="520" y="58" class="z">CHOKEPOINT — Files.Authorize (§3.1)</text>
+
+  <rect x="22" y="72" width="218" height="52" rx="5" class="pr"/>
+  <text x="32" y="90" class="s">bob opens release/notes.txt</text><text x="32" y="106" class="m">GENERIC_WRITE</text><text x="32" y="120" class="s"> </text>
+  <path d="M131,124 L131,140" class="ln"/>
+  <rect x="22" y="142" width="218" height="68" rx="5" class="pr"/>
+  <text x="32" y="160" class="s">rights arrive mapped: the</text><text x="32" y="176" class="s">adapter maps generic bits,</text><text x="32" y="192" class="m">→ 0x00120116</text><text x="32" y="206" class="s">a maximal request is a flag</text>
+  <path d="M242,176 L266,176" class="ln"/>
+
+  <rect x="270" y="142" width="218" height="68" rx="5" class="sv"/>
+  <text x="280" y="160" class="s">admission builds the Caller:</text><text x="280" y="176" class="s">bob, groups {builders},</text><text x="280" y="192" class="s">Access read-write,</text><text x="280" y="206" class="s">authenticated, not privileged</text>
+  <path d="M490,150 L514,104" class="ln"/>
+  <text x="446" y="132" class="h">fresh</text>
+  <rect x="270" y="228" width="218" height="76" rx="5" class="am"/>
+  <text x="280" y="246" class="h">through an open</text><text x="280" y="262" class="s">its stored grant replaces</text><text x="280" y="278" class="s">Collect; Limit, Remove and</text><text x="280" y="294" class="s">Cut still run, on every call</text>
+  <path d="M379,210 L379,226" class="cb"/>
+  <rect x="518" y="72" width="360" height="52" rx="5" class="st"/>
+  <text x="528" y="90" class="h">Limit: take the share ceiling C</text><text x="528" y="108" class="s">C is Access's row: read-write is every entry right</text>
+  <rect x="740" y="128" width="138" height="22" rx="5" class="rd"/><text x="748" y="143" class="e">no grant: refused</text>
+
+  <path d="M698,124 L698,160" class="ln"/>
+  <rect x="518" y="162" width="360" height="124" rx="5" class="sv"/>
+  <text x="528" y="180" class="h">Collect</text>
+  <text x="528" y="198" class="s">privileged: every right but execute nobody can run;</text>
+  <text x="528" y="214" class="s">else the owner's implicit rights, then the walk:</text>
+  <text x="540" y="232" class="s">entry 1, deny bob, decides write data, append,</text>
+  <text x="540" y="248" class="s">write EA, write attributes: refused</text>
+  <text x="528" y="266" class="s">then the parent: delete through delete a child,</text>
+  <text x="528" y="280" class="s">the sticky rule included</text>
+
+  <path d="M490,290 C 502,295 502,296 514,296" class="cb"/>
+
+  <path d="M698,286 L698,302" class="ln"/>
+  <rect x="518" y="304" width="360" height="40" rx="5" class="sv"/>
+  <text x="528" y="322" class="h">Remove</text><text x="590" y="322" class="s">immutable and append-only</text><text x="528" y="337" class="s">take away what they forbid</text>
+
+  <path d="M698,344 L698,360" class="ln"/>
+  <rect x="518" y="362" width="360" height="56" rx="5" class="sv"/>
+  <text x="528" y="380" class="h">Cut</text><text x="560" y="380" class="s">G = what was collected, within C</text>
+  <text x="528" y="396" class="s">granted when every right asked for is in G;</text><text x="528" y="410" class="s">a share made read-only refuses a write ErrReadOnly</text>
+
+  <path d="M698,418 L698,434" class="ln"/>
+  <rect x="518" y="436" width="360" height="56" rx="5" class="rd"/>
+  <text x="528" y="454" class="e">refused: ErrAccess</text><text x="528" y="470" class="s">returns G and whether an audit entry selected</text><text x="528" y="486" class="s">the decision — here, no audit entry selects it</text>
+
+  <path d="M516,464 L492,464" class="ln"/>
+  <rect x="270" y="436" width="218" height="68" rx="5" class="sv"/>
+  <text x="280" y="454" class="s">applies the share's audit</text><text x="280" y="470" class="s">policy and emits the access</text><text x="280" y="486" class="s">event when it selects one;</text><text x="280" y="500" class="s">here, none</text>
+  <path d="M268,520 L244,520" class="ln"/><path d="M379,504 L379,520 L270,520" stroke="#3d444d" stroke-width="1.3" fill="none"/>
+  <rect x="22" y="500" width="218" height="52" rx="5" class="pr"/>
+  <text x="32" y="518" class="s">the status out:</text><text x="32" y="534" class="m">ErrAccess →</text><text x="32" y="548" class="m">STATUS_ACCESS_DENIED</text>
+
+  <text x="22" y="582" class="s">Over NFSv4 the same open asks write data and append, and</text>
+  <text x="22" y="598" class="s">meets the same chokepoint: NFS4ERR_ACCESS.</text>
+  <text x="518" y="520" class="s">The open stores what it asked for, mapped; only a</text>
+  <text x="518" y="536" class="s">maximal request stores G. Every later call through it</text>
+  <text x="518" y="552" class="s">is cut by C and the flags again, per call.</text>
+</svg>

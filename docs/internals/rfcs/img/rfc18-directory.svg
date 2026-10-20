@@ -5,53 +5,49 @@
     <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#b04a4a"/></marker>
     <style>
-      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:12px;font-weight:700;fill:#1b1f24}
-      .s{font-size:11px;fill:#5b6472}.e{font-size:11px;fill:#b04a4a}
-      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;fill:#1b1f24}
+      .t{font-size:15px;font-weight:600;fill:#1b1f24}.h{font-size:13px;font-weight:700;fill:#1b1f24}
+      .s{font-size:12px;fill:#5b6472}.e{font-size:12px;fill:#b04a4a}.z{font-size:11px;font-weight:700;fill:#5b6472}
+      .k{font-size:12px;fill:#1b1f24}
+      .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;fill:#1b1f24}
+      .ms{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:#1b1f24}
       .pr{fill:#e8f0f8;stroke:#4a6f96;stroke-width:1.3}
       .sv{fill:#eef5ee;stroke:#4c8a58;stroke-width:1.6}
       .st{fill:#eceff2;stroke:#5b6472;stroke-width:1.3}
       .am{fill:#fbf3e4;stroke:#b07a2a;stroke-width:1.3}
-      .bd{fill:#f8eaea;stroke:#b04a4a;stroke-width:1.3}
+      .rd{fill:#fbecec;stroke:#b04a4a;stroke-width:1.3}
       .ln{stroke:#3d444d;stroke-width:1.3;fill:none;marker-end:url(#a)}
-      .ex{stroke:#b04a4a;stroke-width:1.1;fill:none;marker-end:url(#r)}
+      .cb{stroke:#3d444d;stroke-width:1.2;fill:none;stroke-dasharray:5 3;marker-end:url(#a)}
+      .ex{stroke:#b04a4a;stroke-width:1.3;fill:none;marker-end:url(#r)}
+      .lane{stroke:#c3c9d0;stroke-width:1;stroke-dasharray:3 3}
+      .zone{fill:none;stroke:#9aa3ad;stroke-width:1;stroke-dasharray:4 3}
     </style>
   </defs>
   <rect width="900" height="400" fill="#ffffff"/>
-  <text x="16" y="26" class="t">A directory lookup: fresh from the cache, else ask; if that fails, stale within grace, else refuse.</text>
+  <text x="16" y="26" class="t">A directory answer's life: fresh for the TTL, stale-usable only while the directory fails, then refused.</text>
 
-  <rect x="30" y="170" width="110" height="44" rx="5" class="pr"/>
-  <text x="44" y="190" class="m">lookup</text><text x="44" y="206" class="s">name or SID</text>
+  <line x1="150" y1="64" x2="150" y2="300" stroke="#3d444d" stroke-width="1.2"/>
+  <line x1="280" y1="64" x2="280" y2="300" class="lane"/>
+  <line x1="670" y1="64" x2="670" y2="300" class="lane"/>
+  <text x="140" y="56" class="m">t0</text><text x="252" y="56" class="m">t0+5m</text><text x="636" y="56" class="m">t0+20m</text>
 
-  <rect x="170" y="166" width="190" height="52" rx="5" class="am"/>
-  <text x="184" y="188" class="m">cached, under TTL?</text><text x="184" y="206" class="s">5 min; not-found 30 s</text>
+  <text x="16" y="96" class="h">the answer</text><text x="16" y="112" class="s">read directly</text>
+  <rect x="150" y="80" width="130" height="36" class="sv"/><text x="160" y="102" class="s">fresh: used</text>
+  <rect x="280" y="80" width="390" height="36" class="am"/><text x="290" y="96" class="s">due: asked again; if the directory answers, fresh again;</text><text x="290" y="111" class="s">if it fails, used and counted stale (TTL + 15 min grace)</text>
+  <rect x="670" y="80" width="214" height="36" class="rd"/><text x="680" y="96" class="e">directory still failing:</text><text x="680" y="111" class="e">refused, ErrUnavailable</text>
 
-  <rect x="200" y="60" width="130" height="40" rx="5" class="sv"/>
-  <text x="214" y="84" class="m">use it</text>
+  <text x="16" y="160" class="h">a cached caller</text><text x="16" y="176" class="s">built from it</text>
+  <rect x="150" y="144" width="130" height="36" class="sv"/><text x="160" y="166" class="s">served</text>
+  <path d="M282,162 L330,162" class="ln"/>
+  <text x="336" y="158" class="s">dies at the TTL: rebuilt through the answer above,</text><text x="336" y="174" class="s">so it is fresh, stale within the grace, or refused</text>
 
-  <rect x="400" y="166" width="170" height="52" rx="5" class="st"/>
-  <text x="414" y="188" class="m">ask the directory</text><text x="414" y="206" class="s">one query per key, 5 s</text>
+  <text x="16" y="224" class="h">a local change</text><text x="16" y="240" class="s">Disabled at t0</text>
+  <rect x="150" y="208" width="24" height="36" class="rd"/>
+  <text x="182" y="224" class="s">refused from the next principals-generation read, at most 1 s later (§7.2),</text><text x="182" y="240" class="s">whatever any cache holds; the writer node applies it at once</text>
 
-  <rect x="400" y="52" width="250" height="56" rx="5" class="sv"/>
-  <text x="414" y="74" class="m">answer: refresh the entry</text><text x="414" y="94" class="s">not-found: cached 30 s</text>
+  <text x="16" y="282" class="h">never answered</text>
+  <rect x="150" y="268" width="734" height="24" class="rd"/><text x="160" y="285" class="e">a principal never looked up, with the directory down: refused at once; nobody is let in as a guest</text>
 
-  <rect x="610" y="166" width="170" height="52" rx="5" class="am"/>
-  <text x="624" y="188" class="m">entry within grace?</text><text x="624" y="206" class="s">at most TTL + 15 min old</text>
-
-  <rect x="610" y="284" width="170" height="44" rx="5" class="am"/>
-  <text x="624" y="304" class="m">use stale</text><text x="624" y="320" class="s">counted</text>
-
-  <rect x="380" y="284" width="190" height="44" rx="5" class="bd"/>
-  <text x="394" y="304" class="m">refuse</text><text x="394" y="320" class="s">ErrUnavailable, never guest</text>
-
-  <path d="M142,192 L166,192" class="ln"/>
-  <path d="M265,164 L265,104" class="ln"/><text x="272" y="140" class="s">yes</text>
-  <path d="M362,192 L396,192" class="ln"/><text x="368" y="184" class="s">no</text>
-  <path d="M485,164 L485,112" class="ln"/><text x="492" y="140" class="s">answers</text>
-  <path d="M572,192 L606,192" class="ln"/><text x="576" y="184" class="e">fails</text>
-  <path d="M720,220 L720,280" class="ln"/><text x="728" y="254" class="s">yes</text>
-  <path d="M660,220 L660,250 L475,250 L475,280" class="ex"/><text x="560" y="244" class="e">no</text>
-
-  <text x="16" y="364" class="s">An error is never cached as not-found and never replaces a positive entry.</text>
-  <text x="16" y="382" class="s">A local Disabled flag is the store's, not the directory's, and takes effect within one second regardless.</text>
+  <text x="16" y="334" class="s">A "no such entry" answer is fresh for 30 s; an error or a 5 s timeout is never cached as "no such entry" and never replaces a positive answer.</text>
+  <text x="16" y="352" class="s">For a minted directory principal, "no such entry" counts as disabled. A grace of zero refuses as soon as the TTL passes.</text>
+  <text x="16" y="370" class="s">Concurrent lookups of one key share one query.</text>
 </svg>
