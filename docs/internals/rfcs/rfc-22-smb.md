@@ -536,17 +536,27 @@ one gateway node's memory; a client that loses the node signs in again.
   share but `IPC$` **MUST** be `STATUS_ACCESS_DENIED`, whatever the share's
   grants or policy would otherwise admit, and on `IPC$` it reaches only §5.2's
   services. A session setup whose credential fails is never made anonymous or
-  guest; it fails. How this confinement meets a re-authentication, and guest
-  access to disk shares, is open (§20, item 5); this rule is unchanged.
+  guest; it fails. How this confinement meets guest access to disk shares is
+  open (§20, item 5); this rule is unchanged.
 - **Re-authentication in place.** A `SESSION_SETUP` naming an existing
   `SessionId` without `SMB2_SESSION_FLAG_BINDING` re-authenticates that session
   ([RFC 18 §3.8](rfc-18-identity.md#3.8%20Re-authentication)): the adapter
   passes the session's current evidence in `SignInStep`, and a success keeps the
-  session's trees, opens and keys and replaces its identity in one step. Which
-  identity a successful re-authentication leaves the session with is open
-  (§20, item 5). Any failed re-authentication tears the session down as
+  session's trees, opens and keys and replaces the session's identity with the
+  one the new proof establishes, in one step, whoever it names. Every open
+  handle keeps the access granted at its open. Any failed re-authentication
+  tears the session down as
   MS-SMB2 3.3.5.5.3 requires: its opens close, pending change notifications
   complete `STATUS_NOTIFY_CLEANUP`, and its trees are removed.
+
+> decision: a successful re-authentication replaces the session's identity in
+> place, and open handles keep the access granted at open. MS-SMB2 3.3.5.5 and
+> the reference servers behave this way, and the reference suite's
+> `smb2.session.reauth2`–`reauth4` depend on it. The ceiling: a handle opened by
+> the earlier identity keeps that identity's grant, whoever the session now
+> acts as; every new open and path call is decided for the new identity.
+> Overturned by a client shown to rely on a re-authentication narrowing an
+> existing handle's access.
 - **An expired session keeps its release commands.** On a session past its
   evidence's expiry, every command but `SESSION_SETUP` (re-authentication),
   `LOGOFF`, `CLOSE`, an unlocking `LOCK` and an oplock or lease break
@@ -2457,7 +2467,7 @@ name, a SID, a principal or a client address
 | §11 backup intent | A session whose principal a grant names `admin`: open a file its DACL denies without `FILE_OPEN_FOR_BACKUP_INTENT`, assert `STATUS_ACCESS_DENIED` and `MaximalAccess` without the denied right; with it, assert granted. A guest session with the intent: assert denied. As that `admin`, run `robocopy /B /SECFIX` of a tree whose files' DACLs exclude the `admin`, with other owners and groups: assert every file's owner, group and DACL restored. Set another owner through a handle opened without the intent: assert `STATUS_ACCESS_DENIED`. | privilege applied to every open of an `admin` session, or stopping at the intent `CREATE` so a restore cannot set a DACL |
 | §5.2 IPC$ | smbtorture `rpc.srvsvc`, `rpc.wkssvc`; a hidden share is absent from `NetShareEnumAll`. | |
 | §2 profile containers | The reference workload's sign-in storm and an hour of random 64 KiB overwrites, with a gateway node and then a primary failed mid-run: every container mounts again without a repair prompt, and every write acknowledged before the failure reads back. Then truncate a container by 20% through the session's own handle, as sign-out compaction does, and read it back cold (no cache on the reading node): byte-for-byte equal to the expected prefix. | a truncate through a held handle that leaves stale data past the new end, or loses data before it |
-| §4.1 re-authentication | alice holds a Kerberos session with a tree and an open. Re-authenticate with alice's wrong password: the session, its tree and open gone, pending notifies completed `STATUS_NOTIFY_CLEANUP`. Re-authenticate as alice with a new ticket: the tree and open still work and the new expiry is in force. smbtorture `smb2.session.reauth1`–`reauth6` pass as they do against the reference servers. |
+| §4.1 re-authentication | alice holds a Kerberos session with a tree and an open. Re-authenticate with alice's wrong password: the session, its tree and open gone, pending notifies completed `STATUS_NOTIFY_CLEANUP`. Re-authenticate as alice with a new ticket: the tree and open still work and the new expiry is in force. Re-authenticate as bob: a new open is decided for bob, and alice's open keeps the access it was granted. smbtorture `smb2.session.reauth1`–`reauth6` pass as they do against the reference servers. |
 | §4.1 expired session | Let a session's ticket expire: assert a `READ` is `STATUS_NETWORK_SESSION_EXPIRED`, and `CLOSE`, an unlocking `LOCK`, a lease break acknowledgement and `LOGOFF` succeed. |
 | §4.3 `PreviousSessionId` | alice holds a session; a new `SESSION_SETUP` names it with a wrong password, then as bob: assert alice's session and opens untouched each time. Then as alice: assert it torn down. |
 | §5.1 access-based enumeration | On a share with the flag, a directory holding alice's folder and bob's: as bob, `QUERY_DIRECTORY` lists only bob's, and `TREE_CONNECT` reports `SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM`. |
@@ -2526,24 +2536,12 @@ client label.
 3. **SMB 3.1.1 POSIX extensions** for Linux clients over SMB.
 4. **Directory leases**, with NFS directory delegations and RFC 14's open
    question 4.
-5. **The identity a re-authentication leaves.** A successful re-authentication
-   of a session in place (§4.1) proves an identity, possibly another user's, or
-   anonymous. Two options:
-   1. *The new identity replaces the session's identity*, and every open handle
-      keeps the access granted at its open. This is what reference servers do
-      and what the reference test suite checks (a session re-authenticated as
-      anonymous keeps using its handles). **Recommended.**
-   2. *Follow MS-SMB2 3.3.5.5.3 literally*: a valid session refreshes only its
-      expiry and group SIDs and keeps its original user; an expired session
-      takes the new user.
+5. **Keyless sessions and disk shares.** S19 ("a session without a session key
+   reaches no share but `IPC$`") contradicts guest access to disk shares where
+   a deployment enables guest, and a session re-authenticated as anonymous
+   (§4.1) keeps the trees it had. S19 is left as written, not strengthened;
+   whether it narrows to keyless null sessions is undecided.
 
-   Undecided. The keyless-session rule of §4.1 (S19, "a session without a
-   session key reaches no share but `IPC$`") sits on the same question: under
-   option 1 a session re-authenticated as anonymous keeps trees on disk shares,
-   and a deployment that enables guest access to disk shares contradicts S19.
-   S19 is left as written, not strengthened; whether it narrows to keyless null
-   sessions is decided with this item. RFC 18 §3.8 states only what both
-   options share.
 ## Appendix A — prior art
 
 *Non-normative.*
