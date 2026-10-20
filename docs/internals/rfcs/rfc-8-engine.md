@@ -1351,6 +1351,37 @@ costs lookup work, never a wrong read.
   engine's source; batching, retry timing, concurrency, fairness and rate limits
   are the scheduler's.
 
+**What does not post here.** The events above are the queue's only inputs, and
+every one is posted by the engine itself. The syncer posts none
+([RFC 3 §2.7](rfc-3-syncer.md#2.7%20It%20reports%3B%20it%20does%20not%20persist)): it runs a transfer when called and returns the outcome
+to its caller.
+
+- **A demand read** is on the request path, not the queue's: the read path calls
+  the share's flow `Fetch` and waits for it, and one fetch serves every
+  concurrent reader of the chunk ([RFC 3 §4.3](rfc-3-syncer.md#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)). Whether to keep the bytes is
+  `fill` ([§7.3](#7.3%20Filling%20is%20a%20decision)); the journal's `Fill` runs beside the reply, which never waits on it.
+- **Read-ahead** is the speculator's ([§7.4](#7.4%20The%20speculator)): it calls the flow's
+  `Prefetch`, which the syncer runs behind demand ([RFC 3 §4.4](rfc-3-syncer.md#4.4%20Speculation%20does%20not%20delay%20demand)).
+- **An upload's outcome** reaches the queue as `PutDone` or `PutFailed`, which the
+  pipeline's put step posts from the result `Upload` returned to it, not from
+  any callback of the syncer's.
+- **A store's ill health** reaches the queue through the binding: the engine
+  reads the flow's `Healthy` and `Health(d)` into the binding's health
+  ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)), and `offloadDue` backs off a share whose store refuses, so a down
+  store needs no event to slow the passes aimed at it.
+
+**A crash, by example.** A node holds 3 dirty files of one share; a pass for the
+first has put its block and not yet committed it, and the second's removal is
+between batches. The process dies. At start, after the journals open and every
+binding is rebuilt ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), `Rebuild` posts a `Dirty` for each of the 3 files,
+since none has its offloaded bit set. The first file's pass does not resume:
+its put intent is abandoned before the node serves, and the new pass carves the
+same bytes again under a freshly minted name ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)), so the object the dead
+pass put is reclaimed through its abandoned intent ([RFC 6 §7.6](rfc-6-block-metadata.md#7.6%20Put%20intents)) and never
+named by a ref. A `RemovalPending` for the second file, read from the
+unfinished-removal index, runs its next batch. Nothing came from the queue that
+died, and no adapter served a client before all of it was posted.
+
 **Checks.**
 
 | Requirement | Check |
