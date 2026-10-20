@@ -53,6 +53,12 @@ node, and a lease owner that is always local.
 Not ported: the manager, its blocking waits, its grace manager, lock persistence, and its deadlock
 detector (RFC 14 has none; SMB's open-brlock-deadlock refusal can port it later if wanted).
 
+Today's manager is replaced, not moved. Until stage 1 lands, RFC 17 §9's slice 3 keeps
+`pkg/metadata/lock` where it is, behind the service's own small lock interface; then
+`*openstate.Table` takes its place behind that interface and `pkg/metadata/lock` is deleted.
+Nothing imports `pkg/openstate` before then, and stage 4 carries no lock persistence over:
+RFC 14 holds open state in memory and rebuilds it by reclaim.
+
 **D4. Concurrency: one table per file, one step per file.** A sharded map from `FileID` to the
 file's table; each table has its own mutex, the "open-state step" of RFC 14 §11. A call touching
 several files takes their steps in `FileID` order, then fold admission, then accept locks, as
@@ -101,15 +107,18 @@ What each piece also carries, and its §13.1 rows:
 1. **Skeleton and stateids:** the `OpenState` interface, errors, the per-file table and step, the
    clock, and `CheckIO`/`CheckChange` with nothing to conflict yet; the stateid layout and its
    per-shard index, with how a miss is classified. *Rows:* one table, client check.
-2. **Clients and leases:** NFSv4.0 unconfirmed clients (open question 4). *Rows:* lease expiry,
-   server owner, client check.
+2. **Clients and leases:** an unconfirmed NFSv4 client stays in the service's front (RFC 17's
+   `Propose`), so open state first sees a client at `Connect`. *Rows:* lease expiry, server
+   owner, client check.
 3. **Opens and deny modes:** deny modes at open; open-unlinked kept alive; delete on close; open
-   children refuse an SMB rename or delete of their directory. *Rows:* no downgrade, anonymous
+   children refuse an SMB rename or delete of their directory; the calls behind RFC 17's
+   `Downgrade` and `ConfirmOpen`. *Rows:* no downgrade, anonymous
    I/O, cross-protocol, open-unlinked (and across protocols), lazy, delete pending, remove against
    deny-delete.
-4. **Byte-range locks and waiters:** `Lock` and `Unlock` take a list of ranges, all or nothing,
-   each shared or exclusive, since an SMB LOCK of several elements is one call (RFC 20 §4.3); FIFO
-   waiters with no adapter timeout; NFSv4.0 owner sequences; NLM. *Rows:* owners, NLM restart, the
+4. **Byte-range locks and waiters:** `Lock` and `Unlock` keep RFC 14's single range; the service
+   takes an SMB LOCK's elements one at a time and releases what it took when a later one fails
+   (RFC 17 §5.11); FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM; the calls
+   behind RFC 17's `TestState` and `ReleaseLockOwner`, and freeing one lock stateid. *Rows:* owners, NLM restart, the
    waiter rows.
 5. **Caching grants and recalls:** grants offered at open; recalls with deadlines; revocation into
    the revoked set; no more grants to a client after one revoke; the per-client budget. *Rows:*
@@ -124,7 +133,9 @@ What each piece also carries, and its §13.1 rows:
 8. **The rest:** watches, async copies, `DropShare`. *Rows:* lost copy, the watch and drop-share
    rows.
 
-Layouts (§2.6) and every "(cluster)" row wait for the cluster stages.
+Layouts (§2.6) and every "(cluster)" row wait for the cluster stages. RFC 14 §11 declares no call
+behind `TestState`, `ReleaseLockOwner`, `Downgrade` or `ConfirmOpen`, nor one that frees a single
+lock stateid (RFC 17 §3.5); the piece that builds each adds it to RFC 14 in the same PR.
 
 ## 4. The conformance suite
 
@@ -155,15 +166,8 @@ The §13.3 benchmarks come with the pieces they measure.
 ## 6. Open questions
 
 1. **D2:** is single node first, with the cluster rules behind seams, the right cut?
-2. **Multi-range `Lock`:** RFC 14 §11 still takes one range. This plan follows the `LockRange`
-   shape of the RFC 14 changes in review (a range plus its own `Exclusive`), since a single
-   `exclusive` flag cannot carry an SMB LOCK that mixes shared and exclusive elements.
-3. **SMB deadlock refusal:** smbtorture's open-brlock-deadlock expects one. Port `deadlock.go`, or
+2. **SMB deadlock refusal:** smbtorture's open-brlock-deadlock expects one. Port `deadlock.go`, or
    record it as a known failure?
-4. **Unconfirmed NFSv4 clients (§2.9):** SETCLIENTID and EXCHANGE_ID must return an existing
-   client's ID, or refuse with `ErrClientInUse`, before any `Connect`, but §11 has no call that finds
-   a client by owner. Either §11 gains one, or the adapter's handler reads `Clients.ByOwner` through
-   the service. Settle before piece 2; in `openstate` it adds two or three days.
 
 ## 7. What ports from today's NFSv4 state
 
@@ -208,9 +212,7 @@ Rough size per piece, code and tests together, so reviewers can plan:
 | 8 | The rest | 1 | 1,500 |
 
 What blocks what:
-- open question 4 (finding an unconfirmed client) before piece 2;
 - piece 1's stateid layout before piece 2, whose `Revoke` needs it;
-- the RFC 14 `LockRange` change merged before piece 4 freezes `Lock`;
 - RFC 20 merged before piece 5 fixes the sink, which mirrors its `Callbacks`.
 
 For teams planning against stage 2, the useful answer is these merges and decisions, not a date.
