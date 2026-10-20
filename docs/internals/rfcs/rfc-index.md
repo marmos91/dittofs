@@ -67,8 +67,6 @@ its own layout: it has no `## Start here`, and it names the tools and files it i
 which the naming convention below allows only of an appendix elsewhere. It builds on no
 other RFC, RFC 0 included, so it is `reviewed` while the storage RFCs are still `draft`.
 
-[The block data-flow split](rfc-block-dataflow.md) is the earlier plan the storage RFCs grew out of.
-
 ## Dependencies
 
 Generated from every RFC's `depends_on` frontmatter; regenerate it whenever one
