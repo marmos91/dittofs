@@ -608,7 +608,7 @@ holds.
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
-| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, create GUID and app instance, reclaim, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Created`, and the parent's `WCC` when it created |
+| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), create GUID and app instance, reclaim, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Created`, and the parent's `WCC` when it created |
 | `AttrChange` | `metadata.Attrs` plus `Guard *time.Time` (a ctime guard, [RFC 20 §2.4](rfc-20-adapters.md#2.4%20Protocol%20details%20that%20stay%20in%20the%20adapter)), `DeleteOnClose *bool` and `Suspend`, `Resume` time masks — the last two only through an open |
 | `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)) |
 | `WCC` | `{Before *File; After File}`: one object's attributes either side of a mutation, from one hold of its accept lock; when `Before` is nil is [§5.7](#5.7%20GetAttr)'s |
@@ -1109,7 +1109,9 @@ through `Peers` (§2.3). Gaps in the layers below are rows of §10's fourth. Whi
 [RFC 21 Appendix D](rfc-21-nfs.md#Appendix%20D%20%E2%80%94%20requests%20and%20the%20service%20calls%20they%20make)
 and [RFC 22 Appendix G](rfc-22-smb.md#Appendix%20G%20%E2%80%94%20commands%20and%20the%20service%20calls%20they%20make).
 An open-state call is named by its RFC 14 view (§2.3); `openstate.Clients` is
-qualified so as not to read as the store's `Clients`.
+qualified so as not to read as the store's `metadata.Clients`, and a bare
+`Opens` is RFC 14's view too, never the store's `metadata.Opens`
+([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)).
 
 | Method | Metadata calls (RFC 7, RFC 6, RFC 14, RFC 16, RFC 12) | Engine calls (RFC 8) | Runs at |
 | --- | --- | --- | --- |
@@ -1204,7 +1206,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
 | `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind}`, below |
-| `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShard` (**(cluster)** a clone between shards, [§5.9](#5.9%20Copy%20and%20clone)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)) |
+| `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShare` (a rename or link between shares, [RFC 7 §5.1](rfc-7-namespace-metadata.md#5.1%20One%20transaction)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)), `OtherShard` (**(cluster)** a clone whose source and destination lie in different shards, [§5.9](#5.9%20Copy%20and%20clone)) — the first three name the boundary a client can see; `OtherShard` names placement, which a client cannot, so adapters fall back rather than report it |
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the server's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
 | `ErrLost`, `ErrUnavailable`, `ErrCorrupt` | the content errors of [RFC 8](rfc-8-engine.md) | aliases |
@@ -1323,7 +1325,7 @@ err = open.CheckIO(ctx, ref, r, write)  // or CheckChange: deny modes, locks, gr
   set-information, rename, delete, delete on close, set-security or EA change
   whose `Target.Open` is set, pass the metadata store an `OpenGrant` built from
   that open's record — its file, the access granted at open, whether it is
-  privileged (an SMB open with backup or restore intent by a caller privileged
+  privileged (an open with `OpenRequest.Backup` set by a caller privileged
   for it) and the directory it resolved through
   ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface),
   [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) — and are evaluated against
@@ -1418,13 +1420,13 @@ re-resolved, at the crossing. The result of steps 1–4 may be cached per
 (share, identity) only with `ExportPolicy.Version`, the netgroups' versions,
 `ShareList.Version`, the share's grant-list version
 ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s
-`S‖id‖gv`) and the principals generation in the key, beside everything RFC 18 §7.1 lists: the principals generation is what
+`S‖id‖gv`) and the principals generation in the key, beside everything RFC 18 §7.1 lists; a cache of a result step 3 decided — a client rule or a netgroup match — also keys on the `Identity`'s `Client` address, since `Identity.Key()` leaves it out ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) and two clients of one principal can be ruled differently: the principals generation is what
 drops a cached resolution when a principal, a group or a mapping changes
 ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)),
 so a disabled user's next call resolves afresh. Step 5 reads the pools as they
 are and is never cached.
 
-![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same four checks — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the flavour rule (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only) and squash — then Authorize; a compound crossing shares is re-admitted, and a cached admission result is keyed with the policy, netgroup and share-list versions](img/rfc17-admission.svg)
+![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same four checks — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the MinProof and MinProtection minimums (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only) and squash — then Authorize; a compound crossing shares is re-admitted, and a cached admission result is keyed with the policy, netgroup and share-list versions](img/rfc17-admission.svg)
 
 **A share's removal joins the calls admitted before it.** Admission counts
 the call against its share *before* it reads the share's state, and uncounts it
@@ -1990,7 +1992,7 @@ carved refs adopted, all resolved at one point in the source's history.
   ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings))
   is refused with `ErrInvalid`, all or nothing, and **(cluster)** one between
   files of two shards, whatever their primaries, with `ErrCross`
-  (`CrossShard`), changing nothing, so the client copies the bytes itself.
+  (`OtherShard`), changing nothing, so the client copies the bytes itself.
 - **`Copy` is not atomic.** The engine's `Copy` runs bounded chunks, each a
   small atomic clone, and returns the bytes copied; at the caller's deadline it
   stops after its current chunk and answers a short count, from which the
@@ -2419,7 +2421,7 @@ tree working:
    must be registered at each directory's primary and kept as directories are
    created and moved; who registers them, and what a client is told while one
    is missing, is unspecified. Whether a single node places per-child shards at
-   all decides whether `ErrCross` (`CrossShard`) can reach it, and is RFC 11's
+   all decides whether `ErrCross` (`OtherShard`) can reach it, and is RFC 11's
    to state.
 
 ## Appendix A — prior art

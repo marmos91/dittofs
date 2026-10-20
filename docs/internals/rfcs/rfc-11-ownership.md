@@ -1287,7 +1287,7 @@ to recall, a directory watch. So:
 
 A by-reference clone or copy is not among these operations: one whose source
 and destination are in different shards is refused at admission with
-`ErrCross` (`CrossShard`), whatever their primaries, and the adapter falls back to a
+`ErrCross` (`OtherShard`), whatever their primaries, and the adapter falls back to a
 server-side byte copy or a cross-device answer ([RFC 15 §4.2](rfc-15-topology.md#4.2%20Calls%20that%20touch%20two%20primaries)).
 
 On any no, the coordinator sends abort and returns the protocol's
@@ -1639,7 +1639,7 @@ a claim or address mark waited out the claim hold.
 | `S-shard-session-new-epoch` | a gateway node paused past its lease is marked, re-acquires a higher node epoch and keeps its sessions; a call it forwarded under the old epoch lost its reply; the client retries on the same session, slot and sequence; assert it is answered from the first result. A request ID built from the gateway node's current epoch applies it twice |
 | `S-shard-handover-open-state-retry` | a `Lock`, a `Close` and a sequenced `Unlock` each lose their reply while their shard is handed over; each is retried at the new primary; assert each is answered with its first result: no self-conflict, no `ErrBadState`, no `ErrBadSeqID`. A handover that ships no dedup entries fails all three |
 | `S-shard-forward-entry-life` | move a file with an open from G to R, close it at R, call G with the moved state reference: assert G re-routes, R answers bad stateid, and G deletes its entry. Move a fourth open G→R, fail R over, and call G with its stateid during R's grace: assert R answers stale, G keeps its entry, and the client's reclaim at R succeeds; a miss judged by G's instance answers bad and loses the lock. Move a second open G→R→Q: assert the call reaches Q. Move a third back to G: assert G's entry is gone after that batch. Remove the share: assert no forwarding entry remains |
-| `S-shard-cross-clone` | clone a file into a directory whose files land in another shard, once with the two shards on different primaries and once on one: assert the clone is refused `ErrCross` (`CrossShard`) and a copy of the same range is copied server-side, with the source extent writable throughout |
+| `S-shard-cross-clone` | clone a file into a directory whose files land in another shard, once with the two shards on different primaries and once on one: assert the clone is refused `ErrCross` (`OtherShard`) and a copy of the same range is copied server-side, with the source extent writable throughout |
 | `S-shard-hop-loop` | two gateways with crossed stale caches: refused at the hop limit, then routed |
 | `S-shard-cross-timeout` | a coordinator dies after prepare: holds end at their deadline, each deleting its hold record; a late commit is refused |
 | `S-shard-cross-hold-release` | a participant releases an expired hold while the coordinator's commit is in flight, the release committing first, on a store that chooses the commit timestamp after the commit's reads; the commit conflicts with the deletion of the hold record and aborts, and the deny-delete open the participant then grants stands |
