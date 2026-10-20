@@ -260,8 +260,8 @@ This document **MUST NOT**:
   that asks which security flavours a share accepts) — [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees);
 - decide authentication, principals or the `owner@domain` mapping —
   [RFC 18](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings); or ACL (access
-  control list) semantics and their NFSv4 spelling —
-  [RFC 19](rfc-19-authorization.md#7.%20NFSv4%20ACLs);
+  control list) semantics — [RFC 19](rfc-19-authorization.md#3.%20Evaluation);
+  their NFSv4 spelling is this RFC's (§11.3);
 - restate the XDR (External Data Representation, the wire encoding) of RFC 1813,
   RFC 7530, RFC 8881 or RFC 7862, or the rows of the error table that follow
   from those specifications, which the adapter holds and
@@ -1228,6 +1228,16 @@ client, are RFC 14's.
   unlock nor free the first host's locks. `NLMPROC4_FREE_ALL` and NSM's
   `SM_NOTIFY` for a host release its locks only when they arrive from the
   address its record holds.
+- **A lock is a permission decision.** An NLM lock is a lock outside any open,
+  so it needs read access or ownership of the file, and a write lock asks no
+  more than a read lock
+  ([RFC 19 §3.8](rfc-19-authorization.md#3.8%20Locks%20outside%20an%20open)). A
+  store error resolving the caller fails the lock, never authorises it as
+  anonymous ([RFC 18 §5.4](rfc-18-identity.md#5.4%20Errors%20never%20become%20answers)).
+- **NLM is admitted at `Claimed`.** `LOCK`, `TEST`, `UNLOCK`, `CANCEL`,
+  `SHARE`, `UNSHARE`, `FREE_ALL` and their `*_MSG` forms are admitted on a share
+  whose `MinProof` is higher than `Claimed`; the claimed caller is still
+  resolved and gated as above.
 - **Replies leave from the address the client used.** Callbacks to the host —
   `NLMPROC4_GRANTED`, `NLMPROC4_GRANTED_MSG`, the `NLMPROC4_*_RES` replies — **MUST** be sent
   from the floating address the host's requests arrived on, never from a
@@ -1315,6 +1325,15 @@ client, are RFC 14's.
   with a waiter if blocking, `NLM4_DENIED_GRACE_PERIOD` if not, never
   `NLM4_DENIED`.
 
+> decision: NLM calls are admitted at `Claimed` on a share that requires more,
+> because a Linux client's `lockd` and `statd` send `AUTH_UNIX` even for files on
+> a `sec=krb5` mount, and every NFSv3 `fcntl` and `flock` on a Kerberos-only share
+> would otherwise fail. The exemption covers lock calls only, never data, so the
+> ceiling is that an admitted host can hold locks on the files its claimed uid
+> can read. Make it a per-share opt-in when a lock-holding denial of service from
+> an admitted host is reported, or a client is shown to send NLM over
+> `RPCSEC_GSS`.
+
 ### 6.2 NSM
 
 The server monitors clients as its peers expect: a host's first NLM call
@@ -1347,6 +1366,20 @@ which resolves it and returns the root handle and the share's flavours; `DUMP`
 is empty, and `UMNT` and `UMNTALL` change nothing; `EXPORT` is `ListShares`, the
 shares [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)
 lets the caller see.
+
+`MNT` and `EXPORT` are admitted on the share's state and its client rules only,
+without the `MinProof` and `MinProtection` step, so a Kerberos-only share can
+return its flavours to a client whose mount daemon sends `MNT` as `AUTH_UNIX`.
+The handle `MNT` returns is gated like any other on every later call.
+
+> decision: `MNT` and `EXPORT` skip the proof and protection minimums, because a
+> Linux client sends `MNT` as `AUTH_UNIX` even for `sec=krb5`, and every NFSv3
+> Kerberos mount of a Kerberos-only share would otherwise be refused before the
+> client learns the share's flavours. The ceiling is what an `AUTH_SYS` `MNT`
+> learns: the share's flavours and its root handle, which is a bearer token over
+> NFSv3, but every call made with it meets `MinProof` and is refused. Overturned
+> if a supported client is shown to send `MNT` over `RPCSEC_GSS`, or a root handle
+> is shown to reach anything without a later admitted call.
 
 ## 7. Names, handles and directories
 
@@ -1544,38 +1577,13 @@ decision: `change` is the file's version including writes not yet committed
 (§9.2); `change_attr_type` is `NFS4_CHANGE_TYPE_IS_UNDEFINED` (§15);
 `maxread`, `maxwrite` and `maxfilesize` are §2.3's.
 
-**Audit entries are an administrator's.** The ACL's audit and alarm entries
-say which accesses are recorded; reading them tells a user what is watched, and
-changing them turns auditing off. Both protocols gate them alike
-([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)):
+**ACL attributes.** `acl`, `dacl`, `sacl` and `aclsupport`, who may read and
+write each, and how their entries are spelled are §11.3's.
 
-- `GETATTR` or `SETATTR` of `sacl` by a caller without `admin` — set only from
-  an `admin` share grant on an authenticated flavour
-  ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)),
-  and so without the system-security right
-  ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right))
-  — **MUST** be `NFS4ERR_ACCESS`.
-- The `acl` attribute, served on every minor version — the only ACL attribute
-  of NFSv4.0, and beside `dacl` and `sacl` on NFSv4.1 and NFSv4.2 — can carry
-  audit and alarm entries too. A `GETATTR` of `acl` by a non-administrator
-  **MUST** omit them; a `SETATTR` of `acl` by a non-administrator that contains
-  any is `NFS4ERR_ACCESS`, and one that contains none leaves the stored audit
-  entries as they were.
-- **`acl`, `dacl` and `sacl` are RFC 19's spelling** of the stored ACL, through
-  the one translation both adapters use
-  ([RFC 19 §7](rfc-19-authorization.md#7.%20NFSv4%20ACLs)). A set it refuses is
-  refused whole, and nothing is stored
-  ([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)):
-  a `who` no principal holds is `NFS4ERR_BADOWNER`
-  ([RFC 19 §7.2](rfc-19-authorization.md#7.2%20Entries%20and%20%60who%60)); every
-  other refusal — an entry type other than allow, deny, audit and alarm, a list
-  of more than 128 entries or 64 KiB, a deny naming a well-known principal that
-  matches no caller, `acl` named in one `SETATTR` with `dacl` or `sacl` — is
-  `NFS4ERR_INVAL`.
 - `mode` and `dacl` are unaffected: the file's owner may set them through its
   implicit rights to read and write the ACL, unless the ACL holds an
   owner-rights entry, in which case the walk decides
-  ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)).
+  ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)).
   Setting `owner` to another principal needs the privileged flag; setting it
   to the caller itself needs the **change the owner** right, which an ACL can
   grant; `owner_group` needs the owner, or a caller with that right, naming a
@@ -1585,17 +1593,15 @@ changing them turns auditing off. Both protocols gate them alike
   an export that leaves it unsquashed is privileged, so `chown` and `tar x` as
   root work as on a local disk.
 - **Which NFS callers are privileged** is
-  [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)'s
-  flavour rule; on the wire it means: over `AUTH_NONE` a caller is never
-  privileged, being the export's anonymous principal; over `AUTH_SYS` a
-  caller is privileged only as uid 0 on an export that leaves root unsquashed;
-  `root_squash` squashes it, and a share grant naming a principal `admin` makes
-  no `AUTH_SYS` caller privileged, whatever uid it sends. An `admin` grant makes
-  a caller privileged only over `RPCSEC_GSS`, where the principal is
-  authenticated (§10). Over `RPCSEC_GSS`, a principal the ID mapping
-  ([RFC 18 §4](rfc-18-identity.md#4.%20Identity%20mapping)) maps to uid 0 is
-  privileged exactly when the export leaves root
-  unsquashed, as `AUTH_SYS` uid 0 is, and `root_squash` squashes it alike:
+  [RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged)'s;
+  on the wire it means: over `AUTH_NONE` a caller is never privileged, being the
+  export's anonymous principal; over `AUTH_SYS` uid 0 is the well-known root
+  principal ([RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)),
+  privileged only on an export that leaves root unsquashed, and a share grant
+  naming a principal `admin` makes no `AUTH_SYS` caller privileged, whatever uid
+  it sends. Over `RPCSEC_GSS`, an `admin` grant makes the authenticated
+  principal privileged (§10), and a Kerberos name linked to root is privileged
+  exactly when the export leaves root unsquashed, as `AUTH_SYS` uid 0 is:
   root on a client running `tar xpf` on a `sec=krb5` export with
   `no_root_squash` restores owners as on a local disk, and the flavour gives
   root no more than the export's squash setting does.
@@ -1612,11 +1618,28 @@ changing them turns auditing off. Both protocols gate them alike
 
 **`ACCESS` answers the granted set.** NFSv3 and NFSv4 `ACCESS` map to the
 service's `Access`, which intersects the asked bits with `Files.Granted`, the
-maximal-access walk of
-[RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)
+granted set of
+[RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), so the bits reported are
 exactly those a later operation is authorised for, owner's implicit rights and
-the privileged flag included.
+the privileged flag included. Each bit reports its rights, the same values in
+both versions:
+
+| `ACCESS` bit | On a file | On a directory |
+| --- | --- | --- |
+| `READ` | read data | list |
+| `LOOKUP` | — | traverse |
+| `MODIFY` | write data | delete a child |
+| `EXTEND` | append, or write data | add a file, or add a subdirectory |
+| `DELETE` | — | delete a child |
+| `EXECUTE` | execute | — |
+| `XAREAD`, `XALIST` | read extended attributes | read extended attributes |
+| `XAWRITE` | write extended attributes | write extended attributes |
+
+A bit with no right on that file type is never reported. `XAREAD`, `XAWRITE`
+and `XALIST` exist only in NFSv4.2
+([RFC 8276](https://www.rfc-editor.org/rfc/rfc8276.html)) and are never reported
+on an earlier version.
 
 **`time_metadata` always moves.** The file's ctime moves on every change,
 whatever an SMB client has suspended on its own open
@@ -1889,7 +1912,25 @@ Authentication and principal mapping are
   rejecting the RPC with the `auth_stat` `AUTH_TOOWEAK` (RFC 5531), which
   RFC 2623 §2.4 allows beside an NFS error, as
   [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) maps
-  `ErrWrongSecurity` (§11.5).
+  `ErrWrongSecurity` (§11.5);
+- a context is keyed by its handle, not by the TCP connection that created it,
+  so a reconnect or a trunked connection keeps using it;
+- the context table is bounded: at most 10 000 contexts per gateway node,
+  charged to [RFC 24](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)'s
+  connection-state pool. When it is full, the same principal's least recently
+  used context is evicted first, then the least recently used overall, so one
+  principal looping `INIT` evicts only its own. A context idle 8 hours is
+  evicted; only a call whose header MIC verified touches its idle time;
+- `RPCSEC_GSS_DESTROY` needs a valid header MIC and an in-window sequence
+  number, since handles travel in the clear;
+- a call on a context past its ticket's end time, or with a sequence number at
+  or above `MAXSEQ`, deletes the context and is answered
+  `RPCSEC_GSS_CTXPROBLEM`, so the client fetches a new ticket rather than
+  retrying a dead handle. Both are checked only after the header MIC verifies.
+
+> ponytail: the context cap and the idle timeout are constants. Make them
+> settings when a deployment's client count, or its clients' idle pattern, is
+> shown to need others.
 
 > decision: an NFSv3 call with a flavour the share refuses is rejected at the
 > RPC layer with `AUTH_TOOWEAK`, not answered `NFS3ERR_ACCES`, in agreement
@@ -1931,7 +1972,7 @@ Each credential becomes RFC 17's neutral `Identity`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), which names no flavour and
 no Kerberos level:
 
-| `Proof` | `Protection` | `Principal` | `Claims` | ← NFS credential |
+| `Proof` | `Protection` | `Evidence.Principal` | `Claims` | ← NFS credential |
 | --- | --- | --- | --- | --- |
 | `None` | `None` | zero | none | `AUTH_NONE` |
 | `Claimed` | `None` | zero | the uid, gid and groups it carried | `AUTH_SYS` |
@@ -1942,6 +1983,14 @@ no Kerberos level:
 The identity also carries the connection's source address, which client rules
 are checked against.
 
+- **Refused credentials.** A credential that does not decode, an `AUTH_SYS`
+  credential over RFC 5531's limits — more than 16 gids, a machine name over
+  255 bytes — and every flavour other than `AUTH_NONE`, `AUTH_SYS` and
+  `RPCSEC_GSS` **MUST** be rejected `AUTH_BADCRED` and run nothing. None is ever
+  treated as anonymous: that would turn a malformed credential into the share's
+  everyone grant.
+- **Root.** A claimed uid 0 maps to RFC 18's root principal
+  ([RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)).
 - **Export flavour policy.** "Requires Kerberos" is the share's `MinProof`
   `Ticket`, and a minimum Kerberos level is the matching `MinProtection`;
   admission compares both with the identity
@@ -1961,10 +2010,8 @@ are checked against.
 - **What a claim reaches.** A `Claimed` or `None` caller is never
   `authenticated` and never `admin`
   ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged));
-  the adapter only reports the proof. So an ACL that grants only Authenticated
-  Users or BUILTIN\Users admits no `AUTH_SYS` or `AUTH_NONE` caller
-  ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode));
-  such a tree needs a named entry, a group's or everyone's. Which NFS callers
+  the adapter only reports the proof, and what that means for an ACL is
+  [RFC 19 §2.3](rfc-19-authorization.md#2.3%20Principals)'s. Which NFS callers
   are privileged is §8.1.
 - **GSS contexts** stay on the gateway node (§10); nothing of them reaches the
   core but the `Identity` `SignIn` returned.
@@ -2046,11 +2093,115 @@ NFSv3 carries, and the rules after it bind both versions. Its errors are
 - **umask.** NFSv4.2's `mode_umask` ([RFC 8275](https://www.rfc-editor.org/rfc/rfc8275.html)) is the umask RFC 7 says a
   create carries apart from the mode: ignored when the parent holds
   inheritable entries, applied to the mode when it holds none (Appendix B).
-- **The ACL rules RFC 7 states are RFC 8881's.** The ordered walk is
-  [RFC 8881 §6.2.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.2.1)'s; removing an entry with delete on the file or
-  delete a child on its directory is §6.2.1.3.2's; mode and ACL agree as §6.4
-  requires; the `chmod` merge is §6.4.1.1's; inheritance at create is
-  §6.4.3's.
+- **The ACL rules RFC 19 states are RFC 8881's.** The ordered walk is
+  [RFC 8881 §6.2.1](https://www.rfc-editor.org/rfc/rfc8881.html#section-6.2.1)'s
+  ([RFC 19 §3](rfc-19-authorization.md#3.%20Evaluation)); removing an entry with
+  delete on the file or delete a child on its directory is §6.2.1.3.2's; mode and
+  ACL agree as §6.4 requires, the `chmod` merge is §6.4.1.1's, and inheritance at
+  create is §6.4.3's ([RFC 19 §4](rfc-19-authorization.md#4.%20Mode%20and%20ACL)).
+
+**ACLs.** `acl`, `dacl` and `sacl` spell RFC 7's one stored ACL through the
+translation both adapters share
+([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)),
+which changes spellings and bit positions only.
+
+| Attribute | Versions | Holds | To read | To write |
+| --- | --- | --- | --- | --- |
+| `acl` | 4.0, 4.1, 4.2 | the access list, then the audit list; no flags | read the ACL, and the system-security right for the audit entries | write the ACL, and the system-security right for the audit entries |
+| `dacl` | 4.1, 4.2 | the access list and its flags | read the ACL | write the ACL |
+| `sacl` | 4.1, 4.2 | the audit list and its flags | the system-security right | the system-security right, and write the ACL in the call's ceiling |
+| `aclsupport` | all | allow, deny, audit and alarm | — | — |
+
+The system-security right is held only by a caller whose `admin` flag is set
+([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right));
+reading the audit entries tells a user what is watched, and changing them turns
+auditing off, so both protocols gate them alike
+([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)).
+
+- **Audit entries.** A `GETATTR` or `SETATTR` of `sacl` without the
+  system-security right is `NFS4ERR_ACCESS`. A `GETATTR` of `acl` without it
+  returns the access list alone; a `SETATTR` of `acl` without it that holds an
+  audit or alarm entry is `NFS4ERR_ACCESS`, and one that holds none leaves the
+  stored audit list as it was.
+- **Flags.** `dacl` and `sacl` carry each list's flags in `aclflag4`: protected
+  `ACL4_PROTECTED`, auto-inherited `ACL4_AUTO_INHERIT`, defaulted
+  `ACL4_DEFAULTED`. A `SETATTR` of `acl` leaves both lists' flags as stored,
+  since `acl` carries none. A `SETATTR` naming `acl` with `dacl` or `sacl` is
+  refused: two values for one list.
+- **At create.** An `acl` or `dacl` in an `OPEN` or `CREATE`'s attributes sets
+  the new file's access list only; the audit list is the inherited one unless
+  the caller holds the system-security right and sends `sacl` or audit entries
+  ([RFC 19 §4.4](rfc-19-authorization.md#4.4%20Inheritance)).
+- **With `mode`.** A `SETATTR` naming `mode` and `acl` (or `dacl`) sets both: the
+  ACL is stored as sent and only setuid, setgid and sticky are taken from the
+  mode ([RFC 19 §4.3](rfc-19-authorization.md#4.3%20Setting%20mode%20and%20ACL)),
+  since merging a mode into the ACL the client sent would change it.
+  `mode_set_masked` changes only the bits its mask names, as a `chmod` of those
+  bits.
+- **Entries.** `ACE4_ACCESS_ALLOWED_ACE_TYPE`, `ACE4_ACCESS_DENIED_ACE_TYPE`,
+  `ACE4_SYSTEM_AUDIT_ACE_TYPE` and `ACE4_SYSTEM_ALARM_ACE_TYPE` are RFC 19's four
+  kinds; any other type is refused. Each right is the NFSv4 right of the same
+  bit: `READ_DATA` (`LIST_DIRECTORY`), `WRITE_DATA` (`ADD_FILE`), `APPEND_DATA`
+  (`ADD_SUBDIRECTORY`), `READ_NAMED_ATTRS`, `WRITE_NAMED_ATTRS`, `EXECUTE`,
+  `DELETE_CHILD`, `READ_ATTRIBUTES`, `WRITE_ATTRIBUTES`, `DELETE`, `READ_ACL`,
+  `WRITE_ACL`, `WRITE_OWNER`, `SYNCHRONIZE`. Order is kept as sent
+  ([RFC 19 §2.7](rfc-19-authorization.md#2.7%20Order)).
+- **Entry flags** map by name
+  ([RFC 19 §2.5](rfc-19-authorization.md#2.5%20Entry%20flags)), never byte for
+  byte, since three sit at bits SMB uses for others:
+
+  | Flag | NFSv4 bit |
+  | --- | --- |
+  | file inherit | `0x01` |
+  | directory inherit | `0x02` |
+  | no propagate | `0x04` |
+  | inherit only | `0x08` |
+  | successful access | `0x10` |
+  | failed access | `0x20` |
+  | inherited | `0x80` |
+
+- **The group flag** (`ACE4_IDENTIFIER_GROUP`, `0x40`) is not a flag of the
+  model: it is how NFSv4 spells the principal's kind. It is set on read exactly
+  when the principal is a group or `GROUP@`, and on write selects the namespace a
+  `who` is resolved in. It is not stored.
+- **Owner pairs.** An effective `OWNER@` or `GROUP@` entry with no inherit flags
+  directly followed by the CREATOR OWNER or CREATOR GROUP inherit-only entry that
+  RFC 22 §11 would fold with it is folded as RFC 22 folds it, so no stored ACL
+  holds an unfolded pair whichever protocol wrote it.
+
+**`who`.** Every principal an entry can name has a spelling
+([RFC 19 §5.2](rfc-19-authorization.md#5.2%20Principals%20on%20the%20wire)):
+
+| Principal | `who` |
+| --- | --- |
+| owner, group, everyone | `OWNER@`, `GROUP@`, `EVERYONE@` |
+| authenticated users, network, anonymous | `AUTHENTICATED@`, `NETWORK@`, `ANONYMOUS@` |
+| root | `0` on every call: root has no record name for an owner string |
+| owner rights, built-in users, administrators, system, creator owner, creator group | the SID's string form at the domain of [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings), such as `S-1-3-4@example.com` |
+| a user or group | RFC 18 §4.5's owner string for the call's proof kind — `name@domain` on a proven caller, the decimal uid or gid on a claimed one — with the group flag for a group; a principal that has a SID and no owner string is spelled by its SID, as above |
+| a deleted principal | the null SID, `S-1-0-0@domain` |
+
+On a set, a `who` of the form `S-…@domain` with a well-formed SID resolves by
+that SID; any other through RFC 18 §4.5's rules, in the user or group namespace
+the group flag says. NFSv4's other special names — `INTERACTIVE@`, `BATCH@`,
+`DIALUP@`, `SERVICE@` — are well-known principals with no row in
+[RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)'s
+table, which RFC 19 §2.8 decides.
+
+**Refusals.** A set RFC 19 refuses is refused whole and nothing is stored
+([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)):
+a `who` no principal holds is `NFS4ERR_BADOWNER`; every other refusal — an entry
+type other than the four, a list over the limit, a deny naming a well-known
+principal that matches no caller, `acl` with `dacl` or `sacl` — is
+`NFS4ERR_INVAL`.
+
+> decision: a principal NFS has no owner string for is spelled by its SID rather
+> than left out. Leaving it out makes every read-modify-write from an NFS client
+> a silent delete of that entry, a deny included. A `who` that is a SID is legal
+> UTF-8 an NFS tool passes through unread. Overturned if a widely used NFS client
+> is shown to refuse or mangle such a `who`; the fallback then is to refuse the
+> NFS ACL write of a file holding an unspellable entry, never to drop it.
+
 - **Listings.** `READDIR` is `Entries`, `READDIRPLUS` and an NFSv4 `READDIR`
   asking for attributes are `EntriesPlus`; cookies and the verifier are §7.2.
 - **Change info and weak cache consistency.** `change_info4`'s `before` and
@@ -2384,7 +2535,12 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §8 attributes | pynfs attribute tests (`supported_attrs`, `GETATTR`, `SETATTR`); assert every REQUIRED attribute in `supported_attrs`, `named_attr` among them and false, `sec_label` absent, and `fs_charset_cap` set by the share's name rule. | a REQUIRED attribute dropped from `supported_attrs` |
 | App. B directory link count *(1 node)* | In a new directory, assert `numlinks` 2 over NFSv4 and `nlink` 2 over NFSv3; `MKDIR` two subdirectories and create a file: assert 4; `RENAME` one subdirectory into the other: assert the parent 3 and the other subdirectory 3; `RMDIR` the moved one: assert its new parent back to 2 and the top directory unchanged at 3. The share's root reports 2 plus its subdirectories. `nfstest_cache`'s directory checks pass. | a directory reporting 1, or a count that moves on a file's create |
 | App. B `mode_umask` *(1 node)* | Over NFSv4.2 with umask 022, create a file mode 0666 in a directory with no inheritable entries: assert 0644. In a directory whose ACL holds an inheritable entry granting a group modify, create the same: assert the group's inherited entry intact, the umask ignored, and no entry the inherited ACL lacked. | the umask applied to an inherited ACL, or an entry added by the create mode |
-| §8.1 audit entries | As a file's owner who is not an administrator, over NFSv4.0 and NFSv4.1: `GETATTR` and `SETATTR` of `sacl` (NFSv4.1) are `NFS4ERR_ACCESS`; `GETATTR` of `acl` shows no audit entry; `SETATTR` of `acl` with one is `NFS4ERR_ACCESS`, and without one keeps the stored audit entries. As an administrator, all succeed. | the SACL readable or writable by the owner, or the `acl` gate applied to one minor version |
+| §11.3 audit entries | As a file's owner who is not an administrator, over NFSv4.0 and NFSv4.1: `GETATTR` and `SETATTR` of `sacl` (NFSv4.1) are `NFS4ERR_ACCESS`; `GETATTR` of `acl` shows no audit entry; `SETATTR` of `acl` with one is `NFS4ERR_ACCESS`, and without one keeps the stored audit entries. As an administrator, all succeed. | the SACL readable or writable by the owner, or the `acl` gate applied to one minor version |
+| §11.3 ACL attributes | `SETATTR` of `acl` and `dacl` together: `NFS4ERR_INVAL`, nothing stored. `SETATTR` of `mode` 04750 with an `acl`: the ACL stored as sent, setuid set, and `Mode` the ACL's own bits. A `who` naming a group with the group flag clear: resolved in the user namespace, `NFS4ERR_BADOWNER` when no user holds it. | flag bits copied byte for byte; a mode merged into a sent ACL |
+| §11.1 refused credentials *(1 node)* | Send a truncated `AUTH_SYS` credential, one with 17 gids, one with a 256-byte machine name, and an `AUTH_DH` and an unknown flavour, to a share with an everyone grant: each rejected `AUTH_BADCRED`, nothing created. | garbage credentials served as anonymous |
+| §6.3 `MNT` on a Kerberos-only share *(1 node)* | `MNT` over `AUTH_UNIX` of a share whose `MinProof` is `Ticket`: the flavours and the root handle returned; a `GETATTR` with that handle over `AUTH_SYS`: refused `AUTH_TOOWEAK`; over `sec=krb5`: answered. | NFSv3 Kerberos mounts refused; or a handle that skips the minimum |
+| §6.1 NLM on a Kerberos-only share *(1 node)* | On a share whose `MinProof` is `Ticket`, an NLM `LOCK` over `AUTH_SYS` as a uid that can read the file: granted; as a uid that can neither read nor own a 0600 file: refused. A store error resolving the caller: the lock refused, never granted as anonymous. | every NFSv3 lock on a Kerberos share failing; locks on files the caller cannot read |
+| §10 context table *(1 node)* | `RPCSEC_GSS_DESTROY` with a corrupted header MIC: refused, the context still usable. A call at sequence `MAXSEQ`: `RPCSEC_GSS_CTXPROBLEM`, and the context gone. With the table's share sized to four contexts, one principal opening a fifth evicts its own oldest, never another principal's. A reconnect on a new TCP connection keeps its context. | an unauthenticated teardown; one principal evicting everyone |
 | §8.1 ctime | An SMB client sets −1 on all four times of an open and writes through it; assert an NFSv3 `GETATTR` shows `ctime` moved. | SMB suspension freezing the NFS ctime |
 | §9.1 stability | Write `DATA_SYNC`, crash the primary, read back. Assert the data and its `size` and `mtime`. Append 10^4 `FILE_SYNC` writes to a new file with the metadata store stalled; assert every reply arrives. Overwrite committed bytes `FILE_SYNC` with the store stalled; assert no success reply until the store commits — `NFS4ERR_DELAY` within the deadline — and that the reply follows that write's existence commit. Same with unstable overwrites and `COMMIT`. | an append waiting on a metadata transaction, or an overwrite answered stable before its existence commit |
 | §9.1 loss verifier | Write unstable, then fail the sync window holding the writes; `COMMIT`. Assert the `COMMIT` succeeds with a verifier different from the writes', the client resends, and the data reads back. | a loss reported as a `COMMIT` error, or a `COMMIT` answered under the old verifier |
@@ -2507,8 +2663,8 @@ attributes that are supported, and where each is read from:
 | `size`, `space_used` | `Size`; `Charged` ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)) |
 | `mode`, `owner`, `owner_group`, `mode_set_masked` | the File; owner strings by [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings) |
 | `mode_umask` (RFC 8275) | settable at create only: the mode is masked by the umask when the parent holds no inheritable ACL entry, and the umask is ignored when it does (RFC 8275 §3), so an inherited ACL is narrowed only by the create mode, as an AND that never adds an entry ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)). Linux clients send it on NFSv4.2 instead of applying the umask themselves, which would cut an inherited grant to the mode's bits |
-| `acl`, `dacl`, `aclsupport` | RFC 7's ACL, spelled by [RFC 19 §7](rfc-19-authorization.md#7.%20NFSv4%20ACLs); `aclsupport` reports allow, deny, audit and alarm |
-| `sacl` | the ACL's audit entries ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)); administrators only (§8.1) |
+| `acl`, `dacl`, `aclsupport` | RFC 7's ACL, spelled as §11.3 says; `aclsupport` reports allow, deny, audit and alarm |
+| `sacl` | the ACL's audit entries ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)); administrators only (§11.3) |
 | `archive`, `hidden`, `system` | `Flags` |
 | `time_access`, `time_modify`, `time_metadata`, `time_create`, `*_set` | `Access`, `Modify`, `Change`, `Birth` |
 | `time_delta` | `Capabilities.TimeGranularity` |
