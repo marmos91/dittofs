@@ -1312,7 +1312,7 @@ client, are RFC 14's.
 
 - **Blocking locks.** A lock request that may wait (`NLMPROC4_LOCK` with `block`
   set) and conflicts, or meets a recall (§5.3), returns `NLM4_BLOCKED`
-  (`ErrBlocked`). The primary keeps the waiter, and on grant the `protocol`
+  (`ErrBlocked`). The primary keeps the waiter, and on grant the gateway
   node holding the client's registration sends `NLMPROC4_GRANTED_MSG` /
   `NLMPROC4_GRANTED`. No worker waits
   ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)).

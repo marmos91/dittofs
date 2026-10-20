@@ -982,11 +982,12 @@ type Minter interface {
 
 // Lifecycle is the engine's store access outside block metadata's views and
 // Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over S‖id‖vl and the incarnation keys.
+// Signatures are indicative; RFC 8 owns what each call carries.
 type Lifecycle interface {
-	// JournalID: the journal identity recorded for a device, for Open.
-	// VersionLimits: each share's limit, read for Open's floor.
-	// RaiseVersionLimits: a tracked max-write of S‖id‖vl, within K keys a transaction.
-	// RaiseIncarnations: in the start transaction, or at attach.
+	JournalID(ctx context.Context, device DeviceID) (JournalID, error)                 // the identity recorded for a device, for Open
+	VersionLimits(ctx context.Context, shares []ShareID) (map[ShareID]Version, error) // each share's limit, read for Open's floor
+	RaiseVersionLimits(ctx context.Context, to map[ShareID]Version) error             // a tracked max-write of S‖id‖vl, within K keys a transaction
+	RaiseIncarnations(ctx context.Context, shards []ShardID) error                    // in the start transaction, or at attach
 }
 
 // ControlPlane is the management API's view (RFC 23). Every write names what

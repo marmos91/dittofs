@@ -543,7 +543,7 @@ A share can span several shards, each with its own primary on its own node
 ([RFC 11 §2](rfc-11-ownership.md#2.%20Shards)). On a single node a share is one shard and the node is its primary
 ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)), so the four steps below run with one gate and no remote round
 trip; a rule or example marked **(cluster)** in this document binds only where a
-second storage node can serve a share. A cut must split every one of them at the same point: every
+second node can serve a share. A cut must split every one of them at the same point: every
 transaction on every shard is either before it, and reads the old cut number, or
 after it, and reads the new one. Each primary therefore keeps a **cut gate** for
 each of its shards. A transaction that writes a versioned record **MUST** pass
