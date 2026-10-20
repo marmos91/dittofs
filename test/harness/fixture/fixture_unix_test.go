@@ -226,7 +226,7 @@ func TestRealServer(t *testing.T) {
 			var w bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			f := registry.Fixture{Profile: profile, NFS: registry.NFS{Version: "export"}, Squash: "root_to_admin", Users: []int{65532}, Delegations: &no, Lease: "30s"}
+			f := registry.Fixture{Profile: profile, NFS: registry.NFS{Version: "export"}, Squash: "root_to_admin", Users: []string{"65532"}, Delegations: &no, Lease: "30s"}
 			s, err := Start(ctx, f, services, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))

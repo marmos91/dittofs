@@ -1,0 +1,21 @@
+- test: special/telldir
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'seekdir() to a saved cookie can return no entries: cookies are a full 64-bit hash (pkg/metadata/cookies.go), and Linux likely reads one with the top bit set as a negative directory offset. Fails on most runs, on every option set'
+  issue: '#2979'
+  intermittent: true
+- test: special/op_chmod
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'a WRITE that reaches the server after the file''s owner chmods it to 0 is refused; knfsd lets the owner through regardless of mode. Whether it shows depends on when the client flushes: it fails on v3, v4.0 and v4.1-noac, and passes where the client holds the writes until close'
+  issue: '#3097'
+  where: {mount-options: [v3, v4.0, v4.1-noac]}
+- test: basic/test6
+  status: fail
+  fix: planned
+  category: bug
+  reason: NFSv3 READDIR returns no "." and ".." entries; knfsd returns both and the Linux client passes the server's list through as-is
+  issue: '#2978'
+  where: {mount-options: [v3]}

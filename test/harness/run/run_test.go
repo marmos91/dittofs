@@ -209,6 +209,7 @@ func TestBlocked(t *testing.T) {
 	_, r := anyRepo(t, `suites:
   fixed: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [docker] }
   plain: { cmd: "true", needs: [docker, root, podman] }
+  goclient: { cmd: go test ./x, format: go-json, fixture: { profile: memory, client: namespace } }
 `, nil)
 	var checked []string
 	check := func(n string) error {
@@ -231,6 +232,9 @@ func TestBlocked(t *testing.T) {
 	}
 	if why, unmet := Blocked(units["plain"], []string{"root"}, check); why != "" || unmet != nil {
 		t.Errorf("met: %q %q", why, unmet)
+	}
+	if why, _ := Blocked(units["goclient"], nil, check); why != "dt doesn't run go test on a namespaced client yet" {
+		t.Errorf("goclient: %q", why)
 	}
 }
 
@@ -546,5 +550,39 @@ func TestAnnotation(t *testing.T) {
 	got := annotation("dt a:b,c", "100% done\nthen\rmore")
 	if want := "::error title=dt a%3Ab%2Cc::100%25 done%0Athen%0Dmore"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A .txt list's line gives its test its {test-args}, filled for that test, and
+// may name the matrix values of the cells it runs in. A named matrix value
+// names its cells and fills its placeholders.
+func TestTestListLines(t *testing.T) {
+	root, r := repo(t, `suites:
+  s:
+    tests: t.txt
+    cmd: "{test-args}"
+    env: { V: "{v}" }
+    matrix: { v: [a, b] }
+  n:
+    cmd: "test {w}-{x}-{q} = 1-2-3"
+    matrix: { p: [k: { w: "1", x: "2" }], q: [y: "3"] }
+`, map[string]string{"t.txt": `one -- test {test} = one
+only-b v=b -- test {v} = b
+three -- test {v} = a
+four -- test -d {out}
+`})
+	rep, out := runTarget(t, root, r, "s", false)
+	if len(rep.Outcomes) != 2 {
+		t.Fatalf("outcomes %+v\n%s", rep.Outcomes, out)
+	}
+	if o := rep.Outcomes[0]; o.Name != "s/a" || o.Result != report.Passed || len(o.Tests) != 3 {
+		t.Errorf("s/a: %+v", o)
+	}
+	if o := rep.Outcomes[1]; o.Name != "s/b" || o.Result != report.Failed || len(o.Tests) != 4 || !strings.Contains(o.Note, "three: `test b = a` exited 1") {
+		t.Errorf("s/b: %+v", o)
+	}
+	rep, out = runTarget(t, root, r, "n", false)
+	if o := rep.Outcomes[0]; o.Name != "n/k/y" || o.Result != report.Passed {
+		t.Errorf("n: %+v\n%s", o, out)
 	}
 }

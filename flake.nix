@@ -16,6 +16,16 @@
       url = "github:kofemann/pynfs";
       flake = false;
     };
+    # Connectathon and NetApp's nfstest: what a kernel client sees through an
+    # untuned mount. git.linux-nfs.org serves them over git:// only.
+    cthon04-src = {
+      url = "git+git://git.linux-nfs.org/projects/steved/cthon04.git";
+      flake = false;
+    };
+    nfstest-src = {
+      url = "git+git://git.linux-nfs.org/projects/mora/nfstest.git";
+      flake = false;
+    };
   };
 
   outputs =
@@ -25,6 +35,8 @@
       flake-utils,
       pjdfstest-src,
       pynfs-src,
+      cthon04-src,
+      nfstest-src,
     }:
     let
       # Version configuration - update this for releases
@@ -169,6 +181,62 @@
               mainProgram = "pynfs-4.1";
             };
           };
+
+        # Connectathon's basic, general, special and lock tests, built in their
+        # tree, which they run from; general's compile on the mount at run time.
+        # bin holds upstream's entry points.
+        cthon04 = pkgs.stdenv.mkDerivation {
+          pname = "cthon04";
+          version = "2026-06-01";
+          src = cthon04-src;
+
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.libtirpc ];
+
+          # The Makefile runs tests.init.sh to write tests.init, which it includes,
+          # and whose PATH would hide the build's own tools.
+          postPatch = "patchShebangs tests.init.sh";
+          buildPhase = ''make PATH="$PATH"'';
+
+          installPhase = ''
+            mkdir -p $out/share $out/bin
+            cp -a . $out/share/cthon04
+            ln -s $out/share/cthon04/runtests $out/share/cthon04/server $out/bin/
+          '';
+
+          meta = with pkgs.lib; {
+            description = "Connectathon NFS test suite";
+            homepage = "https://git.linux-nfs.org/?p=steved/cthon04.git";
+            license = licenses.bsd2;
+            platforms = platforms.linux;
+          };
+        };
+
+        # NetApp's nfstest modules, one wrapper each in bin, as nfstest_posix.
+        nfstest = pkgs.stdenvNoCC.mkDerivation {
+          pname = "nfstest";
+          version = "2024-01-17";
+          src = nfstest-src;
+
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          dontBuild = true;
+
+          installPhase = ''
+            mkdir -p $out/share $out/bin
+            cp -a . $out/share/nfstest
+            for t in $out/share/nfstest/test/nfstest_*; do
+              makeWrapper ${pkgs.python3}/bin/python3 "$out/bin/$(basename "$t")" \
+                --add-flags "$t" --prefix PYTHONPATH : $out/share/nfstest
+            done
+          '';
+
+          meta = with pkgs.lib; {
+            description = "NFS test modules";
+            homepage = "https://git.linux-nfs.org/?p=mora/nfstest.git";
+            license = licenses.gpl2Only;
+            platforms = platforms.linux;
+          };
+        };
 
         # Helper script to start PostgreSQL for testing
         dfs-postgres-start = pkgs.writeShellScriptBin "dfs-postgres-start" ''
@@ -558,7 +626,7 @@
             inherit pynfs;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            inherit pjdfstest;
+            inherit pjdfstest cthon04 nfstest;
           };
 
         # `nix run .#dfs` / `nix run github:marmos91/dittofs#dfsctl`, so the

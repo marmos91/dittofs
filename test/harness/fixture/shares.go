@@ -10,15 +10,29 @@ import (
 )
 
 // shareFlags sets, for each dfsctl share create flag a shares file may name,
-// what the flag sets in the share's request. They are the flags the suites'
-// shares use, each true or false.
-var shareFlags = map[string]func(r *apiclient.CreateShareRequest, on bool){
-	"encrypt-data":               func(r *apiclient.CreateShareRequest, on bool) { r.EncryptData = on },
-	"access-based-enumeration":   func(r *apiclient.CreateShareRequest, on bool) { r.AccessBasedEnumeration = &on },
-	"acl-canonicalize-inherited": func(r *apiclient.CreateShareRequest, on bool) { r.AclFlagInheritedCanonicalization = &on },
-	"change-notify-disabled":     func(r *apiclient.CreateShareRequest, on bool) { r.ChangeNotifyDisabled = &on },
-	"streams-disabled":           func(r *apiclient.CreateShareRequest, on bool) { r.StreamsDisabled = &on },
-	"continuous-availability":    func(r *apiclient.CreateShareRequest, on bool) { r.ContinuousAvailability = &on },
+// what the flag sets in the share's request, and says whether the value is of
+// the flag's kind. They are the flags the suites' shares use: true or false,
+// and default-permission's level.
+var shareFlags = map[string]func(r *apiclient.CreateShareRequest, v any) bool{
+	"encrypt-data":               onOff(func(r *apiclient.CreateShareRequest, on bool) { r.EncryptData = on }),
+	"access-based-enumeration":   onOff(func(r *apiclient.CreateShareRequest, on bool) { r.AccessBasedEnumeration = &on }),
+	"acl-canonicalize-inherited": onOff(func(r *apiclient.CreateShareRequest, on bool) { r.AclFlagInheritedCanonicalization = &on }),
+	"change-notify-disabled":     onOff(func(r *apiclient.CreateShareRequest, on bool) { r.ChangeNotifyDisabled = &on }),
+	"streams-disabled":           onOff(func(r *apiclient.CreateShareRequest, on bool) { r.StreamsDisabled = &on }),
+	"continuous-availability":    onOff(func(r *apiclient.CreateShareRequest, on bool) { r.ContinuousAvailability = &on }),
+	"default-permission": func(r *apiclient.CreateShareRequest, v any) bool {
+		r.DefaultPermission, _ = v.(string)
+		return r.DefaultPermission != ""
+	},
+}
+
+// onOff is a flag that is true or false.
+func onOff(set func(r *apiclient.CreateShareRequest, on bool)) func(r *apiclient.CreateShareRequest, v any) bool {
+	return func(r *apiclient.CreateShareRequest, v any) bool {
+		on, ok := v.(bool)
+		set(r, on)
+		return ok
+	}
 }
 
 // loadShares reads the shares file at path, a list of shares, each with its
@@ -51,11 +65,9 @@ func loadShares(path string) ([]apiclient.CreateShareRequest, error) {
 				continue
 			}
 			set, known := shareFlags[flag]
-			on, isBool := v.(bool)
-			if !known || !isBool {
-				return nil, fmt.Errorf("%s: share %s: %s isn't a flag dt sets true or false", path, name, flag)
+			if !known || !set(&shares[i], v) {
+				return nil, fmt.Errorf("%s: share %s: %s isn't a flag dt sets, to a value of its kind", path, name, flag)
 			}
-			set(&shares[i], on)
 		}
 	}
 	return shares, nil
