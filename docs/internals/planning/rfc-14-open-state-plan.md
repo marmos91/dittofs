@@ -6,7 +6,9 @@ who has the file open, who locked which bytes, what each client may cache, and w
 all of it when a client, a server or a node goes away. Its only caller is the filesystem service
 of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
-**Status:** draft for review. Nothing here is built yet.
+**Status:** draft for review. Pieces 1 and 2 are in review (#3256, #3258). The RFC 14 cited here
+is the one on #3142 (`docs/rfc-20-adapters`), which has the open-state review folded in; `develop`
+has the older text until #3142 merges.
 
 ## 1. What already exists
 
@@ -21,7 +23,8 @@ of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through tha
   that path untouched. Its design is not RFC 14's:
   - one manager and one mutex per share, state keyed by handle strings, two parallel lock tables;
   - workers block on recalls (up to 10 s), which RFC 17 §3.2 forbids;
-  - grace per share without instances; locks persisted, where RFC 14 keeps them volatile;
+  - grace per share without instances; every lock persisted, where RFC 14 keeps a lock volatile
+    unless its open is persistent;
   - opens, deny modes, stateids and lock waiters live in the adapters, not here.
 
   So the service is new, and ports only pure pieces and tests (D3, §4, §7).
@@ -56,31 +59,39 @@ detector (RFC 14 has none; SMB's open-brlock-deadlock refusal can port it later 
 Today's manager is replaced, not moved. Until stage 1 lands, RFC 17 §9's slice 3 keeps
 `pkg/metadata/lock` where it is, behind the service's own small lock interface; then
 `*openstate.Table` takes its place behind that interface and `pkg/metadata/lock` is deleted.
-Nothing imports `pkg/openstate` before then, and stage 4 carries no lock persistence over:
-RFC 14 holds open state in memory and rebuilds it by reclaim.
+Nothing imports `pkg/openstate` before then, and stage 4 carries none of today's lock persistence over:
+RFC 14 keeps a lock volatile unless its open is persistent, and rebuilds the rest by reclaim.
 
 **D4. Concurrency: one table per file, one step per file.** A sharded map from `FileID` to the
 file's table; each table has its own mutex, the "open-state step" of RFC 14 §11. A call touching
 several files takes their steps in `FileID` order, then fold admission, then accept locks, as
-RFC 17 §5.1 orders every call. No call waits on a recall or a client while holding a step: a
+RFC 17 §5.0 orders every call. No call waits on a recall or a client while holding a step: a
 conflict with a caching grant starts the recall and returns `ErrDelay` at once (RFC 17 §3.2,
 "no worker waits on a recall"). The recall is handed up after the step is released and before the
 call returns `ErrDelay`, so the break is queued ahead of the reply that triggered it (RFC 20 §6.2).
 
-**D5. Open state reports to the service, not to clients.** RFC 17 §3.2's `Callbacks`
-(`RecallGrant`, `Notify`, `Revoked`, `LockWaitOver`) are implemented by adapters, which may not
-import `openstate` (RFC 20 §2.3), so the interface lives in `pkg/vfs`, and the service keeps the
-per-client registry: `Rebind(c, cb)` is already an RFC 17 call, and RFC 14's `Connect` takes no
-callbacks. `openstate` declares a small sink of its own, keyed by `ClientID`, with the same four
-events; the service implements it and routes each event to the client's latest `Callbacks`. The
-sink never blocks: it queues and returns, failing when the client has no live channel (RFC 20
-§3.3), and a failure or a missed deadline counts as the client not answering.
+**D5. Open state reports to the service through RFC 14's `Sink`.** Adapters implement RFC 17
+§3.2's `Callbacks` and may not import `openstate` (RFC 20 §2.3), so the service keeps the
+per-client registry: an adapter registers a client's `Callbacks` with RFC 17's `Connect`, and calls
+`Connect` again to replace them. RFC 14's `Sink` has five events, `RecallGrant`, `Notify`,
+`Revoked`, `LockWaitOver` and `Closed`; each queues and returns nothing, and a failed or late
+delivery counts as the client not answering. The service implements it, and the node hands it to
+`Table.Start`, not to `Deps`, since the table is built before the service:
 
-**D6. Time through a declared clock.** Leases (90 s), grace, recall deadlines (35 s for an SMB
-break, one lease for NFS) and NFSv4 waiter polls all run on a clock the service declares with
-standard-library types (`Now`, `Elapsed`, `After`), as RFC 8 and #3189 settled for every
-component. Tests drive a virtual clock, so a 90 s lease runs in microseconds. The system clock may
-land here as its first caller.
+```go
+func New(d Deps) (*Table, error)                            // starts nothing; open state takes no settings
+func (t *Table) Start(ctx context.Context, sink Sink) error // enters grace per shard, arms the timers
+func (t *Table) Stop()
+```
+
+RFC 14's `Rebind(ctx, c, node, by)` is a different call: it records a client's new back channel
+and clears `PathDown`.
+
+**D6. Time through the shared clock.** Leases (90 s), grace, recall deadlines (35 s for an SMB
+break, one lease for NFS) and NFSv4 waiter polls all run on `Deps.Clock`, the shared `clock.Clock`
+of RFC 8 and #3189. Until `pkg/clock` exists, `openstate` declares the subset it reads (`Now`,
+`After`) and switches to the shared type when it lands. Tests drive a fake clock, so a 90 s lease
+runs in microseconds.
 
 **D7. Durable writes only through `kvstore`'s views.** The service never writes keys itself. A
 volatile open is never written (RFC 14 §8); `Unlink`/`Rename` already make an open durable when
@@ -88,67 +99,60 @@ it is the file's last holder.
 
 ## 3. Pieces, in build order
 
-Each piece lands as one or two PRs into `feat/storage-v2`, with its rows of the conformance suite
-(§4). Rows are named as RFC 14 §13.1 names them.
+Each piece lands as one or two PRs into `feat/storage-v2`, with its tests (§4). Rows are RFC 14
+§12's L-numbers.
 
 | # | Piece | RFC 14 | Main calls |
 |---|---|---|---|
-| 1 | Skeleton and stateids | §2.1, §3, §11 | `CheckIO`, `CheckChange` |
-| 2 | Clients and leases | §2.1, §2.9, §4.1, §4.3 | `Propose`, `Connect`, `CreateSession`, `Renew`, `Expire` |
-| 3 | Opens and deny modes | §2.2, §6, §7, §9 | `Open`, `Close`, `SetDisposition`, `SuspendTimes`, `Flushed` |
-| 4 | Byte-range locks and waiters | §2.3, §2.8, §2.10, §4.5 | `Lock`, `Unlock`, `TestLock`, `CancelLock`, `HostRestarted` |
-| 5 | Caching grants and recalls | §2.4, §5 | `Return`, `AckBreak`, `RecallGrant` |
-| 6 | Grace and reclaim | §4.2, §4.4, §8, §9.2 | `ReclaimComplete` |
+| 1 | Skeleton and state references | §2.1, §3, §11 | (none of §11.3; the table and its references) |
+| 2 | Clients and leases | §2.1, §2.9, §4.1, §4.3 | `Propose`, `Connect`, `CreateSession`, `Renew`, `Expire`, `Destroy` |
+| 3 | Opens and deny modes | §2.2, §6, §7, §9 | `Open`, `Downgrade`, `ConfirmOpen`, `SetDisposition`, `SuspendTimes`, `Close`, `Flushed`, `CheckIO`, `CheckChange` |
+| 4 | Byte-range locks and waiters | §2.3, §2.8, §2.10, §4.5 | `Lock`, `CancelLock`, `WaitAnswered`, `TestLock`, `Unlock`, `ReleaseLockOwner` |
+| 5 | Caching grants and recalls | §2.4, §5 | `AckBreak`, `Revoke`, `Rebind`, `TestState`, `FreeState`; the `RecallGrant` and `Revoked` events |
+| 6 | Grace and reclaim | §4.2, §4.4, §8, §9.2 | `ReclaimComplete`; grace at `Start` |
 | 7 | SMB durable and persistent opens | §8.1 | `Reconnect`, `Disconnect` |
-| 8 | The rest | §2.5, §2.7, §11 | `Watch`, `Unwatch`, `Notify`, `DropShare` |
+| 8 | The rest | §2.5, §2.7, §4.3 | `Watch`, `Unwatch`, `DropShare`; the `Notify` and `Closed` events |
 
-What each piece also carries, and its §13.1 rows:
+What each piece also carries, and its §12 rows:
 
-1. **Skeleton and stateids:** the `OpenState` interface, errors, the per-file table and step, the
-   clock, and `CheckIO`/`CheckChange` with nothing to conflict yet; the stateid layout and its
-   per-shard index, with how a miss is classified. *Rows:* one table, client check.
-2. **Clients and leases:** `Propose` holds an unconfirmed NFSv4 client in open state's client
-   area, which runs in the service's front at the client's lease owner (RFC 14 §2.9, §11.3), and
-   `Connect` confirms it. `Revoke` and `FreeState` come with piece 5, which builds the revoked
-   set they act on, and `Destroy` and `Rebind` with the state and back channel they check.
-   *Rows:* L25, L38, L41.
+1. **Skeleton and state references:** the errors, the per-file table and its step; `StateRef`
+   (`Type`, `Shard`, `Instance`, `Token`, `Seq`) minted with its shard and grace instance, and
+   `GrantID` and `WatchID` minted with their shard, so `AckBreak` and `Unwatch` route with no
+   handle; the per-shard index, how a miss is classified, and the stateid seqid check
+   (`ErrOldState`). The wire layout is `pkg/vfs`'s (RFC 17 §3.4). *Rows:* L1, L13, L26, L27, L49.
+2. **Clients and leases:** `Propose` holds an unconfirmed NFSv4 client in the client area, at the
+   client's lease owner (RFC 14 §2.9), and `Connect` confirms it; an NLM host's restart notice is
+   `Connect` with a new verifier (§4.5). *Rows:* L25, L38, L41.
 3. **Opens and deny modes:** deny modes at open; open-unlinked kept alive; delete on close; open
-   children refuse an SMB rename or delete of their directory; the calls behind RFC 17's
-   `Downgrade` and `ConfirmOpen`. *Rows:* no downgrade, anonymous
-   I/O, cross-protocol, open-unlinked (and across protocols), lazy, delete pending, remove against
-   deny-delete.
+   children refuse an SMB rename or delete of their directory; `CheckIO` and `CheckChange`, which
+   have something to check once opens exist. *Rows:* L6, L7, L14, L21, L23, L31, L34, L36.
 4. **Byte-range locks and waiters:** `Lock` takes every range of a request, each shared or
    exclusive, in one step, all or none, and only a single range may wait (RFC 14 §11.3, RFC 17
-   §5.11); FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM; the calls
-   behind RFC 17's `TestState` and `ReleaseLockOwner`, and freeing one lock stateid. *Rows:* owners, NLM restart, the
-   waiter rows.
-5. **Caching grants and recalls:** grants offered at open; recalls with deadlines; revocation into
-   the revoked set; no more grants to a client after one revoke; the per-client budget. *Rows:*
-   recall deadline, flush on recall, no blocked worker, lease key, no write grant on a setuid file.
+   §5.11); FIFO waiters with no adapter timeout; NFSv4.0 owner sequences; NLM. *Rows:* L17, L22,
+   L39, L44.
+5. **Caching grants and recalls:** grants offered at open; a return is `AckBreak(…, GrantNone)`;
+   recalls with deadlines; revocation into the revoked set; no grant to a client for a lease
+   period after one is revoked; the per-client budget. *Rows:* L5, L16, L33, L40, L42, L45, L50,
+   L51.
 6. **Grace and reclaim:** grace per shard after a restart, reclaims only, early end; durable opens
-   rebuilt from `Opens.Durable`; a new primary releases nothing before grace ends. *Rows:* grace,
-   reclaim needs a record, reclaim grants no more, grace per shard, reclaim scoped, I/O in grace,
-   early end, new primary, durable open prefix.
+   rebuilt from `Opens.Durable`; a new primary releases nothing before grace ends. *Rows:* L2, L3,
+   L8, L24, L29, L47, L48.
 7. **SMB durable and persistent opens:** timeouts, create and lock replay, app instance, channel
-   sequence. *Rows:* reconnect matching, timeout, create replay, lock replay, app instance,
-   persistent.
-8. **The rest:** watches, async copies, `DropShare`. *Rows:* lost copy, the watch and drop-share
-   rows.
+   sequence, logoff. *Rows:* L15, L30, L43, L52.
+8. **The rest:** watches, async copies, `DropShare`. *Rows:* L10, L54.
 
-Layouts (§2.6) and every "(cluster)" row wait for the cluster stages. RFC 14 §11 declares no call
-behind `TestState`, `ReleaseLockOwner`, `Downgrade` or `ConfirmOpen`, nor one that frees a single
-lock stateid (RFC 17 §3.5); the piece that builds each adds it to RFC 14 in the same PR.
+Layouts (§2.6) and every "(cluster)" row wait for the cluster stages.
 
 ## 4. The conformance suite
 
-`pkg/openstate/openstatetest`, built like `kvstoretest`: `Run(t, open)` runs every case against a
-service opened by the caller, over a fresh store, with:
+`pkg/openstate`'s own tests, in the layers RFC 14 §13.1 lists: the table suite runs `*Table` over the
+in-memory store, with:
 - a virtual clock the cases advance;
 - a recording sink (D5) that can answer, refuse or stay silent, to drive recalls to their deadlines;
 - `Check`, run after every case: no state held against a file with no table, no lock under a
   closed open, every durable open matching its record, every revoked stateid in its client's set.
 
-Each case names its §13.1 row. Every case is revert-checked: break the rule it pins, watch it fail
+Each case names its §12 row. Every case is revert-checked: break the rule it pins, watch it fail
 on its assertion. Tests that cannot fail are not written (the team's rule), so a row the compiler or
 another case already covers gets no case of its own.
 
@@ -192,9 +196,9 @@ The §13.3 benchmarks come with the pieces they measure.
 
 Behaviours today's code has and RFC 14 does not state, to raise against RFC 14: courtesy clients
 (RFC 7530 §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace
-(RFC 8881 §18.51.3), `RENEW`'s principal check, `ClientStatus` flags for revoked state and a
-callback path down, a stateid naming an unknown shard, and no re-delegation for a while after a
-recall.
+(RFC 8881 §18.51.3), `RENEW`'s principal check, and a stateid naming an unknown shard. RFC 14 now
+covers the other three: the revoked-state flags (`ClientStatus.AdminRevoked`,
+`RecallableRevoked`), the callback path down (`PathDown`), and the grant fence after a revoke.
 
 ## 8. Size and what sets the pace
 
@@ -213,8 +217,7 @@ Rough size per piece, code and tests together, so reviewers can plan:
 | 7 | SMB durable and persistent opens | 1 | 2,000 |
 | 8 | The rest | 1 | 1,500 |
 
-What blocks what:
-- piece 1's stateid layout before piece 2, whose `Revoke` needs it;
-- RFC 20 merged before piece 5 fixes the sink, which mirrors its `Callbacks`.
+What blocks what: #3142 merged, since this plan follows its RFC 14; then each piece after the one
+before it, pieces 3 to 8 needing piece 1's references.
 
 For teams planning against stage 2, the useful answer is these merges and decisions, not a date.
