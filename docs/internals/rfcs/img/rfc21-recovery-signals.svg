@@ -19,7 +19,7 @@
     </style>
   </defs>
   <rect width="900" height="384" fill="#ffffff"/>
-  <text x="16" y="26" class="t">A shard's loss tells each kind of client to reclaim; a protocol node's loss tells none.</text>
+  <text x="16" y="26" class="t">A shard's loss tells each kind of client to reclaim; a gateway node's loss tells none.</text>
 
   <rect x="24" y="48" width="210" height="200" rx="6" class="am"/>
   <text x="38" y="72" class="h">the shard of builds</text>
@@ -62,7 +62,7 @@
   <text x="624" y="238" class="s">so the shard runs its whole grace</text>
 
   <rect x="24" y="276" width="852" height="60" rx="6" class="st"/>
-  <text x="38" y="298" class="l">A protocol node's loss alone is not a restart: no open, lock or delegation is lost, no grace runs, no SM_NOTIFY is sent.</text>
+  <text x="38" y="298" class="l">A gateway node's loss alone is not a restart: no open, lock or delegation is lost, no grace runs, no SM_NOTIFY is sent.</text>
   <text x="38" y="318" class="s">An NFSv4.1 client is answered NFS4ERR_BADSESSION and opens a new session under its client ID (§3.2).</text>
 
   <text x="16" y="366" class="s">A grace instance never repeats, on one node too: every start raises the incarnation of each shard it serves, so a single-node restart opens a new one.</text>

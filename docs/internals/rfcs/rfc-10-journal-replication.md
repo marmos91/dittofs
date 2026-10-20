@@ -1496,6 +1496,9 @@ Every metric is labelled by shard where it is per shard, and by share.
 | reads on nodes other than the primary, labelled `result` = `served` or `forwarded` | `replication_remote_reads_total` | counter |
 | node clock offset from store time; self-fences, labelled `reason` = `lease`, `unreachable` or `clock` | `node_clock_offset_seconds`, `node_self_fences_total` | gauge, counter |
 
+The `node_` prefix is [RFC 23 §11](rfc-23-control-plane.md#11.%20Observability)'s,
+which lists these two under it; their names are unchanged.
+
 Logs: every record change at `Info`, with shard, old and new epoch and reason. A
 node that self-fences logs at `Error`. Stale-epoch refusals log at `Warn`,
 rate-limited per sender.
