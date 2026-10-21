@@ -313,7 +313,7 @@ if test -z "${HARNESS:-}"; then
     tree="$WORK/harness/$HARNESS"
     if test ! -d "$tree"; then
         mkdir -p "$tree.$$"
-        git -C "$REPO" archive "$HARNESS" | tar -x -C "$tree.$$"
+        git -C "$REPO" archive "$HARNESS" bench test/scenarios/lib | tar -x -C "$tree.$$"
         mv -T "$tree.$$" "$tree" 2>/dev/null || rm -rf "$tree.$$"
     fi
     touch "$tree"
