@@ -127,7 +127,7 @@ func (d *driver) step() {
 
 	case 1: // sync
 		d.t.Logf("sync %x", id.Bytes()[15])
-		d.both(func(m *Model) error { return m.Sync(tag, nil, id) })
+		d.both(func(m *Model) error { return m.Sync(tag, []journalv2.FileID{id}, nil) })
 
 	case 2: // fill, never below a release or removal the caller made over its bytes
 		n := int64(d.next()%16) + 1
@@ -207,7 +207,7 @@ func (d *driver) step() {
 		}
 		d.t.Logf("offload %x dirty %+v reported %+v", id.Bytes()[15], o.Dirty, reported)
 		d.both(func(m *Model) error { return m.Report(tag, id, reported, nil) })
-		d.both(func(m *Model) error { m.EndOffer(tag, id); return nil })
+		d.both(func(m *Model) error { return m.EndOffer(tag, id, through, nil, nil) })
 
 	case 4: // release
 		n := int64(d.next()%32) + 1
@@ -280,7 +280,7 @@ func (d *driver) crash() {
 	for _, f := range d.journal.files {
 		if uncertainAt(f) > searched {
 			id, tag := f.id, f.tag
-			d.both(func(m *Model) error { return m.Sync(tag, nil, id) })
+			d.both(func(m *Model) error { return m.Sync(tag, []journalv2.FileID{id}, nil) })
 		}
 		if uncertainAt(f) > searched {
 			return // settled markers alone exceed it; crash later
@@ -320,7 +320,7 @@ func (d *driver) crash() {
 	d.give(fid(5), v, 0, p)
 	d.t.Logf("write 5 share %d [0,+1) %v", shareA, v)
 	d.both(func(m *Model) error { return m.WriteAt(shareA, fid(5), 0, p, 0, v, nil) })
-	d.both(func(m *Model) error { return m.Sync(shareA, nil, fid(5)) })
+	d.both(func(m *Model) error { return m.Sync(shareA, []journalv2.FileID{fid(5)}, nil) })
 }
 
 // uncertainAt counts what a crash now would leave uncertain in f.

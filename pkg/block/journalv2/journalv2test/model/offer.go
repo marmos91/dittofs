@@ -13,7 +13,7 @@ import (
 // offer is what the model remembers of the offer a callback is running on.
 type offer struct {
 	tag        shareTag
-	pieces     []journalv2.OfferedExtent // Dirty and Superseded: what a report marks
+	markable   []journalv2.OfferedExtent // Dirty and Superseded: what a report marks
 	neighbours []journalv2.Held
 	ended      bool
 }
@@ -118,7 +118,7 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	if len(o.Dirty) == 0 {
 		for off, c := range cur.held {
 			if c.rec.ver.Compare(through) <= 0 && !cur.bit[off] {
-				return m.mismatch(op, id, "offered nothing while byte %d is dirty at %v", off, c.rec.ver)
+				return m.mismatch(op, id, "offered nothing while byte %d is dirty at %v: an offer is never empty while dirty content remains", off, c.rec.ver)
 			}
 		}
 	}
@@ -180,7 +180,7 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	if m.offers == nil {
 		m.offers = map[fileID]*offer{}
 	}
-	m.offers[id] = &offer{tag: tag, pieces: slices.Concat(o.Dirty, o.Superseded), neighbours: o.Neighbours}
+	m.offers[id] = &offer{tag: tag, markable: slices.Concat(o.Dirty, o.Superseded), neighbours: o.Neighbours}
 	return nil
 }
 
@@ -306,7 +306,7 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	o := m.offers[id]
 	switch {
 	case o == nil || o.tag != tag:
-		return m.mismatch(op, id, "reported with no offer of the file; call Offer first")
+		return m.misuse(op, id, "reported with no offer of the file; call Offer first in the callback")
 	case o.ended:
 		if !errors.Is(err, journalv2.ErrOfferEnded) {
 			return m.mismatch(op, id, "report after the offer ended returned %v, not ErrOfferEnded", err)
@@ -315,7 +315,7 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	}
 
 	var offeredExtents []extent
-	for _, p := range o.pieces {
+	for _, p := range o.markable {
 		offeredExtents = append(offeredExtents, p.Extent)
 	}
 	for _, n := range o.neighbours {
@@ -351,7 +351,7 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	if f == nil {
 		return nil
 	}
-	for _, p := range o.pieces {
+	for _, p := range o.markable {
 		for _, r := range reported {
 			if e, ok := intersect(p.Extent, r); ok {
 				m.append(f, &record{kind: kindMark, ext: e, ver: p.Version})
@@ -361,12 +361,42 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	return nil
 }
 
-// EndOffer records that the callback of the offer of file id returned: a
-// later report must fail.
-func (m *Model) EndOffer(tag shareTag, id fileID) {
-	if o := m.offers[id]; o != nil && o.tag == tag {
+// EndOffer applies the return of an Offload of file id through share tag,
+// called with through, to which the journal returned err. fnErr is what the
+// callback returned, when it was called; a report after this must fail.
+//
+// Where Offer was called for this Offload, the callback ran, and Offload
+// returns what it returned. Where it was not, the journal offered nothing,
+// which it may only do while no dirty content at or below through is held.
+func (m *Model) EndOffer(tag shareTag, id fileID, through version, fnErr, err error) error {
+	const op = "offload"
+	if o := m.offers[id]; o != nil && o.tag == tag && !o.ended {
 		o.ended = true
+		switch {
+		case fnErr == nil && err != nil:
+			return unexpected(m, op, id, err)
+		case fnErr != nil && !errors.Is(err, fnErr):
+			return m.mismatch(op, id, "returned %v, not the error its callback returned (%v)", err, fnErr)
+		}
+		return nil
 	}
+
+	_, proceed, mis := m.enter(op, tag, id, err)
+	switch {
+	case mis != nil:
+		return mis
+	case errors.Is(err, journalv2.ErrOtherShare):
+		return nil
+	case !proceed:
+		return unexpected(m, op, id, err)
+	}
+	cur := m.current(id)
+	for _, r := range cur.runs() {
+		if !r.offloaded && r.ver.Compare(through) <= 0 {
+			return m.mismatch(op, id, "returned without calling its callback while %v is dirty at %v: an offer is never empty while dirty content remains", r.ext, r.ver)
+		}
+	}
+	return nil
 }
 
 // Release applies a release of extents of file id through share tag, to which
@@ -401,7 +431,7 @@ func (m *Model) Release(tag shareTag, id fileID, extents []extent, err error) er
 	case !proceed:
 		return unexpected(m, op, id, err)
 	case dirtyAt >= 0:
-		return m.mismatch(op, id, "released byte %d, whose offloaded bit is unset", dirtyAt)
+		return m.mismatch(op, id, "released byte %d, whose offloaded bit is unset: a release would evict the only copy", dirtyAt)
 	}
 
 	for _, r := range cur.runs() {

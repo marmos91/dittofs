@@ -59,7 +59,7 @@ func TestReportNeverMarksAWriteNewerThanTheOffer(t *testing.T) {
 	ok(t, m.Offer(shareA, fid(1), ver(10), 0, 0, o))
 	ok(t, m.WriteAt(shareA, fid(1), 10, fill('B', 10), 0, ver(11), nil))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 40)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{
 		{0, 10, 10, true},
@@ -163,7 +163,7 @@ func TestNeighboursAreOffloadedAndWithinWiden(t *testing.T) {
 		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 20), 0, ver(1), nil))
 		ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 20, 1))))
 		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 20)}, nil))
-		m.EndOffer(shareA, fid(1))
+		ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 		ok(t, m.WriteAt(shareA, fid(1), 20, fill('B', 10), 0, ver(2), nil))
 		return m
 	}
@@ -195,7 +195,7 @@ func TestReportMarksExactlyWhatWasOfferedAndReported(t *testing.T) {
 	refused(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(25, 5)}, nil))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(25, 5)}, journalv2.ErrNotOffered))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	refused(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(10, 10)}, nil))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(10, 10)}, journalv2.ErrOfferEnded))
 
@@ -213,7 +213,7 @@ func TestReportAfterARemovalMarksNothingThere(t *testing.T) {
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 40, 1))))
 	ok(t, m.Deallocate(shareA, fid(1), ext(0, 10), ver(2), nil))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 40)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 10), 0, ver(3), nil))
 
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{
@@ -229,7 +229,7 @@ func TestReleaseRefusesDirtyBytesWithNoPartialProgress(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 20), 0, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 20, 1))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 
 	both := []journalv2.Extent{ext(0, 10), ext(10, 10)}
 	refused(t, m.Release(shareA, fid(1), both, nil))
@@ -253,7 +253,7 @@ func TestRebuildByPrecedence(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 4*k, fill('B', 8*k), 0, ver(8), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(7), 0, 0, offerOf(m, fid(1), 7, 7, dirty(0, 8*k, 7))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 8*k)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 4*k)}, nil))
 	ok(t, m.WriteAt(shareA, fid(1), 20*k, fill('C', 4*k), 0, ver(9), nil))
 	// Another file's record between them changes nothing of this one.
@@ -273,7 +273,7 @@ func TestAnOfferSyncsWhatItCaptures(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
 	refused(t, m.Compare(shareA, modelView{New(), shareA}))
@@ -285,7 +285,7 @@ func TestAnOfferNeverOffersOffloadedContentAsDirty(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.WriteAt(shareA, fid(1), 20, fill('B', 10), 0, ver(2), nil))
 	refused(t, m.Offer(shareA, fid(1), ver(2), 0, 0, offerOf(m, fid(1), 1, 2, dirty(0, 10, 1), dirty(20, 10, 2))))
 }
@@ -297,7 +297,7 @@ func TestNeighboursAreNeitherDirtyNorPastWidenOnEitherSide(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 10, fill('A', 20), 0, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(10, 20, 1))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(10, 20)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 10), 0, ver(2), nil))
 	ok(t, m.WriteAt(shareA, fid(1), 30, fill('C', 5), 0, ver(3), nil))
 
@@ -328,7 +328,7 @@ func TestReportOfNeighboursAndOfPartlyOfferedExtents(t *testing.T) {
 		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 		ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
 		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-		m.EndOffer(shareA, fid(1))
+		ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 		ok(t, m.WriteAt(shareA, fid(1), 10, fill('B', 10), 0, ver(2), nil))
 		o := offerOf(m, fid(1), 1, 2, dirty(10, 10, 2))
 		o.Neighbours = []journalv2.Held{{Extent: ext(5, 5), Version: ver(1)}}
@@ -366,7 +366,7 @@ func TestAnOfferSyncsItsNeighbours(t *testing.T) {
 		o.Offered.(offered)[k] = b
 	}
 	ok(t, m.Offer(shareA, fid(1), ver(2), 0, 10, o))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
 
@@ -393,7 +393,7 @@ func TestAnOfferSyncsOnlyWhatItCaptures(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('w', 8), 0, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 4, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
 

@@ -19,6 +19,29 @@
 //
 // The model is the expected answer only. It never stands in for storage.
 //
+// # Driving it
+//
+// Call the journal, then the model's operation of the same name with the
+// journal's result: what the call returned, its error included, as the last
+// arguments. For example, after v, err := h.WriteAt(id, off, p, mtime), call
+// m.WriteAt(tag, id, off, p, mtime, v, err). Apply calls to the model in the
+// order the journal's calls returned.
+//
+// An offload is three steps. Inside the Offload callback, first call Offer
+// with the offer the journal gave; then call Report with each report and its
+// error. After Offload returns, call EndOffer with what the callback returned
+// and what Offload returned, whether or not the callback was called.
+//
+// A crash is Crash, the storage crash, then Reopen with the highest floor the
+// journal was given, then Compare for every share before any other call on a
+// file the crash left unknown; Unresolved lists them. Outside a crash, Compare
+// may be called after any step, and the model-based test calls it after
+// every one.
+//
+// An error wraps ErrDiverged when the journal did what the RFC does not allow,
+// and ErrMisuse when the model was called in a way it cannot take, which is
+// the caller's bug, never the journal's.
+//
 // decision: the model covers writes, fills, offers and their reports,
 // releases, truncates, deallocates, deletes, settles, Since, crashes and
 // reopens. Repack changes no content, so it has no operation here. What it

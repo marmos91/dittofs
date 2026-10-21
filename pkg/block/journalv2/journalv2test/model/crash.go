@@ -1,9 +1,6 @@
 package model
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 // maxUncertain bounds the records of one file a crash may leave uncertain.
 //
@@ -20,7 +17,7 @@ const maxUncertain = 16
 
 // Crash applies a crash of the journal's storage. Each record no returned Sync
 // covered may or may not have survived: a release or an offloaded mark whole,
-// and a write or a fill piece by piece (see decide). A removal is durable on
+// and a write or a fill in part, since it may be several records. A removal is durable on
 // return and survives. A marker settled before the crash may come back,
 // because settling is not persisted, or may not, because repack may have
 // dropped its record.
@@ -42,7 +39,7 @@ func (m *Model) Crash() error {
 			}
 		}
 		if n > maxUncertain {
-			errs = append(errs, fmt.Errorf("model: crash: file %x has %d uncertain records the journal's bytes cannot decide, above the %d the model can search; sync it more often", f.id.Bytes(), n, maxUncertain))
+			errs = append(errs, m.misuse("crash", f.id, "%d unsynced releases, marks and settled markers, above the %d the model can search; sync the file more often", n, maxUncertain))
 		}
 	}
 	if len(errs) > 0 {
@@ -74,13 +71,14 @@ func crashMayDropMarker(r *record) bool {
 }
 
 // Reopen applies the reopen of the journal after a crash with floor: every
-// version it assigns from now on must exceed floor. The floor carries the
-// version limit, so the counter restarts above every version issued before the
-// crash; a floor below one is refused, since the journal could then issue it
-// again.
+// version it assigns from now on must exceed floor. Pass the highest floor the
+// journal was given: the one Open took, or a higher one a Share took. The
+// floor carries the version limit, so the counter restarts above every
+// version issued before the crash; a floor below one is refused, since the
+// journal could then issue it again.
 func (m *Model) Reopen(floor version) error {
 	if floor.Compare(m.issued) < 0 {
-		return fmt.Errorf("model: reopen: floor %v is below version %v, already issued", floor, m.issued)
+		return m.misuse("reopen", fileID{}, "floor %v is below %v, a version already issued; pass the floor the journal opened with", floor, m.issued)
 	}
 	m.crashed = false
 	m.floor = floor

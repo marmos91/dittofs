@@ -2,6 +2,7 @@ package model
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -269,8 +270,76 @@ func (f *file) holdsAnything() bool {
 	return len(st.held) > 0 || len(st.markers) > 0
 }
 
+// The two kinds of error the model returns, for errors.Is.
+var (
+	// ErrDiverged is the journal doing what the RFC does not allow: an answer
+	// or a state no allowed outcome explains. It is a bug in the journal, or
+	// in the model's reading of the RFC.
+	ErrDiverged = errors.New("the journal did what the RFC does not allow")
+
+	// ErrMisuse is a call the model cannot take: made out of order, outside
+	// what the model decides, or past what it can search. It is a bug in the
+	// caller driving the model, never evidence about the journal.
+	ErrMisuse = errors.New("the model cannot take this call")
+)
+
+// mismatch returns an ErrDiverged for op on file id.
 func (m *Model) mismatch(op string, id fileID, format string, args ...any) error {
-	return fmt.Errorf("model: %s %x: %s", op, id.Bytes(), fmt.Sprintf(format, args...))
+	return report(ErrDiverged, op, id, format, args)
+}
+
+// misuse returns an ErrMisuse for op on file id.
+func (m *Model) misuse(op string, id fileID, format string, args ...any) error {
+	return report(ErrMisuse, op, id, format, args)
+}
+
+// report formats an error of kind for op on file id. Versions print as v5
+// (e1.v5 with an epoch) and extents as [off,end), so a message reads in the
+// caller's terms.
+func report(kind error, op string, id fileID, format string, args []any) error {
+	for i, a := range args {
+		switch a := a.(type) {
+		case version:
+			args[i] = fmtVersion(a)
+		case extent:
+			args[i] = fmtExtent(a)
+		}
+	}
+	where := ""
+	if id != (fileID{}) {
+		where = fmt.Sprintf(" file %x", id.Bytes())
+	}
+	return fmt.Errorf("model: %s%s: %s: %w", op, where, fmt.Sprintf(format, args...), kind)
+}
+
+func fmtVersion(v version) string {
+	if v.Epoch != 0 {
+		return fmt.Sprintf("e%d.v%d", v.Epoch, v.Counter)
+	}
+	return fmt.Sprintf("v%d", v.Counter)
+}
+
+func fmtExtent(e extent) string {
+	if end(e) >= toEnd(0) {
+		return fmt.Sprintf("[%d,EOF)", e.Off)
+	}
+	return fmt.Sprintf("[%d,%d)", e.Off, end(e))
+}
+
+// Unresolved returns the files a crash left unknown, which Compare must see
+// before any other call on them.
+func (m *Model) Unresolved() []fileID {
+	var out []fileID
+	for id, f := range m.files {
+		if f.unresolved {
+			out = append(out, id)
+		}
+	}
+	slices.SortFunc(out, func(a, b fileID) int {
+		x, y := a.Bytes(), b.Bytes()
+		return slices.Compare(x[:], y[:])
+	})
+	return out
 }
 
 // onDisk returns the highest version of a record the model holds that a crash

@@ -136,7 +136,7 @@ func TestSinceKeepsAWriteAndAnAdjacentFillOfItsVersionApart(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 7, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 4)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(2, 2)}, nil))
 	ok(t, m.Fill(shareA, fid(1), 2, fill('A', 2), ver(1), ver(1), nil))
 

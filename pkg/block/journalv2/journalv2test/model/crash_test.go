@@ -13,7 +13,7 @@ func TestCrashKeepsSyncedWritesAndAllowsUnsyncedOnesEitherWay(t *testing.T) {
 	setup := func(t *testing.T) *Model {
 		m := New()
 		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-		ok(t, m.Sync(shareA, nil, fid(1)))
+		ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 		ok(t, m.WriteAt(shareA, fid(1), 5, fill('B', 10), 0, ver(2), nil))
 		ok(t, m.Crash())
 		ok(t, m.Reopen(ver(10)))
@@ -66,7 +66,7 @@ func TestCrashMayKeepPartOfASplitWrite(t *testing.T) {
 func TestCrashNeverUndoesARemoval(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Truncate(shareA, fid(1), 4, ver(2), nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
@@ -83,7 +83,7 @@ func TestCrashBringsBackMarkers(t *testing.T) {
 	setup := func(t *testing.T, settle bool) *Model {
 		m := New()
 		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-		ok(t, m.Sync(shareA, nil, fid(1)))
+		ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 		ok(t, m.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
 		if settle {
 			ok(t, m.Settle(shareA, fid(1), ver(2)))
@@ -120,10 +120,10 @@ func TestCrashBringsBackMarkers(t *testing.T) {
 func TestCrashMayLoseAnUnsyncedMark(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
 
@@ -138,7 +138,7 @@ func TestCrashMayLoseAnUnsyncedMark(t *testing.T) {
 func TestVersionsAfterReopenExceedTheFloor(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 10), 0, ver(2), nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(5)))
@@ -174,7 +174,7 @@ func TestCrashRefusesTooManyUndecidableRecordsInOneFile(t *testing.T) {
 	for i := range maxUncertain + 1 {
 		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(int64(i), 1)}, nil))
 	}
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	refused(t, m.Crash())
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(2), nil))
 
@@ -228,7 +228,7 @@ func TestCrashSearchIsDecidedByWhatTheJournalShows(t *testing.T) {
 func TestChangeVersionNeedNotCountAMarkerThatDidNotComeBack(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Deallocate(shareA, fid(1), ext(20, 2), ver(2), nil))
 	ok(t, m.Settle(shareA, fid(1), ver(2)))
 	ok(t, m.Crash())
@@ -248,8 +248,8 @@ func TestCrashTellsAFillFromTheWriteItRefills(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 7, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-	m.EndOffer(shareA, fid(1))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
 	ok(t, m.Fill(shareA, fid(1), 0, fill('A', 10), ver(1), ver(1), nil))
 	ok(t, m.Crash())
@@ -259,7 +259,7 @@ func TestCrashTellsAFillFromTheWriteItRefills(t *testing.T) {
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 7, ver(1), nil))
 	ok(t, j.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(j, fid(1), 1, 1, dirty(0, 10, 1))))
 	ok(t, j.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-	j.EndOffer(shareA, fid(1))
+	ok(t, j.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Compare(shareA, modelView{j, shareA}))
 }
 
@@ -270,7 +270,7 @@ func TestAFillVersionBoundsTheCounterOnlyWhileHeld(t *testing.T) {
 	setup := func(t *testing.T) *Model {
 		m := New()
 		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(5), nil))
-		ok(t, m.Sync(shareA, nil, fid(1)))
+		ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 		ok(t, m.Fill(shareA, fid(1), 100, fill('F', 4), ver(5), ver(50), nil))
 		ok(t, m.Crash())
 		ok(t, m.Reopen(ver(10)))
@@ -296,7 +296,7 @@ func TestAFillVersionBoundsTheCounterOnlyWhileHeld(t *testing.T) {
 func TestAMarkerThatDidNotComeBackNeverDoes(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
 	ok(t, m.Settle(shareA, fid(1), ver(2)))
 	ok(t, m.Crash())
@@ -379,7 +379,7 @@ func TestAVersionIssuedAfterAReopenBoundsWhatSurvived(t *testing.T) {
 	setup := func(t *testing.T) *Model {
 		m := New()
 		ok(t, m.WriteAt(shareB, fid(2), 0, fill('x', 1), 0, ver(1), nil))
-		ok(t, m.Sync(shareB, nil, fid(2)))
+		ok(t, m.Sync(shareB, []journalv2.FileID{fid(2)}, nil))
 		ok(t, m.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(100), nil))
 		ok(t, m.Crash())
 		ok(t, m.Reopen(ver(5)))
@@ -397,7 +397,7 @@ func TestAVersionIssuedAfterAReopenBoundsWhatSurvived(t *testing.T) {
 func TestAMarkerThatCameBackCountsInTheChangeVersion(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
 	ok(t, m.Settle(shareA, fid(1), ver(2)))
 	ok(t, m.Crash())
@@ -418,9 +418,9 @@ func TestAfterACrashTheChangeVersionCountsOnlyLiveRecords(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 4, fill('b', 4), 0, ver(2), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(2), 0, 0, offerOf(m, fid(1), 1, 2, dirty(0, 4, 1), dirty(4, 4, 2))))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(4, 4)}, nil))
-	m.EndOffer(shareA, fid(1))
+	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(4, 4)}, nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	j := clone(m)
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
@@ -458,7 +458,7 @@ func TestReopenAcceptsAFloorAtTheLastVersionIssued(t *testing.T) {
 func TestAWriteLiveAgainAfterACrashCountsInTheChangeVersion(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 4), 0, ver(2), nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
@@ -475,7 +475,7 @@ func TestCrashMayKeepPartOfASameVersionRefill(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(5), nil))
 	ok(t, m.Fill(shareA, fid(1), 0, fill('V', 4), ver(5), ver(5), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 3)}, nil))
 	ok(t, m.Fill(shareA, fid(1), 0, fill('E', 3), ver(5), ver(5), nil))
 	j := clone(m)
@@ -502,7 +502,7 @@ func TestCrashMayKeepPartOfASameVersionRefill(t *testing.T) {
 func TestAnUnsettledMarkerCountsInTheChangeVersionAfterACrash(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Sync(shareA, nil, fid(1)))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Truncate(shareA, fid(1), 4, ver(2), nil))
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
@@ -520,7 +520,7 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 	setup := func(t *testing.T, issue uint64, again bool, later ...uint64) *Model {
 		m := New()
 		ok(t, m.WriteAt(shareB, fid(2), 0, fill('x', 1), 0, ver(1), nil))
-		ok(t, m.Sync(shareB, nil, fid(2)))
+		ok(t, m.Sync(shareB, []journalv2.FileID{fid(2)}, nil))
 		ok(t, m.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(50), nil))
 		ok(t, m.Crash())
 		ok(t, m.Reopen(ver(5)))
@@ -529,7 +529,7 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 			ok(t, m.WriteAt(shareB, fid(2), 0, fill('z', 1), 0, ver(v), nil))
 		}
 		if again {
-			ok(t, m.Sync(shareB, nil, fid(2)))
+			ok(t, m.Sync(shareB, []journalv2.FileID{fid(2)}, nil))
 			ok(t, m.Crash())
 			ok(t, m.Reopen(ver(issue)))
 		}
@@ -549,11 +549,11 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 func TestQueriesAndSettlesAreRefusedUntilACrashIsResolved(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	refused(t, m.Sync(shareA, journalv2.ErrCorrupt, fid(1)))
+	refused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, journalv2.ErrCorrupt))
 	ok(t, m.Crash())
-	refused(t, m.Sync(shareA, nil, fid(1)))
+	refused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Reopen(ver(10)))
-	refused(t, m.Sync(shareA, nil, fid(1)))
+	refused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	refused(t, m.Settle(shareA, fid(1), ver(1)))
 	_, err := m.Since(shareA, fid(1), journalv2.Version{})
 	refused(t, err)
@@ -584,7 +584,7 @@ func TestWritesAreDecidedFromTheBytesWithoutTheSearch(t *testing.T) {
 			m := New()
 			if c.synced {
 				ok(t, m.WriteAt(shareA, fid(1), 0, fill('0', 4*n), 0, ver(1), nil))
-				ok(t, m.Sync(shareA, nil, fid(1)))
+				ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 			}
 			for i := range n {
 				ok(t, m.WriteAt(shareA, fid(1), int64(i)*4, fill(byte('a'+i), 4), 0, ver(uint64(i)+10), nil))

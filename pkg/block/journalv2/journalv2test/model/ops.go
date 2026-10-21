@@ -54,7 +54,7 @@ func (m *Model) claim(f *file, tag shareTag, id fileID) *file {
 // last reopen.
 func (m *Model) issue(op string, id fileID, v version) error {
 	if bound := maxVersion(maxVersion(m.issued, m.onDisk()), m.floor); v.Compare(bound) <= 0 {
-		return m.mismatch(op, id, "assigned version %v, not above %v, the highest issued, on disk or in the floor", v, bound)
+		return m.mismatch(op, id, "assigned version %v, not above %v, the highest version issued, on disk or in the floor: every version assigned must exceed them", v, bound)
 	}
 	m.issued = v
 	m.maxSeen = maxVersion(m.maxSeen, v)
@@ -108,7 +108,7 @@ func (m *Model) WriteAt(tag shareTag, id fileID, off int64, p []byte, mtime int6
 // err. Returned nil, every operation on those files that returned before it is
 // durable. A failed sync window is outside the model, so any error is one it
 // has no rule for.
-func (m *Model) Sync(tag shareTag, err error, ids ...fileID) error {
+func (m *Model) Sync(tag shareTag, ids []fileID, err error) error {
 	const op = "sync"
 	for _, id := range ids {
 		if mis := m.known(op, id); mis != nil {
@@ -116,7 +116,7 @@ func (m *Model) Sync(tag shareTag, err error, ids ...fileID) error {
 		}
 	}
 	if err != nil {
-		return unexpected(m, op, fileID{}, err)
+		return m.mismatch(op, fileID{}, "returned %v, but the model takes no failed sync window", err)
 	}
 	for _, id := range ids {
 		f := m.files[id]
@@ -135,10 +135,10 @@ func (m *Model) Sync(tag shareTag, err error, ids ...fileID) error {
 // until Compare finds it.
 func (m *Model) known(op string, id fileID) error {
 	if m.crashed {
-		return m.mismatch(op, id, "called between Crash and Reopen")
+		return m.misuse(op, id, "called between Crash and Reopen")
 	}
 	if f := m.files[id]; f != nil && f.unresolved {
-		return m.mismatch(op, id, "called on a file a crash left unresolved; Compare it first")
+		return m.misuse(op, id, "called on a file a crash left unknown; Compare its share first")
 	}
 	return nil
 }
@@ -175,11 +175,11 @@ func (m *Model) Fill(tag shareTag, id fileID, off int64, p []byte, asOf, v versi
 	case !proceed:
 		return unexpected(m, op, id, err)
 	case mustRefuse:
-		return m.mismatch(op, id, "accepted a fill as of %v of a file changed at %v", asOf, st.change)
+		return m.mismatch(op, id, "accepted a fill as of %v of a file changed at %v: a stale fill must be refused", asOf, st.change)
 	}
 
 	if r := droppableAbove(f, extent{Off: off, Len: int64(len(p))}, v); r != nil {
-		return m.mismatch(op, id, "fill at %v below a %s at %v over its bytes: repack may have dropped that record, which the model cannot see; fill at or above it", v, r.kind, r.ver)
+		return m.misuse(op, id, "fill at %v below a %s at %v over its bytes, which the model does not decide; fill at or above it", v, r.kind, r.ver)
 	}
 
 	f = m.claim(f, tag, id)

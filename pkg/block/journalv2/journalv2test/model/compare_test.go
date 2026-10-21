@@ -19,7 +19,7 @@ func script(t *testing.T, ms ...*Model) {
 		ok(t, m.WriteAt(shareA, fid(1), 30, fill('B', 10), 22, ver(2), nil))
 		ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 20, 1))))
 		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-		m.EndOffer(shareA, fid(1))
+		ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 		ok(t, m.Truncate(shareA, fid(1), 35, ver(3), nil))
 		ok(t, m.WriteAt(shareB, fid(2), 100, fill('C', 5), 33, ver(4), nil))
 		ok(t, m.Delete(shareB, fid(2), ver(5), nil))
