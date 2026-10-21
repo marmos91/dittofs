@@ -205,6 +205,7 @@ func TestConfigureKerberos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = l.Close() }()
 	port := l.Addr().(*net.TCPAddr).Port
 	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Kerberos: true}, url, 0, port)
 	s.kdc = &kdc{host: "localhost"}
@@ -223,7 +224,10 @@ func TestConfigureKerberos(t *testing.T) {
 	if i := slices.Index(f.calls, want[0]); i < 0 || i+len(want) > len(f.calls) || !slices.Equal(f.calls[i:i+len(want)], want) {
 		t.Errorf("calls:\n%s\nwant, in a row:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
 	}
-	_ = l.Close()
+	// SMB moves to port 1, which nothing listens on, and unlike a port the
+	// test frees, nothing else gets it meanwhile: it's never handed out as a
+	// free port, and an ordinary user may not bind it.
+	f.running["smb"], s.smbPort = 1, 1
 	if err := s.check(c, nil); err == nil || !strings.Contains(err.Error(), "{server}, the name localhost, doesn't lead to SMB's port") {
 		t.Errorf("nothing at {server}: %v", err)
 	}
