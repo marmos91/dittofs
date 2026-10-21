@@ -95,7 +95,8 @@ func (h *Handle) Offload(ctx context.Context, id FileID, through Version, limit,
 // ErrOfferEnded.
 //
 // fn receives a context derived from ctx, so the work fn does under it, such
-// as an upload, ends with the call's deadline.
+// as an upload, ends with the call's deadline. report ignores ctx: what it
+// records has already committed, and refusing it would cost a second upload.
 //
 // Partial success is honoured: every extent reported before fn returns stays
 // marked, whatever fn returns, and the error fn returns covers only what was
