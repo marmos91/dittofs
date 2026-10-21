@@ -499,20 +499,20 @@ The secret is stored at-rest and is write-only / redacted in API responses.
 
 ### Share access policy
 
-A share's export access policy — `require_kerberos`, `allow_auth_sys`,
+A share's access policy (`require_kerberos`, `allow_auth_sys`,
 `min_kerberos_level` and the netgroup client allowlist, set with
-`dfsctl share nfs-config set` — applies to SMB as well as NFS. It is checked at
+`dfsctl share nfs-config set`) applies to SMB as well as NFS. It is checked at
 TREE_CONNECT and again on every request on the tree, so a policy change, a
-re-authentication over NTLM, or a channel bound from another address takes
-effect on the next request. A refusal is `STATUS_ACCESS_DENIED`.
+re-authentication with a weaker proof, or a channel bound from another address
+takes effect on the next request. A refusal is `STATUS_ACCESS_DENIED`. The
+defaults admit every session.
 
 | Setting | Over SMB |
 |---------|----------|
-| `require_kerberos=true` | Only Kerberos sessions; NTLM, guest and anonymous sessions are refused. |
-| `allow_auth_sys=false` | Same as `require_kerberos=true`. |
-| `min_kerberos_level=krb5i` | The session must enforce signing (signing required, or dialect 3.1.1), or the tree is made to require encryption when the session can encrypt; otherwise refused. |
-| `min_kerberos_level=krb5p` | The tree requires encryption (`SMB2_SHAREFLAG_ENCRYPT_DATA`); a session that cannot encrypt (SMB 2.x, no cipher) is refused. |
-| netgroup | The client's IP must be in the netgroup, as for NFS. |
+| `require_kerberos` | Refuses NTLM, guest and anonymous sessions. |
+| `allow_auth_sys=false` | Refuses guest and anonymous sessions; NTLM and Kerberos pass. |
+| `min_kerberos_level` | The protection floor for any authenticated session, NTLM included. `krb5i` needs a session that enforces signing (signing required, or dialect 3.1.1); otherwise the tree is made to require encryption when the session can encrypt. `krb5p` needs every request on the tree encrypted, by the session or by the tree (`SMB2_SHAREFLAG_ENCRYPT_DATA`, set by the share's `encrypt_data` or by this floor); a session that cannot encrypt, such as SMB 2.x, is refused. Guest and anonymous sessions answer to `allow_auth_sys` alone. |
+| `netgroup` | The address of the connection carrying the request must be in the netgroup, as for NFS. An edit to a netgroup's members applies once the cached verdict for that address expires. |
 
 ### Guest Sessions
 

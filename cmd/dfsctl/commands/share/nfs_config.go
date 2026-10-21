@@ -69,14 +69,15 @@ intact. Netgroup changes take effect immediately. Changes to squash mode and
 authentication flavors (--allow-auth-sys, --require-kerberos) apply on the
 next NFS adapter restart.
 
-The netgroup allowlist is NFS export policy: it is enforced on NFSv3 mounts and
-on NFSv4 operations, and has no effect on SMB access to the same share.
+The netgroup allowlist and the authentication flags are the share's access
+policy: they are enforced on NFSv3 mounts, on NFSv4 operations and on SMB
+requests to the same share.
 
 Examples:
   # Restrict access to a specific netgroup
   dfsctl share nfs-config set /export --netgroup office-network
 
-  # Remove the netgroup restriction (allow all NFS clients)
+  # Remove the netgroup restriction (allow all clients)
   dfsctl share nfs-config set /export --netgroup ""
 
   # Map root UID to guest on this export
