@@ -1261,7 +1261,9 @@ No flip may produce a read that returns bytes other than the ones written.
 
 After each, the reopened journal is compared with the reference model of
 [RFC 1 §9.1](rfc-1-journal.md#9.1%20Kinds%20of%20test): everything a returned `Sync` covered is held and reads its exact bytes; anything
-else is held whole or not at all.
+else is held record by record, each record whole or not at all. A write split
+at a segment cap is several records ([§2.2](#2.2%20Segments)), so it can come back partly held:
+some of its pieces held whole, the others absent, never a piece in part.
 
 **Edits from outside.** An operator, a backup tool or a stray script can change
 the directory while the journal is closed or open. Record checksums cover
