@@ -294,7 +294,8 @@ def main():
                                capture_output=True, text=True).stdout.strip()
         commits = f" ({count or '?'} commits since `{since[:9]}`)"
 
-    extra = {"night": night, "mode": mode, "commit": commit, "score": score, "areas": areas, "points": points,
+    harness = open(f"{run}/harness").read().strip() if os.path.exists(f"{run}/harness") else ""
+    extra = {"night": night, "mode": mode, "commit": commit, "harness": harness, "score": score, "areas": areas, "points": points,
              "flags": flags, "failures": failures, "drives": drive_wear(run)}
     tests = [{"name": f"{s['step']} {s['target']} r{s['repeat']}".replace(" - r-", ""), "suite": ["ditto-nightly"],
               "status": {"ok": "passed", "skipped": "skipped"}.get(s["status"], "failed"), "rawStatus": s["status"],

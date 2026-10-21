@@ -8,6 +8,8 @@
 #            file and fsync it at its end
 #   mailbox  the mailbox simulator (bench/workloads/mailbox) with 2, 8 and 16 users, scaled down
 #   files    5,000 files of 4 KiB, 64 KiB and 1.75 MiB, created (each fsynced), then read back
+# Each target starts after an fstrim of the data's file system, and the two take turns going first:
+# one order on odd repeats, the other on even ones, swapped from one date to the next.
 # score.py then compares the two targets point by point and writes the summary. Slack gets it by the
 # scenarios' rules, through their reporting (test/scenarios/lib/report.sh), same bot, same channel:
 # a quiet night posts nothing; the first new flag or failure is a message; while that alert is open,
@@ -17,17 +19,26 @@
 #   night.sh              as root, from cron at 18:45 (setup.sh writes the cron file)
 #   SMOKE=yes night.sh    one short point of each kind, a few minutes; never posts
 #
+# The checkout's working tree is not what runs. night.sh fetches develop and the branch the checkout
+# is on, then hands over to the night.sh of that branch as fetched, extracted under
+# /var/tmp/dittofs-perf/harness/<commit>: its scripts, the mailbox jobs and the scenarios' reporting
+# all come from there, and dfs is built from develop as fetched. Both commits are recorded. A fetch
+# that fails leaves the last fetched commits.
+#
 # Environment:
 #   CALIBRATION=yes  every point three times, and no Slack post: the first week, whose spread sets
 #                    each point's noise band
 #   SLACK_DIR        the bot's slack-token and slack-channel; without them nothing posts
 #   LOCK             the lock the scenario runs take (default /var/tmp/dittofs-scenarios)
 #   STOP_AT          the hard stop, HH:MM local time (default 05:45): steps are cut to end before it
+#   HARNESS          set by hand: this tree runs as it is, with dfs from develop as last fetched (a
+#                    test of changes not pushed yet)
 # Results: /var/tmp/dittofs-perf/<date>/ (a smoke run: smoke-<date>-<time>/), kept 30 days.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+TREE="$(cd "$HERE/../.." && pwd)"                               # the scripts, jobs and reporting
+REPO="${REPO:-$(git -C "$HERE" rev-parse --show-toplevel)}"     # the checkout git works in
 WORK=/var/tmp/dittofs-perf      # results, the Go caches and the run's state; smb.conf names it too
 DATA=/srv/perf/data             # the targets' data, emptied after each target
 MNT=/srv/perf/mnt
@@ -67,9 +78,8 @@ build() {
     local src="$WORK/build/src"
     rm -rf "$WORK/build"
     mkdir -p "$src" "$WORK/build/bin" "$WORK/go"
-    git -C "$REPO" fetch -q origin develop
-    git -C "$REPO" rev-parse FETCH_HEAD >"$NIGHT/commit"
-    git -C "$REPO" archive FETCH_HEAD | tar -x -C "$src"
+    git -C "$REPO" rev-parse "${DEVELOP:-origin/develop}" >"$NIGHT/commit"
+    git -C "$REPO" archive "$(cat "$NIGHT/commit")" | tar -x -C "$src"
     cd "$src"
     CGO_ENABLED=0 GOFLAGS=-buildvcs=false GOTOOLCHAIN=auto GOPATH="$WORK/go" GOMODCACHE="$WORK/go/mod" \
         GOCACHE="$WORK/go/build" go build -o "$WORK/build/bin/" ./cmd/dfs ./cmd/dfsctl
@@ -192,7 +202,7 @@ matrix() {
 }
 
 mailbox() {
-    local mb="$REPO/bench/workloads/mailbox" u s point t0 failed=0 first=yes
+    local mb="$TREE/bench/workloads/mailbox" u s point t0 failed=0 first=yes
     export TARGET_DIR="$DIR/mailbox" RESULTS_DIR="$RES/mailbox" RUNTIME="$MAILBOX_RUNTIME"
     # The simulator's sizes and rates, scaled to VHDX_SIZE and a short RUNTIME (see its README).
     export LOGON_IO=100m SORT_READ=50m SORT_WRITE=10m COMPACT_MOVE=128m SYNC_GROW=128m MAIL_INTERVAL=5s SEND_INTERVAL=30s
@@ -257,9 +267,9 @@ post() {
     text="$(cat "$1/slack.txt")"
     ts="$(cat "$WORK/slack-ts" 2>/dev/null || true)"
     # shellcheck disable=SC2034 # report.sh reads them
-    HERE="$REPO/test/scenarios" CACHE="$WORK"
+    HERE="$TREE/test/scenarios" CACHE="$WORK"
     # shellcheck source-path=SCRIPTDIR source=../../test/scenarios/lib/report.sh
-    . "$REPO/test/scenarios/lib/report.sh"
+    . "$TREE/test/scenarios/lib/report.sh"
     case "$(cat "$1/alert" 2>/dev/null)" in
     new)
         if test -n "$ts"; then
@@ -285,6 +295,20 @@ build | start | matrix | mailbox | files | post) "$@"; exit ;;
 esac
 
 test "$(id -u)" -eq 0 || { echo "night.sh: run it as root" >&2; exit 2; }
+if test -z "${HARNESS:-}"; then
+    branch="$(git -C "$REPO" symbolic-ref --short HEAD)" || { echo "night.sh: $REPO is on no branch" >&2; exit 2; }
+    git -C "$REPO" fetch -q origin develop "$branch" || echo "night.sh: the fetch failed, running what was fetched last" >&2
+    HARNESS="$(git -C "$REPO" rev-parse "origin/$branch")" DEVELOP="$(git -C "$REPO" rev-parse origin/develop)"
+    tree="$WORK/harness/$HARNESS"
+    if test ! -d "$tree"; then
+        mkdir -p "$tree.$$"
+        git -C "$REPO" archive "$HARNESS" | tar -x -C "$tree.$$"
+        mv -T "$tree.$$" "$tree" 2>/dev/null || rm -rf "$tree.$$"
+    fi
+    touch "$tree"
+    export REPO HARNESS DEVELOP
+    exec "$tree/bench/ditto/night.sh" "$@"
+fi
 test -d "$LOCK" || { echo "night.sh: no lock directory $LOCK" >&2; exit 2; }
 DEADLINE="$(date -d "${STOP_AT:-05:45}" +%s)"
 test "$DEADLINE" -gt "$(date +%s)" || DEADLINE="$(date -d "tomorrow ${STOP_AT:-05:45}" +%s)"
@@ -297,9 +321,10 @@ test ! -e "$NIGHT" || NIGHT="$WORK/$(date +%F-%H%M%S)"
 mkdir -p "$NIGHT"
 export NIGHT RUN="$WORK/run" CALIBRATION
 date +%s >"$NIGHT/started"
+echo "$HARNESS" >"$NIGHT/harness"
 echo "night.sh: $NIGHT"
 exec >>"$NIGHT/night.log" 2>&1
-log "start: calibration $CALIBRATION, smoke $SMOKE, $REPEATS repeat(s), matrix files $FILE_SIZE, hard stop $(date -d "@$DEADLINE" '+%F %T')"
+log "start: harness $HARNESS, calibration $CALIBRATION, smoke $SMOKE, $REPEATS repeat(s), matrix files $FILE_SIZE, hard stop $(date -d "@$DEADLINE" '+%F %T')"
 printf 'step\ttarget\trepeat\tstatus\tseconds\n' >"$NIGHT/steps.tsv"
 
 # step NAME TARGET REPEAT BOX [ARGS]: runs night.sh NAME [ARGS] in a time box cut to end before the
@@ -383,8 +408,9 @@ finish() {
 STARTED="" STATE=""
 trap finish EXIT
 
-# Results older than 30 days go.
+# Results and fetched trees older than 30 days go (the tree in use was touched as it started).
 find "$WORK" -mindepth 1 -maxdepth 1 -type d \( -name '20??-??-??*' -o -name 'smoke-*' \) -mtime +30 -exec rm -rf {} +
+find "$WORK/harness" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
 
 exec 9<"$LOCK"
 if ! flock -w "${LOCK_WAIT:-1800}" 9; then
@@ -395,11 +421,14 @@ fi
 step build - - 900 || true
 host_state before
 STATE=yes
-test "$SMOKE" = yes || timeout 300 fstrim -v "$(dirname "$DATA")" || true
 
+DAY=$(($(date +%s) / 86400))
 if test -x "$WORK/build/bin/dfs"; then
     for repeat in $(seq "$REPEATS"); do
-        for target in dittofs samba; do
+        order=(dittofs samba)
+        test $(((DAY + repeat) % 2)) -eq 1 || order=(samba dittofs)
+        for target in "${order[@]}"; do
+            test "$SMOKE" = yes || timeout 300 fstrim -v "$DATA" || true
             export DIR="$MNT/$target" RES="$NIGHT/r$repeat/$target" PASSWORD
             PASSWORD="$(secret)"
             rm -rf "${DATA:?}/$target" "$RUN"

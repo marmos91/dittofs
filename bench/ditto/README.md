@@ -8,7 +8,9 @@ Samba's, point by point.
 
 Both targets serve one share over SMB on loopback. The kernel client mounts each with the same
 options: SMB 3.1.1, `cache=none`, signing on, encryption and compression off. The two targets run
-one after the other, never together:
+one after the other, never together, each after an `fstrim` of the data's file system, and they
+take turns going first: one order on odd repeats, the other on even ones, swapped from one date to
+the next.
 
 - **DittoFS**: a Badger metadata store and the local journal. The block store is S3, since a share
   needs one, at an endpoint nothing answers: the server starts with it unhealthy, the sync to it
@@ -23,8 +25,13 @@ On each target, every step in its own time box:
 | `mailbox` | The mailbox simulator (`../workloads/mailbox`) with 2, 8 and 16 users, files of 512 MiB, fixed-time scenarios of 60 s | 16 |
 | `files` | 5,000 files of 4 KiB, 64 KiB and 1.75 MiB, created (each fsynced at its close), then read back | 6 |
 
-Before the targets, the night fetches `develop`, builds `dfs`, and records the commit, the host's
-state and each NVMe drive's `smart-log`. A repeat writes about 200 GB to each drive, both targets
+The checkout under `/srv/perf` only starts the night. Its `night.sh` fetches `develop` and the
+branch the checkout is on, extracts that branch as fetched under `/var/tmp/dittofs-perf/harness/`,
+and hands over to the `night.sh` there: the scripts, the mailbox jobs and the scenarios' reporting
+all come from the fetched branch, so a merged change reaches the next night with nobody updating
+the host. The checkout has to stay on a branch, `develop` once this is merged. The night then
+builds `dfs` from the fetched `develop`, and records both commits, the host's state and each NVMe
+drive's `smart-log`. A repeat writes about 200 GB to each drive, both targets
 together: the first calibration night wrote 594 GB. Each night's `summary.json` has the measured figure.
 The drives' wear rating isn't a limit here: if the disks become the bottleneck, the runs move to
 another host. The night takes the lock of the scenario runs, so the two
