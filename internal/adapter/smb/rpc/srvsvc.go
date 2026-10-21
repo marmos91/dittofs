@@ -85,11 +85,35 @@ type ShareInfo1 struct {
 // SRVSVCHandler handles SRVSVC RPC calls
 type SRVSVCHandler struct {
 	shares []ShareInfo1
+	// canConnect reports whether the session that opened the pipe could
+	// TREE_CONNECT to the named share. It is asked on every request, so an
+	// answer follows grant changes and re-authentication made after the open.
+	canConnect func(shareName string) bool
 }
 
-// NewSRVSVCHandler creates a new SRVSVC handler with the given shares
-func NewSRVSVCHandler(shares []ShareInfo1) *SRVSVCHandler {
-	return &SRVSVCHandler{shares: shares}
+// NewSRVSVCHandler creates a new SRVSVC handler over shares, serving only those
+// canConnect admits. A nil canConnect admits none.
+func NewSRVSVCHandler(shares []ShareInfo1, canConnect func(shareName string) bool) *SRVSVCHandler {
+	return &SRVSVCHandler{shares: shares, canConnect: canConnect}
+}
+
+// visibleShares returns the shares the pipe's session could connect to.
+//
+// ponytail: each enumeration resolves the session's permission once per share,
+// a few control-plane reads apiece, so it is O(shares) store round trips. Batch
+// the grants into one per-session lookup when a share count in the thousands
+// makes enumeration show up in a profile.
+func (h *SRVSVCHandler) visibleShares() []ShareInfo1 {
+	visible := make([]ShareInfo1, 0, len(h.shares))
+	if h.canConnect == nil {
+		return visible
+	}
+	for _, s := range h.shares {
+		if h.canConnect(s.Name) {
+			visible = append(visible, s)
+		}
+	}
+	return visible
 }
 
 // HandleBind processes a BIND request and returns a BIND_ACK
@@ -147,9 +171,9 @@ func (h *SRVSVCHandler) handleNetrShareEnum(req *Request) []byte {
 	var stubData []byte
 	switch level {
 	case 1:
-		stubData = h.buildShareEnumLevel1Response()
+		stubData = buildShareEnumLevel1Response(h.visibleShares())
 	default:
-		stubData = h.buildShareEnumLevel1Response() // Fallback to level 1
+		stubData = buildShareEnumLevel1Response(h.visibleShares()) // Fallback to level 1
 	}
 
 	resp := &Response{
@@ -163,7 +187,7 @@ func (h *SRVSVCHandler) handleNetrShareEnum(req *Request) []byte {
 }
 
 // buildShareEnumLevel1Response builds the NDR-encoded response for level 1 share enum
-func (h *SRVSVCHandler) buildShareEnumLevel1Response() []byte {
+func buildShareEnumLevel1Response(shares []ShareInfo1) []byte {
 	// Response structure for NetrShareEnum with level 1:
 	// - Level (4 bytes)
 	// - ShareInfo switch (4 bytes) - discriminant
@@ -176,7 +200,7 @@ func (h *SRVSVCHandler) buildShareEnumLevel1Response() []byte {
 	// - ResumeHandle pointer (4 bytes)
 	// - Return status (4 bytes)
 
-	numShares := len(h.shares)
+	numShares := len(shares)
 
 	logger.Debug("Building share enum response", "numShares", numShares)
 
@@ -210,7 +234,7 @@ func (h *SRVSVCHandler) buildShareEnumLevel1Response() []byte {
 
 		// Array of SHARE_INFO_1 structures (fixed-size parts)
 		ptrValue := uint32(0x00020008)
-		for i, share := range h.shares {
+		for i, share := range shares {
 			// Name pointer
 			buf = appendUint32(buf, ptrValue+uint32(i*8))
 			// Type
@@ -220,7 +244,7 @@ func (h *SRVSVCHandler) buildShareEnumLevel1Response() []byte {
 		}
 
 		// String data with conformant array headers
-		for _, share := range h.shares {
+		for _, share := range shares {
 			// Name string: MaxCount, Offset, ActualCount, Data
 			nameLen := len(share.Name) + 1 // Include null
 			buf = appendUint32(buf, uint32(nameLen))
@@ -285,6 +309,11 @@ func (h *SRVSVCHandler) handleNetrShareGetInfo(req *Request) []byte {
 		return h.encodeGetInfoResponse(req, h.buildShareGetInfoError(level, ERROR_INVALID_LEVEL))
 	}
 
+	// decision: a share the session cannot connect to answers exactly as one
+	// that does not exist, not ERROR_ACCESS_DENIED. The enumeration already
+	// hides it, and a distinct refusal would confirm to that session the very
+	// name the enumeration withholds. The level-502 security descriptor is
+	// therefore never built for a refused session.
 	share, found := h.findShare(shareName)
 	if !found {
 		return h.encodeGetInfoResponse(req, h.buildShareGetInfoError(level, NERR_NetNameNotFound))
@@ -304,13 +333,14 @@ func (h *SRVSVCHandler) encodeGetInfoResponse(req *Request, stubData []byte) []b
 	return resp.Encode(req.Header.CallID)
 }
 
-// findShare locates a share by its wire name, tolerating a leading path
-// separator and matching case-insensitively (SMB share names are case-folded).
+// findShare locates a share the session could connect to by its wire name,
+// tolerating a leading path separator and matching case-insensitively (SMB
+// share names are case-folded).
 func (h *SRVSVCHandler) findShare(name string) (ShareInfo1, bool) {
 	name = strings.TrimLeft(name, "\\/")
 	for _, s := range h.shares {
 		if strings.EqualFold(s.Name, name) {
-			return s, true
+			return s, h.canConnect != nil && h.canConnect(s.Name)
 		}
 	}
 	return ShareInfo1{}, false
