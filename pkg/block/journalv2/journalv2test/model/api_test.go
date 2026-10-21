@@ -23,6 +23,9 @@ func TestErrorsSayWhetherTheJournalOrTheCallerIsWrong(t *testing.T) {
 	if !errors.Is(diverged, ErrDiverged) || errors.Is(diverged, ErrMisuse) {
 		t.Fatalf("a repeated version is the journal's fault: %v", diverged)
 	}
+	if !strings.Contains(diverged.Error(), "assigned version v1") {
+		t.Fatalf("message %q does not name the version as v1", diverged)
+	}
 
 	ok(t, m.Crash())
 	misuse := m.WriteAt(shareA, fid(2), 0, fill('A', 4), 0, ver(2), nil)
