@@ -199,10 +199,6 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 	if netgroupName == "" {
 		return true, nil
 	}
-	// An address that is not an IP matches no member.
-	if clientIP == nil {
-		return false, nil
-	}
 
 	// 3. Reuse a recent verdict. It depends only on the netgroup's members and
 	// the client IP, so those two are the whole key: re-pointing a share at a
