@@ -234,6 +234,14 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 	// encrypt; otherwise the session is refused. It runs after the permission
 	// was resolved so the generation check below also covers it: a
 	// re-authentication that lands after this read refuses the tree there.
+	//
+	// decision: a guest or anonymous session is not refused on a share whose
+	// policy admits it, although it holds no key and could be confined to IPC$.
+	// And admission is not whole on every call: the policy is re-applied on each
+	// tree-scoped request except the release-only ones, but the grant is
+	// resolved here and in the authorization re-check. Both hold until the VFS
+	// takes admission over and admits every call; confine keyless sessions
+	// sooner if one is found reaching a share an operator meant to close.
 	encryptTree := share.EncryptData || treeEncryptionMeetsKerberosFloor(share, sess)
 	if err := h.checkSharePolicy(ctx.Context, share, sess, ctx.ClientAddr, encryptTree); err != nil {
 		logger.Warn("SMB TREE_CONNECT refused by the share's access policy",
