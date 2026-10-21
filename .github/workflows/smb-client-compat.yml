@@ -40,6 +40,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # badger-s3, the production profile, as the clients suite's Linux run has
+    # it: the share's blocks go to this Localstack. The macOS job stays on
+    # memory, since its runner has no Docker to run Localstack.
+    services:
+      localstack:
+        image: localstack/localstack:4.13.1
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -84,12 +106,18 @@ jobs:
           # Login as admin with the env-configured password (no forced change).
           ./dfsctl login --server http://localhost:8080 --username admin --password "$DITTOFS_ADMIN_INITIAL_PASSWORD"
 
-          # Create stores
-          ./dfsctl store metadata add --name mem-meta --in-memory
-          ./dfsctl store block add --name mem-payload --type memory
+          # Create stores: badger metadata on disk, blocks in Localstack's
+          # bucket, which the S3 block store never creates itself. The health
+          # check fails the job when the server can't reach the bucket.
+          curl -sf -X PUT http://localhost:4566/dittofs-clients
+          ./dfsctl store metadata add --name badger-meta --type badger \
+            --config "{\"db_path\":\"${RUNNER_TEMP}/metadata\"}"
+          ./dfsctl store block add --name s3-payload --type s3 \
+            --config '{"bucket":"dittofs-clients","region":"us-east-1","endpoint":"http://localhost:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
+          ./dfsctl store block health --name s3-payload
 
           # Create share
-          ./dfsctl share create --name /smbbasic --metadata mem-meta --block-store mem-payload
+          ./dfsctl share create --name /smbbasic --metadata badger-meta --block-store s3-payload
 
           # Create test user (password must be >= 8 chars)
           ./dfsctl user create --username test --password 'testpass123'
@@ -138,6 +166,14 @@ jobs:
           sudo rm /mnt/smbtest/linux-renamed.txt
           sudo rmdir /mnt/smbtest/linux-dir
           echo "PASS: delete"
+
+          # Reads can be served from the local tier, so only the bucket shows
+          # that S3 is in the data path. The files above are gone before the
+          # syncer's upload delay, so this one stays until a block of it lands.
+          sudo dd if=/dev/urandom of=/mnt/smbtest/s3-check.bin bs=1M count=1 status=none
+          timeout 30 sh -c 'until curl -sf "http://localhost:4566/dittofs-clients?list-type=2" | grep -q "<Key>"; do sleep 1; done' \
+            || { echo "FAIL: no block reached the dittofs-clients bucket in 30s"; exit 1; }
+          echo "PASS: a block reached the S3 bucket"
 
           # Unmount
           sudo umount /mnt/smbtest

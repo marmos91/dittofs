@@ -27,7 +27,7 @@ STACK_OWNED=false
 # shellcheck source=../compose-env.sh
 source "${CONFORMANCE_DIR}/compose-env.sh"
 
-VALID_PROFILES=("memory" "badger" "badger-s3" "memory-kerberos")
+VALID_PROFILES=("memory" "badger" "badger-s3" "badger-s3-kerberos")
 
 # Name given to every one-off smbtorture container so it stays addressable (see
 # run_smbtorture). Scoped to this harness process so a container leaked by an
@@ -68,7 +68,7 @@ wait_until() {
 # --------------------------------------------------------------------------
 # Defaults
 # --------------------------------------------------------------------------
-PROFILE="${PROFILE:-memory}"
+PROFILE="${PROFILE:-}"  # empty: none chosen, memory unless --kerberos forces its own
 FILTER=""
 KEEP=false
 DRY_RUN=false
@@ -103,10 +103,10 @@ Options:
   --help              Show this help
 
 Profiles:
-  memory           In-memory BadgerDB metadata + memory payload (fastest)
-  badger           On-disk BadgerDB metadata + memory payload
-  badger-s3        On-disk BadgerDB metadata + S3 payload (Localstack)
-  memory-kerberos  Memory profile with Kerberos auth enabled (auto-selected by --kerberos)
+  memory              In-memory BadgerDB metadata + memory payload (fastest)
+  badger              On-disk BadgerDB metadata + memory payload
+  badger-s3           On-disk BadgerDB metadata + S3 payload (Localstack)
+  badger-s3-kerberos  badger-s3 with Kerberos auth enabled (auto-selected by --kerberos)
 
 Examples:
   $(basename "$0")                              # Full smb2 suite with memory
@@ -162,22 +162,23 @@ done
 
 # SMBTORTURE_AUTH=kerberos is treated as equivalent to --kerberos so that
 # callers driving the runner via env vars get the full Kerberos setup (KDC
-# service, memory-kerberos profile, bootstrap identity mapping), not just
+# service, badger-s3-kerberos profile, bootstrap identity mapping), not just
 # the smbtorture argument switch.
 if [[ "${SMBTORTURE_AUTH:-}" == "kerberos" ]]; then
     KERBEROS=true
 fi
 
 # When --kerberos is set, force the Kerberos-enabled config profile.
-# memory-kerberos wires up the keytab path and service principal that the
-# self-contained kdc container provisions at startup. Any other profile is
-# silently overridden (with a warning for non-memory variants).
-if $KERBEROS && [[ "$PROFILE" != "memory-kerberos" ]]; then
-    if [[ "$PROFILE" != "memory" ]]; then
-        log_warn "Profile ${PROFILE} does not include Kerberos config; forcing memory-kerberos"
+# badger-s3-kerberos wires up the keytab path and service principal that the
+# self-contained kdc container provisions at startup. A chosen profile is
+# overridden, with a warning unless it is badger-s3, whose stores it keeps.
+if $KERBEROS && [[ "$PROFILE" != "badger-s3-kerberos" ]]; then
+    if [[ -n "$PROFILE" && "$PROFILE" != "badger-s3" ]]; then
+        log_warn "Profile ${PROFILE} does not include Kerberos config; forcing badger-s3-kerberos"
     fi
-    PROFILE="memory-kerberos"
+    PROFILE="badger-s3-kerberos"
 fi
+PROFILE="${PROFILE:-memory}"
 
 # --------------------------------------------------------------------------
 # Validate inputs
@@ -335,9 +336,9 @@ fi
 
 # An -s3 profile stores its blocks in the "s3" compose profile's Localstack.
 # The S3 block store never creates its bucket, so it must exist before
-# DittoFS's first PUT.
-if [[ "$PROFILE" == *-s3 ]]; then
-    export COMPOSE_PROFILES="s3"
+# DittoFS's first PUT. Kerberos's compose profile, when set, stays active.
+if [[ "$PROFILE" == *-s3 || "$PROFILE" == *-s3-kerberos ]]; then
+    export COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}s3"
 
     log_step "Starting Localstack..."
     docker compose up -d localstack

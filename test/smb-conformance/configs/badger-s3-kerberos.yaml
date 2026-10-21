@@ -1,11 +1,12 @@
 # DittoFS Configuration for SMB Conformance Testing with Kerberos
-# Profile: memory/memory + Kerberos auth
+# Profile: badger/s3 + Kerberos auth
 #
-# Same as memory.yaml but adds a Kerberos section pointing at the keytab
+# Same as badger-s3.yaml but adds a Kerberos section pointing at the keytab
 # exported by the self-contained KDC container (see docker-compose "kerberos"
 # profile and test/smb-conformance/kdc/).
+# Requires the localstack Compose profile to be active.
 #
-# NOTE: keep the non-kerberos sections below in sync with memory.yaml.
+# NOTE: keep the non-kerberos sections below in sync with badger-s3.yaml.
 
 logging:
   level: "DEBUG"
