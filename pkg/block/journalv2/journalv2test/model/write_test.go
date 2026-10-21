@@ -85,3 +85,15 @@ func TestAFileIsItsSharesWhileItHoldsAnything(t *testing.T) {
 	// Refusing a file no other share holds is wrong.
 	refused(t, m.WriteAt(shareA, fid(2), 0, fill('A', 4), 0, journalv2.Version{}, journalv2.ErrOtherShare))
 }
+
+// Once a file holds nothing, another share's call on it may claim it: the
+// journal keeps the tag only while a record of the file is on disk, which the
+// caller cannot see.
+func TestAnEmptiedFileMayBeClaimedByAnotherShare(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.Deallocate(shareA, fid(1), ext(0, 4), ver(2), nil))
+	m.Settle(shareA, fid(1), ver(2))
+	ok(t, m.WriteAt(shareB, fid(1), 0, fill('B', 4), 0, ver(3), nil))
+	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 4, 3, false}})
+}

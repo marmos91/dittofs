@@ -244,14 +244,14 @@ func (d *driver) crash() {
 	d.must(d.m.Crash())
 	d.must(journal.Crash())
 	floor := d.issue()
-	d.m.Reopen(floor)
-	journal.Reopen(floor)
+	d.must(d.m.Reopen(floor))
+	d.must(journal.Reopen(floor))
 
 	rng := rand.New(rand.NewPCG(uint64(d.next()), uint64(d.next())))
 	for _, f := range journal.files {
 		if f.unresolved {
 			items := f.items()
-			candidate{items, rng.Uint32() & (1<<len(items) - 1)}.adopt(f)
+			candidate{items: items, mask: rng.Uint32() & (1<<len(items) - 1)}.adopt(f)
 		}
 	}
 	for _, tag := range []journalv2.ShareTag{shareA, shareB} {

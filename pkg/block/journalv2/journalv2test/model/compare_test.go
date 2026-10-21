@@ -4,6 +4,7 @@ import (
 	"iter"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 )
@@ -42,6 +43,14 @@ type planted struct {
 	since   func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error]
 	index   func(id journalv2.FileID) ([]journalv2.IndexEntry, error)
 	files   func() iter.Seq[journalv2.FileID]
+	dirty   func() iter.Seq2[journalv2.FileID, time.Time]
+}
+
+func (p planted) DirtyFiles() iter.Seq2[journalv2.FileID, time.Time] {
+	if p.dirty != nil {
+		return p.dirty()
+	}
+	return p.modelView.DirtyFiles()
 }
 
 func (p planted) ReadAt(id journalv2.FileID, off int64, b []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
@@ -171,6 +180,65 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 				return changes(cs)
 			}}
 		}},
+		{"Extents omits a held byte", func(h modelView) View {
+			return planted{modelView: h, extents: func(id journalv2.FileID) ([]journalv2.Extent, error) {
+				es, err := h.Extents(id)
+				if len(es) > 0 {
+					es[0].Off++
+					es[0].Len--
+				}
+				return es, err
+			}}
+		}},
+		{"Since names a byte not held", func(h modelView) View {
+			return planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+				cs := []journalv2.Change{{Kind: journalv2.ChangeWrite, Extent: ext(1000, 1), Version: ver(1)}}
+				for c := range h.Since(id, from) {
+					cs = append(cs, c)
+				}
+				return changes(cs)
+			}}
+		}},
+		{"the index holds a byte not held", func(h modelView) View {
+			return planted{modelView: h, index: func(id journalv2.FileID) ([]journalv2.IndexEntry, error) {
+				es, err := h.Index(id)
+				return append(es, journalv2.IndexEntry{Kind: journalv2.EntryHeld, Extent: ext(1000, 1), Version: ver(1)}), err
+			}}
+		}},
+		{"the index serves a held byte at the wrong version", func(h modelView) View {
+			return planted{modelView: h, index: func(id journalv2.FileID) ([]journalv2.IndexEntry, error) {
+				es, err := h.Index(id)
+				for i := range es {
+					if es[i].Kind == journalv2.EntryHeld {
+						es[i].Version = ver(99)
+					}
+				}
+				return es, err
+			}}
+		}},
+		{"the index omits a marker", func(h modelView) View {
+			return planted{modelView: h, index: func(id journalv2.FileID) ([]journalv2.IndexEntry, error) {
+				es, err := h.Index(id)
+				var held []journalv2.IndexEntry
+				for _, e := range es {
+					if e.Kind == journalv2.EntryHeld {
+						held = append(held, e)
+					}
+				}
+				return held, err
+			}}
+		}},
+		{"DirtyFiles omits a dirty file", func(h modelView) View {
+			return planted{modelView: h, dirty: func() iter.Seq2[journalv2.FileID, time.Time] {
+				return func(func(journalv2.FileID, time.Time) bool) {}
+			}}
+		}},
+		{"asOf above every version issued", func(h modelView) View {
+			return planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
+				n, mi, he, _, err := h.ReadAt(id, off, p)
+				return n, mi, he, ver(1000), err
+			}}
+		}},
 		{"a file the share does not hold", func(h modelView) View {
 			return planted{modelView: h, files: func() iter.Seq[journalv2.FileID] {
 				return func(yield func(journalv2.FileID) bool) {
@@ -194,8 +262,8 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 }
 
 // A marker of a truncate or a delete runs to the end of the file, however the
-// journal writes that length: Len 0 and the length to the largest offset both
-// read as the end.
+// journal writes that length: Len 0, the length to the largest offset and any
+// longer one all read as the end.
 func TestCompareReadsAToEndMarkerEitherWay(t *testing.T) {
 	m, j := New(), New()
 	script(t, m, j)
@@ -205,7 +273,7 @@ func TestCompareReadsAToEndMarkerEitherWay(t *testing.T) {
 			var cs []journalv2.Change
 			for c := range view.Since(id, from) {
 				if c.Kind == journalv2.ChangeTruncate {
-					c.Extent.Len = 0
+					c.Extent.Len = math.MaxInt64
 				}
 				cs = append(cs, c)
 			}

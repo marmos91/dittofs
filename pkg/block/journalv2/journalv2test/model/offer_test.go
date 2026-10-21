@@ -184,16 +184,16 @@ func TestNeighboursAreOffloadedAndWithinWiden(t *testing.T) {
 	refused(t, m.Offer(shareA, fid(1), ver(2), 0, 8, withNeighbour(m, journalv2.Held{Extent: ext(10, 8), Version: ver(1)})))
 }
 
-// A reported extent that was not offered is rejected with ErrNotOffered and
-// marks nothing; a partial report marks exactly what it names; once the offer
+// A reported extent nothing of which was offered is rejected with
+// ErrNotOffered and marks nothing; a partial report marks exactly what it names; once the offer
 // is over, report fails with ErrOfferEnded.
 func TestReportMarksExactlyWhatWasOfferedAndReported(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 40), 0, ver(1), nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 20, 0, offerOf(m, fid(1), 1, 1, dirty(0, 20, 1))))
 
-	refused(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(15, 10)}, nil))
-	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(15, 10)}, journalv2.ErrNotOffered))
+	refused(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(25, 5)}, nil))
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(25, 5)}, journalv2.ErrNotOffered))
 	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
 	m.EndOffer(shareA, fid(1))
 	refused(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(10, 10)}, nil))
@@ -265,4 +265,91 @@ func TestRebuildByPrecedence(t *testing.T) {
 		{4 * k, 8 * k, 8, false},
 		{20 * k, 4 * k, 9, false},
 	})
+}
+
+// An offer captures its records synced: they are made durable before the
+// callback is called, so a crash after it cannot lose them.
+func TestAnOfferSyncsWhatItCaptures(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
+	m.EndOffer(shareA, fid(1))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	refused(t, m.Compare(shareA, modelView{New(), shareA}))
+}
+
+// Offloaded content is not dirty and is never offered as such.
+func TestAnOfferNeverOffersOffloadedContentAsDirty(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
+	m.EndOffer(shareA, fid(1))
+	ok(t, m.WriteAt(shareA, fid(1), 20, fill('B', 10), 0, ver(2), nil))
+	refused(t, m.Offer(shareA, fid(1), ver(2), 0, 0, offerOf(m, fid(1), 1, 2, dirty(0, 10, 1), dirty(20, 10, 2))))
+}
+
+// A dirty extent is never a neighbour, and a neighbour after the dirty
+// extents lies within widen of them too.
+func TestNeighboursAreNeitherDirtyNorPastWidenOnEitherSide(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 10, fill('A', 20), 0, ver(1), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(10, 20, 1))))
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(10, 20)}, nil))
+	m.EndOffer(shareA, fid(1))
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 10), 0, ver(2), nil))
+	ok(t, m.WriteAt(shareA, fid(1), 30, fill('C', 5), 0, ver(3), nil))
+
+	withNeighbour := func(n journalv2.Held, newest uint64) journalv2.Offer {
+		o := offerOf(m, fid(1), 1, newest, dirty(0, 10, 2))
+		o.Neighbours = []journalv2.Held{n}
+		for k, b := range frozen(m, fid(1), journalv2.OfferedExtent{Extent: n.Extent, Version: n.Version}) {
+			o.Offered.(offered)[k] = b
+		}
+		return o
+	}
+	ok(t, m.Offer(shareA, fid(1), ver(2), 0, 8, withNeighbour(journalv2.Held{Extent: ext(10, 8), Version: ver(1)}, 2)))
+	refused(t, m.Offer(shareA, fid(1), ver(2), 0, 8, withNeighbour(journalv2.Held{Extent: ext(10, 20), Version: ver(1)}, 2)))
+	o := withNeighbour(journalv2.Held{Extent: ext(10, 20), Version: ver(1)}, 3)
+	o.Neighbours = append(o.Neighbours, journalv2.Held{Extent: ext(30, 5), Version: ver(3)})
+	for k, b := range frozen(m, fid(1), dirty(30, 5, 3)) {
+		o.Offered.(offered)[k] = b
+	}
+	refused(t, m.Offer(shareA, fid(1), ver(3), 0, 64, o))
+}
+
+// A report naming a neighbour is accepted and changes nothing, since the
+// neighbour is already marked; one only partly offered may be refused with
+// ErrNotOffered or intersected with the offer.
+func TestReportOfNeighboursAndOfPartlyOfferedExtents(t *testing.T) {
+	setup := func(t *testing.T) *Model {
+		m := New()
+		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+		ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
+		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
+		m.EndOffer(shareA, fid(1))
+		ok(t, m.WriteAt(shareA, fid(1), 10, fill('B', 10), 0, ver(2), nil))
+		o := offerOf(m, fid(1), 1, 2, dirty(10, 10, 2))
+		o.Neighbours = []journalv2.Held{{Extent: ext(5, 5), Version: ver(1)}}
+		for k, b := range frozen(m, fid(1), dirty(5, 5, 1)) {
+			o.Offered.(offered)[k] = b
+		}
+		ok(t, m.Offer(shareA, fid(1), ver(2), 0, 5, o))
+		return m
+	}
+
+	m := setup(t)
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(5, 5)}, nil))
+
+	m = setup(t)
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(15, 10)}, journalv2.ErrNotOffered))
+	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 10, 1, true}, {10, 10, 2, false}})
+
+	m = setup(t)
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(15, 10)}, nil))
+	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 10, 1, true}, {10, 5, 2, false}, {15, 5, 2, true}})
+
+	m = setup(t)
+	refused(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(30, 5)}, nil))
 }

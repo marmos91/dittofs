@@ -18,7 +18,8 @@ import (
 // extent or a marker under another share's tag, and allowed but not required
 // once it holds neither: the journal keeps a file's tag while any segment
 // holds a record of it, which the caller cannot see, so a call after the last
-// record went may claim the file afresh or be refused.
+// record went may claim the file afresh or be refused. Require the refusal for
+// longer if the journal ever reports when a file's last record leaves.
 func (m *Model) enter(op string, tag shareTag, id fileID, err error) (f *file, proceed bool, mis error) {
 	if m.crashed {
 		return nil, false, m.mismatch(op, id, "called between Crash and Reopen")

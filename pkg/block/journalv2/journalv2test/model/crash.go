@@ -7,11 +7,13 @@ import (
 
 // maxUncertain bounds the records of one file a crash may leave uncertain.
 //
-// ponytail: Compare finds the state a crash left by trying every subset of a
-// file's uncertain records, O(2^k) derivations. 16 keeps that under a second
-// for test-sized files. Replace the search with inference per record, which
-// the bytes the journal shows mostly decide on their own, when the model-based
-// test needs longer runs of unsynced calls on one file.
+// ponytail: Compare first decides each uncertain write and fill it can from
+// the bytes the journal shows, then tries every subset of the rest: O(2^k)
+// derivations of O(held bytes) each, for the k records the bytes leave
+// undecided, which are releases, marks, settled markers and writes hidden
+// under newer content. With 4 KiB writes, 16 undecided records take minutes.
+// Decide releases and marks from the bits the journal shows too when the
+// model-based test stalls in this search.
 const maxUncertain = 16
 
 // Crash applies a crash of the journal's storage. Each record no returned Sync
@@ -49,10 +51,17 @@ func (m *Model) Crash() error {
 }
 
 // Reopen applies the reopen of the journal after a crash with floor: every
-// version it assigns from now on must exceed floor.
-func (m *Model) Reopen(floor version) {
+// version it assigns from now on must exceed floor. The floor carries the
+// version limit, so the counter restarts above every version issued before the
+// crash; a floor below one is refused, since the journal could then issue it
+// again.
+func (m *Model) Reopen(floor version) error {
+	if floor.Compare(m.maxSeen) < 0 {
+		return fmt.Errorf("model: reopen: floor %v is below version %v, already issued", floor, m.maxSeen)
+	}
 	m.crashed = false
 	m.floor = floor
+	return nil
 }
 
 // items returns what a crash left uncertain in f, in a fixed order: the
@@ -69,13 +78,18 @@ func (f *file) items() []*record {
 }
 
 // candidate is one state a crash allows for a file: which of its uncertain
-// items took effect, a surviving record or a marker that came back.
+// items took effect, a surviving record or a marker that came back. The items
+// in fixed are decided already; the others are taken where mask has their bit.
 type candidate struct {
+	fixed map[*record]bool
 	items []*record
 	mask  uint32
 }
 
 func (c candidate) took(r *record) bool {
+	if took, ok := c.fixed[r]; ok {
+		return took
+	}
 	for i, it := range c.items {
 		if it == r {
 			return c.mask&(1<<i) != 0
@@ -89,6 +103,7 @@ func (c candidate) derive(f *file) *fileState {
 	for _, r := range f.recs {
 		if r.markerOptional && c.took(r) {
 			st.markers = append(st.markers, r)
+			st.change = maxVersion(st.change, r.ver)
 		}
 	}
 	return st
@@ -115,4 +130,65 @@ func (c candidate) adopt(f *file) {
 	}
 	f.recs = kept
 	f.unresolved = false
+}
+
+// outranks reports whether q wins over r where they overlap: the higher
+// version, and between equal versions the later record.
+func outranks(q, r *record) bool {
+	if c := q.ver.Compare(r.ver); c != 0 {
+		return c > 0
+	}
+	return q.seq > r.seq
+}
+
+// decide settles each uncertain write and fill of f that the bytes the journal
+// shows decide on their own, and returns them with whether each survived.
+//
+// A record survived where the journal serves one of its bytes at its version,
+// with no other record of that version there to serve it instead. A record was
+// lost where the journal serves an older version inside it, or reports a byte
+// of it missing that no release or removal outranking it covers: had it
+// survived, it or something outranking it would decide that byte.
+func decide(f *file, o *observation) map[*record]bool {
+	out := map[*record]bool{}
+	for _, r := range f.recs {
+		if !r.uncertain || r.data == nil {
+			continue
+		}
+		survived, lost := false, false
+		for i, b := range r.data {
+			off := r.ext.Off + int64(i)
+			got, held := o.held[off]
+			switch {
+			case held && got.ver == r.ver && got.b == b && !servedByAnother(f, r, off):
+				survived = true
+			case held && got.ver.Compare(r.ver) < 0:
+				lost = true
+			case !held && o.missing[off] && !removedAbove(f, r, off):
+				lost = true
+			}
+		}
+		if survived != lost {
+			out[r] = survived
+		}
+	}
+	return out
+}
+
+func servedByAnother(f *file, r *record, off int64) bool {
+	for _, q := range f.recs {
+		if q != r && q.data != nil && q.ver == r.ver && covers(q.ext, off) {
+			return true
+		}
+	}
+	return false
+}
+
+func removedAbove(f *file, r *record, off int64) bool {
+	for _, q := range f.recs {
+		if (q.kind == kindRelease || q.kind.removal()) && outranks(q, r) && covers(q.ext, off) {
+			return true
+		}
+	}
+	return false
 }

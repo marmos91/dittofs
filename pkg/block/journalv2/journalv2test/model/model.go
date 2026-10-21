@@ -176,7 +176,10 @@ func derive(f *file, keep func(*record) bool) *fileState {
 		case r.kind == kindMark:
 			marks = append(marks, r)
 		}
-		if r.kind.changes() {
+		// A removal whose settled marker may not have come back after a
+		// crash may have had its record dropped by repack, and the journal
+		// rebuilds a file's change version from the records on disk.
+		if r.kind.changes() && !r.markerOptional && !r.markerGone {
 			st.change = maxVersion(st.change, r.ver)
 		}
 		if r.hasMarker() {

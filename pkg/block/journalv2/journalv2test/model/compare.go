@@ -19,6 +19,11 @@ type heldByte struct {
 	ver version
 }
 
+type indexByte struct {
+	ver       version
+	offloaded bool
+}
+
 type sinceByte struct {
 	ver   version
 	mtime int64
@@ -35,15 +40,16 @@ type markerKey struct {
 // normalMarker returns a marker's key with its extent in one form.
 //
 // decision: a marker that runs to the end of the file is compared with
-// Len = MaxInt64 - Off, and a source writing it with Len 0 is read the same
-// way, since the handle's contract does not fix how such a length is written.
+// Len = MaxInt64 - Off, and a source writing it with Len 0, or with any length
+// reaching past the largest offset, is read the same way, since the handle's
+// contract does not fix how such a length is written.
 // A delete always covers the whole file, so its extent is not compared at all.
 // Tighten this once the journal's Since documents one form.
 func normalMarker(kind journalv2.ChangeKind, e extent, v version) markerKey {
 	switch {
 	case kind == journalv2.ChangeDelete:
 		e = extent{Off: 0, Len: toEnd(0)}
-	case e.Len == 0:
+	case e.Len == 0 || e.Len >= toEnd(e.Off):
 		e.Len = toEnd(e.Off)
 	}
 	return markerKey{kind, e, v}
@@ -58,7 +64,7 @@ type observation struct {
 	asOf    version
 	writes  map[int64]sinceByte // bytes Since names as held
 	markers []markerKey         // markers Since yields
-	bits    map[int64]bool      // the index's held bytes and their offloaded bit
+	bits    map[int64]indexByte // the index's held bytes
 	idxMark []markerKey         // the index's markers, with no kind
 }
 
@@ -146,19 +152,29 @@ func (m *Model) compareFile(f *file, v View) error {
 	if err != nil {
 		return m.mismatch(op, f.id, "%v", err)
 	}
+	ceiling := maxVersion(m.maxSeen, m.floor)
 	if !f.unresolved {
-		if d := differ(obs, derive(f, all)); d != "" {
+		if d := differ(obs, derive(f, all), ceiling); d != "" {
 			return m.mismatch(op, f.id, "%s", d)
 		}
 		return nil
 	}
 
-	items := f.items()
+	fixed := decide(f, obs)
+	var items []*record
+	for _, r := range f.items() {
+		if _, ok := fixed[r]; !ok {
+			items = append(items, r)
+		}
+	}
+	if len(items) > maxUncertain {
+		return m.mismatch(op, f.id, "%d uncertain records left undecided, above the %d the model can search", len(items), maxUncertain)
+	}
 	all := uint32(1)<<len(items) - 1
 	first := ""
 	for mask := all; ; mask-- {
-		c := candidate{items, mask}
-		d := differ(obs, c.derive(f))
+		c := candidate{fixed, items, mask}
+		d := differ(obs, c.derive(f), ceiling)
 		if d == "" {
 			c.adopt(f)
 			return nil
@@ -180,7 +196,7 @@ func (m *Model) compareFile(f *file, v View) error {
 func observe(f *file, v View) (*observation, error) {
 	o := &observation{
 		held: map[int64]heldByte{}, missing: map[int64]bool{}, extents: map[int64]bool{},
-		writes: map[int64]sinceByte{}, bits: map[int64]bool{},
+		writes: map[int64]sinceByte{}, bits: map[int64]indexByte{},
 	}
 
 	es, err := v.Extents(f.id)
@@ -290,7 +306,10 @@ func observe(f *file, v View) (*observation, error) {
 				return nil, fmt.Errorf("Index names %+v held", e.Extent)
 			}
 			for off := e.Extent.Off; off < end(e.Extent); off++ {
-				o.bits[off] = e.Offloaded
+				if _, dup := o.bits[off]; dup {
+					return nil, fmt.Errorf("Index holds byte %d twice", off)
+				}
+				o.bits[off] = indexByte{e.Version, e.Offloaded}
 			}
 		case journalv2.EntryMarker:
 			k := normalMarker(0, e.Extent, e.Version)
@@ -317,8 +336,9 @@ func merge(es []extent) []extent {
 }
 
 // differ returns the first way the observation differs from st, or "" when it
-// does not.
-func differ(o *observation, st *fileState) string {
+// does not. ceiling is the highest version issued or the floor, whichever is
+// higher: no answer of the journal names a change above it.
+func differ(o *observation, st *fileState, ceiling version) string {
 	offs := slices.Sorted(maps.Keys(st.held))
 	for _, off := range offs {
 		c := st.held[off]
@@ -343,12 +363,17 @@ func differ(o *observation, st *fileState) string {
 			return fmt.Sprintf("Extents names byte %d, which the model does not hold", off)
 		}
 	}
-	if o.asOf.Compare(st.change) < 0 {
-		// decision: asOf is required at or above the model's change version,
-		// not equal to it. A file with no index entry answers with its floor
-		// bucket, which may be higher, and an asOf too high only refuses a
-		// fill needlessly; one too low lets a stale fill through.
+	// decision: asOf is required between the model's change version and the
+	// highest version issued or the floor, not equal to the change version. A
+	// file with no index entry answers with its floor bucket, which may be
+	// higher, and buckets start at the floor after a reopen. Require equality
+	// once the journal documents that a file with an entry answers with that
+	// entry's version exactly.
+	switch {
+	case o.asOf.Compare(st.change) < 0:
 		return fmt.Sprintf("a read reports the file changed at %v, older than %v", o.asOf, st.change)
+	case o.asOf.Compare(ceiling) > 0:
+		return fmt.Sprintf("a read reports the file changed at %v, above every version issued and the floor (%v)", o.asOf, ceiling)
 	}
 
 	nWrites := 0
@@ -390,12 +415,14 @@ func differ(o *observation, st *fileState) string {
 	}
 
 	for _, off := range offs {
-		bit, ok := o.bits[off]
+		got, ok := o.bits[off]
 		switch {
 		case !ok:
 			return fmt.Sprintf("byte %d is held, but the index has no held entry for it", off)
-		case bit != st.bit[off]:
-			return fmt.Sprintf("byte %d has offloaded bit %t in the index, not %t", off, bit, st.bit[off])
+		case got.ver != st.held[off].rec.ver:
+			return fmt.Sprintf("byte %d is held at %v in the index, not %v", off, got.ver, st.held[off].rec.ver)
+		case got.offloaded != st.bit[off]:
+			return fmt.Sprintf("byte %d has offloaded bit %t in the index, not %t", off, got.offloaded, st.bit[off])
 		}
 	}
 	if len(o.bits) != len(st.held) {

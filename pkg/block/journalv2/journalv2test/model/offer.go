@@ -111,6 +111,10 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	if limit > 0 && total > limit {
 		return m.mismatch(op, id, "offered %d bytes, above the limit of %d", total, limit)
 	}
+	// The first extent always fits, so an offer is empty only once no dirty
+	// content outside segments under repack remains. The model is driven one
+	// call at a time, so no repack pass runs during an offer, and it models
+	// Offload, not OffloadMany, whose later files may get nothing.
 	if len(o.Dirty) == 0 {
 		for off, c := range cur.held {
 			if c.rec.ver.Compare(through) <= 0 && !cur.bit[off] {
@@ -142,6 +146,19 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 			if _, err := o.Offered.ReadAt(make([]byte, 1), probe); err == nil {
 				return m.mismatch(op, id, "Offered read byte %d, outside the offer", probe)
 			}
+		}
+	}
+
+	// An offer syncs the records it captures before calling the callback, so
+	// a crash from now on cannot lose them.
+	for _, d := range o.Dirty {
+		for off := d.Extent.Off; off < end(d.Extent); off++ {
+			below.held[off].rec.durable = true
+		}
+	}
+	for _, n := range o.Neighbours {
+		for off := n.Extent.Off; off < end(n.Extent); off++ {
+			cur.held[off].rec.durable = true
 		}
 	}
 
@@ -258,11 +275,17 @@ func readsAs(r io.ReaderAt, e extent, st *fileState) string {
 // Report applies a call of report during the offer of file id through share
 // tag, naming reported, to which report returned err.
 //
-// A report naming any byte that was not offered must fail with ErrNotOffered
-// and mark nothing. Once EndOffer was called, report must fail with
-// ErrOfferEnded. Otherwise it marks each offered extent where reported, at the
-// extent's version, so content newer than the offer stays dirty and content
-// removed meanwhile is not marked.
+// A report naming an extent nothing of which was offered must fail with
+// ErrNotOffered and mark nothing. Once EndOffer was called, report must fail
+// with ErrOfferEnded. Otherwise it marks each offered extent where reported, at
+// the extent's version, so content newer than the offer stays dirty and
+// content removed meanwhile is not marked.
+//
+// decision: a reported extent only partly offered may be refused with
+// ErrNotOffered, marking nothing, or accepted and intersected with the offer.
+// The journal may intersect a report with what it offered, and must reject an
+// extent that was not offered; an extent that was partly offered is both.
+// Require one outcome once the journal's report documents which.
 func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) error {
 	const op = "report"
 	o := m.offers[id]
@@ -283,15 +306,23 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	for _, n := range o.neighbours {
 		offeredExtents = append(offeredExtents, n.Extent)
 	}
+	partly := false
 	for _, r := range reported {
-		if r.Len > 0 && !coveredBy(r, offeredExtents) {
+		if r.Len <= 0 || coveredBy(r, offeredExtents) {
+			continue
+		}
+		if !slices.ContainsFunc(offeredExtents, func(e extent) bool { _, ok := intersect(e, r); return ok }) {
 			if !errors.Is(err, journalv2.ErrNotOffered) {
 				return m.mismatch(op, id, "report of %+v, not offered, returned %v, not ErrNotOffered", r, err)
 			}
 			return nil
 		}
+		partly = true
 	}
-	if err != nil {
+	switch {
+	case partly && errors.Is(err, journalv2.ErrNotOffered):
+		return nil
+	case err != nil:
 		return unexpected(m, op, id, err)
 	}
 
