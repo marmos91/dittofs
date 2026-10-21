@@ -406,11 +406,13 @@ that append a record, read a segment, sync, or wait on another operation: `Init`
 `WriteAt`, `Sync`, `ReadAt`, `Fill`, `Offload` and `OffloadMany` (whose callback
 receives the context too), `MarkOffloaded`, `Unmark`, `Release`, the removals of
 [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`. A call that only reads or changes
-memory and never waits takes none: `Close`, `Share`, `Strand`, `SetSyncPolicy`,
+memory and never waits takes none: `Share`, `Strand`, `SetSyncPolicy`,
 `Reserve`, `Draw`, `SetVersionLimit`, `Settle`, `Held`, `Extents`, `Files`,
-`DirtyFiles` and `Stats`.
+`DirtyFiles` and `Stats`. `Close` takes none either, like the syncer's, the
+remote tier's, the engine's and GC's: it waits only for calls already in flight,
+each under its own context.
 
-The context carries the caller's deadline and its trace. The journal honours its
+The context carries the caller's deadline. The journal honours its
 cancellation only where that leaves no outcome unknown:
 
 - a call checks the context before it changes any state, and if it is done
@@ -425,19 +427,15 @@ cancellation only where that leaves no outcome unknown:
 - a refusal ([§6](#6.%20Capacity)) is returned at once as itself, and a done context never
   replaces it.
 
-> decision: the journal takes a context although it never waits on anything a
-> deadline could end ([§6](#6.%20Capacity), [§8.1](#8.1%20What%20must%20not%20block%20what)); the deadline
-> stays the engine's. Three things need it all the same. The set's rule is that a
-> call doing I/O takes a context and only a pure one takes none
-> ([RFC 16 §2.4](rfc-16-metadata-store.md#2.4%20Methods%20on%20entities)); the
-> syncer, the remote tier and block metadata follow it, and a journal without one
-> would be the set's only I/O API that does not. `Replicated`, which the engine calls in place of the
+> decision: the journal takes a context although it never waits for capacity,
+> only on its own appends and syncs ([§6](#6.%20Capacity), [§8.1](#8.1%20What%20must%20not%20block%20what)); the deadline
+> stays the engine's. `Replicated`, which the engine calls in place of the
 > journal on a replicated shard ([RFC 10 §12](rfc-10-journal-replication.md#12.%20API%20surface)),
-> takes a context on the same operations, so one engine call serves both. And a
-> span's parent travels in the context: without it every span the journal opens
-> is a root that duplicates the engine's span for the same stage, and no journal
-> log line can carry its request's trace ID ([RFC 25](rfc-index.md) §5.3, §6.1).
-> Overturned for a call shown to do no I/O and never wait, which then takes none.
+> takes a context on these same calls, so with one here the engine has one call
+> path for both; context-taking variants beside context-free calls would give it
+> two. The set's other I/O interfaces, the syncer's, the remote tier's and block
+> metadata's, take one too. Overturned for a call shown to do no I/O and never
+> wait, which then takes none.
 
 **A tag names one share, once.** The metadata store mints a share's tag from an
 installation-wide counter that is never lowered, whenever a share arrives in the
