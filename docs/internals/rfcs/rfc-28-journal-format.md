@@ -1244,7 +1244,7 @@ No flip may produce a read that returns bytes other than the ones written.
 
 **Crashes.** Through the storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), never by killing the process:
 
-- *lost writes*: every write since the last sync is dropped, at every sync point of every operation that syncs: `WriteAt`, seal, footer, repack copy, repack unlink, and each directory sync — so a created segment's entry and an unlink are each lost when their directory sync was not reached;
+- *lost writes*: every write since the last sync is dropped, at every sync point of every operation that syncs: `WriteAt`, seal, footer, repack copy, repack unlink, each directory sync, and those of `Open` itself: the sync of an unproven tail, the truncation of a torn tail and the seal after it, a re-append, and the zeroing of a re-adopted spare's slots — so a created segment's entry and an unlink are each lost when their directory sync was not reached;
 - *torn writes*: the last unsynced write survives only in part, cut at every byte of the final record and of the trailer;
 - *reordered writes*: any subset of the unsynced writes survives, so a later write can survive without an earlier one. The seam cannot tell which orders a filesystem allows, so it allows them all.
 
