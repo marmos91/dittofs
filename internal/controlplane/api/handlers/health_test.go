@@ -241,10 +241,11 @@ func TestReadiness_NoShares_ReturnsOK(t *testing.T) {
 
 func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 	ctx := context.Background()
+	// Opened before the runtime so cleanup removes the share before this store closes.
+	metaStore := badgertest.NewInMemory(t)
 	reg, bsID := newReadinessRuntime(t)
 
 	// Register metadata store
-	metaStore := badgertest.NewInMemory(t)
 	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
@@ -294,10 +295,11 @@ func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 
 func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
 	ctx := context.Background()
+	// Opened before the runtime so cleanup removes the share before this store closes.
+	metaStore := badgertest.NewInMemory(t)
 	reg, bsID := newReadinessRuntime(t)
 
 	// Register metadata store
-	metaStore := badgertest.NewInMemory(t)
 	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
