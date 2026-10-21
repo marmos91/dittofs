@@ -181,8 +181,9 @@ const (
 // the journal serves an older version there, or reports it missing with no
 // release or removal outranking the record over it: had it survived, it or
 // something outranking it would decide that byte. A byte only durable content
-// outranks is settled as lost, since either way it can never be seen. None of
-// these answers changes which states match; they only shrink the search.
+// outranks can never be seen again: it is settled by the one thing that shows
+// whether it is there, the change version a read reports. None of these
+// answers changes which states match; they only shrink the search.
 //
 // decision: an uncertain write or fill may survive in part, any of its bytes
 // kept and the others lost. The journal stores a write that crosses a segment
@@ -235,8 +236,14 @@ func classify(f *file, r *record, o *observation, i int) evidence {
 	case (held && got.ver.Compare(r.ver) > 0 || !held && o.missing[off]) && !uncertainAbove(f, r, off):
 		// Only durable content outranks the byte, so it is hidden now and
 		// stays hidden: no later call brings back a byte below one that
-		// outranks it without removing it too. Lost and kept look the same
-		// forever, and lost is the smaller state.
+		// outranks it without removing it too. A hidden fill shows nowhere,
+		// so lost is exact. A hidden write still counts in the file's change
+		// version: kept, it holds asOf at or above its version, so an asOf
+		// below it means the write was lost, and one at or above it is what
+		// keeping it shows.
+		if r.kind == kindWrite && o.asOf.Compare(r.ver) >= 0 {
+			return kept
+		}
 		return lost
 	}
 	return hidden

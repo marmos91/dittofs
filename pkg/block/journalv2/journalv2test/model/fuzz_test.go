@@ -104,9 +104,11 @@ func (d *driver) step() {
 		}
 		v := d.issue()
 		d.give(id, v, off, p)
+		d.t.Logf("write %x share %d [%d,+%d) %v", id.Bytes()[15], tag, off, n, v)
 		d.must(d.m.WriteAt(tag, id, off, p, int64(d.next()), v, nil))
 
 	case 1: // sync
+		d.t.Logf("sync %x", id.Bytes()[15])
 		d.m.Sync(tag, id)
 
 	case 2: // fill
@@ -125,6 +127,7 @@ func (d *driver) step() {
 		if err == nil {
 			d.give(id, v, off, p)
 		}
+		d.t.Logf("fill %x [%d,+%d) asOf %v v %v -> %v", id.Bytes()[15], off, n, asOf, v, err)
 		d.must(d.m.Fill(tag, id, off, p, asOf, v, err))
 
 	case 3: // offload: offer every dirty run, report some of it
@@ -166,6 +169,7 @@ func (d *driver) step() {
 				reported = append(reported, p.Extent)
 			}
 		}
+		d.t.Logf("offload %x dirty %+v reported %+v", id.Bytes()[15], o.Dirty, reported)
 		d.must(d.m.Report(tag, id, reported, nil))
 		d.m.EndOffer(tag, id)
 
@@ -182,6 +186,7 @@ func (d *driver) step() {
 				}
 			}
 		}
+		d.t.Logf("release %x %+v -> %v", id.Bytes()[15], e, err)
 		d.must(d.m.Release(tag, id, []journalv2.Extent{e}, err))
 
 	case 5: // truncate
@@ -190,6 +195,7 @@ func (d *driver) step() {
 			d.must(d.m.Truncate(tag, id, size, journalv2.Version{}, err))
 			return
 		}
+		d.t.Logf("truncate %x %d %v", id.Bytes()[15], size, d.issue())
 		d.must(d.m.Truncate(tag, id, size, d.issue(), nil))
 
 	case 6: // deallocate
@@ -203,6 +209,7 @@ func (d *driver) step() {
 			d.must(d.m.Deallocate(tag, id, e, journalv2.Version{}, err))
 			return
 		}
+		d.t.Logf("deallocate %x %+v %v", id.Bytes()[15], e, d.issue())
 		d.must(d.m.Deallocate(tag, id, e, d.issue(), nil))
 
 	case 7: // delete
@@ -210,10 +217,13 @@ func (d *driver) step() {
 			d.must(d.m.Delete(tag, id, journalv2.Version{}, err))
 			return
 		}
+		d.t.Logf("delete %x %v", id.Bytes()[15], d.issue())
 		d.must(d.m.Delete(tag, id, d.issue(), nil))
 
 	case 8: // settle
-		d.m.Settle(tag, id, journalv2.Version{Counter: uint64(d.next()) % (d.m.maxSeen.Counter + 1)})
+		v := journalv2.Version{Counter: uint64(d.next()) % (d.m.maxSeen.Counter + 1)}
+		d.t.Logf("settle %x %v", id.Bytes()[15], v)
+		d.m.Settle(tag, id, v)
 
 	case 9: // crash, reopen, and a journal that kept a random allowed state
 		d.crash()
@@ -247,6 +257,7 @@ func (d *driver) crash() {
 	d.must(d.m.Reopen(floor))
 	d.must(journal.Reopen(floor))
 
+	d.t.Logf("crash, reopen at %v", floor)
 	rng := rand.New(rand.NewPCG(uint64(d.next()), uint64(d.next())))
 	for _, f := range journal.files {
 		if f.unresolved {

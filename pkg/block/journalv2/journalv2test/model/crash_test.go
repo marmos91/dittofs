@@ -312,3 +312,37 @@ func TestAMarkerThatDidNotComeBackNeverDoes(t *testing.T) {
 	ok(t, back.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
 	refused(t, m.Compare(shareA, modelView{back, shareA}))
 }
+
+// A lost write hidden under a removal whose marker did not come back shows in
+// one place only: the change version a read reports. Kept, it holds that
+// version at or above its own; lost, the file reports an older one.
+func TestAHiddenWriteIsToldByTheChangeVersion(t *testing.T) {
+	setup := func(t *testing.T) *Model {
+		m := New()
+		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+		ok(t, m.Deallocate(shareA, fid(1), ext(0, 4), ver(2), nil))
+		m.Settle(shareA, fid(1), ver(2))
+		ok(t, m.Crash())
+		ok(t, m.Reopen(ver(10)))
+		return m
+	}
+	journal := func(writeKept bool) *Model {
+		j := setup(t)
+		f := j.files[fid(1)]
+		items := f.items() // the write, then the settled marker
+		mask := uint32(0)
+		if writeKept {
+			mask = 1
+		}
+		candidate{items: items, mask: mask}.adopt(f)
+		return j
+	}
+
+	for _, kept := range []bool{true, false} {
+		m, j := setup(t), journal(kept)
+		ok(t, m.Compare(shareA, modelView{j, shareA}))
+		if got, want := m.current(fid(1)).change, j.current(fid(1)).change; got != want {
+			t.Fatalf("write kept %t: model change version %v, journal %v", kept, got, want)
+		}
+	}
+}
