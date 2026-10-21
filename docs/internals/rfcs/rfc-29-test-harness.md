@@ -572,7 +572,7 @@ suites:
       DryRun: "false"
       SutComputerName: "{server}"
       SutIPAddress: "{server}"
-      DomainName: "{server}"
+      DomainName: localhost             # without a dot, WPTS stays in workgroup mode: the fixture has no domain controller
       AdminUserName: "{user}"
       PasswordForAllUsers: "{password}"
     matrix: { profile: [badger-s3] }
