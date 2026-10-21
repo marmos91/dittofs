@@ -159,7 +159,6 @@ func (m *Model) compareFile(f *file, v View) error {
 		}
 		return nil
 	}
-
 	fixed := decide(f, obs)
 	var items []*record
 	for _, r := range f.items() {
@@ -186,7 +185,7 @@ func (m *Model) compareFile(f *file, v View) error {
 			break
 		}
 	}
-	return m.mismatch(op, f.id, "no state the crash allows matches; with every uncertain record kept: %s", first)
+	return m.mismatch(op, f.id, "no state the crash allows matches; with every undecided record kept: %s", first)
 }
 
 // observe reads file f through v. It reads the journal around every extent any

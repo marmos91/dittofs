@@ -17,37 +17,56 @@ import (
 const maxUncertain = 16
 
 // Crash applies a crash of the journal's storage. Each record no returned Sync
-// covered may or may not have survived, whole: a write, a fill, a release or
-// an offloaded mark. A removal is durable on return and survives. A marker
-// settled before the crash may come back, because settling is not persisted,
-// or may not, because repack may have dropped its record.
+// covered may or may not have survived: a release or an offloaded mark whole,
+// and a write or a fill piece by piece (see decide). A removal is durable on
+// return and survives. A marker settled before the crash may come back,
+// because settling is not persisted, or may not, because repack may have
+// dropped its record.
 //
 // Every running offer ends. Until Reopen the model takes no call, and until
 // Compare finds which of the allowed states the journal shows, it takes no
-// call on a file the crash left uncertain. Crash returns an error when one
-// file has more uncertain records than the model can search.
+// call on a file the crash left uncertain. Crash changes nothing and returns
+// an error when one file has more uncertain records than the bytes the journal
+// shows can decide and the model can search: releases, marks and settled
+// markers.
 func (m *Model) Crash() error {
-	m.crashed = true
-	m.offers = nil
 	var errs []error
 	for _, f := range m.files {
 		n := 0
 		for _, r := range f.recs {
-			if !r.durable {
-				r.uncertain = true
-				n++
-			}
-			if r.kind.removal() && r.settled && !r.markerGone {
-				r.markerOptional = true
+			if !r.durable && r.data == nil || crashMayDropMarker(r) {
 				n++
 			}
 		}
-		f.unresolved = f.unresolved || n > 0
 		if n > maxUncertain {
-			errs = append(errs, fmt.Errorf("model: crash: file %x has %d uncertain records, above the %d the model can search; sync it more often", f.id.Bytes(), n, maxUncertain))
+			errs = append(errs, fmt.Errorf("model: crash: file %x has %d uncertain records the journal's bytes cannot decide, above the %d the model can search; sync it more often", f.id.Bytes(), n, maxUncertain))
 		}
 	}
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
+	m.crashed = true
+	m.offers = nil
+	for _, f := range m.files {
+		for _, r := range f.recs {
+			if !r.durable {
+				r.uncertain = true
+				f.unresolved = true
+			}
+			if crashMayDropMarker(r) {
+				r.markerOptional = true
+				f.unresolved = true
+			}
+		}
+	}
+	return nil
+}
+
+// crashMayDropMarker reports whether a crash may leave r's marker absent: it
+// was settled, and has not already failed to come back after an earlier crash.
+func crashMayDropMarker(r *record) bool {
+	return r.kind.removal() && r.settled && !r.markerGone
 }
 
 // Reopen applies the reopen of the journal after a crash with floor: every
@@ -56,8 +75,8 @@ func (m *Model) Crash() error {
 // crash; a floor below one is refused, since the journal could then issue it
 // again.
 func (m *Model) Reopen(floor version) error {
-	if floor.Compare(m.maxSeen) < 0 {
-		return fmt.Errorf("model: reopen: floor %v is below version %v, already issued", floor, m.maxSeen)
+	if floor.Compare(m.issued) < 0 {
+		return fmt.Errorf("model: reopen: floor %v is below version %v, already issued", floor, m.issued)
 	}
 	m.crashed = false
 	m.floor = floor
@@ -141,38 +160,107 @@ func outranks(q, r *record) bool {
 	return q.seq > r.seq
 }
 
-// decide settles each uncertain write and fill of f that the bytes the journal
-// shows decide on their own, and returns them with whether each survived.
+// evidence is what the journal's bytes say of one byte of an uncertain write
+// or fill: that it survived, that it was lost, or nothing, where content that
+// outranks it hides it either way.
+type evidence uint8
+
+const (
+	hidden evidence = iota
+	kept
+	lost
+)
+
+// decide splits each uncertain write and fill of f into pieces where what the
+// journal shows of it changes, settles each piece the bytes decide, and
+// returns the settled pieces with whether each survived. The pieces left out
+// are hidden: whichever way they went, the bytes look the same.
 //
-// A record survived where the journal serves one of its bytes at its version,
-// with no other record of that version there to serve it instead. A record was
-// lost where the journal serves an older version inside it, or reports a byte
-// of it missing that no release or removal outranking it covers: had it
-// survived, it or something outranking it would decide that byte.
+// A byte survived where the journal serves it at the record's version, with no
+// other record of that version there to serve it instead. It was lost where
+// the journal serves an older version there, or reports it missing with no
+// release or removal outranking the record over it: had it survived, it or
+// something outranking it would decide that byte. A byte only durable content
+// outranks is settled as lost, since either way it can never be seen. None of
+// these answers changes which states match; they only shrink the search.
+//
+// decision: an uncertain write or fill may survive in part, any of its bytes
+// kept and the others lost. The journal stores a write that crosses a segment
+// cap as one record per segment, each surviving whole or not at all, so the
+// write can come back partly held. The model cannot see where the pieces
+// split, so it accepts any split; checking that each piece is whole needs the
+// segment boundaries, which only a test placing the write knows. Hold the
+// model to whole pieces if the journal ever reports where a write was split.
 func decide(f *file, o *observation) map[*record]bool {
 	out := map[*record]bool{}
+	var recs []*record
 	for _, r := range f.recs {
 		if !r.uncertain || r.data == nil {
+			recs = append(recs, r)
 			continue
 		}
-		survived, lost := false, false
-		for i, b := range r.data {
-			off := r.ext.Off + int64(i)
-			got, held := o.held[off]
-			switch {
-			case held && got.ver == r.ver && got.b == b && !servedByAnother(f, r, off):
-				survived = true
-			case held && got.ver.Compare(r.ver) < 0:
-				lost = true
-			case !held && o.missing[off] && !removedAbove(f, r, off):
-				lost = true
+		start, ev := 0, classify(f, r, o, 0)
+		for i := 1; i <= len(r.data); i++ {
+			var next evidence
+			if i < len(r.data) {
+				next = classify(f, r, o, i)
+				if next == ev {
+					continue
+				}
 			}
-		}
-		if survived != lost {
-			out[r] = survived
+			p := r.piece(start, i)
+			recs = append(recs, p)
+			if ev != hidden {
+				out[p] = ev == kept
+			}
+			start, ev = i, next
 		}
 	}
+	f.recs = recs
 	return out
+}
+
+// classify returns what the journal shows of byte i of r. It reads the file's
+// records as they were before decide split any of them.
+func classify(f *file, r *record, o *observation, i int) evidence {
+	off := r.ext.Off + int64(i)
+	got, held := o.held[off]
+	switch {
+	case held && got.ver == r.ver && got.b == r.data[i] && !servedByAnother(f, r, off):
+		return kept
+	case held && got.ver.Compare(r.ver) < 0:
+		return lost
+	case !held && o.missing[off] && !removedAbove(f, r, off):
+		return lost
+	case (held && got.ver.Compare(r.ver) > 0 || !held && o.missing[off]) && !uncertainAbove(f, r, off):
+		// Only durable content outranks the byte, so it is hidden now and
+		// stays hidden: no later call brings back a byte below one that
+		// outranks it without removing it too. Lost and kept look the same
+		// forever, and lost is the smaller state.
+		return lost
+	}
+	return hidden
+}
+
+// uncertainAbove reports whether a write, fill or release the crash may have
+// lost outranks r at off.
+func uncertainAbove(f *file, r *record, off int64) bool {
+	for _, q := range f.recs {
+		if q != r && q.uncertain && (q.data != nil || q.kind == kindRelease) && outranks(q, r) && covers(q.ext, off) {
+			return true
+		}
+	}
+	return false
+}
+
+// piece returns the part of r from byte i to byte j as a record of its own,
+// with r's version and sequence number: deciding bytes by precedence, the
+// pieces of r decide exactly what r did.
+func (r *record) piece(i, j int) *record {
+	p := *r
+	p.ext = extent{Off: r.ext.Off + int64(i), Len: int64(j - i)}
+	p.data = r.data[i:j:j]
+	return &p
 }
 
 func servedByAnother(f *file, r *record, off int64) bool {

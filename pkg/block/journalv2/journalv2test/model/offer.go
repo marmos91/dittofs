@@ -150,10 +150,20 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	}
 
 	// An offer syncs the records it captures before calling the callback, so
-	// a crash from now on cannot lose them.
+	// a crash from now on cannot lose them: its dirty extents, its neighbours,
+	// and the superseded versions it carries.
 	for _, d := range o.Dirty {
 		for off := d.Extent.Off; off < end(d.Extent); off++ {
 			below.held[off].rec.durable = true
+		}
+	}
+	for _, s := range o.Superseded {
+		for _, r := range f.recs {
+			if r.data != nil && r.ver == s.Version {
+				if _, ok := intersect(r.ext, s.Extent); ok {
+					r.durable = true
+				}
+			}
 		}
 	}
 	for _, n := range o.Neighbours {
@@ -306,9 +316,13 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	for _, n := range o.neighbours {
 		offeredExtents = append(offeredExtents, n.Extent)
 	}
-	partly := false
+	partly, empty := false, false
 	for _, r := range reported {
-		if r.Len <= 0 || coveredBy(r, offeredExtents) {
+		if r.Len <= 0 {
+			empty = true
+			continue
+		}
+		if coveredBy(r, offeredExtents) {
 			continue
 		}
 		if !slices.ContainsFunc(offeredExtents, func(e extent) bool { _, ok := intersect(e, r); return ok }) {
@@ -321,6 +335,8 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 	}
 	switch {
 	case partly && errors.Is(err, journalv2.ErrNotOffered):
+		return nil
+	case empty && errors.Is(err, journalv2.ErrZeroLength):
 		return nil
 	case err != nil:
 		return unexpected(m, op, id, err)

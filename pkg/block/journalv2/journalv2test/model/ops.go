@@ -52,13 +52,15 @@ func (m *Model) claim(f *file, tag shareTag, id fileID) *file {
 	return f
 }
 
-// issue checks a version the journal assigned: it exceeds every version seen
-// before it and the floor of the last reopen.
+// issue checks a version the journal assigned: it exceeds every version issued
+// before it, every version on disk, a fill's included, and the floor of the
+// last reopen.
 func (m *Model) issue(op string, id fileID, v version) error {
-	if v.Compare(m.maxSeen) <= 0 || v.Compare(m.floor) <= 0 {
-		return m.mismatch(op, id, "assigned version %v, not above every version before it (%v) and the floor (%v)", v, m.maxSeen, m.floor)
+	if bound := maxVersion(maxVersion(m.issued, m.onDisk()), m.floor); v.Compare(bound) <= 0 {
+		return m.mismatch(op, id, "assigned version %v, not above %v, the highest issued, on disk or in the floor", v, bound)
 	}
-	m.maxSeen = v
+	m.issued = v
+	m.maxSeen = maxVersion(m.maxSeen, v)
 	return nil
 }
 

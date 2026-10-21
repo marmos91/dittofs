@@ -276,7 +276,7 @@ func uncertainAt(f *file) int {
 // clone returns a model with its own copy of every file and record of m.
 func clone(m *Model) *Model {
 	c := New()
-	c.seq, c.maxSeen, c.floor, c.crashed = m.seq, m.maxSeen, m.floor, m.crashed
+	c.seq, c.issued, c.maxSeen, c.floor, c.crashed = m.seq, m.issued, m.maxSeen, m.floor, m.crashed
 	for id, f := range m.files {
 		g := &file{id: f.id, tag: f.tag, unresolved: f.unresolved}
 		for _, r := range f.recs {

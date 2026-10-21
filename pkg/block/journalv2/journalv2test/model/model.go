@@ -106,8 +106,13 @@ type Model struct {
 	files map[fileID]*file
 	seq   uint64
 
-	// maxSeen is the highest content version the model has seen issued or
-	// written; every version the journal assigns must exceed it.
+	// issued is the highest content version the journal has issued: every
+	// version it assigns must exceed it, across crashes too, since the floor
+	// of a reopen carries the version limit.
+	issued version
+	// maxSeen is the highest content version the model has seen, issued or
+	// carried by a fill; no answer of the journal names a change above it or
+	// the floor.
 	maxSeen version
 	// floor is the floor of the last reopen.
 	floor version
@@ -252,4 +257,18 @@ func (f *file) holdsAnything() bool {
 
 func (m *Model) mismatch(op string, id fileID, format string, args ...any) error {
 	return fmt.Errorf("model: %s %x: %s", op, id.Bytes(), fmt.Sprintf(format, args...))
+}
+
+// onDisk returns the highest version of a record the model holds that a crash
+// has not left uncertain: every version the journal assigns must exceed it.
+func (m *Model) onDisk() version {
+	var v version
+	for _, f := range m.files {
+		for _, r := range f.recs {
+			if !r.uncertain {
+				v = maxVersion(v, r.ver)
+			}
+		}
+	}
+	return v
 }

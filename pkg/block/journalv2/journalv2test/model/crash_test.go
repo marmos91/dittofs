@@ -39,17 +39,27 @@ func TestCrashKeepsSyncedWritesAndAllowsUnsyncedOnesEitherWay(t *testing.T) {
 	refused(t, m.Compare(shareA, modelView{neither, shareA}))
 }
 
-// A write lost to a crash is lost whole: a state holding part of it is
-// refused.
-func TestCrashNeverKeepsPartOfAWrite(t *testing.T) {
-	m := New()
-	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	ok(t, m.Crash())
-	ok(t, m.Reopen(ver(10)))
+// A write split at a segment cap is one record per segment, each surviving a
+// crash whole or not at all, so the write can come back partly held. Its bytes
+// are still its own: a state holding other bytes in its place is refused.
+func TestCrashMayKeepPartOfASplitWrite(t *testing.T) {
+	setup := func(t *testing.T) *Model {
+		m := New()
+		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+		ok(t, m.Crash())
+		ok(t, m.Reopen(ver(10)))
+		return m
+	}
 
 	torn := New()
 	ok(t, torn.WriteAt(shareA, fid(1), 0, fill('A', 6), 0, ver(1), nil))
-	refused(t, m.Compare(shareA, modelView{torn, shareA}))
+	m := setup(t)
+	ok(t, m.Compare(shareA, modelView{torn, shareA}))
+	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 6, 1, false}})
+
+	other := New()
+	ok(t, other.WriteAt(shareA, fid(1), 0, fill('B', 6), 0, ver(1), nil))
+	refused(t, setup(t).Compare(shareA, modelView{other, shareA}))
 }
 
 // A removal is durable on return, so a crash never undoes it, synced or not.
@@ -153,17 +163,26 @@ func TestNoCallBetweenACrashAndItsResolution(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(11), nil))
 }
 
-// The states a crash allows double with each unsynced record, so the model
-// refuses to search past its bound rather than run for hours.
-func TestCrashRefusesTooManyUnsyncedRecordsInOneFile(t *testing.T) {
+// The states a crash allows double with each unsynced record the journal's
+// bytes cannot decide, so the model refuses to search past its bound rather
+// than run for hours, and changes nothing when it refuses. Writes are decided
+// from the bytes, so any number of them is accepted.
+func TestCrashRefusesTooManyUndecidableRecordsInOneFile(t *testing.T) {
 	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 20), 0, ver(1), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 20, 1))))
 	for i := range maxUncertain + 1 {
-		ok(t, m.WriteAt(shareA, fid(1), int64(i), []byte{byte(i)}, 0, ver(uint64(i)+1), nil))
+		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(int64(i), 1)}, nil))
 	}
-	err := m.Crash()
-	if err == nil {
-		t.Fatalf("Crash accepted %d unsynced records in one file", maxUncertain+1)
+	m.EndOffer(shareA, fid(1))
+	refused(t, m.Crash())
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(2), nil))
+
+	w := New()
+	for i := range maxUncertain + 1 {
+		ok(t, w.WriteAt(shareA, fid(1), int64(i), []byte{byte(i)}, 0, ver(uint64(i)+1), nil))
 	}
+	ok(t, w.Crash())
 }
 
 // A record that survived a crash is on disk: a second crash cannot lose it.
@@ -219,4 +238,77 @@ func TestChangeVersionNeedNotCountAMarkerThatDidNotComeBack(t *testing.T) {
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, m.Compare(shareA, modelView{j, shareA}))
 	ok(t, m.Fill(shareA, fid(1), 30, fill('F', 2), ver(1), ver(1), nil))
+}
+
+// A fill may carry the version of a write it refills. Where a release and the
+// refill of synced, offloaded content are both lost, the journal serves the
+// write again, and its bytes at that version are the write's, not the fill's.
+func TestCrashTellsAFillFromTheWriteItRefills(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 7, ver(1), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
+	m.EndOffer(shareA, fid(1))
+	m.Sync(shareA, fid(1))
+	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('A', 10), ver(1), ver(1), nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	j := New()
+	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 7, ver(1), nil))
+	ok(t, j.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(j, fid(1), 1, 1, dirty(0, 10, 1))))
+	ok(t, j.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
+	j.EndOffer(shareA, fid(1))
+	ok(t, m.Compare(shareA, modelView{j, shareA}))
+}
+
+// A fill's version is the ref's, not one the journal issued, so it bounds no
+// reopen floor. Once the fill is lost, versions above the floor are issued
+// again; while it is held, every version issued exceeds it.
+func TestAFillVersionBoundsTheCounterOnlyWhileHeld(t *testing.T) {
+	setup := func(t *testing.T) *Model {
+		m := New()
+		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(5), nil))
+		m.Sync(shareA, fid(1))
+		ok(t, m.Fill(shareA, fid(1), 100, fill('F', 4), ver(5), ver(50), nil))
+		ok(t, m.Crash())
+		ok(t, m.Reopen(ver(10)))
+		return m
+	}
+	write := New()
+	ok(t, write.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(5), nil))
+
+	m := setup(t)
+	ok(t, m.Compare(shareA, modelView{write, shareA}))
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(11), nil))
+
+	both := New()
+	ok(t, both.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(5), nil))
+	ok(t, both.Fill(shareA, fid(1), 100, fill('F', 4), ver(5), ver(50), nil))
+	m = setup(t)
+	ok(t, m.Compare(shareA, modelView{both, shareA}))
+	refused(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(11), nil))
+}
+
+// A settled marker that did not come back after one crash never comes back
+// after the next: repack dropped its record.
+func TestAMarkerThatDidNotComeBackNeverDoes(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	m.Sync(shareA, fid(1))
+	ok(t, m.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
+	m.Settle(shareA, fid(1), ver(2))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	gone := New()
+	ok(t, gone.WriteAt(shareA, fid(1), 2, fill('A', 8), 0, ver(1), nil))
+	ok(t, m.Compare(shareA, modelView{gone, shareA}))
+
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(20)))
+	back := New()
+	ok(t, back.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, back.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
+	refused(t, m.Compare(shareA, modelView{back, shareA}))
 }

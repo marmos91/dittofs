@@ -353,3 +353,35 @@ func TestReportOfNeighboursAndOfPartlyOfferedExtents(t *testing.T) {
 	m = setup(t)
 	refused(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(30, 5)}, nil))
 }
+
+// An offer syncs its neighbours' records too: a filled neighbour offered with
+// the dirty content cannot be lost to a later crash.
+func TestAnOfferSyncsItsNeighbours(t *testing.T) {
+	m := New()
+	ok(t, m.Fill(shareA, fid(1), 0, fill('F', 10), journalv2.Version{}, ver(1), nil))
+	ok(t, m.WriteAt(shareA, fid(1), 10, fill('W', 10), 0, ver(2), nil))
+	o := offerOf(m, fid(1), 1, 2, dirty(10, 10, 2))
+	o.Neighbours = []journalv2.Held{{Extent: ext(0, 10), Version: ver(1)}}
+	for k, b := range frozen(m, fid(1), dirty(0, 10, 1)) {
+		o.Offered.(offered)[k] = b
+	}
+	ok(t, m.Offer(shareA, fid(1), ver(2), 0, 10, o))
+	m.EndOffer(shareA, fid(1))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	j := New()
+	ok(t, j.WriteAt(shareA, fid(1), 10, fill('W', 10), 0, ver(2), nil))
+	refused(t, m.Compare(shareA, modelView{j, shareA}))
+}
+
+// A report naming an empty extent names nothing: it may be accepted or refused
+// with ErrZeroLength.
+func TestReportOfAnEmptyExtent(t *testing.T) {
+	for _, err := range []error{nil, journalv2.ErrZeroLength} {
+		m := New()
+		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+		ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))))
+		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(3, 0)}, err))
+	}
+}
