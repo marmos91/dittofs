@@ -50,7 +50,7 @@ install() {
     # The Unix account the Samba baseline maps its SMB user to; the DittoFS user gets its uid.
     id "$PERF_USER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "$PERF_USER"
     mkdir -p /srv/perf/data /srv/perf/mnt /var/tmp/dittofs-perf
-    install -d -m 700 "$SECRETS"
+    mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
     test -d "$CHECKOUT/.git" ||
         git clone -q --branch "${BRANCH:-develop}" https://github.com/marmos91/dittofs "$CHECKOUT"
 }
