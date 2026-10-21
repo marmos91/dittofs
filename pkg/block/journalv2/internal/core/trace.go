@@ -11,11 +11,15 @@ import "log/slog"
 // journal lock held. Neither may block, and neither may call back into the
 // journal.
 //
-// decision: spans take no request context. The journal's operations carry
-// none, so a journal span is a root, correlated with the request that caused
-// it through its attributes (journal, share tag, file). Parenting journal
-// spans under request spans would need context-taking variants of the calls,
-// not a change to the existing signatures.
+// decision: the journal traces only its own background work, as root spans:
+// opening and its recovery, sealing an idle segment, retiring a segment, and a
+// repack pass. RFC 25 §6.1 makes background work a root span, and the
+// journal's operations take no request context, so it could not parent a span
+// under a request anyway. A wait on the request path (a sync, a fill, an
+// offload) is the engine's: RFC 8 opens a child of the request's span for
+// each stage it waits on, and an offload pass as a root of its own, so a
+// journal span there would count the same wait twice (RFC 25 §2.7, one event,
+// one owner).
 type Tracer func(op SpanOp, attrs ...slog.Attr) (end func(err error))
 
 // SpanOp names the operation a span covers. Its values are the span names
@@ -24,15 +28,11 @@ type Tracer func(op SpanOp, attrs ...slog.Attr) (end func(err error))
 // §6.1 requires of every span name.
 type SpanOp string
 
-// The operations the journal traces.
+// The operations the journal traces: its background work only (see Tracer).
 const (
-	SpanOpen           SpanOp = "journal.Open"
-	SpanRecoveryPhase  SpanOp = "journal.RecoveryPhase"
-	SpanSync           SpanOp = "journal.Sync"
-	SpanOffloadPass    SpanOp = "journal.OffloadPass"
-	SpanRepackPass     SpanOp = "journal.RepackPass"
-	SpanFill           SpanOp = "journal.Fill"
-	SpanReserveRefused SpanOp = "journal.ReserveRefused"
-	SpanSeal           SpanOp = "journal.Seal"
-	SpanRetire         SpanOp = "journal.Retire"
+	SpanOpen          SpanOp = "journal.Open"
+	SpanRecoveryPhase SpanOp = "journal.RecoveryPhase"
+	SpanRepackPass    SpanOp = "journal.RepackPass"
+	SpanSeal          SpanOp = "journal.Seal"
+	SpanRetire        SpanOp = "journal.Retire"
 )

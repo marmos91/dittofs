@@ -12,13 +12,9 @@ type (
 
 // The operations the journal traces. See SpanOp.
 const (
-	SpanOpen           = core.SpanOpen
-	SpanRecoveryPhase  = core.SpanRecoveryPhase
-	SpanSync           = core.SpanSync
-	SpanOffloadPass    = core.SpanOffloadPass
-	SpanRepackPass     = core.SpanRepackPass
-	SpanFill           = core.SpanFill
-	SpanReserveRefused = core.SpanReserveRefused
-	SpanSeal           = core.SpanSeal
-	SpanRetire         = core.SpanRetire
+	SpanOpen          = core.SpanOpen
+	SpanRecoveryPhase = core.SpanRecoveryPhase
+	SpanRepackPass    = core.SpanRepackPass
+	SpanSeal          = core.SpanSeal
+	SpanRetire        = core.SpanRetire
 )
