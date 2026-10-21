@@ -94,8 +94,8 @@ func (h *Handle) Offload(ctx context.Context, id FileID, through Version, limit,
 // reserved headroom it appends none. After fn returns, report fails with
 // ErrOfferEnded.
 //
-// fn receives a context derived from ctx, which carries the pass's trace, so
-// the work fn does under it is traced as part of the pass.
+// fn receives a context derived from ctx, so the work fn does under it, such
+// as an upload, ends with the call's deadline.
 //
 // Partial success is honoured: every extent reported before fn returns stays
 // marked, whatever fn returns, and the error fn returns covers only what was

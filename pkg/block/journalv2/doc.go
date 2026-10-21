@@ -20,11 +20,12 @@
 // segments. The journal provides the mechanisms and none of the policy.
 //
 // A call that does I/O or can wait takes a context first; a call that only
-// reads or changes memory and never waits takes none. The context carries the
-// caller's deadline and trace, and is honoured only where that leaves no
-// outcome unknown: a call checks it before it changes any state, and returns
-// the context's error having changed nothing; once a call has appended its
-// record it completes and returns its result whatever the context says. A
+// reads or changes memory and never waits takes none. Close takes none either:
+// it waits only for calls already in flight, each under its own context. The
+// context carries the caller's deadline, and is honoured only where that
+// leaves no outcome unknown: a call checks it before it changes any state, and
+// returns the context's error having changed nothing; once a call has appended
+// its record it completes and returns its result whatever the context says. A
 // cancelled Sync stops waiting, not the sync, and its outcome reaches the next
 // Sync of the file. A capacity refusal is returned as itself, never as the
 // context's error.
