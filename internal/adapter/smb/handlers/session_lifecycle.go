@@ -1026,11 +1026,14 @@ func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, use
 // before StoreSession to avoid a data race window where a concurrent reader
 // could observe a zero ExpiresAt on the published session and skip the
 // per-request expiry check in prepareDispatch (see #341 A1). A zero
-// expiresAt is treated as "no expiry" by session.IsExpired.
+// expiresAt is treated as "no expiry" by session.IsExpired. Only Kerberos
+// creates such a session, so it is marked Kerberos-authenticated here, before
+// anything else can read it.
 
 func (h *Handler) CreateSessionWithUserAndExpiry(sessionID uint64, clientAddr string, user *models.User, domain string, expiresAt time.Time) *session.Session {
 	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
 	sess.SetExpiry(expiresAt)
+	sess.MarkKerberos()
 	h.SessionManager.StoreSession(sess)
 	return sess
 }

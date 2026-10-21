@@ -118,12 +118,22 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    (`internal/adapter/nfs/auth/share_permission.go`) and the SMB Tree Connect check
    (`internal/adapter/smb/handlers/tree_connect.go`).
 
-   The export auth-flavor policy (`AllowAuthSys`, `RequireKerberos`, `MinKerberosLevel`) lives in
-   `CheckExportAccess` (`internal/adapter/nfs/auth/export_access.go`), which also applies the
-   netgroup client allowlist — but only when its caller supplies a lookup. It has three callers:
-   MOUNT supplies one, the NFSv3 per-operation dispatch does not, and the NFSv4 auth-context
-   builder does not either, because it runs its own netgroup check first with its own status. The
-   flavor gates run per operation, not only at mount.
+   The share policy (`AllowAuthSys`, `RequireKerberos`, `MinKerberosLevel`, the netgroup client
+   allowlist) lives once, protocol-neutral, in `runtime.CheckShareAccess`
+   (`pkg/controlplane/runtime/export_auth_policy.go`). NFS's `CheckExportAccess`
+   (`internal/adapter/nfs/auth/export_access.go`) translates an RPC flavor and GSS service into a
+   proof and a protection, and applies the netgroup check only when its caller supplies a lookup.
+   It has three callers: MOUNT supplies one, the NFSv3 per-operation dispatch does not, and the
+   NFSv4 auth-context builder does not either, because it runs its own netgroup check first with
+   its own status. SMB maps a session onto the same two (`checkSharePolicy`,
+   `internal/adapter/smb/handlers/tree_connect.go`) in `admitTreeConnect`, which TREE_CONNECT and
+   the srvsvc share list both apply, and on every request in `prepareDispatch`
+   (`internal/adapter/smb/response.go`), CLOSE, TREE_DISCONNECT and LOCK exempt (LOCK's handler
+   checks an acquisition itself). COPYCHUNK also checks its source handle's tree, which the
+   request's TreeID does not name. `allow_auth_sys=false` refuses only a request nothing verified
+   (AUTH_SYS, AUTH_NULL, an SMB guest or anonymous session), so NTLM passes it, and
+   `min_kerberos_level` is the floor for NTLM too. The flavor gates run per operation, not only at
+   mount.
 
    **NFSv4 needs a second gate, and it is not that one.** A compound can enter a share's handle
    and then run only operations that make no metadata call of their own (LOCK, LOCKT, LOCKU and

@@ -604,9 +604,13 @@ accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts/operations are refused. (Set `require_kerberos` to also refuse AUTH_NULL and mandate RPCSEC_GSS — `allow_auth_sys=false` alone only gates AUTH_SYS.) |
+| `allow_auth_sys` | `true` | When `false`, every flavor but RPCSEC_GSS is refused, AUTH_SYS (AUTH_UNIX) and AUTH_NULL alike. |
 | `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
-| `min_kerberos_level` | `krb5` | Minimum GSS protection level a Kerberos session must negotiate (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
+| `min_kerberos_level` | `krb5` | The protection floor for any authenticated session (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
+
+Over NFS the two flavor gates refuse the same flavors; they differ over SMB, where
+an NTLM session passes `allow_auth_sys=false` but not `require_kerberos` (see
+[SMB § Share access policy](smb.md#share-access-policy)).
 
 `allow_auth_sys`, `require_kerberos`, and `min_kerberos_level` are enforced
 identically on **NFSv3** (at MOUNT) and on **NFSv4.0/v4.1** (at the first
@@ -630,11 +634,13 @@ share that still carries `require_kerberos=true` stops the server with exit code
 78 and an error naming the share. Either re-enable `kerberos.enabled`, or clear
 the policy with `dfsctl share nfs-config set <share> --require-kerberos false`.
 
-`min_kerberos_level` only constrains RPCSEC_GSS sessions: it rejects a Kerberos
-session whose negotiated service level is below the floor (e.g. a plain `krb5`
-authentication-only session on a `krb5p` privacy share). Non-GSS flavors are
-governed by `allow_auth_sys` / `require_kerberos`; pair `min_kerberos_level`
-with `require_kerberos=true` to mandate a protection floor for *all* access.
+`min_kerberos_level` is the protection floor for any authenticated session.
+Over NFS only RPCSEC_GSS authenticates, so it rejects a Kerberos session whose
+negotiated service level is below the floor (e.g. a plain `krb5`
+authentication-only session on a `krb5p` privacy share). AUTH_SYS and AUTH_NULL
+prove nothing and are governed by `allow_auth_sys` / `require_kerberos` alone;
+pair `min_kerberos_level` with either to mandate a protection floor for *all*
+access.
 
 **Principal → identity mapping (the "access denied after EXCHANGE_ID" case).**
 A successful `sec=krb5` mount has two stages, and they fail differently:
