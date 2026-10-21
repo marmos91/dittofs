@@ -384,8 +384,10 @@ Every conformance subtask also:
     undone. It then closes every handle, so the journal can be reopened on the same
     directory;
   - supports the variants RFC 28 §4.4 names: *lost writes* (the default), *torn* (the
-    last unsynced write kept up to byte n), and *reordered* (unsynced writes kept in a
-    seeded order other than the one issued, where the filesystem allows it);
+    last unsynced write kept up to byte n), and *reordered* (a seeded subset of the
+    unsynced writes kept, in any order). The seam cannot know which orders a
+    filesystem allows, so it allows all of them: outside data-journaling modes, unsynced
+    writes have no order;
   - counts calls per operation and per file, and exposes the durable image of a file
     (what a crash would leave) for stale-read checks;
   - can serve reads of a named file from its durable image instead of the page cache
@@ -393,8 +395,8 @@ Every conformance subtask also:
 - **Done when:**
   - its unit tests, on a real temporary directory, show each discard rule: a synced write
     survives a crash, an unsynced one does not, a renamed file's directory entry survives
-    only after `SyncDir`, a torn write keeps exactly n bytes, and a reordering never
-    produces an order the filesystem cannot;
+    only after `SyncDir`, a torn write keeps exactly n bytes, a reordering can keep a
+    later unsynced write without an earlier one, and no variant loses a synced write;
   - each test reverts the matching rule in the seam and watches the test fail.
 - **Rules:**
   - 1, 10: the seam is fully implemented and its tests can fail.
@@ -415,6 +417,9 @@ Every conformance subtask also:
     `Fail` returns the error (`EIO`, `ENOSPC` or any given), `Drop` reports success and
     discards the effect, `Tear` keeps the first n bytes, `Delay` waits, `Reorder` marks the
     write for 2.1's reordering.
+  - **A disk that loses a confirmed write:** a `Drop` on a `write` followed by a
+    successful `sync` of the same file. The journal sees the write and the sync succeed,
+    and a crash leaves the write's slot as it was before.
   - **Holds** (D6): `Hold`, `Reached`, `Waiting`, `Release`.
 - **Done when:**
   - the same seed and rules give the same actions over the same calls, and a different
@@ -423,6 +428,8 @@ Every conformance subtask also:
     fires timers due by 105 s;
   - each action kind is observable through the seam on a real file, including a failed
     `sync`, a failed `sync_dir` and a failed `read_direct`, the three RFC 1 §1.3 names;
+  - a `Drop`ped write followed by a successful `sync` is absent from the durable image
+    and gone after `Crash()`;
   - a held call blocks until `Release`, and `Waiting` counts the blocked calls.
 - **Rules:**
   - 1, 10: each property above is a test that a plausible bug fails.
@@ -512,8 +519,10 @@ Every conformance subtask also:
 - **Deliverables:** `TestModel`: random sequences of write, fill, offload, release,
   truncate, deallocate, delete, settle, repack, crash and reopen, over at least two files
   on two streams and two shares on one journal, compared with the model after every step
-  (RFC 1 §9.1, §9.3). Crashes use the seam's three variants. Seeds, shrinking and the
-  corpus follow D7.
+  (RFC 1 §9.1, §9.3). Crashes use the seam's three variants. Faults are steps too: a
+  write that fails with `EIO`, an `ENOSPC` from the filesystem, and a failed sync, after
+  which the sequence keeps running, because failure-path bugs show when work continues
+  after the fault, not at the fault. Seeds, shrinking and the corpus follow D7.
 - **Done when:**
   - the corpus in `testdata/model/` replays before any random seed;
   - a planted model divergence (the journal wrapper reporting one wrong byte) is caught
@@ -552,6 +561,10 @@ Every conformance subtask also:
     decided after the pass's copies, carried release keeps its sequence, re-append trusts
     no page cache, loss by exact record, a synced loss masks what it superseded, a failed
     window is reported once, a re-append keeps its numbers;
+  - **removal outlives its segment** also crashes in the window its rule protects (a
+    removal record is dropped only once the unlink it stands for is durable): the old
+    segment's `sync_dir` after its unlink is held, reclaim tries to drop the removal
+    record, and the seam crashes. After reopen, the removed file does not exist;
   - the counted checks of RFC 1 §9.7 that need only the seam: **syncs per write** (16
     writers held at the seam until all wait, at most one sync per four writes) and
     **mixed durability** (bytes each small writer's sync waited for stay within one
@@ -629,7 +642,9 @@ Every conformance subtask also:
     over, against the share and the journal; `ENOSPC` from the filesystem below the
     journal's maximum, distinct from `ErrNoSpace`; a sync that fails then succeeds on the
     same stream; truncate, delete, release, mark and seal at the maximum; one segment
-    retired by eviction and by repack, footprint falling once and never below zero;
+    retired by eviction and by repack, footprint falling once and never below zero; an
+    unlink of a retired segment that fails with `EIO`, after which `UsedBytes` is
+    unchanged, the unlink is retried, and nothing is attached twice after reopen;
   - **opening:** an empty directory, one holding only a `format` file, one from an older
     format, and `Init` on each.
 - **Done when:** as 2.7. Each test's name says its case (`TestEdge_ThreeWaySplit`).
@@ -645,7 +660,10 @@ Every conformance subtask also:
   - **RFC 28 §4.2 Group A**, nine checks: corrupt dirty, corrupt offloaded, directory
     entry survives, footer is not authoritative, unmark clears, write carries its mtime,
     unproven tail verified at open, failed directory sync is a failed window, a zero slot
-    is not the end. (Directory flush on NTFS is epic 3's.)
+    is not the end. (Directory flush on NTFS is epic 3's.) "Unproven tail verified at
+    open" also runs on a segment whose sync failed: the process stops before the window
+    is resolved, with the seam serving the window from a stale cache, and the reopened
+    journal verifies it with direct reads, then re-appends it or records a loss.
   - **Group B**: segment reclaimable.
   - **Group C**, the 22 rows that need no encoder, plus the refusal halves of three
     split rows (D9): rebuild, sources agree, synced damage is not a torn tail, bits
@@ -659,12 +677,20 @@ Every conformance subtask also:
     payload does not stop a scan), and `format` file (55 or 57 bytes, a bad checksum and
     version 2 fail the open; a crash on either side of the `format.tmp` rename leaves old
     or new whole). "Record layout" and "trailer" are encoder goldens, epic 3's.
+  - **"A spare is whole or absent" with a leftover temporary file:** spare A is held
+    after its file sync and before its rename, another operation's directory sync lands,
+    and the seam crashes, so `A.spare.tmp` survives. After reopen, `A.spare.tmp` is
+    unlinked, the next spare's id is above A's, and the pool is refilled.
   - **RFC 28 §4.4, injected systematically:** a bit flipped in turn in every region (record
     header and payload, catalog entry, footer, trailer, segment header, seal marker,
-    `format`), each with its required outcome; lost writes at every sync point of every
-    operation that syncs; torn writes cut at every byte of the final record and of the
-    trailer; reordered unsynced writes. After each, the reopened journal is compared with
-    the reference model. Plus the table of edits from outside, one test per row.
+    `format`), each with its required outcome; runs of junk of 64 KiB and 1 MiB across
+    several records and the catalog, after which only the records the run covers are
+    dropped and a scan resynchronises; lost writes at every sync point of every operation
+    that syncs, `Open`'s own recovery included (truncate, seal, re-append, spare zeroing),
+    where the journal reopened after a crash inside `Open` holds the same index as after a
+    clean open; torn writes cut at every byte of the final record and of the trailer;
+    reordered unsynced writes. After each, the reopened journal is compared with the
+    reference model. Plus the table of edits from outside, one test per row.
 - **Done when:** as 2.7, and `raw`'s own tests are green.
 - **Rules:**
   - 1, 10: `raw`'s tests fail on a wrong offset or checksum range.
@@ -824,3 +850,31 @@ test/journalv2 ──► standard library (reads the RFCs and the conformance so
   budget needs it.
 - **The `e2e` known file.** The system tests of epics 10 and 11 need the `e2e` suite to
   have opted in to a known file (RFC 29 §9). If it has not by then, epic 10 creates it.
+- **Failure modes waiting on a decision.** Each test below is written once its rule is
+  decided, in the subtask named:
+  - *a disk that loses a confirmed write and leaves zeros.* Today the journal reads the
+    zeros as a write that failed and was never acknowledged, and steps over them
+    silently. Whether the loss is reported changes the on-disk format, which freezes in
+    epic 3. The seam can already produce it (2.2); the assertion waits (2.13).
+  - *a record written to another offset of its own segment.* It verifies, so a rebuild by
+    scan can attach it in the wrong place. Rejecting it means storing the record's own
+    offset in the header, also a format change (2.13).
+  - *a read that fails with `EIO`.* RFC 28 §3.3 defines an action only for a record that
+    does not verify. Retry, treat as corruption, or both, on `ReadAt`, offload, repack and
+    the scan at open (2.8, 2.13).
+  - *a filesystem that turns read-only.* No rule names this state, and each failure takes
+    a fresh spare, so repeated failures can drain the spares and the headroom. The seam's
+    schedule gains a rule failing every call from a given call on with `EROFS` together
+    with this check, its first consumer (2.2, 2.12).
+  - *a spare whose directory sync failed.* RFC 28 §4.2 A "failed directory sync is a
+    failed window" still has the stream create a segment at roll, but a roll only takes a
+    spare. The check is rewritten with the RFC (2.13).
+  - *a recycle rename that fails.* Nothing says whether the segment is kept or unlinked;
+    it must never be half adopted (2.12).
+  - *errors that reach the wrong caller.* ext4 mounted with `data=journal` can report a
+    sync's failure on a later sync, and a descriptor reopened after a writeback error may
+    not see it. Refusing the mount mode is a platform check (epic 3); keeping an active
+    segment's descriptor open until its writes are synced is a rule for RFC 1 §7.4 (2.10).
+  - *crash tests below the filesystem.* The seam simulates a crash above the filesystem,
+    so a filesystem's own bug after a rename or a directory sync never shows. RFC 1 §9.3
+    asks for every supported filesystem; CI runs ext4 only.
