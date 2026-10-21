@@ -358,28 +358,34 @@ failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per 
 `dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one: the
 fixture's mounts and unmounts, starting the server with the one capability that binds port 445 for
 WPTS (§4.2), restarting `rpc.gssd`, and the commands of a suite whose own `needs` name `root`.
-Unless its format is `go-json`, such a suite runs each command as `sudo -n env NAME=value ... CMD`,
-as pjdfstest's `prove` must run; the needs a fixture implies (§4.2) don't make its commands run as
-root. A Go suite whose tests need root themselves, like e2e, which mounts from inside `go test`,
-runs with `go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs
-only each binary under `sudo -n`, in its package's directory and with the flags `go test` gives
-every binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test
-binary; run as root, those builds would write root's files into the user's Go caches, and fail on
-the modules only the binaries use. So before a root suite runs, `dt` builds both as the user into
-`{bin}` and passes it as `DITTOFS_E2E_BIN`, and the e2e helpers take the binaries from there rather
-than building them. Root never runs `go build`: the Go caches and the results stay the user's, and
-the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
+Unless its format is `go-json`, such a suite runs each command as
+`sudo -n env -C DIR NAME=value ... CMD`, as pjdfstest's `prove` must run. `env` enters the suite's
+`dir` as root, since the user may have no access to it, as to a mount whose share grants that user
+nothing; `sudo`'s own `--chdir` would need a `runcwd` in sudoers, which few hosts grant. The needs a
+fixture implies (§4.2) don't make its commands run as root, and a suite that needs root doesn't run
+on a namespaced client yet: no suite does. A Go suite whose tests need root themselves, like e2e,
+which mounts from inside `go test`, runs with `go test -exec 'sudo -n env ...'`: `go` builds the
+test binaries as the user, and runs only each binary under `sudo -n`, in its package's directory and
+with the flags `go test` gives every binary. The e2e tests start `dfs` and `dfsctl`, and today build
+them from inside the test binary; run as root, those builds would write root's files into the user's
+Go caches, and fail on the modules only the binaries use. So before a root suite runs, `dt` builds
+both as the user into `{bin}` and passes it as `DITTOFS_E2E_BIN`, and the e2e helpers take the
+binaries from there rather than building them. Root never runs `go build`: the Go caches and the
+results stay the user's, and the `root` need (§4.5) means passwordless sudo, not running `dt` under
+sudo.
 
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
 the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the variables of
 the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its
-`service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. Today's e2e job
-does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A fixture sets no variables: it gives
-its values as placeholders (§4.2), and a suite that needs one in a variable puts it in its `env`,
-as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes on a command line, where any
-user can read it while the process runs: the server started under `sudo` for port 445 gets the
-admin's password from `dt`'s environment, through `sudo -n --preserve-env=NAME`.
+`service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. The commands of a
+suite that isn't `go-json` get its `env` and `PATH` only, as they get neither of the others when
+they run as the user. Today's e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A
+fixture sets no variables: it gives its values as placeholders (§4.2), and a suite that needs one in
+a variable puts it in its `env`, as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes
+on a command line, where any user can read it while the process runs: the server started under
+`sudo` for port 445 gets the admin's password from `dt`'s environment, through
+`sudo -n --preserve-env=NAME`.
 
 ## 4. Design
 
@@ -485,8 +491,7 @@ suites:
         needs: [windows]
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
       nonrace:                          # the throughput and allocation gates that skip under -race
-        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
-        env: { DITTOFS_BENCH_LANE: "1" }
+        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
   integration:
     job: Integration Tests (1.26.x)
@@ -530,17 +535,16 @@ suites:
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
 
-  # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix` and
-  # `select.pr` replace suites.json's profiles and PR lists. Commands are shortened: the flags each
-  # tool needs are in its script today, and move here with it. On PRs only the production profile,
-  # badger-s3, runs (§4.3).
+  # Conformance. Each tool is called directly, against the suite's fixture (§4.2). `matrix`
+  # replaces suites.json's profiles. Commands are shortened: the flags each tool needs are in its
+  # script today, and move here with it. Conformance runs the production profile, badger-s3,
+  # only (§4.3).
   pjdfstest:
     format: tap                         # each test file prints TAP; no prove summary to parse
     cmd: prove -v {test}
     dir: "{mount}"                      # run in the mounted share
     tests: "{tools}/pjdfstest/tests/*/*.t"
-    matrix: { profile: [memory, badger, badger-s3], nfs: ["3", "4", "4.1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], nfs: ["3", "4", "4.1"] }
     fixture:
       profile: "{profile}"
       nfs: { version: "{nfs}", options: "noac,sync,lookupcache=none" }   # mounted at {mount}; v3 adds nolock
@@ -554,8 +558,7 @@ suites:
     format: junit                       # pynfs writes JUnit itself with --xml
     cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml {names}"
     names: all                          # what {names} holds when a run names no tests
-    matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], minor: ["0", "1"] }
     fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # pynfs mounts nothing; uid 1 is its second client
     known: test/nfs-conformance/pynfs/known.yaml
     tier: pr
@@ -575,11 +578,10 @@ suites:
       DryRun: "false"
       SutComputerName: "{server}"
       SutIPAddress: "{server}"
-      DomainName: "{server}"
+      DomainName: localhost             # without a dot, WPTS stays in workgroup mode: the fixture has no domain controller
       AdminUserName: "{user}"
       PasswordForAllUsers: "{password}"
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     fixture:
       profile: "{profile}"
       smb: { encryption: preferred, port: 445 }   # WPTS connects to 445 only
@@ -595,8 +597,7 @@ suites:
     cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}%{password} {test}"
     tests: test/smb-conformance/smbtorture/tests.txt   # the list smbtorture/run.sh holds today, with each test's share and name prefix
     timeout: { test: 5m }               # run.sh's one limit for each test of its list
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }   # its multichannel test dials 445
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
@@ -604,6 +605,7 @@ suites:
     options:
       kerberos:                         # dt run smbtorture --kerberos
         cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        volumes: { "{krb5-conf}": /etc/krb5.conf }   # where smbtorture finds the KDC
         tests: [smb2.session, smb2.read, smb2.lock]
         timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}                      # one cell: it pins its profile
@@ -642,7 +644,7 @@ suites:
     tests: test/nfs-mount/nfstest/tests.txt   # the modules, each with the option sets it runs on
     cmd: "{tools}/nfstest/bin/nfstest_{test} --server {server} --port {nfs-port} --export /export --nfsversion {nfs} --mtpoint /tmp/dittofs-test --mtopts {mtopts} --rmtraces --notty {test-args}"
     matrix:
-      profile: [memory]
+      profile: [badger-s3]
       mount-options:                    # the same sets as nfstest's flags: it mounts by itself
         - default: { nfs: "4.2", mtopts: hard }
         - v3: { nfs: "3", mtopts: "hard,tcp,mountproto=tcp" }
@@ -742,7 +744,7 @@ fixture are filled before the first test, when neither has a value.
 | `{tools}` | the pinned test tools (pjdfstest, pynfs, cthon04, nfstest) at the revisions `flake.lock` pins: built with `nix build .#NAME` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, `{tools}/pynfs` is pynfs's tree, with its `bin`, `{tools}/cthon04` is cthon04's built tree, and `{tools}/nfstest` holds a `bin` with a program per module |
 | `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do |
 | `{packages}` | the package list `packages` gives |
-| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{client2}` | from the fixture (§4.2) |
+| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
 
 For the pynfs cell `badger-s3/1`, for example:
 
@@ -810,8 +812,8 @@ a scenario's size is in its file name, a fio job's parameters in its job file.
 read it with `jq`. Workflows never parse the file itself, though; they parse `run.sh --matrix`
 output. `dt plan --json` gives them the same, from YAML.
 
-`suites.json` goes with `run.sh`: its profiles become `matrix`, its PR lists `select.pr`, and its
-known-failure paths `known`. `test/conformance/check-docs.sh`, which renders the documentation's
+`suites.json` goes with `run.sh`: its profiles become `matrix`, and its known-failure paths
+`known`. `test/conformance/check-docs.sh`, which renders the documentation's
 tables from it, becomes `dt docs --check` in step 3 (§8), as the conformance suites move: the
 tables always describe what CI runs, and until then CI runs those suites from `suites.json`. Its
 other reader, `ci-health.yml`, takes from it only the names of the workflows it watches. Those are
@@ -840,7 +842,7 @@ carry a script that builds it.
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, in its own group, so a suite's tests run under an ordinary user's permissions rather than root's. `dt` running as root, as in `dtc`, has no such user to give, and a fixture with `self` doesn't start: run `dt` there as an ordinary user with passwordless sudo |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
-| `kerberos` | `true` starts the KDC service, writes the keytabs, restarts `rpc.gssd` once the keytab is in place, puts a test user's ticket where the kernel's upcall reads it, and turns Kerberos on |
+| `kerberos` | `true` starts a KDC before the server: a container of `test/smb-conformance/kdc`'s image, on the server's network and a free port, with the server's principal `cifs/{server}` and `{user}`'s, with `{password}`. The server gets its keytab and turns Kerberos on, and maps `{user}@{realm}` to `{user}`, as the scripts' bootstrap does, since a client given the principal sends it as its NTLM user name too. That is what SMB needs. A kernel mount with Kerberos also needs `rpc.gssd` restarted once `/etc/krb5.keytab` is in place, and a test user's ticket where the kernel's upcall reads it (§3): that comes with the first suite whose fixture mounts with Kerberos, since e2e's Kerberos mounts set up their own KDC |
 | `reset` | `each`: remove a test's share and create it again, with its settings and grants, before the test runs, as smbtorture's runner does today. A test whose share fails to reset doesn't run; like every fixture step, the reset isn't retried |
 | `client` | `namespace`: the cell's mounts and commands run on a client in a network namespace of its own, with its own rpcbind, `rpc.statd`, hostname and NFS client identifier, joined to the host by a bridge. A client on the server's own stack loses NLM, since its lockd takes the server's registration, and its traffic can't be told from the server's. Its mount and UTS namespaces, with a private `/run`, are kept in files, and each command enters them through `sudo -n nsenter`, in the cell's `dir`, as the user `dt` runs as, with the suite's `env` given explicitly. The bridge's alias names the `dt` process that owns it, and a fixture first removes the clients of a `dt` that is gone, as one that was killed leaves them |
 | `clients` | `2` adds a second namespaced client at `{client2}`, which the user `dt` runs as can reach over ssh, with a key of the fixture's own that only the first client's ssh configuration names, which there takes the place of the user's own too, since ssh reads the user's first, for suites that drive two clients, such as nfstest's cache and delegation tests. Its traffic is copied into the first client's interface, as on a shared segment |
@@ -885,9 +887,9 @@ root keeps its privileges, as both suites need.
 **Needs a fixture implies.** A fixture adds to its cell's `needs` what its fields require, so the
 cell doesn't start without them and `dt plan` places it where they're met: `service:localstack` for
 an S3 profile, `root` and `nfs-client` for an NFS mount or a namespaced `client`, `rpcbind` for
-`rpcbind: host`, `root` and `smb-client` for an SMB mount, and `root` and `port:445` for
-`smb: { port: 445 }`. They are for the fixture's own steps: only a
-suite's own `needs` make its commands run as root (§3).
+`rpcbind: host`, `root` and `smb-client` for an SMB mount, `root` and `port:445` for
+`smb: { port: 445 }`, and `docker` for `kerberos`, whose KDC is a container. They are for the
+fixture's own steps: only a suite's own `needs` make its commands run as root (§3).
 
 `dt` applies the adapter settings before enabling the adapter. Otherwise it restarts the adapter,
 because the server's settings watcher polls every 10 seconds and the tests would start before it
@@ -901,15 +903,19 @@ The fixture gives the command these placeholders:
   server at `localhost`, and WPTS and smbtorture reach it inside the server's container. When
   step 2's exit criterion compares results through `dt` with the scripts' (§8), a difference that
   comes from the address, or from where the server runs, has its cause listed beforehand. The
-  scripts stay as they are, except that pynfs's reference run is given `--server` with the host's
-  address, so a difference in the delegation tests isn't hidden behind the address.
+  scripts stay as they are, except that pynfs's reference run is given the host's address as its
+  `--server`, through `PYNFS_SERVER`, so a difference in the delegation tests isn't hidden behind
+  the address, and that they save each cell's exit status and grades for the comparison (§8).
+  With `kerberos`, `{server}` is the machine's name instead, which a Kerberos client names the
+  server's principal after: Samba's client never uses Kerberos with an address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
   port, or `rpcbind: host`, run one at a time.
 - `{client2}`: the second client's address, with `clients: 2`.
 - `{mount}`: where the share is mounted, a path as short as today's `/tmp/dittofs-test`, so a
   test of path length such as pjdfstest's `open/03.t` measures the server, not the mount point.
-- `{realm}`.
+- `{realm}` and `{krb5-conf}`: with `kerberos`, its KDC's realm, and a `krb5.conf` that names the
+  KDC, for a tool's container to mount at `/etc/krb5.conf`.
 - `{share}`: the share a test runs on: its `share=` in a `.txt` list, else the fixture's first
   share, without its leading `/`.
 - `{user}` and `{password}`: a test user whose password is generated per run, in place of the
@@ -919,6 +925,8 @@ The fixture gives the command these placeholders:
 Before the first test, the fixture checks itself, and a failed check ends the cell with exit 2,
 never a pass (R10):
 - the server answers;
+- with `kerberos`, its KDC answers before the server starts, and `{server}`, a name then, reaches
+  the server's SMB port;
 - an S3 profile's bucket accepts a write and a read;
 - the mount is there at the version asked for;
 - every `needs` holds.
@@ -953,11 +961,11 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 Each tier contains the one below it: a quick run on every PR, the full set after every merge, and
 the long and heavy suites each night.
 
-**PRs run the production profile only.** On PRs, pjdfstest, pynfs, WPTS, smbtorture and cthon04
-run only `badger-s3`, the profile production uses. Since the bucket fix (#3013, for #2986) they
-reach S3; before it they tested nothing more than `badger`. `memory` and `badger` run after merge
-and nightly. smbtorture gains a `badger-s3` profile for this, and cthon04, which runs on `memory`
-on PRs today, moves to it.
+**Conformance runs the production profile only.** In every tier, pjdfstest, pynfs, WPTS,
+smbtorture, cthon04 and nfstest run only `badger-s3`, the profile production uses: the team
+decided on 2026-10-19 to drop `memory` and `badger` from the conformance matrix. Since the bucket
+fix (#3013, for #2986) they reach S3; before it they tested nothing more than `badger`. smbtorture
+gains a `badger-s3` profile for this, and cthon04 and nfstest, which ran on `memory`, move to it.
 
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
@@ -1112,11 +1120,11 @@ There are three places to run:
 | Dedicated test host | a large disk and long run times | nightly suites a runner can't hold: the 9x long runs, such as scenario 92, which grows a 30 GB file |
 
 **Windows clients on a hosted runner.** The runner's own system owns TCP port 445, which is why
-`smb-client-compat.yml`'s Windows job has skipped `net use` on most runs since mid-September
-(#2994). Since Windows Server 2025, which the hosted runners are, the SMB client can connect on
-another port: `net use \\localhost\share /TCPPORT:12445`, or `New-SmbMapping -TcpPort`. So the
-fixture mounts on DittoFS's own port, and port 445 isn't needed. This still needs one run to prove
-it end to end.
+`smb-client-compat.yml`'s Windows job skipped `net use` on most runs from mid-September (#2994),
+until it was dropped: it tested nothing. Since Windows Server 2025, which the hosted runners are,
+the SMB client can connect on another port: `net use \\localhost\share /TCPPORT:12445`, or
+`New-SmbMapping -TcpPort`. So the fixture mounts on DittoFS's own port, and port 445 isn't needed.
+This still needs one run to prove it end to end.
 
 **Scenarios on a runner.** They need podman 5.6 or later (`test/scenarios/README.md`), and the
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:
@@ -1264,9 +1272,12 @@ server. No known-failure entry excuses either. A cell whose tool wrote no result
 no test in them, is not run, exit 2, and so is one whose container didn't start (`docker run`
 exits 125 to 127). docker passes a command's own exit status through, so a command in an image
 that exits 126 or 127 itself is not run too: by the shell's convention, a command it called
-couldn't run or wasn't found, which is lost coverage, not a regression. A name with several results
-in one cell is graded at each of them: smbtorture reports four subcases as `smb2.charset.Testing`,
-and three pass where one fails.
+couldn't run or wasn't found, which is lost coverage, not a regression. So is a command `dt` can't
+start, as when its program isn't there or its `dir` can't be entered, and one that runs as root and
+exits 125 to 127, `env`'s statuses for the same: the tests it stopped have no results, and the
+cell's note gives why once, however many it stopped. A name with several results in one cell is
+graded at each of them: smbtorture reports four subcases as `smb2.charset.Testing`, and three pass
+where one fails.
 
 The `system` suite is `exit` per scenario file. When another run holds its lock, `setup.sh` runs
 nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as not run, exit 2, and
@@ -1528,10 +1539,10 @@ green PRs that break each other. If the repository moves to an organization: ena
 `merge_group` to `tests.yml`'s triggers, and drop the up-to-date rule.
 
 **Baselines.** smbtorture's `baseline-results.md` is a snapshot of DittoFS's own results on
-`memory`, and the pynfs knfsd run compares the same tests against the kernel's server. Neither
-changes from one night to the next: the smbtorture file last changed on 2026-06-22. Both are
-manual:
-- `dt known baseline smbtorture/memory` writes the file, in `test/smb-conformance/smbtorture/`,
+`badger-s3`, the one profile conformance runs (§4.3), and the pynfs knfsd run compares the same
+tests against the kernel's server. Neither changes from one night to the next: the smbtorture
+file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
+- `dt known baseline smbtorture/badger-s3` writes the file, in `test/smb-conformance/smbtorture/`,
   from that cell's results in a run, and it lands through a pull request like any change. It counts
   each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
   the tool's own status, so an unexpected pass is a pass; and anything else as a skip. Its header
@@ -1545,9 +1556,9 @@ manual:
 The nightly job that pushes the file to develop goes. It has failed every night since the ruleset
 began requiring pull requests.
 
-**What moves when.** The AD-DC, Kerberos and Windows runs are options of registered suites, and
-their workflows move into `tests.yml` after the main ones (§8 step 3); until then they keep running
-as they are.
+**What moves when.** The AD-DC, Kerberos and Windows runs and the performance gates are options of
+registered suites, and their workflows move into `tests.yml` after the main ones (§8 step 3); until
+then they keep running as they are.
 
 Three things stay outside the registry:
 - **the security scans,** gitleaks and CodeQL (Analyze (go)), which are GitHub actions;
@@ -1603,7 +1614,8 @@ a percentage.
 - **Checks that the benchmarks still work:** `bench-smoke` (`dfsbench run --smoke`, documented as
   needing no secrets) runs on PRs, non-blocking, as `bench-smoke.yml` does today. `unit --nonrace`
   runs nightly: the throughput and allocation gates that skip under `-race` and `-short` today
-  (#2999).
+  (#2999). The aggregate random-write gate joins once it has a baseline: without one it passes
+  whatever it measures.
 - **Comparisons** run on the dedicated host. A suite whose result is more than an agreed margin
   below its 7-day median for three nights in a row adds a note to the develop-status issue.
 - **Manual suites on the dedicated host:** the metadata-scale benchmark (many files, metadata
@@ -1727,19 +1739,35 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    consecutive runs, every profile, and every CI job that runs a suite through `dt`, the lint jobs
    and the parity jobs, publishes through `dt report`.
    - **The same results,** per cell: the same verdict (green or not), the same new failures, the
-     same known failures and the same tests run. A difference whose cause is listed beforehand
-     doesn't reset the count: what `dt` grades that the scripts don't, such as skips and tests with
-     no result (§4.6, §4.7), and where the server runs (§4.2).
+     same known failures and the same tests run, counted as the tests that passed or failed,
+     expected skips excluded, as smbtorture's failed `CSN 0x7fff` draw is (§4.6). A
+     difference whose cause is listed beforehand doesn't reset the count: what `dt` grades that
+     the scripts don't, such as skips and tests with no result (§4.6, §4.7), and where the server
+     runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
+     alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
+     grading each test, as it does when one has no result, compares only its verdict, and differs
+     when the scripts pass it. pynfs's scripts reach the server at the host's address, as `dt`
+     does (§4.2); a test whose difference comes from where its server runs is named, with the
+     cause, in the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
-     A last job compares the two sides' results per cell.
-   - smbtorture's `badger-s3` cell is new (§4.3), so no script runs it: it needs 5 green runs.
+     They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
+     which come in step 3: each `dt run CELL --ci`, at the tier the scripts run at, `nightly` on
+     the schedule and on a dispatch naming a suite, and `merge` on another dispatch. A last job
+     compares the two sides' results for each planned cell, writes the comparison to its summary,
+     and fails when a cell differs, as a planned cell missing on either side does, or when there
+     is none to compare: its result is what the 5 runs count. None of these jobs fails the
+     workflow run, so develop's status is still the scripts'.
+   - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
+     name, as the scripts' results directories name them (`pynfs/badger-s3-4.1` for `dt`'s
+     `pynfs/badger-s3/1`). For it, `run.sh` saves each cell's exit status, and each grader its
+     grades: each failure, known or new, and the tests run.
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.
    - Move `nfs-pynfs.yml` first, as the smallest, then `conformance.yml`, then the unit, Windows,
      integration, operator and lint jobs, the lint, unit and integration jobs keeping their names.
-     Then AD-DC, the Kerberos runs and `bench-smoke.yml`.
+     Then AD-DC, the Kerberos runs, the performance gates and `bench-smoke.yml`.
    - `ci-health.yml` watches `tests.yml` beside the workflows still outside it, from its own list
      once `suites.json` goes (§4.1), and stops re-running `tests.yml`'s failed jobs, since `dt`'s
      retry replaces that.
@@ -1824,7 +1852,7 @@ Carried over from earlier reviews:
 
 Settled before revision 4:
 - CTRF: decided in the 2026-10-08 call.
-- Which profiles run on PRs: `badger-s3` only.
+- Which profiles conformance runs: `badger-s3` only, on PRs, and since 2026-10-19 in every tier.
 - WPTS's setup: it fits the fixture's fields.
 - The NFS `sec=krb5` job: it goes.
 - Real Windows and macOS mounts: the `clients` suite, on hosted runners, on the `memory` profile.

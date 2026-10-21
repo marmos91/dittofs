@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -122,6 +123,30 @@ func TestFixtureCell(t *testing.T) {
 	log, _ := os.ReadFile(filepath.Join(rep.Dir, "logs", "f-memory.log"))
 	if !strings.Contains(out, "[dt] $ echo 10.0.0.9:40001 dt-user\n") || strings.Contains(string(log), "s3cret") {
 		t.Errorf("the command as shown:\n%s\nlog:\n%s", out, log)
+	}
+}
+
+// A fixture with Kerberos has its KDC's image built from the checkout, one of
+// the fixture's own steps, before its server starts, and gives {realm} and
+// {krb5-conf}.
+func TestFixtureKerberosImage(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("dt sets up Kerberos only on Linux")
+	}
+	log := fakeDocker(t)
+	var before string // the docker calls when the fixture started
+	fakeFixture(t, func(context.Context) (fixtureServer, error) {
+		data, _ := os.ReadFile(log)
+		before = string(data)
+		return &fakeServer{}, nil
+	})
+	root, r := repo(t, `suites:
+  k: { cmd: "echo {realm} {krb5-conf}", fixture: { profile: memory, smb: true, kerberos: true } }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
+	rep, out := runTarget(t, root, r, "k", false)
+	build := "build\n-q\n-t\ndittofs-dt-kdc\n" + filepath.Join("test", "smb-conformance", "kdc") + "\n"
+	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(before, build) {
+		t.Errorf("outcome %+v, docker calls before the fixture:\n%s\n%s", o, before, out)
 	}
 }
 

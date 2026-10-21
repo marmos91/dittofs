@@ -210,6 +210,7 @@ func TestBlocked(t *testing.T) {
   fixed: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [docker] }
   plain: { cmd: "true", needs: [docker, root, podman] }
   goclient: { cmd: go test ./x, format: go-json, fixture: { profile: memory, client: namespace } }
+  rootclient: { cmd: "true", needs: [root], fixture: { profile: memory, client: namespace } }
 `, nil)
 	var checked []string
 	check := func(n string) error {
@@ -235,6 +236,9 @@ func TestBlocked(t *testing.T) {
 	}
 	if why, _ := Blocked(units["goclient"], nil, check); why != "dt doesn't run go test on a namespaced client yet" {
 		t.Errorf("goclient: %q", why)
+	}
+	if why, _ := Blocked(units["rootclient"], nil, check); why != "dt doesn't run a suite that needs root on a namespaced client yet" {
+		t.Errorf("rootclient: %q", why)
 	}
 }
 
@@ -499,6 +503,125 @@ func TestUnfillableCommandIsNotRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "ran")); err == nil {
 		t.Error("the cell ran a command before finding one it can't fill")
+	}
+}
+
+// A command that doesn't start ran nothing: it leaves its test not run, not
+// failed, and the note gives why, once however many tests it stopped, so
+// summary.json and the report give it too. A reader doesn't read such a test,
+// which has no result rather than an incomplete one.
+func TestCommandThatDidntStart(t *testing.T) {
+	root, r := repo(t, `groups: { g: [read, each, list] }
+suites:
+  read: { cmd: "no-such-program {test}", tests: "t/*.t", format: tap }
+  each: { cmd: "no-such-program {test}", tests: "t/*.t" }
+  list: { cmd: [ "true", "no-such-program" ] }
+`, map[string]string{"t/a.t": "", "t/b.t": ""})
+	rep, out := runTarget(t, root, r, "g", false)
+	why := ` didn't start: exec: "no-such-program": executable file not found in $PATH`
+	notes := []string{"`no-such-program {test}`" + why + "; no results", "`no-such-program {test}`" + why, "`no-such-program`" + why}
+	cells := readSummary(t, filepath.Join(rep.Dir, "summary.json")).Results.Extra.Cells
+	for i, o := range rep.Outcomes {
+		if o.Result != report.NotRun || o.Note != notes[i] || cells[i].Note != notes[i] {
+			t.Errorf("%s: %+v, summary.json %+v, want not run with %q\n%s", o.Name, o, cells[i], notes[i], out)
+		}
+	}
+	if cases := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(cases, []string{"list > true: passed"}) {
+		t.Errorf("results %q", cases)
+	}
+}
+
+// Run as root, a command is started by env, which exits 127 when it can't
+// find the program and 125 when it can't enter dir: that command didn't start
+// either, with the same results and note.
+func TestRootCommandThatDidntStart(t *testing.T) {
+	fakeSudo(t)
+	root, r := repo(t, `groups: { g: [read, each, list, dir] }
+suites:
+  read: { cmd: "no-such-program {test}", tests: "t/*.t", format: tap, needs: [root] }
+  each: { cmd: "no-such-program {test}", tests: "t/*.t", needs: [root] }
+  list: { cmd: [ "true", "no-such-program" ], needs: [root] }
+  dir: { cmd: "true", dir: no-such-dir, needs: [root] }
+`, map[string]string{"t/a.t": "", "t/b.t": ""})
+	rep, out := runTarget(t, root, r, "g", false)
+	notes := []string{"`no-such-program {test}` didn't start: env exited 127; no results", "`no-such-program {test}` didn't start: env exited 127", "`no-such-program` didn't start: env exited 127", "`true` didn't start: env exited 125"}
+	for i, o := range rep.Outcomes {
+		if o.Result != report.NotRun || o.Note != notes[i] {
+			t.Errorf("%s: %+v, want not run with %q\n%s", o.Name, o, notes[i], out)
+		}
+	}
+	if cases := readSummary(t, filepath.Join(rep.Dir, "summary.json")).cases(); !slices.Equal(cases, []string{"list > true: passed"}) {
+		t.Errorf("results %q", cases)
+	}
+}
+
+// A suite whose own needs name root, run by dt as a user, runs each command
+// as sudo -n env -C DIR PATH=... NAME=value ... CMD. sudo starts in the
+// repository, since the user may have no access to the suite's dir, and env
+// enters it as root; the command gets PATH and the suite's env, which sudo
+// resets. The command printed names each variable without its value. {bin}
+// is built only for a Go suite's tests run as root, so another such suite
+// without a fixture has none.
+func TestRootSuiteCommand(t *testing.T) {
+	calls := fakeSudo(t)
+	root, r := repo(t, `suites:
+  p:
+    cmd: { sh: 'pwd -P > {out}/ran; echo "$DT_VAR" >> {out}/ran' }
+    dir: d
+    env: { DT_VAR: "two words" }
+    needs: [root]
+  bin: { cmd: "ls {bin}", needs: [root] }
+`, map[string]string{"d/.keep": ""})
+	if rep, _ := runTarget(t, root, r, "bin", false); rep.Outcomes[0].Result != report.NotRun || !strings.Contains(rep.Outcomes[0].Note, "{bin}") {
+		t.Errorf("bin: %+v", rep.Outcomes[0])
+	}
+	rep, out := runTarget(t, root, r, "p", false)
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
+		t.Fatalf("outcome %+v\n%s", o, out)
+	}
+	var call []string // where sudo started, and its arguments, for the command
+	for _, c := range strings.Split(readFile(t, calls), "\n\n") {
+		if lines := strings.Split(c, "\n"); len(lines) > 2 && lines[2] == "env" {
+			call = lines
+		}
+	}
+	physical := func(p string) string {
+		p, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	dir := filepath.Join(root, "d")
+	want := []string{physical(root), "-n", "env", "-C", dir, "PATH=" + os.Getenv("PATH"), "DT_VAR=two words", "sh", "-c"}
+	if len(call) != len(want)+1 || !slices.Equal(call[:len(want)], want) {
+		t.Errorf("sudo started in and with %q, want %q and the script", call, want)
+	}
+	if ran := readFile(t, filepath.Join(rep.Dir, "p", "ran")); ran != physical(dir)+"\ntwo words\n" {
+		t.Errorf("the command ran in, and with: %q", ran)
+	}
+	if !strings.Contains(out, "[dt] $ sudo -n env -C "+dir+" PATH=$PATH DT_VAR=$DT_VAR sh -c ") || strings.Contains(out, "two words") {
+		t.Errorf("printed:\n%s", out)
+	}
+}
+
+// A command run as root that outlives its limit is interrupted, as a Go
+// suite's tests run as root are, since dt can't kill what sudo runs: sudo
+// passes the interrupt on, and the command stops.
+func TestRootSuiteCommandInterrupted(t *testing.T) {
+	fakeSudo(t)
+	root, r := repo(t, `suites:
+  p:
+    cmd: { sh: "trap 'echo interrupted > {out}/stopped; exit 1' INT; sleep 30 & wait" }
+    timeout: { test: 1s }
+    needs: [root]
+`, nil)
+	rep, out := runTarget(t, root, r, "p", false)
+	if o := rep.Outcomes[0]; o.Result != report.Failed || o.Note != "timed out after 1s" {
+		t.Errorf("outcome %+v\n%s", o, out)
+	}
+	if got := readFile(t, filepath.Join(rep.Dir, "p", "stopped")); got != "interrupted\n" {
+		t.Errorf("stopped: %q", got)
 	}
 }
 

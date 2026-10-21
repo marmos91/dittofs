@@ -1009,18 +1009,55 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, resp)
 }
 
-// Remove handles DELETE /api/v1/shares/{name}.
-// Deletes a share (admin only).
+// Remove handles DELETE /api/v1/shares/{name}, where {name} is the share's
+// name or its ID. Deletes a share (admin only).
 func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
-	name := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
-	if name == "/" {
+	ref := metadata.NormalizeShareNameFromURL(chi.URLParam(r, "name"))
+	if ref == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}
 
+	// The runtime, the metadata store and the journal know a share by its
+	// name alone, so an ID is resolved to the name before anything else.
+	share, err := h.store.GetShare(r.Context(), ref)
+	if err != nil {
+		if errors.Is(err, models.ErrShareNotFound) {
+			NotFound(w, "Share not found")
+			return
+		}
+		InternalServerError(w, "Failed to get share")
+		return
+	}
+	name := share.Name
+
 	// Remove from runtime first (if runtime is available)
 	removedFromRuntime := false
 	if h.runtime != nil {
+		// decision: the name stays taken until the share's row is gone,
+		// rather than freed as the removal begins: the share's records and
+		// journal are keyed by its name, so a share created under it before
+		// the purge ends could be purged with them. A second removal meanwhile
+		// is refused. Free the name at once when a share's data is keyed by
+		// something no later share can hold.
+		end, err := h.runtime.BeginShareRemoval(name)
+		if err != nil {
+			Conflict(w, "Share is being removed")
+			return
+		}
+		defer end()
+		// A removal that held the name while this one resolved it may have
+		// deleted the share since, and a share created under the name after
+		// that is not the one this request named.
+		if _, err := h.store.GetShareByID(r.Context(), share.ID); err != nil {
+			if errors.Is(err, models.ErrShareNotFound) {
+				NotFound(w, "Share not found")
+				return
+			}
+			InternalServerError(w, "Failed to get share")
+			return
+		}
+
 		// A share absent from the registry is not an error here — the DB row is
 		// authoritative — but whether it was there decides who raises the
 		// invalidation below.

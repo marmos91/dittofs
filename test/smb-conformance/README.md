@@ -12,7 +12,7 @@ Comprehensive SMB3 protocol conformance testing for the DittoFS SMB adapter. Thi
 | **smbclient E2E** | smbclient CLI | CLI-based protocol validation | ~2 min |
 | **Cross-protocol** | NFS + SMB mounts | Lease/delegation coordination | ~5 min |
 | **Kerberos** | go-smb2 + smbtorture | Kerberos auth + SMB3 features | ~10 min |
-| **Multi-OS CI** | mount.cifs/mount_smbfs/net use | Windows/macOS/Linux clients | ~10 min |
+| **Multi-OS CI** | mount.cifs/mount_smbfs | macOS/Linux clients | ~10 min |
 
 ## Prerequisites
 
@@ -161,7 +161,7 @@ cd smbtorture
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `memory-kerberos`) |
+| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `badger-s3`, `memory-kerberos`) |
 | `--filter FILTER` | (all) | Run specific sub-test by name |
 | `--timeout SECONDS` | `1200` | Kill smbtorture after SECONDS |
 | `--keep` | off | Leave containers running |
@@ -331,7 +331,7 @@ SMBTORTURE_AUTH=kerberos ./smbtorture/run.sh --profile memory --verbose
 
 ## Multi-OS Client Compatibility
 
-Validates DittoFS SMB adapter against native OS SMB clients on three platforms.
+Validates DittoFS SMB adapter against native OS SMB clients on two platforms.
 
 ### Workflow
 
@@ -343,18 +343,11 @@ Validates DittoFS SMB adapter against native OS SMB clients on three platforms.
 |----------|--------|---------------|
 | Ubuntu (latest) | mount.cifs + smbclient | `sudo mount -t cifs //localhost/share /mnt/test -o port=12445,...` |
 | macOS (latest) | mount_smbfs | `mount_smbfs //user:pass@localhost:12445/share /tmp/smbtest` |
-| Windows (latest) | net use | `net use Z: \\localhost\share /user:test test123` |
-
-The Windows cell is best-effort. `net use` can only reach TCP 445 (UNC syntax has no port
-field), so DittoFS has to take 445 from the runner's in-box SMB server. When that listener
-cannot be stopped, the job skips the bind and the assertions and says so with a warning
-annotation and a step-summary line — a green Windows job is not by itself proof that the
-redirector path was exercised. Linux and macOS use port 12445 and are unaffected.
 
 ### When It Runs
 
 - **Push to develop** (SMB paths changed)
-- **Weekly** (Monday 4 AM UTC)
+- **Weekly** (Sunday 21:55 UTC)
 - **Manual dispatch** (`workflow_dispatch`)
 
 NOT on pull requests (too slow for PR checks).
@@ -375,15 +368,15 @@ Each platform runs the same core operations:
 
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
-| `conformance.yml` | PR (presubmit profiles), push (all), nightly | WPTS BVT + smbtorture + Kerberos | ~20 min |
-| `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux client testing | ~10 min |
+| `conformance.yml` | PR, push, nightly | WPTS BVT + smbtorture on `badger-s3`, Kerberos | ~20 min |
+| `smb-client-compat.yml` | push, weekly | macOS/Linux client testing | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol) | ~15 min |
 
 ### Speed Tiers
 
-- **PR checks (fast, <5 min)**: Memory-only WPTS BVT, memory-only smbtorture
-- **Push to develop (comprehensive, <30 min)**: All profiles WPTS BVT, all profiles smbtorture, E2E tests, multi-OS client compat
-- **Weekly (full matrix, <60 min)**: Everything above + Kerberos smbtorture
+- **PR checks**: WPTS BVT and smbtorture, on `badger-s3`
+- **Push to develop and nightly**: the same, plus Kerberos smbtorture and the E2E tests
+- **Push to develop (SMB paths) and weekly**: multi-OS client compat
 
 ### Results
 

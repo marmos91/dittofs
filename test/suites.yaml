@@ -73,8 +73,8 @@ suites:
         needs: [windows]
         blocking: { pr: false }
       nonrace:
-        cmd: go test -timeout=25m ./pkg/block/... ./internal/bench/...
-        env: { DITTOFS_BENCH_LANE: "1" }
+        # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
+        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
         tier: nightly
   integration:
     job: Integration Tests (1.26.x)
@@ -123,14 +123,13 @@ suites:
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
 
-  # Conformance. On pull requests only the production profile, badger-s3, runs.
+  # Conformance runs the production profile, badger-s3, only.
   pjdfstest:
     format: tap
     cmd: prove -v {test}
     dir: "{mount}"
     tests: "{tools}/pjdfstest/tests/*/*.t"
-    matrix: { profile: [memory, badger, badger-s3], nfs: ["3", "4", "4.1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], nfs: ["3", "4", "4.1"] }
     fixture:
       profile: "{profile}"
       nfs: { version: "{nfs}", options: "noac,sync,lookupcache=none" }
@@ -143,8 +142,7 @@ suites:
   pynfs:
     format: junit
     cmd: "{tools}/pynfs/bin/pynfs-4.{minor} {server}:{nfs-port}/export --minorversion {minor} --security sys --uid 0 --gid 0 --rundeps --maketree --xml {out}/junit.xml all"
-    matrix: { profile: [memory, badger, badger-s3], minor: ["0", "1"] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3], minor: ["0", "1"] }
     fixture: { profile: "{profile}", nfs: export, squash: none, lease: 30s, users: [1] }   # uid 1 is pynfs's second client
     known: test/nfs-conformance/pynfs/known.yaml
     tier: pr
@@ -166,11 +164,13 @@ suites:
       DryRun: "false"
       SutComputerName: "{server}"
       SutIPAddress: "{server}"
-      DomainName: "{server}"
+      # A value without a dot keeps WPTS in workgroup mode, as the fixture has no domain
+      # controller. The server's address won't do: WPTS reads it as a domain's name once
+      # its last byte has two digits.
+      DomainName: localhost
       AdminUserName: "{user}"
       PasswordForAllUsers: "{password}"
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     fixture:
       profile: "{profile}"
       smb: { encryption: preferred, port: 445 }
@@ -198,16 +198,22 @@ suites:
     # One limit for every line of the list, as run.sh gives: it stops a hang, it doesn't grade
     # speed. The slowest suite took 193 s, and one suite 22 s on one profile and 112 s on another.
     timeout: { test: 5m }
-    matrix: { profile: [memory, badger, badger-s3] }
-    select: { pr: { profile: [badger-s3] } }
+    matrix: { profile: [badger-s3] }
     # smb2.multichannel.bugs.bug_15346 opens its extra connections to 445, whatever -p says.
     fixture: { profile: "{profile}", smb: { port: 445 }, shares: test/smb-conformance/shares.yaml, reset: each }
     known: test/smb-conformance/smbtorture/known.yaml
     tier: pr
     needs: [linux, docker]
     options:
+      # The suite's options, as run.sh --kerberos gives them too. smbtorture finds the KDC in
+      # the fixture's krb5.conf, and asks it for a ticket to cifs/{server}, a name here.
       kerberos:
-        cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        cmd: >-
+          smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required
+          --option=netbiosname=localhost --option=clientminprotocol=SMB2_02
+          --option=clientmaxprotocol=SMB3 --option=torture:smbd=false
+          --option=torture:maxopenfiles=2000 --option=torture:acl_xattr_name=security.NTACL {test}
+        volumes: { "{krb5-conf}": /etc/krb5.conf }
         tests: [smb2.session, smb2.read, smb2.lock]
         timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}
@@ -248,7 +254,7 @@ suites:
     # nfstest mounts by itself, at the version it's told, so a set gives its flags.
     cmd: "{tools}/nfstest/bin/nfstest_{test} --server {server} --port {nfs-port} --export /export --nfsversion {nfs} --mtpoint /tmp/dittofs-test --mtopts {mtopts} --rmtraces --notty {test-args}"
     matrix:
-      profile: [memory]
+      profile: [badger-s3]
       mount-options:
         - default: { nfs: "4.2", mtopts: hard }
         - v3: { nfs: "3", mtopts: "hard,tcp,mountproto=tcp" }

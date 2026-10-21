@@ -223,18 +223,21 @@ func TestGoPackages(t *testing.T) {
 // fakeSudo puts a sudo on the PATH that drops -n, resets the environment as
 // sudo does, marks it, and runs the rest as the user, so the root path runs
 // without real sudo. As root, dt takes the plain path, so there's nothing to
-// test.
-func fakeSudo(t *testing.T) {
+// test. It returns the file where each call writes the directory it started
+// in and its arguments, a line each, and then an empty line.
+func fakeSudo(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("the root path runs through sudo, as a user that isn't root")
 	}
 	dir := t.TempDir()
-	script := "#!/bin/sh\n[ \"$1\" = -n ] && shift\nexec env -i DT_FAKE_SUDO=1 \"$@\"\n"
+	calls := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\n{ pwd -P; printf '%s\\n' \"$@\" ''; } >> '" + calls + "'\n[ \"$1\" = -n ] && shift\nexec env -i DT_FAKE_SUDO=1 \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return calls
 }
 
 // withBins adds the dfs and dfsctl a root suite needs built, as stubs.

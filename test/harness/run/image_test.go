@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/fixture"
+	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
@@ -112,23 +115,6 @@ func TestImageDockerArgs(t *testing.T) {
 	got := []byte(regexp.MustCompile(`(?m)^dt-(img-a|own)-[0-9a-f]{8}$`).ReplaceAllString(
 		strings.NewReplacer(cellOut, "{out}", root, "ROOT").Replace(readFile(t, log)), "dt-$1-NAME"))
 	golden(t, "docker-run.golden", got)
-}
-
-// The network is the one the fixture's server is on: the host's, or, for dt
-// in a dtc container on a bridge network, that container's.
-func TestImageNetwork(t *testing.T) {
-	for _, c := range []struct{ in, hostnet, want string }{
-		{"", "", "host"},
-		{"1", "1", "host"},
-		{"1", "", "container:dtc-1"},
-	} {
-		t.Setenv("DT_IN_CONTAINER", c.in)
-		t.Setenv("DT_HOSTNET", c.hostnet)
-		t.Setenv("DT_CONTAINER_NAME", "dtc-1")
-		if got := network(); got != c.want {
-			t.Errorf("in %q, hostnet %q: %s, want %s", c.in, c.hostnet, got, c.want)
-		}
-	}
 }
 
 // A test stopped at its limit, at the cell's or by an interrupt has its
@@ -295,6 +281,64 @@ func TestTemplates(t *testing.T) {
 	}
 	if _, err := os.Stat(log); err == nil {
 		t.Error("a cell whose templates dt can't fill ran docker")
+	}
+}
+
+// wptsDomain is the shape of a DomainName WPTS takes for a domain's name: a
+// DNS name whose last label has at least two characters.
+var wptsDomain = regexp.MustCompile(`(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// The registry's wpts cell keeps WPTS in workgroup mode whatever the server's
+// address, in the environment its container is given and in the config dt
+// fills in for it: an address whose last byte has two digits, as a DomainName,
+// would have WPTS run its domain tests against a domain controller the
+// fixture doesn't have.
+func TestWPTSWorkgroup(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	r, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells, err := Select(root, r, "wpts", "", "pr", nil, nil, nil)
+	if err != nil || len(cells) == 0 {
+		t.Fatalf("wpts: %d cells, %v", len(cells), err)
+	}
+	c := cells[0]
+	matrix := c.Unit.Matrix.Fill(c.Matrix)
+	spec, err := cellFixture(*c.Unit.Fixture, matrix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vals := map[string]string{"out": t.TempDir()}
+	maps.Copy(vals, matrix)
+	for _, k := range fixture.Placeholders(spec) {
+		vals[k] = "dt"
+	}
+	vals["server"] = "10.1.1.180"
+
+	env, err := suiteEnv(c.Unit, c.Tier, vals, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inEnv []string
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "DomainName="); ok {
+			inEnv = append(inEnv, v)
+		}
+	}
+	dir := filepath.Join(vals["out"], "config")
+	if err := renderTemplates(root, c.Unit.Templates, dir, vals, nil); err != nil {
+		t.Fatal(err)
+	}
+	property := regexp.MustCompile(`<Property name="DomainName" value="([^"]*)"`)
+	m := property.FindStringSubmatch(readFile(t, filepath.Join(dir, "CommonTestSuite.deployment.ptfconfig")))
+	if len(inEnv) != 1 || m == nil {
+		t.Fatalf("DomainName in the environment %q, in the config %q: want one of each", inEnv, m)
+	}
+	for where, v := range map[string]string{"environment": inEnv[0], "config": m[1]} {
+		if wptsDomain.MatchString(v) {
+			t.Errorf("the %s's DomainName %q, with the server at %s: WPTS takes it for a domain's name", where, v, vals["server"])
+		}
 	}
 }
 

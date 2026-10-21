@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,6 +93,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("{}"))
 	case strings.Contains(r.URL.Path, "/permissions/users/"):
 		call += fmt.Sprintf(" %v", body["level"])
+	case r.URL.Path == "/api/v1/identity-mappings":
+		call += fmt.Sprintf(" %v %v to %v", body["provider_name"], body["principal"], body["username"])
+		_, _ = w.Write([]byte("{}"))
 	default:
 		_, _ = w.Write([]byte("{}"))
 	}
@@ -189,6 +193,39 @@ func TestConfigureSMB(t *testing.T) {
 	}
 	if f.running["smb"] != 40002 || f.shares[1]["access_based_enumeration"] != true {
 		t.Errorf("SMB on %d, shares %v", f.running["smb"], f.shares)
+	}
+}
+
+// With Kerberos, {user}'s principal maps to {user} once the test users are
+// in, as the scripts' bootstrap maps it, and the check finds SMB at {server},
+// a name then, and fails when the name doesn't lead there.
+func TestConfigureKerberos(t *testing.T) {
+	f, c, url := newFakeAPI(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Kerberos: true}, url, 0, port)
+	s.kdc = &kdc{host: "localhost"}
+	if err := s.configure(c, nil, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.check(c, nil); err != nil {
+		t.Errorf("SMB at {server}: %v", err)
+	}
+	want := []string{
+		"POST /api/v1/users dt-user uid=65535 gid=65535",
+		"POST /api/v1/users dt-user2 uid=65536 gid=65536",
+		"POST /api/v1/identity-mappings kerberos dt-user@DITTOFS.TEST to dt-user",
+		"POST /api/v1/shares /export owner=<nil>",
+	}
+	if i := slices.Index(f.calls, want[0]); i < 0 || i+len(want) > len(f.calls) || !slices.Equal(f.calls[i:i+len(want)], want) {
+		t.Errorf("calls:\n%s\nwant, in a row:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+	_ = l.Close()
+	if err := s.check(c, nil); err == nil || !strings.Contains(err.Error(), "{server}, the name localhost, doesn't lead to SMB's port") {
+		t.Errorf("nothing at {server}: %v", err)
 	}
 }
 
