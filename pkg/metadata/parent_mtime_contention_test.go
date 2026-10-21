@@ -60,14 +60,18 @@ func TestParentMtimeContention(t *testing.T) {
 		svc := metadata.New()
 		require.NoError(t, svc.RegisterStoreForShare(share, svc0store(store)))
 		// decision: the coalesced directory-timestamp flush is held off, so a
-		// change that makes it fire far more often goes unseen here. The flush
-		// writes the parent once per interval by design and aborts every same-dir
-		// create in flight, so a run that outlasts an interval gains conflicts in
-		// proportion to its wall time whatever the create path does: 45-63 at
-		// 81-120 creates/s, against 1-6 with the flush held. No share of the
-		// creates can absorb a cost that follows wall time. Withdraw the hold if
-		// creates stop reading the parent inode inside their transaction, since
-		// the flush could then abort none of them.
+		// change that makes it fire more often goes unseen here. A flush on every
+		// create still fails
+		// TestCommitCount_DeferredWritePathFiresOneRelaxedCommitPerLeg, which
+		// counts the create's durable commits; a shorter interval that stops short
+		// of every create fails neither test. The flush writes the parent once per
+		// interval by design and aborts every same-dir create in flight, so a run
+		// that outlasts an interval gains conflicts in proportion to its wall time
+		// whatever the create path does: 45-63 at 81-120 creates/s, against 1-6
+		// with the flush held. No share of the creates can absorb a cost that
+		// follows wall time. Withdraw the hold if creates stop reading the parent
+		// inode inside their transaction, since the flush could then abort none of
+		// them.
 		metadata.HoldDirectoryTimeFlushForTest(svc)
 		auth := &metadata.AuthContext{
 			Context: ctx, AuthMethod: "unix",
