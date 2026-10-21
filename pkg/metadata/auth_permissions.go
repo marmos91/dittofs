@@ -664,16 +664,11 @@ func (s *Service) HasMaximalReadAccess(file *File, authCtx *AuthContext) bool {
 //
 //   - Root bypass (UID 0): returns desiredAccess as granted; MAXIMUM_ALLOWED
 //     resolves to GENERIC_ALL.
-//   - file.ACL == nil: NO DACL-level enforcement. Per MS-DTYP §2.5.3 a NULL
-//     DACL grants every right to every principal; per MS-FSA the access check
-//     against the security descriptor is only meaningful when an SD exists.
-//     We mirror that: return the requested set (minus MAXIMUM_ALLOWED itself)
-//     as granted. POSIX semantics (mode-bit enforcement on read/write/delete)
-//     remain enforced by the metadata operation layer downstream of CREATE;
-//     this is the open-time gate only, and it must not deny opens that the
-//     pre-#529 server permitted (load-bearing for WPTS BVT, smb2.create.multi,
-//     and DELETE/WRITE_DAC/WRITE_OWNER requests that the POSIX rwx mapping
-//     cannot encode).
+//   - file.ACL == nil: the file has no security descriptor, so the rights
+//     come from its POSIX mode and owner (posixFileAccess): the owner gets
+//     GENERIC_ALL, everyone else the rwx bundles of ComputeMaximalAccess, and
+//     DELETE is granted only when the requester could unlink the file over
+//     NFS — delete permission on the parent plus the sticky-bit rule.
 //   - file.ACL != nil: per-requested-bit acl.Evaluate; only the bits the DACL
 //     explicitly allows are granted. EVERYONE@/OWNER@/GROUP@/SID-form ACEs
 //     resolve via the same EvaluateContext shape as evaluateACLPermissions.
@@ -784,16 +779,31 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 		}
 	}
 
-	// No DACL stored: nothing to enforce at the open gate. Grant the explicit
-	// set as-is; MAXIMUM_ALLOWED expands to GENERIC_ALL. Downstream metadata
-	// ops (read/write/delete/setattr) still apply their own POSIX-mode checks,
-	// so a per-op DENY for a non-owner with mode 0o600 still produces
-	// STATUS_ACCESS_DENIED at the operation level — just not at open.
+	// No DACL stored: the open is gated by the file's POSIX mode and owner.
+	// The granted rights become the handle's authority — a handle carrying
+	// FILE_WRITE_DATA or DELETE skips the per-op POSIX check downstream
+	// (WriteAuthorizedByHandle, HasDeleteAccess) — so granting the request
+	// as-is here would let any share user write or delete another user's file.
 	if file.ACL == nil {
+		effective := s.posixFileAccess(file, parent, authCtx)
 		if maximumAllowed {
-			return accessMaskPosixGenericAll | explicit, nil
+			named := explicit &^ genericDerived
+			if named != 0 && effective&named != named {
+				return effective, &StoreError{
+					Code:    ErrAccessDenied,
+					Message: "explicit non-MAXIMUM_ALLOWED bit denied by file mode",
+				}
+			}
+			return effective, nil
 		}
-		return explicit, nil
+		granted := effective & explicit
+		if granted != explicit {
+			return granted, &StoreError{
+				Code:    ErrAccessDenied,
+				Message: "desired access denied by file mode",
+			}
+		}
+		return granted, nil
 	}
 
 	// DACL-present path: single-pass acl.EvaluateGranted. It accumulates the
@@ -831,10 +841,10 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 	// Windows semantics that lets administrators delete files with no DELETE
 	// in their own DACL via the containing folder's permissions.
 	//
-	// Null parent DACL (parent.ACL == nil) follows MS-DTYP §2.5.3: a NULL DACL
-	// grants every right to every principal, so the override applies.
+	// A parent with no stored DACL is judged by its POSIX mode, as NFS REMOVE
+	// is — a missing DACL is not a NULL DACL granting everyone everything.
 	if explicit&acl.ACE4_DELETE != 0 && granted&acl.ACE4_DELETE == 0 && parent != nil {
-		if parentGrantsDeleteChild(parent, authCtx) {
+		if s.parentGrantsDeleteChild(file, parent, authCtx) {
 			granted |= acl.ACE4_DELETE
 		}
 	}
@@ -851,7 +861,7 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 		// effective-rights set too so the open's GrantedAccess (which the
 		// caller propagates into Open.GrantedAccess and surfaces via MxAc)
 		// reflects the same Windows semantics on MaxAccess queries.
-		if parent != nil && parentGrantsDeleteChild(parent, authCtx) {
+		if parent != nil && s.parentGrantsDeleteChild(file, parent, authCtx) {
 			effective |= acl.ACE4_DELETE
 		}
 		// MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"): FILE_READ_ATTRIBUTES is always granted from the
@@ -897,18 +907,53 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 	return granted, nil
 }
 
+// posixFileAccess maps a file with no stored DACL to the access rights its
+// POSIX mode and owner grant the requester: the ComputeMaximalAccess bundles,
+// plus FILE_READ_ATTRIBUTES (always granted from the containing directory,
+// MS-FSA §2.1.5.1.2.1), with DELETE decided only by posixMayUnlink. The
+// owner's GENERIC_ALL bundle carries DELETE, but owning a file does not make
+// it removable: unlink is a right on the parent directory.
+func (s *Service) posixFileAccess(file, parent *File, authCtx *AuthContext) uint32 {
+	access := s.ComputeMaximalAccess(file, authCtx)&^acl.ACE4_DELETE | acl.ACE4_READ_ATTRIBUTES
+	if s.posixMayUnlink(file, parent, authCtx) {
+		access |= acl.ACE4_DELETE
+	}
+	return access
+}
+
+// posixMayUnlink reports whether the requester may remove file from parent
+// under the same rules RemoveFile applies to an NFS REMOVE: delete permission
+// on the parent (checkDeletePermission) and the sticky-bit owner rule. A nil
+// parent, or any error resolving the check, denies.
+//
+// decision: execute on the parent is not checked, because RemoveFile does not
+// check it either — NFS meets traverse at LOOKUP, and SMB sessions hold
+// bypass-traverse (AuthContext.BypassTraverseChecking). Add it here and in
+// RemoveFile together if either path ever reaches a parent without traversal.
+func (s *Service) posixMayUnlink(file, parent *File, authCtx *AuthContext) bool {
+	if parent == nil || authCtx == nil {
+		return false
+	}
+	parentHandle, err := EncodeFileHandle(parent)
+	if err != nil {
+		return false
+	}
+	return s.checkDeletePermission(authCtx, parentHandle, file) == nil &&
+		CheckStickyBitRestriction(authCtx, &parent.FileAttr, &file.FileAttr) == nil
+}
+
 // parentGrantsDeleteChild decides whether a parent directory grants
 // FILE_DELETE_CHILD (ACE4_DELETE_CHILD) to the requester for the purposes
-// of the MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") delete-via-parent override. Null DACL on the
-// parent grants everything (MS-DTYP §2.5.3). Root and nil-identity callers
-// also bypass — consistent with the rest of CheckFileAccessWithParent.
-func parentGrantsDeleteChild(parent *File, authCtx *AuthContext) bool {
+// of the MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") delete-via-parent override. A parent with
+// no stored DACL is judged by its POSIX mode, exactly as NFS REMOVE is
+// (posixMayUnlink). Root callers bypass — consistent with the rest of
+// CheckFileAccessWithParent.
+func (s *Service) parentGrantsDeleteChild(file, parent *File, authCtx *AuthContext) bool {
 	if parent == nil {
 		return false
 	}
-	// Null DACL: grant per MS-DTYP §2.5.3.
 	if parent.ACL == nil {
-		return true
+		return s.posixMayUnlink(file, parent, authCtx)
 	}
 	// Root bypass: identical to the file-side root short-circuit.
 	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
@@ -935,7 +980,8 @@ func parentGrantsDeleteChild(parent *File, authCtx *AuthContext) bool {
 //
 // When file.ACL is nil, the POSIX fallback maps the file's mode bits:
 //   - Owner: GENERIC_ALL.
-//   - Group member / other: the rwx bundles (accessMaskPosixRead/Write/Execute).
+//   - Group member / other: the rwx bundles (accessMaskPosixRead/Write/Execute),
+//     with FILE_DELETE_CHILD added to write on a directory.
 //   - Any authenticated user with no granted bits still receives the minimal
 //     READ_CONTROL | SYNCHRONIZE set.
 func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 {
@@ -990,6 +1036,11 @@ func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 
 	}
 	if permBits&0x2 != 0 { // write
 		access |= accessMaskPosixWrite
+		// Write on a directory carries FILE_DELETE_CHILD, as the synthesized
+		// DACL maps it (acl.rwxToFullMask).
+		if file.Type == FileTypeDirectory {
+			access |= acl.ACE4_DELETE_CHILD
+		}
 	}
 	if permBits&0x1 != 0 { // execute
 		access |= accessMaskPosixExecute

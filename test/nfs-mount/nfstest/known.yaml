@@ -4,20 +4,6 @@
   category: bug
   reason: reading a file does not update its atime; may be deliberate
   issue: '#2982'
-- test: 'posix/seekdir: traceback: ValueError: NULL pointer access'
-  status: fail
-  fix: planned
-  category: bug
-  reason: readdir() after seekdir() to a saved cookie returns nothing (NULL), the same failure as cthon04 special/telldir
-  issue: '#2979'
-  intermittent: true
-- test: 'posix/telldir: traceback: ValueError: NULL pointer access'
-  status: fail
-  fix: planned
-  category: bug
-  reason: 'as posix/seekdir: the cookie from telldir() does not seek back'
-  issue: '#2979'
-  intermittent: true
 - test: 'dio/*: WRITEs should be cached for buffered I/O'
   status: fail
   fix: wontfix
