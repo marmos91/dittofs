@@ -383,6 +383,7 @@ Restamp(ctx context.Context, dir string, expect JournalID, install InstallationI
 (*Journal) Share(tag ShareTag, limit int64, floor Version, policy SyncPolicy) (*Handle, error)
 (*Journal) Forget(ctx context.Context, tag ShareTag) error
 (*Journal) Strand(tag ShareTag) error // §3: serve, evict and offer none of the tag's extents
+(*Journal) Close() error // §8.7: joins background work, waits for calls in flight
 (*Handle) Close() error
 (*Handle) SetSyncPolicy(policy SyncPolicy) error           // §5.2
 (*Handle) Reserve(n int64, writes int) (*Reservation, error)  // §6
@@ -404,28 +405,36 @@ this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20fil
 that append a record, read a segment, sync, or wait on another operation: `Init`,
 `Open`, `Restamp`, `Forget` and `Repack`, and through a handle or a reservation
 `WriteAt`, `Sync`, `ReadAt`, `Fill`, `Offload` and `OffloadMany` (whose callback
-receives the context too), `MarkOffloaded`, `Unmark`, `Release`, the removals of
+receives a context derived from it), `MarkOffloaded`, `Unmark`, `Release`, the removals of
 [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`. A call that only reads or changes
 memory and never waits takes none: `Share`, `Strand`, `SetSyncPolicy`,
 `Reserve`, `Draw`, `SetVersionLimit`, `Settle`, `Held`, `Extents`, `Files`,
-`DirtyFiles` and `Stats`. `Close` takes none either, like the syncer's, the
-remote tier's, the engine's and GC's: it waits only for calls already in flight,
-each under its own context.
+`DirtyFiles` and `Stats`. No `Close` takes one either, the journal's, a
+handle's or a reservation's, like the syncer's, the remote tier's, the engine's
+and GC's: the journal's and a handle's wait only for calls already in flight,
+each under its own context, and the journal's also joins its background work
+([§8.7](#8.7%20Shutdown)).
 
 The context carries the caller's deadline. The journal honours its
 cancellation only where that leaves no outcome unknown:
 
-- a call checks the context before it changes any state, and if it is done
-  returns the context's error having changed nothing;
+- a call checks the context first, before any refusal check ([§6](#6.%20Capacity)) and before
+  it changes any state, and if it is done returns the context's error having
+  changed nothing;
 - once a call has appended its record, it completes and returns its result
   whatever the context says, so a cancelled write is never half made;
 - a cancelled `Sync` stops waiting, not the sync: the sync runs on for the other
   writes it covers, and its outcome reaches the next `Sync` of the file as
-  [§5.3](#5.3%20A%20failed%20sync) says;
+  [§5.3](#5.3%20A%20failed%20sync) says. A `Sync` that returns the context's error clears no
+  file's mark of an unreported failure;
 - `Open` checks between recovery phases, and a cancelled open leaves the
   directory for a later `Open` to recover;
-- a refusal ([§6](#6.%20Capacity)) is returned at once as itself, and a done context never
-  replaces it.
+- `OffloadMany` and `Repack` stop at a record boundary, and every record they
+  appended stands; `Since` ends its iteration with the context's error;
+- `report` ignores the context: what it records has already committed
+  ([RFC 8 §6.8](rfc-8-engine.md#6.8%20The%20callback%20returns%20only%20what%20committed)), and refusing it would cost a second upload;
+- a call past the context check that is refused ([§6](#6.%20Capacity)) returns the refusal at
+  once, as itself.
 
 > decision: the journal takes a context although it never waits for capacity,
 > only on its own appends and syncs ([§6](#6.%20Capacity), [§8.1](#8.1%20What%20must%20not%20block%20what)); the deadline
@@ -2445,6 +2454,9 @@ which domain guards it. The domains are:
 The file append domain is what [§3.1](#3.1%20Write), [§3.4](#3.4%20Fill) and [§7.2](#7.2%20Repack) mean by the file's
 serialised append. It is the one domain held across I/O — the record write — and
 it guards one file only, so writes to different files still run concurrently.
+A wait for it is not abandoned when the caller's context is done: the domain is
+held across one local record write and nothing remote, which is the bound
+[RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline) asks a lock that cannot be abandoned to state.
 
 The file index domain is deliberately per-file, not store-wide: a store-wide
 index lock makes every read of every file contend with every write to any file.
@@ -2711,7 +2723,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§4.3](#4.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§3](#3.%20Interface) attached share raises the counter | Open a journal whose counter stands at 10^3; attach a share with a floor of 9×10^8; assert the first write through it is assigned a version above the floor, and that a design attaching without raising assigns one below the share's imported refs. |
 | [§3](#3.%20Interface) unclaimed tags are the caller's to name | Write and offload file F under tag T and dirty file G under tag P; reopen and attach only a new tag U. Assert the journal forgets neither T nor P on its own and serves G under P once P attaches; then `Forget(T)` as the caller names it and assert no read of F serves the old bytes and `Since` yields nothing of T. A journal that forgets every tag not yet attached drops P's acknowledged writes. |
-| [§3](#3.%20Interface) a cancelled call changes nothing or completes | Call `WriteAt`, `Release` and `Forget` with a context already done: assert each returns the context's error and appends no record, and a crash and reopen finds nothing of them. Cancel the context of a `WriteAt` held at the storage seam after its record is appended: assert it returns its version and the extent reads back. Cancel a `Sync` while it waits, then fail that sync at the seam: assert the cancelled call returned the context's error and the next `Sync` of the file reports the failure. Fill a share to its limit and call `WriteAt` with a done context: assert the refusal still names the share's limit. A journal that checks the context after appending leaves a write the caller was told failed but that recovery serves. |
+| [§3](#3.%20Interface) a cancelled call changes nothing or completes | Call `WriteAt`, `Release` and `Forget` with a context already done: assert each returns the context's error and appends no record, and a crash and reopen finds nothing of them. Cancel the context of a `WriteAt` held at the storage seam after its record is appended: assert it returns its version and the extent reads back. Cancel a `Sync` while it waits, then fail that sync at the seam: assert the cancelled call returned the context's error and the next `Sync` of the file reports the failure; fail another sync, call `Sync` with a done context, and assert the `Sync` after it still reports that failure. Fill a share to its limit and call `WriteAt` with a done context: assert it returns the context's error and takes no reservation. A journal that checks the context after appending leaves a write the caller was told failed but that recovery serves. |
 | [§3](#3.%20Interface) restamp after a lost store | `Init` a journal under installation I1 and write F; `Restamp` it to I2 with its own identity as `expect`; reopen. Assert `format` names I2, F still reads, and `Restamp` with another identity is refused and changes nothing. |
 | [§3](#3.%20Interface) forget leaves nothing to settle | Write files F and G under tag T, delete G and leave its marker unsettled; `Forget(T)`; crash and reopen. Assert no extent or marker of T is held, `Since` yields nothing for F or G, `RemovalMarkers` does not count them, and `Forget` was refused while a handle of T was open. Attach T again, write F at a higher version, crash and reopen: assert the new write is held. A drop that deletes per file leaves a marker that a later attach's `Since` yields as a removal. |
 | [§3](#3.%20Interface) unclaimed tag reported | Write dirty extents under tag T; reopen and attach no share for T. Assert `Stats().Shares` lists T with its held and dirty bytes, and that after `Forget(T)` it lists T no more. |
