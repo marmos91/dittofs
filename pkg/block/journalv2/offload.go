@@ -91,6 +91,9 @@ func (h *Handle) Offload(id FileID, through Version, limit, widen int64, fn func
 // reserved headroom it appends none. After fn returns, report fails with
 // ErrOfferEnded.
 //
+// Once fn has been called, the call returns fn's error, possibly wrapped, or
+// nil: every append happened inside report.
+//
 // Partial success is honoured: every extent reported before fn returns stays
 // marked, whatever fn returns, and the error fn returns covers only what was
 // not reported. No lock is held while fn runs.
