@@ -1341,8 +1341,8 @@ data branch when they do.
 ### 4.7 Grading: known failures, expected skips, quarantine, retries
 
 **Known failures and expected skips** live in one YAML file per suite (`known:`). It replaces the
-Markdown lists, which `dt docs` renders from it for the documentation, and `dt known import`
-converts the old lists once.
+Markdown lists: the documentation's suite table, which `dt docs` writes, links each suite's known
+file, and `dt known import` converts the old lists once.
 
 ```yaml
 # test/posix/known.yaml
@@ -1476,6 +1476,10 @@ An unexpected pass isn't retried, nor is a known failure: only new failures are.
 - **Where it runs.** On the cell's own fixture, before it stops, and within the cell's limit. A
   new failure whose test passed in every result of a retry passes, flaky; the results its retry
   gives for other tests, and what else it meets, such as a skip or no results, don't count.
+  Only a retry that runs a test whole again clears the test's timeout: a retry by name runs the
+  failed tests, not those the timeout left unrun, so the timeout still fails the cell. A retry by
+  name runs the same command, so the result files the attempt before it wrote under `{out}` are
+  kept as `FILE.attempt-N`, a name no reader reads.
 
 A test flaky twice in a week on develop is a quarantine candidate.
 
@@ -1515,7 +1519,8 @@ One workflow, `tests.yml`, runs every registered suite:
     `.#NAME` and publishes them to the cache, as the old jobs did, and a pull request or a
     dispatch only reads it.
   - `gate` needs every job that runs a blocking cell, and always runs. It merges the summaries
-    into one report: its job summary is each blocking cell's `report.md`, one after another. It
+    into one report: its job summary is each blocking cell's `report.md`, one after another, from
+    the cell's latest attempt. It
     fails unless `plan` and every `run` job passed, which a `run` job does only when its cell
     exited 0.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
@@ -1528,9 +1533,11 @@ One workflow, `tests.yml`, runs every registered suite:
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
   any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
   every suite runs there.
-- **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, a
-  push queues, and a scheduled run has a group of its own, so it and a push never replace each
-  other (§9).
+- **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, and
+  a scheduled run has a group of its own, so it and a push never replace each other. A push waits
+  for the run in progress, and a newer push replaces it while it waits: pushes that land faster
+  than a run are tested together by the next one (§9), and the replaced run, cancelled, has no
+  result, which `ci-health.yml` passes over.
 
   Because the gate needs every blocking job, a failing job can't hide behind a green summary, as
   the nightly's baseline job did from 2026-09-10 (#2997).
@@ -1695,8 +1702,9 @@ a percentage.
   placeholder as one value. That breaks a list placeholder such as `{packages}`, and leaves `dt`
   editing free text to add `-json -count=1`. Commands are argument lists, with `{ sh: ... }` when a
   shell is needed (§4.1).
-- **Markdown known-failure lists.** Kept as the rendered view only (§4.7): the source is YAML,
-  which `dt` checks against a schema.
+- **Markdown known-failure lists.** Not kept, not even as a rendered view: the documentation's
+  suite table links each suite's known file (§4.7). The source is YAML, which `dt` checks against
+  a schema, and a rendered copy would only restate it.
 - **JUnit XML as the main result format, or a JSON schema of our own.** JUnit has no field for a
   retry or a flaky pass, and our own schema would be one more format to specify and render. CTRF
   has both fields and a GitHub reporter, and JUnit is generated from it (§4.6).

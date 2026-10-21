@@ -34,8 +34,10 @@ permissions:
 
 concurrency:
   # A scheduled run has a group of its own, so it and a push never replace
-  # each other. Only a superseded pull-request run is cancelled: a push is a
-  # distinct commit someone wants tested, so its run queues instead.
+  # each other. A newer pull-request run cancels the one in progress.
+  # decision: a push waits for the run in progress, and a newer push replaces
+  # it while it waits, so pushes that land faster than a run are tested
+  # together by the next one, and the one replaced, cancelled, has no result.
   group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -206,12 +208,20 @@ jobs:
           pattern: dt-run-*
           path: ${{ runner.temp }}/results
 
-      # Every blocking cell's report.md, which is what dt report prints for it.
+      # Every blocking cell's report.md, which is what dt report prints for it,
+      # from its latest attempt: a job re-run uploads one of its own.
       - name: Report
         if: always()
         run: |
           shopt -s nullglob
-          reports=("$RUNNER_TEMP"/results/*/*/report.md)
+          declare -A latest   # each cell's artifact, dt-run-CELL-ATTEMPT, by CELL
+          for d in $(printf '%s\n' "$RUNNER_TEMP"/results/dt-run-* | sort -V); do
+            latest[${d%-*}]=$d
+          done
+          reports=()
+          for d in $(printf '%s\n' "${latest[@]}" | sort); do
+            reports+=("$d"/*/report.md)
+          done
           if [ ${#reports[@]} -eq 0 ]; then
             echo "No blocking cell reported." >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -401,7 +401,6 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 				didntStart = append(didntStart, reason)
 			}
 		}
-		delete(timedOut, test)
 		switch {
 		case read == nil && test == "":
 			return r.steps, why // exit without tests: each command is a test case
@@ -487,10 +486,25 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			break
 		}
 		_, _ = fmt.Fprintf(w, "[dt] retry %d: %s\n", n, strings.Join(shown, ", "))
+		// A retry by name runs the same command, which writes its results
+		// where the attempt before it did: those are kept, under a name no
+		// reader reads.
+		if ext := resultExt[c.Unit.Format]; len(names) > 0 && ext != "" {
+			for _, f := range resultFiles(out, ext) {
+				if err := os.Rename(f, f+".attempt-"+strconv.Itoa(n)); err != nil {
+					_, _ = fmt.Fprintf(w, "[dt] %v\n", err)
+				}
+			}
+		}
 		var results []report.Test
 		for _, test := range again {
 			if cellCtx.Err() != nil {
 				break
+			}
+			// Only a test run whole again can clear its timeout: a retry by
+			// name runs the failed tests, not those a timeout left unrun.
+			if len(names) == 0 {
+				delete(timedOut, test)
 			}
 			got, why := attempt(test)
 			results = append(results, got...)

@@ -126,7 +126,8 @@ func TestMixed(t *testing.T) {
 }
 
 // A tool that takes test names is retried by name, through {names}: what it
-// gives for the tests it wasn't asked for doesn't count.
+// gives for the tests it wasn't asked for doesn't count. The full run's result
+// file is kept, under a name the reader doesn't read.
 func TestRetryByName(t *testing.T) {
 	root, r := repo(t, `suites:
   p: { cmd: "sh tool.sh {out} {names}", format: junit, names: all }
@@ -155,6 +156,43 @@ fail='<failure message="broke"/>'
 	}
 	if tc := byName(o)["CODE2"]; tc.Status != report.Passed || tc.Retries != 0 {
 		t.Errorf("CODE2, which passed: %+v", tc)
+	}
+	kept, _ := filepath.Glob(filepath.Join(root, "results", "*", "p", "junit.xml.attempt-1"))
+	if data := readFiles(t, kept); len(kept) != 1 || !strings.Contains(data, `code="CODE2" name="CODE2"></testcase>`) {
+		t.Errorf("the full run's junit.xml, kept as %v:\n%s", kept, data)
+	}
+}
+
+// readFiles is the files' contents, one after another.
+func readFiles(t *testing.T, files []string) string {
+	t.Helper()
+	var all []byte
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, data...)
+	}
+	return string(all)
+}
+
+// A retry by name runs only the tests that failed, not those a timeout left
+// unrun, so the full run's timeout still fails the cell when the retry passes.
+func TestRetryByNameKeepsATimeout(t *testing.T) {
+	root, r := repo(t, `suites:
+  p: { cmd: "sh tool.sh {out} {names}", format: junit, names: all, timeout: { test: 1s } }
+`, map[string]string{"tool.sh": `out=$1; shift
+if [ "$*" = all ]; then
+  echo '<testsuites><testsuite><testcase code="CODE1" name="CODE1"><failure message="broke"/></testcase></testsuite></testsuites>' > "$out/junit.xml"
+  sleep 30
+fi
+echo '<testsuites><testsuite><testcase code="CODE1" name="CODE1"></testcase></testsuite></testsuites>' > "$out/junit.xml"
+`})
+	for retry, want := range []string{"timed out after 1s; 1 failed: CODE1", "timed out after 1s; 1 flaky: CODE1"} {
+		if o := retryRun(t, context.Background(), root, r, "p", retry); o.Result != report.Failed || o.Note != want {
+			t.Errorf("--retry %d: %s %q, want failed with %q", retry, o.Result, o.Note, want)
+		}
 	}
 }
 
