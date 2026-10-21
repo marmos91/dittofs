@@ -20,7 +20,7 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	}
 
 	openFile, ok := h.GetOpenFile(fileID)
-	if !ok {
+	if !ok || !openFileBelongsToRequest(ctx, openFile) {
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
@@ -152,26 +152,26 @@ func (h *Handler) handleSetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*
 // Returns a deterministic object ID derived from the file handle.
 // Per MS-FSA 2.1.5.10.13 ("FSCTL_GET_OBJECT_ID"): return the object ID for the file.
 func (h *Handler) handleGetObjectID(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	return h.buildObjectIDResponse(FsctlGetObjectID, body)
+	return h.buildObjectIDResponse(ctx, FsctlGetObjectID, body)
 }
 
 // handleCreateOrGetObjectID handles FSCTL_CREATE_OR_GET_OBJECT_ID [MS-FSCC] 2.3.1 (FSCTL_CREATE_OR_GET_OBJECT_ID Request).
 // Returns the same object ID as FSCTL_GET_OBJECT_ID (creates if not present).
 func (h *Handler) handleCreateOrGetObjectID(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	return h.buildObjectIDResponse(FsctlCreateOrGetObjectID, body)
+	return h.buildObjectIDResponse(ctx, FsctlCreateOrGetObjectID, body)
 }
 
 // buildObjectIDResponse builds a FILE_OBJECTID_BUFFER response [MS-FSCC] 2.1.3.
 // Shared by FSCTL_GET_OBJECT_ID and FSCTL_CREATE_OR_GET_OBJECT_ID since DittoFS
 // always derives the object ID deterministically from the metadata handle.
-func (h *Handler) buildObjectIDResponse(ctlCode uint32, body []byte) (*HandlerResult, error) {
+func (h *Handler) buildObjectIDResponse(ctx *SMBHandlerContext, ctlCode uint32, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
 	if !ok {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	openFile, ok := h.GetOpenFile(fileID)
-	if !ok {
+	if !ok || !openFileBelongsToRequest(ctx, openFile) {
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
@@ -206,7 +206,7 @@ func (h *Handler) handleMarkHandle(ctx *SMBHandlerContext, body []byte) (*Handle
 	}
 
 	openFile, ok := h.GetOpenFile(fileID)
-	if !ok {
+	if !ok || !openFileBelongsToRequest(ctx, openFile) {
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
@@ -230,7 +230,7 @@ func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*
 	}
 
 	openFile, ok := h.GetOpenFile(fileID)
-	if !ok {
+	if !ok || !openFileBelongsToRequest(ctx, openFile) {
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 

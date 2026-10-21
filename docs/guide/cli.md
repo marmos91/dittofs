@@ -3041,11 +3041,10 @@ is a named set of IP addresses, CIDR ranges, or hostnames that can be referenced
 from share security policies to allow or restrict which network endpoints can
 access a share. All subcommands require admin privileges.
 
-Netgroups are part of a share's NFS export policy: they are attached with
-"dfsctl share nfs-config set --netgroup" and are enforced on NFSv3 (at MOUNT)
-and on NFSv4 (on every operation that resolves the share). They do NOT apply to
-SMB — restrict SMB access with share permissions and user authentication
-instead.
+Netgroups are part of a share's access policy: they are attached with
+"dfsctl share nfs-config set --netgroup" and are enforced on NFSv3 (at MOUNT),
+on NFSv4 (on every operation that resolves the share) and on SMB (at
+TREE_CONNECT and on every request on the tree).
 
 **Examples:**
 
@@ -4273,10 +4272,10 @@ Manage per-share NFS adapter configuration
 
 View and update the NFS adapter configuration for a share.
 
-This controls protocol-specific NFS export settings such as the squash mode,
-auth flavor, and the netgroup that restricts which clients may access the
-export. Netgroup changes take effect immediately; other fields apply on the
-next adapter restart.
+This controls the share's export settings: the squash mode, the
+authentication flags and the netgroup that restricts which clients may reach
+the share. The authentication flags and the netgroup are the share's access
+policy, which applies over NFS and SMB alike. Changes take effect immediately.
 
 **Examples:**
 
@@ -4312,12 +4311,11 @@ Update a share's NFS adapter configuration
 Update the NFS adapter configuration for a share.
 
 Only the flags you supply are changed; omitted flags leave the existing values
-intact. Netgroup changes take effect immediately. Changes to squash mode and
-authentication flavors (--allow-auth-sys, --require-kerberos) apply on the
-next NFS adapter restart.
+intact. Changes take effect immediately, without an adapter restart.
 
-The netgroup allowlist is NFS export policy: it is enforced on NFSv3 mounts and
-on NFSv4 operations, and has no effect on SMB access to the same share.
+The netgroup allowlist and the authentication flags are the share's access
+policy: they are enforced on NFSv3 mounts, on NFSv4 operations and on SMB
+requests to the same share.
 
 ```
 dfsctl share nfs-config set <name> [flags]
@@ -4329,7 +4327,7 @@ dfsctl share nfs-config set <name> [flags]
 # Restrict access to a specific netgroup
 dfsctl share nfs-config set /export --netgroup office-network
 
-# Remove the netgroup restriction (allow all NFS clients)
+# Remove the netgroup restriction (allow all clients)
 dfsctl share nfs-config set /export --netgroup ""
 
 # Map root UID to guest on this export
