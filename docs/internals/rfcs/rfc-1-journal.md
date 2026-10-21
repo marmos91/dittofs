@@ -377,16 +377,16 @@ derived from its identifier.
 ## 3. Interface
 
 ```go
-Init(dir string, install InstallationID) (JournalID, error)
-Open(dir string, floor Version, expect JournalID) (*Journal, error)
-Restamp(dir string, expect JournalID, install InstallationID) error // RFC 28 §3.4
+Init(ctx context.Context, dir string, install InstallationID) (JournalID, error)
+Open(ctx context.Context, dir string, floor Version, expect JournalID) (*Journal, error)
+Restamp(ctx context.Context, dir string, expect JournalID, install InstallationID) error // RFC 28 §3.4
 (*Journal) Share(tag ShareTag, limit int64, floor Version, policy SyncPolicy) (*Handle, error)
-(*Journal) Forget(tag ShareTag) error
+(*Journal) Forget(ctx context.Context, tag ShareTag) error
 (*Journal) Strand(tag ShareTag) error // §3: serve, evict and offer none of the tag's extents
 (*Handle) Close() error
 (*Handle) SetSyncPolicy(policy SyncPolicy) error           // §5.2
 (*Handle) Reserve(n int64, writes int) (*Reservation, error)  // §6
-(*Reservation) WriteAt(id FileID, off int64, p []byte, mtime int64) (Version, error)
+(*Reservation) WriteAt(ctx context.Context, id FileID, off int64, p []byte, mtime int64) (Version, error)
 (*Reservation) Close() error                       // returns what is left
 
 type ShareTag uint32 // a share's tag in this installation: Share.Tag (RFC 16 §2.3), never given to another share
@@ -399,6 +399,45 @@ written into every record the share appends ([RFC 28 §2.3](rfc-28-journal-forma
 share's accounting ([§6](#6.%20Capacity)); a file belongs to one share for its life. `Open`'s `floor` is
 the version floor of [RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding); `expect` is the identity the caller has recorded for
 this directory ([RFC 28 §3.4](rfc-28-journal-format.md#3.4%20Unattachable%20files)).
+
+**A call that does I/O or can wait takes a context first.** Those are the calls
+that append a record, read a segment, sync, or wait on another operation: `Init`,
+`Open`, `Restamp`, `Forget` and `Repack`, and through a handle or a reservation
+`WriteAt`, `Sync`, `ReadAt`, `Fill`, `Offload` and `OffloadMany` (whose callback
+receives the context too), `MarkOffloaded`, `Unmark`, `Release`, the removals of
+[§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete), `Since`, `Hold`, `Unhold` and `Stamp`. A call that only reads or changes
+memory and never waits takes none: `Close`, `Share`, `Strand`, `SetSyncPolicy`,
+`Reserve`, `Draw`, `SetVersionLimit`, `Settle`, `Held`, `Extents`, `Files`,
+`DirtyFiles` and `Stats`.
+
+The context carries the caller's deadline and its trace. The journal honours its
+cancellation only where that leaves no outcome unknown:
+
+- a call checks the context before it changes any state, and if it is done
+  returns the context's error having changed nothing;
+- once a call has appended its record, it completes and returns its result
+  whatever the context says, so a cancelled write is never half made;
+- a cancelled `Sync` stops waiting, not the sync: the sync runs on for the other
+  writes it covers, and its outcome reaches the next `Sync` of the file as
+  [§5.3](#5.3%20A%20failed%20sync) says;
+- `Open` checks between recovery phases, and a cancelled open leaves the
+  directory for a later `Open` to recover;
+- a refusal ([§6](#6.%20Capacity)) is returned at once as itself, and a done context never
+  replaces it.
+
+> decision: the journal takes a context although it never waits on anything a
+> deadline could end ([§6](#6.%20Capacity), [§8.1](#8.1%20What%20must%20not%20block%20what)); the deadline
+> stays the engine's. Three things need it all the same. The set's rule is that a
+> call doing I/O takes a context and only a pure one takes none
+> ([RFC 16 §2.4](rfc-16-metadata-store.md#2.4%20Methods%20on%20entities)); the
+> syncer, the remote tier and block metadata follow it, and a journal without one
+> would be the set's only I/O API that does not. `Replicated`, which the engine calls in place of the
+> journal on a replicated shard ([RFC 10 §12](rfc-10-journal-replication.md#12.%20API%20surface)),
+> takes a context on the same operations, so one engine call serves both. And a
+> span's parent travels in the context: without it every span the journal opens
+> is a root that duplicates the engine's span for the same stage, and no journal
+> log line can carry its request's trace ID ([RFC 25](rfc-index.md) §5.3, §6.1).
+> Overturned for a call shown to do no I/O and never wait, which then takes none.
 
 **A tag names one share, once.** The metadata store mints a share's tag from an
 installation-wide counter that is never lowered, whenever a share arrives in the
@@ -609,8 +648,8 @@ above resolves it at that journal's next start.
 ### 3.1 Write
 
 ```go
-WriteAt(id FileID, off int64, p []byte, mtime int64) (v Version, err error) // mtime: ns since the Unix epoch, 0 when the open suspended it (RFC 28 §2.3)
-Sync(ids ...FileID) error
+WriteAt(ctx context.Context, id FileID, off int64, p []byte, mtime int64) (v Version, err error) // mtime: ns since the Unix epoch, 0 when the open suspended it (RFC 28 §2.3)
+Sync(ctx context.Context, ids ...FileID) error
 ```
 
 Stages `p` at `off`, with the modification time the write sets ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), and makes it durable by the next `Sync` naming the file or, under `bounded`,
@@ -637,7 +676,7 @@ newer bytes thereafter, and **MUST NOT** require the caller to invalidate first.
 ### 3.2 Read
 
 ```go
-ReadAt(id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error)
+ReadAt(ctx context.Context, id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error)
 
 type Held struct {
     Extent  Extent
@@ -668,9 +707,9 @@ a `missing` extent passes it back to `Fill`.
 ### 3.3 Offload
 
 ```go
-Offload(id FileID, through Version, limit, widen int64, fn func(o Offer, report func(offloaded []Extent) error) error) error
+Offload(ctx context.Context, id FileID, through Version, limit, widen int64, fn func(ctx context.Context, o Offer, report func(offloaded []Extent) error) error) error
 
-OffloadMany(files []Capture, limit, widen int64, fn func(offers []Offer, report func(id FileID, offloaded []Extent) error) error) error
+OffloadMany(ctx context.Context, files []Capture, limit, widen int64, fn func(ctx context.Context, offers []Offer, report func(id FileID, offloaded []Extent) error) error) error
 
 type Capture struct {
     ID      FileID
@@ -880,8 +919,8 @@ nothing is held there. The engine drops the removed refs at commit
 **Marking outside an offer.**
 
 ```go
-MarkOffloaded(id FileID, extents []Extent, oldest, newest Version) error
-Unmark(id FileID, extents []Extent) error
+MarkOffloaded(ctx context.Context, id FileID, extents []Extent, oldest, newest Version) error
+Unmark(ctx context.Context, id FileID, extents []Extent) error
 ```
 
 `MarkOffloaded` sets the offloaded bit of the held extents of `id` that `extents`
@@ -898,7 +937,7 @@ does, are [RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%
 ### 3.4 Fill
 
 ```go
-Fill(id FileID, off int64, p []byte, asOf Version, v Version) error
+Fill(ctx context.Context, id FileID, off int64, p []byte, asOf Version, v Version) error
 ```
 
 Places retrieved remote bytes into local storage. This is the only path by which
@@ -962,7 +1001,7 @@ make content not yet offloaded evictable, and nothing would fail at the time.
 ### 3.5 Release
 
 ```go
-Release(id FileID, extents []Extent) error
+Release(ctx context.Context, id FileID, extents []Extent) error
 ```
 
 Stops holding `extents`. This is the mechanism of eviction; the policy is the
@@ -1001,10 +1040,10 @@ was before the release. A release record draws on the reserved headroom of
 ### 3.6 Truncate, deallocate and delete
 
 ```go
-Truncate(id FileID, size int64) (Version, error)
-Deallocate(id FileID, e Extent) (Version, error)
-Delete(id FileID) (Version, error)
-CloneTarget(id FileID, spec CloneSpec) (Version, error)
+Truncate(ctx context.Context, id FileID, size int64) (Version, error)
+Deallocate(ctx context.Context, id FileID, e Extent) (Version, error)
+Delete(ctx context.Context, id FileID) (Version, error)
+CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Version, error)
 
 type CloneSpec struct {
     SrcShare       ShareID // the source's share: a source in another share is found by both IDs
@@ -1274,7 +1313,7 @@ times `WriteAt` and counts read hits and misses itself. The counters live in
 ### 3.10 Settle and Since
 
 ```go
-Since(id FileID, from Version) iter.Seq2[Change, error]
+Since(ctx context.Context, id FileID, from Version) iter.Seq2[Change, error]
 Settle(id FileID, v Version)
 
 type Change struct {
@@ -1311,10 +1350,10 @@ rebuilds it.
 ### 3.11 Snapshot holds
 
 ```go
-Hold(share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
-Unhold(share ShareID, cut SnapshotCut) error
+Hold(ctx context.Context, share ShareID, cut SnapshotCut, marks map[FileID]Version) error // durable before it returns
+Unhold(ctx context.Context, share ShareID, cut SnapshotCut) error
 Held(share ShareID) (bytes int64)
-Stamp(id FileID, through Version, cut SnapshotCut) error
+Stamp(ctx context.Context, id FileID, through Version, cut SnapshotCut) error
 ```
 
 A snapshot cut is taken without draining the journal ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)); the
@@ -2162,7 +2201,7 @@ it not held are durable, without waiting for a repack to select it.
 ### 7.2 Repack
 
 ```go
-Repack(budget int64, scope RepackScope) (freed int64, err error)
+Repack(ctx context.Context, budget int64, scope RepackScope) (freed int64, err error)
 
 type RepackScope struct {
     Share    ShareTag    // zero: any share
@@ -2674,6 +2713,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§4.3](#4.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§3](#3.%20Interface) attached share raises the counter | Open a journal whose counter stands at 10^3; attach a share with a floor of 9×10^8; assert the first write through it is assigned a version above the floor, and that a design attaching without raising assigns one below the share's imported refs. |
 | [§3](#3.%20Interface) unclaimed tags are the caller's to name | Write and offload file F under tag T and dirty file G under tag P; reopen and attach only a new tag U. Assert the journal forgets neither T nor P on its own and serves G under P once P attaches; then `Forget(T)` as the caller names it and assert no read of F serves the old bytes and `Since` yields nothing of T. A journal that forgets every tag not yet attached drops P's acknowledged writes. |
+| [§3](#3.%20Interface) a cancelled call changes nothing or completes | Call `WriteAt`, `Release` and `Forget` with a context already done: assert each returns the context's error and appends no record, and a crash and reopen finds nothing of them. Cancel the context of a `WriteAt` held at the storage seam after its record is appended: assert it returns its version and the extent reads back. Cancel a `Sync` while it waits, then fail that sync at the seam: assert the cancelled call returned the context's error and the next `Sync` of the file reports the failure. Fill a share to its limit and call `WriteAt` with a done context: assert the refusal still names the share's limit. A journal that checks the context after appending leaves a write the caller was told failed but that recovery serves. |
 | [§3](#3.%20Interface) restamp after a lost store | `Init` a journal under installation I1 and write F; `Restamp` it to I2 with its own identity as `expect`; reopen. Assert `format` names I2, F still reads, and `Restamp` with another identity is refused and changes nothing. |
 | [§3](#3.%20Interface) forget leaves nothing to settle | Write files F and G under tag T, delete G and leave its marker unsettled; `Forget(T)`; crash and reopen. Assert no extent or marker of T is held, `Since` yields nothing for F or G, `RemovalMarkers` does not count them, and `Forget` was refused while a handle of T was open. Attach T again, write F at a higher version, crash and reopen: assert the new write is held. A drop that deletes per file leaves a marker that a later attach's `Since` yields as a removal. |
 | [§3](#3.%20Interface) unclaimed tag reported | Write dirty extents under tag T; reopen and attach no share for T. Assert `Stats().Shares` lists T with its held and dirty bytes, and that after `Forget(T)` it lists T no more. |
