@@ -8,12 +8,16 @@ RUN_DIR/alert says what the night means for the Slack alert (night.sh post): new
 failure the 7 nights before did not have; same, only ones they had; clear, none.
 
 A point's value on a target is the median of its repeats. Its ratio is DittoFS's performance over
-Samba's: a throughput as it is, a time or a latency inverted, so above 1 DittoFS is faster. The
-score is the geometric mean of the ratios, over every point and per area.
+Samba's: a throughput as it is, a time or a latency inverted, so above 1 DittoFS is faster. Each
+area's score is the geometric mean of its points' ratios, and the headline is the geometric mean of
+the four areas' scores, so each area weighs the same. An area is complete when every step feeding
+it finished and each of its points has a value above zero on both targets in every repeat. Without
+all four complete there is no headline: the night says so, and stores none for later nights.
 
 Flags need a noise band, which is set once from the calibration nights (CALIBRATION=yes) and kept
-in band.json beside the nights: a point is flagged when its ratio falls below its 7-day median by
-more than its band, and a flag or a failure seen in the 7 nights before is not reported as new.
+in band.json beside the nights: a point, an area or the headline is flagged when it falls below
+its 7-day median by more than its band, and a flag or a failure seen in the 7 nights before is not
+reported as new. Delete band.json when the scoring changes, and the next night sets it again.
 """
 import csv
 import glob
@@ -27,6 +31,10 @@ import sys
 import time
 
 TARGETS = ("dittofs", "samba")
+AREAS = ("sequential", "random", "small files", "mailbox")
+# The areas each step of night.sh feeds: one that did not finish leaves them incomplete.
+STEP_AREAS = {"lock": AREAS, "build": AREAS, "start": AREAS, "matrix": ("sequential", "random"),
+              "mailbox": ("mailbox",), "files": ("small files",)}
 MIN_BAND = 0.05
 FILE_SIZES = {"4k": 4096, "64k": 65536, "1792k": 1792 * 1024}
 # The mailbox scenarios: how each one scores (see the simulator's README).
@@ -107,13 +115,25 @@ def measure(target_dir):
 
 
 def geomean(values):
-    values = [v for v in values if v and v > 0]
-    return math.exp(sum(map(math.log, values)) / len(values)) if values else None
+    """The geometric mean, or None when there is nothing to average or a value is missing or not above zero."""
+    values = list(values)
+    if not values or any(v is None or v <= 0 for v in values):
+        return None
+    return math.exp(sum(map(math.log, values)) / len(values))
+
+
+def headline(ratios, area_of, complete=AREAS):
+    """Each complete area's score and the headline, from {point: ratio}: None for an area that is
+    not complete, and for the headline unless all four are."""
+    areas = {a: geomean(r for p, r in ratios.items() if area_of[p] == a) if a in complete else None for a in AREAS}
+    return areas, geomean(areas.values())
 
 
 def label(name):
     if name == "score":
         return "the overall figure"
+    if name in AREAS:
+        return f"the {name} area"
     m = re.match(r"(seq|rand)-(read|write)-(\w+)-t(\d+)$", name)
     if m:
         kind = "sequential" if m.group(1) == "seq" else "random"
@@ -143,7 +163,8 @@ def history(work, night):
 
 
 def band(work, nights):
-    """The noise band per point and for the score, from the calibration nights' repeats."""
+    """The noise band per point, per area and for the headline, from the calibration nights'
+    repeats: each repeat's areas and headline come from its points' ratios through headline()."""
     path = f"{work}/band.json"
     if os.path.exists(path):
         return load(path)
@@ -152,9 +173,19 @@ def band(work, nights):
         return None
     spreads = {}
     for n in calibration:
-        for name, p in n["points"].items():
+        points = n["points"]
+        for name, p in points.items():
             spreads.setdefault(name, []).extend(p["repeat_ratios"])
-        spreads.setdefault("score", []).extend(n["repeat_scores"])
+        repeats = {len(p["repeat_ratios"]) for p in points.values()}
+        if len(repeats) != 1:
+            continue
+        complete = [a for a in AREAS if n["areas"].get(a) is not None]
+        for i in range(repeats.pop()):
+            areas, score = headline({name: p["repeat_ratios"][i] for name, p in points.items()},
+                                    {name: p["area"] for name, p in points.items()}, complete)
+            for name, v in list(areas.items()) + [("score", score)]:
+                if v is not None:
+                    spreads.setdefault(name, []).append(v)
     result = {}
     for name, ratios in spreads.items():
         mid = statistics.median(ratios)
@@ -209,21 +240,29 @@ def main():
     def perf(name, v):
         return v if meta[name][2] else 1 / v
 
-    points, repeat_scores = {}, {}
+    # Why each incomplete area is: a step that did not finish, or a point without a value above
+    # zero on a target in some repeat. An area with no points at all is incomplete too.
+    repeats = sorted(rdir.rsplit("/r", 1)[1] for rdir in glob.glob(f"{run}/r[0-9]*"))
+    incomplete = {}
+    for s in steps:
+        for a in STEP_AREAS.get(s["step"], ()) if s["status"] != "ok" else ():
+            incomplete.setdefault(a, f"{s['step']} {s['target']} r{s['repeat']}: {s['status']}")
+    points = {}
     for name, by in values.items():
-        d, s = by["dittofs"], by["samba"]
-        if not d or not s or not all(d.values()) or not all(s.values()):
+        missing = [t for t in TARGETS for r in repeats if not by[t].get(r, 0) > 0]
+        if missing:
+            incomplete.setdefault(meta[name][0], f"{label(name)} has no value on {missing[0]}")
             continue
-        ratio = perf(name, statistics.median(d.values())) / perf(name, statistics.median(s.values()))
-        per_repeat = [perf(name, d[r]) / perf(name, s[r]) for r in sorted(d) if r in s]
-        for r in d:
-            if r in s:
-                repeat_scores.setdefault(r, []).append(perf(name, d[r]) / perf(name, s[r]))
+        d, s = by["dittofs"], by["samba"]
         points[name] = {"area": meta[name][0], "unit": meta[name][1], "better": "higher" if meta[name][2] else "lower",
-                        "dittofs": list(d.values()), "samba": list(s.values()), "ratio": ratio, "repeat_ratios": per_repeat}
-    score = geomean(p["ratio"] for p in points.values())
-    areas = {a: geomean(p["ratio"] for p in points.values() if p["area"] == a)
-             for a in ("sequential", "random", "small files", "mailbox")}
+                        "dittofs": [d[r] for r in repeats], "samba": [s[r] for r in repeats],
+                        "ratio": perf(name, statistics.median(d.values())) / perf(name, statistics.median(s.values())),
+                        "repeat_ratios": [perf(name, d[r]) / perf(name, s[r]) for r in repeats]}
+    for a in AREAS:
+        if not any(p["area"] == a for p in points.values()):
+            incomplete.setdefault(a, "no points")
+    areas, score = headline({n: p["ratio"] for n, p in points.items()}, {n: p["area"] for n, p in points.items()},
+                            [a for a in AREAS if a not in incomplete])
 
     nights = history(work, night)[-7:] if mode != "smoke" else []
     bands = band(work, nights) if mode == "night" else None
@@ -231,15 +270,16 @@ def main():
     seen_failures = {re.sub(r" r\d+:", ":", f) for n in nights for f in n.get("failures", [])}
     flags = []
     if bands and nights:
-        for name, p in points.items():
-            past = [n["points"][name]["ratio"] for n in nights if name in n.get("points", {})]
-            if past and name in bands and p["ratio"] < statistics.median(past) * (1 - bands[name]):
+        now = {name: p["ratio"] for name, p in points.items()} | {a: v for a, v in areas.items() if v is not None}
+        if score is not None:
+            now["score"] = score
+        for name, v in now.items():
+            past = [n["score"] if name == "score" else n["areas"].get(name) if name in AREAS
+                    else n["points"].get(name, {}).get("ratio") for n in nights]
+            past = [x for x in past if x is not None]
+            if past and name in bands and v < statistics.median(past) * (1 - bands[name]):
                 flags.append(name)
-        past = [n["score"] for n in nights if n.get("score")]
-        if past and score and "score" in bands and score < statistics.median(past) * (1 - bands["score"]):
-            flags.append("score")
-    if score is None:
-        failures.append("score: nothing to score")
+    failures += [f"{a}: incomplete, {why}" for a, why in incomplete.items()]
     new_flags = [f for f in flags if f not in seen_flags]
     new_failures = [f for f in failures if re.sub(r" r\d+:", ":", f) not in seen_failures]
 
@@ -255,7 +295,6 @@ def main():
         commits = f" ({count or '?'} commits since `{since[:9]}`)"
 
     extra = {"night": night, "mode": mode, "commit": commit, "score": score, "areas": areas, "points": points,
-             "repeat_scores": [geomean(v) for _, v in sorted(repeat_scores.items())],
              "flags": flags, "failures": failures, "drives": drive_wear(run)}
     tests = [{"name": f"{s['step']} {s['target']} r{s['repeat']}".replace(" - r-", ""), "suite": ["ditto-nightly"],
               "status": {"ok": "passed", "skipped": "skipped"}.get(s["status"], "failed"), "rawStatus": s["status"],
@@ -272,12 +311,16 @@ def main():
 
     # The Slack summary.
     if score is None:
-        title = f":x: Nightly performance: nothing to score ({mode})"
+        title = f":x: Nightly performance: incomplete, no figure tonight ({', '.join(a for a in AREAS if a in incomplete)})"
     else:
-        past = [n["score"] for n in nights if n.get("score")]
-        trend = f"; was {pct(past[-1])} last night, 7-day median {pct(statistics.median(past))}" if past else ""
+        past = [n["score"] for n in nights if n.get("score") is not None]
+        trend = f", 7-day median {pct(statistics.median(past))}" if past else ""
+        if nights and nights[-1].get("score") is not None:
+            trend = f"; was {pct(nights[-1]['score'])} last night{trend}"
+        elif trend:
+            trend = ";" + trend[1:]
         mark = ":warning: " if new_flags or new_failures else ""
-        title = f"{mark}DittoFS at {pct(score)} of Samba (geometric mean of {len(points)} points{trend})"
+        title = f"{mark}DittoFS at {pct(score)} of Samba (geometric mean of the 4 areas, {len(points)} points{trend})"
     lines = []
     if points:
         worst = min(points, key=lambda n: points[n]["ratio"])
@@ -287,7 +330,7 @@ def main():
             n = logons[-1]
             line += f" Mailbox, {n.rsplit('-u', 1)[1]} users: logon {1 / points[n]['ratio']:.1f}x Samba's time."
         lines.append(line)
-        lines.append(" · ".join(f"{a} {pct(v)}" for a, v in areas.items() if v is not None).capitalize())
+        lines.append(" · ".join(f"{a} {pct(v) if v is not None else 'incomplete'}" for a, v in areas.items()).capitalize())
     if mode == "night" and not bands:
         lines.append("No noise band yet, so no flags: it comes from the calibration nights.")
     elif flags:

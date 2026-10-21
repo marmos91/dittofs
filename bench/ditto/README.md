@@ -34,9 +34,15 @@ killed and recorded as `timeout`.
 ## The figure
 
 A point's value on a target is the median of its repeats. Its ratio is DittoFS's performance over
-Samba's: a throughput as it is, a time or a latency inverted, so 100% means as fast as Samba. The
-score is the geometric mean of all the ratios, with sub-scores for the sequential, random, small
-files and mailbox points. The mailbox scenarios score as follows:
+Samba's: a throughput as it is, a time or a latency inverted, so 100% means as fast as Samba. Each
+area (sequential, random, small files, mailbox) scores the geometric mean of its points' ratios,
+and the figure is the geometric mean of the four area scores, so each area weighs the same
+whatever its number of points.
+
+An area counts only when it is complete: every step feeding it finished, and each of its points
+has a value above zero on both targets in every repeat. A night with an incomplete area has no
+figure. It reports itself incomplete, as a failure, and stores no figure and no score for that
+area, so the 7-day medians skip it. The mailbox scenarios score as follows:
 
 | Scenario | Value |
 |---|---|
@@ -48,8 +54,10 @@ files and mailbox points. The mailbox scenarios score as follows:
 
 `CALIBRATION=yes` in the cron file runs every point three times and posts nothing. That is the
 first week. When it is set to `no`, the night runs every point once, and `score.py` first sets
-each point's noise band from the calibration nights' repeats (`band.json`). A point is flagged
-when it falls below its 7-day median by more than its band.
+the noise bands from the calibration nights' repeats (`band.json`): one per point, one per area
+and one for the figure, each repeat's areas and figure computed as a night's are. A point, an area
+or the figure is flagged when it falls below its own 7-day median by more than its band. After a
+change to the scoring, delete `band.json`, and the next night sets it again.
 
 Slack gets the night by the scenarios' rules, through their reporting
 (`test/scenarios/lib/report.sh`): the same bot, the same channel (`SLACK_DIR`).
