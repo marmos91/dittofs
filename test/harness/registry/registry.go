@@ -22,9 +22,10 @@ const Path = "test/suites.yaml"
 
 // ToolDirs maps each test tool {tools} holds to the directory of its output
 // that {tools}/NAME links to: pjdfstest's share/pjdfstest holds its binary
-// beside its tests, where misc.sh looks for it, and pynfs's whole output
-// holds bin/pynfs-4.x. A suite names a tool as {tools}/NAME.
-var ToolDirs = map[string]string{"pjdfstest": "share/pjdfstest", "pynfs": "."}
+// beside its tests, where misc.sh looks for it, pynfs's and nfstest's whole
+// outputs hold bin/pynfs-4.x and bin/nfstest_MODULE, and cthon04's
+// share/cthon04 is its built tree. A suite names a tool as {tools}/NAME.
+var ToolDirs = map[string]string{"cthon04": "share/cthon04", "nfstest": ".", "pjdfstest": "share/pjdfstest", "pynfs": "."}
 
 // Registry is the whole file.
 type Registry struct {
@@ -73,17 +74,20 @@ type Suite struct {
 
 // Fixture is the DittoFS server a suite's tests run against.
 type Fixture struct {
-	Server      string `yaml:"server"`
-	Profile     string `yaml:"profile"`
-	NFS         NFS    `yaml:"nfs"`
-	SMB         SMB    `yaml:"smb"`
-	Shares      string `yaml:"shares"`
-	Users       []int  `yaml:"users"`
-	Squash      string `yaml:"squash"`
-	Delegations *bool  `yaml:"delegations"`
-	Lease       string `yaml:"lease"`
-	Kerberos    bool   `yaml:"kerberos"`
-	Reset       string `yaml:"reset"`
+	Server      string   `yaml:"server"`
+	Profile     string   `yaml:"profile"`
+	NFS         NFS      `yaml:"nfs"`
+	SMB         SMB      `yaml:"smb"`
+	Shares      string   `yaml:"shares"`
+	Users       []string `yaml:"users"` // UIDs, or self: the user dt runs as
+	Squash      string   `yaml:"squash"`
+	Delegations *bool    `yaml:"delegations"`
+	Lease       string   `yaml:"lease"`
+	Kerberos    bool     `yaml:"kerberos"`
+	Reset       string   `yaml:"reset"`
+	Client      string   `yaml:"client"`
+	Clients     int      `yaml:"clients"`
+	RPCBind     string   `yaml:"rpcbind"`
 }
 
 // Packages selects the Go packages whose tests a build tag changes.

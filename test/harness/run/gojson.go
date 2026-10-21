@@ -43,7 +43,7 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	root := asRoot(t.cell)
 	if root {
 		if err := buildBin(t.ctx, t.root, t.vals["bin"], t.env, t.out); err != nil {
-			return NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err), nil
+			return report.NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err), nil
 		}
 	}
 	limit, _ := t.ctx.Deadline()
@@ -52,7 +52,7 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	for i, cmd := range t.cell.Unit.Cmd {
 		argv, err := fill(cmd, t.vals, t.lists)
 		if err != nil {
-			return NotRun, err.Error(), nil
+			return report.NotRun, err.Error(), nil
 		}
 		if len(names) > 0 {
 			argv = append(argv, "-run", runPattern(names))
@@ -69,7 +69,7 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 		case t.ctx.Err() != nil:
 			// The cell didn't finish, and what its tests reported once
 			// interrupted can come from the interrupt itself.
-			return NotRun, res.note(append(problems, "interrupted")), nil
+			return report.NotRun, res.note(append(problems, "interrupted")), nil
 		case err != nil:
 			problems = append(problems, fmt.Sprintf("`%s`: %v", shown, err))
 		case code != 0 && res.failures() == failed:
@@ -89,13 +89,13 @@ func (t tester) goJSON(names []string) (string, string, []report.Test) {
 	}
 	switch {
 	case slices.ContainsFunc(res.cases, func(tc report.Test) bool { return tc.Grade == report.New }) || len(problems) > 0:
-		return Failed, res.note(append(problems, notRun...)), res.cases
+		return report.Failed, res.note(append(problems, notRun...)), res.cases
 	case len(notRun) > 0:
-		return NotRun, res.note(notRun), res.cases
+		return report.NotRun, res.note(notRun), res.cases
 	case len(res.tests) == 0:
-		return NotRun, "no tests ran", res.cases
+		return report.NotRun, "no tests ran", res.cases
 	}
-	return Passed, res.note(nil), res.cases
+	return report.Passed, res.note(nil), res.cases
 }
 
 // goTest runs a go test command with -json -count=1 added after its go test,

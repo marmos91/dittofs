@@ -52,16 +52,18 @@ func Unsupported(f *registry.Fixture) string {
 		return fmt.Sprintf("dt doesn't set up a %s fixture yet", f.Server)
 	case f.Profile != "memory" && f.Profile != "badger" && f.Profile != "badger-s3" && fixed(f.Profile):
 		return fmt.Sprintf("dt doesn't set up the %q profile yet", f.Profile)
-	case mounts(f.NFS.Version) && fixed(f.NFS.Version) && mountVers[f.NFS.Version] == "":
+	case f.NFS.Mounts() && !f.NFS.FromOptions && fixed(f.NFS.Version) && mountVers[f.NFS.Version] == "":
 		return fmt.Sprintf("dt doesn't mount NFS %s yet", f.NFS.Version)
-	case mounts(f.NFS.Version) && fixed(f.NFS.Version) && runtime.GOOS != "linux":
+	case f.NFS.Mounts() && fixed(f.NFS.Version) && runtime.GOOS != "linux":
 		return "dt mounts NFS only on Linux yet"
+	case f.Client != "" && runtime.GOOS != "linux":
+		return "dt sets up namespaced clients only on Linux yet"
 	case f.SMB.Encryption != "" && f.SMB.Encryption != "preferred" && fixed(f.SMB.Encryption):
 		return fmt.Sprintf("dt doesn't set SMB encryption %q", f.SMB.Encryption)
 	case f.SMB.Mount:
 		return "dt doesn't mount SMB yet"
-	case f.Kerberos:
-		return "dt doesn't set up Kerberos in fixtures yet"
+	case f.Kerberos && (runtime.GOOS != "linux" || !f.SMB.Enabled):
+		return "dt sets up Kerberos only for SMB on Linux yet"
 	case f.Reset != "" && f.Reset != "each" && fixed(f.Reset):
 		return fmt.Sprintf("dt doesn't reset shares %q", f.Reset)
 	}
@@ -70,18 +72,25 @@ func Unsupported(f *registry.Fixture) string {
 
 // Placeholders names what fixture f gives a cell's commands, besides {bin}:
 // {server}, {share}, {user}, {user2} and {password}, {nfs-port} when it
-// serves NFS, {smb-port} when it serves SMB, and {mount} when it mounts the
-// share.
+// serves NFS, {smb-port} when it serves SMB, {mount} when it mounts the
+// share, {client2} with a second client, and {realm} and {krb5-conf} with
+// Kerberos.
 func Placeholders(f registry.Fixture) []string {
 	names := []string{"server", "share", "user", "user2", "password"}
-	if f.NFS.Version != "" {
+	if f.NFS.Serves() {
 		names = append(names, "nfs-port")
 	}
 	if f.SMB.Enabled {
 		names = append(names, "smb-port")
 	}
-	if mounts(f.NFS.Version) {
+	if f.NFS.Mounts() {
 		names = append(names, "mount")
+	}
+	if f.Clients == 2 {
+		names = append(names, "client2")
+	}
+	if f.Kerberos {
+		names = append(names, "realm", "krb5-conf")
 	}
 	return names
 }
@@ -101,6 +110,8 @@ type Server struct {
 	nfsPort int                            // 0 when the fixture serves no NFS
 	smbPort int                            // 0 when the fixture serves no SMB
 	mount   string                         // {mount}, once the fixture makes it
+	clients *clients                       // its namespaced clients, when it has them
+	kdc     *kdc                           // its KDC, with Kerberos
 	out     io.Writer                      // dt's lines on the setup and the teardown
 	stop    sync.Once
 	stopErr error
@@ -111,14 +122,25 @@ type Server struct {
 func (s *Server) Placeholders() map[string]string { return s.vals }
 
 // Start starts dfs from bin with its data under out, in a directory it
-// removes when it stops, and its output in out/dfs.log, which it keeps. It
-// sets the server up as f asks and checks that it answers. An S3 profile's
-// bucket is created first, at the endpoint services give: the variables of
-// the cell's services, as NAME=value. It makes one attempt: when a step
-// fails, or ctx ends first, it stops the server and returns why. w gets dt's
-// lines on the setup, and never a credential.
+// removes when it stops, and its output in out/dfs.log, which it keeps. With
+// Kerberos, its KDC starts first, its output in out/kdc.log. It sets the
+// server up as f asks and checks that it answers, then sets up its
+// namespaced clients, and mounts the share, from the first client when it has
+// them. An S3 profile's bucket is created first, at the endpoint services
+// give: the variables of the cell's services, as NAME=value. It makes one
+// attempt: when a step fails, or ctx ends first, it stops the server and
+// returns why. w gets dt's lines on the setup, and never a credential.
 func Start(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (*Server, error) {
+	if slices.Contains(f.Users, "self") && geteuid() == 0 {
+		return nil, errors.New("users: self is the user dt runs as, so the tests run under an ordinary user's permissions, and dt runs as root here: run it as an ordinary user with passwordless sudo")
+	}
 	server, err := address()
+	if f.Kerberos {
+		// {server} is the machine's name, which a Kerberos client names the
+		// server's principal after: Samba's never uses Kerberos with an
+		// address.
+		server, err = hostname()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -134,12 +156,12 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		}
 		_, _ = fmt.Fprintf(w, "[dt] fixture: blocks in the bucket %s at %s, under %s\n", bucketName, b.endpoint, b.prefix)
 	}
-	ports, err := freePorts(3)
+	ports, err := freePorts(4) // the API's, NFS's, SMB's and the KDC's
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{data: filepath.Join(out, "dfs"), api: "http://127.0.0.1:" + strconv.Itoa(ports[0]), f: f, shares: shares, exited: make(chan struct{}), out: w}
-	if f.NFS.Version != "" {
+	if f.NFS.Serves() {
 		s.nfsPort = ports[1]
 	}
 	if f.SMB.Enabled {
@@ -155,7 +177,15 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	// escaping in the XML of a tool's configuration.
 	password := secret()
 	s.admin = secret()
-	config, err := writeConfig(s.data, ports[0])
+	if f.Kerberos {
+		if s.kdc, err = startKDC(ctx, filepath.Join(s.data, "kdc"), server, password, ports[3], out); err == nil {
+			_, _ = fmt.Fprintf(w, "[dt] fixture: the KDC of %s answers on port %d, with the principals %s and %s; its output in %s\n", Realm, ports[3], s.kdc.principal(), User, s.kdc.log.Name())
+		}
+	}
+	var config string
+	if err == nil {
+		config, err = writeConfig(s.data, ports[0], s.kdc)
+	}
 	if err == nil {
 		argv := []string{filepath.Join(bin, "dfs"), "start", "--foreground", "--config", config}
 		if f.SMB.Port != 0 {
@@ -187,6 +217,9 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	}
 	if err != nil {
 		_ = s.log.Close()
+		if s.kdc != nil {
+			s.kdc.stop()
+		}
 		_ = os.RemoveAll(s.data)
 		return nil, err
 	}
@@ -207,11 +240,25 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		<-done
 		err = ctx.Err()
 	}
+	if err == nil && f.Client != "" {
+		n := max(1, f.Clients)
+		s.clients, err = upClients(ctx, n, s.nfsPort, out, w)
+		if err == nil {
+			server = s.clients.server()
+			_, _ = fmt.Fprintf(w, "[dt] fixture: %d namespaced clients at %s, the server at %s\n", n, s.clients.addr(1), server)
+		}
+	}
 	if err != nil {
 		_ = s.Stop()
 		return nil, err
 	}
 	s.vals = map[string]string{"server": server, "share": strings.TrimPrefix(shares[0].Name, "/"), "user": User, "user2": User2, "password": password}
+	if f.Clients == 2 {
+		s.vals["client2"] = s.clients.addr(2)
+	}
+	if s.kdc != nil {
+		s.vals["realm"], s.vals["krb5-conf"] = Realm, filepath.Join(s.kdc.dir, "krb5.conf")
+	}
 	if s.nfsPort > 0 {
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
 		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
@@ -224,15 +271,23 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		}
 		_, _ = fmt.Fprintf(w, "[dt] fixture: SMB serves %s at %s:%d\n", strings.Join(names, " "), server, s.smbPort)
 	}
-	if mounts(f.NFS.Version) {
+	if f.NFS.Mounts() {
 		if err := s.mountShare(ctx, server, f.NFS); err != nil {
 			_ = s.Stop()
 			return nil, err
 		}
 		s.vals["mount"] = s.mount
-		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS %s mounted at %s\n", mountVers[f.NFS.Version], s.mount)
 	}
 	return s, nil
+}
+
+// Command is argv as a cell's test runs it, in dir with env added: on the
+// fixture's namespaced client, as the user dt runs as, or else as it is.
+func (s *Server) Command(argv []string, dir string, env []string) ([]string, error) {
+	if s.clients == nil {
+		return argv, nil
+	}
+	return s.clients.asUser(argv, dir, env)
 }
 
 // setUp waits for the server's API, logs in as its admin, configures it and
@@ -248,7 +303,13 @@ func (s *Server) setUp(ctx context.Context, b *bucket, password string) error {
 	if err := s.configure(c, b, password); err != nil {
 		return err
 	}
-	return s.check(c, b)
+	if err := s.check(c, b); err != nil {
+		return err
+	}
+	if s.f.RPCBind == "host" {
+		return s.registered(ctx)
+	}
+	return nil
 }
 
 // login is an API client logged in as the server's admin.
@@ -299,7 +360,8 @@ func (s *Server) waitReady(ctx context.Context) error {
 }
 
 // Stop unmounts the share, then stops the process group dt started dfs in,
-// and nothing outside it, then removes the server's data; its output stays.
+// and nothing outside it, then removes the namespaced clients, the KDC and
+// the server's data; its output stays.
 // The share goes first, since an unmount waits on a server that is gone. dfs
 // gets SIGTERM and stopGrace to exit before SIGKILL, also when the setup's
 // limit stops it, so a dfs that hangs there holds its cell up to stopGrace
@@ -321,6 +383,12 @@ func (s *Server) Stop() error {
 				stopGroup(s.cmd, true)
 				<-s.exited
 			}
+		}
+		if s.clients != nil {
+			s.clients.down()
+		}
+		if s.kdc != nil {
+			s.kdc.stop()
 		}
 		_ = s.log.Close()
 		_ = os.RemoveAll(s.data)
@@ -348,8 +416,9 @@ func ready(ctx context.Context, api string) error {
 }
 
 // writeConfig writes the server's configuration into a new directory data:
-// its API on port, and its database and journal in data.
-func writeConfig(data string, port int) (string, error) {
+// its API on port, its database and journal in data, and with KDC k,
+// Kerberos on, with k's keytab and principal.
+func writeConfig(data string, port int, k *kdc) (string, error) {
 	if err := os.MkdirAll(data, 0o700); err != nil {
 		return "", err
 	}
@@ -366,6 +435,10 @@ database:
 blockstore:
   journal: { path: %q }
 `, port, secret()+secret(), filepath.Join(data, "controlplane.db"), filepath.Join(data, "journal"))
+	if k != nil {
+		config += fmt.Sprintf("kerberos: { enabled: true, keytab_path: %q, service_principal: %q, krb5_conf: %q }\n",
+			filepath.Join(k.dir, "dittofs.keytab"), k.principal()+"@"+Realm, filepath.Join(k.dir, "krb5.conf"))
+	}
 	path := filepath.Join(data, "config.yaml")
 	return path, os.WriteFile(path, []byte(config), 0o600)
 }
@@ -414,6 +487,9 @@ type iface struct {
 	addrs []net.Addr
 }
 
+// hostname is this machine's name; the tests replace it.
+var hostname = os.Hostname
+
 // interfaces lists this machine's interfaces; the tests replace it.
 var interfaces = func() ([]iface, error) {
 	list, err := net.Interfaces()
@@ -426,6 +502,16 @@ var interfaces = func() ([]iface, error) {
 		out = append(out, iface{i.Flags, addrs})
 	}
 	return out, nil
+}
+
+// Network is the network the fixture's server is on, which a container joins
+// to reach it: the host's, unless dt runs in a dtc container on a bridge
+// network, whose network the container then shares.
+func Network() string {
+	if os.Getenv("DT_IN_CONTAINER") == "1" && os.Getenv("DT_HOSTNET") != "1" {
+		return "container:" + os.Getenv("DT_CONTAINER_NAME")
+	}
+	return "host"
 }
 
 // address is {server}: the IPv4 address of the first interface that is up

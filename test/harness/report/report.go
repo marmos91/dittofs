@@ -2,7 +2,8 @@
 // writes them as the run's summary.json, in the Common Test Report Format
 // (CTRF) at one pinned version, with each cell's as a JUnit file and the run's
 // report.md, both generated from the same results. It reads summary.json back,
-// and shows a run as dt report does.
+// shows a run as dt report does, and writes a cell's results as smbtorture's
+// baseline file.
 package report
 
 import (
@@ -19,12 +20,14 @@ import (
 // specVersion is the one CTRF version dt writes, whatever CTRF publishes later.
 const specVersion = "0.1.0"
 
-// A test's status, in CTRF's words.
+// A test's status, in CTRF's words. A cell's result is passed, failed,
+// skipped, for needs this machine doesn't meet, or NotRun.
 const (
 	Passed  = "passed"
 	Failed  = "failed"
 	Skipped = "skipped"
-	Other   = "other" // the test has no result: its output stopped before one
+	Other   = "other"   // the test has no result: its output stopped before one
+	NotRun  = "not run" // the cell couldn't run, or its limit left tests unstarted
 )
 
 // Grades dt gives a result. A passing result no entry stands against has
@@ -99,11 +102,12 @@ func Slug(cell string) string {
 // suite lists no tests, so the commands ran once for the whole cell.
 type Ran struct {
 	Test     string
-	Prefix   string // the test's prefix= in a .txt list: what the names the tool reports leave off
-	Output   []byte // what the commands printed
-	Exit     int    // the first non-zero exit status among them, else 0
-	TimedOut bool   // they were stopped at the test's limit or the cell's
-	Out      string // the cell's directory, {out}, where tools write their result files
+	Prefix   string        // the test's prefix= in a .txt list: what the names the tool reports leave off
+	Output   []byte        // what the commands printed
+	Exit     int           // the first non-zero exit status among them, else 0
+	TimedOut bool          // they were stopped at the test's limit or the cell's
+	Took     time.Duration // how long they ran
+	Out      string        // the cell's directory, {out}, where tools write their result files
 }
 
 // A Reader reads one format's results from what a test's commands left. The

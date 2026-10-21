@@ -1,6 +1,7 @@
 package known
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 
@@ -61,8 +62,9 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 				t.Grade, t.Reason, t.Issue = report.ExpectedSkip, apply[e].Reason, apply[e].Issue
 			default:
 				// decision: rawStatus is set here too, since grading changed
-				// the status; it is set whenever a grade changes the status.
-				t.Status, t.RawStatus, t.Grade = report.Other, report.Skipped, report.UnexpectedSkip
+				// the status; it is set whenever a grade changes the status,
+				// unless the reader kept the tool's own, as TRX's NotExecuted.
+				t.Status, t.RawStatus, t.Grade = report.Other, cmp.Or(t.RawStatus, report.Skipped), report.UnexpectedSkip
 			}
 		default:
 			t.Grade = report.Incomplete

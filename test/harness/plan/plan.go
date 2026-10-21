@@ -4,6 +4,7 @@ package plan
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -140,24 +141,29 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 	}
 	suite, option, _ := strings.Cut(u.Name, "/")
 	// A cell lists its tests only when it runs part of the suite's.
-	partial := len(groups) > 1 || sel.Glob != "" || u.Shards > 1
+	partial := len(groups) > 1 || sel.Glob != "" || u.Shards > 1 || slices.ContainsFunc(slices.Collect(maps.Values(lines)), func(l Line) bool { return l.Where != nil })
 	var cells []Cell
 	for _, p := range points(u.Matrix, values) {
 		for _, g := range groups {
-			needs := union(union(u.Needs, g.needs), fixtureNeeds(u.Fixture, p.asMap()))
+			needs := union(union(u.Needs, g.needs), fixtureNeeds(u.Fixture, u.Matrix.Fill(p.asMap())))
 			place := placeOf(needs)
 			shards := 1
 			if u.Shards > 1 && place != dedicated {
 				shards = u.Shards
+			}
+			// A test whose line names matrix values runs only in their cells.
+			ours := slices.DeleteFunc(slices.Clone(g.tests), func(t string) bool { return !lines[t].at(p.asMap()) })
+			if len(ours) == 0 && len(g.tests) > 0 {
+				continue
 			}
 			for i := 1; i <= shards; i++ {
 				segments := append([]string{u.Name}, p.values()...)
 				if g.label != "" {
 					segments = append(segments, g.label)
 				}
-				tests := g.tests
+				tests := ours
 				if shards > 1 {
-					tests = shard(g.tests, i, shards)
+					tests = shard(ours, i, shards)
 					// A cell with no tests listed runs the whole suite, so a
 					// shard left empty by fewer tests than shards is dropped.
 					if len(tests) == 0 {
@@ -185,7 +191,8 @@ func UnitCells(root string, u *registry.Suite, tier string, allValues bool) ([]C
 
 // fixtureNeeds are the needs fixture f implies at one point of its matrix,
 // for its own steps: a service for an S3 profile, root and the client for a
-// mount, and root and the port for SMB on a set port.
+// mount, root and the port for SMB on a set port, and docker for Kerberos's
+// KDC.
 func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 	if f == nil {
 		return nil
@@ -202,14 +209,20 @@ func fixtureNeeds(f *registry.Fixture, values map[string]string) []string {
 	if fill(f.Profile) == "badger-s3" {
 		out = append(out, "service:localstack")
 	}
-	if v := fill(f.NFS.Version); v != "" && v != "export" {
+	if nfs := (registry.NFS{Version: fill(f.NFS.Version), FromOptions: f.NFS.FromOptions}); nfs.Mounts() || f.Client != "" {
 		out = append(out, "root", "nfs-client")
+	}
+	if f.RPCBind != "" {
+		out = append(out, "rpcbind")
 	}
 	if f.SMB.Mount {
 		out = union(out, []string{"root", "smb-client"})
 	}
 	if f.SMB.Port != 0 {
 		out = union(out, []string{"root", "port:" + strconv.Itoa(f.SMB.Port)})
+	}
+	if f.Kerberos {
+		out = append(out, "docker")
 	}
 	return out
 }
@@ -288,16 +301,30 @@ func testGroups(root string, u *registry.Suite, narrow string) ([]group, map[str
 
 // Line is what a .txt list's line gives its test besides its name.
 type Line struct {
-	Limit  time.Duration // its own limit; 0 when the line gives none
-	Share  string        // share=: the share it runs on, in place of the fixture's first
-	Prefix string        // prefix=: what the names the tool reports for it leave off
+	Limit  time.Duration       // its own limit; 0 when the line gives none
+	Share  string              // share=: the share it runs on, in place of the fixture's first
+	Prefix string              // prefix=: what the names the tool reports for it leave off
+	Where  map[string][]string // AXIS=V,...: the matrix values of the cells it runs in; all when nil
+	Args   []string            // the words after --, its {test-args}
+}
+
+// at reports whether the line's test runs in the cell with these matrix
+// values.
+func (l Line) at(values map[string]string) bool {
+	for axis, want := range l.Where {
+		if !slices.Contains(want, values[axis]) {
+			return false
+		}
+	}
+	return true
 }
 
 // ListTests expands the unit's tests: a glob relative to root, a list of
 // names, or a .txt file of names, each line a name and then, in any order, at
-// most one each of its own limit, share= and prefix=, each with a value. A
-// glob holding a placeholder is resolved only when the cell runs, so it lists
-// nothing here.
+// most one each of its own limit, share=, prefix= and, per matrix axis,
+// AXIS=V,... for the values it runs at, each with a value, and last, after
+// --, its {test-args}. A glob holding a placeholder is resolved only when the
+// cell runs, so it lists nothing here.
 func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[string]Line, error) {
 	var tests []string
 	lines := map[string]Line{}
@@ -319,20 +346,9 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 			if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 				continue
 			}
-			var l Line
-			for _, f := range fields[1:] {
-				key, value, isKey := strings.Cut(f, "=")
-				limit, err := time.ParseDuration(f)
-				switch {
-				case isKey && key == "share" && value != "" && l.Share == "":
-					l.Share = value
-				case isKey && key == "prefix" && value != "" && l.Prefix == "":
-					l.Prefix = value
-				case err == nil && limit > 0 && l.Limit == 0:
-					l.Limit = limit
-				default:
-					return nil, nil, fmt.Errorf("%s:%d: %q is not a limit above zero, share=NAME or prefix=NAME, each given once", u.Tests.File, i+1, f)
-				}
+			l, err := parseLine(u, fields[1:])
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s:%d: %w", u.Tests.File, i+1, err)
 			}
 			tests = append(tests, fields[0])
 			lines[fields[0]] = l
@@ -342,6 +358,44 @@ func ListTests(root string, u *registry.Suite, narrow string) ([]string, map[str
 		tests = slices.DeleteFunc(slices.Clone(tests), func(t string) bool { return !match(narrow, t) })
 	}
 	return tests, lines, nil
+}
+
+// parseLine reads what a .txt list's line gives its test after its name.
+func parseLine(u *registry.Suite, fields []string) (Line, error) {
+	var l Line
+	for i, f := range fields {
+		key, value, isKey := strings.Cut(f, "=")
+		limit, err := time.ParseDuration(f)
+		switch {
+		case f == "--":
+			l.Args = fields[i+1:]
+			for _, a := range l.Args {
+				if bad := u.Unknown(a); len(bad) > 0 {
+					return l, fmt.Errorf("unknown placeholder {%s}", bad[0])
+				}
+			}
+			return l, nil
+		case isKey && key == "share" && value != "" && l.Share == "":
+			l.Share = value
+		case isKey && key == "prefix" && value != "" && l.Prefix == "":
+			l.Prefix = value
+		case isKey && l.Where[key] == nil && slices.ContainsFunc(u.Matrix, func(a registry.Axis) bool { return a.Name == key }):
+			if l.Where == nil {
+				l.Where = map[string][]string{}
+			}
+			l.Where[key] = strings.Split(value, ",")
+			for _, v := range l.Where[key] {
+				if !slices.ContainsFunc(u.Matrix, func(a registry.Axis) bool { return a.Name == key && slices.Contains(a.Values, v) }) {
+					return l, fmt.Errorf("%s has no value %q", key, v)
+				}
+			}
+		case err == nil && limit > 0 && l.Limit == 0:
+			l.Limit = limit
+		default:
+			return l, fmt.Errorf("%q is not a limit above zero, share=NAME, prefix=NAME, AXIS=V,... or --, each given once", f)
+		}
+	}
+	return l, nil
 }
 
 // Glob returns the files pattern matches, each named by its path below dir

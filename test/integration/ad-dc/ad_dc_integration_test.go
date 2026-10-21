@@ -270,10 +270,9 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	t.Log("Waiting for KDC TCP port...")
 	waitForADPort(t, kdcHostPort, 6*time.Minute)
 
-	// Wait for the entrypoint to finish exporting the keytab. It is the last
-	// artifact written before samba re-execs in the foreground.
-	t.Log("Waiting for service keytab export...")
-	waitForKeytab(t, 4*time.Minute)
+	// The samba that served the setup keeps running, so the DC stays up from here.
+	t.Log("Waiting for the AD-DC setup to finish...")
+	waitForADReady(t, 4*time.Minute)
 
 	// Copy the keytab out of the container. docker cp reads as root inside the
 	// container, so the fixture's chmod 0400 / chown to the dittofs uid does
@@ -331,20 +330,25 @@ func findADDockerfileDir(t *testing.T) string {
 	}
 }
 
-// waitForKeytab polls until dittofs.keytab exists and is non-empty inside the
-// container (the entrypoint exports it after provisioning completes).
-func waitForKeytab(t *testing.T, timeout time.Duration) {
+// waitForADReady polls until the entrypoint writes its ready marker, the last
+// step of its setup: the users, groups and complete keytab exist and the KDC,
+// LDAP and DNS accept connections. A failed setup stops the container, which
+// fails the test at once instead of at the timeout.
+func waitForADReady(t *testing.T, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := adDockerExec("sh", "-c", "test -s /keytabs/dittofs.keytab && echo ok")
-		if err == nil && strings.TrimSpace(string(out)) == "ok" {
+		if _, err := adDockerExec("test", "-f", "/keytabs/.ready"); err == nil {
 			return
+		}
+		if out, _ := adDockerOutput("inspect", "-f", "{{.State.Running}}", adContainerName); strings.TrimSpace(string(out)) == "false" {
+			dumpADLogs(t)
+			t.Fatal("AD-DC container stopped before its setup finished")
 		}
 		time.Sleep(2 * time.Second)
 	}
 	dumpADLogs(t)
-	t.Fatalf("keytab not exported within %s", timeout)
+	t.Fatalf("AD-DC setup not finished within %s", timeout)
 }
 
 func waitForADPort(t *testing.T, port int, timeout time.Duration) {
@@ -414,23 +418,10 @@ func getADAPREQ(t *testing.T, krb5ConfPath string) []byte {
 	}
 
 	// kinit equivalent. DisablePAFXFAST avoids an unnecessary preauth round.
-	// Retry on transient KDC errors: the entrypoint exports the keytab (which
-	// setupADDC waits for) and only THEN stops the provisioning samba and
-	// re-execs it in the foreground, so the KDC has a brief down window right
-	// when the test first reaches kinit ("connection reset by peer"). A short
-	// retry loop rides that restart gap out.
 	cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
-	var loginErr error
-	for attempt := 1; attempt <= 15; attempt++ {
-		if loginErr = cl.Login(); loginErr == nil {
-			break
-		}
-		t.Logf("kinit attempt %d/15 not ready yet: %v", attempt, loginErr)
-		time.Sleep(2 * time.Second)
-	}
-	if loginErr != nil {
+	if err := cl.Login(); err != nil {
 		dumpADLogs(t)
-		t.Fatalf("kinit as alice failed after retries: %v", loginErr)
+		t.Fatalf("kinit as alice: %v", err)
 	}
 	defer cl.Destroy()
 	t.Log("alice obtained a TGT from the AD-DC")

@@ -22,10 +22,11 @@ const subunitKnown = `- { test: smb2.lock.lock1, status: fail, fix: wontfix, cat
 // parse-results.sh, case by case from its test, each result graded against
 // the same list: a name with its grade, or its status when nothing graded it.
 // Where dt grades differently, as the RFC says, the case says how: a test with
-// no result is incomplete, a timed-out entry fails the test it had open
-// whatever the list says, a known failure that passes fails, and no timeout is
-// signed off. The grader's cases on its timeouts.txt rows and on its one-byte
-// exit status have no counterpart in dt.
+// no result is incomplete, an entry whose client crashed with no test open is
+// incomplete, a timed-out entry fails the test it had open whatever the list
+// says, a known failure that passes fails, and no timeout is signed off. The
+// grader's cases on its timeouts.txt rows and on its one-byte exit status have
+// no counterpart in dt.
 func TestReadSubunit(t *testing.T) {
 	entries, err := known.Parse("known.yaml", []byte(subunitKnown))
 	if err != nil {
@@ -33,6 +34,7 @@ func TestReadSubunit(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name     string
+		test     string // the entry of tests.txt, smb2.x when empty
 		prefix   string
 		timedOut bool
 		exit     int
@@ -76,6 +78,9 @@ test: smb2.oplock.batch2
 success: smb2.scan.find
 test: smb2.scan.scan
 `, want: []string{"smb2.scan.find passed", "smb2.scan.scan incomplete"}},
+		{name: "a client that crashed with no test open leaves its entry incomplete, apart from the test it names", test: "smb2.lock.lock1", exit: 139, output: `test: smb2.lock.lock1
+success: smb2.lock.lock1
+`, want: []string{"smb2.lock.lock1 unexpected_pass", "smb2.lock.lock1 (exit) incomplete"}},
 		{name: "a known failure that passes is unexpected", output: `test: smb2.lock.lock1
 success: smb2.lock.lock1
 test: smb2.oplock.batch1
@@ -168,7 +173,7 @@ needs kernel oplocks
 `, want: []string{"smb2.oplock.batch1 known", "smb2.oplock.batch2 ungraded"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tests, err := readSubunit(report.Ran{Test: "smb2.x", Prefix: tc.prefix, Output: []byte(tc.output), Exit: tc.exit, TimedOut: tc.timedOut})
+			tests, err := readSubunit(report.Ran{Test: cmp.Or(tc.test, "smb2.x"), Prefix: tc.prefix, Output: []byte(tc.output), Exit: tc.exit, TimedOut: tc.timedOut})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,10 +217,10 @@ skip: smb2.lock.lock1 [ no locks ]
 }
 
 // A run that reports no test, as smbtorture does for a name it doesn't know,
-// is an error, whatever else it printed.
+// is an error, whatever else it printed and however it exited.
 func TestSubunitNoResults(t *testing.T) {
 	for _, output := range []string{"", "smbtorture 4.22.6\nUnknown torture operation 'smb2.notify.security'\n"} {
-		if tests, err := readSubunit(report.Ran{Output: []byte(output), Exit: 1}); err == nil {
+		if tests, err := readSubunit(report.Ran{Output: []byte(output), Exit: 139}); err == nil {
 			t.Errorf("%q: no error, results %+v", output, tests)
 		}
 	}
@@ -228,7 +233,7 @@ func TestSubunitCell(t *testing.T) {
   s: { format: subunit, cmd: "cat {test}", tests: list.txt }
 `, map[string]string{"list.txt": "a prefix=p\nb\n", "a": "test: x\nfailure: x [\nboom\n]\n", "b": "Unknown torture operation\n"})
 	rep, out := runTarget(t, root, r, "s", false)
-	if o := rep.Outcomes[0]; o.Result != Failed || o.Note != "1 failed: smb2.p.x; b: no results" {
+	if o := rep.Outcomes[0]; o.Result != report.Failed || o.Note != "1 failed: smb2.p.x; b: no results" {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }

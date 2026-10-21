@@ -32,14 +32,6 @@ import (
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// How a cell went.
-const (
-	Passed  = "passed"
-	Failed  = "failed"  // a test failed or timed out
-	NotRun  = "not run" // it couldn't run, or its limit left tests unstarted
-	Skipped = "skipped" // without --ci, this machine doesn't meet its needs
-)
-
 // Report is a whole run.
 type Report struct {
 	Dir      string // the run's results directory
@@ -52,11 +44,11 @@ func (r Report) Status() int {
 	ran, notRun := false, false
 	for _, o := range r.Outcomes {
 		switch o.Result {
-		case Failed:
+		case report.Failed:
 			return 1
-		case NotRun:
+		case report.NotRun:
 			notRun = true
-		case Passed:
+		case report.Passed:
 			ran = true
 		}
 	}
@@ -163,7 +155,7 @@ func annotations(c report.Cell) []string {
 			out = append(out, annotation("dt "+c.Name+": "+t.Title(), "passed unexpectedly: remove its known entry ("+t.Reason+")"))
 		}
 	}
-	if len(out) == 0 && (c.Result == Failed || c.Result == NotRun) {
+	if len(out) == 0 && (c.Result == report.Failed || c.Result == report.NotRun) {
 		out = append(out, annotation("dt "+c.Name, c.Result+": "+c.Note))
 	}
 	return out
@@ -181,14 +173,15 @@ func annotation(title, message string) string {
 // its log once it has one, and its tests' results. A cell with a fixture has
 // its server started before its first test and stopped after its last.
 func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res report.Cell) {
-	didntRun := func(why string) report.Cell { return report.Cell{Name: c.Name, Result: NotRun, Note: why} }
+	didntRun := func(why string) report.Cell { return report.Cell{Name: c.Name, Result: report.NotRun, Note: why} }
 	if ctx.Err() != nil {
 		return didntRun("interrupted")
 	}
-	var spec registry.Fixture // the cell's fixture, its matrix values filled in
+	matrix := c.Unit.Matrix.Fill(c.Matrix) // the matrix's placeholders
+	var spec registry.Fixture              // the cell's fixture, its matrix values filled in
 	if f := c.Unit.Fixture; f != nil {
 		var err error
-		if spec, err = cellFixture(*f, c.Matrix); err != nil {
+		if spec, err = cellFixture(*f, matrix); err != nil {
 			return didntRun(err.Error())
 		}
 		// What dt can't do yet decides before the needs, as in Blocked.
@@ -200,16 +193,17 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		// A machine that met the needs could run the cell, so without --ci
 		// it's skipped; what dt can't do yet is never a skip.
 		if len(unmet) > 0 && !o.CI {
-			return report.Cell{Name: c.Name, Result: Skipped, Note: why}
+			return report.Cell{Name: c.Name, Result: report.Skipped, Note: why}
 		}
 		return didntRun(why)
 	}
 	out := filepath.Join(dir, report.Slug(c.Name))
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
-	for k, v := range c.Matrix {
-		vals[k] = v
-	}
+	maps.Copy(vals, matrix)
 	lists := map[string][]string{"args": strings.Fields(c.Unit.Args[c.Tier])}
+	if c.Unit.Tests.File != "" {
+		lists["test-args"] = []string{""} // until each test's, from its line, fills it
+	}
 	if c.Unit.Packages != nil {
 		pkgs, err := goPackages(o.Root, c.Unit.Packages.Tag)
 		if err != nil {
@@ -248,7 +242,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	w := io.MultiWriter(o.Out, log)
 	// Once the log exists, a cell that doesn't run still points at it.
 	didntRun = func(why string) report.Cell {
-		return report.Cell{Name: c.Name, Result: NotRun, Note: why, Log: logName}
+		return report.Cell{Name: c.Name, Result: report.NotRun, Note: why, Log: logName}
 	}
 
 	cellCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*minute)
@@ -298,6 +292,17 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if err := buildBin(setup, o.Root, vals["bin"], os.Environ(), w); err != nil {
 			return setupFailed("the fixture", fmt.Errorf("dfs and dfsctl didn't build: %w", err))
 		}
+		if spec.Kerberos {
+			build := []string{"docker", "build", "-q", "-t", fixture.KDCImage, filepath.Join("test", "smb-conformance", "kdc")}
+			_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
+			code, err := execute(setup, build, o.Root, os.Environ(), w)
+			if err == nil && code != 0 {
+				err = fmt.Errorf("docker build exited %d", code)
+			}
+			if err != nil {
+				return setupFailed("the fixture", fmt.Errorf("the KDC's image didn't build: %w", err))
+			}
+		}
 		if spec.Shares != "" {
 			spec.Shares = filepath.Join(o.Root, spec.Shares)
 		}
@@ -310,7 +315,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// interrupt stopped the cell first.
 			if err := server.Stop(); err != nil && ctx.Err() == nil {
 				_, _ = fmt.Fprintf(w, "[dt] fixture: %v\n", err)
-				res.Result, res.Note = Failed, strings.TrimSuffix("the fixture: "+err.Error()+"; "+res.Note, "; ")
+				res.Result, res.Note = report.Failed, strings.TrimSuffix("the fixture: "+err.Error()+"; "+res.Note, "; ")
 			}
 		}()
 		maps.Copy(vals, server.Placeholders())
@@ -349,7 +354,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 	}
 	setupDone()
-	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, out: w, log: log}
+	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, lines: lines, server: server, out: w, log: log}
 	if c.Unit.Format == "go-json" {
 		result, note, tests := t.goJSON(c.Tests)
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
@@ -395,9 +400,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// exit: each test is a test case, or without tests each command.
 			if test == "" {
 				cases = append(cases, r.steps...)
-			} else if r.result != NotRun {
+			} else if r.result != report.NotRun {
 				tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
-				if r.result == Failed {
+				if r.result == report.Failed {
 					tc.Status, tc.Message = report.Failed, r.note
 				}
 				if r.timedOut {
@@ -408,7 +413,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		case r.interrupted:
 			// Its not-run note says so, and nothing it reported counts.
 		default:
-			got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Out: out})
+			got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
 			if err != nil {
 				notRun = append(notRun, prefix+err.Error())
 			}
@@ -455,12 +460,12 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	}
 	unexpected, lost := gradeNotes(cases)
 	failed, notRun = append(failed, unexpected...), append(notRun, lost...)
-	cell := report.Cell{Name: c.Name, Result: Passed, Log: logName, Tests: cases}
+	cell := report.Cell{Name: c.Name, Result: report.Passed, Log: logName, Tests: cases}
 	switch {
 	case len(failed) > 0:
-		cell.Result, cell.Note = Failed, strings.Join(append(failed, notRun...), "; ")
+		cell.Result, cell.Note = report.Failed, strings.Join(append(failed, notRun...), "; ")
 	case len(notRun) > 0:
-		cell.Result, cell.Note = NotRun, strings.Join(notRun, "; ")
+		cell.Result, cell.Note = report.NotRun, strings.Join(notRun, "; ")
 	}
 	return cell
 }
@@ -501,7 +506,7 @@ func gradeNotes(cases []report.Test) (failed, notRun []string) {
 
 // readers read the formats whose results a tool writes: every format but
 // exit and go-json, which dt reads itself.
-var readers = map[string]report.Reader{"subunit": readSubunit}
+var readers = map[string]report.Reader{"junit": readJUnit, "nfstest": readNFStest, "subunit": readSubunit, "tap": readTAP, "trx": readTRX}
 
 // exitNotRun is the exit status of a command that ran nothing, as the
 // scenarios' setup gives when another run holds their lock.
@@ -518,7 +523,9 @@ type tester struct {
 	own      []string // the suite's alone
 	vals     map[string]string
 	lists    map[string][]string
-	paths    map[string]string // the file each test runs as {test}, when it isn't its name
+	paths    map[string]string    // the file each test runs as {test}, when it isn't its name
+	lines    map[string]plan.Line // what each test's line in a .txt list gives it
+	server   fixtureServer        // the cell's fixture, which may run the commands on its client
 	out, log io.Writer
 	capture  io.Writer // also gets the commands' output, for a reader
 }
@@ -547,6 +554,16 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		defer cancel()
 	}
 	t.vals["test"] = cmp.Or(t.paths[test], test)
+	if _, ok := t.lists["test-args"]; ok {
+		t.lists["test-args"] = nil
+		for _, a := range t.lines[test].Args {
+			v, err := replace(a, t.vals, nil, nil)
+			if err != nil {
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
+			}
+			t.lists["test-args"] = append(t.lists["test-args"], v)
+		}
+	}
 	var r testRun
 	var failed, notRun []string
 	image := t.cell.Unit.Image
@@ -566,7 +583,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		var err error
 		if cmd != (registry.Command{}) {
 			if argv, err = fill(cmd, t.vals, t.lists); err != nil {
-				return testRun{result: NotRun, notRun: []string{err.Error()}}
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
 			}
 		}
 		shown := cmp.Or(strings.Join(argv, " "), image)
@@ -576,9 +593,18 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		printed, container := shown, ""
 		if image != "" {
 			if argv, container, err = t.inImage(argv); err != nil {
-				return testRun{result: NotRun, notRun: []string{err.Error()}}
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
 			}
 			printed = strings.Join(argv, " ")
+		}
+		if t.server != nil {
+			wrapped, err := t.server.Command(argv, t.dir, t.own)
+			if err != nil {
+				return testRun{result: report.NotRun, notRun: []string{err.Error()}}
+			}
+			if !slices.Equal(wrapped, argv) {
+				argv, printed = wrapped, strings.Join(wrapped, " ")
+			}
 		}
 		if pw := t.vals["password"]; pw != "" { // a credential stays out of the log
 			shown = strings.ReplaceAll(shown, pw, "{password}")
@@ -607,7 +633,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		case errors.Is(t.ctx.Err(), context.DeadlineExceeded):
 			step.Message, step.Grade = "stopped at the cell's limit", report.New
 		case t.ctx.Err() != nil:
-			r.result, r.notRun, r.interrupted = NotRun, []string{"interrupted"}, true
+			r.result, r.notRun, r.interrupted = report.NotRun, []string{"interrupted"}, true
 			return r
 		case err != nil:
 			step.Message = fmt.Sprintf("`%s`: %v", firstLine(shown), err)
@@ -626,18 +652,18 @@ func (t tester) run(test string, limit time.Duration) testRun {
 		}
 		r.steps = append(r.steps, step)
 		if ctx.Err() != nil { // the test, or the cell, ran out of time
-			r.result, r.note, r.notRun, r.timedOut = Failed, step.Message, notRun, true
+			r.result, r.note, r.notRun, r.timedOut = report.Failed, step.Message, notRun, true
 			return r
 		}
 	}
 	r.notRun = notRun
 	switch {
 	case len(failed) > 0:
-		r.result, r.note = Failed, strings.Join(failed, ", ")
+		r.result, r.note = report.Failed, strings.Join(failed, ", ")
 	case len(notRun) > 0:
-		r.result = NotRun
+		r.result = report.NotRun
 	default:
-		r.result = Passed
+		r.result = report.Passed
 	}
 	return r
 }
@@ -747,16 +773,14 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 	return strings.Join(reasons, "; "), unmet
 }
 
-// unsupported says why dt can't run the suite yet, or returns "".
+// unsupported says why dt can't run the suite yet, or returns "": only a
+// fixture field dt doesn't do yet, since it reads every format.
 func unsupported(u *registry.Suite) string {
-	if u.Fixture != nil {
-		if why := fixture.Unsupported(u.Fixture); why != "" {
-			return why
-		}
+	if u.Format == "go-json" && u.Fixture != nil && u.Fixture.Client != "" {
+		return "dt doesn't run go test on a namespaced client yet"
 	}
-	switch {
-	case u.Format != "exit" && u.Format != "go-json" && readers[u.Format] == nil:
-		return fmt.Sprintf("dt doesn't read %s results yet", u.Format)
+	if u.Fixture != nil {
+		return fixture.Unsupported(u.Fixture)
 	}
 	return ""
 }

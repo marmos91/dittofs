@@ -400,12 +400,12 @@ in `test/conformance/suites.json`:
 
 | Suite | Protocol | Profiles | Variants | Presubmit | Known failures |
 |---|---|---|---|---|---|
-| `wpts` | SMB | `memory`, `badger`, `badger-s3` | — | `memory`, `badger-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
-| `smbtorture` | SMB | `memory`, `badger` | — | `memory`, `badger` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
-| `pjdfstest` | NFS | `memory`, `badger`, `badger-s3` | `3`, `4`, `4.1` | `memory`, `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
-| `pynfs` | NFS | `memory`, `badger`, `badger-s3` | `4.0`, `4.1` | `memory`, `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
-| `cthon04` | NFS | `memory`, `badger`, `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `memory` | [`test/nfs-mount/cthon04/KNOWN_FAILURES.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md) |
-| `nfstest` | NFS | `memory` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
+| `wpts` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
+| `smbtorture` | SMB | `badger-s3` | — | `badger-s3` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
+| `pjdfstest` | NFS | `badger-s3` | `3`, `4`, `4.1` | `badger-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
+| `pynfs` | NFS | `badger-s3` | `4.0`, `4.1` | `badger-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
+| `cthon04` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `badger-s3` | [`test/nfs-mount/cthon04/KNOWN_FAILURES.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES.md), [`test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/cthon04/KNOWN_FAILURES_V3.md) |
+| `nfstest` | NFS | `badger-s3` | `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | — | [`test/nfs-mount/nfstest/KNOWN_FAILURES.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V3.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V4.md), [`test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md`](../../test/nfs-mount/nfstest/KNOWN_FAILURES_V40.md) |
 
 Tiering, profiles and blacklists come from
 [`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through
@@ -486,8 +486,8 @@ the option that caused it.
   tables grade which set is declared in `test/conformance/suites.json`
 - **Run locally:**
   ```bash
-  sudo test/conformance/run.sh --suite cthon04 --profile memory --variant v4.1   # Linux host
-  test/nfs-mount/dev-docker.sh cthon04 memory v4.1                               # anywhere with Docker
+  sudo test/conformance/run.sh --suite cthon04 --profile badger-s3 --variant v4.1   # Linux host, localstack on :4566
+  test/nfs-mount/dev-docker.sh cthon04 badger-s3 v4.1                               # anywhere with Docker
   ```
 
 Runs in the `nfs-mount` job of `.github/workflows/conformance.yml`. See

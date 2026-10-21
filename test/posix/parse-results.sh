@@ -65,6 +65,7 @@ if [[ -z "$PROVE_RESULT" ]]; then
     echo -e "${RED}ERROR: prove did not finish — missing or incomplete result footer.${NC}"
     exit 1
 fi
+FILES_RUN="$(sed -nE 's/^Files=([0-9]+), Tests=.*/\1/p' "$OUTPUT_FILE" | tail -1)"
 
 kf_load "$KNOWN_FAILURES_FILE"
 echo "Loaded ${KF_COUNT} known failure pattern(s) from $(basename "${KNOWN_FAILURES_FILE:-<none>}")"
@@ -80,6 +81,7 @@ echo "Loaded ${KF_COUNT} known failure pattern(s) from $(basename "${KNOWN_FAILU
 # --------------------------------------------------------------------------
 if ! grep -q "Test Summary Report" "$OUTPUT_FILE" && grep -q "All tests successful" "$OUTPUT_FILE"; then
     echo -e "${GREEN}${BOLD}RESULT: All tests successful. CI green.${NC}"
+    kf_record ran "$FILES_RUN"
     [[ -n "$RESULTS_DIR" && -d "$RESULTS_DIR" ]] && {
         printf '| Metric | Count |\n|--------|-------|\n| Failed | 0 |\n| Known | 0 |\n| New Failures | 0 |\n' > "${RESULTS_DIR}/summary.txt"
     }
@@ -145,12 +147,15 @@ for ft in "${FAILING_FILES[@]:-}"; do
     if kf_is_known "$ft"; then
         KNOWN_HITS=$((KNOWN_HITS + 1))
         printf "  ${YELLOW}%-24s KNOWN${NC} (%s)\n" "$ft" "$(kf_reason "$ft")"
+        kf_record known "$ft"
     else
         NEW_FAILURES=$((NEW_FAILURES + 1))
         NEW_FAILURE_LIST+=("$ft")
         printf "  ${RED}%-24s FAIL${NC}\n" "$ft"
+        kf_record new "$ft"
     fi
 done
+kf_record ran "$FILES_RUN"
 
 echo ""
 echo -e "${BOLD}--- Summary ---${NC}"

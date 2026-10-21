@@ -40,8 +40,10 @@ on:
       - '**.jpg'
       - '**.svg'
   schedule:
-    # Nightly at 04:19 UTC, staggered from the other protocol suites.
-    - cron: '19 4 * * *'
+    # Nightly at 22:19 UTC, staggered from the other protocol suites. GitHub
+    # starts scheduled runs hours late, which lands this one before the
+    # working day rather than inside it.
+    - cron: '19 22 * * *'
   workflow_dispatch:
     inputs:
       suite:
@@ -60,7 +62,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A scheduled run has a group of its own, so it and a push never replace
+  # each other. A re-run keeps its event, and so its group.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   # Cancel a superseded PR run: a new commit replaces the old one, and only the
   # tip matters. Do NOT cancel a develop run: each push is a distinct commit
   # someone wants tested, and cancelling it means it never is -- which left most
@@ -71,6 +75,9 @@ concurrency:
 
 env:
   DITTOFS_MOUNT: /tmp/dittofs-test
+  # The tier the parity jobs' dt runs at, as the scripts' jobs pick theirs: a
+  # dispatch naming a suite as the schedule, a blank one as after a merge.
+  TIER: ${{ (github.event_name == 'schedule' || inputs.suite != '') && 'nightly' || 'merge' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -124,7 +131,9 @@ jobs:
 
   # The graders decide whether a suite is red at all, so they are guarded on
   # their own in about a second rather than only through a 40-minute run that
-  # would have to fail first to reveal a grading regression.
+  # would have to fail first to reveal a grading regression. The common
+  # runner's, the known-failures parser's and the admission lease's tests run
+  # in Repo Checks (lint.yml).
   graders:
     name: Grading logic
     runs-on: ubuntu-latest
@@ -132,12 +141,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Test the common runner
-        run: ./test/conformance/run_test.sh
-
-      - name: Test the shared known-failures parser
-        run: ./test/common/known-failures_test.sh
 
       - name: Test the POSIX grader
         run: ./test/posix/parse-results_test.sh
@@ -156,9 +159,6 @@ jobs:
 
       - name: Test grader exit-status boundaries
         run: ./test/conformance/grader-exit-status_test.sh
-
-      - name: Test the conformance admission lease
-        run: ./test/smb-conformance/compose-env_test.sh
 
   # ---------------------------------------------------------------------------
   # SMB — Docker Compose, no host services, no root.
@@ -385,7 +385,7 @@ jobs:
   # each named option set in test/nfs-mount/option-sets.sh. Same shape as
   # pjdfstest: a dfs on the host adapter, sudo for the mount. Both suites run
   # in this one job; the matrix cell names which. Mostly nightly: PRs get
-  # cthon04 on memory only, merges get nothing (tiers in suites.json).
+  # cthon04, merges get nothing (tiers in suites.json).
   # ---------------------------------------------------------------------------
   nfs-mount:
     name: ${{ matrix.suite }} ${{ matrix.variant }} / ${{ matrix.profile }}
@@ -526,70 +526,173 @@ jobs:
           path: test/smb-conformance/results/smbtorture-*/
           retention-days: 30
 
-  smbtorture-baseline-refresh:
-    name: smbtorture baseline refresh
+  # ---------------------------------------------------------------------------
+  # Parity: the same suites' cells through dt, beside the scripts' jobs, until
+  # the two give the same results on 5 consecutive runs
+  # (docs/internals/rfcs/rfc-29-test-harness.md). Never blocking: a red cell
+  # or a difference fails its own job, and never the workflow run. They go
+  # when the suites move into tests.yml.
+  # ---------------------------------------------------------------------------
+  dt-plan:
+    name: dt plan
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # Nightly only. Regenerates baseline-results.md from a clean develop
-    # memory-profile run so the documentation snapshot cannot drift. NOT a CI
-    # gate — grading is done against KNOWN_FAILURES.md by parse-results.sh.
-    # Checks out develop explicitly rather than relying on scheduled runs firing
-    # on the default branch, so this keeps working if the default moves.
-    if: github.event_name == 'schedule'
-    permissions:
-      contents: write
+    timeout-minutes: 5
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
     steps:
-      - name: Checkout develop
+      - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
-          ref: develop
-          # GITHUB_TOKEN cannot push past branch protection on develop. If that
-          # branch requires PRs or reviews, set a PAT secret BASELINE_PUSH_TOKEN
-          # with bypass rights.
-          token: ${{ secrets.BASELINE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+          go-version: "1.26.x"
+          cache: false
 
-      - name: Run smbtorture (memory profile)
+      # This workflow's suites, narrowed as a dispatch naming one narrows the
+      # scripts' jobs. Options are left out, as the harness RFC's parity has them.
+      - name: Plan the cells
+        id: plan
+        env:
+          ONLY: ${{ inputs.suite }}
         run: |
-          cd test/smb-conformance/smbtorture
-          # A known-failure red run must not stop the baseline refresh.
-          ./run.sh --profile memory --verbose || true
+          set -o pipefail
+          cells="$(go run ./cmd/dt plan --tier "$TIER" --json | jq -c --arg only "$ONLY" '[.cells[]
+            | select(.option == null and (.suite == "pjdfstest" or .suite == "wpts" or .suite == "smbtorture"))
+            | select($only == "" or .suite == $only)]')"
+          echo "$cells" | jq .
+          echo "cells=${cells}" >> "$GITHUB_OUTPUT"
 
-      - name: Regenerate baseline-results.md
-        run: |
-          cd test/smb-conformance/smbtorture
-          RESULTS_DIR=$(ls -td ../results/smbtorture-*/ 2>/dev/null | head -1 || true)
-          if [ -z "$RESULTS_DIR" ] || [ ! -f "$RESULTS_DIR/smbtorture-output.txt" ]; then
-            echo "no smbtorture output to snapshot"
-            exit 0
-          fi
-          BASELINE_PROFILE=memory \
-          BASELINE_COMMIT="$(git rev-parse --short HEAD)" \
-          BASELINE_PLATFORM="$(uname -sm) (GitHub Actions)" \
-            ./parse-results.sh --emit-baseline "$RESULTS_DIR/smbtorture-output.txt" KNOWN_FAILURES.md > baseline-results.md
+  dt:
+    name: dt ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: dt-plan
+    if: needs.dt-plan.outputs.cells != '[]'
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.dt-plan.outputs.cells) }}
 
-      - name: Commit the refreshed baseline
+    services:
+      localstack:
+        image: ${{ contains(matrix.needs, 'service:localstack') && 'localstack/localstack:4.13.1' || '' }}
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+
+      # dt builds pjdfstest from flake.lock with nix, as the scripts' job does.
+      - name: Install Nix
+        if: matrix.suite == 'pjdfstest'
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        if: matrix.suite == 'pjdfstest'
+        uses: ./.github/actions/nix-cache
+
+      - name: Install NFS client utilities
+        if: contains(matrix.needs, 'nfs-client')
         run: |
-          BASELINE=test/smb-conformance/smbtorture/baseline-results.md
-          if git diff --quiet "$BASELINE"; then
-            echo "baseline-results.md unchanged"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$BASELINE"
-          git commit -m "docs(smb-conformance): refresh smbtorture baseline-results.md [skip ci]"
-          # A PR may merge into develop during the run; rebase the lone baseline
-          # commit on top so the push fast-forwards instead of reddening the job
-          # on a non-fast-forward rejection.
-          git pull --rebase origin develop
-          git push origin HEAD:develop
+          sudo apt-get update
+          sudo apt-get install -y nfs-common
+
+      # And the cell's name as one path element, for its artifact's name.
+      - name: Build dt
+        id: build
+        env:
+          CELL: ${{ matrix.name }}
+        run: |
+          go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+          echo "SLUG=${CELL//\//-}" >> "$GITHUB_ENV"
+
+      - name: Run ${{ matrix.name }}
+        env:
+          CELL: ${{ matrix.name }}
+        run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci'
+
+      - name: Report
+        if: always() && steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/dt" report --format md >> "$GITHUB_STEP_SUMMARY"'
+
+      # One artifact per cell, replaced by a re-run, so the last job compares
+      # each cell's latest run. Without the binaries dt built and the tools it
+      # linked, about 90 MB a cell.
+      - name: Upload results
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dt-results-${{ env.SLUG }}
+          path: |
+            test/harness/results/
+            !test/harness/results/*/bin/
+            !test/harness/results/*/tools/
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 30
+
+  # Compares each cell's results through dt with its results through the
+  # scripts. Its result is what the 5 consecutive runs count.
+  parity:
+    name: dt and the scripts, cell by cell
+    runs-on: ubuntu-latest
+    needs: [dt-plan, dt, wpts, smbtorture, pjdfstest]
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Download the results
+        uses: actions/download-artifact@v7
+        with:
+          path: ${{ runner.temp }}/results
+
+      # Against the plan, so a cell missing on either side, or none at all, differs.
+      - name: Compare
+        env:
+          CELLS: ${{ needs.dt-plan.outputs.cells }}
+        run: |
+          set -o pipefail
+          go run ./test/conformance/parity --plan "$CELLS" "$RUNNER_TEMP/results" pjdfstest wpts smbtorture | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   summary:
     name: Conformance summary
     runs-on: ubuntu-latest
-    if: always()
-    needs: [wpts, smbtorture, pjdfstest, nfs-mount]
+    # Not on a cancelled run: its cells report `cancelled`, which says nothing
+    # about the code.
+    if: ${{ !cancelled() }}
+    needs: [matrix, graders, wpts, smbtorture, pjdfstest, nfs-mount, smbtorture-kerberos]
     steps:
       - name: Checkout
         uses: actions/checkout@v7

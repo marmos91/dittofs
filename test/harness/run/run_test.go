@@ -73,7 +73,7 @@ func TestEveryCommandRuns(t *testing.T) {
   lint: { cmd: [ "false", "true", { sh: "echo ran > {out}/marker" } ] }
 `, nil)
 	rep, _ := runTarget(t, root, r, "lint", false)
-	if o := rep.Outcomes[0]; o.Result != Failed || !strings.Contains(o.Note, "`false` exited 1") {
+	if o := rep.Outcomes[0]; o.Result != report.Failed || !strings.Contains(o.Note, "`false` exited 1") {
 		t.Errorf("outcome %+v", o)
 	}
 	if _, err := os.Stat(filepath.Join(rep.Dir, "lint", "marker")); err != nil {
@@ -139,7 +139,7 @@ func TestLeftoversAreKilled(t *testing.T) {
 	start := time.Now()
 	rep, _ := runTarget(t, root, r, "s", false)
 	took := time.Since(start)
-	if o := rep.Outcomes[0]; o.Result != Passed {
+	if o := rep.Outcomes[0]; o.Result != report.Passed {
 		t.Errorf("outcome %+v", o)
 	}
 	if alive(t, filepath.Join(root, "t/a.sh.pid")) {
@@ -176,7 +176,7 @@ func TestCellLimitStopsTheCell(t *testing.T) {
 `, map[string]string{"t/a.sh": "sleep 30\n", "t/b.sh": "exit 0\n", "t/c.sh": "exit 0\n"})
 	rep, _ := runTarget(t, root, r, "s", false)
 	o := rep.Outcomes[0]
-	if o.Result != Failed || !strings.Contains(o.Note, "t/a.sh: stopped at the cell's limit") || !strings.Contains(o.Note, "2 tests not started") {
+	if o.Result != report.Failed || !strings.Contains(o.Note, "t/a.sh: stopped at the cell's limit") || !strings.Contains(o.Note, "2 tests not started") {
 		t.Errorf("outcome %+v", o)
 	}
 }
@@ -191,26 +191,15 @@ suites:
   away: { cmd: "true", needs: [`+other+`] }
   here: { cmd: "true" }
 `, nil)
-	if rep, _ := runTarget(t, root, r, "g", false); rep.Outcomes[0].Result != Skipped || rep.Status() != 0 {
+	if rep, _ := runTarget(t, root, r, "g", false); rep.Outcomes[0].Result != report.Skipped || rep.Status() != 0 {
 		t.Errorf("local: %+v, status %d", rep.Outcomes, rep.Status())
 	}
 	if rep, _ := runTarget(t, root, r, "away", false); rep.Status() != 2 {
 		t.Errorf("nothing ran: status %d, want 2", rep.Status())
 	}
 	rep, out := runTarget(t, root, r, "g", true)
-	if rep.Outcomes[0].Result != NotRun || rep.Status() != 2 || !strings.Contains(out, "::error title=dt away::") {
+	if rep.Outcomes[0].Result != report.NotRun || rep.Status() != 2 || !strings.Contains(out, "::error title=dt away::") {
 		t.Errorf("ci: %+v, status %d\n%s", rep.Outcomes, rep.Status(), out)
-	}
-}
-
-// A suite dt can't run yet is reported as not run, never as passed.
-func TestUnsupportedIsNotRun(t *testing.T) {
-	root, r := repo(t, `suites:
-  g: { cmd: prove t, format: tap }
-`, nil)
-	rep, _ := runTarget(t, root, r, "g", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "tap") {
-		t.Errorf("outcome %+v", o)
 	}
 }
 
@@ -220,6 +209,7 @@ func TestBlocked(t *testing.T) {
 	_, r := anyRepo(t, `suites:
   fixed: { cmd: "true", fixture: { profile: memory, smb: { mount: true } }, needs: [docker] }
   plain: { cmd: "true", needs: [docker, root, podman] }
+  goclient: { cmd: go test ./x, format: go-json, fixture: { profile: memory, client: namespace } }
 `, nil)
 	var checked []string
 	check := func(n string) error {
@@ -242,6 +232,9 @@ func TestBlocked(t *testing.T) {
 	}
 	if why, unmet := Blocked(units["plain"], []string{"root"}, check); why != "" || unmet != nil {
 		t.Errorf("met: %q %q", why, unmet)
+	}
+	if why, _ := Blocked(units["goclient"], nil, check); why != "dt doesn't run go test on a namespaced client yet" {
+		t.Errorf("goclient: %q", why)
 	}
 }
 
@@ -422,7 +415,7 @@ func TestNoBaseSkipsItsCommands(t *testing.T) {
   lint: { cmd: [ "true", "no-such-check {base}" ] }
 `, nil)
 	rep, out := runTarget(t, root, r, "lint", false)
-	if rep.Outcomes[0].Result != Passed || !strings.Contains(out, "[dt] skipped, no change to check: no-such-check {base}") {
+	if rep.Outcomes[0].Result != report.Passed || !strings.Contains(out, "[dt] skipped, no change to check: no-such-check {base}") {
 		t.Errorf("outcome %+v\n%s", rep.Outcomes[0], out)
 	}
 }
@@ -457,7 +450,7 @@ suites:
 // that still lists it, so the fix knows which entry to remove. A known
 // failure isn't annotated, and the cell, having a test to name, isn't either.
 func TestUnexpectedPassAnnotation(t *testing.T) {
-	cell := report.Cell{Name: "s/x", Result: Failed, Note: "1 passed unexpectedly: b", Tests: []report.Test{
+	cell := report.Cell{Name: "s/x", Result: report.Failed, Note: "1 passed unexpectedly: b", Tests: []report.Test{
 		{Name: "a", Status: report.Skipped, Grade: report.Known, Reason: "r1"},
 		{Name: "b", Status: report.Failed, Grade: report.UnexpectedPass, Reason: "r2"},
 	}}
@@ -486,10 +479,10 @@ suites:
 		t.Fatal(err)
 	}
 	slow, next := rep.Outcomes[0], rep.Outcomes[1]
-	if slow.Result != NotRun || !strings.Contains(slow.Note, "t/a.sh: interrupted") || !strings.Contains(slow.Note, "1 tests not started: interrupted") {
+	if slow.Result != report.NotRun || !strings.Contains(slow.Note, "t/a.sh: interrupted") || !strings.Contains(slow.Note, "1 tests not started: interrupted") {
 		t.Errorf("slow: %+v", slow)
 	}
-	if next.Result != NotRun || rep.Status() != 2 {
+	if next.Result != report.NotRun || rep.Status() != 2 {
 		t.Errorf("next: %+v, status %d", next, rep.Status())
 	}
 }
@@ -501,7 +494,7 @@ func TestUnfillableCommandIsNotRun(t *testing.T) {
   s: { cmd: [ "touch ran", "run {bin}" ] }
 `, nil)
 	rep, _ := runTarget(t, root, r, "s", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || !strings.Contains(o.Note, "{bin}") || rep.Status() != 2 {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.Contains(o.Note, "{bin}") || rep.Status() != 2 {
 		t.Errorf("outcome %+v, status %d", o, rep.Status())
 	}
 	if _, err := os.Stat(filepath.Join(root, "ran")); err == nil {
@@ -542,7 +535,7 @@ func TestPathsHoldFromAnyDir(t *testing.T) {
 			t.Fatal(err)
 		}
 		rep, err := Run(context.Background(), cells, Options{Root: root, Results: "results", Out: &bytes.Buffer{}})
-		if err != nil || rep.Outcomes[0].Result != Passed {
+		if err != nil || rep.Outcomes[0].Result != report.Passed {
 			t.Errorf("%s: %+v, %v", suite, rep.Outcomes, err)
 		}
 		if !filepath.IsAbs(rep.Dir) {
@@ -557,5 +550,39 @@ func TestAnnotation(t *testing.T) {
 	got := annotation("dt a:b,c", "100% done\nthen\rmore")
 	if want := "::error title=dt a%3Ab%2Cc::100%25 done%0Athen%0Dmore"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A .txt list's line gives its test its {test-args}, filled for that test, and
+// may name the matrix values of the cells it runs in. A named matrix value
+// names its cells and fills its placeholders.
+func TestTestListLines(t *testing.T) {
+	root, r := repo(t, `suites:
+  s:
+    tests: t.txt
+    cmd: "{test-args}"
+    env: { V: "{v}" }
+    matrix: { v: [a, b] }
+  n:
+    cmd: "test {w}-{x}-{q} = 1-2-3"
+    matrix: { p: [k: { w: "1", x: "2" }], q: [y: "3"] }
+`, map[string]string{"t.txt": `one -- test {test} = one
+only-b v=b -- test {v} = b
+three -- test {v} = a
+four -- test -d {out}
+`})
+	rep, out := runTarget(t, root, r, "s", false)
+	if len(rep.Outcomes) != 2 {
+		t.Fatalf("outcomes %+v\n%s", rep.Outcomes, out)
+	}
+	if o := rep.Outcomes[0]; o.Name != "s/a" || o.Result != report.Passed || len(o.Tests) != 3 {
+		t.Errorf("s/a: %+v", o)
+	}
+	if o := rep.Outcomes[1]; o.Name != "s/b" || o.Result != report.Failed || len(o.Tests) != 4 || !strings.Contains(o.Note, "three: `test b = a` exited 1") {
+		t.Errorf("s/b: %+v", o)
+	}
+	rep, out = runTarget(t, root, r, "n", false)
+	if o := rep.Outcomes[0]; o.Name != "n/k/y" || o.Result != report.Passed {
+		t.Errorf("n: %+v\n%s", o, out)
 	}
 }

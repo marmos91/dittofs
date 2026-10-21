@@ -66,10 +66,10 @@ func Import(md, file string, where map[string][]string) ([]string, error) {
 // free-text ones above its appendix included, is a bug, planned, with the
 // row's issue.
 //
-// decision: the issue is read from the Issue column, the fourth, only.
-// WPTS's format for a row above its appendix puts it in the fifth, after a
-// status column; no row uses that format, so such a row is refused for want
-// of an issue rather than read.
+// decision: the issue is read from the Issue column, the row's fifth field,
+// only. WPTS's format for a row above its appendix puts it in the sixth,
+// after a status column; no row uses that format, so such a row is refused
+// for want of an issue rather than read.
 func entryOf(r Row, where map[string][]string) Entry {
 	e := Entry{Test: r.Name, Status: "fail", Fix: "wontfix", Reason: r.Reason, Issue: issueRef.FindString(r.Issue), Where: where}
 	switch {

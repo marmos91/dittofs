@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,28 +17,52 @@ import (
 // versions at, by the name its vers= option gives it.
 var mountVers = map[string]string{"3": "3", "4": "4.0", "4.1": "4.1"}
 
-// mounts reports whether an nfs version mounts the share: export serves it
-// without a mount.
-func mounts(version string) bool { return version != "" && version != "export" }
+// mountOptions are the options a mount of nfs takes from the server on port:
+// the version, the port, the suite's own options last. A mount whose version
+// its options give takes them first, as they are. NFSv3 reaches the MOUNT
+// protocol on the same port, and nolock answers its locks in the client,
+// which has no lock manager the server can reach, unless it's a namespaced
+// client, which has its own.
+func mountOptions(nfs registry.NFS, port int, namespaced bool) string {
+	vers, opts := mountVers[nfs.Version], []string{}
+	switch {
+	case nfs.FromOptions:
+		vers, opts = nfsVers(nfs.Options), append(opts, nfs.Options)
+	case vers == "3":
+		opts = append(opts, "nfsvers=3", "tcp")
+	default:
+		opts = append(opts, "vers="+vers)
+	}
+	opts = append(opts, fmt.Sprintf("port=%d", port))
+	if vers == "3" {
+		opts = append(opts, fmt.Sprintf("mountport=%d", port))
+		if !namespaced {
+			opts = append(opts, "nolock")
+		}
+	}
+	if !nfs.FromOptions {
+		opts = append(opts, nfs.Options)
+	}
+	return strings.Join(slices.DeleteFunc(opts, func(o string) bool { return o == "" }), ",")
+}
 
-// mountOptions are the options an NFS mount at version takes from the server
-// on port, before the suite's own, extra. NFSv3 reaches the MOUNT protocol on
-// the same port, and nolock answers its locks in the client, which has no
-// lock manager the server can reach.
-func mountOptions(version string, port int, extra string) string {
-	opts := fmt.Sprintf("vers=%s,port=%d", mountVers[version], port)
-	if version == "3" {
-		opts = fmt.Sprintf("nfsvers=3,tcp,port=%d,mountport=%d,nolock", port, port)
+// wantVers is the vers= the kernel reports for a mount of nfs: its version's,
+// or the one its options give with a minor version or as 3. "" asks nothing:
+// the kernel negotiates it.
+func wantVers(nfs registry.NFS) string {
+	if !nfs.FromOptions {
+		return mountVers[nfs.Version]
 	}
-	if extra != "" {
-		opts += "," + extra
+	if v := nfsVers(nfs.Options); v == "3" || strings.Contains(v, ".") {
+		return v
 	}
-	return opts
+	return ""
 }
 
 // mountShare mounts the share from server over NFS, at nfs's version and
 // with its options, on a new directory, {mount}, and checks that the kernel
-// has it mounted there at that version.
+// has it mounted there at that version. With a namespaced client, the client
+// mounts it.
 func (s *Server) mountShare(ctx context.Context, server string, nfs registry.NFS) error {
 	// {mount} is no longer than the posix setup's /tmp/dittofs-test, so a
 	// test of path length measures the server rather than the mount point.
@@ -50,22 +75,47 @@ func (s *Server) mountShare(ctx context.Context, server string, nfs registry.NFS
 	}
 	s.mount = dir
 	source := server + ":" + Share
-	argv := asRoot("mount", "-t", "nfs", "-o", mountOptions(nfs.Version, s.nfsPort, nfs.Options), source, dir)
+	argv := s.root("mount", "-t", "nfs", "-o", mountOptions(nfs, s.nfsPort, s.clients != nil), source, dir)
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
 	if err := runFor(ctx, 0, argv); err != nil {
 		return fmt.Errorf("mounting %s at %s: %w", source, dir, err)
 	}
-	opts, mounted, err := mountedAt(dir)
-	want := mountVers[nfs.Version]
+	opts, mounted, err := s.mountedAt(dir)
+	want := wantVers(nfs)
 	switch {
 	case err != nil:
 		return err
 	case !mounted:
 		return fmt.Errorf("mount exited 0, but nothing is mounted at %s", dir)
-	case nfsVers(opts) != want:
+	case want != "" && nfsVers(opts) != want:
 		return fmt.Errorf("%s is mounted with vers=%s, not vers=%s", dir, nfsVers(opts), want)
 	}
+	_, _ = fmt.Fprintf(s.out, "[dt] fixture: NFS vers=%s mounted at %s\n", nfsVers(opts), dir)
 	return nil
+}
+
+// root is argv run as root where the share is mounted: on the namespaced
+// client, or on this machine.
+func (s *Server) root(argv ...string) []string {
+	if s.clients != nil {
+		return s.clients.in(1, "", argv...)
+	}
+	return asRoot(argv...)
+}
+
+// mountedAt reads the mount table where the share is mounted for the last
+// mount at dir, as the package's mountedAt does on this machine.
+func (s *Server) mountedAt(dir string) (opts string, mounted bool, err error) {
+	if s.clients == nil {
+		return mountedAt(dir)
+	}
+	argv := s.root("cat", "/proc/self/mountinfo")
+	table, err := exec.Command(argv[0], argv[1:]...).Output()
+	if err != nil {
+		return "", false, fmt.Errorf("reading the client's mounts: %w", err)
+	}
+	opts, mounted = lastMount(string(table), dir)
+	return opts, mounted, nil
 }
 
 // unmountWaits are how long an unmount waits for umount, and then for a
@@ -78,13 +128,13 @@ var unmountWaits = [2]time.Duration{15 * time.Second, 10 * time.Second}
 // namespace at once. A share that stays mounted keeps its directory, and dt
 // says so.
 func (s *Server) unmount() {
-	if _, mounted, err := mountedAt(s.mount); mounted || err != nil {
+	if _, mounted, err := s.mountedAt(s.mount); mounted || err != nil {
 		// decision: a umount that fails, as on a share a process still
 		// uses, is forced as one that hangs is, since the server stops next.
-		if runFor(context.Background(), unmountWaits[0], asRoot("umount", s.mount)) != nil {
-			_ = runFor(context.Background(), unmountWaits[1], asRoot("umount", "-f", "-l", s.mount))
+		if runFor(context.Background(), unmountWaits[0], s.root("umount", s.mount)) != nil {
+			_ = runFor(context.Background(), unmountWaits[1], s.root("umount", "-f", "-l", s.mount))
 		}
-		if _, mounted, err = mountedAt(s.mount); mounted || err != nil {
+		if _, mounted, err = s.mountedAt(s.mount); mounted || err != nil {
 			_, _ = fmt.Fprintf(s.out, "[dt] fixture: the share stays mounted at %s; unmount it with: sudo umount -f -l %s\n", s.mount, s.mount)
 			return
 		}
