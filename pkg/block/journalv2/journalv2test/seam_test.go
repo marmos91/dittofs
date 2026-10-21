@@ -1,0 +1,439 @@
+package journalv2test
+
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block/journalv2/internal/storage"
+)
+
+func newSeam(t *testing.T) *Seam {
+	t.Helper()
+	s, err := NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// create makes name, durable in the directory, and returns it open.
+func create(t *testing.T, s *Seam, name string) storage.File {
+	t.Helper()
+
+	f, err := s.Create(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SyncDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	return f
+}
+
+func write(t *testing.T, f storage.File, p string, off int64) {
+	t.Helper()
+
+	if _, err := f.WriteAt([]byte(p), off); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func syncFile(t *testing.T, f storage.File) {
+	t.Helper()
+
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func crash(t *testing.T, s *Seam, opts ...CrashOption) {
+	t.Helper()
+
+	if err := s.Crash(opts...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// onDisk returns what the real file holds, read past the seam.
+func onDisk(t *testing.T, s *Seam, name string) string {
+	t.Helper()
+
+	b, err := os.ReadFile(filepath.Join(s.dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(b)
+}
+
+func exists(s *Seam, name string) bool {
+	_, err := os.Stat(filepath.Join(s.dir, name))
+	return err == nil
+}
+
+func TestCrashKeepsSyncedWritesAndDropsTheRest(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bb", 1)   // overwrites synced bytes
+	write(t, f, "cccc", 4) // extends the file
+
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "aaaa" {
+		t.Fatalf("after crash the file holds %q, want the synced %q", got, "aaaa")
+	}
+}
+
+func TestCrashUndoesUnsyncedAllocate(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+	if err := f.Allocate(0, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "ab" {
+		t.Fatalf("an allocation never synced left %d bytes, want the 2 synced", len(got))
+	}
+}
+
+func TestCrashUndoesUnsyncedTruncate(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "abcdef", 0)
+	syncFile(t, f)
+	if err := f.Truncate(2); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "XYZ", 2) // regrows over the cut bytes
+	if err := f.Truncate(8); err != nil {
+		t.Fatal(err)
+	}
+
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "abcdef" {
+		t.Fatalf("after crash the file holds %q, want %q", got, "abcdef")
+	}
+
+	// A grow on its own file: above, the undo of the later write cuts the
+	// file back anyway, which would hide a grow the seam never recorded.
+	g := create(t, s, "grow")
+	write(t, g, "ab", 0)
+	syncFile(t, g)
+	if err := g.Truncate(8); err != nil {
+		t.Fatal(err)
+	}
+
+	crash(t, s)
+
+	if got := onDisk(t, s, "grow"); got != "ab" {
+		t.Fatalf("after crash the grown file holds %q, want %q", got, "ab")
+	}
+}
+
+func TestCrashDropsCreateWithoutSyncDir(t *testing.T) {
+	s := newSeam(t)
+	f, err := s.Create("seg")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, f, "data", 0)
+	syncFile(t, f) // the data is durable, the directory entry is not
+
+	crash(t, s)
+
+	if exists(s, "seg") {
+		t.Fatal("a file created without a SyncDir survived the crash")
+	}
+
+	if _, err := s.Open("seg"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Open after the crash: %v, want fs.ErrNotExist", err)
+	}
+}
+
+func TestRenameSurvivesOnlyAfterSyncDir(t *testing.T) {
+	s := newSeam(t)
+	a := create(t, s, "a")
+
+	write(t, a, "new", 0)
+	syncFile(t, a)
+
+	b := create(t, s, "b")
+	write(t, b, "old", 0)
+	syncFile(t, b)
+
+	if err := s.Rename("a", "b"); err != nil { // replaces b
+		t.Fatal(err)
+	}
+	crash(t, s)
+
+	if got := onDisk(t, s, "a"); got != "new" {
+		t.Fatalf("after an unsynced rename, a holds %q, want %q", got, "new")
+	}
+
+	if got := onDisk(t, s, "b"); got != "old" {
+		t.Fatalf("after an unsynced rename, b holds %q, want the file it replaced, %q", got, "old")
+	}
+
+	if err := s.Rename("a", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SyncDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	crash(t, s)
+
+	if exists(s, "a") {
+		t.Fatal("after a synced rename, a still exists")
+	}
+
+	if got := onDisk(t, s, "b"); got != "new" {
+		t.Fatalf("after a synced rename, b holds %q, want %q", got, "new")
+	}
+}
+
+func TestCrashUndoesRemoveWithoutSyncDir(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "keep", 0)
+	syncFile(t, f)
+	if err := s.Remove("seg"); err != nil {
+		t.Fatal(err)
+	}
+
+	if exists(s, "seg") {
+		t.Fatal("Remove left the file in the directory")
+	}
+
+	crash(t, s)
+
+	if got := onDisk(t, s, "seg"); got != "keep" {
+		t.Fatalf("after an unsynced remove, the file holds %q, want %q", got, "keep")
+	}
+
+	if names, err := s.List(); err != nil || !slices.Equal(names, []string{"seg"}) {
+		t.Fatalf("List after the crash: %v, %v; want [seg]", names, err)
+	}
+}
+
+func TestTornKeepsExactlyNBytesOfTheLastWrite(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+
+	g := create(t, s, "other")
+	write(t, f, "bbbb", 4) // lost: not the last write
+	write(t, g, "cccc", 0) // the last write, torn
+
+	crash(t, s, Torn(3))
+
+	if got := onDisk(t, s, "seg"); got != "aaaa" {
+		t.Fatalf("seg holds %q, want only its synced %q", got, "aaaa")
+	}
+
+	if got := onDisk(t, s, "other"); got != "ccc" {
+		t.Fatalf("the torn write left %q, want its first 3 bytes %q", got, "ccc")
+	}
+}
+
+func TestReorderedNeverPutsAnOlderWriteOverANewerOne(t *testing.T) {
+	// Two overlapping writes: older "aaaaaaaa" at 0, newer "bbbbbbbb" at 4.
+	// A device may keep either, both or neither, but where both are kept the
+	// newer must win in the overlap.
+	allowed := map[string]string{
+		"":                         "neither",
+		"aaaaaaaa":                 "older only",
+		"\x00\x00\x00\x00bbbbbbbb": "newer only",
+		"aaaabbbbbbbb":             "both",
+	}
+	seen := map[string]bool{}
+	for seed := uint64(0); seed < 64; seed++ {
+		s := newSeam(t)
+		f := create(t, s, "seg")
+
+		syncFile(t, f)
+		write(t, f, "aaaaaaaa", 0)
+		write(t, f, "bbbbbbbb", 4)
+
+		crash(t, s, Reordered(seed))
+
+		got := onDisk(t, s, "seg")
+		if _, ok := allowed[got]; !ok {
+			t.Fatalf("seed %d left %q, an order no device produces", seed, got)
+		}
+
+		seen[allowed[got]] = true
+	}
+	if !seen["newer only"] {
+		t.Fatal("no seed kept the newer write without the older one, so nothing was reordered")
+	}
+}
+
+func TestReorderedKeepsTheSameWritesForTheSameSeed(t *testing.T) {
+	// Several files, so a draw that followed map order would differ between
+	// runs of one seed.
+	names := []string{"a", "b", "c", "d"}
+	run := func(seed uint64) string {
+		s := newSeam(t)
+		files := make([]storage.File, len(names))
+		for i, name := range names {
+			files[i] = create(t, s, name)
+		}
+		for off := range int64(8) {
+			for _, f := range files {
+				write(t, f, "x", off)
+			}
+		}
+
+		crash(t, s, Reordered(seed))
+
+		var got string
+		for _, name := range names {
+			got += name + "=" + onDisk(t, s, name) + ";"
+		}
+		return got
+	}
+
+	for seed := range uint64(8) {
+		want := run(seed)
+		for range 10 {
+			if got := run(seed); got != want {
+				t.Fatalf("seed %d kept %q, then %q", seed, want, got)
+			}
+		}
+	}
+}
+
+func TestReorderedNeverLosesASyncedWrite(t *testing.T) {
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := create(t, s, "seg")
+		g := create(t, s, "other")
+
+		write(t, f, "synced", 0)
+		syncFile(t, f)
+		write(t, f, "after", 6)
+		write(t, g, "elsewhere", 0)
+
+		crash(t, s, Reordered(seed))
+
+		if got := onDisk(t, s, "seg"); len(got) < 6 || got[:6] != "synced" {
+			t.Fatalf("seed %d left %q, want it to start with the synced %q", seed, got, "synced")
+		}
+	}
+}
+
+func TestDurableAndStaleReads(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "synced", 0)
+	syncFile(t, f)
+	write(t, f, "UNSYNC", 0)
+
+	got, err := s.Durable("seg")
+	if err != nil || string(got) != "synced" {
+		t.Fatalf("Durable: %q, %v; want %q", got, err, "synced")
+	}
+
+	p := make([]byte, 6)
+	if _, err := f.ReadAtDirect(p, 0); err != nil || string(p) != "synced" {
+		t.Fatalf("ReadAtDirect: %q, %v; want the durable %q", p, err, "synced")
+	}
+
+	if _, err := f.ReadAt(p, 0); err != nil || string(p) != "UNSYNC" {
+		t.Fatalf("ReadAt: %q, %v; want the written %q", p, err, "UNSYNC")
+	}
+
+	s.StaleReads("seg")
+	if _, err := f.ReadAt(p, 0); err != nil || string(p) != "synced" {
+		t.Fatalf("ReadAt with stale reads: %q, %v; want the durable %q", p, err, "synced")
+	}
+
+	if _, err := s.Create("new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Durable("new"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Durable of a file created without a SyncDir: %v, want fs.ErrNotExist", err)
+	}
+}
+
+func TestCrashClosesEveryOpenFile(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	crash(t, s)
+
+	if _, err := f.WriteAt([]byte("x"), 0); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("WriteAt on a file opened before the crash: %v, want fs.ErrClosed", err)
+	}
+	g, err := s.Open("seg")
+	if err != nil {
+		t.Fatalf("reopening after the crash: %v", err)
+	}
+	write(t, g, "ok", 0)
+}
+
+func TestCallsAreCountedPerOperationAndFile(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "a")
+	g := create(t, s, "b")
+	write(t, f, "x", 0)
+	write(t, f, "y", 1)
+	write(t, g, "z", 0)
+	syncFile(t, f)
+
+	if got := s.Calls(OpWrite); got != 3 {
+		t.Fatalf("Calls(write) = %d, want 3", got)
+	}
+
+	if got := s.CallsFor(OpWrite, "a"); got != 2 {
+		t.Fatalf("CallsFor(write, a) = %d, want 2", got)
+	}
+
+	if got := s.CallsFor(OpSync, "b"); got != 0 {
+		t.Fatalf("CallsFor(sync, b) = %d, want 0", got)
+	}
+
+	if got := s.Calls(OpSyncDir); got != 2 {
+		t.Fatalf("Calls(sync_dir) = %d, want 2", got)
+	}
+}
+
+func TestRefusedCrashChangesNothing(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	syncFile(t, f)
+
+	if err := s.Crash(Torn(1)); err == nil {
+		t.Fatal("Crash(Torn) with no unsynced write succeeded")
+	}
+
+	// The refused crash must leave the file open and its writes unsynced.
+	write(t, f, "after", 0)
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "" {
+		t.Fatalf("after a refused crash and a real one, seg holds %q; want it empty", got)
+	}
+}
