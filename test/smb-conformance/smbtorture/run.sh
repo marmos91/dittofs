@@ -68,7 +68,7 @@ wait_until() {
 # --------------------------------------------------------------------------
 # Defaults
 # --------------------------------------------------------------------------
-PROFILE="${PROFILE:-memory}"
+PROFILE="${PROFILE:-}"  # empty: none chosen, memory unless --kerberos forces its own
 FILTER=""
 KEEP=false
 DRY_RUN=false
@@ -170,14 +170,15 @@ fi
 
 # When --kerberos is set, force the Kerberos-enabled config profile.
 # badger-s3-kerberos wires up the keytab path and service principal that the
-# self-contained kdc container provisions at startup. Any other profile is
+# self-contained kdc container provisions at startup. A chosen profile is
 # overridden, with a warning unless it is badger-s3, whose stores it keeps.
 if $KERBEROS && [[ "$PROFILE" != "badger-s3-kerberos" ]]; then
-    if [[ "$PROFILE" != "badger-s3" ]]; then
+    if [[ -n "$PROFILE" && "$PROFILE" != "badger-s3" ]]; then
         log_warn "Profile ${PROFILE} does not include Kerberos config; forcing badger-s3-kerberos"
     fi
     PROFILE="badger-s3-kerberos"
 fi
+PROFILE="${PROFILE:-memory}"
 
 # --------------------------------------------------------------------------
 # Validate inputs

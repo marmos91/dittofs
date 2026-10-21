@@ -167,6 +167,14 @@ jobs:
           sudo rmdir /mnt/smbtest/linux-dir
           echo "PASS: delete"
 
+          # Reads can be served from the local tier, so only the bucket shows
+          # that S3 is in the data path. The files above are gone before the
+          # syncer's upload delay, so this one stays until a block of it lands.
+          sudo dd if=/dev/urandom of=/mnt/smbtest/s3-check.bin bs=1M count=1 status=none
+          timeout 30 sh -c 'until curl -sf "http://localhost:4566/dittofs-clients?list-type=2" | grep -q "<Key>"; do sleep 1; done' \
+            || { echo "FAIL: no block reached the dittofs-clients bucket in 30s"; exit 1; }
+          echo "PASS: a block reached the S3 bucket"
+
           # Unmount
           sudo umount /mnt/smbtest
 
