@@ -122,15 +122,20 @@ func (d *driver) step() {
 		d.t.Logf("sync %x", id.Bytes()[15])
 		d.both(func(m *Model) error { return m.Sync(tag, nil, id) })
 
-	case 2: // fill, never below a release or removal over its bytes
+	case 2: // fill, never below a release or removal the caller made over its bytes
 		n := int64(d.next()%16) + 1
 		off := d.offset(n)
 		p := fill(d.next(), int(n))
 		v := journalv2.Version{Counter: uint64(d.next()) % (d.journal.maxSeen.Counter + 1)}
-		if f := d.journal.files[id]; f != nil {
-			for _, r := range f.recs {
-				if _, ok := intersect(r.ext, extent{Off: off, Len: n}); ok && (r.kind == kindRelease || r.kind.removal()) {
-					v = maxVersion(v, r.ver)
+		// What the caller released or removed is in the records of one model
+		// or the other: a crash may have taken it from the journal's while
+		// the model kept it, unseen, or the other way round.
+		for _, mm := range []*Model{d.journal, d.m} {
+			if f := mm.files[id]; f != nil {
+				for _, r := range f.recs {
+					if _, ok := intersect(r.ext, extent{Off: off, Len: n}); ok && (r.kind == kindRelease || r.kind.removal()) {
+						v = maxVersion(v, r.ver)
+					}
 				}
 			}
 		}
