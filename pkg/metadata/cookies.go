@@ -89,8 +89,11 @@ func (cm *CookieManager) GenerateCookie(dirHandle FileHandle, name string) uint6
 		return 0
 	}
 
-	// Generate cookie by hashing dirHandle + name
-	cookie := fnv1a64(dirHandle, name)
+	// Hash dirHandle + name into a cookie below 2^63. A client may hand the
+	// cookie to applications as a signed directory offset through telldir()
+	// and refuse to seek to a negative one, so a cookie with bit 63 set would
+	// make seekdir() silently do nothing.
+	cookie := fnv1a64(dirHandle, name) &^ (1 << 63)
 
 	// Cookies 0, 1 and 2 are reserved: 0 starts a directory scan, and NFSv4
 	// keeps 1 and 2 for the client's own "." and ".." entries, so no result

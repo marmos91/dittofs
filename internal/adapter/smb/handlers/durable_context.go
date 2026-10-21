@@ -875,6 +875,14 @@ func validateAndRestore(
 		// DesiredAccess in that case for forward compatibility — the
 		// fallback matches the pre-#548 behaviour and only affects in-flight
 		// reconnects across the upgrade boundary.
+		//
+		// decision: the open gate is not re-run on reconnect, so a handle
+		// persisted under a looser gate keeps its wider grant until it is
+		// closed or its durable timeout expires. Re-gating needs the
+		// requester's AuthContext and the parent, neither of which reaches
+		// this path. Re-run the gate here, and fail a reconnect whose result
+		// is narrower than the stored grant, if a gate change must take
+		// effect on handles already open.
 		GrantedAccess: func() uint32 {
 			if handle.GrantedAccess != 0 {
 				return handle.GrantedAccess

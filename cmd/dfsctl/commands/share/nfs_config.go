@@ -24,10 +24,10 @@ var nfsConfigCmd = &cobra.Command{
 	Short: "Manage per-share NFS adapter configuration",
 	Long: `View and update the NFS adapter configuration for a share.
 
-This controls protocol-specific NFS export settings such as the squash mode,
-auth flavor, and the netgroup that restricts which clients may access the
-export. Netgroup changes take effect immediately; other fields apply on the
-next adapter restart.
+This controls the share's export settings: the squash mode, the
+authentication flags and the netgroup that restricts which clients may reach
+the share. The authentication flags and the netgroup are the share's access
+policy, which applies over NFS and SMB alike. Changes take effect immediately.
 
 Examples:
   # Show a share's NFS config
@@ -65,18 +65,17 @@ var nfsConfigSetCmd = &cobra.Command{
 	Long: `Update the NFS adapter configuration for a share.
 
 Only the flags you supply are changed; omitted flags leave the existing values
-intact. Netgroup changes take effect immediately. Changes to squash mode and
-authentication flavors (--allow-auth-sys, --require-kerberos) apply on the
-next NFS adapter restart.
+intact. Changes take effect immediately, without an adapter restart.
 
-The netgroup allowlist is NFS export policy: it is enforced on NFSv3 mounts and
-on NFSv4 operations, and has no effect on SMB access to the same share.
+The netgroup allowlist and the authentication flags are the share's access
+policy: they are enforced on NFSv3 mounts, on NFSv4 operations and on SMB
+requests to the same share.
 
 Examples:
   # Restrict access to a specific netgroup
   dfsctl share nfs-config set /export --netgroup office-network
 
-  # Remove the netgroup restriction (allow all NFS clients)
+  # Remove the netgroup restriction (allow all clients)
   dfsctl share nfs-config set /export --netgroup ""
 
   # Map root UID to guest on this export

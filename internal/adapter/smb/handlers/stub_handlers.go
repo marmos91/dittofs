@@ -1043,7 +1043,7 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 
 	// Get open file to access metadata handle for filesystem stats
 	openFile, ok := h.GetOpenFile(fileID)
-	if !ok {
+	if !ok || !openFileBelongsToRequest(ctx, openFile) {
 		logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
@@ -1103,7 +1103,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 
 	// Get open file
 	openFile, ok := h.GetOpenFile(fileID)
-	if !ok {
+	if !ok || !openFileBelongsToRequest(ctx, openFile) {
 		logger.Debug("IOCTL READ_FILE_USN_DATA: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
 		return NewErrorResult(types.StatusFileClosed), nil
 	}

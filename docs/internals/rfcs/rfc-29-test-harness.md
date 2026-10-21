@@ -609,7 +609,7 @@ suites:
         tests: [smb2.session, smb2.read, smb2.lock]
         timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}                      # one cell: it pins its profile
-        fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
+        fixture: { profile: badger-s3, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
 
@@ -962,10 +962,12 @@ Each tier contains the one below it: a quick run on every PR, the full set after
 the long and heavy suites each night.
 
 **Conformance runs the production profile only.** In every tier, pjdfstest, pynfs, WPTS,
-smbtorture, cthon04 and nfstest run only `badger-s3`, the profile production uses: the team
-decided on 2026-10-19 to drop `memory` and `badger` from the conformance matrix. Since the bucket
-fix (#3013, for #2986) they reach S3; before it they tested nothing more than `badger`. smbtorture
-gains a `badger-s3` profile for this, and cthon04 and nfstest, which ran on `memory`, move to it.
+smbtorture, with its Kerberos option, cthon04 and nfstest run only `badger-s3`, the profile
+production uses: the team decided on 2026-10-19 to drop `memory` and `badger` from the conformance
+matrix. Since the bucket fix (#3013, for #2986) they reach S3; before it they tested nothing more
+than `badger`. smbtorture gains a `badger-s3` profile for this, and cthon04, nfstest and the
+Kerberos option, which ran on `memory`, move to it. The `clients` suite runs `badger-s3` on Linux;
+its macOS and Windows options stay on `memory`, since their hosted runners can't run Localstack.
 
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
@@ -1855,7 +1857,8 @@ Settled before revision 4:
 - Which profiles conformance runs: `badger-s3` only, on PRs, and since 2026-10-19 in every tier.
 - WPTS's setup: it fits the fixture's fields.
 - The NFS `sec=krb5` job: it goes.
-- Real Windows and macOS mounts: the `clients` suite, on hosted runners, on the `memory` profile.
+- Real Windows and macOS mounts: the `clients` suite, on hosted runners, on the `memory` profile,
+  since those runners can't run Localstack, which `badger-s3` needs.
 - Where the test tools come from: `flake.lock`, built with Nix on Linux as today (§4.5).
 - The scenario lock: `setup.sh` owns it and exits 75, since #3018 (§4.6).
 
