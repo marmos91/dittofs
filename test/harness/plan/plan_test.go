@@ -60,6 +60,21 @@ func TestPRTier(t *testing.T) {
 	}
 }
 
+// Conformance runs the production profile, badger-s3, in every tier, its
+// options included, so each of its nightly cells needs Localstack.
+func TestConformanceRunsBadgerS3(t *testing.T) {
+	cells, err := Plan("../../..", repo(t), "nightly", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conformance := []string{"pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04", "nfstest"}
+	for _, c := range cells {
+		if slices.Contains(conformance, c.Suite) && !slices.Contains(c.Needs, "service:localstack") {
+			t.Errorf("%s doesn't run badger-s3: needs %v", c.Name, c.Needs)
+		}
+	}
+}
+
 // Each tier contains the ones before it, and manual runs only when asked.
 func TestTiersContainTheOnesBefore(t *testing.T) {
 	r := repo(t)

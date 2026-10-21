@@ -217,7 +217,7 @@ suites:
         tests: [smb2.session, smb2.read, smb2.lock]
         timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}
-        fixture: { profile: memory, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
+        fixture: { profile: badger-s3, smb: true, shares: test/smb-conformance/shares.yaml, kerberos: true }
         known: test/smb-conformance/smbtorture/known-kerberos.yaml
         tier: merge
 
@@ -276,6 +276,9 @@ suites:
     fixture: { profile: badger-s3, smb: { mount: true }, nfs: "4.1" }
     needs: [linux, root, smb-client, nfs-client]
     tier: nightly
+    # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
+    # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
+    # containers only. Move them to badger-s3 once an S3 endpoint runs there.
     options:
       macos:   { needs: [macos], fixture: { profile: memory, smb: { mount: true }, nfs: "4" } }
       windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } }

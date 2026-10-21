@@ -481,8 +481,9 @@ jobs:
         uses: actions/checkout@v7
 
       # The self-contained KDC (test/smb-conformance/kdc) is started via the
-      # docker-compose "kerberos" profile by run.sh --kerberos. No external KDC
-      # or secrets required.
+      # docker-compose "kerberos" profile by run.sh --kerberos, and Localstack
+      # with the bucket for badger-s3, the production profile, which dt's
+      # kerberos option runs too. No external KDC or secrets required.
       #
       # The filters cover Kerberos-sensitive operations, not just session setup:
       # a truncated or garbled GSS session key surfaces on read and lock too.
@@ -497,7 +498,7 @@ jobs:
           cd test/smb-conformance/smbtorture
           rc=0
           for f in smb2.session smb2.read smb2.lock; do
-            ./run.sh --kerberos --filter "$f" --verbose || rc=$?
+            ./run.sh --profile badger-s3 --kerberos --filter "$f" --verbose || rc=$?
           done
           exit "$rc"
 
