@@ -1,5 +1,7 @@
 package journalv2
 
+import "context"
+
 // Journal is one journal on one directory: the bytes of every share placed on
 // the device it lives on. Each share works through its own handle.
 //
@@ -16,7 +18,7 @@ type Journal struct{}
 // ErrJournalExists and writing nothing, a directory that already holds a
 // format file or a segment. A negative setting is refused with
 // ErrInvalidSetting.
-func Init(dir string, install InstallationID, opts ...Option) (JournalID, error) {
+func Init(ctx context.Context, dir string, install InstallationID, opts ...Option) (JournalID, error) {
 	return JournalID{}, ErrNotImplemented
 }
 
@@ -40,7 +42,7 @@ func Init(dir string, install InstallationID, opts ...Option) (JournalID, error)
 //
 // Open requires WithClock. Without it, Open fails with ErrNoClock and opens
 // nothing.
-func Open(dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error) {
+func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error) {
 	return nil, ErrNotImplemented
 }
 
@@ -52,7 +54,7 @@ func Open(dir string, floor Version, expect JournalID, opts ...Option) (*Journal
 //
 // Restamp fails as Open does when dir holds no journal or another one. It
 // reads no time and no setting, so it ignores every option it is given.
-func Restamp(dir string, expect JournalID, install InstallationID, opts ...Option) error {
+func Restamp(ctx context.Context, dir string, expect JournalID, install InstallationID, opts ...Option) error {
 	return ErrNotImplemented
 }
 

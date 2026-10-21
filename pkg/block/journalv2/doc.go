@@ -19,6 +19,16 @@
 // offers extents for offload, releases what was offloaded and repacks
 // segments. The journal provides the mechanisms and none of the policy.
 //
+// A call that does I/O or can wait takes a context first; a call that only
+// reads or changes memory and never waits takes none. The context carries the
+// caller's deadline and trace, and is honoured only where that leaves no
+// outcome unknown: a call checks it before it changes any state, and returns
+// the context's error having changed nothing; once a call has appended its
+// record it completes and returns its result whatever the context says. A
+// cancelled Sync stops waiting, not the sync, and its outcome reaches the next
+// Sync of the file. A capacity refusal is returned as itself, never as the
+// context's error.
+//
 // The package depends only on the standard library and the operating system's
 // file interface. Time is read only through an injected clock, so a test can
 // advance it.

@@ -1,5 +1,7 @@
 package journalv2
 
+import "context"
+
 // Hold records, for snapshot cut cut of share, a hold mark per file: the
 // version each file's existence has committed up to. Content at or below a
 // file's mark whose offloaded bit is unset is kept, and offered as
@@ -8,7 +10,7 @@ package journalv2
 //
 // Its record is refused with a NoSpaceError naming LimitHeadroom once less
 // than half the reserved headroom remains.
-func (h *Handle) Hold(share ShareID, cut SnapshotCut, marks map[FileID]Version) error {
+func (h *Handle) Hold(ctx context.Context, share ShareID, cut SnapshotCut, marks map[FileID]Version) error {
 	return ErrNotImplemented
 }
 
@@ -16,7 +18,7 @@ func (h *Handle) Hold(share ShareID, cut SnapshotCut, marks map[FileID]Version) 
 // snapshot deleted, keeping what another live cut's hold still covers.
 // Released content nothing else keeps is reclaimable like any superseded
 // record.
-func (h *Handle) Unhold(share ShareID, cut SnapshotCut) error {
+func (h *Handle) Unhold(ctx context.Context, share ShareID, cut SnapshotCut) error {
 	return ErrNotImplemented
 }
 
@@ -36,6 +38,6 @@ func (h *Handle) Held(share ShareID) int64 {
 // refuses it; it is refused with a NoSpaceError naming LimitHeadroom once less
 // than half the reserved headroom remains, and a refused or failed Stamp
 // records nothing.
-func (h *Handle) Stamp(id FileID, through Version, cut SnapshotCut) error {
+func (h *Handle) Stamp(ctx context.Context, id FileID, through Version, cut SnapshotCut) error {
 	return ErrNotImplemented
 }
