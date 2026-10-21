@@ -1,10 +1,3 @@
-- test: special/telldir
-  status: fail
-  fix: planned
-  category: bug
-  reason: 'seekdir() to a saved cookie can return no entries: cookies are a full 64-bit hash (pkg/metadata/cookies.go), and Linux likely reads one with the top bit set as a negative directory offset. Fails on most runs, on every option set'
-  issue: '#2979'
-  intermittent: true
 - test: special/op_chmod
   status: fail
   fix: planned
