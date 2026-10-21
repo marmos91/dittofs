@@ -572,7 +572,7 @@ suites:
       DryRun: "false"
       SutComputerName: "{server}"
       SutIPAddress: "{server}"
-      DomainName: "{server}"
+      DomainName: localhost             # without a dot, WPTS stays in workgroup mode: the fixture has no domain controller
       AdminUserName: "{user}"
       PasswordForAllUsers: "{password}"
     matrix: { profile: [badger-s3] }
@@ -599,6 +599,7 @@ suites:
     options:
       kerberos:                         # dt run smbtorture --kerberos
         cmd: "smbtorture //{server}/{share} -p {smb-port} -U{user}@{realm}%{password} --use-kerberos=required {test}"
+        volumes: { "{krb5-conf}": /etc/krb5.conf }   # where smbtorture finds the KDC
         tests: [smb2.session, smb2.read, smb2.lock]
         timeout: { test: 20m }          # as run.sh --kerberos gives each
         matrix: {}                      # one cell: it pins its profile
@@ -737,7 +738,7 @@ fixture are filled before the first test, when neither has a value.
 | `{tools}` | the pinned test tools (pjdfstest, pynfs, cthon04, nfstest) at the revisions `flake.lock` pins: built with `nix build .#NAME` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, `{tools}/pynfs` is pynfs's tree, with its `bin`, `{tools}/cthon04` is cthon04's built tree, and `{tools}/nfstest` holds a `bin` with a program per module |
 | `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do |
 | `{packages}` | the package list `packages` gives |
-| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{client2}` | from the fixture (§4.2) |
+| `{server}`, `{nfs-port}`, `{smb-port}`, `{mount}`, `{share}`, `{user}`, `{user2}`, `{password}`, `{realm}`, `{krb5-conf}`, `{client2}` | from the fixture (§4.2) |
 
 For the pynfs cell `badger-s3/1`, for example:
 
@@ -835,7 +836,7 @@ carry a script that builds it.
 | `shares` | A file of shares and their settings, as data (below); the default is one share, `/export` |
 | `users` | UIDs to create, each with a read-write grant on every share; `self` is the user `dt` runs as, in its own group, so a suite's tests run under an ordinary user's permissions rather than root's. `dt` running as root, as in `dtc`, has no such user to give, and a fixture with `self` doesn't start: run `dt` there as an ordinary user with passwordless sudo |
 | `squash`, `delegations`, `lease` | Export and adapter settings, as the server has them today (below) |
-| `kerberos` | `true` starts the KDC service, writes the keytabs, restarts `rpc.gssd` once the keytab is in place, puts a test user's ticket where the kernel's upcall reads it, and turns Kerberos on |
+| `kerberos` | `true` starts a KDC before the server: a container of `test/smb-conformance/kdc`'s image, on the server's network and a free port, with the server's principal `cifs/{server}` and `{user}`'s, with `{password}`. The server gets its keytab and turns Kerberos on, and maps `{user}@{realm}` to `{user}`, as the scripts' bootstrap does, since a client given the principal sends it as its NTLM user name too. That is what SMB needs. A kernel mount with Kerberos also needs `rpc.gssd` restarted once `/etc/krb5.keytab` is in place, and a test user's ticket where the kernel's upcall reads it (§3): that comes with the first suite whose fixture mounts with Kerberos, since e2e's Kerberos mounts set up their own KDC |
 | `reset` | `each`: remove a test's share and create it again, with its settings and grants, before the test runs, as smbtorture's runner does today. A test whose share fails to reset doesn't run; like every fixture step, the reset isn't retried |
 | `client` | `namespace`: the cell's mounts and commands run on a client in a network namespace of its own, with its own rpcbind, `rpc.statd`, hostname and NFS client identifier, joined to the host by a bridge. A client on the server's own stack loses NLM, since its lockd takes the server's registration, and its traffic can't be told from the server's. Its mount and UTS namespaces, with a private `/run`, are kept in files, and each command enters them through `sudo -n nsenter`, in the cell's `dir`, as the user `dt` runs as, with the suite's `env` given explicitly. The bridge's alias names the `dt` process that owns it, and a fixture first removes the clients of a `dt` that is gone, as one that was killed leaves them |
 | `clients` | `2` adds a second namespaced client at `{client2}`, which the user `dt` runs as can reach over ssh, with a key of the fixture's own that only the first client's ssh configuration names, which there takes the place of the user's own too, since ssh reads the user's first, for suites that drive two clients, such as nfstest's cache and delegation tests. Its traffic is copied into the first client's interface, as on a shared segment |
@@ -880,9 +881,9 @@ root keeps its privileges, as both suites need.
 **Needs a fixture implies.** A fixture adds to its cell's `needs` what its fields require, so the
 cell doesn't start without them and `dt plan` places it where they're met: `service:localstack` for
 an S3 profile, `root` and `nfs-client` for an NFS mount or a namespaced `client`, `rpcbind` for
-`rpcbind: host`, `root` and `smb-client` for an SMB mount, and `root` and `port:445` for
-`smb: { port: 445 }`. They are for the fixture's own steps: only a
-suite's own `needs` make its commands run as root (§3).
+`rpcbind: host`, `root` and `smb-client` for an SMB mount, `root` and `port:445` for
+`smb: { port: 445 }`, and `docker` for `kerberos`, whose KDC is a container. They are for the
+fixture's own steps: only a suite's own `needs` make its commands run as root (§3).
 
 `dt` applies the adapter settings before enabling the adapter. Otherwise it restarts the adapter,
 because the server's settings watcher polls every 10 seconds and the tests would start before it
@@ -899,13 +900,16 @@ The fixture gives the command these placeholders:
   scripts stay as they are, except that pynfs's reference run is given the host's address as its
   `--server`, through `PYNFS_SERVER`, so a difference in the delegation tests isn't hidden behind
   the address, and that they save each cell's exit status and grades for the comparison (§8).
+  With `kerberos`, `{server}` is the machine's name instead, which a Kerberos client names the
+  server's principal after: Samba's client never uses Kerberos with an address.
 - `{nfs-port}` and `{smb-port}`: the ports its adapters listen on, free ones chosen per fixture,
   unless a field sets one, so cells can run side by side (§4.4). Cells whose fixtures set the same
   port, or `rpcbind: host`, run one at a time.
 - `{client2}`: the second client's address, with `clients: 2`.
 - `{mount}`: where the share is mounted, a path as short as today's `/tmp/dittofs-test`, so a
   test of path length such as pjdfstest's `open/03.t` measures the server, not the mount point.
-- `{realm}`.
+- `{realm}` and `{krb5-conf}`: with `kerberos`, its KDC's realm, and a `krb5.conf` that names the
+  KDC, for a tool's container to mount at `/etc/krb5.conf`.
 - `{share}`: the share a test runs on: its `share=` in a `.txt` list, else the fixture's first
   share, without its leading `/`.
 - `{user}` and `{password}`: a test user whose password is generated per run, in place of the
@@ -915,6 +919,8 @@ The fixture gives the command these placeholders:
 Before the first test, the fixture checks itself, and a failed check ends the cell with exit 2,
 never a pass (R10):
 - the server answers;
+- with `kerberos`, its KDC answers before the server starts, and `{server}`, a name then, reaches
+  the server's SMB port;
 - an S3 profile's bucket accepts a write and a read;
 - the mount is there at the version asked for;
 - every `needs` holds.

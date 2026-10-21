@@ -8,13 +8,14 @@
 # The keytab is written to /keytabs/dittofs.keytab on a shared volume so the
 # DittoFS container can pick it up for SMB Kerberos authentication.
 #
-# The KDC listens on port 88 (TCP+UDP) and is reachable from other containers
-# via the docker-compose service name "kdc".
+# The KDC listens on port $KDC_PORT, 88 by default (TCP+UDP), and is reachable
+# from other containers via the docker-compose service name "kdc".
 
 set -euo pipefail
 
 REALM="${KRB5_REALM:-DITTOFS.TEST}"
 KDC_HOST="${KDC_HOST:-kdc}"
+KDC_PORT="${KDC_PORT:-88}"
 KEYTAB_DIR="${KEYTAB_DIR:-/keytabs}"
 DITTOFS_SPN="${DITTOFS_SPN:-cifs/dittofs}"
 USER_PRINCIPAL="${USER_PRINCIPAL:-wpts-admin}"
@@ -50,7 +51,7 @@ write_krb5_conf() {
 
 [realms]
     $REALM = {
-        kdc = $KDC_HOST:88
+        kdc = $KDC_HOST:$KDC_PORT
         admin_server = $KDC_HOST
     }
 
@@ -68,8 +69,8 @@ chmod 644 "$KEYTAB_DIR/krb5.conf"
 mkdir -p /etc/krb5kdc
 cat > /etc/krb5kdc/kdc.conf <<EOF
 [kdcdefaults]
-    kdc_ports = 88
-    kdc_tcp_ports = 88
+    kdc_ports = $KDC_PORT
+    kdc_tcp_ports = $KDC_PORT
 
 [realms]
     $REALM = {
@@ -116,5 +117,5 @@ if [ ! -f /var/lib/krb5kdc/principal ]; then
         | kadmin.local > /dev/null
 fi
 
-log "Starting krb5kdc on port 88..."
+log "Starting krb5kdc on port $KDC_PORT..."
 exec krb5kdc -n
