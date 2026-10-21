@@ -178,7 +178,7 @@ func buildQueryNetworkInterfaceInfoRequestWithMaxOutput(fileID []byte, maxOutput
 	w.WriteUint32(0) // OutputOffset
 	w.WriteUint32(0) // OutputCount
 	w.WriteUint32(maxOutput)
-	w.WriteUint32(0) // Flags
+	w.WriteUint32(1) // Flags: SMB2_0_IOCTL_IS_FSCTL
 	w.WriteUint32(0) // Reserved2
 	return w.Bytes()
 }
