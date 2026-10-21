@@ -25,17 +25,30 @@ func TestPlatforms(t *testing.T) {
 	}
 }
 
+// refusedPort is a port nothing on loopback listens on, and unlike a port a
+// test frees, nothing else gets it meanwhile: it's never handed out as a free
+// port, and an ordinary user may not bind it.
+const refusedPort = "1"
+
 // A port is met while it's free, and unmet once something listens on it, on
-// every address or on loopback alone.
+// every address or on loopback alone. The port is the first one met from
+// 1024, below those a system hands out as free ports, so nothing else takes
+// it between the test freeing it and the check binding it.
 func TestPort(t *testing.T) {
-	for _, addr := range []string{":0", "127.0.0.1:0"} {
-		l, err := net.Listen("tcp", addr)
+	p := 1024
+	for ; Check("", "port:"+strconv.Itoa(p)) != nil; p++ {
+		if p == 32767 {
+			t.Fatal("no port from 1024 to 32767 is met")
+		}
+	}
+	port := strconv.Itoa(p)
+	for _, addr := range []string{":", "127.0.0.1:"} {
+		l, err := net.Listen("tcp", addr+port)
 		if err != nil {
 			t.Fatal(err)
 		}
-		port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 		if err := Check("", "port:"+port); err == nil {
-			t.Errorf("a port in use on %s is met", addr)
+			t.Errorf("a port in use on %s is met", addr+port)
 		}
 		_ = l.Close()
 		if err := Check("", "port:"+port); err != nil {
@@ -54,12 +67,12 @@ func TestPortNotBindable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = l.Close() }()
 	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 	if err := Check("", "port:"+port); err == nil {
 		t.Error("a port something accepts on is met")
 	}
-	_ = l.Close()
-	if err := Check("", "port:"+port); err != nil {
+	if err := Check("", "port:"+refusedPort); err != nil {
 		t.Errorf("a port nothing accepts on: %v", err)
 	}
 }
@@ -104,7 +117,7 @@ func TestServices(t *testing.T) {
 			t.Errorf("%s: %v, want %q", need, err, want)
 		}
 	}
-	_ = l.Close()
+	t.Setenv("DITTOFS_TEST_POSTGRES_DSN", "host=127.0.0.1 port="+refusedPort+" dbname=x")
 	if err := Check("", "service:postgres"); err == nil || !strings.Contains(err.Error(), "nothing answers") {
 		t.Errorf("nothing listening: %v", err)
 	}
@@ -130,12 +143,7 @@ func TestLocalstackHealth(t *testing.T) {
 		t.Cleanup(s.Close)
 		return s.URL
 	}
-	// A port nothing listens on.
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
+	refused := "http://127.0.0.1:" + refusedPort
 	other := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(other.Close)
 	for _, c := range []struct{ name, endpoint, want string }{
@@ -143,7 +151,7 @@ func TestLocalstackHealth(t *testing.T) {
 		{"S3 available", health(`{"services": {"s3": "available"}}`) + "/", ""},
 		{"S3 off", health(`{"services": {"s3": "disabled"}}`), `says S3 is "disabled", not available or running`},
 		{"another HTTP server", other.URL, "answered 404, not with Localstack's health"},
-		{"nothing listening", "http://" + closed.Addr().String(), "nothing answers at http://" + closed.Addr().String() + "/_localstack/health"},
+		{"nothing listening", refused, "nothing answers at " + refused + "/_localstack/health"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("LOCALSTACK_ENDPOINT", c.endpoint)
