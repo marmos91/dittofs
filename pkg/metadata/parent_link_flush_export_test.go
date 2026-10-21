@@ -15,3 +15,12 @@ func ForceDirectoryTimeFlushForTest(s *Service, handles ...FileHandle) {
 		s.dirTimes.pending[key].lastFlush = time.Time{}
 	}
 }
+
+// HoldDirectoryTimeFlushForTest keeps s from persisting coalesced directory
+// timestamps for the rest of the test, so a workload measured on s does not
+// include those parent writes.
+func HoldDirectoryTimeFlushForTest(s *Service) {
+	s.dirTimes.mu.Lock()
+	defer s.dirTimes.mu.Unlock()
+	s.dirTimes.interval = time.Hour
+}
