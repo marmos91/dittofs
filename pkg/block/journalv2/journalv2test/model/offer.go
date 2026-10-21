@@ -150,27 +150,32 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	}
 
 	// An offer syncs the records it captures before calling the callback, so
-	// a crash from now on cannot lose them: its dirty extents, its neighbours,
-	// and the superseded versions it carries.
-	for _, d := range o.Dirty {
-		for off := d.Extent.Off; off < end(d.Extent); off++ {
-			below.held[off].rec.durable = true
-		}
-	}
-	for _, s := range o.Superseded {
-		for _, r := range f.recs {
-			if r.data != nil && r.ver == s.Version {
-				if _, ok := intersect(r.ext, s.Extent); ok {
-					r.durable = true
-				}
+	// a crash from now on cannot lose them: the bytes of its dirty extents,
+	// its neighbours and the superseded versions it carries, and no others.
+	// A write split at a segment cap is several records, and the model cannot
+	// see where, so it syncs exactly the captured bytes.
+	captured := map[*record][]extent{}
+	capture := func(st *fileState, e extent) {
+		for off := e.Off; off < end(e); off++ {
+			if c, ok := st.held[off]; ok {
+				captured[c.rec] = append(captured[c.rec], extent{Off: off, Len: 1})
 			}
 		}
 	}
+	for _, d := range o.Dirty {
+		capture(below, d.Extent)
+	}
 	for _, n := range o.Neighbours {
-		for off := n.Extent.Off; off < end(n.Extent); off++ {
-			cur.held[off].rec.durable = true
+		capture(cur, n.Extent)
+	}
+	for _, s := range o.Superseded {
+		for _, r := range f.recs {
+			if e, ok := intersect(r.ext, s.Extent); ok && r.data != nil && r.ver == s.Version {
+				captured[r] = append(captured[r], e)
+			}
 		}
 	}
+	f.sync(captured)
 
 	if m.offers == nil {
 		m.offers = map[fileID]*offer{}

@@ -385,3 +385,28 @@ func TestReportOfAnEmptyExtent(t *testing.T) {
 		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(3, 0)}, err))
 	}
 }
+
+// An offer syncs the records it captures and nothing else: a write split at a
+// segment cap is several records, so an offer of part of it leaves the rest
+// as unsynced as before.
+func TestAnOfferSyncsOnlyWhatItCaptures(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('w', 8), 0, ver(1), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(1), 4, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
+	m.EndOffer(shareA, fid(1))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	j := New()
+	ok(t, j.WriteAt(shareA, fid(1), 0, fill('w', 4), 0, ver(1), nil))
+	ok(t, m.Compare(shareA, modelView{j, shareA}))
+}
+
+// A superseded version an offer carries has no stamp either.
+func TestAnOfferNeverStampsASupersededVersion(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	o := offerOf(m, fid(1), 1, 1, dirty(0, 10, 1))
+	o.Superseded = []journalv2.OfferedExtent{{Extent: ext(0, 10), Version: ver(1), Stamped: true}}
+	refused(t, m.Offer(shareA, fid(1), ver(1), 0, 0, o))
+}

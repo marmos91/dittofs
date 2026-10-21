@@ -61,6 +61,9 @@ func (m *Model) issue(op string, id fileID, v version) error {
 	}
 	m.issued = v
 	m.maxSeen = maxVersion(m.maxSeen, v)
+	if m.sinceReopen == (version{}) {
+		m.sinceReopen = v
+	}
 	return nil
 }
 

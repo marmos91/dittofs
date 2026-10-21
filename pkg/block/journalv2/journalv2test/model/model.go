@@ -84,6 +84,11 @@ type record struct {
 	// crash, records that its marker never will. Its effect on the bytes
 	// stays.
 	markerGone bool
+
+	// uncounted marks a record that may hold the file's change version up no
+	// longer: after a crash, one that backed nothing and carried no live
+	// marker, which repack may have dropped before it.
+	uncounted bool
 }
 
 func (r *record) hasMarker() bool { return r.kind.removal() && !r.settled && !r.markerGone }
@@ -116,6 +121,10 @@ type Model struct {
 	maxSeen version
 	// floor is the floor of the last reopen.
 	floor version
+	// sinceReopen is the lowest version issued since the last reopen, zero
+	// when none was: no record a crash left uncertain survived at or above
+	// it, since every version issued exceeds every version on disk.
+	sinceReopen version
 
 	// offers is the offer each file's running callback was given.
 	offers map[fileID]*offer
@@ -181,10 +190,10 @@ func derive(f *file, keep func(*record) bool) *fileState {
 		case r.kind == kindMark:
 			marks = append(marks, r)
 		}
-		// A removal whose settled marker may not have come back after a
-		// crash may have had its record dropped by repack, and the journal
-		// rebuilds a file's change version from the records on disk.
-		if r.kind.changes() && !r.markerOptional && !r.markerGone {
+		// After a crash the journal rebuilds a file's change version from the
+		// records on disk, and repack may have dropped a removal whose
+		// settled marker did not come back, or a record backing nothing.
+		if r.kind.changes() && !r.markerOptional && !r.markerGone && !r.uncounted {
 			st.change = maxVersion(st.change, r.ver)
 		}
 		if r.hasMarker() {
@@ -223,7 +232,8 @@ func (m *Model) current(id fileID) *fileState {
 }
 
 // run is a maximal stretch of held bytes read from one record with one
-// offloaded bit.
+// offloaded bit. The pieces a record was split into are one record here: they
+// share its sequence number, which no other record has.
 type run struct {
 	ext       extent
 	ver       version
@@ -238,7 +248,7 @@ func (st *fileState) runs() []run {
 		c, bit := st.held[off], st.bit[off]
 		if n := len(out); n > 0 {
 			last := &out[n-1]
-			if last.rec == c.rec && last.offloaded == bit && last.ext.Off+last.ext.Len == off {
+			if last.rec.seq == c.rec.seq && last.offloaded == bit && last.ext.Off+last.ext.Len == off {
 				last.ext.Len++
 				continue
 			}
@@ -271,4 +281,47 @@ func (m *Model) onDisk() version {
 		}
 	}
 	return v
+}
+
+// sync makes durable the bytes of each record that captured names, splitting
+// a record into pieces where only part of it is named.
+func (f *file) sync(captured map[*record][]extent) {
+	var recs []*record
+	for _, r := range f.recs {
+		es := merge(captured[r])
+		if len(es) == 0 {
+			recs = append(recs, r)
+			continue
+		}
+		in := func(i int) bool {
+			off := r.ext.Off + int64(i)
+			return slices.ContainsFunc(es, func(e extent) bool { return covers(e, off) })
+		}
+		start := 0
+		for i := 1; i <= len(r.data); i++ {
+			if i < len(r.data) && in(i) == in(start) {
+				continue
+			}
+			p := r.piece(start, i)
+			p.durable = p.durable || in(start)
+			recs = append(recs, p)
+			start = i
+		}
+	}
+	f.recs = recs
+}
+
+// countLive marks which records of f hold its change version up after a
+// crash: recovery rebuilds a file's change version from the records on disk,
+// and repack may have dropped any record that backs no held byte and carries
+// no live marker. A record that is still live counts; the others may be gone.
+func (f *file) countLive() {
+	st := derive(f, all)
+	live := map[*record]bool{}
+	for _, c := range st.held {
+		live[c.rec] = true
+	}
+	for _, r := range f.recs {
+		r.uncounted = r.kind.changes() && !live[r] && !r.hasMarker()
+	}
 }

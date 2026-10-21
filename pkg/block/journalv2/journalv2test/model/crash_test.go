@@ -313,10 +313,10 @@ func TestAMarkerThatDidNotComeBackNeverDoes(t *testing.T) {
 	refused(t, m.Compare(shareA, modelView{back, shareA}))
 }
 
-// A lost write hidden under a removal whose marker did not come back shows in
-// one place only: the change version a read reports. Kept, it holds that
-// version at or above its own; lost, the file reports an older one.
-func TestAHiddenWriteIsToldByTheChangeVersion(t *testing.T) {
+// A write hidden under a removal whose marker did not come back backs nothing,
+// so after a crash it no longer holds the change version up, whether it was
+// kept or lost: the two states look the same, and both are accepted.
+func TestAHiddenWriteCannotBeToldApartAfterACrash(t *testing.T) {
 	setup := func(t *testing.T) *Model {
 		m := New()
 		ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
@@ -345,4 +345,109 @@ func TestAHiddenWriteIsToldByTheChangeVersion(t *testing.T) {
 			t.Fatalf("write kept %t: model change version %v, journal %v", kept, got, want)
 		}
 	}
+}
+
+// asOfView is a journal view that reports one change version for every read.
+type asOfView struct {
+	modelView
+	asOf journalv2.Version
+}
+
+func (v asOfView) ReadAt(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
+	n, missing, held, _, err := v.modelView.ReadAt(id, off, p)
+	return n, missing, held, v.asOf, err
+}
+
+// Overlapping unsynced writes are decided from the top: the newest that the
+// journal shows is kept, and every write under it is hidden only by content
+// now known to be there, so no search over them is needed.
+func TestOverlappingUnsyncedWritesAreDecidedFromTheTop(t *testing.T) {
+	m := New()
+	for i := 1; i <= 20; i++ {
+		ok(t, m.WriteAt(shareA, fid(1), 0, fill(byte('a'+i), 4), 0, ver(uint64(i)), nil))
+	}
+	j := clone(m)
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(30)))
+	ok(t, m.Compare(shareA, modelView{j, shareA}))
+}
+
+// Every version the journal issues exceeds every version on disk, so once it
+// issued v50 after a reopen, a fill at v100 that the crash left uncertain
+// cannot have survived.
+func TestAVersionIssuedAfterAReopenBoundsWhatSurvived(t *testing.T) {
+	setup := func(t *testing.T) *Model {
+		m := New()
+		ok(t, m.WriteAt(shareB, fid(2), 0, fill('x', 1), 0, ver(1), nil))
+		m.Sync(shareB, fid(2))
+		ok(t, m.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(100), nil))
+		ok(t, m.Crash())
+		ok(t, m.Reopen(ver(5)))
+		ok(t, m.WriteAt(shareB, fid(2), 0, fill('y', 1), 0, ver(50), nil))
+		return m
+	}
+	kept := New()
+	ok(t, kept.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(100), nil))
+	refused(t, setup(t).Compare(shareA, modelView{kept, shareA}))
+	ok(t, setup(t).Compare(shareA, modelView{New(), shareA}))
+}
+
+// A marker that came back after a crash still counts in the file's change
+// version: a journal reporting an older one is refused.
+func TestAMarkerThatCameBackCountsInTheChangeVersion(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	m.Sync(shareA, fid(1))
+	ok(t, m.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
+	m.Settle(shareA, fid(1), ver(2))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	j := New()
+	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, j.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
+	refused(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
+}
+
+// Repack may drop a record that backs nothing, and recovery rebuilds a file's
+// change version from the records on disk, so after a crash a released write
+// no longer holds the change version up.
+func TestAfterACrashTheChangeVersionCountsOnlyLiveRecords(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('a', 4), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareA, fid(1), 4, fill('b', 4), 0, ver(2), nil))
+	ok(t, m.Offer(shareA, fid(1), ver(2), 0, 0, offerOf(m, fid(1), 1, 2, dirty(0, 4, 1), dirty(4, 4, 2))))
+	ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(4, 4)}, nil))
+	m.EndOffer(shareA, fid(1))
+	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(4, 4)}, nil))
+	m.Sync(shareA, fid(1))
+	j := clone(m)
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	ok(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
+}
+
+// A Compare that finds no state the crash allows leaves the model as it was.
+func TestAFailedCompareChangesNothing(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	before := len(m.files[fid(1)].recs)
+	other := New()
+	ok(t, other.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, other.WriteAt(shareA, fid(1), 4, fill('B', 2), 0, ver(2), nil))
+	refused(t, m.Compare(shareA, modelView{other, shareA}))
+	if after := len(m.files[fid(1)].recs); after != before {
+		t.Fatalf("a failed Compare left %d records, not %d", after, before)
+	}
+}
+
+// A floor equal to the last version issued is high enough: the counter
+// restarts above it.
+func TestReopenAcceptsAFloorAtTheLastVersionIssued(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(7), nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(7)))
 }

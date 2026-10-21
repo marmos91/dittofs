@@ -159,6 +159,7 @@ func (m *Model) compareFile(f *file, v View) error {
 		}
 		return nil
 	}
+	orig := f.recs
 	fixed := decide(f, obs)
 	var items []*record
 	for _, r := range f.items() {
@@ -167,13 +168,17 @@ func (m *Model) compareFile(f *file, v View) error {
 		}
 	}
 	if len(items) > maxUncertain {
+		f.recs = orig
 		return m.mismatch(op, f.id, "%d uncertain records left undecided, above the %d the model can search", len(items), maxUncertain)
 	}
 	all := uint32(1)<<len(items) - 1
 	first := ""
 	for mask := all; ; mask-- {
 		c := candidate{fixed, items, mask}
-		d := differ(obs, c.derive(f), ceiling)
+		d := m.issuedAbove(f, c)
+		if d == "" {
+			d = differ(obs, c.derive(f), ceiling)
+		}
 		if d == "" {
 			c.adopt(f)
 			return nil
@@ -185,7 +190,24 @@ func (m *Model) compareFile(f *file, v View) error {
 			break
 		}
 	}
+	f.recs = orig
 	return m.mismatch(op, f.id, "no state the crash allows matches; with every undecided record kept: %s", first)
+}
+
+// issuedAbove returns how candidate c keeps a record the journal cannot have
+// kept, or "" when it keeps none: every version issued since the reopen
+// exceeds every version on disk, so a record at or above the lowest of them
+// did not survive the crash.
+func (m *Model) issuedAbove(f *file, c candidate) string {
+	if m.sinceReopen == (version{}) {
+		return ""
+	}
+	for _, r := range f.recs {
+		if r.uncertain && c.took(r) && r.ver.Compare(m.sinceReopen) >= 0 {
+			return fmt.Sprintf("keeps a %s at %v, but the journal issued %v since the reopen", r.kind, r.ver, m.sinceReopen)
+		}
+	}
+	return ""
 }
 
 // observe reads file f through v. It reads the journal around every extent any
