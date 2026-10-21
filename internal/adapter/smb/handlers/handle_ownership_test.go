@@ -205,6 +205,11 @@ func TestHandleOwnership_ForeignSessionRefused(t *testing.T) {
 		{"IOCTL FSCTL_SET_ZERO_DATA", ioctlOp(FsctlSetZeroData, byteRange)},
 		{"IOCTL FSCTL_SET_COMPRESSION", ioctlOp(FsctlSetCompression, []byte{0, 0})},
 		{"IOCTL FSCTL_GET_REPARSE_POINT", ioctlOp(FsctlGetReparsePoint, nil)},
+		{"IOCTL FSCTL_GET_COMPRESSION", ioctlOp(FsctlGetCompression, nil)},
+		{"IOCTL FSCTL_GET_OBJECT_ID", ioctlOp(FsctlGetObjectID, nil)},
+		{"IOCTL FSCTL_CREATE_OR_GET_OBJECT_ID", ioctlOp(FsctlCreateOrGetObjectID, nil)},
+		{"IOCTL FSCTL_MARK_HANDLE", ioctlOp(FsctlMarkHandle, nil)},
+		{"IOCTL FSCTL_QUERY_FILE_REGIONS", ioctlOp(FsctlQueryFileRegions, nil)},
 	}
 
 	// A fixture per arm, since several of these commands consume the handle.
