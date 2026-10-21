@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -111,15 +112,9 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	if limit > 0 && total > limit {
 		return m.mismatch(op, id, "offered %d bytes, above the limit of %d", total, limit)
 	}
-	// The first extent always fits, so an offer is empty only once no dirty
-	// content outside segments under repack remains. The model is driven one
-	// call at a time, so no repack pass runs during an offer, and it models
-	// Offload, not OffloadMany, whose later files may get nothing.
 	if len(o.Dirty) == 0 {
-		for off, c := range cur.held {
-			if c.rec.ver.Compare(through) <= 0 && !cur.bit[off] {
-				return m.mismatch(op, id, "offered nothing while byte %d is dirty at %v: an offer is never empty while dirty content remains", off, c.rec.ver)
-			}
+		if off, v, ok := m.mustOffer(id, through); ok {
+			return m.mismatch(op, id, "offered nothing while byte %d is dirty at %v: an offer is never empty while dirty content remains", off, v)
 		}
 	}
 
@@ -390,13 +385,47 @@ func (m *Model) EndOffer(tag shareTag, id fileID, through version, fnErr, err er
 	case !proceed:
 		return unexpected(m, op, id, err)
 	}
-	cur := m.current(id)
-	for _, r := range cur.runs() {
-		if !r.offloaded && r.ver.Compare(through) <= 0 {
-			return m.mismatch(op, id, "returned without calling its callback while %v is dirty at %v: an offer is never empty while dirty content remains", r.ext, r.ver)
-		}
+	if off, v, ok := m.mustOffer(id, through); ok {
+		return m.mismatch(op, id, "returned without calling its callback while byte %d is dirty at %v: an offer is never empty while dirty content remains", off, v)
 	}
 	return nil
+}
+
+// mustOffer returns a byte of file id that an offer through through must not
+// leave out entirely, with its version: dirty content at or below through that
+// the file holds, or that a write above through overwrote, which is still
+// offered as the file's live content. ok is false when there is none, and an
+// empty offer is allowed.
+//
+// decision: an offer is never empty while such content remains. The first
+// extent always fits whatever the pin bounds, and an offer leaves out only
+// extents in segments a running repack pass has selected. The model holds
+// that no repack pass runs during an offer, since it is driven one call at a
+// time and Repack is the caller's call, and that a limit of zero or less
+// bounds nothing, as Offer reads it. Drop the rule, or let the caller say a
+// pass is running, if the journal ever repacks in the background while an
+// offer runs, or gives a limit of zero a meaning of its own.
+func (m *Model) mustOffer(id fileID, through version) (int64, version, bool) {
+	f := m.files[id]
+	if f == nil {
+		return 0, version{}, false
+	}
+	cur := derive(f, all)
+	below := derive(f, func(r *record) bool { return r.ver.Compare(through) <= 0 })
+	for _, off := range slices.Sorted(maps.Keys(below.held)) {
+		c := below.held[off]
+		if c.rec.kind != kindWrite || below.bit[off] {
+			continue
+		}
+		top, held := cur.held[off]
+		switch {
+		case held && top.rec == c.rec && !cur.bit[off]:
+			return off, c.rec.ver, true
+		case held && top.rec.kind == kindWrite && top.rec.ver.Compare(through) > 0:
+			return off, c.rec.ver, true
+		}
+	}
+	return 0, version{}, false
 }
 
 // Release applies a release of extents of file id through share tag, to which

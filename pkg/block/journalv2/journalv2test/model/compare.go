@@ -91,9 +91,10 @@ type sinceView struct {
 // and each version a record of f carries, so that a journal yielding a change
 // at from, or ignoring from, is seen.
 //
-// ponytail: Since is read once per version, at most 8 of them spread over the
-// file's versions, each read costing a walk of the file. Read every version if
-// a journal bug in the from filter ever slips between the sampled ones.
+// ponytail: Since is read once per version, each read costing a walk of the
+// file: every version up to 32 of them, then 32 spread over the file's
+// versions. Read every version if a journal bug in the from filter ever slips
+// between the sampled ones.
 func sinceFroms(f *file) []version {
 	var vs []version
 	for _, r := range f.recs {
@@ -101,7 +102,7 @@ func sinceFroms(f *file) []version {
 	}
 	slices.SortFunc(vs, version.Compare)
 	vs = slices.Compact(vs)
-	const most = 8
+	const most = 32
 	if len(vs) > most {
 		picked := make([]version, 0, most)
 		for i := range most {
@@ -204,6 +205,7 @@ func (m *Model) compareFile(f *file, v View) error {
 		return nil
 	}
 	orig, matched := f.recs, false
+	inDoubt := len(f.items())
 	defer func() {
 		if !matched {
 			f.recs = orig // a failed search changes nothing
@@ -215,6 +217,9 @@ func (m *Model) compareFile(f *file, v View) error {
 		if _, ok := fixed[r]; !ok {
 			items = append(items, r)
 		}
+	}
+	if len(items) > maxUncertain && len(items) > inDoubt {
+		return m.mismatch(op, f.id, "its answer leaves %d records in doubt, more than the %d the crash did: it serves bytes no record holds beside ones a record does", len(items), inDoubt)
 	}
 	if len(items) > maxUncertain {
 		return m.misuse(op, f.id, "%d records the crash left in doubt that the journal's bytes cannot settle, above the %d the model can search; sync the file more often", len(items), maxUncertain)

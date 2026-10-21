@@ -43,7 +43,7 @@ func TestAFailureNamesTheBytesTheVersionAndTheRule(t *testing.T) {
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
 	err := m.Compare(shareA, modelView{New(), shareA})
-	refused(t, err)
+	diverged(t, err)
 	for _, want := range []string{"[0,4)", "v1", "synced", "lost"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message %q does not say %q", err, want)
@@ -66,7 +66,7 @@ func TestSinceIsComparedFromEveryVersion(t *testing.T) {
 		}
 		return h.Since(id, from)
 	}}
-	refused(t, m.Compare(shareA, inclusive))
+	diverged(t, m.Compare(shareA, inclusive))
 }
 
 // Offload calls its callback while dirty content at or below through is held:
@@ -74,16 +74,16 @@ func TestSinceIsComparedFromEveryVersion(t *testing.T) {
 // returned.
 func TestOffloadCallsItsCallbackAndReturnsWhatItReturned(t *testing.T) {
 	m := New()
-	refused(t, m.EndOffer(shareA, fid(1), ver(1), nil, journalv2.ErrCorrupt))
+	diverged(t, m.EndOffer(shareA, fid(1), ver(1), nil, journalv2.ErrCorrupt))
 	ok(t, m.EndOffer(shareA, fid(1), ver(1), nil, nil))
 
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
-	refused(t, m.EndOffer(shareA, fid(1), ver(1), nil, nil))
+	diverged(t, m.EndOffer(shareA, fid(1), ver(1), nil, nil))
 	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 
 	upload := errors.New("upload failed")
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
-	refused(t, m.EndOffer(shareA, fid(1), ver(1), upload, nil))
+	diverged(t, m.EndOffer(shareA, fid(1), ver(1), upload, nil))
 	ok(t, m.Offer(shareA, fid(1), ver(1), 0, 0, offerOf(m, fid(1), 1, 1, dirty(0, 4, 1))))
 	ok(t, m.EndOffer(shareA, fid(1), ver(1), upload, upload))
 }
@@ -104,4 +104,50 @@ func TestUnresolvedNamesTheFilesACrashLeftUnknown(t *testing.T) {
 	if got := m.Unresolved(); len(got) != 0 {
 		t.Fatalf("Unresolved = %s after Compare", fmtFiles(got))
 	}
+}
+
+// Since is compared from every version a file has, up to the bound: a journal
+// wrong from one version only, among twenty, is refused.
+func TestSinceIsComparedFromEachOfManyVersions(t *testing.T) {
+	m, j := New(), New()
+	for _, x := range []*Model{m, j} {
+		for i := range 20 {
+			ok(t, x.WriteAt(shareA, fid(1), int64(i), []byte{byte('a' + i)}, 0, ver(uint64(i)+1), nil))
+		}
+	}
+	h := modelView{j, shareA}
+	wrongAtFive := planted{modelView: h, since: func(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
+		if from == ver(5) {
+			from = ver(4)
+		}
+		return h.Since(id, from)
+	}}
+	diverged(t, m.Compare(shareA, wrongAtFive))
+}
+
+// A journal whose answer leaves more in doubt than the crash did is wrong, not
+// misused: serving a record's bytes in alternation with bytes no record holds
+// splits it into more undecided pieces than the search takes.
+func TestAnAnswerThatFragmentsTheSearchIsTheJournals(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(5), nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('A', 40), ver(5), ver(5), nil))
+	ok(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
+	ok(t, m.Release(shareA, fid(1), []journalv2.Extent{ext(0, 40)}, nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('A', 40), ver(5), ver(5), nil))
+	j := clone(m)
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+
+	h := modelView{j, shareA}
+	alternating := planted{modelView: h, readAt: func(id journalv2.FileID, off int64, p []byte) (int, []journalv2.Extent, []journalv2.Held, journalv2.Version, error) {
+		n, mi, he, as, err := h.ReadAt(id, off, p)
+		for i := range p {
+			if (off+int64(i))%2 == 1 {
+				p[i] = 'B'
+			}
+		}
+		return n, mi, he, as, err
+	}}
+	diverged(t, m.Compare(shareA, alternating))
 }

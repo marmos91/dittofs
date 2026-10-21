@@ -29,7 +29,7 @@ func TestFillOlderThanTheFileMustBeRefused(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('W', 4), 0, ver(5), nil))
 
-	refused(t, m.Fill(shareA, fid(1), 10, fill('F', 4), ver(4), ver(2), nil))
+	diverged(t, m.Fill(shareA, fid(1), 10, fill('F', 4), ver(4), ver(2), nil))
 	ok(t, m.Fill(shareA, fid(1), 10, fill('F', 4), ver(4), ver(2), journalv2.ErrStaleFill))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 4, 5, false}})
 }
@@ -39,7 +39,7 @@ func TestFillOlderThanTheFileMustBeRefused(t *testing.T) {
 func TestFillAsOfEveryVersionMustBeAccepted(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('W', 4), 0, ver(5), nil))
-	refused(t, m.Fill(shareA, fid(1), 10, fill('F', 4), ver(5), ver(5), journalv2.ErrStaleFill))
+	diverged(t, m.Fill(shareA, fid(1), 10, fill('F', 4), ver(5), ver(5), journalv2.ErrStaleFill))
 }
 
 // Floor buckets are coarse: a fill of a file unchanged since asOf may still be
@@ -72,7 +72,7 @@ func TestFillBelowADroppableRecordIsOutsideTheModel(t *testing.T) {
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, m.Deallocate(shareA, fid(1), ext(0, 10), ver(2), nil))
 	ok(t, m.Settle(shareA, fid(1), ver(2)))
-	refused(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(1), nil))
+	misused(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(1), nil))
 	ok(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(2), nil))
 
 	// Below a release: the release leaves no marker.
@@ -82,7 +82,7 @@ func TestFillBelowADroppableRecordIsOutsideTheModel(t *testing.T) {
 	ok(t, r.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
 	ok(t, r.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
 	ok(t, r.Release(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
-	refused(t, r.Fill(shareA, fid(1), 0, fill('F', 4), ver(5), ver(4), nil))
+	misused(t, r.Fill(shareA, fid(1), 0, fill('F', 4), ver(5), ver(4), nil))
 
 	// Below a removal whose settled marker did not come back after a crash.
 	g := New()
@@ -94,7 +94,7 @@ func TestFillBelowADroppableRecordIsOutsideTheModel(t *testing.T) {
 	ok(t, g.Reopen(ver(10)))
 	ok(t, g.Compare(shareA, modelView{New(), shareA}))
 	ok(t, g.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(11), nil))
-	refused(t, g.Fill(shareA, fid(1), 0, fill('F', 4), ver(11), ver(1), nil))
+	misused(t, g.Fill(shareA, fid(1), 0, fill('F', 4), ver(11), ver(1), nil))
 }
 
 // A fill below a removal whose marker is not settled is decided: the marker is

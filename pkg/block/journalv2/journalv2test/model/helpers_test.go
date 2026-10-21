@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -60,10 +61,21 @@ func ok(t *testing.T, err error) {
 	}
 }
 
-func refused(t *testing.T, err error) {
+// diverged asserts the model reported the journal doing what the RFC does not
+// allow.
+func diverged(t *testing.T, err error) {
 	t.Helper()
-	if err == nil {
-		t.Fatal("the model accepted an outcome the RFC forbids")
+	if !errors.Is(err, ErrDiverged) {
+		t.Fatalf("want the journal reported wrong, got %v", err)
+	}
+	t.Logf("refused: %v", err)
+}
+
+// misused asserts the model reported a call it cannot take.
+func misused(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrMisuse) {
+		t.Fatalf("want the call reported as one the model cannot take, got %v", err)
 	}
 	t.Logf("refused: %v", err)
 }

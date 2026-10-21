@@ -52,7 +52,7 @@ func TestDeallocateInsideAndAcrossExtents(t *testing.T) {
 func TestZeroLengthDeallocateIsRefused(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	refused(t, m.Deallocate(shareA, fid(1), ext(3, 0), ver(2), nil))
+	diverged(t, m.Deallocate(shareA, fid(1), ext(3, 0), ver(2), nil))
 	ok(t, m.Deallocate(shareA, fid(1), ext(3, 0), journalv2.Version{}, journalv2.ErrZeroLength))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 10, 1, false}})
 }
@@ -75,9 +75,9 @@ func TestDeleteDropsEveryExtent(t *testing.T) {
 func TestRemovalVersionMustExceedEveryVersionSeen(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(4), nil))
-	refused(t, m.Truncate(shareA, fid(1), 0, ver(4), nil))
-	refused(t, m.Deallocate(shareA, fid(1), ext(0, 1), ver(3), nil))
-	refused(t, m.Delete(shareA, fid(1), ver(1), nil))
+	diverged(t, m.Truncate(shareA, fid(1), 0, ver(4), nil))
+	diverged(t, m.Deallocate(shareA, fid(1), ext(0, 1), ver(3), nil))
+	diverged(t, m.Delete(shareA, fid(1), ver(1), nil))
 }
 
 // Settle(v) drops the markers at or below v and keeps the newer ones.

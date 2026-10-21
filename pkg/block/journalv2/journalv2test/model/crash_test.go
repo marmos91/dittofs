@@ -36,7 +36,7 @@ func TestCrashKeepsSyncedWritesAndAllowsUnsyncedOnesEitherWay(t *testing.T) {
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 10, 1, false}})
 
 	m = setup(t)
-	refused(t, m.Compare(shareA, modelView{neither, shareA}))
+	diverged(t, m.Compare(shareA, modelView{neither, shareA}))
 }
 
 // A write split at a segment cap is one record per segment, each surviving a
@@ -59,7 +59,7 @@ func TestCrashMayKeepPartOfASplitWrite(t *testing.T) {
 
 	other := New()
 	ok(t, other.WriteAt(shareA, fid(1), 0, fill('B', 6), 0, ver(1), nil))
-	refused(t, setup(t).Compare(shareA, modelView{other, shareA}))
+	diverged(t, setup(t).Compare(shareA, modelView{other, shareA}))
 }
 
 // A removal is durable on return, so a crash never undoes it, synced or not.
@@ -73,7 +73,7 @@ func TestCrashNeverUndoesARemoval(t *testing.T) {
 
 	undone := New()
 	ok(t, undone.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	refused(t, m.Compare(shareA, modelView{undone, shareA}))
+	diverged(t, m.Compare(shareA, modelView{undone, shareA}))
 }
 
 // Settling is not persisted, so a marker the caller settled before a crash
@@ -112,7 +112,7 @@ func TestCrashBringsBackMarkers(t *testing.T) {
 	ok(t, m.Compare(shareA, modelView{journal(true), shareA}))
 
 	m = setup(t, false)
-	refused(t, m.Compare(shareA, modelView{journal(true), shareA}))
+	diverged(t, m.Compare(shareA, modelView{journal(true), shareA}))
 }
 
 // An offloaded record lost to a crash leaves the bit unset: wrong only in the
@@ -146,8 +146,8 @@ func TestVersionsAfterReopenExceedTheFloor(t *testing.T) {
 	lost := New()
 	ok(t, lost.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, m.Compare(shareA, modelView{lost, shareA}))
-	refused(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(2), nil))
-	refused(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(5), nil))
+	diverged(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(2), nil))
+	diverged(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(5), nil))
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('C', 1), 0, ver(6), nil))
 }
 
@@ -157,9 +157,9 @@ func TestNoCallBetweenACrashAndItsResolution(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, m.Crash())
-	refused(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(2), nil))
+	misused(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(2), nil))
 	ok(t, m.Reopen(ver(10)))
-	refused(t, m.WriteAt(shareA, fid(1), 0, fill('A', 1), 0, ver(11), nil))
+	misused(t, m.WriteAt(shareA, fid(1), 0, fill('A', 1), 0, ver(11), nil))
 	ok(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(11), nil))
 }
 
@@ -175,7 +175,7 @@ func TestCrashRefusesTooManyUndecidableRecordsInOneFile(t *testing.T) {
 		ok(t, m.Report(shareA, fid(1), []journalv2.Extent{ext(int64(i), 1)}, nil))
 	}
 	ok(t, m.EndOffer(shareA, fid(1), journalv2.Version{}, nil, nil))
-	refused(t, m.Crash())
+	misused(t, m.Crash())
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(2), nil))
 
 	w := New()
@@ -197,7 +197,7 @@ func TestARecordThatSurvivedACrashIsDurable(t *testing.T) {
 
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(20)))
-	refused(t, m.Compare(shareA, modelView{New(), shareA}))
+	diverged(t, m.Compare(shareA, modelView{New(), shareA}))
 }
 
 // The floor of a reopen carries the version limit, so the counter restarts
@@ -206,7 +206,7 @@ func TestReopenRefusesAFloorBelowAVersionIssued(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(7), nil))
 	ok(t, m.Crash())
-	refused(t, m.Reopen(ver(6)))
+	misused(t, m.Reopen(ver(6)))
 }
 
 // The search for the state a crash left is decided by what the journal shows
@@ -288,7 +288,7 @@ func TestAFillVersionBoundsTheCounterOnlyWhileHeld(t *testing.T) {
 	ok(t, both.Fill(shareA, fid(1), 100, fill('F', 4), ver(5), ver(50), nil))
 	m = setup(t)
 	ok(t, m.Compare(shareA, modelView{both, shareA}))
-	refused(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(11), nil))
+	diverged(t, m.WriteAt(shareA, fid(1), 0, fill('B', 1), 0, ver(11), nil))
 }
 
 // A settled marker that did not come back after one crash never comes back
@@ -310,7 +310,7 @@ func TestAMarkerThatDidNotComeBackNeverDoes(t *testing.T) {
 	back := New()
 	ok(t, back.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, back.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
-	refused(t, m.Compare(shareA, modelView{back, shareA}))
+	diverged(t, m.Compare(shareA, modelView{back, shareA}))
 }
 
 // A write hidden under a removal whose marker did not come back backs nothing,
@@ -388,7 +388,7 @@ func TestAVersionIssuedAfterAReopenBoundsWhatSurvived(t *testing.T) {
 	}
 	kept := New()
 	ok(t, kept.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(100), nil))
-	refused(t, setup(t).Compare(shareA, modelView{kept, shareA}))
+	diverged(t, setup(t).Compare(shareA, modelView{kept, shareA}))
 	ok(t, setup(t).Compare(shareA, modelView{New(), shareA}))
 }
 
@@ -406,7 +406,7 @@ func TestAMarkerThatCameBackCountsInTheChangeVersion(t *testing.T) {
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, j.Deallocate(shareA, fid(1), ext(0, 2), ver(2), nil))
-	refused(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
+	diverged(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
 }
 
 // Repack may drop a record that backs nothing, and recovery rebuilds a file's
@@ -437,7 +437,7 @@ func TestAFailedCompareChangesNothing(t *testing.T) {
 	other := New()
 	ok(t, other.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
 	ok(t, other.WriteAt(shareA, fid(1), 4, fill('B', 2), 0, ver(2), nil))
-	refused(t, m.Compare(shareA, modelView{other, shareA}))
+	diverged(t, m.Compare(shareA, modelView{other, shareA}))
 	if after := len(m.files[fid(1)].recs); after != before {
 		t.Fatalf("a failed Compare left %d records, not %d", after, before)
 	}
@@ -465,7 +465,7 @@ func TestAWriteLiveAgainAfterACrashCountsInTheChangeVersion(t *testing.T) {
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
 	ok(t, m.Compare(shareA, modelView{j, shareA}))
-	refused(t, m.Fill(shareA, fid(1), 10, fill('F', 2), journalv2.Version{}, ver(1), nil))
+	diverged(t, m.Fill(shareA, fid(1), 10, fill('F', 2), journalv2.Version{}, ver(1), nil))
 }
 
 // A refill at a released version is several records like any write, and may
@@ -510,7 +510,7 @@ func TestAnUnsettledMarkerCountsInTheChangeVersionAfterACrash(t *testing.T) {
 	j := New()
 	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
 	ok(t, j.Truncate(shareA, fid(1), 4, ver(2), nil))
-	refused(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
+	diverged(t, m.Compare(shareA, asOfView{modelView{j, shareA}, ver(1)}))
 }
 
 // The bound a version issued after a crash sets on what survived it holds
@@ -537,9 +537,9 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 	}
 	kept := New()
 	ok(t, kept.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(50), nil))
-	refused(t, setup(t, 50, false).Compare(shareA, modelView{kept, shareA}))
-	refused(t, setup(t, 20, true).Compare(shareA, modelView{kept, shareA}))
-	refused(t, setup(t, 20, false, 60).Compare(shareA, modelView{kept, shareA}))
+	diverged(t, setup(t, 50, false).Compare(shareA, modelView{kept, shareA}))
+	diverged(t, setup(t, 20, true).Compare(shareA, modelView{kept, shareA}))
+	diverged(t, setup(t, 20, false, 60).Compare(shareA, modelView{kept, shareA}))
 	ok(t, setup(t, 20, true).Compare(shareA, modelView{New(), shareA}))
 }
 
@@ -549,14 +549,14 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 func TestQueriesAndSettlesAreRefusedUntilACrashIsResolved(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
-	refused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, journalv2.ErrCorrupt))
+	diverged(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, journalv2.ErrCorrupt))
 	ok(t, m.Crash())
-	refused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
+	misused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
 	ok(t, m.Reopen(ver(10)))
-	refused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
-	refused(t, m.Settle(shareA, fid(1), ver(1)))
+	misused(t, m.Sync(shareA, []journalv2.FileID{fid(1)}, nil))
+	misused(t, m.Settle(shareA, fid(1), ver(1)))
 	_, err := m.Since(shareA, fid(1), journalv2.Version{})
-	refused(t, err)
+	misused(t, err)
 }
 
 // Writes are decided from the bytes the journal shows, however many there are:

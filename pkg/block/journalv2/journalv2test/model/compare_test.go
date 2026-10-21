@@ -256,7 +256,7 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m, j := New(), New()
 			script(t, m, j)
-			refused(t, m.Compare(shareA, c.plant(modelView{j, shareA})))
+			diverged(t, m.Compare(shareA, c.plant(modelView{j, shareA})))
 		})
 	}
 }

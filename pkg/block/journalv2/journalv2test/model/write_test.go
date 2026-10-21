@@ -56,16 +56,16 @@ func TestHeldContentNeedNotStartAtZeroNorBeContiguous(t *testing.T) {
 func TestWriteVersionMustExceedEveryVersionSeen(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 1), 0, ver(5), nil))
-	refused(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(5), nil))
-	refused(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(4), nil))
-	refused(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, journalv2.Version{}, nil))
+	diverged(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(5), nil))
+	diverged(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, ver(4), nil))
+	diverged(t, m.WriteAt(shareA, fid(2), 0, fill('A', 1), 0, journalv2.Version{}, nil))
 }
 
 // A refused write changes nothing, and an error the model has no rule for is
 // reported rather than absorbed.
 func TestWriteErrorsTheModelHasNoRuleForAreReported(t *testing.T) {
 	m := New()
-	refused(t, m.WriteAt(shareA, fid(1), 0, fill('A', 1), 0, ver(1), journalv2.ErrCorrupt))
+	diverged(t, m.WriteAt(shareA, fid(1), 0, fill('A', 1), 0, ver(1), journalv2.ErrCorrupt))
 	if got := heldSpans(t, m, fid(1)); len(got) != 0 {
 		t.Fatalf("a failed write left %v held", got)
 	}
@@ -78,12 +78,12 @@ func TestAFileIsItsSharesWhileItHoldsAnything(t *testing.T) {
 	m := New()
 	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
 
-	refused(t, m.WriteAt(shareB, fid(1), 0, fill('B', 4), 0, ver(2), nil))
+	diverged(t, m.WriteAt(shareB, fid(1), 0, fill('B', 4), 0, ver(2), nil))
 	ok(t, m.WriteAt(shareB, fid(1), 0, fill('B', 4), 0, journalv2.Version{}, journalv2.ErrOtherShare))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 4, 1, false}})
 
 	// Refusing a file no other share holds is wrong.
-	refused(t, m.WriteAt(shareA, fid(2), 0, fill('A', 4), 0, journalv2.Version{}, journalv2.ErrOtherShare))
+	diverged(t, m.WriteAt(shareA, fid(2), 0, fill('A', 4), 0, journalv2.Version{}, journalv2.ErrOtherShare))
 }
 
 // Once a file holds nothing, another share's call on it may claim it: the
