@@ -22,8 +22,8 @@ import (
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
-// sudoGrace is how long go test has to stop after SIGINT, on a suite that
-// runs as root, before dt kills it.
+// sudoGrace is how long a command of a suite that runs as root, go test
+// among them, has to stop after SIGINT before dt kills it.
 const sudoGrace = 2 * time.Minute
 
 // goJSON runs a go-json cell's commands and grades the cell from their
@@ -124,12 +124,6 @@ func (t tester) goTest(argv []string, asRoot bool, events string, res *results) 
 	return followed(cmd, events, res, t.out)
 }
 
-// asRoot reports whether a cell's go tests run as root through sudo: a
-// go-json suite that needs root, run by dt as a user.
-func asRoot(c Cell) bool {
-	return c.Unit.Format == "go-json" && slices.Contains(c.Needs, "root") && os.Geteuid() != 0
-}
-
 // buildBin builds dfs and dfsctl from the checkout at root, as the user, into
 // {bin}, the run's bin directory, once per run: for a cell with a fixture, and
 // for a suite whose tests run as root, which take the binaries from
@@ -141,7 +135,7 @@ func buildBin(ctx context.Context, root, bin string, env []string, w io.Writer) 
 	}
 	build := []string{"go", "build", "-o", bin + string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl"}
 	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
-	code, err := execute(ctx, build, root, env, w)
+	code, err := execute(ctx, build, root, env, w, false)
 	if err == nil && code != 0 {
 		err = fmt.Errorf("go build exited %d", code)
 	}
