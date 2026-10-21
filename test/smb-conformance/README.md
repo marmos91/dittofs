@@ -161,7 +161,7 @@ cd smbtorture
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `badger-s3`, `memory-kerberos`) |
+| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `badger-s3`, `badger-s3-kerberos`) |
 | `--filter FILTER` | (all) | Run specific sub-test by name |
 | `--timeout SECONDS` | `1200` | Kill smbtorture after SECONDS |
 | `--keep` | off | Leave containers running |
@@ -320,7 +320,7 @@ smbtorture can also be run with Kerberos authentication via the CI workflow:
 
 ```bash
 # In CI (via environment variable)
-SMBTORTURE_AUTH=kerberos ./smbtorture/run.sh --profile memory --verbose
+SMBTORTURE_AUTH=kerberos ./smbtorture/run.sh --profile badger-s3 --verbose
 ```
 
 ### Prerequisites
@@ -339,10 +339,10 @@ Validates DittoFS SMB adapter against native OS SMB clients on two platforms.
 
 ### Platforms
 
-| Platform | Client | Mount Command |
-|----------|--------|---------------|
-| Ubuntu (latest) | mount.cifs + smbclient | `sudo mount -t cifs //localhost/share /mnt/test -o port=12445,...` |
-| macOS (latest) | mount_smbfs | `mount_smbfs //user:pass@localhost:12445/share /tmp/smbtest` |
+| Platform | Client | Mount Command | Profile |
+|----------|--------|---------------|---------|
+| Ubuntu (latest) | mount.cifs + smbclient | `sudo mount -t cifs //localhost/share /mnt/test -o port=12445,...` | `badger-s3` (Localstack) |
+| macOS (latest) | mount_smbfs | `mount_smbfs //user:pass@localhost:12445/share /tmp/smbtest` | `memory`: the runner has no Docker for Localstack |
 
 ### When It Runs
 
@@ -402,7 +402,7 @@ test/smb-conformance/
 │   ├── memory.yaml
 │   ├── badger.yaml
 │   ├── badger-s3.yaml
-│   └── memory-kerberos.yaml
+│   └── badger-s3-kerberos.yaml
 ├── ptfconfig/                # WPTS configuration templates
 │   ├── CommonTestSuite.deployment.ptfconfig.template
 │   └── MS-SMB2_ServerTestSuite.deployment.ptfconfig.template
