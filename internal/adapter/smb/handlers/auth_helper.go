@@ -261,6 +261,14 @@ type identityMapper interface {
 // installs a User, so an unprimed context reaches the nobody arm of
 // BuildAuthContext instead. Withdraw the exemption if a User can ever reach
 // BuildAuthContextFromUser without primeAuthContext.
+//
+// decision: a share whose squash leaves uid 0 as uid 0 (none, root_to_admin,
+// and all_to_admin, which maps every caller to it) leaves a uid-0 session
+// privileged, because the metadata layer derives privilege from uid 0; tree
+// connect grants it admin too (rootHasAdminAccess). That is the share admin's
+// choice. Over SMB only an open with backup intent should be privileged, which
+// needs a backup privilege field on the identity for the metadata layer to read
+// instead of the uid. Withdraw this when the identity has one.
 func squashIdentity(m identityMapper, shareName string, identity *metadata.Identity) *metadata.Identity {
 	if m == nil {
 		return identity
