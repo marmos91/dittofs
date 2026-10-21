@@ -91,7 +91,7 @@ create_metadata_store() {
     log_info "Creating metadata store for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory|memory-kerberos)
+        memory)
             $DFSCTL store metadata add --name default --type badger --in-memory
             ;;
         badger*)
@@ -110,12 +110,12 @@ create_block_stores() {
     log_info "Creating block stores for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory|memory-kerberos|badger)
+        memory|badger)
             # Profiles without S3 pair their metadata store with the memory
             # block store so the suite stays self-contained.
             $DFSCTL store block add --name default --type memory
             ;;
-        *-s3)
+        *-s3|*-s3-kerberos)
             # Localstack is a deliberate private-network test endpoint; opt it past
             # the S3 SSRF guard which otherwise rejects the private 172.x address
             # that "localstack" resolves to.

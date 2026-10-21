@@ -33,7 +33,7 @@ services:
       - dittofs-data:/data
       # Shared volume with the kdc service. Always mounted (harmless when the
       # kerberos profile is not active — the directory is just empty), so
-      # memory-kerberos.yaml can reference /keytabs/dittofs.keytab.
+      # badger-s3-kerberos.yaml can reference /keytabs/dittofs.keytab.
       - kdc-keytabs:/keytabs:ro
     depends_on:
       # Wait for the KDC to finish writing the keytab before starting, but
