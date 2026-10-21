@@ -104,8 +104,11 @@ func TestSMBNoACLOpenGatedByModeOwnerAndParent(t *testing.T) {
 
 	// sticky/ is 1777 and owned by neither user: its mode lets bob write it,
 	// so only the sticky bit keeps him from removing alice's files. SMB cannot
-	// set the bit, so the directory is made over NFS. The refusal may come at
-	// the open or at the close, so the outcome is what is asserted.
+	// set the bit, so the directory is made over NFS. This pins the sticky
+	// rule over SMB rather than the open gate: the open gate and RemoveFile
+	// both enforce it, so the case fails only if both lose it. The refusal
+	// may come at the open or at the close, so the outcome is what is
+	// asserted.
 	t.Run("StickyDirectoryOnlyOwnerDeletes", func(t *testing.T) {
 		nfsPort := helpers.FindFreePort(t)
 		_, err := env.CLIRunner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
