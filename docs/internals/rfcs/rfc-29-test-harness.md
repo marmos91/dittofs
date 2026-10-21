@@ -1526,7 +1526,7 @@ green PRs that break each other. If the repository moves to an organization: ena
 **Baselines.** smbtorture's `baseline-results.md` is a snapshot of DittoFS's own results on
 `badger-s3`, the one profile conformance runs (§4.3), and the pynfs knfsd run compares the same
 tests against the kernel's server. Neither changes from one night to the next: the smbtorture
-file last changed on 2026-06-22, from `memory`. Both are manual:
+file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt known baseline smbtorture/badger-s3` writes the file, in `test/smb-conformance/smbtorture/`,
   from that cell's results in a run, and it lands through a pull request like any change. It counts
   each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
