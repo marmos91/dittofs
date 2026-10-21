@@ -558,3 +558,42 @@ func TestQueriesAndSettlesAreRefusedUntilACrashIsResolved(t *testing.T) {
 	_, err := m.Since(shareA, fid(1), journalv2.Version{})
 	refused(t, err)
 }
+
+// Writes are decided from the bytes the journal shows, however many there are:
+// kept where it serves them, lost where it serves an older version or nothing.
+// Each case has more writes than the search could take.
+func TestWritesAreDecidedFromTheBytesWithoutTheSearch(t *testing.T) {
+	const n = maxUncertain + 1
+	cases := []struct {
+		name    string
+		synced  bool // an older synced write under each
+		journal func(j *Model)
+	}{
+		{"all kept", false, func(j *Model) {
+			for i := range n {
+				ok(t, j.WriteAt(shareA, fid(1), int64(i)*4, fill(byte('a'+i), 4), 0, ver(uint64(i)+10), nil))
+			}
+		}},
+		{"all lost over nothing", false, func(j *Model) {}},
+		{"all lost over an older version", true, func(j *Model) {
+			ok(t, j.WriteAt(shareA, fid(1), 0, fill('0', 4*n), 0, ver(1), nil))
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New()
+			if c.synced {
+				ok(t, m.WriteAt(shareA, fid(1), 0, fill('0', 4*n), 0, ver(1), nil))
+				ok(t, m.Sync(shareA, nil, fid(1)))
+			}
+			for i := range n {
+				ok(t, m.WriteAt(shareA, fid(1), int64(i)*4, fill(byte('a'+i), 4), 0, ver(uint64(i)+10), nil))
+			}
+			ok(t, m.Crash())
+			ok(t, m.Reopen(ver(100)))
+			j := New()
+			c.journal(j)
+			ok(t, m.Compare(shareA, modelView{j, shareA}))
+		})
+	}
+}

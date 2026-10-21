@@ -187,7 +187,7 @@ const (
 // it is an earlier record of that version, which the record would outrank, or
 // a later one, which hides it for good. Only a byte served at its own version,
 // with its own bytes, beside another record of that version, is left to the
-// search. None of these answers changes which states match;
+// search. None of these answers changes anything the journal can show later;
 // they only shrink the search.
 //
 // decision: an uncertain write or fill may survive in part, any of its bytes

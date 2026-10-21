@@ -74,4 +74,36 @@ func TestFillBelowADroppableRecordIsOutsideTheModel(t *testing.T) {
 	ok(t, m.Settle(shareA, fid(1), ver(2)))
 	refused(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(1), nil))
 	ok(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(2), nil))
+
+	// Below a release: the release leaves no marker.
+	r := New()
+	ok(t, r.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(5), nil))
+	ok(t, r.Offer(shareA, fid(1), ver(5), 0, 0, offerOf(r, fid(1), 5, 5, dirty(0, 10, 5))))
+	ok(t, r.Report(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
+	r.EndOffer(shareA, fid(1))
+	ok(t, r.Release(shareA, fid(1), []journalv2.Extent{ext(0, 10)}, nil))
+	refused(t, r.Fill(shareA, fid(1), 0, fill('F', 4), ver(5), ver(4), nil))
+
+	// Below a removal whose settled marker did not come back after a crash.
+	g := New()
+	ok(t, g.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, g.Sync(shareA, nil, fid(1)))
+	ok(t, g.Deallocate(shareA, fid(1), ext(0, 10), ver(2), nil))
+	ok(t, g.Settle(shareA, fid(1), ver(2)))
+	ok(t, g.Crash())
+	ok(t, g.Reopen(ver(10)))
+	ok(t, g.Compare(shareA, modelView{New(), shareA}))
+	ok(t, g.WriteAt(shareA, fid(2), 0, fill('x', 1), 0, ver(11), nil))
+	refused(t, g.Fill(shareA, fid(1), 0, fill('F', 4), ver(11), ver(1), nil))
+}
+
+// A fill below a removal whose marker is not settled is decided: the marker is
+// live, its record stays on disk, and content below its version is not held
+// inside it.
+func TestFillBelowAnUnsettledMarkerIsDecided(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, m.Deallocate(shareA, fid(1), ext(0, 10), ver(2), nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(1), nil))
+	equalSpans(t, heldSpans(t, m, fid(1)), nil)
 }

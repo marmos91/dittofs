@@ -12,8 +12,12 @@ import (
 // the journal, from bytes a fuzzer chooses. The journal answers every call as
 // the RFC allows; both models are given the answer, and after every step the
 // model must show exactly what the journal holds. After a crash the journal
-// keeps a random state of those the crash allows, writes split at random
-// points, which the model must find.
+// keeps a random state of those the crash allows, each uncertain write or fill
+// split at most once at a random point, which the model must find.
+//
+// The journal is the model's own code, so this shows that the model finds any
+// state a crash leaves and keeps answering as that state does. It does not
+// show that the model's precedence matches the RFC: the table tests do.
 type driver struct {
 	t       *testing.T
 	m       *Model // under test
@@ -58,8 +62,11 @@ func (d *driver) offset(n int64) int64 {
 	return int64(b % 64)
 }
 
+// issue returns the next version the journal issues: above every version it
+// issued, every version on disk and the floor, but not above a fill's version
+// a crash may have lost, so the bound such a fill must respect is reached.
 func (d *driver) issue() journalv2.Version {
-	return journalv2.Version{Counter: maxVersion(d.journal.maxSeen, d.journal.floor).Counter + 1}
+	return journalv2.Version{Counter: maxVersion(maxVersion(d.journal.issued, d.journal.onDisk()), d.journal.floor).Counter + 1}
 }
 
 // other is the journal's answer to a call through tag on id when another
@@ -126,14 +133,20 @@ func (d *driver) step() {
 		n := int64(d.next()%16) + 1
 		off := d.offset(n)
 		p := fill(d.next(), int(n))
+		// Usually an older version, sometimes one above every version the
+		// journal issued, which a crash and the next version issued test.
 		v := journalv2.Version{Counter: uint64(d.next()) % (d.journal.maxSeen.Counter + 1)}
-		// What the caller released or removed is in the records of one model
-		// or the other: a crash may have taken it from the journal's while
-		// the model kept it, unseen, or the other way round.
+		if b := d.next(); b < 32 {
+			v = journalv2.Version{Counter: d.journal.maxSeen.Counter + 1 + uint64(b)}
+		}
+		// What the caller released, or removed and settled, is in the records
+		// of one model or the other: a crash may have taken it from the
+		// journal's while the model kept it, unseen, or the other way round.
+		// A fill below an unsettled marker is decided, and is fuzzed.
 		for _, mm := range []*Model{d.journal, d.m} {
 			if f := mm.files[id]; f != nil {
 				for _, r := range f.recs {
-					if _, ok := intersect(r.ext, extent{Off: off, Len: n}); ok && (r.kind == kindRelease || r.kind.removal()) {
+					if _, ok := intersect(r.ext, extent{Off: off, Len: n}); ok && (r.kind == kindRelease || r.kind.removal() && r.settled) {
 						v = maxVersion(v, r.ver)
 					}
 				}
@@ -273,7 +286,10 @@ func (d *driver) crash() {
 			return // settled markers alone exceed it; crash later
 		}
 	}
-	floor := d.issue()
+	// The floor carries the version limit: above every version issued, not
+	// above a fill's version, so a fill above every version issued can be
+	// lost and its version issued again.
+	floor := journalv2.Version{Counter: d.journal.issued.Counter + 1}
 	d.t.Logf("crash, reopen at %v", floor)
 	d.both(func(m *Model) error { return m.Crash() })
 	d.both(func(m *Model) error { return m.Reopen(floor) })
@@ -295,6 +311,16 @@ func (d *driver) crash() {
 		f.recs = recs
 		candidate{items: f.items(), mask: rng.Uint32()}.adopt(f)
 	}
+
+	// Issue a version before the model compares the files the crash left
+	// uncertain, on a file no crash touches, so the bound it sets on them is
+	// checked.
+	v := d.issue()
+	p := []byte{d.next()}
+	d.give(fid(5), v, 0, p)
+	d.t.Logf("write 5 share %d [0,+1) %v", shareA, v)
+	d.both(func(m *Model) error { return m.WriteAt(shareA, fid(5), 0, p, 0, v, nil) })
+	d.both(func(m *Model) error { return m.Sync(shareA, nil, fid(5)) })
 }
 
 // uncertainAt counts what a crash now would leave uncertain in f.

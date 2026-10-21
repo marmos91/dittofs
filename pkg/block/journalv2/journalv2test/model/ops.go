@@ -327,18 +327,19 @@ func changeKind(k recordKind) journalv2.ChangeKind {
 	return journalv2.ChangeWrite
 }
 
-// droppableAbove returns a record over e with a version above v that repack
-// may drop without the model seeing it, nil when there is none: a release, or
-// a removal whose marker is settled.
+// droppableAbove returns a record over e with a version above v that the
+// running journal no longer keeps in its index, nil when there is none: a
+// release, which leaves no marker, or a removal whose marker was settled,
+// including one whose marker did not come back after a crash.
 //
 // decision: a fill never carries a version below a release or a settled
-// removal over its bytes. Such a record outranks every record of the file it
-// overlaps, and repack drops it once nothing it outranks is left on disk,
-// which the model cannot see; a fill below it is then held or not depending on
-// whether it was dropped. A fill carries its ref's version, and the content a
-// release made absent was offloaded at the released version, so a refill
-// carries that version or a later one. Model the drop if a caller ever fills
-// from a ref older than what it released.
+// removal over its bytes. The running journal fills every sub-extent its
+// index holds nothing for, so it holds such a fill; after a restart the
+// record's precedence hides it again, and repack may have dropped the record,
+// so either way it is undecided. A fill carries its ref's version, and the
+// content a release made absent was offloaded at the released version, so a
+// refill carries that version or a later one. Model the index apart from the
+// records if a caller ever fills from a ref older than what it released.
 func droppableAbove(f *file, e extent, v version) *record {
 	if f == nil {
 		return nil
@@ -347,7 +348,7 @@ func droppableAbove(f *file, e extent, v version) *record {
 		if _, ok := intersect(r.ext, e); !ok || r.ver.Compare(v) <= 0 {
 			continue
 		}
-		if r.kind == kindRelease || r.kind.removal() && (r.settled || r.markerGone) {
+		if r.kind == kindRelease || r.kind.removal() && r.settled {
 			return r
 		}
 	}

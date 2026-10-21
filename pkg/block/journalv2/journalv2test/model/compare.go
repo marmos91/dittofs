@@ -81,7 +81,7 @@ type observation struct {
 // After a crash, Compare looks for a state the crash allows that the journal
 // shows, file by file, and continues from it: the model then holds what the
 // journal holds. When none matches, it reports how the state in which every
-// uncertain record survived differs.
+// record left undecided was kept differs, or why that state cannot be.
 func (m *Model) Compare(tag shareTag, v View) error {
 	const op = "compare"
 	if m.crashed {

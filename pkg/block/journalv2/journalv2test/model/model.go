@@ -64,9 +64,10 @@ type record struct {
 	data  []byte // a write's or a fill's bytes, ext.Len of them
 	mtime int64
 
-	// durable is set once a Sync covering the record returns, or on return
-	// for a removal. A record that is not durable when the journal crashes
-	// may or may not survive the crash.
+	// durable is set once a Sync covering the record returns, on return for
+	// a removal, when an offer captures the record's bytes, and when a crash
+	// it was uncertain in is resolved with it kept. A record that is not
+	// durable when the journal crashes may or may not survive the crash.
 	durable bool
 
 	// uncertain marks a record not durable at a crash, until Compare learns
@@ -92,7 +93,9 @@ type record struct {
 
 	// bound, for a record a crash left uncertain, is the first version the
 	// journal issued after that crash; zero until one is issued. The record
-	// cannot have survived at or above it.
+	// cannot have survived at or above it. Only a fill can reach it: every
+	// other record carries a version issued before the crash, below every
+	// version issued after it.
 	bound version
 }
 
