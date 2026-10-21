@@ -260,17 +260,24 @@ func nfsAdapterEnabled(ctx context.Context, s store.Store) (bool, error) {
 // (nil, nil) when the share references an unknown metadata store so the caller
 // can skip it (already logged). Extracted so both startup load and live
 // block-store rebind (#1532) build an identical config from the same row.
+//
+// Any other failure to look up the metadata store, a cancelled context among
+// them, is an error: read as an unknown store, it would let a purge skip the
+// share's records and delete the rest.
 func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (*ShareConfig, error) {
 	// Try by ID first, fall back to name lookup.
 	metaStoreCfg, err := s.GetMetadataStoreByID(ctx, share.MetadataStoreID)
-	if err != nil {
+	if errors.Is(err, models.ErrStoreNotFound) {
 		metaStoreCfg, err = s.GetMetadataStore(ctx, share.MetadataStoreID)
-		if err != nil {
-			logger.Warn("Share references unknown metadata store",
-				"share", share.Name,
-				"metadata_store_id", share.MetadataStoreID)
-			return nil, nil
-		}
+	}
+	if errors.Is(err, models.ErrStoreNotFound) {
+		logger.Warn("Share references unknown metadata store",
+			"share", share.Name,
+			"metadata_store_id", share.MetadataStoreID)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("look up the metadata store of share %q: %w", share.Name, err)
 	}
 
 	nfsOpts := models.DefaultNFSExportOptions()

@@ -292,6 +292,17 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if err := buildBin(setup, o.Root, vals["bin"], os.Environ(), w); err != nil {
 			return setupFailed("the fixture", fmt.Errorf("dfs and dfsctl didn't build: %w", err))
 		}
+		if spec.Kerberos {
+			build := []string{"docker", "build", "-q", "-t", fixture.KDCImage, filepath.Join("test", "smb-conformance", "kdc")}
+			_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
+			code, err := execute(setup, build, o.Root, os.Environ(), w)
+			if err == nil && code != 0 {
+				err = fmt.Errorf("docker build exited %d", code)
+			}
+			if err != nil {
+				return setupFailed("the fixture", fmt.Errorf("the KDC's image didn't build: %w", err))
+			}
+		}
 		if spec.Shares != "" {
 			spec.Shares = filepath.Join(o.Root, spec.Shares)
 		}

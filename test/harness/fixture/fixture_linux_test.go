@@ -62,6 +62,11 @@ func TestRealMount(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			f := registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: v, Options: "noac,sync,lookupcache=none"}, Squash: "none", Users: []string{"65534"}}
+			// The user dt runs as reads {mount} below, so it needs a grant
+			// unless it is root.
+			if geteuid() != 0 {
+				f.Users = append(f.Users, "self")
+			}
 			s, err := Start(ctx, f, nil, bin, out, &w)
 			if err != nil {
 				log, _ := os.ReadFile(filepath.Join(out, "dfs.log"))
@@ -73,7 +78,8 @@ func TestRealMount(t *testing.T) {
 			}
 			// A suite's users reach the share through {mount}: the
 			// directory under the mount is private to the user dt runs as.
-			nobody := exec.Command("setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "ls", mount)
+			argv := asRoot("setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "ls", mount)
+			nobody := exec.Command(argv[0], argv[1:]...)
 			if out, err := nobody.CombinedOutput(); err != nil {
 				t.Errorf("a user other than root lists {mount}: %v\n%s", err, out)
 			}
@@ -163,5 +169,55 @@ func TestRealClients(t *testing.T) {
 	}
 	if exec.Command("ip", "link", "show", bridge).Run() == nil {
 		t.Errorf("the bridge %s stays", bridge)
+	}
+}
+
+// Where docker and smbclient are, a real dfs with Kerberos gets a KDC of the
+// image test/smb-conformance/kdc builds: smbclient lists {share} at {server}
+// as {user}, with a ticket from the KDC {krb5-conf} names for {realm}, and
+// over NTLM with {user}'s principal, which the server's mapping resolves.
+// Stop removes the KDC's container.
+func TestRealKerberos(t *testing.T) {
+	bin := realBin(t)
+	out := t.TempDir()
+	if repo := os.Getenv("DITTOFS_REPO"); os.Getenv("DT_IN_CONTAINER") == "1" && !strings.HasPrefix(out, repo+"/") {
+		t.Skip("in dtc the Docker daemon sees the checkout and not /tmp, so the KDC's keytab wouldn't reach dfs: set TMPDIR to a directory in the checkout")
+	}
+	if err := needs.Check("", "docker"); err != nil {
+		t.Skipf("docker: %v", err)
+	}
+	smbclient, err := exec.LookPath("smbclient")
+	if err != nil {
+		t.Skip("no smbclient here")
+	}
+	if got, err := exec.Command("docker", "build", "-q", "-t", KDCImage, filepath.Join(smbConformance, "kdc")).CombinedOutput(); err != nil {
+		t.Fatalf("the KDC's image: %v\n%s", err, got)
+	}
+	shares, _ := filepath.Abs(filepath.Join(smbConformance, "shares.yaml"))
+	var w bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	s, err := Start(ctx, registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Shares: shares, Kerberos: true}, nil, bin, out, &w)
+	if err != nil {
+		kdc, _ := os.ReadFile(filepath.Join(out, "kdc.log"))
+		t.Fatalf("Start: %v\n%s\nkdc.log:\n%s", err, w.String(), kdc)
+	}
+	name := s.kdc.name
+	defer func() {
+		if err := s.Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+		if exec.Command("docker", "container", "inspect", name).Run() == nil {
+			t.Errorf("the KDC's container %s stays", name)
+		}
+	}()
+	vals := s.Placeholders()
+	for _, kerberos := range []string{"required", "disabled"} {
+		ls := exec.Command(smbclient, "//"+vals["server"]+"/"+vals["share"], "-p", vals["smb-port"],
+			"-U", vals["user"]+"@"+vals["realm"]+"%"+vals["password"], "--use-kerberos="+kerberos, "-c", "ls")
+		ls.Env = append(os.Environ(), "KRB5_CONFIG="+vals["krb5-conf"])
+		if got, err := ls.CombinedOutput(); err != nil {
+			t.Errorf("smbclient --use-kerberos=%s: %v\n%s", kerberos, err, got)
+		}
 	}
 }
