@@ -183,8 +183,9 @@ const (
 // gone, and no later call brings back a byte below one that outranks it
 // without removing it too. After a crash a record backing nothing no longer
 // counts in the change version either, so kept and lost look the same forever.
-// A byte served at its version with other bytes was lost too, unless a later
-// record of that version serves it. Only a byte served at its own version,
+// A byte served at its version with other bytes was lost too: whatever serves
+// it is an earlier record of that version, which the record would outrank, or
+// a later one, which hides it for good. Only a byte served at its own version,
 // with its own bytes, beside another record of that version, is left to the
 // search. None of these answers changes which states match;
 // they only shrink the search.
@@ -233,25 +234,10 @@ func classify(f *file, r *record, o *observation, i int) evidence {
 	switch {
 	case held && got.ver == r.ver && got.b == r.data[i] && !servedByAnother(f, r, off):
 		return kept
-	case held && got.ver != r.ver, !held && o.missing[off]:
-		return lost
-	case held && got.b != r.data[i] && !servedLater(f, r, off):
-		// Served at the record's version with other bytes, by an earlier
-		// record of that version: had it survived, it would outrank that.
+	case held && (got.ver != r.ver || got.b != r.data[i]), !held && o.missing[off]:
 		return lost
 	}
 	return undecided
-}
-
-// servedLater reports whether a record of r's version appended after it covers
-// off: had both survived, that record would serve the byte.
-func servedLater(f *file, r *record, off int64) bool {
-	for _, q := range f.recs {
-		if q.seq > r.seq && q.data != nil && q.ver == r.ver && covers(q.ext, off) {
-			return true
-		}
-	}
-	return false
 }
 
 // piece returns the part of r from byte i to byte j as a record of its own,

@@ -517,7 +517,7 @@ func TestAnUnsettledMarkerCountsInTheChangeVersionAfterACrash(t *testing.T) {
 // across a second crash, and it holds at that version too: no version issued
 // equals one on disk.
 func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
-	setup := func(t *testing.T, issue uint64, again bool) *Model {
+	setup := func(t *testing.T, issue uint64, again bool, later ...uint64) *Model {
 		m := New()
 		ok(t, m.WriteAt(shareB, fid(2), 0, fill('x', 1), 0, ver(1), nil))
 		ok(t, m.Sync(shareB, nil, fid(2)))
@@ -525,6 +525,9 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 		ok(t, m.Crash())
 		ok(t, m.Reopen(ver(5)))
 		ok(t, m.WriteAt(shareB, fid(2), 0, fill('y', 1), 0, ver(issue), nil))
+		for _, v := range later {
+			ok(t, m.WriteAt(shareB, fid(2), 0, fill('z', 1), 0, ver(v), nil))
+		}
 		if again {
 			ok(t, m.Sync(shareB, nil, fid(2)))
 			ok(t, m.Crash())
@@ -536,6 +539,7 @@ func TestAVersionIssuedAfterACrashBoundsItsRecordsAcrossReopens(t *testing.T) {
 	ok(t, kept.Fill(shareA, fid(1), 0, fill('f', 4), journalv2.Version{}, ver(50), nil))
 	refused(t, setup(t, 50, false).Compare(shareA, modelView{kept, shareA}))
 	refused(t, setup(t, 20, true).Compare(shareA, modelView{kept, shareA}))
+	refused(t, setup(t, 20, false, 60).Compare(shareA, modelView{kept, shareA}))
 	ok(t, setup(t, 20, true).Compare(shareA, modelView{New(), shareA}))
 }
 
