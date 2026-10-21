@@ -210,6 +210,8 @@ func TestHandleOwnership_ForeignSessionRefused(t *testing.T) {
 		{"IOCTL FSCTL_CREATE_OR_GET_OBJECT_ID", ioctlOp(FsctlCreateOrGetObjectID, nil)},
 		{"IOCTL FSCTL_MARK_HANDLE", ioctlOp(FsctlMarkHandle, nil)},
 		{"IOCTL FSCTL_QUERY_FILE_REGIONS", ioctlOp(FsctlQueryFileRegions, nil)},
+		{"IOCTL FSCTL_GET_NTFS_VOLUME_DATA", ioctlOp(FsctlGetNtfsVolumeData, nil)},
+		{"IOCTL FSCTL_READ_FILE_USN_DATA", ioctlOp(FsctlReadFileUsnData, nil)},
 	}
 
 	// A fixture per arm, since several of these commands consume the handle.
