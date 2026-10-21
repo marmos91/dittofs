@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"testing"
@@ -260,6 +261,31 @@ func TestTreeConnect_SharePolicy_Krb5pRequiresEncryption(t *testing.T) {
 
 	if result, _ := treeConnectFrom(t, h, guestSession(h, policyInsideIP), policyInsideIP); result.Status != types.StatusSuccess {
 		t.Fatalf("krb5p share, guest session: status = %s, want STATUS_SUCCESS (allow_auth_sys alone decides)", result.Status)
+	}
+}
+
+// The srvsvc share list applies the same admission as TREE_CONNECT, the share
+// policy included: a session is not shown a share the policy would refuse it.
+func TestSRVSVC_SharePolicyHidesShare(t *testing.T) {
+	h, _ := newSharePolicyHandler(t)
+	secure, open := encodeUTF16LE("secure"), encodeUTF16LE("open")
+
+	for _, tc := range []struct {
+		name       string
+		sess       *session.Session
+		wantSecure bool
+	}{
+		{"Kerberos inside the netgroup", kerberosSession(h, policyInsideIP), true},
+		{"NTLM", ntlmSession(h, policyInsideIP), false},
+		{"Kerberos outside the netgroup", kerberosSession(h, policyOutsideIP), false},
+	} {
+		resp := srvsvcEnum(openSRVSVCPipe(t, h, tc.sess.SessionID), 1)
+		if !bytes.Contains(resp, open) {
+			t.Errorf("%s session: NetrShareEnum omits /open, which has no policy", tc.name)
+		}
+		if got := bytes.Contains(resp, secure); got != tc.wantSecure {
+			t.Errorf("%s session: NetrShareEnum lists /secure = %v, want %v", tc.name, got, tc.wantSecure)
+		}
 	}
 }
 
