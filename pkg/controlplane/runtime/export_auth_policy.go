@@ -16,17 +16,31 @@ import (
 // log why.
 var ErrExportAccessDenied = errors.New("export access denied")
 
-// KerberosProtection is the protection a request's Kerberos context gives it,
-// in a form both protocols can state: NFS derives it from the RPCSEC_GSS
-// service a request negotiated, SMB from how the session authenticated and
-// whether its traffic on the tree is signed or encrypted. The values are
-// ordered, so a floor is a >= comparison.
+// Proof is what authenticated a request, weakest first.
+type Proof uint8
+
+const (
+	// ProofNone is a request nothing verified: NFS AUTH_SYS and AUTH_NULL, an
+	// SMB guest or anonymous session.
+	ProofNone Proof = iota
+	// ProofNTLM is an SMB session that proved its password with NTLM.
+	ProofNTLM
+	// ProofKerberos is a request carrying a verified Kerberos context.
+	ProofKerberos
+)
+
+// KerberosProtection is the protection an authenticated request carries, on
+// the scale a share's min_kerberos_level names, in a form both protocols can
+// state: NFS derives it from the RPCSEC_GSS service a request negotiated, SMB
+// from whether a session's traffic on the tree is signed or encrypted, whatever
+// proof authenticated it. The values are ordered, so a floor is a >=
+// comparison.
 type KerberosProtection uint8
 
 const (
-	// NoKerberos is a request that was not authenticated with Kerberos.
+	// NoKerberos is no protection at all: a request nothing verified.
 	NoKerberos KerberosProtection = iota
-	// KerberosAuthOnly is Kerberos authentication with no per-message protection (krb5).
+	// KerberosAuthOnly is authentication with no per-message protection (krb5).
 	KerberosAuthOnly
 	// KerberosIntegrity adds per-message integrity (krb5i).
 	KerberosIntegrity
@@ -35,8 +49,8 @@ const (
 )
 
 // RequiredKerberosProtection maps a share's min_kerberos_level to the
-// protection a Kerberos request must have. An empty or unrecognised level sets
-// no floor and maps to NoKerberos, which every request meets.
+// protection an authenticated request must have. An empty or unrecognised
+// level sets no floor and maps to NoKerberos, which every request meets.
 func RequiredKerberosProtection(minLevel string) KerberosProtection {
 	switch minLevel {
 	case models.KerberosLevelKrb5:
@@ -50,14 +64,6 @@ func RequiredKerberosProtection(minLevel string) KerberosProtection {
 	}
 }
 
-// ShareRequiresKerberos reports whether a share admits only Kerberos-
-// authenticated requests: require_kerberos is set, or allow_auth_sys is off.
-// Both refuse every request weaker than Kerberos — on NFS, AUTH_NONE as well as
-// AUTH_SYS — so the two are one rule here.
-func ShareRequiresKerberos(share *Share) bool {
-	return share.RequireKerberos || !share.AllowAuthSys
-}
-
 // NetgroupChecker reports whether a client address is allowed by a share's
 // netgroup allowlist. A nil clientIP is an address that is not an IP literal: it
 // must be allowed by a share with no allowlist and refused by one with any.
@@ -65,14 +71,15 @@ func ShareRequiresKerberos(share *Share) bool {
 type NetgroupChecker func(ctx context.Context, shareName string, clientIP net.IP) (bool, error)
 
 // CheckShareAccess applies the protocol-neutral part of a share's access
-// policy to one request: whether the share admits a request with this Kerberos
-// protection, and whether the client address is in the share's netgroup
-// allowlist. It returns nil when the request may proceed and an error wrapping
-// ErrExportAccessDenied otherwise. share must not be nil.
+// policy to one request: whether the share admits the request's proof, whether
+// its protection meets the share's floor, and whether the client address is in
+// the share's netgroup allowlist. It returns nil when the request may proceed
+// and an error wrapping ErrExportAccessDenied otherwise. share must not be nil.
 //
-// The protection floor (min_kerberos_level) applies to Kerberos requests only.
-// A request without Kerberos is governed by ShareRequiresKerberos alone, so a
-// share that sets a floor but still admits weaker authentication admits it.
+// require_kerberos admits only a Kerberos proof. allow_auth_sys=false refuses a
+// request nothing verified and admits NTLM, which is a real proof. On NFS the
+// two refuse the same requests, because only RPCSEC_GSS verifies anything
+// there; they differ over SMB.
 //
 // The netgroup allowlist gates the client address, and only when a lookup is
 // supplied: a nil netgroup means the caller applies no address gate here (an
@@ -82,16 +89,27 @@ type NetgroupChecker func(ctx context.Context, shareName string, clientIP net.IP
 func CheckShareAccess(
 	ctx context.Context,
 	share *Share,
+	proof Proof,
 	protection KerberosProtection,
 	clientIP net.IP,
 	netgroup NetgroupChecker,
 ) error {
-	if protection == NoKerberos {
-		if ShareRequiresKerberos(share) {
-			return fmt.Errorf("%w: share %q accepts only Kerberos authentication",
-				ErrExportAccessDenied, share.Name)
-		}
-	} else if protection < RequiredKerberosProtection(share.MinKerberosLevel) {
+	if proof == ProofNone && !share.AllowAuthSys {
+		return fmt.Errorf("%w: share %q accepts only authenticated requests",
+			ErrExportAccessDenied, share.Name)
+	}
+	if proof != ProofKerberos && share.RequireKerberos {
+		return fmt.Errorf("%w: share %q accepts only Kerberos authentication",
+			ErrExportAccessDenied, share.Name)
+	}
+	// decision: min_kerberos_level is the protection floor for any
+	// authenticated request, NTLM included, although it is named for Kerberos:
+	// a share that refuses a Kerberos session in clear must not admit the
+	// weaker proof in clear. A request nothing verified holds no key to protect
+	// a message with, so it answers to allow_auth_sys alone, as AUTH_SYS always
+	// has on NFS. Narrow the floor to Kerberos only if a client that cannot
+	// sign is shown to need such a share.
+	if proof != ProofNone && protection < RequiredKerberosProtection(share.MinKerberosLevel) {
 		return fmt.Errorf("%w: share %q requires min kerberos level %q (request has protection %d)",
 			ErrExportAccessDenied, share.Name, share.MinKerberosLevel, protection)
 	}

@@ -620,12 +620,14 @@ func (s *Session) AuthzIdentity() AuthzIdentity {
 	}
 }
 
-// IsKerberos reports whether the session's current identity was authenticated
-// with Kerberos.
-func (s *Session) IsKerberos() bool {
+// AuthProof reports, from one read of the session's current identity, whether
+// anything verified it (it is not a guest or anonymous logon) and whether that
+// was Kerberos, so a concurrent re-authentication cannot pair one identity's
+// answer with another's.
+func (s *Session) AuthProof() (verified, kerberos bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.kerberos
+	return !s.IsGuest && !s.IsNull, s.kerberos
 }
 
 // AuthGeneration reports the generation of the session's current identity.

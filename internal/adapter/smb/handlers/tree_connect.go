@@ -228,7 +228,7 @@ func (h *Handler) admitTreeConnect(ctx *SMBHandlerContext, sess *session.Session
 
 	permission = capReadOnlyShare(share, permission)
 
-	// The share's access policy: Kerberos-only, the Kerberos protection floor
+	// The share's access policy: the proofs it admits, the protection floor
 	// and the netgroup client allowlist. A floor above what the session already
 	// enforces is met by requiring encryption on this tree when the session can
 	// encrypt; otherwise the session is refused. It runs after the permission
@@ -382,15 +382,13 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 // SMB terms. treeEncrypted is whether every request on the tree must be
 // encrypted. It returns nil when the request may proceed.
 //
-// decision: allow_auth_sys=false refuses NTLM, guest and anonymous sessions,
-// exactly as require_kerberos does. On NFS the two settings already refuse the
-// same requests — everything that is not RPCSEC_GSS — and the operator's
-// intent in both is "Kerberos only"; reading allow_auth_sys=false as meaning
-// nothing over SMB would leave a weaker logon reaching a share that NFS keeps
-// Kerberos-only, which is the gap this gate closes. Narrow it to require_kerberos
-// alone only if allow_auth_sys ever gains a meaning NTLM does not fall under.
+// A guest or anonymous session carries no proof, so require_kerberos and
+// allow_auth_sys=false both refuse it. An NTLM session is a real proof: only
+// require_kerberos refuses it, and the protection floor applies to it as to a
+// Kerberos session.
 func (h *Handler) checkSharePolicy(ctx context.Context, share *runtime.Share, sess *session.Session, clientAddr string, treeEncrypted bool) error {
-	return runtime.CheckShareAccess(ctx, share, smbKerberosProtection(sess, treeEncrypted),
+	proof, protection := smbSessionProtection(sess, treeEncrypted)
+	return runtime.CheckShareAccess(ctx, share, proof, protection,
 		clientIPFromAddr(clientAddr), h.Registry.CheckNetgroupAccess)
 }
 
@@ -432,11 +430,13 @@ func (h *Handler) TreeSharePolicyStatus(ctx context.Context, tree *TreeConnectio
 	return 0
 }
 
-// smbKerberosProtection states what Kerberos protection a session's requests on
-// a tree carry, in the terms the share policy compares: none unless the
-// session's identity was authenticated with Kerberos; privacy when its traffic
-// on the tree is encrypted; integrity when every request must be signed;
-// authentication only otherwise.
+// smbSessionProtection states a session's proof and the protection its
+// requests on a tree carry, in the terms the share policy compares. The proof
+// is none for a guest or anonymous session, Kerberos when its identity was
+// authenticated with a ticket, and NTLM otherwise. The protection is none
+// without a proof; privacy when the session's traffic on the tree is
+// encrypted; integrity when every request must be signed; authentication only
+// otherwise.
 //
 // decision: SMB has no per-tree signing, so krb5i is met only by signing the
 // session already enforces — signing required, or the implicit requirement of
@@ -444,33 +444,41 @@ func (h *Handler) TreeSharePolicyStatus(ctx context.Context, tree *TreeConnectio
 // session that merely may sign gets authentication only, because an unsigned
 // request from it would be accepted. treeEncryptionMeetsKerberosFloor raises
 // such a session to encryption where it can; one that cannot encrypt is refused.
-func smbKerberosProtection(sess *session.Session, treeEncrypted bool) runtime.KerberosProtection {
-	if sess == nil || !sess.IsKerberos() {
-		return runtime.NoKerberos
+func smbSessionProtection(sess *session.Session, treeEncrypted bool) (runtime.Proof, runtime.KerberosProtection) {
+	if sess == nil {
+		return runtime.ProofNone, runtime.NoKerberos
+	}
+	verified, kerberos := sess.AuthProof()
+	if !verified {
+		return runtime.ProofNone, runtime.NoKerberos
+	}
+	proof := runtime.ProofNTLM
+	if kerberos {
+		proof = runtime.ProofKerberos
 	}
 	cs := sess.GetCryptoState()
 	switch {
 	case sess.ShouldEncrypt() || (treeEncrypted && sessionCanEncrypt(sess)):
-		return runtime.KerberosPrivacy
+		return proof, runtime.KerberosPrivacy
 	case cs != nil && cs.ShouldVerify() && (cs.SigningRequired || sess.Dialect == types.Dialect0311):
-		return runtime.KerberosIntegrity
+		return proof, runtime.KerberosIntegrity
 	default:
-		return runtime.KerberosAuthOnly
+		return proof, runtime.KerberosAuthOnly
 	}
 }
 
 // treeEncryptionMeetsKerberosFloor reports whether a tree must require
-// encryption to bring a Kerberos session up to the share's min_kerberos_level:
-// the floor asks for integrity or privacy, the session does not already
-// provide it, and the session can encrypt. Encryption is the one protection
-// SMB can enforce per tree.
+// encryption to bring an authenticated session, NTLM or Kerberos, up to the
+// share's min_kerberos_level: the floor asks for integrity or privacy, the
+// session does not already provide it, and the session can encrypt.
+// Encryption is the one protection SMB can enforce per tree.
 func treeEncryptionMeetsKerberosFloor(share *runtime.Share, sess *session.Session) bool {
 	required := runtime.RequiredKerberosProtection(share.MinKerberosLevel)
 	if required < runtime.KerberosIntegrity || !sessionCanEncrypt(sess) {
 		return false
 	}
-	have := smbKerberosProtection(sess, false)
-	return have != runtime.NoKerberos && have < required
+	proof, have := smbSessionProtection(sess, false)
+	return proof != runtime.ProofNone && have < required
 }
 
 // sessionCanEncrypt reports whether a session negotiated SMB 3.x encryption, so

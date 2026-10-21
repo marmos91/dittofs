@@ -29,7 +29,7 @@ type NetgroupChecker = runtime.NetgroupChecker
 //
 // The policy itself is runtime.CheckShareAccess, which SMB applies too; this
 // function only states the NFS request in its terms. Every flavor other than
-// RPCSEC_GSS carries no Kerberos protection: a share that refuses AUTH_SYS
+// RPCSEC_GSS is a request nothing verified: a share that refuses AUTH_SYS
 // refuses everything weaker than it too, and naming AUTH_UNIX alone would let
 // an AUTH_NONE caller — no credential at all — past the gate.
 //
@@ -47,14 +47,14 @@ func CheckExportAccess(
 	clientIP net.IP,
 	netgroup NetgroupChecker,
 ) error {
-	protection := runtime.NoKerberos
+	proof, protection := runtime.ProofNone, runtime.NoKerberos
 	if authFlavor == rpc.AuthRPCSECGSS {
 		si := gss.SessionInfoFromContext(ctx)
 		if si == nil {
 			return fmt.Errorf("%w: RPCSEC_GSS credential for share %q was not verified",
 				ErrExportAccessDenied, share.Name)
 		}
-		protection = protectionForGSSService(si.Service)
+		proof, protection = runtime.ProofKerberos, protectionForGSSService(si.Service)
 	}
-	return runtime.CheckShareAccess(ctx, share, protection, clientIP, netgroup)
+	return runtime.CheckShareAccess(ctx, share, proof, protection, clientIP, netgroup)
 }

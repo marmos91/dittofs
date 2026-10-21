@@ -123,17 +123,36 @@ func TestTreeConnect_SharePolicy_NTLMRefusedOnKerberosOnlyShare(t *testing.T) {
 	}
 }
 
-// allow_auth_sys=false alone refuses NTLM too.
-func TestTreeConnect_SharePolicy_NTLMRefusedWhenAuthSysDisallowed(t *testing.T) {
+// guestSession and anonymousSession go through the constructor the guest and
+// anonymous SESSION_SETUP paths use.
+func guestSession(h *Handler, ip string) *session.Session {
+	return h.CreateSessionWithID(h.GenerateSessionID(), ip+":50000", true, "guest", "")
+}
+
+func anonymousSession(h *Handler, ip string) *session.Session {
+	return h.CreateSessionWithID(h.GenerateSessionID(), ip+":50000", false, "", "")
+}
+
+// allow_auth_sys=false refuses the sessions nothing verified, guest and
+// anonymous, and admits NTLM, which is a real proof.
+func TestTreeConnect_SharePolicy_AuthSysDisallowedRefusesGuestAndAnonymousOnly(t *testing.T) {
 	h, rt := newSharePolicyHandler(t)
 	if err := rt.SetExportAuthPolicyForTesting(policyShare, false, false); err != nil {
 		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
 	}
-	sess := ntlmSession(h, policyInsideIP)
 
-	result, _ := treeConnectFrom(t, h, sess, policyInsideIP)
-	if result.Status != types.StatusAccessDenied {
-		t.Fatalf("NTLM TREE_CONNECT with allow_auth_sys=false: status = %s, want STATUS_ACCESS_DENIED", result.Status)
+	for _, tc := range []struct {
+		name string
+		sess *session.Session
+		want types.Status
+	}{
+		{"guest", guestSession(h, policyInsideIP), types.StatusAccessDenied},
+		{"anonymous", anonymousSession(h, policyInsideIP), types.StatusAccessDenied},
+		{"NTLM", ntlmSession(h, policyInsideIP), types.StatusSuccess},
+	} {
+		if result, _ := treeConnectFrom(t, h, tc.sess, policyInsideIP); result.Status != tc.want {
+			t.Errorf("%s TREE_CONNECT with allow_auth_sys=false: status = %s, want %s", tc.name, result.Status, tc.want)
+		}
 	}
 }
 
@@ -195,34 +214,52 @@ func TestTreeSharePolicyStatus_RechecksEstablishedTree(t *testing.T) {
 	}
 }
 
-// krb5p on SMB means the tree requires encryption: a Kerberos session that can
-// encrypt gets an encrypted tree, one that cannot is refused.
+// krb5p on SMB means the tree requires encryption, for an NTLM session as for
+// a Kerberos one, since the floor applies to any authenticated session: one
+// that can encrypt gets an encrypted tree, one that cannot is refused. A guest
+// session holds no key to encrypt with, so it answers to allow_auth_sys alone.
 func TestTreeConnect_SharePolicy_Krb5pRequiresEncryption(t *testing.T) {
 	h, rt := newSharePolicyHandler(t)
+	// Kerberos is not required, so the floor alone decides for NTLM and guest.
+	if err := rt.SetExportAuthPolicyForTesting(policyShare, true, false); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
 	if err := rt.SetMinKerberosLevelForTesting(policyShare, models.KerberosLevelKrb5p); err != nil {
 		t.Fatalf("SetMinKerberosLevelForTesting: %v", err)
 	}
 
-	plain := kerberosSession(h, policyInsideIP)
-	if result, _ := treeConnectFrom(t, h, plain, policyInsideIP); result.Status != types.StatusAccessDenied {
-		t.Fatalf("krb5p share, session without encryption: status = %s, want STATUS_ACCESS_DENIED", result.Status)
+	for _, proof := range []struct {
+		name       string
+		newSession func(*Handler, string) *session.Session
+	}{
+		{"Kerberos", kerberosSession},
+		{"NTLM", ntlmSession},
+	} {
+		plain := proof.newSession(h, policyInsideIP)
+		if result, _ := treeConnectFrom(t, h, plain, policyInsideIP); result.Status != types.StatusAccessDenied {
+			t.Fatalf("krb5p share, %s session without encryption: status = %s, want STATUS_ACCESS_DENIED", proof.name, result.Status)
+		}
+
+		enc := proof.newSession(h, policyInsideIP)
+		cs := session.DeriveAllKeys(make([]byte, 16), types.Dialect0311, [64]byte{}, types.CipherAES128GCM, 0, false)
+		if err := cs.CreateEncryptors(types.CipherAES128GCM); err != nil {
+			t.Fatalf("CreateEncryptors: %v", err)
+		}
+		enc.SetCryptoState(cs)
+		enc.SetBindIdentity(types.Dialect0311, 0, types.CipherAES128GCM, [16]byte{})
+
+		result, ctx := treeConnectFrom(t, h, enc, policyInsideIP)
+		if result.Status != types.StatusSuccess {
+			t.Fatalf("krb5p share, %s session that can encrypt: status = %s, want STATUS_SUCCESS", proof.name, result.Status)
+		}
+		tree, _ := h.GetTree(ctx.TreeID)
+		if tree == nil || !tree.EncryptData {
+			t.Fatalf("krb5p tree for a %s session was published without requiring encryption", proof.name)
+		}
 	}
 
-	enc := kerberosSession(h, policyInsideIP)
-	cs := session.DeriveAllKeys(make([]byte, 16), types.Dialect0311, [64]byte{}, types.CipherAES128GCM, 0, false)
-	if err := cs.CreateEncryptors(types.CipherAES128GCM); err != nil {
-		t.Fatalf("CreateEncryptors: %v", err)
-	}
-	enc.SetCryptoState(cs)
-	enc.SetBindIdentity(types.Dialect0311, 0, types.CipherAES128GCM, [16]byte{})
-
-	result, ctx := treeConnectFrom(t, h, enc, policyInsideIP)
-	if result.Status != types.StatusSuccess {
-		t.Fatalf("krb5p share, session that can encrypt: status = %s, want STATUS_SUCCESS", result.Status)
-	}
-	tree, _ := h.GetTree(ctx.TreeID)
-	if tree == nil || !tree.EncryptData {
-		t.Fatal("krb5p tree was published without requiring encryption")
+	if result, _ := treeConnectFrom(t, h, guestSession(h, policyInsideIP), policyInsideIP); result.Status != types.StatusSuccess {
+		t.Fatalf("krb5p share, guest session: status = %s, want STATUS_SUCCESS (allow_auth_sys alone decides)", result.Status)
 	}
 }
 

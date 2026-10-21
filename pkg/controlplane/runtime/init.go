@@ -225,12 +225,12 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		// skips exports nothing either.
 		//
 		// decision: the refusal is keyed on the NFS adapter alone, although SMB
-		// applies the same Kerberos-only rule at TREE_CONNECT. An SMB-only server
-		// boots with such a share and refuses every session to it, which fails
-		// closed; refusing the boot there too would stop servers that booted
-		// before SMB honoured the policy. Extend the condition to SMB if an
-		// unreachable SMB share turns out to be a misconfiguration operators
-		// miss.
+		// applies require_kerberos at TREE_CONNECT too. An SMB-only server boots
+		// with such a share: require_kerberos refuses every session to it, which
+		// fails closed, and allow_auth_sys=false still admits NTLM over SMB.
+		// Refusing the boot there too would stop servers that booted before SMB
+		// honoured the policy. Extend the condition to SMB if an unreachable SMB
+		// share turns out to be a misconfiguration operators miss.
 		if shareConfig.Enabled && nfsEnabled &&
 			ExportAcceptsNoAuthFlavor(shareConfig.RequireKerberos, shareConfig.AllowAuthSys, rt.KerberosEnabled()) {
 			cause, remedy := ExportNoAuthFlavorCause(share.Name, shareConfig.RequireKerberos, shareConfig.AllowAuthSys)
