@@ -85,6 +85,14 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	// principal MUST be non-privileged so per-file POSIX bits and NFSv4 ACLs
 	// are still enforced. See nobodyUID for the UID=0 root-bypass rationale
 	// (audit #1132).
+	//
+	// decision: the share's squash mode is not applied here, so a guest stays
+	// at 65534 even where NFS would map an AUTH_NULL caller to the share's
+	// anonymous UID/GID. 65534 is unprivileged under every mode, while the
+	// mapping can yield root for a guest: as UID 65534 it becomes root on an
+	// all_to_admin share, and as an AUTH_NULL-style caller it takes an
+	// anonymous UID that may be configured as 0. Revisit if a share's
+	// anonymous UID must also own what SMB guests create.
 	setUnprivilegedIdentity(authCtx)
 
 	// Set the share-level read-only ceiling for guest/anonymous sessions.
@@ -169,6 +177,7 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 			identity = buildIdentity(ctx, user)
 			ctx.maybeCacheIdentity(user, identity)
 		}
+		identity = squashIdentity(ctx.identityMapper, ctx.ShareName, identity)
 	}
 
 	authCtx := &metadata.AuthContext{
@@ -230,6 +239,48 @@ func buildIdentity(ctx *SMBHandlerContext, user *models.User) *metadata.Identity
 		slices.Concat(user.GroupSIDs, ctx.PACGroupSIDs),
 	)
 	return identity
+}
+
+// identityMapper applies a share's squash mode to an identity. The runtime
+// implements it with the function the NFS auth-context builders call, so the
+// two protocols squash the same way.
+type identityMapper interface {
+	ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error)
+}
+
+// squashIdentity applies shareName's squash mode to identity. It runs on every
+// op rather than once per session: the session cache holds the unsquashed
+// identity keyed by user alone, while one session can hold trees on shares with
+// different modes, and a share's mode can change while a tree is open.
+//
+// A share that cannot be resolved yields the unprivileged nobody identity, so a
+// lookup failure never leaves a UID-0 caller unsquashed.
+//
+// decision: a nil mapper leaves the identity as built. Only a context that was
+// never primed has none, and in production priming is also the only thing that
+// installs a User, so an unprimed context reaches the nobody arm of
+// BuildAuthContext instead. Withdraw the exemption if a User can ever reach
+// BuildAuthContextFromUser without primeAuthContext.
+//
+// decision: a share whose squash leaves uid 0 as uid 0 (none, root_to_admin,
+// and all_to_admin, which maps every caller to it) leaves a uid-0 session
+// privileged, because the metadata layer derives privilege from uid 0; tree
+// connect grants it admin too (rootHasAdminAccess). That is the share admin's
+// choice. Over SMB only an open with backup intent should be privileged, which
+// needs a backup privilege field on the identity for the metadata layer to read
+// instead of the uid. Withdraw this when the identity has one.
+func squashIdentity(m identityMapper, shareName string, identity *metadata.Identity) *metadata.Identity {
+	if m == nil {
+		return identity
+	}
+	mapped, err := m.ApplyIdentityMapping(shareName, identity)
+	if err != nil {
+		logger.Debug("Squash mapping failed, using the unprivileged identity",
+			"share", shareName, "user", identity.Username, "error", err)
+		uid, gid := nobodyUID, nobodyGID
+		return &metadata.Identity{UID: &uid, GID: &gid, GIDs: []uint32{gid}, Username: identity.Username}
+	}
+	return mapped
 }
 
 // cachedIdentity returns the session's memoized identity for user, or nil.
@@ -345,6 +396,7 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 		// Hand the owning session to BuildAuthContextFromUser so it can reuse the
 		// session's memoized identity instead of re-deriving it per op.
 		ctx.session = sess
+		ctx.identityMapper = h.Registry
 		// One locked read for every identity field the request will authorize
 		// with. SESSION_SETUP re-authentication and the authorization re-check
 		// both write these under the session mutex, so reading the fields

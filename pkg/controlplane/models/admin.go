@@ -25,8 +25,9 @@ const (
 // DefaultAdminUser creates a new admin user with the given password hashes.
 // The user will have MustChangePassword set to true, requiring a password
 // change on first login.
-// The admin user is created with UID 0 (root) to bypass Unix permission
-// checks in the metadata service. GID comes from group membership (admins group).
+// The admin user is created with UID 0 (root), which bypasses Unix permission
+// checks in the metadata service on a share whose squash leaves root
+// unsquashed. GID comes from group membership (admins group).
 func DefaultAdminUser(passwordHash, ntHash string) *User {
 	uid := uint32(0) // Root UID for filesystem permission bypass
 

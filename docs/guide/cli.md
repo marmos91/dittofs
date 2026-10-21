@@ -3910,7 +3910,7 @@ Flags:
       --relaxed-metadata-commit         Let an operation that promised stable metadata return before the metadata fsync
       --retention string                Retention policy (pin|ttl|lru)
       --retention-ttl string            Retention TTL duration (e.g., 72h, 24h)
-      --squash string                   NFS export squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a root-mounted client is not squashed to guest.
+      --squash string                   Squash mode, for NFS and SMB (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a UID 0 caller (a root-mounted NFS client, the built-in SMB admin) is not squashed to guest.
       --streams-disabled                Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').
       --trash-exclude strings           Glob patterns whose deletions bypass the recycle bin (repeatable).
       --trash-max-size int              Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).
@@ -4275,7 +4275,9 @@ View and update the NFS adapter configuration for a share.
 This controls the share's export settings: the squash mode, the
 authentication flags and the netgroup that restricts which clients may reach
 the share. The authentication flags and the netgroup are the share's access
-policy, which applies over NFS and SMB alike. Changes take effect immediately.
+policy, which applies over NFS and SMB alike; the squash mode maps the
+identities of SMB sessions too, guest sessions excepted. Changes take effect
+immediately.
 
 **Examples:**
 
@@ -4315,7 +4317,8 @@ intact. Changes take effect immediately, without an adapter restart.
 
 The netgroup allowlist and the authentication flags are the share's access
 policy: they are enforced on NFSv3 mounts, on NFSv4 operations and on SMB
-requests to the same share.
+requests to the same share. The squash mode is not NFS-only either: it maps the
+identities of SMB sessions on the share as well, guest sessions excepted.
 
 ```
 dfsctl share nfs-config set <name> [flags]

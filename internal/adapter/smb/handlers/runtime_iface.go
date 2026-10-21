@@ -48,6 +48,9 @@ type smbRuntime interface {
 	// Netgroup client allowlist, applied through runtime.CheckShareAccess.
 	CheckNetgroupAccess(ctx context.Context, shareName string, clientIP net.IP) (bool, error)
 
+	// ApplyIdentityMapping applies the share's squash mode to an identity.
+	ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error)
+
 	// Identity / auth backends.
 	GetUserStore() models.UserStore
 	GetIdentityMappingStore() store.IdentityMappingStore
