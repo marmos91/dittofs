@@ -63,3 +63,15 @@ func TestFillBelowARemovalsVersionIsExcluded(t *testing.T) {
 	ok(t, m.Fill(shareA, fid(1), 0, fill('F', 10), ver(2), ver(1), nil))
 	equalSpans(t, heldSpans(t, m, fid(1)), nil)
 }
+
+// A fill carries the version of the ref it was fetched from, never one below a
+// release or a settled removal over its bytes: repack may have dropped such a
+// record, which the model cannot see, so it does not decide such a fill.
+func TestFillBelowADroppableRecordIsOutsideTheModel(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 10), 0, ver(1), nil))
+	ok(t, m.Deallocate(shareA, fid(1), ext(0, 10), ver(2), nil))
+	ok(t, m.Settle(shareA, fid(1), ver(2)))
+	refused(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(1), nil))
+	ok(t, m.Fill(shareA, fid(1), 0, fill('F', 4), ver(2), ver(2), nil))
+}

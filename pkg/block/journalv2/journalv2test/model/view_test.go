@@ -65,7 +65,12 @@ func (v modelView) Extents(id journalv2.FileID) ([]journalv2.Extent, error) {
 
 func (v modelView) Since(id journalv2.FileID, from journalv2.Version) iter.Seq2[journalv2.Change, error] {
 	return func(yield func(journalv2.Change, error) bool) {
-		for _, c := range v.m.Since(v.tag, id, from) {
+		cs, err := v.m.Since(v.tag, id, from)
+		if err != nil {
+			yield(journalv2.Change{}, err)
+			return
+		}
+		for _, c := range cs {
 			if !yield(c, nil) {
 				return
 			}

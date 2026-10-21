@@ -77,3 +77,12 @@ func equalSpans(t *testing.T, got, want []span) {
 		}
 	}
 }
+
+func since(t *testing.T, m *Model, tag journalv2.ShareTag, id journalv2.FileID, from journalv2.Version) []journalv2.Change {
+	t.Helper()
+	cs, err := m.Since(tag, id, from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cs
+}

@@ -21,13 +21,10 @@ import (
 // record went may claim the file afresh or be refused. Require the refusal for
 // longer if the journal ever reports when a file's last record leaves.
 func (m *Model) enter(op string, tag shareTag, id fileID, err error) (f *file, proceed bool, mis error) {
-	if m.crashed {
-		return nil, false, m.mismatch(op, id, "called between Crash and Reopen")
+	if mis := m.known(op, id); mis != nil {
+		return nil, false, mis
 	}
 	f = m.files[id]
-	if f != nil && f.unresolved {
-		return nil, false, m.mismatch(op, id, "called on a file a crash left unresolved; Compare it first")
-	}
 	other := f != nil && f.tag != tag
 	if errors.Is(err, journalv2.ErrOtherShare) {
 		if !other {
@@ -61,8 +58,15 @@ func (m *Model) issue(op string, id fileID, v version) error {
 	}
 	m.issued = v
 	m.maxSeen = maxVersion(m.maxSeen, v)
-	if m.sinceReopen == (version{}) {
-		m.sinceReopen = v
+	// The first version issued after a crash bounds every record that crash
+	// left uncertain: it exceeds every version on disk, so a record at or
+	// above it did not survive. The bound outlives later crashes.
+	for _, f := range m.files {
+		for _, r := range f.recs {
+			if r.uncertain && r.bound == (version{}) {
+				r.bound = v
+			}
+		}
 	}
 	return nil
 }
@@ -100,10 +104,20 @@ func (m *Model) WriteAt(tag shareTag, id fileID, off int64, p []byte, mtime int6
 	return nil
 }
 
-// Sync applies a Sync of ids through share tag that returned nil: every
-// operation on those files that returned before it is durable. A Sync that
-// failed is not applied.
-func (m *Model) Sync(tag shareTag, ids ...fileID) {
+// Sync applies a Sync of ids through share tag, to which the journal returned
+// err. Returned nil, every operation on those files that returned before it is
+// durable. A failed sync window is outside the model, so any error is one it
+// has no rule for.
+func (m *Model) Sync(tag shareTag, err error, ids ...fileID) error {
+	const op = "sync"
+	for _, id := range ids {
+		if mis := m.known(op, id); mis != nil {
+			return mis
+		}
+	}
+	if err != nil {
+		return unexpected(m, op, fileID{}, err)
+	}
 	for _, id := range ids {
 		f := m.files[id]
 		if f == nil || f.tag != tag {
@@ -113,6 +127,20 @@ func (m *Model) Sync(tag shareTag, ids ...fileID) {
 			r.durable = true
 		}
 	}
+	return nil
+}
+
+// known returns why the model cannot take a call on file id now: it is
+// between a crash and its reopen, or a crash left the file's state unknown
+// until Compare finds it.
+func (m *Model) known(op string, id fileID) error {
+	if m.crashed {
+		return m.mismatch(op, id, "called between Crash and Reopen")
+	}
+	if f := m.files[id]; f != nil && f.unresolved {
+		return m.mismatch(op, id, "called on a file a crash left unresolved; Compare it first")
+	}
+	return nil
 }
 
 // Fill applies a fill of p at off at version v through share tag, made with
@@ -148,6 +176,10 @@ func (m *Model) Fill(tag shareTag, id fileID, off int64, p []byte, asOf, v versi
 		return unexpected(m, op, id, err)
 	case mustRefuse:
 		return m.mismatch(op, id, "accepted a fill as of %v of a file changed at %v", asOf, st.change)
+	}
+
+	if r := droppableAbove(f, extent{Off: off, Len: int64(len(p))}, v); r != nil {
+		return m.mismatch(op, id, "fill at %v below a %s at %v over its bytes: repack may have dropped that record, which the model cannot see; fill at or above it", v, r.kind, r.ver)
 	}
 
 	f = m.claim(f, tag, id)
@@ -216,17 +248,23 @@ func (m *Model) remove(op string, kind recordKind, tag shareTag, id fileID, e ex
 
 // Settle applies the caller's statement that metadata has recorded every
 // removal of file id at or below v: their markers are dropped. Settling is not
-// persisted, so a crash brings the markers back.
-func (m *Model) Settle(tag shareTag, id fileID, v version) {
+// persisted, so a crash brings the markers back. The journal's Settle returns
+// nothing; an error here is the model's, for a file whose state it does not
+// know yet.
+func (m *Model) Settle(tag shareTag, id fileID, v version) error {
+	if mis := m.known("settle", id); mis != nil {
+		return mis
+	}
 	f := m.files[id]
 	if f == nil || f.tag != tag {
-		return
+		return nil
 	}
 	for _, r := range f.recs {
 		if r.kind.removal() && r.ver.Compare(v) <= 0 {
 			r.settled = true
 		}
 	}
+	return nil
 }
 
 // Since returns what the journal's Since(id, from) must yield through share
@@ -234,10 +272,15 @@ func (m *Model) Settle(tag shareTag, id fileID, v version) {
 // is strictly above from, in version order. Held extents are split where the
 // record they are read from changes; Compare checks Since byte by byte, so a
 // journal may split them differently.
-func (m *Model) Since(tag shareTag, id fileID, from version) []journalv2.Change {
+//
+// The error is the model's, for a file whose state it does not know yet.
+func (m *Model) Since(tag shareTag, id fileID, from version) ([]journalv2.Change, error) {
+	if mis := m.known("since", id); mis != nil {
+		return nil, mis
+	}
 	f := m.files[id]
 	if f == nil || f.tag != tag {
-		return nil
+		return nil, nil
 	}
 	st := derive(f, all)
 	var out []journalv2.Change
@@ -269,7 +312,7 @@ func (m *Model) Since(tag shareTag, id fileID, from version) []journalv2.Change 
 		}
 		return cmp.Compare(a.Extent.Off, b.Extent.Off)
 	})
-	return out
+	return out, nil
 }
 
 func changeKind(k recordKind) journalv2.ChangeKind {
@@ -282,4 +325,31 @@ func changeKind(k recordKind) journalv2.ChangeKind {
 		return journalv2.ChangeDelete
 	}
 	return journalv2.ChangeWrite
+}
+
+// droppableAbove returns a record over e with a version above v that repack
+// may drop without the model seeing it, nil when there is none: a release, or
+// a removal whose marker is settled.
+//
+// decision: a fill never carries a version below a release or a settled
+// removal over its bytes. Such a record outranks every record of the file it
+// overlaps, and repack drops it once nothing it outranks is left on disk,
+// which the model cannot see; a fill below it is then held or not depending on
+// whether it was dropped. A fill carries its ref's version, and the content a
+// release made absent was offloaded at the released version, so a refill
+// carries that version or a later one. Model the drop if a caller ever fills
+// from a ref older than what it released.
+func droppableAbove(f *file, e extent, v version) *record {
+	if f == nil {
+		return nil
+	}
+	for _, r := range f.recs {
+		if _, ok := intersect(r.ext, e); !ok || r.ver.Compare(v) <= 0 {
+			continue
+		}
+		if r.kind == kindRelease || r.kind.removal() && (r.settled || r.markerGone) {
+			return r
+		}
+	}
+	return nil
 }

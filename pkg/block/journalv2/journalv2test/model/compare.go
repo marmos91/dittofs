@@ -199,16 +199,13 @@ func (m *Model) compareFile(f *file, v View) error {
 }
 
 // issuedAbove returns how candidate c keeps a record the journal cannot have
-// kept, or "" when it keeps none: every version issued since the reopen
-// exceeds every version on disk, so a record at or above the lowest of them
-// did not survive the crash.
+// kept, or "" when it keeps none: every version issued after a crash exceeds
+// every version on disk, so a record at or above the first of them did not
+// survive that crash.
 func (m *Model) issuedAbove(f *file, c candidate) string {
-	if m.sinceReopen == (version{}) {
-		return ""
-	}
 	for _, r := range f.recs {
-		if r.uncertain && c.took(r) && r.ver.Compare(m.sinceReopen) >= 0 {
-			return fmt.Sprintf("keeps a %s at %v, but the journal issued %v since the reopen", r.kind, r.ver, m.sinceReopen)
+		if r.uncertain && c.took(r) && r.bound != (version{}) && r.ver.Compare(r.bound) >= 0 {
+			return fmt.Sprintf("keeps a %s at %v, but the journal issued %v after the crash", r.kind, r.ver, r.bound)
 		}
 	}
 	return ""

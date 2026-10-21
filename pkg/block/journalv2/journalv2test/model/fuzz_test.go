@@ -8,12 +8,17 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
 )
 
-// driver plays a journal that always answers as the RFC allows, from bytes a
-// fuzzer chooses, and drives the model with its answers.
+// driver runs the model under test in lockstep with a second model that plays
+// the journal, from bytes a fuzzer chooses. The journal answers every call as
+// the RFC allows; both models are given the answer, and after every step the
+// model must show exactly what the journal holds. After a crash the journal
+// keeps a random state of those the crash allows, writes split at random
+// points, which the model must find.
 type driver struct {
-	t    *testing.T
-	m    *Model
-	data []byte
+	t       *testing.T
+	m       *Model // under test
+	journal *Model // plays the journal
+	data    []byte
 
 	// given is every byte any write or fill handed the model, per file,
 	// version and offset: the only bytes the model may ever report.
@@ -54,13 +59,13 @@ func (d *driver) offset(n int64) int64 {
 }
 
 func (d *driver) issue() journalv2.Version {
-	return journalv2.Version{Counter: maxVersion(d.m.maxSeen, d.m.floor).Counter + 1}
+	return journalv2.Version{Counter: maxVersion(d.journal.maxSeen, d.journal.floor).Counter + 1}
 }
 
-// other is the answer of a call through tag on id when another share has the
-// file: refused while it holds anything, otherwise accepted.
+// other is the journal's answer to a call through tag on id when another
+// share has the file: refused while it holds anything, otherwise accepted.
 func (d *driver) other(id journalv2.FileID, tag journalv2.ShareTag) error {
-	if f := d.m.files[id]; f != nil && f.tag != tag && f.holdsAnything() {
+	if f := d.journal.files[id]; f != nil && f.tag != tag && f.holdsAnything() {
 		return journalv2.ErrOtherShare
 	}
 	return nil
@@ -83,9 +88,14 @@ func (d *driver) give(id journalv2.FileID, v journalv2.Version, off int64, p []b
 	}
 }
 
-func (d *driver) must(err error) {
+// both applies a call to the journal, which must take its own answer, and
+// then to the model, which must accept it.
+func (d *driver) both(call func(m *Model) error) {
 	d.t.Helper()
-	if err != nil {
+	if err := call(d.journal); err != nil {
+		d.t.Fatalf("the journal refused its own answer: %v", err)
+	}
+	if err := call(d.m); err != nil {
 		d.t.Fatalf("the model refused an answer the RFC allows: %v", err)
 	}
 }
@@ -98,44 +108,52 @@ func (d *driver) step() {
 		off := d.offset(n)
 		p := fill(d.next(), int(n))
 		p[0] ^= d.next()
+		mtime := int64(d.next())
 		if err := d.other(id, tag); err != nil {
-			d.must(d.m.WriteAt(tag, id, off, p, 0, journalv2.Version{}, err))
+			d.both(func(m *Model) error { return m.WriteAt(tag, id, off, p, mtime, journalv2.Version{}, err) })
 			return
 		}
 		v := d.issue()
 		d.give(id, v, off, p)
 		d.t.Logf("write %x share %d [%d,+%d) %v", id.Bytes()[15], tag, off, n, v)
-		d.must(d.m.WriteAt(tag, id, off, p, int64(d.next()), v, nil))
+		d.both(func(m *Model) error { return m.WriteAt(tag, id, off, p, mtime, v, nil) })
 
 	case 1: // sync
 		d.t.Logf("sync %x", id.Bytes()[15])
-		d.m.Sync(tag, id)
+		d.both(func(m *Model) error { return m.Sync(tag, nil, id) })
 
-	case 2: // fill
+	case 2: // fill, never below a release or removal over its bytes
 		n := int64(d.next()%16) + 1
 		off := d.offset(n)
 		p := fill(d.next(), int(n))
-		v := journalv2.Version{Counter: uint64(d.next()) % (d.m.maxSeen.Counter + 1)}
-		asOf := maxVersion(d.m.maxSeen, d.m.floor)
+		v := journalv2.Version{Counter: uint64(d.next()) % (d.journal.maxSeen.Counter + 1)}
+		if f := d.journal.files[id]; f != nil {
+			for _, r := range f.recs {
+				if _, ok := intersect(r.ext, extent{Off: off, Len: n}); ok && (r.kind == kindRelease || r.kind.removal()) {
+					v = maxVersion(v, r.ver)
+				}
+			}
+		}
+		asOf := maxVersion(d.journal.maxSeen, d.journal.floor)
 		if d.next()&1 == 0 {
 			asOf = journalv2.Version{}
 		}
 		err := d.other(id, tag)
-		if err == nil && d.m.current(id).change.Compare(asOf) > 0 {
+		if err == nil && d.journal.current(id).change.Compare(asOf) > 0 {
 			err = journalv2.ErrStaleFill
 		}
 		if err == nil {
 			d.give(id, v, off, p)
 		}
 		d.t.Logf("fill %x [%d,+%d) asOf %v v %v -> %v", id.Bytes()[15], off, n, asOf, v, err)
-		d.must(d.m.Fill(tag, id, off, p, asOf, v, err))
+		d.both(func(m *Model) error { return m.Fill(tag, id, off, p, asOf, v, err) })
 
 	case 3: // offload: offer every dirty run, report some of it
-		if f := d.m.files[id]; f == nil || f.tag != tag {
+		if f := d.journal.files[id]; f == nil || f.tag != tag {
 			return
 		}
-		through := d.m.maxSeen
-		st := d.m.current(id)
+		through := d.journal.maxSeen
+		st := d.journal.current(id)
 		o := journalv2.Offer{ID: id}
 		bytes := offered{}
 		for _, r := range st.runs() {
@@ -156,12 +174,12 @@ func (d *driver) step() {
 			}
 		}
 		o.Offered = bytes
-		d.must(d.m.Offer(tag, id, through, 0, 0, o))
+		d.both(func(m *Model) error { return m.Offer(tag, id, through, 0, 0, o) })
 		if d.next()&1 == 0 && d.other(id, tag) == nil {
 			v := d.issue()
 			p := fill(d.next(), 4)
 			d.give(id, v, 0, p)
-			d.must(d.m.WriteAt(tag, id, 0, p, 0, v, nil))
+			d.both(func(m *Model) error { return m.WriteAt(tag, id, 0, p, 0, v, nil) })
 		}
 		var reported []journalv2.Extent
 		for _, p := range o.Dirty {
@@ -170,15 +188,15 @@ func (d *driver) step() {
 			}
 		}
 		d.t.Logf("offload %x dirty %+v reported %+v", id.Bytes()[15], o.Dirty, reported)
-		d.must(d.m.Report(tag, id, reported, nil))
-		d.m.EndOffer(tag, id)
+		d.both(func(m *Model) error { return m.Report(tag, id, reported, nil) })
+		d.both(func(m *Model) error { m.EndOffer(tag, id); return nil })
 
 	case 4: // release
 		n := int64(d.next()%32) + 1
 		e := journalv2.Extent{Off: d.offset(n), Len: n}
 		err := d.other(id, tag)
 		if err == nil {
-			st := d.m.current(id)
+			st := d.journal.current(id)
 			for off := range st.held {
 				if covers(e, off) && !st.bit[off] {
 					err = journalv2.ErrNotOffloaded
@@ -187,16 +205,17 @@ func (d *driver) step() {
 			}
 		}
 		d.t.Logf("release %x %+v -> %v", id.Bytes()[15], e, err)
-		d.must(d.m.Release(tag, id, []journalv2.Extent{e}, err))
+		d.both(func(m *Model) error { return m.Release(tag, id, []journalv2.Extent{e}, err) })
 
 	case 5: // truncate
 		size := d.offset(0)
 		if err := d.other(id, tag); err != nil {
-			d.must(d.m.Truncate(tag, id, size, journalv2.Version{}, err))
+			d.both(func(m *Model) error { return m.Truncate(tag, id, size, journalv2.Version{}, err) })
 			return
 		}
-		d.t.Logf("truncate %x %d %v", id.Bytes()[15], size, d.issue())
-		d.must(d.m.Truncate(tag, id, size, d.issue(), nil))
+		v := d.issue()
+		d.t.Logf("truncate %x %d %v", id.Bytes()[15], size, v)
+		d.both(func(m *Model) error { return m.Truncate(tag, id, size, v, nil) })
 
 	case 6: // deallocate
 		n := int64(d.next() % 16)
@@ -206,70 +225,70 @@ func (d *driver) step() {
 			err = journalv2.ErrZeroLength
 		}
 		if err != nil {
-			d.must(d.m.Deallocate(tag, id, e, journalv2.Version{}, err))
+			d.both(func(m *Model) error { return m.Deallocate(tag, id, e, journalv2.Version{}, err) })
 			return
 		}
-		d.t.Logf("deallocate %x %+v %v", id.Bytes()[15], e, d.issue())
-		d.must(d.m.Deallocate(tag, id, e, d.issue(), nil))
+		v := d.issue()
+		d.t.Logf("deallocate %x %+v %v", id.Bytes()[15], e, v)
+		d.both(func(m *Model) error { return m.Deallocate(tag, id, e, v, nil) })
 
 	case 7: // delete
 		if err := d.other(id, tag); err != nil {
-			d.must(d.m.Delete(tag, id, journalv2.Version{}, err))
+			d.both(func(m *Model) error { return m.Delete(tag, id, journalv2.Version{}, err) })
 			return
 		}
-		d.t.Logf("delete %x %v", id.Bytes()[15], d.issue())
-		d.must(d.m.Delete(tag, id, d.issue(), nil))
+		v := d.issue()
+		d.t.Logf("delete %x %v", id.Bytes()[15], v)
+		d.both(func(m *Model) error { return m.Delete(tag, id, v, nil) })
 
 	case 8: // settle
-		v := journalv2.Version{Counter: uint64(d.next()) % (d.m.maxSeen.Counter + 1)}
+		v := journalv2.Version{Counter: uint64(d.next()) % (d.journal.maxSeen.Counter + 1)}
 		d.t.Logf("settle %x %v", id.Bytes()[15], v)
-		d.m.Settle(tag, id, v)
+		d.both(func(m *Model) error { return m.Settle(tag, id, v) })
 
-	case 9: // crash, reopen, and a journal that kept a random allowed state
+	case 9, 10: // crash and reopen
 		d.crash()
-
-	case 10: // the model agrees with itself
-		for _, tag := range []journalv2.ShareTag{shareA, shareB} {
-			d.must(d.m.Compare(tag, modelView{d.m, tag}))
-		}
 	}
 }
 
-// crash crashes the model, and resolves it against a journal that kept a
-// state the crash allows, chosen by the fuzzer: Compare must accept it and
-// continue from it.
+// crash crashes both, and lets the journal keep a random state of those the
+// crash allows: each uncertain write or fill split at a random point, and each
+// piece and uncertain record kept or lost. The model finds it at the next
+// Compare.
 func (d *driver) crash() {
-	// The search for the state the journal kept doubles with each uncertain
-	// record; keep it small so the fuzzer spends its time on sequences.
+	// The search doubles with each record the bytes cannot decide; keep it
+	// small so the fuzzer spends its time on sequences.
 	const searched = 8
-	for _, f := range d.m.files {
+	for _, f := range d.journal.files {
 		if uncertainAt(f) > searched {
-			d.m.Sync(f.tag, f.id)
+			id, tag := f.id, f.tag
+			d.both(func(m *Model) error { return m.Sync(tag, nil, id) })
 		}
 		if uncertainAt(f) > searched {
 			return // settled markers alone exceed it; crash later
 		}
 	}
-	journal := clone(d.m)
-	d.must(d.m.Crash())
-	d.must(journal.Crash())
 	floor := d.issue()
-	d.must(d.m.Reopen(floor))
-	d.must(journal.Reopen(floor))
-
 	d.t.Logf("crash, reopen at %v", floor)
+	d.both(func(m *Model) error { return m.Crash() })
+	d.both(func(m *Model) error { return m.Reopen(floor) })
+
 	rng := rand.New(rand.NewPCG(uint64(d.next()), uint64(d.next())))
-	for _, f := range journal.files {
-		if f.unresolved {
-			items := f.items()
-			candidate{items: items, mask: rng.Uint32() & (1<<len(items) - 1)}.adopt(f)
+	for _, f := range d.journal.files {
+		if !f.unresolved {
+			continue
 		}
-	}
-	for _, tag := range []journalv2.ShareTag{shareA, shareB} {
-		d.must(d.m.Compare(tag, modelView{journal, tag}))
-	}
-	for _, tag := range []journalv2.ShareTag{shareA, shareB} {
-		d.must(journal.Compare(tag, modelView{d.m, tag}))
+		var recs []*record
+		for _, r := range f.recs {
+			if r.uncertain && len(r.data) > 1 && rng.IntN(2) == 0 {
+				k := 1 + rng.IntN(len(r.data)-1)
+				recs = append(recs, r.piece(0, k), r.piece(k, len(r.data)))
+				continue
+			}
+			recs = append(recs, r)
+		}
+		f.recs = recs
+		candidate{items: f.items(), mask: rng.Uint32()}.adopt(f)
 	}
 }
 
@@ -277,11 +296,31 @@ func (d *driver) crash() {
 func uncertainAt(f *file) int {
 	n := 0
 	for _, r := range f.recs {
-		if !r.durable || r.kind.removal() && r.settled && !r.markerGone {
+		if !r.durable || crashMayDropMarker(r) {
 			n++
 		}
 	}
 	return n
+}
+
+// compare checks the model against the journal, share by share, and that it
+// holds no byte it was not given.
+func (d *driver) compare() {
+	for _, tag := range []journalv2.ShareTag{shareA, shareB} {
+		if err := d.m.Compare(tag, modelView{d.journal, tag}); err != nil {
+			d.t.Fatalf("the model does not show what the journal holds: %v", err)
+		}
+	}
+	for id, f := range d.m.files {
+		if f.unresolved {
+			continue
+		}
+		for off, c := range d.m.current(id).held {
+			if !d.given[id][c.rec.ver][off][c.b] {
+				d.t.Fatalf("file %x byte %d holds %q at %v, which no write or fill gave", id.Bytes(), off, c.b, c.rec.ver)
+			}
+		}
+	}
 }
 
 // clone returns a model with its own copy of every file and record of m.
@@ -299,34 +338,20 @@ func clone(m *Model) *Model {
 	return c
 }
 
-// check asserts the model reports only bytes it was given: every held byte is
-// one some write or fill handed it, at that offset and version.
-func (d *driver) check() {
-	for id, f := range d.m.files {
-		if f.unresolved {
-			continue
-		}
-		for off, c := range d.m.current(id).held {
-			if !d.given[id][c.rec.ver][off][c.b] {
-				d.t.Fatalf("file %x byte %d holds %q at %v, which no write or fill gave", id.Bytes(), off, c.b, c.rec.ver)
-			}
-		}
-	}
-}
-
-// FuzzModel drives random sequences of every operation through the model
-// alone, answering each as the RFC allows. The model must accept every such
-// answer, never panic, and never hold a byte it was not given.
+// FuzzModel drives random sequences of every operation through the model and
+// a second model playing the journal, crashes included. The model must accept
+// every answer the RFC allows, never panic, never hold a byte it was not
+// given, and show what the journal holds after every step.
 func FuzzModel(f *testing.F) {
 	f.Add([]byte{0, 0, 3, 'a', 0, 9, 1, 0, 0, 0, 2, 0, 3, 0, 0, 9, 1, 2})
 	f.Add([]byte{0, 0, 0xff, 7, 'z', 0, 5, 9, 0, 5, 1, 0, 9, 3, 4, 0, 4, 0, 6, 8, 1, 0, 0, 10})
 	f.Add([]byte{3, 0, 1, 15, 'q', 0, 3, 3, 1, 1, 2, 3, 2, 'w', 0, 4, 4, 2, 0, 9, 5, 6})
 	f.Add([]byte{0, 0, 4, 3, 'b', 0, 0, 3, 1, 1, 3, 3, 0, 0, 4, 4, 5, 0, 7, 8, 7, 0, 7, 9, 0, 3})
 	f.Fuzz(func(t *testing.T, data []byte) {
-		d := &driver{t: t, m: New(), data: data, given: map[journalv2.FileID]map[journalv2.Version]map[int64]map[byte]bool{}}
+		d := &driver{t: t, m: New(), journal: New(), data: data, given: map[journalv2.FileID]map[journalv2.Version]map[int64]map[byte]bool{}}
 		for steps := 0; len(d.data) > 0 && steps < 256; steps++ {
 			d.step()
-			d.check()
+			d.compare()
 		}
 	})
 }

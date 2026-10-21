@@ -21,9 +21,10 @@
 //
 // decision: the model covers writes, fills, offers and their reports,
 // releases, truncates, deallocates, deletes, settles, Since, crashes and
-// reopens. Repack changes no content, so it has no operation here: its one
-// visible effect, dropping a settled removal's record, is already allowed
-// after every crash. The model leaves out snapshot holds and stamps, clone
+// reopens. Repack changes no content, so it has no operation here. What it
+// may drop shows only after a crash, where the model allows it: a settled
+// removal's marker, and the hold a record backing nothing has on the change
+// version. The model leaves out snapshot holds and stamps, clone
 // targets, Forget and Strand, capacity and its refusals, failed sync windows
 // and loss records, and Stats. Each is checked by the conformance tests that
 // own it. Add one here when the model-based test needs to drive it.

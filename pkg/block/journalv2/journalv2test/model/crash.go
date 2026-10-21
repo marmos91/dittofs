@@ -11,9 +11,9 @@ import (
 // the bytes the journal shows, then tries every subset of the rest: O(2^k)
 // derivations of O(held bytes) each, for the k records left undecided. Those
 // are releases, marks and settled markers, and any write or fill served at
-// its own version beside another record of that version, which only a release
-// and a refill of the same content produce. With 4 KiB writes, 16 undecided
-// records take minutes.
+// its own version, with its own bytes, beside another record of that version,
+// which a release and a refill of the same content produce. With 4 KiB writes,
+// 16 undecided records take minutes.
 // Decide releases and marks from the bits the journal shows too when the
 // model-based test stalls in this search.
 const maxUncertain = 16
@@ -84,7 +84,6 @@ func (m *Model) Reopen(floor version) error {
 	}
 	m.crashed = false
 	m.floor = floor
-	m.sinceReopen = version{}
 	return nil
 }
 
@@ -159,12 +158,12 @@ func (c candidate) adopt(f *file) {
 }
 
 // evidence is what the journal's bytes say of one byte of an uncertain write
-// or fill: that it survived, that it was lost, or nothing, where content that
-// outranks it hides it either way.
+// or fill: that it survived, that it was lost, or nothing, where another
+// record of the same version may be what the journal serves.
 type evidence uint8
 
 const (
-	hidden evidence = iota
+	undecided evidence = iota
 	kept
 	lost
 )
@@ -184,8 +183,10 @@ const (
 // gone, and no later call brings back a byte below one that outranks it
 // without removing it too. After a crash a record backing nothing no longer
 // counts in the change version either, so kept and lost look the same forever.
-// Only a byte served at its own version beside another record of that version
-// is left to the search. None of these answers changes which states match;
+// A byte served at its version with other bytes was lost too, unless a later
+// record of that version serves it. Only a byte served at its own version,
+// with its own bytes, beside another record of that version, is left to the
+// search. None of these answers changes which states match;
 // they only shrink the search.
 //
 // decision: an uncertain write or fill may survive in part, any of its bytes
@@ -214,7 +215,7 @@ func decide(f *file, o *observation) map[*record]bool {
 			}
 			p := r.piece(start, i)
 			recs = append(recs, p)
-			if ev != hidden {
+			if ev != undecided {
 				out[p] = ev == kept
 			}
 			start, ev = i, next
@@ -234,8 +235,23 @@ func classify(f *file, r *record, o *observation, i int) evidence {
 		return kept
 	case held && got.ver != r.ver, !held && o.missing[off]:
 		return lost
+	case held && got.b != r.data[i] && !servedLater(f, r, off):
+		// Served at the record's version with other bytes, by an earlier
+		// record of that version: had it survived, it would outrank that.
+		return lost
 	}
-	return hidden
+	return undecided
+}
+
+// servedLater reports whether a record of r's version appended after it covers
+// off: had both survived, that record would serve the byte.
+func servedLater(f *file, r *record, off int64) bool {
+	for _, q := range f.recs {
+		if q.seq > r.seq && q.data != nil && q.ver == r.ver && covers(q.ext, off) {
+			return true
+		}
+	}
+	return false
 }
 
 // piece returns the part of r from byte i to byte j as a record of its own,

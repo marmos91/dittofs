@@ -89,6 +89,11 @@ type record struct {
 	// longer: after a crash, one that backed nothing and carried no live
 	// marker, which repack may have dropped before it.
 	uncounted bool
+
+	// bound, for a record a crash left uncertain, is the first version the
+	// journal issued after that crash; zero until one is issued. The record
+	// cannot have survived at or above it.
+	bound version
 }
 
 func (r *record) hasMarker() bool { return r.kind.removal() && !r.settled && !r.markerGone }
@@ -121,10 +126,6 @@ type Model struct {
 	maxSeen version
 	// floor is the floor of the last reopen.
 	floor version
-	// sinceReopen is the lowest version issued since the last reopen, zero
-	// when none was: no record a crash left uncertain survived at or above
-	// it, since every version issued exceeds every version on disk.
-	sinceReopen version
 
 	// offers is the offer each file's running callback was given.
 	offers map[fileID]*offer
@@ -312,9 +313,15 @@ func (f *file) sync(captured map[*record][]extent) {
 }
 
 // countLive marks which records of f hold its change version up after a
-// crash: recovery rebuilds a file's change version from the records on disk,
-// and repack may have dropped any record that backs no held byte and carries
-// no live marker. A record that is still live counts; the others may be gone.
+// crash: recovery rebuilds a file's change version from the records on disk.
+//
+// decision: after a crash, a record backing no held byte and carrying no live
+// marker no longer holds the change version up. Repack drops a record once it
+// backs nothing and outranks nothing left on disk, which the model cannot
+// see, so it takes every such record as possibly dropped. That only lowers
+// the bound the change version a read reports must reach, and what a stale
+// fill must be refused below; it never refuses a journal. Count a record
+// again if the model ever tracks what each segment still holds.
 func (f *file) countLive() {
 	st := derive(f, all)
 	live := map[*record]bool{}
