@@ -358,10 +358,10 @@ func (v asOfView) ReadAt(id journalv2.FileID, off int64, p []byte) (int, []journ
 	return n, missing, held, v.asOf, err
 }
 
-// Overlapping unsynced writes are decided from the top: the newest that the
-// journal shows is kept, and every write under it is hidden only by content
-// now known to be there, so no search over them is needed.
-func TestOverlappingUnsyncedWritesAreDecidedFromTheTop(t *testing.T) {
+// Overlapping unsynced writes are decided from the bytes alone: the one the
+// journal serves is kept, and every write under it is hidden for good, so no
+// search over them is needed however many there are.
+func TestOverlappingUnsyncedWritesNeedNoSearch(t *testing.T) {
 	m := New()
 	for i := 1; i <= 20; i++ {
 		ok(t, m.WriteAt(shareA, fid(1), 0, fill(byte('a'+i), 4), 0, ver(uint64(i)), nil))
