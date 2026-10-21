@@ -264,6 +264,61 @@ func TestTreeConnect_SharePolicy_Krb5pRequiresEncryption(t *testing.T) {
 	}
 }
 
+// krb5i on SMB is met by signing the session enforces, not by signing it may
+// merely do: an NTLM session that signs only when it chooses is refused when it
+// cannot encrypt and given an encrypted tree when it can, and one that must sign
+// every request is admitted as it is.
+func TestTreeConnect_SharePolicy_Krb5iNeedsEnforcedSigning(t *testing.T) {
+	h, rt := newSharePolicyHandler(t)
+	if err := rt.SetExportAuthPolicyForTesting(policyShare, true, false); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
+	if err := rt.SetMinKerberosLevelForTesting(policyShare, models.KerberosLevelKrb5i); err != nil {
+		t.Fatalf("SetMinKerberosLevelForTesting: %v", err)
+	}
+
+	// signingSession is an SMB 3.0.2 NTLM session that can sign, must sign only
+	// when required, and holds encryption keys only when canEncrypt. Below 3.1.1
+	// signing is not implied by the dialect.
+	signingSession := func(required, canEncrypt bool) *session.Session {
+		sess := ntlmSession(h, policyInsideIP)
+		cs := session.DeriveAllKeys(make([]byte, 16), types.Dialect0302, [64]byte{}, types.CipherAES128CCM, 0, false)
+		cs.SigningEnabled, cs.SigningRequired = true, required
+		if canEncrypt {
+			if err := cs.CreateEncryptors(types.CipherAES128CCM); err != nil {
+				t.Fatalf("CreateEncryptors: %v", err)
+			}
+		}
+		sess.SetCryptoState(cs)
+		sess.SetBindIdentity(types.Dialect0302, 0, types.CipherAES128CCM, [16]byte{})
+		return sess
+	}
+
+	for _, tc := range []struct {
+		name        string
+		sess        *session.Session
+		want        types.Status
+		wantEncrypt bool
+	}{
+		{"may sign, cannot encrypt", signingSession(false, false), types.StatusAccessDenied, false},
+		{"may sign, can encrypt", signingSession(false, true), types.StatusSuccess, true},
+		{"must sign", signingSession(true, false), types.StatusSuccess, false},
+	} {
+		result, ctx := treeConnectFrom(t, h, tc.sess, policyInsideIP)
+		if result.Status != tc.want {
+			t.Errorf("krb5i share, NTLM session that %s: status = %s, want %s", tc.name, result.Status, tc.want)
+			continue
+		}
+		if tc.want != types.StatusSuccess {
+			continue
+		}
+		if tree, _ := h.GetTree(ctx.TreeID); tree == nil || tree.EncryptData != tc.wantEncrypt {
+			t.Errorf("krb5i share, NTLM session that %s: tree requires encryption = %v, want %v",
+				tc.name, tree != nil && tree.EncryptData, tc.wantEncrypt)
+		}
+	}
+}
+
 // The srvsvc share list applies the same admission as TREE_CONNECT, the share
 // policy included: a session is not shown a share the policy would refuse it.
 // The netgroup is checked against the address of the connection that opened
