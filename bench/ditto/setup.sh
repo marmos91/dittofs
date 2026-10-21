@@ -3,19 +3,23 @@
 # run again at any time; it changes only what is missing or different.
 #   setup.sh                      packages, the run's user, directories and the checkout
 #   setup.sh cron                 the cron file that starts the night; after a smoke run passed
-#   setup.sh remove               undoes all of the above but the packages
+#   setup.sh remove               undoes all of the above but the packages, when no run holds the
+#                                 lock; a split drive stays split but leaves /srv/perf and fstab
 #   setup.sh split-drive DEV --yes
 #                                 not part of the setup: takes DEV out of the host's RAID1 mirrors and
 #                                 mounts it alone at /srv/perf/data, so the runs' writes stop
 #                                 landing on the OS drive. The OS loses its redundancy, so the
 #                                 host's administrator decides when.
 # Environment: BRANCH (the checkout's branch, default develop), PERF_USER (dittofs-perf), SLACK_DIR
-# and SCENARIO_HOST (written into the cron file for the nightly post).
+# and SCENARIO_HOST (written into the cron file for the nightly post). The Slack bot's token and
+# channel go, by hand, in SECRETS: slack-token and slack-channel, root's and 0600, as SECRETS is 0700.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 CHECKOUT=/srv/perf/dittofs
 CRON=/etc/cron.d/dittofs-perf
+SECRETS=/etc/dittofs-perf
+LOCK=/var/tmp/dittofs-scenarios
 PERF_USER="${PERF_USER:-dittofs-perf}"
 
 # installed PACKAGE: whether PACKAGE is installed, not merely known (a removed one keeps its config).
@@ -29,7 +33,7 @@ install() {
     # (golang-1.26-go, with golang-go for the go command). night.sh builds with GOTOOLCHAIN=auto, so a
     # later patch or toolchain line on develop fetches its own toolchain.
     go="$(awk '$1 == "go" { split($2, v, "."); print v[1] "." v[2] }' "$REPO/go.mod")"
-    for p in fio samba cifs-utils nvme-cli python3 git iproute2 util-linux "golang-$go-go" golang-go; do
+    for p in fio samba cifs-utils nvme-cli python3 git curl iproute2 util-linux "golang-$go-go" golang-go; do
         installed "$p" || missing+=("$p")
     done
     if test "${#missing[@]}" -gt 0; then
@@ -46,6 +50,7 @@ install() {
     # The Unix account the Samba baseline maps its SMB user to; the DittoFS user gets its uid.
     id "$PERF_USER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "$PERF_USER"
     mkdir -p /srv/perf/data /srv/perf/mnt /var/tmp/dittofs-perf
+    install -d -m 700 "$SECRETS"
     test -d "$CHECKOUT/.git" ||
         git clone -q --branch "${BRANCH:-develop}" https://github.com/marmos91/dittofs "$CHECKOUT"
 }
@@ -58,7 +63,7 @@ cron() {
 # CALIBRATION=yes runs every point three times and posts nothing: the first week. With no, it
 # posts one summary a night to the channel in SLACK_DIR.
 CALIBRATION=yes
-SLACK_DIR=${SLACK_DIR:-/home/lucian-lungu/.config/dittofs-scenarios}
+SLACK_DIR=${SLACK_DIR:-$SECRETS}
 SCENARIO_HOST=${SCENARIO_HOST:-$(hostname -s)}
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 45 18 * * * root $CHECKOUT/bench/ditto/night.sh >>/var/tmp/dittofs-perf/cron.log 2>&1
@@ -67,9 +72,16 @@ EOF
 }
 
 remove() {
+    if test -d "$LOCK"; then
+        exec 9<"$LOCK"
+        flock -n 9 || refuse "a run holds $LOCK; remove when it has ended"
+    fi
     rm -f "$CRON"
     umount /srv/perf/mnt/* 2>/dev/null || true
-    rm -rf /srv/perf /var/tmp/dittofs-perf
+    # A drive that split-drive took out of the mirror stays split; only its mount goes.
+    ! mountpoint -q /srv/perf/data || umount /srv/perf/data
+    sed -i '/^LABEL=dittofs-perf /d' /etc/fstab
+    rm -rf /srv/perf /var/tmp/dittofs-perf "$SECRETS"
     ! id "$PERF_USER" >/dev/null 2>&1 || userdel "$PERF_USER"
 }
 

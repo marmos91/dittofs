@@ -90,8 +90,7 @@ build() {
 dfs_env() { env HOME="$RUN" XDG_CONFIG_HOME="$RUN/config" XDG_STATE_HOME="$RUN/state" PATH="$WORK/build/bin:$PATH" "$@"; }
 
 start_dittofs() {
-    local data="$DATA/dittofs" admin first
-    admin="$(secret)" first="$(secret)"
+    local data="$DATA/dittofs"
     mkdir -p "$data"
     cat >"$RUN/config.yaml" <<EOF
 logging: { level: INFO, format: text, output: stdout }
@@ -105,41 +104,51 @@ blockstore:
   journal: { path: "$data/journal" }
 EOF
     # The first start creates the NFS and SMB adapters on their default ports, which another server
-    # on the host may hold. So it runs in a network namespace of its own, where the stores, the user,
-    # the share and the adapters are set up, and the measured server is the second start.
-    # The block store is S3, as a share needs one. Its endpoint answers only during the setup (share
-    # creation waits for its health probe); the measured server finds nothing there, starts with
-    # the store unhealthy, and keeps every write in its journal with the sync paused. So the run
-    # measures the frontend alone.
-    # shellcheck disable=SC2016 # the inner bash expands them
-    dfs_env DITTOFS_ADMIN_INITIAL_PASSWORD="$admin" unshare --net bash -euo pipefail -c '
-        ip link set lo up
-        python3 "$HERE/s3stub.py" "$PORT_DEAD" 2>>"$RES/dfs-setup.log" &
-        stub=$!
-        dfs start --foreground --config "$RUN/config.yaml" >>"$RES/dfs-setup.log" 2>&1 &
-        trap "kill $stub $! 2>/dev/null; wait" EXIT
-        api="http://127.0.0.1:$PORT_API"
-        for _ in $(seq 60); do dfsctl login --server "$api" --username admin --password "$1" >/dev/null 2>&1 && break; sleep 0.5; done
-        dfsctl adapter edit nfs --enabled false
-        dfsctl store metadata add --name md --type badger --db-path "$2/metadata"
-        dfsctl store block add --name s3 --type s3 --config "{\"endpoint\":\"http://127.0.0.1:$PORT_DEAD\",\"bucket\":\"perf\",\"access_key_id\":\"perf\",\"secret_access_key\":\"unreachable\",\"allow_private_endpoint\":true}"
-        dfsctl user create --username "$PERF_USER" --uid "$(id -u "$PERF_USER")" --gid "$(id -g "$PERF_USER")" --password "$3" --role user
-        XDG_CONFIG_HOME="$RUN/user" dfsctl login --server "$api" --username "$PERF_USER" --password "$3"
-        XDG_CONFIG_HOME="$RUN/user" dfsctl user change-password --current "$3" --new "$PASSWORD"
-        dfsctl share create --name /perf --metadata md --block-store s3 --journal-size 64GiB --owner "$PERF_USER"
-        dfsctl share permission grant /perf --user "$PERF_USER" --level read-write
-        dfsctl adapter edit smb --port "$PORT_DFS" --enabled true \
-            --config "{\"bind_address\":\"127.0.0.1\",\"encryption\":{\"encryption_mode\":\"disabled\"}}"
-    ' setup "$admin" "$data" "$first" >>"$RES/dfs-setup.log" 2>&1 9<&-
+    # on the host may hold. So it runs in a network namespace of its own (setup_boot), where the
+    # stores, the user, the share and the adapters are set up, and the measured server is the second
+    # start. The admin password lives in the environment only.
+    dfs_env DITTOFS_ADMIN_INITIAL_PASSWORD="$(secret)" unshare --net "$HERE/night.sh" setup_boot "$data" \
+        >>"$RES/dfs-setup.log" 2>&1 9<&-
     env HOME="$RUN" XDG_CONFIG_HOME="$RUN/config" XDG_STATE_HOME="$RUN/state" \
         setsid "$WORK/build/bin/dfs" start --foreground --config "$RUN/config.yaml" >>"$RES/dfs.log" 2>&1 </dev/null 9<&- &
     echo "$!" >"$RUN/pid"
     # Up to three minutes: the start waits for the block store's first probe, ten attempts with backoff.
     wait_port "$PORT_DFS" 280
-    # The adapters as the measured server runs them. (Listing the stores or shares would wait for the
-    # block store's health.)
-    dfs_env dfsctl login --server "http://127.0.0.1:$PORT_API" --username admin --password "$admin" >/dev/null
-    dfs_env dfsctl adapter list >"$RES/dittofs-adapters.txt"
+}
+
+# setup_boot DATA: the first start of dfs, in its own network namespace (see start_dittofs).
+# The block store is S3, as a share needs one. Its endpoint (s3stub.py) answers only here, since
+# creating a share waits for its health probe; the measured server finds nothing there, starts with
+# the store unhealthy, and keeps every write in its journal with the sync paused. So the run measures
+# the frontend alone. No password goes on a command line, where any user of the host can read it:
+# dfsctl reads the admin's at its login prompt, and the API creates the user, through curl's stdin.
+setup_boot() {
+    local api="http://127.0.0.1:$PORT_API" token
+    ip link set lo up
+    python3 "$HERE/s3stub.py" "$PORT_DEAD" &
+    STUB=$!
+    dfs start --foreground --config "$RUN/config.yaml" &
+    DFS=$!
+    trap 'kill "$STUB" "$DFS" 2>/dev/null; wait' EXIT
+    for _ in $(seq 60); do
+        printf '%s\n' "$DITTOFS_ADMIN_INITIAL_PASSWORD" | dfsctl login --server "$api" --username admin >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+    dfsctl adapter edit nfs --enabled false
+    dfsctl store metadata add --name md --type badger --db-path "$1/metadata"
+    dfsctl store block add --name s3 --type s3 --config "{\"endpoint\":\"http://127.0.0.1:$PORT_DEAD\",\"bucket\":\"perf\",\"access_key_id\":\"perf\",\"secret_access_key\":\"unreachable\",\"allow_private_endpoint\":true}"
+    # dfsctl takes a new user's password only as an argument, or twice at a prompt that a pipe can't
+    # answer, so the user comes from the API. The passwords are hex, so they need no JSON escaping.
+    token="$(printf 'data = "{\\"username\\":\\"admin\\",\\"password\\":\\"%s\\"}"\n' "$DITTOFS_ADMIN_INITIAL_PASSWORD" |
+        curl -sf -K - -H 'Content-Type: application/json' "$api/api/v1/auth/login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+    printf 'header = "Authorization: Bearer %s"\ndata = "{\\"username\\":\\"%s\\",\\"password\\":\\"%s\\",\\"uid\\":%s,\\"gid\\":%s,\\"role\\":\\"user\\"}"\n' \
+        "$token" "$PERF_USER" "$PASSWORD" "$(id -u "$PERF_USER")" "$(id -g "$PERF_USER")" |
+        curl -sf -K - -H 'Content-Type: application/json' "$api/api/v1/users" >/dev/null
+    dfsctl share create --name /perf --metadata md --block-store s3 --journal-size 64GiB --owner "$PERF_USER"
+    dfsctl share permission grant /perf --user "$PERF_USER" --level read-write
+    dfsctl adapter edit smb --port "$PORT_DFS" --enabled true \
+        --config '{"bind_address":"127.0.0.1","encryption":{"encryption_mode":"disabled"}}'
+    dfsctl adapter list >"$RES/dittofs-adapters.txt"
 }
 
 start_samba() {
@@ -289,7 +298,7 @@ $text" "$ts" yes >/dev/null
 }
 
 case "${1:-}" in
-build | start | matrix | mailbox | files | post) "$@"; exit ;;
+build | start | setup_boot | matrix | mailbox | files | post) "$@"; exit ;;
 "") ;;
 *) echo "usage: night.sh" >&2; exit 2 ;;
 esac

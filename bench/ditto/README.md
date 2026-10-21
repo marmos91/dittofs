@@ -67,7 +67,9 @@ or the figure is flagged when it falls below its own 7-day median by more than i
 change to the scoring, delete `band.json`, and the next night sets it again.
 
 Slack gets the night by the scenarios' rules, through their reporting
-(`test/scenarios/lib/report.sh`): the same bot, the same channel (`SLACK_DIR`).
+(`test/scenarios/lib/report.sh`): the same bot, the same channel. The bot's token and channel are
+`slack-token` and `slack-channel` in `/etc/dittofs-perf` (`SLACK_DIR`), root's, the directory 0700
+and the files 0600.
 
 - A quiet night posts nothing. It is still recorded, in its directory and `trend.csv`.
 - The first night with a new flag or failure (one the 7 nights before did not have) posts its
@@ -118,6 +120,7 @@ SMOKE=yes /srv/perf/dittofs/bench/ditto/night.sh  # a few minutes, one point of 
 /srv/perf/dittofs/bench/ditto/setup.sh cron       # the cron file, in calibration mode
 ```
 
-`setup.sh remove` takes it all away again, apart from the packages. `setup.sh split-drive DEV --yes`
+`setup.sh remove` takes it all away again, apart from the packages, unless a run holds the lock.
+`setup.sh split-drive DEV --yes`
 takes one drive out of the host's RAID1 mirror for the runs' data. It is a separate step, since it
 leaves the OS without redundancy.
