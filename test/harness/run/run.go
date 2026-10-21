@@ -211,7 +211,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		lists["packages"] = pkgs
 	}
-	if asRoot(c) {
+	if c.Unit.Format == "go-json" && asRoot(c) {
 		vals["bin"] = filepath.Join(dir, "bin") // goJSON builds it before the commands run
 	}
 	if len(c.Unit.Tools()) > 0 {
@@ -295,7 +295,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if spec.Kerberos {
 			build := []string{"docker", "build", "-q", "-t", fixture.KDCImage, filepath.Join("test", "smb-conformance", "kdc")}
 			_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
-			code, err := execute(setup, build, o.Root, os.Environ(), w)
+			code, err := execute(setup, build, o.Root, os.Environ(), w, false)
 			if err == nil && code != 0 {
 				err = fmt.Errorf("docker build exited %d", code)
 			}
@@ -360,7 +360,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
 	}
 	read := readers[c.Unit.Format]
-	var failed, notRun []string
+	var failed, notRun, didntStart []string
 	var cases []report.Test
 	unstarted, interrupted := 0, false
 	first := vals["share"] // the fixture's first share, which a test's share= replaces
@@ -395,6 +395,13 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if len(r.notRun) > 0 {
 			notRun = append(notRun, prefix+strings.Join(r.notRun, ", "))
 		}
+		// A command that doesn't start for one test mostly doesn't for any,
+		// in the same way, so each reason is noted once.
+		for _, why := range r.didntStart {
+			if !slices.Contains(didntStart, why) {
+				didntStart = append(didntStart, why)
+			}
+		}
 		switch {
 		case read == nil:
 			// exit: each test is a test case, or without tests each command.
@@ -412,6 +419,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			}
 		case r.interrupted:
 			// Its not-run note says so, and nothing it reported counts.
+		case len(r.didntStart) > 0:
+			// It ran in part at most, so what a reader finds isn't its
+			// result: it has none, and the note says why.
 		default:
 			got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
 			if err != nil {
@@ -425,6 +435,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			cases = append(cases, got...)
 		}
 	}
+	notRun = append(notRun, didntStart...)
 	if unstarted > 0 {
 		notRun = append(notRun, fmt.Sprintf("%d tests not started: %s", unstarted, stopped(cellCtx)))
 		interrupted = interrupted || errors.Is(cellCtx.Err(), context.Canceled)
@@ -535,6 +546,7 @@ type testRun struct {
 	result      string        // how the test went
 	note        string        // why it failed, when it did
 	notRun      []string      // why commands of it ran nothing, an interrupt included
+	didntStart  []string      // why commands of it didn't start, each named by its first line
 	steps       []report.Test // each command that ran to a result, named by its first line
 	exit        int           // the first non-zero exit status
 	timedOut    bool          // stopped at the test's limit or the cell's
@@ -606,6 +618,12 @@ func (t tester) run(test string, limit time.Duration) testRun {
 				argv, printed = wrapped, strings.Join(wrapped, " ")
 			}
 		}
+		dir, sudo := t.dir, asRoot(t.cell)
+		if sudo {
+			var hidden []string
+			argv, hidden = sudoIn(t.dir, t.own, argv)
+			printed, dir = strings.Join(hidden, " "), t.root
+		}
 		if pw := t.vals["password"]; pw != "" { // a credential stays out of the log
 			shown = strings.ReplaceAll(shown, pw, "{password}")
 			printed = strings.ReplaceAll(printed, pw, "{password}")
@@ -616,7 +634,7 @@ func (t tester) run(test string, limit time.Duration) testRun {
 			w = io.MultiWriter(t.out, t.capture)
 		}
 		start := time.Now()
-		code, err := execute(ctx, argv, t.dir, t.env, w)
+		code, err := execute(ctx, argv, dir, t.env, w, sudo)
 		step.Duration = time.Since(start)
 		// A docker client that started, which execute says by returning no
 		// error, and was then killed leaves its container running.
@@ -636,8 +654,16 @@ func (t tester) run(test string, limit time.Duration) testRun {
 			r.result, r.notRun, r.interrupted = report.NotRun, []string{"interrupted"}, true
 			return r
 		case err != nil:
-			step.Message = fmt.Sprintf("`%s`: %v", firstLine(shown), err)
-			failed = append(failed, step.Message)
+			// A command that didn't start ran nothing: lost coverage, not a
+			// regression, as with a container that didn't start.
+			r.didntStart = append(r.didntStart, fmt.Sprintf("`%s` didn't start: %v", step.Name, err))
+			continue
+		case sudo && notStarted(code):
+			// Run as root, the command is started by env, which exits 127
+			// when it can't find it, 126 when it can't run it and 125 when it
+			// fails itself, as when it can't enter dir.
+			r.didntStart = append(r.didntStart, fmt.Sprintf("`%s` didn't start: env exited %d", step.Name, code))
+			continue
 		case code == exitNotRun:
 			notRun = append(notRun, fmt.Sprintf("`%s` exited %d: it ran nothing", firstLine(shown), code))
 			continue
@@ -660,12 +686,41 @@ func (t tester) run(test string, limit time.Duration) testRun {
 	switch {
 	case len(failed) > 0:
 		r.result, r.note = report.Failed, strings.Join(failed, ", ")
-	case len(notRun) > 0:
+	case len(notRun) > 0 || len(r.didntStart) > 0:
 		r.result = report.NotRun
 	default:
 		r.result = report.Passed
 	}
 	return r
+}
+
+// asRoot reports whether a cell's commands run as root through sudo: those of
+// a suite whose own needs name root, run by dt as a user. The needs its
+// fixture implies are for the fixture's own steps, which call sudo themselves.
+func asRoot(c Cell) bool {
+	return slices.Contains(c.Unit.Needs, "root") && os.Geteuid() != 0
+}
+
+// sudoIn is argv run as root in dir, and the same command to print, with each
+// variable as NAME=$NAME, so no value reaches the terminal or the log. sudo
+// resets the environment, so env gives the command PATH and the suite's
+// variables, own, explicitly. env enters dir too, as root: the user dt runs
+// as may have no access to it, as to a mount whose share grants that user
+// nothing.
+//
+// decision: the values of own are on sudo's command line, where any user can
+// read them while it runs, as the variables a Go suite's tests get through
+// -exec are. No suite that runs as root has a credential in its env: pass
+// such a variable through sudo's --preserve-env if one ever does.
+func sudoIn(dir string, own, argv []string) (run, shown []string) {
+	vars := append([]string{"PATH=" + os.Getenv("PATH")}, own...)
+	hidden := make([]string, len(vars))
+	for i, v := range vars {
+		name, _, _ := strings.Cut(v, "=")
+		hidden[i] = name + "=$" + name
+	}
+	sudo := []string{"sudo", "-n", "env", "-C", dir}
+	return slices.Concat(sudo, vars, argv), slices.Concat(sudo, hidden, argv)
 }
 
 // cmdName names a command as a test case: its first line, as the registry
@@ -704,8 +759,9 @@ func stopped(ctx context.Context) string {
 // execute runs one command with its output going to w, and returns its exit
 // status. A command that outlives ctx is killed with everything it started,
 // and whatever a command leaves running in its process group is killed when
-// it exits.
-func execute(ctx context.Context, argv []string, dir string, env []string, w io.Writer) (int, error) {
+// it exits. One that runs as root through sudo, which dt can't kill, is
+// interrupted instead, as a Go suite that runs as root is.
+func execute(ctx context.Context, argv []string, dir string, env []string, w io.Writer, sudo bool) (int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = dir, env
 	// The command writes to a pipe of dt's own, not one exec makes, so Wait
@@ -715,7 +771,11 @@ func execute(ctx context.Context, argv []string, dir string, env []string, w io.
 		return -1, err
 	}
 	cmd.Stdout, cmd.Stderr = pw, pw
-	killTree(cmd)
+	if sudo {
+		interruptTree(cmd, sudoGrace)
+	} else {
+		killTree(cmd)
+	}
 	err = cmd.Start()
 	_ = pw.Close()
 	if err != nil {
@@ -778,6 +838,12 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 func unsupported(u *registry.Suite) string {
 	if u.Format == "go-json" && u.Fixture != nil && u.Fixture.Client != "" {
 		return "dt doesn't run go test on a namespaced client yet"
+	}
+	// decision: no suite that runs as root has a namespaced client, so dt
+	// doesn't run one. Its commands would enter the client's namespaces as
+	// root, without dropping to the user, as they do when dt runs as root.
+	if slices.Contains(u.Needs, "root") && u.Fixture != nil && u.Fixture.Client != "" {
+		return "dt doesn't run a suite that needs root on a namespaced client yet"
 	}
 	if u.Fixture != nil {
 		return fixture.Unsupported(u.Fixture)
