@@ -47,6 +47,8 @@ func newRootACLTestRouter(t *testing.T, shareNames ...string) (http.Handler, str
 		t.Fatalf("create jwt service: %v", err)
 	}
 
+	// Opened before the runtime so cleanup removes the shares before this store closes.
+	metaStore := badgertest.NewInMemory(t)
 	rt := runtime.New(cpStore)
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
 	t.Cleanup(func() {
@@ -60,7 +62,7 @@ func newRootACLTestRouter(t *testing.T, shareNames ...string) (http.Handler, str
 	if err != nil {
 		t.Fatalf("create metadata store config: %v", err)
 	}
-	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("register metadata store: %v", err)
 	}
 	blockID, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "test-block", Type: "memory"})
