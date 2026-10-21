@@ -19,18 +19,20 @@ import "log/slog"
 type Tracer func(op SpanOp, attrs ...slog.Attr) (end func(err error))
 
 // SpanOp names the operation a span covers. Its values are the span names
-// operators see, so none carries the journal's version.
+// operators see, so none carries the journal's version. Each is
+// journal.<Name>, the journal's prefix from RFC 25's prefix table, as RFC 25
+// §6.1 requires of every span name.
 type SpanOp string
 
 // The operations the journal traces.
 const (
-	SpanOpen           SpanOp = "open"
-	SpanRecoveryPhase  SpanOp = "recovery_phase"
-	SpanSync           SpanOp = "sync"
-	SpanOffloadPass    SpanOp = "offload_pass"
-	SpanRepackPass     SpanOp = "repack_pass"
-	SpanFill           SpanOp = "fill"
-	SpanReserveRefused SpanOp = "reserve_refused"
-	SpanSeal           SpanOp = "seal"
-	SpanRetire         SpanOp = "retire"
+	SpanOpen           SpanOp = "journal.Open"
+	SpanRecoveryPhase  SpanOp = "journal.RecoveryPhase"
+	SpanSync           SpanOp = "journal.Sync"
+	SpanOffloadPass    SpanOp = "journal.OffloadPass"
+	SpanRepackPass     SpanOp = "journal.RepackPass"
+	SpanFill           SpanOp = "journal.Fill"
+	SpanReserveRefused SpanOp = "journal.ReserveRefused"
+	SpanSeal           SpanOp = "journal.Seal"
+	SpanRetire         SpanOp = "journal.Retire"
 )
