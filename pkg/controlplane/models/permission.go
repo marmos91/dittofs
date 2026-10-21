@@ -161,3 +161,15 @@ func (s SquashMode) OrDefault() SquashMode {
 	}
 	return DefaultSquashMode
 }
+
+// RootKeepsAdmin reports whether a caller with UID 0 keeps root privileges
+// under this mode: none, root_to_admin and all_to_admin. An empty or invalid
+// mode normalizes to DefaultSquashMode, which squashes root.
+func (s SquashMode) RootKeepsAdmin() bool {
+	switch s.OrDefault() {
+	case SquashNone, SquashRootToAdmin, SquashAllToAdmin:
+		return true
+	default:
+		return false
+	}
+}
