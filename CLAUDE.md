@@ -113,10 +113,14 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    for v3, `ExtractV4HandlerContext` for v4). The handler then builds the `*metadata.AuthContext`,
    with share permission and squashing applied (`BuildAuthContextWithMapping` for v3, reached
    through `GetCachedAuthContext`; `buildV4AuthContext` for v4). For SMB it is built in the SMB
-   session layer. It threads through handler → store. Export-level squashing (`AllSquash`,
-   `RootSquash`) is applied via `ResolveSharePermission`
+   session layer (`BuildAuthContextFromUser`). It threads through handler → store. The share's
+   squash maps the identity in one place both adapters call, `Runtime.ApplyIdentityMapping`
+   (`pkg/controlplane/runtime/identity`), after the share's grants have resolved against the
+   unsquashed identity, so only file operations run as the squashed one. SMB guest sessions are
+   not mapped: they stay at the unprivileged nobody identity under every mode. Root's admin bypass
+   at the share gate is `models.SquashMode.RootKeepsAdmin`, which both `ResolveSharePermission`
    (`internal/adapter/nfs/auth/share_permission.go`) and the SMB Tree Connect check
-   (`internal/adapter/smb/handlers/tree_connect.go`).
+   (`internal/adapter/smb/handlers/tree_connect.go`) use.
 
    The share policy (`AllowAuthSys`, `RequireKerberos`, `MinKerberosLevel`, the netgroup client
    allowlist) lives once, protocol-neutral, in `runtime.CheckShareAccess`
