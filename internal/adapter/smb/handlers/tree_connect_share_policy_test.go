@@ -421,4 +421,15 @@ func TestLock_SharePolicy_RefusesAcquireAdmitsUnlock(t *testing.T) {
 	if res.Status != types.StatusSuccess {
 		t.Fatalf("UNLOCK after NTLM re-authentication: status = %s, want STATUS_SUCCESS so the range is released", res.Status)
 	}
+
+	// A tree disconnected after dispatch has no policy left to admit an
+	// acquisition, so the handler refuses it rather than skipping the check.
+	h.DeleteTree(treeID)
+	res, err = h.Lock(ctx, lockBody(fileID, 40, 10, SMB2LockFlagSharedLock|SMB2LockFlagFailImmediately))
+	if err != nil {
+		t.Fatalf("Lock (tree gone): %v", err)
+	}
+	if res.Status != types.StatusNetworkNameDeleted {
+		t.Fatalf("LOCK acquisition on a disconnected tree: status = %s, want STATUS_NETWORK_NAME_DELETED", res.Status)
+	}
 }

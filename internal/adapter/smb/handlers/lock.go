@@ -333,12 +333,15 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// refuses can still release its locks; an UNLOCK-first request never
 	// acquires (lock elements after it are deferred-invalid below), so only a
 	// lock-first request is checked. The open's own tree is the one checked,
-	// so the request header's TreeID cannot point the check at another share.
+	// so the request header's TreeID cannot point the check at another share,
+	// and a tree disconnected since dispatch refuses the acquisition.
 	if !isUnlockRequest {
-		if tree, ok := h.GetTree(openFile.TreeID); ok {
-			if st := h.TreeSharePolicyStatus(ctx.Context, tree, ctx.ClientAddr); st != 0 {
-				return NewErrorResult(st), nil
-			}
+		tree, ok := h.GetTree(openFile.TreeID)
+		if !ok {
+			return NewErrorResult(types.StatusNetworkNameDeleted), nil
+		}
+		if st := h.TreeSharePolicyStatus(ctx.Context, tree, ctx.ClientAddr); st != 0 {
+			return NewErrorResult(st), nil
 		}
 	}
 
