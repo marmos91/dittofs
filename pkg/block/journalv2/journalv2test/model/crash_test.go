@@ -451,3 +451,19 @@ func TestReopenAcceptsAFloorAtTheLastVersionIssued(t *testing.T) {
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(7)))
 }
+
+// A write that a lost newer write had hidden is live again once the crash is
+// resolved, and holds the change version up: a fill as of an older version is
+// refused.
+func TestAWriteLiveAgainAfterACrashCountsInTheChangeVersion(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	m.Sync(shareA, fid(1))
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('B', 4), 0, ver(2), nil))
+	ok(t, m.Crash())
+	ok(t, m.Reopen(ver(10)))
+	j := New()
+	ok(t, j.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.Compare(shareA, modelView{j, shareA}))
+	refused(t, m.Fill(shareA, fid(1), 10, fill('F', 2), journalv2.Version{}, ver(1), nil))
+}

@@ -159,7 +159,12 @@ func (m *Model) compareFile(f *file, v View) error {
 		}
 		return nil
 	}
-	orig := f.recs
+	orig, matched := f.recs, false
+	defer func() {
+		if !matched {
+			f.recs = orig // a failed search changes nothing
+		}
+	}()
 	fixed := decide(f, obs)
 	var items []*record
 	for _, r := range f.items() {
@@ -168,7 +173,6 @@ func (m *Model) compareFile(f *file, v View) error {
 		}
 	}
 	if len(items) > maxUncertain {
-		f.recs = orig
 		return m.mismatch(op, f.id, "%d uncertain records left undecided, above the %d the model can search", len(items), maxUncertain)
 	}
 	all := uint32(1)<<len(items) - 1
@@ -181,6 +185,7 @@ func (m *Model) compareFile(f *file, v View) error {
 		}
 		if d == "" {
 			c.adopt(f)
+			matched = true
 			return nil
 		}
 		if mask == all {
@@ -190,7 +195,6 @@ func (m *Model) compareFile(f *file, v View) error {
 			break
 		}
 	}
-	f.recs = orig
 	return m.mismatch(op, f.id, "no state the crash allows matches; with every undecided record kept: %s", first)
 }
 

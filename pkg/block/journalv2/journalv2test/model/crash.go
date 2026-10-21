@@ -3,7 +3,6 @@ package model
 import (
 	"errors"
 	"fmt"
-	"slices"
 )
 
 // maxUncertain bounds the records of one file a crash may leave uncertain.
@@ -11,9 +10,10 @@ import (
 // ponytail: Compare first decides each uncertain write and fill it can from
 // the bytes the journal shows, then tries every subset of the rest: O(2^k)
 // derivations of O(held bytes) each, for the k records left undecided. Those
-// are releases, marks and settled markers, and the writes and fills they keep
-// from being decided: under an unsynced release, or beside another record of
-// the same version. With 4 KiB writes, 16 undecided records take minutes.
+// are releases, marks and settled markers, and any write or fill served at
+// its own version beside another record of that version, which only a release
+// and a refill of the same content produce. With 4 KiB writes, 16 undecided
+// records take minutes.
 // Decide releases and marks from the bits the journal shows too when the
 // model-based test stalls in this search.
 const maxUncertain = 16
@@ -28,14 +28,16 @@ const maxUncertain = 16
 // Every running offer ends. Until Reopen the model takes no call, and until
 // Compare finds which of the allowed states the journal shows, it takes no
 // call on a file the crash left uncertain. Crash changes nothing and returns
-// an error when one file may leave more records undecided than the model can
-// search; Compare reports it if a file still does.
+// an error when one file has more releases, marks and settled markers left
+// uncertain than the model can search. Writes and fills are decided from the
+// bytes, except where the search is needed beside a record of the same
+// version; Compare reports a file that still leaves too many undecided.
 func (m *Model) Crash() error {
 	var errs []error
 	for _, f := range m.files {
 		n := 0
 		for _, r := range f.recs {
-			if crashMayDropMarker(r) || !r.durable && (r.data == nil || mayStayUndecided(f, r)) {
+			if crashMayDropMarker(r) || !r.durable && r.data == nil {
 				n++
 			}
 		}
@@ -63,24 +65,6 @@ func (m *Model) Crash() error {
 		f.countLive()
 	}
 	return nil
-}
-
-// mayStayUndecided reports whether the bytes the journal shows may leave the
-// unsynced write or fill r undecided: an unsynced release outranks it, or
-// another record of the same version overlaps it.
-func mayStayUndecided(f *file, r *record) bool {
-	for _, q := range f.recs {
-		if q == r {
-			continue
-		}
-		if _, ok := intersect(q.ext, r.ext); !ok {
-			continue
-		}
-		if !q.durable && q.kind == kindRelease && outranks(q, r) || q.data != nil && q.ver == r.ver {
-			return true
-		}
-	}
-	return false
 }
 
 // crashMayDropMarker reports whether a crash may leave r's marker absent: it
@@ -199,18 +183,19 @@ const (
 // returns the settled pieces with whether each survived. The pieces left out
 // are left to the search.
 //
-// It decides from the top, the record that outranks the others first, so that
-// by the time it reaches a record, everything outranking it is settled or left
-// to the search. A byte survived where the journal serves it at the record's
-// version, with no other record of that version there to serve it instead. It
-// was lost where the journal serves an older version there, or reports it
-// missing with no release or removal outranking the record over it: had it
-// survived, it or something outranking it would decide that byte. Where only
-// content known to be there outranks it, the byte is hidden for good: no later
-// call brings back a byte below one that outranks it without removing it too,
-// and after a crash a record backing nothing no longer counts in the change
-// version, so kept and lost look the same forever and lost is taken. None of
-// these answers changes which states match; they only shrink the search.
+// A byte survived where the journal serves it at the record's version, with no
+// other record of that version there to serve it instead. Every other byte the
+// journal shows, held at another version or missing, is settled as lost.
+// Served at an older version, the record cannot have survived there, since it
+// would outrank what is served. Served at a newer version, or missing under a
+// release or removal that outranks it, it is hidden: whatever outranks it is
+// durable once the crash is resolved, the survivors made durable and the rest
+// gone, and no later call brings back a byte below one that outranks it
+// without removing it too. After a crash a record backing nothing no longer
+// counts in the change version either, so kept and lost look the same forever.
+// Only a byte served at its own version beside another record of that version
+// is left to the search. None of these answers changes which states match;
+// they only shrink the search.
 //
 // decision: an uncertain write or fill may survive in part, any of its bytes
 // kept and the others lost. The journal stores a write that crosses a segment
@@ -221,91 +206,45 @@ const (
 // model to whole pieces if the journal ever reports where a write was split.
 func decide(f *file, o *observation) map[*record]bool {
 	out := map[*record]bool{}
-	order := slices.Clone(f.recs)
-	slices.SortStableFunc(order, func(a, b *record) int {
-		switch {
-		case outranks(a, b):
-			return -1
-		case outranks(b, a):
-			return 1
-		}
-		return 0
-	})
-
-	var open []*record // pieces of records above, left to the search
-	pieces := map[*record][]*record{}
-	for _, r := range order {
+	var recs []*record
+	for _, r := range f.recs {
 		if !r.uncertain || r.data == nil {
+			recs = append(recs, r)
 			continue
 		}
-		start, ev := 0, classify(f, r, o, open, 0)
-		var mine []*record
+		start, ev := 0, classify(f, r, o, 0)
 		for i := 1; i <= len(r.data); i++ {
 			var next evidence
 			if i < len(r.data) {
-				next = classify(f, r, o, open, i)
+				next = classify(f, r, o, i)
 				if next == ev {
 					continue
 				}
 			}
 			p := r.piece(start, i)
-			mine = append(mine, p)
-			if ev == hidden {
-				open = append(open, p)
-			} else {
+			recs = append(recs, p)
+			if ev != hidden {
 				out[p] = ev == kept
 			}
 			start, ev = i, next
-		}
-		pieces[r] = mine
-	}
-
-	var recs []*record
-	for _, r := range f.recs {
-		if ps, ok := pieces[r]; ok {
-			recs = append(recs, ps...)
-		} else {
-			recs = append(recs, r)
 		}
 	}
 	f.recs = recs
 	return out
 }
 
-// classify returns what the journal shows of byte i of r, given the pieces of
-// records above r left to the search. It reads the file's records as they were
-// before decide split any of them.
-func classify(f *file, r *record, o *observation, open []*record, i int) evidence {
+// classify returns what the journal shows of byte i of r. It reads the file's
+// records as they were before decide split any of them.
+func classify(f *file, r *record, o *observation, i int) evidence {
 	off := r.ext.Off + int64(i)
 	got, held := o.held[off]
 	switch {
 	case held && got.ver == r.ver && got.b == r.data[i] && !servedByAnother(f, r, off):
 		return kept
-	case held && got.ver.Compare(r.ver) < 0:
-		return lost
-	case !held && o.missing[off] && !removedAbove(f, r, off):
-		return lost
-	case (held && got.ver.Compare(r.ver) > 0 || !held && o.missing[off]) && !openAbove(f, r, open, off):
+	case held && got.ver != r.ver, !held && o.missing[off]:
 		return lost
 	}
 	return hidden
-}
-
-// openAbove reports whether something the crash may have lost, and that the
-// bytes have not decided, outranks r at off: a piece above left to the search,
-// or a release.
-func openAbove(f *file, r *record, open []*record, off int64) bool {
-	for _, q := range open {
-		if outranks(q, r) && covers(q.ext, off) {
-			return true
-		}
-	}
-	for _, q := range f.recs {
-		if q.uncertain && q.kind == kindRelease && outranks(q, r) && covers(q.ext, off) {
-			return true
-		}
-	}
-	return false
 }
 
 // piece returns the part of r from byte i to byte j as a record of its own,
@@ -321,15 +260,6 @@ func (r *record) piece(i, j int) *record {
 func servedByAnother(f *file, r *record, off int64) bool {
 	for _, q := range f.recs {
 		if q != r && q.data != nil && q.ver == r.ver && covers(q.ext, off) {
-			return true
-		}
-	}
-	return false
-}
-
-func removedAbove(f *file, r *record, off int64) bool {
-	for _, q := range f.recs {
-		if (q.kind == kindRelease || q.kind.removal()) && outranks(q, r) && covers(q.ext, off) {
 			return true
 		}
 	}
