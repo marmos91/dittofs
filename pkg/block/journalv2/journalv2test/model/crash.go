@@ -158,15 +158,6 @@ func (c candidate) adopt(f *file) {
 	f.countLive()
 }
 
-// outranks reports whether q wins over r where they overlap: the higher
-// version, and between equal versions the later record.
-func outranks(q, r *record) bool {
-	if c := q.ver.Compare(r.ver); c != 0 {
-		return c > 0
-	}
-	return q.seq > r.seq
-}
-
 // evidence is what the journal's bytes say of one byte of an uncertain write
 // or fill: that it survived, that it was lost, or nothing, where content that
 // outranks it hides it either way.
