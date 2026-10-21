@@ -1182,7 +1182,7 @@ A check here fails by **coming back up describing something other than what is o
 
 | Requirement | Check |
 | --- | --- |
-| [§3.1](#3.1%20Rebuilding) rebuild | Write a non-zero pattern, simulate a crash ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)) mid-write and reopen; assert every acknowledged extent reads its pattern and the last verified record is the tail. |
+| [§3.1](#3.1%20Rebuilding) rebuild | Write a non-zero pattern, `Sync` part of it, simulate a crash ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)) mid-write and reopen; assert every extent covered by a returned `Sync` reads its pattern and the last verified record is the tail. |
 | [§3.1](#3.1%20Rebuilding) sources agree | Build the placement index from catalogs and by full scan of the same store; assert both are identical. |
 | [§3.3](#3.3%20Torn%20and%20corrupt%20records) synced damage is not a torn tail | In the newest segment, sync records A and B, write C, then corrupt A's payload; reopen; assert A is reported as corruption, not truncated as a torn tail, and B is still held. |
 | [§3.2](#3.2%20Offload%20state%20after%20recovery) bits survive restart | Offload and mark an extent, write another and leave it dirty, crash and reopen; before any `MarkOffloaded`, assert `Release` permits the first and refuses the second. Crash before the offloaded record syncs; assert the extent comes back unmarked, never the reverse. |
