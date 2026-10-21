@@ -45,7 +45,7 @@ if test "$SMOKE" = yes; then
     : "${MAILBOX_RUNTIME:=10}" "${FILE_SETS:=4k}" "${FILES:=200}"
 fi
 test "$CALIBRATION" = no || : "${REPEATS:=3}"
-: "${REPEATS:=1}" "${BOX:=3600}" "${FILE_SIZE:=256m}" "${RUNTIME:=30}" "${RAMP:=5}"
+: "${REPEATS:=1}" "${BOX:=3600}" "${FILE_SIZE:=512m}" "${RUNTIME:=30}" "${RAMP:=5}"
 : "${RW_LIST:=read randread write randwrite}" "${BS_LIST:=4k 64k 1m}" "${THREADS_LIST:=1 2 4 8}"
 : "${USERS_LIST:=2 8 16}" "${VHDX_SIZE:=512m}" "${MAILBOX_RUNTIME:=60}"
 : "${MAILBOX:=01-logon-outlook-start 02-mail-flow 03-folder-resort 04-search-reindex 05-ost-full-sync 06-logoff-compaction}"

@@ -19,13 +19,15 @@ On each target, every step in its own time box:
 
 | Step | What | Points |
 |---|---|---|
-| `matrix` | fio: read and write, sequential and random, 4 KiB, 64 KiB and 1 MiB blocks, 1, 2, 4 and 8 threads. Buffered I/O. Reads run for 30 s; writes are one pass over each thread's 256 MiB file and fsync it at the end | 48 |
+| `matrix` | fio: read and write, sequential and random, 4 KiB, 64 KiB and 1 MiB blocks, 1, 2, 4 and 8 threads. Buffered I/O. Reads run for 30 s; writes are one pass over each thread's 512 MiB file and fsync it at the end | 48 |
 | `mailbox` | The mailbox simulator (`../workloads/mailbox`) with 2, 8 and 16 users, files of 512 MiB, fixed-time scenarios of 60 s | 16 |
 | `files` | 5,000 files of 4 KiB, 64 KiB and 1.75 MiB, created (each fsynced at its close), then read back | 6 |
 
 Before the targets, the night fetches `develop`, builds `dfs`, and records the commit, the host's
-state and each NVMe drive's `smart-log`. A repeat writes about 140 GB to each drive, both targets
-together: a calibration night about 420 GB. Each night's `summary.json` has the measured figure. The night takes the lock of the scenario runs, so the two
+state and each NVMe drive's `smart-log`. A repeat writes about 200 GB to each drive, both targets
+together: the first calibration night wrote 594 GB. Each night's `summary.json` has the measured figure.
+The drives' wear rating isn't a limit here: if the disks become the bottleneck, the runs move to
+another host. The night takes the lock of the scenario runs, so the two
 never overlap. Every step is cut to end by the hard stop, 05:45; a step that reaches its box is
 killed and recorded as `timeout`.
 
@@ -70,13 +72,12 @@ the steps measure the same thing. After changing what a step runs (a size, a lis
 the earlier nights out of the comparison before the next night runs: rename their directories out of
 the `<date>` form with a suffix (they are still removed after 30 days), and drop their rows from
 `trend.csv`. If that leaves fewer than a week of
-calibration nights, keep `CALIBRATION=yes` until there are seven. The first night, 2026-10-20, ran
-the matrix with 512 MiB files and does not count:
+calibration nights, keep `CALIBRATION=yes` until there are seven. For example, for a night `D`:
 
 ```sh
 cd /var/tmp/dittofs-perf
-mv 2026-10-20 2026-10-20-512m
-grep -v '^2026-10-20,' trend.csv >trend.csv.new && mv trend.csv.new trend.csv
+mv D D-old
+grep -v '^D,' trend.csv >trend.csv.new && mv trend.csv.new trend.csv
 ```
 
 ## Results
