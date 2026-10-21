@@ -60,10 +60,19 @@ func setupReopen2Env(t *testing.T) *reopen2Env {
 
 	metaSvc := rt.GetMetadataService()
 
+	// The sessions here carry no user, so they act as nobody (65534). They open with SEC_RIGHTS_FILE_ALL, DELETE included, so
+	// that identity owns the file and may unlink it from the share root.
+	rootMode := uint32(0o777)
+	if _, err := metaSvc.SetFileAttributes(rootAuth, rootHandle, &metadata.SetAttrs{Mode: &rootMode}); err != nil {
+		t.Fatalf("SetFileAttributes(root): %v", err)
+	}
+
 	// Create the file that the durable handle will reference.
 	_, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "durable.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
+		UID:  nobodyUID,
+		GID:  nobodyGID,
 	})
 	if err != nil {
 		t.Fatalf("CreateFile: %v", err)

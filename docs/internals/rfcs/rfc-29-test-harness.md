@@ -358,28 +358,34 @@ failing exit status into 1 and would hide `dt`'s (§4.4). CI builds it once per 
 `dt` runs as the user who started it. Only the steps that need root call `sudo -n`, one by one: the
 fixture's mounts and unmounts, starting the server with the one capability that binds port 445 for
 WPTS (§4.2), restarting `rpc.gssd`, and the commands of a suite whose own `needs` name `root`.
-Unless its format is `go-json`, such a suite runs each command as `sudo -n env NAME=value ... CMD`,
-as pjdfstest's `prove` must run; the needs a fixture implies (§4.2) don't make its commands run as
-root. A Go suite whose tests need root themselves, like e2e, which mounts from inside `go test`,
-runs with `go test -exec 'sudo -n env ...'`: `go` builds the test binaries as the user, and runs
-only each binary under `sudo -n`, in its package's directory and with the flags `go test` gives
-every binary. The e2e tests start `dfs` and `dfsctl`, and today build them from inside the test
-binary; run as root, those builds would write root's files into the user's Go caches, and fail on
-the modules only the binaries use. So before a root suite runs, `dt` builds both as the user into
-`{bin}` and passes it as `DITTOFS_E2E_BIN`, and the e2e helpers take the binaries from there rather
-than building them. Root never runs `go build`: the Go caches and the results stay the user's, and
-the `root` need (§4.5) means passwordless sudo, not running `dt` under sudo.
+Unless its format is `go-json`, such a suite runs each command as
+`sudo -n env -C DIR NAME=value ... CMD`, as pjdfstest's `prove` must run. `env` enters the suite's
+`dir` as root, since the user may have no access to it, as to a mount whose share grants that user
+nothing; `sudo`'s own `--chdir` would need a `runcwd` in sudoers, which few hosts grant. The needs a
+fixture implies (§4.2) don't make its commands run as root, and a suite that needs root doesn't run
+on a namespaced client yet: no suite does. A Go suite whose tests need root themselves, like e2e,
+which mounts from inside `go test`, runs with `go test -exec 'sudo -n env ...'`: `go` builds the
+test binaries as the user, and runs only each binary under `sudo -n`, in its package's directory and
+with the flags `go test` gives every binary. The e2e tests start `dfs` and `dfsctl`, and today build
+them from inside the test binary; run as root, those builds would write root's files into the user's
+Go caches, and fail on the modules only the binaries use. So before a root suite runs, `dt` builds
+both as the user into `{bin}` and passes it as `DITTOFS_E2E_BIN`, and the e2e helpers take the
+binaries from there rather than building them. Root never runs `go build`: the Go caches and the
+results stay the user's, and the `root` need (§4.5) means passwordless sudo, not running `dt` under
+sudo.
 
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
 the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the variables of
 the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its
-`service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. Today's e2e job
-does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A fixture sets no variables: it gives
-its values as placeholders (§4.2), and a suite that needs one in a variable puts it in its `env`,
-as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes on a command line, where any
-user can read it while the process runs: the server started under `sudo` for port 445 gets the
-admin's password from `dt`'s environment, through `sudo -n --preserve-env=NAME`.
+`service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. The commands of a
+suite that isn't `go-json` get its `env` and `PATH` only, as they get neither of the others when
+they run as the user. Today's e2e job does the same by hand, with `sudo -E env "PATH=$PATH" ...`. A
+fixture sets no variables: it gives its values as placeholders (§4.2), and a suite that needs one in
+a variable puts it in its `env`, as `fio-verify` puts `{mount}` in `BENCH_DIR`. A secret never goes
+on a command line, where any user can read it while the process runs: the server started under
+`sudo` for port 445 gets the admin's password from `dt`'s environment, through
+`sudo -n --preserve-env=NAME`.
 
 ## 4. Design
 
@@ -1266,9 +1272,12 @@ server. No known-failure entry excuses either. A cell whose tool wrote no result
 no test in them, is not run, exit 2, and so is one whose container didn't start (`docker run`
 exits 125 to 127). docker passes a command's own exit status through, so a command in an image
 that exits 126 or 127 itself is not run too: by the shell's convention, a command it called
-couldn't run or wasn't found, which is lost coverage, not a regression. A name with several results
-in one cell is graded at each of them: smbtorture reports four subcases as `smb2.charset.Testing`,
-and three pass where one fails.
+couldn't run or wasn't found, which is lost coverage, not a regression. So is a command `dt` can't
+start, as when its program isn't there or its `dir` can't be entered, and one that runs as root and
+exits 125 to 127, `env`'s statuses for the same: the tests it stopped have no results, and the
+cell's note gives why once, however many it stopped. A name with several results in one cell is
+graded at each of them: smbtorture reports four subcases as `smb2.charset.Testing`, and three pass
+where one fails.
 
 The `system` suite is `exit` per scenario file. When another run holds its lock, `setup.sh` runs
 nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as not run, exit 2, and
@@ -1532,7 +1541,7 @@ green PRs that break each other. If the repository moves to an organization: ena
 **Baselines.** smbtorture's `baseline-results.md` is a snapshot of DittoFS's own results on
 `badger-s3`, the one profile conformance runs (§4.3), and the pynfs knfsd run compares the same
 tests against the kernel's server. Neither changes from one night to the next: the smbtorture
-file last changed on 2026-06-22, from `memory`. Both are manual:
+file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt known baseline smbtorture/badger-s3` writes the file, in `test/smb-conformance/smbtorture/`,
   from that cell's results in a run, and it lands through a pull request like any change. It counts
   each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
