@@ -27,7 +27,9 @@ var nfsConfigCmd = &cobra.Command{
 This controls the share's export settings: the squash mode, the
 authentication flags and the netgroup that restricts which clients may reach
 the share. The authentication flags and the netgroup are the share's access
-policy, which applies over NFS and SMB alike. Changes take effect immediately.
+policy, which applies over NFS and SMB alike; the squash mode maps the
+identities of SMB sessions too, guest sessions excepted. Changes take effect
+immediately.
 
 Examples:
   # Show a share's NFS config
@@ -69,7 +71,8 @@ intact. Changes take effect immediately, without an adapter restart.
 
 The netgroup allowlist and the authentication flags are the share's access
 policy: they are enforced on NFSv3 mounts, on NFSv4 operations and on SMB
-requests to the same share.
+requests to the same share. The squash mode is not NFS-only either: it maps the
+identities of SMB sessions on the share as well, guest sessions excepted.
 
 Examples:
   # Restrict access to a specific netgroup

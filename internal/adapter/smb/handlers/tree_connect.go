@@ -693,6 +693,14 @@ func askPersistedRecord(ctx context.Context, user *models.User, userStore models
 // group memberships consulted below are current ones rather than those captured
 // when the session authenticated, while every other identity field still comes
 // from the one read that produced the generation the re-check is pinned to.
+//
+// decision: grants resolve against the authenticated, unsquashed user; the
+// share's squash mode applies only to the filesystem identity, in
+// BuildAuthContextFromUser. So an all_to_guest caller keeps its own share grant
+// and does file operations as the anonymous UID/GID. NFS orders the two the
+// same way (ResolveSharePermission runs on the claimed UID before
+// ApplyIdentityMapping), so the protocols agree. Resolve against the squashed
+// identity instead only if both change together.
 func resolveSharePermissionForIdentity(
 	ctx *SMBHandlerContext,
 	sess *session.Session,
@@ -796,20 +804,8 @@ func isRootUser(user *models.User) bool {
 	return user != nil && user.UID != nil && *user.UID == 0
 }
 
-// rootHasAdminAccess checks if the share's squash mode allows root to have admin access.
-// An empty/unset squash normalizes to DefaultSquashMode (root_to_guest), which
-// does NOT grant root admin. Root has admin access only when squash mode is:
-//   - SquashNone (no mapping)
-//   - SquashRootToAdmin (root keeps admin)
-//   - SquashAllToAdmin (everyone gets admin)
+// rootHasAdminAccess checks if the share's squash mode lets root keep admin
+// access (models.SquashMode.RootKeepsAdmin, shared with NFS).
 func rootHasAdminAccess(share *runtime.Share) bool {
-	if share == nil {
-		return false
-	}
-	switch share.Squash.OrDefault() {
-	case models.SquashNone, models.SquashRootToAdmin, models.SquashAllToAdmin:
-		return true
-	default:
-		return false
-	}
+	return share != nil && share.Squash.RootKeepsAdmin()
 }
