@@ -68,7 +68,13 @@ func ndrWideString(s string) []byte {
 // and returns a function issuing one request on it.
 func openSRVSVCPipe(t *testing.T, h *Handler, sessionID uint64) func(opnum uint16, stub []byte) []byte {
 	t.Helper()
-	ipcCtx := newTreeConnectTestContext(sessionID)
+	return openSRVSVCPipeFrom(t, h, sessionID, "127.0.0.1:12345")
+}
+
+// openSRVSVCPipeFrom is openSRVSVCPipe over a connection from clientAddr.
+func openSRVSVCPipeFrom(t *testing.T, h *Handler, sessionID uint64, clientAddr string) func(opnum uint16, stub []byte) []byte {
+	t.Helper()
+	ipcCtx := NewSMBHandlerContext(context.Background(), clientAddr, sessionID, 0, 1)
 	if res, err := h.TreeConnect(ipcCtx, buildTreeConnectRequestBody(`\\server\IPC$`)); err != nil || res.Status != types.StatusSuccess {
 		t.Fatalf("TREE_CONNECT IPC$ failed: %v %v", res.Status, err)
 	}
