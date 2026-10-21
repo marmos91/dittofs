@@ -108,7 +108,7 @@ for count in 0 1 254 255 256 257 512; do
         for ((i = 1; i <= count; i++)); do
             echo "/fixture/tests/new/$i.t (Wstat: 0 Tests: 1 Failed: 1)"
         done
-        echo "Files=$((count + 2)), Tests=$((count + 2)), 0 wallclock secs (0.01 CPU)"
+        echo "Files=$((count + 2)), Tests=$((count + 3)), 0 wallclock secs (0.01 CPU)"
         echo 'Result: FAIL'
     } >"$WORK/prove.log"
 
@@ -120,17 +120,28 @@ for count in 0 1 254 255 256 257 512; do
     write_wpts_fixture "${results[@]}"
 
     for suite in pynfs posix wpts; do
+        known=KNOWN new=NEW suffix=
         case "$suite" in
             pynfs) parser="$TEST_DIR/nfs-conformance/pynfs/parse-results.sh"; input="$WORK/pynfs.log" ;;
-            posix) parser="$TEST_DIR/posix/parse-results.sh"; input="$WORK/prove.log" ;;
+            posix) parser="$TEST_DIR/posix/parse-results.sh"; input="$WORK/prove.log"; known=known/00.t new=new/ suffix=.t ;;
             wpts) parser="$TEST_DIR/smb-conformance/parse-results.sh"; input="$WORK/wpts.trx" ;;
         esac
-        "$parser" "$input" "$WORK/known.md" >"$WORK/raw" 2>&1
+        # The grades the parity jobs compare with dt's: each failure, then the tests that ran.
+        {
+            echo "known $known"
+            for ((i = 1; i <= count; i++)); do
+                echo "new $new$i$suffix"
+            done
+            echo "ran $((count + 2))"
+        } >"$WORK/want-grades"
+        rm -f "$WORK/grades"
+        DITTOFS_RESULTS_DIR="$WORK" "$parser" "$input" "$WORK/known.md" >"$WORK/raw" 2>&1
         got=$?
         sed $'s/\033\[[0-9;]*m//g' "$WORK/raw" >"$WORK/output"
         if [[ "$got" -ne "$expected" ]] ||
             ! grep -qiE "New failures:[[:space:]]+$count$" "$WORK/output" ||
-            ! grep -qiE 'Known failures:[[:space:]]+1$' "$WORK/output"; then
+            ! grep -qiE 'Known failures:[[:space:]]+1$' "$WORK/output" ||
+            ! cmp -s "$WORK/want-grades" "$WORK/grades"; then
             echo "FAIL: $suite with $count new failures: exit $got, want $expected; exact counts must survive"
             tail -12 "$WORK/output"
             FAILURES=$((FAILURES + 1))

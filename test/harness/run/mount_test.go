@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // A fixture that mounts the share gives {mount} to its cell's commands, and
@@ -31,9 +33,9 @@ func TestFixtureMount(t *testing.T) {
     fixture: { profile: memory, nfs: "4.1" }
 `, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
 	rep, out := runTarget(t, root, r, "m", false)
-	want, note := Passed, ""
+	want, note := report.Passed, ""
 	if runtime.GOOS != "linux" {
-		want, note = NotRun, "dt mounts NFS only on Linux yet"
+		want, note = report.NotRun, "dt mounts NFS only on Linux yet"
 	}
 	if o := rep.Outcomes[0]; o.Result != want || o.Note != note {
 		t.Errorf("outcome %+v\n%s", o, out)

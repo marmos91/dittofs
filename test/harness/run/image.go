@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/fixture"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
@@ -40,7 +41,7 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 	// results in {out}/config, owned by root, and only dtc hands it back to
 	// the user (DT_FIX_OWNER). Pass --user once a suite's image is known to
 	// run as any user.
-	docker = []string{"docker", "run", "--rm", "--name", name, "--network", network()}
+	docker = []string{"docker", "run", "--rm", "--name", name, "--network", fixture.Network()}
 	// decision: dir is given to docker as it fills, so a relative one is
 	// docker's to refuse: it exits 125, and the cell is not run.
 	if t.inside != "" {
@@ -70,16 +71,6 @@ func (t tester) inImage(argv []string) (docker []string, name string, err error)
 		docker = append(docker, "-v", from+":"+to)
 	}
 	return append(append(docker, u.Image), argv...), name, nil
-}
-
-// network is the network the fixture's server is on: the host's, unless dt
-// runs in a dtc container on a bridge network, whose network the image's
-// container then shares.
-func network() string {
-	if os.Getenv("DT_IN_CONTAINER") == "1" && os.Getenv("DT_HOSTNET") != "1" {
-		return "container:" + os.Getenv("DT_CONTAINER_NAME")
-	}
-	return "host"
 }
 
 // pull pulls image unless docker has it, before the cell's first test, so

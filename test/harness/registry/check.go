@@ -21,11 +21,11 @@ import (
 var Tiers = []string{"pr", "merge", "nightly", "manual"}
 
 var (
-	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx")
+	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx", "nfstest")
 	metrics    = set("fio-json", "dfsbench-json")
 	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "nfs4-acl-tools", "kerberos", "dm-flakey", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
-	placeholders = set("test", "args", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "user", "user2", "password", "realm")
+	placeholders = set("test", "test-args", "args", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
 
 	// runFlags are dt run's flags, the planned ones included, which no option
 	// may share a name with.
@@ -114,7 +114,7 @@ func checkUnit(root string, u *Suite) []error {
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
 
 	if !formats[u.Format] {
-		fail("format %q is not one of exit, go-json, junit, tap, subunit, trx", u.Format)
+		fail("format %q is not one of exit, go-json, junit, tap, subunit, trx, nfstest", u.Format)
 	}
 	if u.Metrics != "" && !metrics[u.Metrics] {
 		fail("metrics %q is not fio-json or dfsbench-json", u.Metrics)
@@ -186,10 +186,18 @@ func checkUnit(root string, u *Suite) []error {
 		// decision: a fixture's users are UIDs from 1 to 65534. Root is what
 		// squash decides, not a user to create, and the fixture's own test
 		// users take the first two UIDs above that range, so none shares one.
-		for _, uid := range f.Users {
-			if uid < 1 || uid > 65534 {
-				fail("fixture users: %d is not a UID from 1 to 65534", uid)
+		for _, u := range f.Users {
+			if uid, err := strconv.Atoi(u); u != "self" && (err != nil || uid < 1 || uid > 65534) {
+				fail("fixture users: %s is not self or a UID from 1 to 65534", u)
 			}
+		}
+		switch {
+		case f.Client != "" && f.Client != "namespace":
+			fail("fixture client: %q is not namespace", f.Client)
+		case f.Clients != 0 && (f.Clients != 2 || f.Client == ""):
+			fail("fixture clients: 2 adds a second client beside the namespaced one, and is the only value")
+		case f.RPCBind != "" && f.RPCBind != "host":
+			fail("fixture rpcbind: %q is not host", f.RPCBind)
 		}
 		paths = append(paths, f.Shares)
 	}
@@ -218,6 +226,11 @@ func checkUnit(root string, u *Suite) []error {
 			fail("matrix axis %q has no values", a.Name)
 		}
 		axes[a.Name] = true
+		for _, v := range a.Values[min(1, len(a.Values)):] {
+			if len(a.Fill) > 0 && !slices.Equal(slices.Sorted(maps.Keys(a.Fill[v])), a.fillNames()) {
+				fail("matrix axis %q: value %s fills other placeholders than %s does", a.Name, v, a.Values[0])
+			}
+		}
 	}
 	// A template takes the same placeholders as a command.
 	for _, f := range templates {
@@ -230,7 +243,7 @@ func checkUnit(root string, u *Suite) []error {
 			switch {
 			case p == "test":
 				fail("template %s: {test} has no value before the first test, when templates are filled in", filepath.Base(f))
-			case !placeholders[p] && !axes[p]:
+			case len(u.Unknown("{"+p+"}")) > 0:
 				fail("template %s: unknown placeholder {%s}", filepath.Base(f), p)
 			}
 		}
@@ -239,9 +252,9 @@ func checkUnit(root string, u *Suite) []error {
 	for _, s := range u.allStrings() {
 		for _, p := range Placeholders(s) {
 			used[p] = true
-			if !placeholders[p] && !axes[p] {
-				fail("unknown placeholder {%s}", p)
-			}
+		}
+		for _, p := range u.Unknown(s) {
+			fail("unknown placeholder {%s}", p)
 		}
 		for _, name := range toolRefs(s) {
 			if _, ok := ToolDirs[name]; !ok {
@@ -250,18 +263,25 @@ func checkUnit(root string, u *Suite) []error {
 		}
 	}
 	// dt fills {test} again for each test only in cmd and volumes, and
-	// everything else before the first test, when it has no value.
+	// {test-args} in cmd, and everything else before the first test, when
+	// they have no value.
 	fields := u.fields()
 	for _, field := range slices.Sorted(maps.Keys(fields)) {
-		if field == "cmd" || field == "volumes" {
-			continue
+		holds := func(p string) bool {
+			return slices.ContainsFunc(fields[field], func(s string) bool { return slices.Contains(Placeholders(s), p) })
 		}
-		if slices.ContainsFunc(fields[field], func(s string) bool { return slices.Contains(Placeholders(s), "test") }) {
+		if field != "cmd" && field != "volumes" && holds("test") {
 			fail("%s holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test", field)
+		}
+		if field != "cmd" && holds("test-args") {
+			fail("%s holds {test-args}, which has a value only in cmd: the rest is filled in before the first test", field)
 		}
 	}
 	if used["test"] && !u.Tests.Set() {
 		fail("{test} is used, but the suite has no tests")
+	}
+	if used["test-args"] && u.Tests.File == "" {
+		fail("{test-args} is used, but the suite's tests aren't a .txt list, whose lines give them")
 	}
 	inCell := map[string]bool{}
 	for _, s := range u.cellStrings() {
@@ -270,8 +290,10 @@ func checkUnit(root string, u *Suite) []error {
 		}
 	}
 	for _, a := range u.Matrix {
-		if !inCell[a.Name] {
-			fail("matrix axis %q is used by no command, fixture or env", a.Name)
+		for _, p := range a.fillNames() {
+			if !inCell[p] {
+				fail("matrix axis %q is used by no command, fixture or env: {%s} is in none", a.Name, p)
+			}
 		}
 	}
 	for t, sel := range u.Select {
@@ -371,6 +393,26 @@ func Placeholders(s string) []string {
 		}
 	}
 	return out
+}
+
+// Unknown returns the placeholders in s that no cell of the suite fills.
+func (u *Suite) Unknown(s string) []string {
+	var out []string
+	for _, p := range Placeholders(s) {
+		if !placeholders[p] && !slices.ContainsFunc(u.Matrix, func(a Axis) bool { return slices.Contains(a.fillNames(), p) }) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// fillNames names the placeholders the axis fills: its own, or those its
+// named values fill.
+func (a Axis) fillNames() []string {
+	if len(a.Fill) == 0 || len(a.Values) == 0 {
+		return []string{a.Name}
+	}
+	return slices.Sorted(maps.Keys(a.Fill[a.Values[0]]))
 }
 
 // Tools returns the test tools the suite names, as {tools}/NAME in any of its

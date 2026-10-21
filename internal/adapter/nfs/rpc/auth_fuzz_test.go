@@ -22,8 +22,8 @@ func FuzzParseUnixAuth(f *testing.F) {
 		})
 		f.Add(body)
 
-		// The parser ignores padding contents and trailing bytes. Preserve
-		// those accepted inputs while exercising all string alignments.
+		// The parser ignores padding contents and refuses trailing bytes.
+		// Exercise both across all string alignments.
 		padded := bytes.Clone(body)
 		paddingEnd := 8 + nameLen + (4-nameLen%4)%4
 		for i := 8 + nameLen; i < paddingEnd; i++ {
@@ -55,7 +55,7 @@ func FuzzParseUnixAuth(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, body []byte) {
 		// The defined credential fields consume at most 340 bytes. Leave room
-		// for ignored suffixes while bounding each fuzz iteration's work.
+		// for refused suffixes while bounding each fuzz iteration's work.
 		if len(body) > 4096 {
 			t.Skip()
 		}
@@ -66,10 +66,12 @@ func FuzzParseUnixAuth(f *testing.F) {
 
 		// Use the independent XDR decoder as the wire-format oracle. Its
 		// limit bounds both string bytes and array elements before allocation;
-		// the AUTH_UNIX supplementary-group limit is stricter than that.
+		// the AUTH_UNIX supplementary-group limit is stricter than that. A body
+		// is exactly one credential, so bytes the oracle leaves unread are
+		// malformed too.
 		want := UnixAuth{GIDs: []uint32{}}
-		_, decodeErr := xdr.UnmarshalLimited(bytes.NewReader(body), &want, 255)
-		if decodeErr != nil || len(want.GIDs) > 16 {
+		n, decodeErr := xdr.UnmarshalLimited(bytes.NewReader(body), &want, 255)
+		if decodeErr != nil || n != len(body) || len(want.GIDs) > 16 {
 			require.Error(t, err, "malformed or oversized credentials must be rejected")
 			require.Nil(t, got, "failed parsing must not return a partial identity")
 			return

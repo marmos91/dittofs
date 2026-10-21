@@ -7,15 +7,12 @@
 # row is about the kernel client rather than DittoFS.
 #
 # Not a CI gate: it measures a third-party server, so its verdict says nothing
-# about any given commit. It takes as long as the nfstest cells it is compared
-# with, so it runs nightly beside them, and on demand, never on a PR.
+# about any given commit, and its results don't change from night to night. It
+# runs on demand only, when a known-failure row needs fresh evidence.
 
 name: nfstest knfsd baseline
 
 on:
-  schedule:
-    # Nightly at 04:43 UTC, staggered from the other protocol suites.
-    - cron: '43 4 * * *'
   workflow_dispatch:
     inputs:
       variants:

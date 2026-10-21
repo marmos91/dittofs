@@ -23,15 +23,14 @@ const knownFile = `- { test: known, status: fail, fix: wontfix, category: proto,
 // skip, or a test whose output stopped, which no entry excuses, leaves it
 // not run.
 func TestCellFromGrades(t *testing.T) {
-	readers["tap"] = func(r report.Ran) ([]report.Test, error) {
+	fakeTAP(t, func(r report.Ran) ([]report.Test, error) {
 		var tests []report.Test
 		for _, line := range strings.Fields(string(r.Output)) {
 			status, name, _ := strings.Cut(line, ":")
 			tests = append(tests, report.Test{Name: name, Status: status})
 		}
 		return tests, nil
-	}
-	t.Cleanup(func() { delete(readers, "tap") })
+	})
 	root, r := repo(t, `groups: { g: [green, fixed, unlisted, stopped] }
 suites:
   green: { cmd: "cat {test}", tests: "green/*", format: tap, known: k.yaml }
@@ -47,10 +46,10 @@ suites:
 	})
 	rep := runIn(t, root, r, "g")
 	want := []report.Cell{
-		{Name: "green", Result: Passed},
-		{Name: "fixed", Result: Failed, Note: "1 passed unexpectedly: fixed"},
-		{Name: "unlisted", Result: NotRun, Note: "1 skipped unexpectedly: nope"},
-		{Name: "stopped", Result: NotRun, Note: "1 incomplete: known"},
+		{Name: "green", Result: report.Passed},
+		{Name: "fixed", Result: report.Failed, Note: "1 passed unexpectedly: fixed"},
+		{Name: "unlisted", Result: report.NotRun, Note: "1 skipped unexpectedly: nope"},
+		{Name: "stopped", Result: report.NotRun, Note: "1 incomplete: known"},
 	}
 	if len(rep.Outcomes) != len(want) {
 		t.Fatalf("outcomes %+v", rep.Outcomes)
@@ -104,9 +103,9 @@ func TestExitSuiteGraded(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []report.Cell{
-		{Name: "s/a", Result: Failed, Note: "t/hangs.sh: timed out after 1s"},
-		{Name: "s/b", Result: Failed, Note: "t/fails.sh: `sh t/fails.sh b` exited 1"},
-		{Name: "s/o/c", Result: Passed},
+		{Name: "s/a", Result: report.Failed, Note: "t/hangs.sh: timed out after 1s"},
+		{Name: "s/b", Result: report.Failed, Note: "t/fails.sh: `sh t/fails.sh b` exited 1"},
+		{Name: "s/o/c", Result: report.Passed},
 	}
 	if len(rep.Outcomes) != len(want) {
 		t.Fatalf("outcomes %+v", rep.Outcomes)
@@ -132,25 +131,25 @@ func TestGoJSONGraded(t *testing.T) {
 {"Action":"run","Package":"p","Test":"TestPass"}
 {"Action":"pass","Package":"p","Test":"TestPass"}
 {"Action":"fail","Package":"p"}
-`, "1", Passed, "1 passed, 0 failed, 0 skipped, 1 known"},
+`, "1", report.Passed, "1 passed, 0 failed, 0 skipped, 1 known"},
 		{"an unexpected pass", `{"Action":"run","Package":"p","Test":"TestKnown"}
 {"Action":"pass","Package":"p","Test":"TestKnown"}
 {"Action":"pass","Package":"p"}
-`, "0", Failed, "1 passed, 0 failed, 0 skipped; 1 passed unexpectedly: TestKnown"},
+`, "0", report.Failed, "1 passed, 0 failed, 0 skipped; 1 passed unexpectedly: TestKnown"},
 		{"an unlisted skip", `{"Action":"run","Package":"p","Test":"TestSkip"}
 {"Action":"skip","Package":"p","Test":"TestSkip"}
 {"Action":"pass","Package":"p"}
-`, "0", NotRun, "0 passed, 0 failed, 1 skipped; 1 skipped unexpectedly: TestSkip"},
+`, "0", report.NotRun, "0 passed, 0 failed, 1 skipped; 1 skipped unexpectedly: TestSkip"},
 		{"a crash", `{"Action":"run","Package":"p","Test":"TestKnown"}
 {"Action":"output","Package":"p","Test":"TestKnown","Output":"panic: boom\n"}
 {"Action":"fail","Package":"p"}
-`, "1", Failed, "0 passed, 1 failed, 0 skipped: TestKnown"},
+`, "1", report.Failed, "0 passed, 1 failed, 0 skipped: TestKnown"},
 		{"a parent that failed only through its known subtest", `{"Action":"run","Package":"p","Test":"TestP"}
 {"Action":"run","Package":"p","Test":"TestP/bad"}
 {"Action":"fail","Package":"p","Test":"TestP/bad"}
 {"Action":"fail","Package":"p","Test":"TestP"}
 {"Action":"fail","Package":"p"}
-`, "1", Passed, "0 passed, 0 failed, 0 skipped, 2 known"},
+`, "1", report.Passed, "0 passed, 0 failed, 0 skipped, 2 known"},
 		{"a parent with a new subtest beside its known one", `{"Action":"run","Package":"p","Test":"TestP"}
 {"Action":"run","Package":"p","Test":"TestP/bad"}
 {"Action":"fail","Package":"p","Test":"TestP/bad"}
@@ -158,7 +157,7 @@ func TestGoJSONGraded(t *testing.T) {
 {"Action":"fail","Package":"p","Test":"TestP/worse"}
 {"Action":"fail","Package":"p","Test":"TestP"}
 {"Action":"fail","Package":"p"}
-`, "1", Failed, "0 passed, 2 failed, 0 skipped, 1 known: TestP/worse"},
+`, "1", report.Failed, "0 passed, 2 failed, 0 skipped, 1 known: TestP/worse"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			root, r := repo(t, "suites:\n  g: { cmd: go test ./..., format: go-json, known: k.yaml }\n",

@@ -384,7 +384,11 @@ run_one() {
         fi
     done
 
-    [[ "$DRY_RUN" == true ]] || write_summary "$label" "$status" "${results_dir}" "$failed_step"
+    if [[ "$DRY_RUN" == false ]]; then
+        # Beside the grades the grader wrote, for comparing them with dt's.
+        echo "$status" >"${results_dir}/status"
+        write_summary "$label" "$status" "${results_dir}" "$failed_step"
+    fi
     return "$status"
 }
 

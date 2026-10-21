@@ -9,37 +9,45 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/test/harness/registry"
+	"github.com/marmos91/dittofs/test/harness/report"
 )
 
 // fakeServer is a started fixture that gives fixed placeholders, and
-// {mount} when mount is set. Each reset says so in the cell's output.
+// {mount} when mount is set. Each reset says which share in the cell's
+// output.
 type fakeServer struct {
 	stops    int
 	resets   int
 	err      error // what Stop reports
 	resetErr error // what Reset reports
 	mount    string
+	client   []string  // what Command puts before a command, as a client would
 	out      io.Writer // the cell's output
 }
 
 func (f *fakeServer) Placeholders() map[string]string {
-	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": "40002", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
+	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": "40002", "share": "one", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
 	if f.mount != "" {
 		vals["mount"] = f.mount
 	}
 	return vals
 }
 
-func (f *fakeServer) Reset() error {
+func (f *fakeServer) Reset(share string) error {
 	f.resets++
-	_, _ = fmt.Fprintln(f.out, "[dt] fake reset")
+	_, _ = fmt.Fprintln(f.out, "[dt] fake reset", share)
 	return f.resetErr
+}
+
+func (f *fakeServer) Command(argv []string, _ string, _ []string) ([]string, error) {
+	return append(slices.Clone(f.client), argv...), nil
 }
 
 func (f *fakeServer) Stop() error {
@@ -94,10 +102,10 @@ func TestFixtureCell(t *testing.T) {
 	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, fixtureSuite, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
 	rep, out := runTarget(t, root, r, "f", false)
-	if len(rep.Outcomes) != 3 || rep.Outcomes[0].Result != Passed || rep.Outcomes[1].Result != Passed {
+	if len(rep.Outcomes) != 3 || rep.Outcomes[0].Result != report.Passed || rep.Outcomes[1].Result != report.Passed {
 		t.Fatalf("outcomes %+v\n%s", rep.Outcomes, out)
 	}
-	if o := rep.Outcomes[2]; o.Result != NotRun || o.Note != `dt doesn't set up the "postgres-s3" profile yet` {
+	if o := rep.Outcomes[2]; o.Result != report.NotRun || o.Note != `dt doesn't set up the "postgres-s3" profile yet` {
 		t.Errorf("postgres-s3: %+v", o)
 	}
 	a := *asked
@@ -118,6 +126,30 @@ func TestFixtureCell(t *testing.T) {
 	}
 }
 
+// A fixture with Kerberos has its KDC's image built from the checkout, one of
+// the fixture's own steps, before its server starts, and gives {realm} and
+// {krb5-conf}.
+func TestFixtureKerberosImage(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("dt sets up Kerberos only on Linux")
+	}
+	log := fakeDocker(t)
+	var before string // the docker calls when the fixture started
+	fakeFixture(t, func(context.Context) (fixtureServer, error) {
+		data, _ := os.ReadFile(log)
+		before = string(data)
+		return &fakeServer{}, nil
+	})
+	root, r := repo(t, `suites:
+  k: { cmd: "echo {realm} {krb5-conf}", fixture: { profile: memory, smb: true, kerberos: true } }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
+	rep, out := runTarget(t, root, r, "k", false)
+	build := "build\n-q\n-t\ndittofs-dt-kdc\n" + filepath.Join("test", "smb-conformance", "kdc") + "\n"
+	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(before, build) {
+		t.Errorf("outcome %+v, docker calls before the fixture:\n%s\n%s", o, before, out)
+	}
+}
+
 // A fixture that fails its setup leaves its cell not run and its tests
 // unstarted; one that passes the setup's limit is tried once.
 func TestFixtureSetupFails(t *testing.T) {
@@ -126,7 +158,7 @@ func TestFixtureSetupFails(t *testing.T) {
 	})
 	root, r := repo(t, fixtureSuite, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
 	rep, out := runTarget(t, root, r, "f/memory", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != "the fixture: dfs exited before its API answered" || strings.Contains(out, "[dt] $ echo") {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "the fixture: dfs exited before its API answered" || strings.Contains(out, "[dt] $ echo") {
 		t.Errorf("a failed setup: %+v\n%s", o, out)
 	}
 
@@ -138,7 +170,7 @@ func TestFixtureSetupFails(t *testing.T) {
 		return nil, ctx.Err()
 	})
 	rep, _ = runTarget(t, root, r, "f/memory", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != "the fixture wasn't set up within 3s, and isn't retried" || len(*asked) != 1 {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "the fixture wasn't set up within 3s, and isn't retried" || len(*asked) != 1 {
 		t.Errorf("a setup past its limit: %+v, started %d times", o, len(*asked))
 	}
 }
@@ -150,7 +182,7 @@ func TestFixtureServerEnds(t *testing.T) {
 	fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, fixtureSuite, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
 	rep, _ := runTarget(t, root, r, "f/memory", false)
-	if o := rep.Outcomes[0]; o.Result != Failed || o.Note != "the fixture: dfs exited before its cell ended: exit status 2" {
+	if o := rep.Outcomes[0]; o.Result != report.Failed || o.Note != "the fixture: dfs exited before its cell ended: exit status 2" {
 		t.Errorf("outcome %+v", o)
 	}
 }
@@ -172,7 +204,7 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 	fakeDocker(t)
 	t.Setenv("FAKE_IMAGE", "stall")
 	rep, out := runTarget(t, root, r, "f", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != "the fixture wasn't set up within 3s, and isn't retried" {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "the fixture wasn't set up within 3s, and isn't retried" {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
 	if late := time.Since(deadline); late > time.Second {
@@ -180,28 +212,29 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 	}
 }
 
-// A fixture with reset: each has its share reset before each test of its
-// cell, and a test whose reset fails doesn't run. The fixture finds its
-// shares file from the repository's root, and the commands get {smb-port}
-// and {user2}.
+// A fixture with reset: each has the share of each test of its cell reset
+// before the test, and a test whose reset fails doesn't run. A test's {share}
+// is its share= in a .txt list, else the fixture's first share. The fixture
+// finds its shares file from the repository's root, and the commands get
+// {smb-port} and {user2}.
 func TestFixtureResetEach(t *testing.T) {
 	server := &fakeServer{}
 	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, `suites:
   r:
-    cmd: "echo {test} {smb-port} {user2}"
-    tests: [a, b]
+    cmd: "echo {test} {share} {smb-port} {user2}"
+    tests: list.txt
     fixture: { profile: memory, smb: true, shares: smb/shares.yaml, reset: each }
-`, withBins(map[string]string{"go.mod": goModule["go.mod"], "smb/shares.yaml": "- name: /s\n"}))
+`, withBins(map[string]string{"go.mod": goModule["go.mod"], "smb/shares.yaml": "- name: /one\n- name: /two\n", "list.txt": "a share=two\nb\n"}))
 	rep, out := runTarget(t, root, r, "r", false)
 	var steps []string
 	for _, line := range strings.Split(out, "\n") {
-		if line == "[dt] fake reset" || strings.HasPrefix(line, "[dt] $ echo") {
+		if strings.HasPrefix(line, "[dt] fake reset") || strings.HasPrefix(line, "[dt] $ echo") {
 			steps = append(steps, line)
 		}
 	}
-	want := []string{"[dt] fake reset", "[dt] $ echo a 40002 dt-user2", "[dt] fake reset", "[dt] $ echo b 40002 dt-user2"}
-	if o := rep.Outcomes[0]; o.Result != Passed || !slices.Equal(steps, want) {
+	want := []string{"[dt] fake reset two", "[dt] $ echo a two 40002 dt-user2", "[dt] fake reset one", "[dt] $ echo b one 40002 dt-user2"}
+	if o := rep.Outcomes[0]; o.Result != report.Passed || !slices.Equal(steps, want) {
 		t.Errorf("outcome %+v, steps:\n%s\nwant:\n%s", o, strings.Join(steps, "\n"), strings.Join(want, "\n"))
 	}
 	if a := *asked; a[0].Shares != filepath.Join(root, "smb", "shares.yaml") {
@@ -210,7 +243,24 @@ func TestFixtureResetEach(t *testing.T) {
 
 	server.resetErr = errors.New("the API answered 500")
 	rep, out = runTarget(t, root, r, "r", false)
-	if o := rep.Outcomes[0]; o.Result != NotRun || o.Note != "a: its share wasn't reset: the API answered 500; b: its share wasn't reset: the API answered 500" || strings.Contains(out, "[dt] $ echo") {
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "a: its share wasn't reset: the API answered 500; b: its share wasn't reset: the API answered 500" || strings.Contains(out, "[dt] $ echo") {
 		t.Errorf("a failed reset: %+v\n%s", o, out)
+	}
+}
+
+// A fixture with a client runs each command there, and dt shows it as it
+// runs.
+func TestCommandOnTheClient(t *testing.T) {
+	fakeFixture(t, func(context.Context) (fixtureServer, error) {
+		return &fakeServer{client: []string{"env", "ON_CLIENT=yes"}}, nil
+	})
+	root, r := repo(t, `suites:
+  c:
+    cmd: { sh: 'test "$ON_CLIENT" = yes' }
+    fixture: { profile: memory, nfs: export }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
+	rep, out := runTarget(t, root, r, "c", false)
+	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(out, "[dt] $ env ON_CLIENT=yes sh -c") {
+		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }

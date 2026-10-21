@@ -1,8 +1,16 @@
 package fixture
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"maps"
+	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,12 +55,10 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 	}
 	// The users come before the shares, since {user} owns a shares file's
 	// shares.
-	for _, uid := range f.Users {
-		// decision: each user's GID is its UID, as the suites' scripts set
-		// them up today.
-		id := uint32(uid)
-		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: fmt.Sprintf("dt-%d", uid), Password: password, UID: &id, GID: &id}); err != nil {
-			return fmt.Errorf("user %d: %w", uid, err)
+	for _, u := range f.Users {
+		uid, gid := ids(u)
+		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: userName(u), Password: password, UID: &uid, GID: &gid}); err != nil {
+			return fmt.Errorf("user %s: %w", u, err)
 		}
 	}
 	// decision: {user} and {user2} have UIDs and GIDs of their own, the first
@@ -64,6 +70,14 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 	}{{User, UserUID}, {User2, User2UID}} {
 		if _, err := c.CreateUser(&apiclient.CreateUserRequest{Username: u.name, Password: password, UID: &u.id, GID: &u.id}); err != nil {
 			return fmt.Errorf("the test user %s: %w", u.name, err)
+		}
+	}
+	// {user}'s principal maps to {user}, as the scripts' bootstrap maps it: a
+	// client given the principal sends it as its NTLM user name too, which
+	// the server looks up through the mapping.
+	if f.Kerberos {
+		if _, err := c.CreateIdentityMapping("kerberos", User+"@"+Realm, User); err != nil {
+			return fmt.Errorf("the identity mapping of %s@%s: %w", User, Realm, err)
 		}
 	}
 	for _, share := range s.shares {
@@ -85,6 +99,9 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 		}
 		if d := settings.DelegationsEnabled; d != nil && got.DelegationsEnabled != *d {
 			return fmt.Errorf("the server reports delegations %t, not the %t dt set", got.DelegationsEnabled, *d)
+		}
+		if r := settings.PortmapperRegisterWithSystem; r != nil && (!got.PortmapperRegisterWithSystem || !got.UDPEnabled) {
+			return errors.New("the server reports it doesn't register with the host's rpcbind, or serves no UDP, though dt set both")
 		}
 	}
 	if f.SMB.Encryption == "preferred" {
@@ -133,20 +150,43 @@ func addShare(c *apiclient.Client, f registry.Fixture, share apiclient.CreateSha
 			return fmt.Errorf("squash %s on %s: %w", f.Squash, share.Name, err)
 		}
 	}
-	for _, uid := range f.Users {
-		if err := c.SetUserSharePermission(share.Name, fmt.Sprintf("dt-%d", uid), "read-write"); err != nil {
-			return fmt.Errorf("user %d's grant on %s: %w", uid, share.Name, err)
+	for _, u := range f.Users {
+		if err := c.SetUserSharePermission(share.Name, userName(u), "read-write"); err != nil {
+			return fmt.Errorf("user %s's grant on %s: %w", u, share.Name, err)
 		}
 	}
 	return nil
 }
 
+// ids gives a fixture user's UID and GID: self is the user dt runs as, in its
+// own group, and a UID's GID is the UID, as the suites' scripts set them up
+// today.
+func ids(user string) (uid, gid uint32) {
+	if user == "self" {
+		return uint32(os.Getuid()), uint32(os.Getgid())
+	}
+	n, _ := strconv.ParseUint(user, 10, 32) // the registry checks it's a UID
+	return uint32(n), uint32(n)
+}
+
+// userName is a fixture user's name on the server.
+func userName(user string) string {
+	uid, _ := ids(user)
+	return fmt.Sprintf("dt-%d", uid)
+}
+
 // nfsSettings is the NFS adapter settings fixture f sets, or nil for none.
+// With rpcbind: host the server registers its services with the host's
+// rpcbind, and serves MOUNT, NLM and NSM over UDP too, as NSM needs.
 func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error) {
-	if f.Delegations == nil && f.Lease == "" {
+	if f.Delegations == nil && f.Lease == "" && f.RPCBind == "" {
 		return nil, nil
 	}
 	req := &apiclient.PatchNFSSettingsRequest{DelegationsEnabled: f.Delegations}
+	if f.RPCBind == "host" {
+		on := true
+		req.PortmapperRegisterWithSystem, req.UDPEnabled = &on, &on
+	}
 	if f.Lease != "" {
 		d, err := time.ParseDuration(f.Lease)
 		if err != nil || d <= 0 || d%time.Second != 0 {
@@ -161,8 +201,9 @@ func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error)
 // check is the fixture's check before the first test that the server
 // answers: an authenticated call answers, and shows NFS and SMB each served
 // on its port when the fixture asks for it, and no adapter it doesn't ask for.
-// With an S3 profile's bucket b, the server's own check of its block store
-// must find it healthy too.
+// With Kerberos, {server}, a name then, must lead to SMB's port. With an S3
+// profile's bucket b, the server's own check of its block store must find it
+// healthy too.
 func (s *Server) check(c *apiclient.Client, b *bucket) error {
 	adapters, err := c.ListAdapters()
 	if err != nil {
@@ -183,6 +224,13 @@ func (s *Server) check(c *apiclient.Client, b *bucket) error {
 			return fmt.Errorf("%s isn't served on port %d", strings.ToUpper(a), ports[a])
 		}
 	}
+	if s.kdc != nil {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(s.kdc.host, strconv.Itoa(s.smbPort)), 5*time.Second)
+		if err != nil {
+			return fmt.Errorf("{server}, the name %s, doesn't lead to SMB's port: %w", s.kdc.host, err)
+		}
+		_ = conn.Close()
+	}
 	if b == nil {
 		return nil
 	}
@@ -194,4 +242,52 @@ func (s *Server) check(c *apiclient.Client, b *bucket) error {
 		return fmt.Errorf("the server can't reach the bucket %s at %s: %s", bucketName, b.endpoint, h.Details)
 	}
 	return nil
+}
+
+// registered waits until the host's rpcbind lists the server's lock manager
+// and MOUNT on its NFS port, which rpcbind: host has the server register.
+//
+// decision: the host has one NLM and one MOUNT registration, and a server
+// takes them over from another that registered them as it does, so two
+// fixtures with rpcbind: host at once would take each other's. dt runs such
+// cells one at a time, as those whose fixtures set the same port.
+func (s *Server) registered(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, clientWaits[0])
+	defer cancel()
+	for {
+		table, err := exec.CommandContext(ctx, "rpcinfo", "-p").Output()
+		missing, nlm := unregistered(string(table), s.nfsPort)
+		if err == nil && len(missing) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			if err != nil {
+				return fmt.Errorf("the host's rpcbind: rpcinfo -p: %w", err)
+			}
+			err = fmt.Errorf("the host's rpcbind doesn't list the server's %s on port %d", strings.Join(missing, " and "), s.nfsPort)
+			if nlm != "" {
+				err = fmt.Errorf("%w: it gives NLM to port %s, held by a lock manager the server can't take it from, such as the host's own lockd, which runs while the host serves NFS or has an NFSv3 mount that locks", err, nlm)
+			}
+			return err
+		case <-time.After(clientWaits[1]):
+		}
+	}
+}
+
+// unregistered names what of NLM 4 and MOUNT 3 over TCP on port an rpcinfo
+// -p table doesn't list, and the port it gives NLM 4 to instead, if any.
+func unregistered(table string, port int) (missing []string, nlm string) {
+	want := map[string]string{"100021 4": "lock manager", "100005 3": "MOUNT"}
+	for _, line := range strings.Split(table, "\n") {
+		f := strings.Fields(line)
+		switch {
+		case len(f) < 4 || f[2] != "tcp":
+		case f[3] == strconv.Itoa(port):
+			delete(want, f[0]+" "+f[1])
+		case f[0]+" "+f[1] == "100021 4":
+			nlm = f[3]
+		}
+	}
+	return slices.Sorted(maps.Values(want)), nlm
 }
