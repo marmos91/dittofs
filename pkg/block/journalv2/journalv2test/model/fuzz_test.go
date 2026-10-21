@@ -3,6 +3,7 @@ package model
 import (
 	"math"
 	"math/rand/v2"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -122,11 +123,11 @@ func (d *driver) step() {
 		}
 		v := d.issue()
 		d.give(id, v, off, p)
-		d.t.Logf("write %x share %d [%d,+%d) %v", id.Bytes()[15], tag, off, n, v)
+		d.t.Logf("write %s share %d %s at %s", fmtFile(id), tag, fmtExtent(extent{Off: off, Len: n}), fmtVersion(v))
 		d.both(func(m *Model) error { return m.WriteAt(tag, id, off, p, mtime, v, nil) })
 
 	case 1: // sync
-		d.t.Logf("sync %x", id.Bytes()[15])
+		d.t.Logf("sync %s", fmtFile(id))
 		d.both(func(m *Model) error { return m.Sync(tag, []journalv2.FileID{id}, nil) })
 
 	case 2: // fill, never below a release or removal the caller made over its bytes
@@ -163,7 +164,7 @@ func (d *driver) step() {
 		if err == nil {
 			d.give(id, v, off, p)
 		}
-		d.t.Logf("fill %x [%d,+%d) asOf %v v %v -> %v", id.Bytes()[15], off, n, asOf, v, err)
+		d.t.Logf("fill %s %s at %s as of %s -> %v", fmtFile(id), fmtExtent(extent{Off: off, Len: n}), fmtVersion(v), fmtVersion(asOf), err)
 		d.both(func(m *Model) error { return m.Fill(tag, id, off, p, asOf, v, err) })
 
 	case 3: // offload: offer every dirty run, report some of it
@@ -205,7 +206,7 @@ func (d *driver) step() {
 				reported = append(reported, p.Extent)
 			}
 		}
-		d.t.Logf("offload %x dirty %+v reported %+v", id.Bytes()[15], o.Dirty, reported)
+		d.t.Logf("offload %s through %s offered %s reported %s", fmtFile(id), fmtVersion(through), fmtOffered(o.Dirty), fmtExtents(reported))
 		d.both(func(m *Model) error { return m.Report(tag, id, reported, nil) })
 		d.both(func(m *Model) error { return m.EndOffer(tag, id, through, nil, nil) })
 
@@ -222,7 +223,7 @@ func (d *driver) step() {
 				}
 			}
 		}
-		d.t.Logf("release %x %+v -> %v", id.Bytes()[15], e, err)
+		d.t.Logf("release %s %s -> %v", fmtFile(id), fmtExtent(e), err)
 		d.both(func(m *Model) error { return m.Release(tag, id, []journalv2.Extent{e}, err) })
 
 	case 5: // truncate
@@ -232,7 +233,7 @@ func (d *driver) step() {
 			return
 		}
 		v := d.issue()
-		d.t.Logf("truncate %x %d %v", id.Bytes()[15], size, v)
+		d.t.Logf("truncate %s to %d at %s", fmtFile(id), size, fmtVersion(v))
 		d.both(func(m *Model) error { return m.Truncate(tag, id, size, v, nil) })
 
 	case 6: // deallocate
@@ -247,7 +248,7 @@ func (d *driver) step() {
 			return
 		}
 		v := d.issue()
-		d.t.Logf("deallocate %x %+v %v", id.Bytes()[15], e, v)
+		d.t.Logf("deallocate %s %s at %s", fmtFile(id), fmtExtent(e), fmtVersion(v))
 		d.both(func(m *Model) error { return m.Deallocate(tag, id, e, v, nil) })
 
 	case 7: // delete
@@ -256,12 +257,12 @@ func (d *driver) step() {
 			return
 		}
 		v := d.issue()
-		d.t.Logf("delete %x %v", id.Bytes()[15], v)
+		d.t.Logf("delete %s at %s", fmtFile(id), fmtVersion(v))
 		d.both(func(m *Model) error { return m.Delete(tag, id, v, nil) })
 
 	case 8: // settle
 		v := journalv2.Version{Counter: uint64(d.next()) % (d.journal.maxSeen.Counter + 1)}
-		d.t.Logf("settle %x %v", id.Bytes()[15], v)
+		d.t.Logf("settle %s through %s", fmtFile(id), fmtVersion(v))
 		d.both(func(m *Model) error { return m.Settle(tag, id, v) })
 
 	case 9, 10: // crash and reopen
@@ -290,7 +291,7 @@ func (d *driver) crash() {
 	// above a fill's version, so a fill above every version issued can be
 	// lost and its version issued again.
 	floor := journalv2.Version{Counter: d.journal.issued.Counter + 1}
-	d.t.Logf("crash, reopen at %v", floor)
+	d.t.Logf("crash, reopen with floor %s", fmtVersion(floor))
 	d.both(func(m *Model) error { return m.Crash() })
 	d.both(func(m *Model) error { return m.Reopen(floor) })
 
@@ -318,7 +319,7 @@ func (d *driver) crash() {
 	v := d.issue()
 	p := []byte{d.next()}
 	d.give(fid(5), v, 0, p)
-	d.t.Logf("write 5 share %d [0,+1) %v", shareA, v)
+	d.t.Logf("write %s share %d [0,1) at %s", fmtFile(fid(5)), shareA, fmtVersion(v))
 	d.both(func(m *Model) error { return m.WriteAt(shareA, fid(5), 0, p, 0, v, nil) })
 	d.both(func(m *Model) error { return m.Sync(shareA, []journalv2.FileID{fid(5)}, nil) })
 }
@@ -348,7 +349,7 @@ func (d *driver) compare() {
 		}
 		for off, c := range d.m.current(id).held {
 			if !d.given[id][c.rec.ver][off][c.b] {
-				d.t.Fatalf("file %x byte %d holds %q at %v, which no write or fill gave", id.Bytes(), off, c.b, c.rec.ver)
+				d.t.Fatalf("%s byte %d holds %q at %s, which no write or fill gave", fmtFile(id), off, c.b, fmtVersion(c.rec.ver))
 			}
 		}
 	}
@@ -385,4 +386,20 @@ func FuzzModel(f *testing.F) {
 			d.compare()
 		}
 	})
+}
+
+func fmtExtents(es []journalv2.Extent) string {
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = fmtExtent(e)
+	}
+	return "[" + strings.Join(out, " ") + "]"
+}
+
+func fmtOffered(os []journalv2.OfferedExtent) string {
+	out := make([]string, len(os))
+	for i, o := range os {
+		out[i] = fmtExtent(o.Extent) + " " + fmtVersion(o.Version)
+	}
+	return "[" + strings.Join(out, ", ") + "]"
 }

@@ -291,6 +291,6 @@ func TestCompareReadsAToEndMarkerEitherWay(t *testing.T) {
 	}
 	ok(t, m.Compare(shareA, zeroLen))
 	if got := since(t, m, shareA, fid(1), ver(2)); got[0].Extent.Len != math.MaxInt64-35 {
-		t.Fatalf("model marker %+v, want it to run to the end", got[0].Extent)
+		t.Fatalf("model marker %s, want it to run to the end", fmtExtent(got[0].Extent))
 	}
 }

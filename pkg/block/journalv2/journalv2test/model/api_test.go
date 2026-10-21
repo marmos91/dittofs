@@ -98,10 +98,10 @@ func TestUnresolvedNamesTheFilesACrashLeftUnknown(t *testing.T) {
 	ok(t, m.Crash())
 	ok(t, m.Reopen(ver(10)))
 	if got := m.Unresolved(); len(got) != 1 || got[0] != fid(1) {
-		t.Fatalf("Unresolved = %v, want only file 1", got)
+		t.Fatalf("Unresolved = %s, want only file 1", fmtFiles(got))
 	}
 	ok(t, m.Compare(shareA, modelView{New(), shareA}))
 	if got := m.Unresolved(); len(got) != 0 {
-		t.Fatalf("Unresolved = %v after Compare", got)
+		t.Fatalf("Unresolved = %s after Compare", fmtFiles(got))
 	}
 }

@@ -2,6 +2,8 @@ package model
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journalv2"
@@ -69,11 +71,11 @@ func refused(t *testing.T, err error) {
 func equalSpans(t *testing.T, got, want []span) {
 	t.Helper()
 	if len(got) != len(want) {
-		t.Fatalf("held spans:\n got %+v\nwant %+v", got, want)
+		t.Fatalf("held spans:\n got %v\nwant %v", got, want)
 	}
 	for i := range got {
 		if got[i] != want[i] {
-			t.Fatalf("held spans:\n got %+v\nwant %+v", got, want)
+			t.Fatalf("held spans:\n got %v\nwant %v", got, want)
 		}
 	}
 }
@@ -85,4 +87,49 @@ func since(t *testing.T, m *Model, tag journalv2.ShareTag, id journalv2.FileID, 
 		t.Fatal(err)
 	}
 	return cs
+}
+
+// String prints a span as [off,end) v1, with "offloaded" when its bit is set.
+func (s span) String() string {
+	out := fmt.Sprintf("%s v%d", fmtExtent(ext(s.Off, s.Len)), s.Ver)
+	if s.Offloaded {
+		out += " offloaded"
+	}
+	return out
+}
+
+// fmtChange prints a change as Since names it: write [0,4) @v1 mtime 7.
+func fmtChange(c journalv2.Change) string {
+	kind := map[journalv2.ChangeKind]string{
+		journalv2.ChangeWrite:       "write",
+		journalv2.ChangeTruncate:    "truncate",
+		journalv2.ChangeDeallocate:  "deallocate",
+		journalv2.ChangeDelete:      "delete",
+		journalv2.ChangeCloneTarget: "clone target",
+		journalv2.ChangeLoss:        "loss",
+	}[c.Kind]
+	out := fmt.Sprintf("%s %s @%s", kind, fmtExtent(c.Extent), fmtVersion(c.Version))
+	if c.Mtime != 0 {
+		out += fmt.Sprintf(" mtime %d", c.Mtime)
+	}
+	return out
+}
+
+func fmtChanges(cs []journalv2.Change) string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = fmtChange(c)
+	}
+	return "[" + strings.Join(out, ", ") + "]"
+}
+
+// fmtFile prints a file the tests built with fid by its number.
+func fmtFile(id journalv2.FileID) string { return fmt.Sprintf("file %d", id.Bytes()[15]) }
+
+func fmtFiles(ids []journalv2.FileID) string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = fmtFile(id)
+	}
+	return "[" + strings.Join(out, ", ") + "]"
 }

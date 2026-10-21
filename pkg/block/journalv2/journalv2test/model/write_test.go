@@ -67,7 +67,7 @@ func TestWriteErrorsTheModelHasNoRuleForAreReported(t *testing.T) {
 	m := New()
 	refused(t, m.WriteAt(shareA, fid(1), 0, fill('A', 1), 0, ver(1), journalv2.ErrCorrupt))
 	if got := heldSpans(t, m, fid(1)); len(got) != 0 {
-		t.Fatalf("a failed write left %+v held", got)
+		t.Fatalf("a failed write left %v held", got)
 	}
 }
 

@@ -86,11 +86,11 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	for i, d := range o.Dirty {
 		switch {
 		case d.Extent.Len <= 0:
-			return m.mismatch(op, id, "offered the empty extent %+v", d.Extent)
+			return m.mismatch(op, id, "offered the empty extent %v", d.Extent)
 		case i > 0 && d.Extent.Off < end(prev):
-			return m.mismatch(op, id, "offered %+v after %+v, not in offset order", d.Extent, prev)
+			return m.mismatch(op, id, "offered %v after %v, not in offset order", d.Extent, prev)
 		case d.Stamped:
-			return m.mismatch(op, id, "offered %+v stamped, but no stamp was given", d.Extent)
+			return m.mismatch(op, id, "offered %v stamped, but no stamp was given", d.Extent)
 		}
 		for off := d.Extent.Off; off < end(d.Extent); off++ {
 			c, held := below.held[off]
@@ -137,7 +137,7 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	}
 	for _, s := range o.Superseded {
 		if s.Stamped {
-			return m.mismatch(op, id, "offered superseded %+v stamped, but no stamp was given", s.Extent)
+			return m.mismatch(op, id, "offered superseded %v stamped, but no stamp was given", s.Extent)
 		}
 	}
 
@@ -238,11 +238,11 @@ func (m *Model) checkNeighbours(id fileID, widen int64, o journalv2.Offer, cur *
 			}
 			switch {
 			case first < 0:
-				return m.mismatch(op, id, "offered neighbour %+v contiguous with no dirty extent", s.e)
+				return m.mismatch(op, id, "offered neighbour %v contiguous with no dirty extent", s.e)
 			case k < first && run[first].e.Off-s.e.Off > widen:
-				return m.mismatch(op, id, "offered neighbour %+v more than widen %d before %+v", s.e, widen, run[first].e)
+				return m.mismatch(op, id, "offered neighbour %v more than widen %d before %v", s.e, widen, run[first].e)
 			case k > last && end(s.e)-end(run[last].e) > widen:
-				return m.mismatch(op, id, "offered neighbour %+v more than widen %d after %+v", s.e, widen, run[last].e)
+				return m.mismatch(op, id, "offered neighbour %v more than widen %d after %v", s.e, widen, run[last].e)
 			}
 		}
 		i = j
@@ -277,7 +277,7 @@ func readsAs(r io.ReaderAt, e extent, st *fileState) string {
 	}
 	buf := make([]byte, e.Len)
 	if _, err := r.ReadAt(buf, e.Off); err != nil {
-		return fmt.Sprintf("Offered failed reading %+v: %v", e, err)
+		return fmt.Sprintf("Offered failed reading %s: %v", fmtExtent(e), err)
 	}
 	for i, b := range buf {
 		if want := st.held[e.Off+int64(i)].b; b != want {
@@ -332,7 +332,7 @@ func (m *Model) Report(tag shareTag, id fileID, reported []extent, err error) er
 		}
 		if !slices.ContainsFunc(offeredExtents, func(e extent) bool { _, ok := intersect(e, r); return ok }) {
 			if !errors.Is(err, journalv2.ErrNotOffered) {
-				return m.mismatch(op, id, "report of %+v, not offered, returned %v, not ErrNotOffered", r, err)
+				return m.mismatch(op, id, "report of %v, not offered, returned %v, not ErrNotOffered", r, err)
 			}
 			return nil
 		}

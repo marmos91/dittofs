@@ -120,11 +120,11 @@ func TestSinceYieldsHeldExtentsAndMarkersInVersionOrder(t *testing.T) {
 func equalChanges(t *testing.T, got, want []journalv2.Change) {
 	t.Helper()
 	if len(got) != len(want) {
-		t.Fatalf("changes:\n got %+v\nwant %+v", got, want)
+		t.Fatalf("changes:\n got %s\nwant %s", fmtChanges(got), fmtChanges(want))
 	}
 	for i := range got {
 		if got[i] != want[i] {
-			t.Fatalf("change %d:\n got %+v\nwant %+v", i, got[i], want[i])
+			t.Fatalf("change %d:\n got %s\nwant %s", i, fmtChange(got[i]), fmtChange(want[i]))
 		}
 	}
 }

@@ -105,7 +105,7 @@ func TestCrashBringsBackMarkers(t *testing.T) {
 	m := setup(t, true)
 	ok(t, m.Compare(shareA, modelView{journal(false), shareA}))
 	if got := since(t, m, shareA, fid(1), ver(1)); len(got) != 1 {
-		t.Fatalf("a marker that came back is not live in the model: %+v", got)
+		t.Fatalf("a marker that came back is not live in the model: %s", fmtChanges(got))
 	}
 
 	m = setup(t, true)
@@ -342,7 +342,7 @@ func TestAHiddenWriteCannotBeToldApartAfterACrash(t *testing.T) {
 		m, j := setup(t), journal(kept)
 		ok(t, m.Compare(shareA, modelView{j, shareA}))
 		if got, want := m.current(fid(1)).change, j.current(fid(1)).change; got != want {
-			t.Fatalf("write kept %t: model change version %v, journal %v", kept, got, want)
+			t.Fatalf("write kept %t: model change version %s, journal %s", kept, fmtVersion(got), fmtVersion(want))
 		}
 	}
 }
