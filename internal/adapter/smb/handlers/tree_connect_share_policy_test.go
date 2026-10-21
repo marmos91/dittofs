@@ -266,6 +266,9 @@ func TestTreeConnect_SharePolicy_Krb5pRequiresEncryption(t *testing.T) {
 
 // The srvsvc share list applies the same admission as TREE_CONNECT, the share
 // policy included: a session is not shown a share the policy would refuse it.
+// The netgroup is checked against the address of the connection that opened
+// the pipe, as TREE_CONNECT checks the one it arrives on, so a channel bound
+// from outside the netgroup is not shown the share either.
 func TestSRVSVC_SharePolicyHidesShare(t *testing.T) {
 	h, _ := newSharePolicyHandler(t)
 	secure, open := encodeUTF16LE("secure"), encodeUTF16LE("open")
@@ -273,18 +276,19 @@ func TestSRVSVC_SharePolicyHidesShare(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		sess       *session.Session
+		pipeFrom   string
 		wantSecure bool
 	}{
-		{"Kerberos inside the netgroup", kerberosSession(h, policyInsideIP), true},
-		{"NTLM", ntlmSession(h, policyInsideIP), false},
-		{"Kerberos outside the netgroup", kerberosSession(h, policyOutsideIP), false},
+		{"Kerberos session inside the netgroup", kerberosSession(h, policyInsideIP), policyInsideIP, true},
+		{"NTLM session", ntlmSession(h, policyInsideIP), policyInsideIP, false},
+		{"Kerberos session, pipe opened over a channel from outside the netgroup", kerberosSession(h, policyInsideIP), policyOutsideIP, false},
 	} {
-		resp := srvsvcEnum(openSRVSVCPipe(t, h, tc.sess.SessionID), 1)
+		resp := srvsvcEnum(openSRVSVCPipeFrom(t, h, tc.sess.SessionID, tc.pipeFrom+":50001"), 1)
 		if !bytes.Contains(resp, open) {
-			t.Errorf("%s session: NetrShareEnum omits /open, which has no policy", tc.name)
+			t.Errorf("%s: NetrShareEnum omits /open, which has no policy", tc.name)
 		}
 		if got := bytes.Contains(resp, secure); got != tc.wantSecure {
-			t.Errorf("%s session: NetrShareEnum lists /secure = %v, want %v", tc.name, got, tc.wantSecure)
+			t.Errorf("%s: NetrShareEnum lists /secure = %v, want %v", tc.name, got, tc.wantSecure)
 		}
 	}
 }
