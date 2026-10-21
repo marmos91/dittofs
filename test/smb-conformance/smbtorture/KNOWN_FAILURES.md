@@ -184,8 +184,8 @@ Advanced share mode enforcement and deny mode scenarios.
 ### Character Set (Edge Cases)
 
 Unicode and character set edge cases (partial surrogates, wide-A collision) are
-tracked as fix candidates in baseline-results.md rather than known failures,
-since basic charset support works.
+not listed as known failures, since basic charset support works; their current
+result is in baseline-results.md's per-test lists.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
@@ -1501,10 +1501,10 @@ Reverted post-conflict lease granting (caused kernel_oplocks5 regression).
   signing (HMAC-SHA256/AES-128-CMAC/AES-128-GMAC), encryption (AES-128-CCM/GCM,
   AES-256-CCM/GCM), Kerberos authentication, leases, durable handles V2, and
   cross-protocol coordination
-- 50 tests newly pass after phases 33-39 (see baseline-results.md)
+- 50 tests newly passed after phases 33-39
 - Fix-candidate tests (leases, durable handles, sessions, locks, etc.) are
-  listed here with "(Fix Candidate)" annotations and also tracked in
-  baseline-results.md for prioritization
+  listed here with "(Fix Candidate)" annotations; baseline-results.md gives
+  each test's current result
 - The NT_STATUS_NO_MEMORY errors seen in full-suite runs are a client-side issue
   from rapid connection creation under ARM64 emulation, not a DittoFS server bug
 - Interactive hold tests (smb2.hold-oplock, smb2.hold-sharemode) are skipped by

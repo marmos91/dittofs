@@ -164,7 +164,10 @@ suites:
       DryRun: "false"
       SutComputerName: "{server}"
       SutIPAddress: "{server}"
-      DomainName: "{server}"
+      # A value without a dot keeps WPTS in workgroup mode, as the fixture has no domain
+      # controller. The server's address won't do: WPTS reads it as a domain's name once
+      # its last byte has two digits.
+      DomainName: localhost
       AdminUserName: "{user}"
       PasswordForAllUsers: "{password}"
     matrix: { profile: [badger-s3] }

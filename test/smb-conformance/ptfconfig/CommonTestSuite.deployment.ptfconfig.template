@@ -30,8 +30,8 @@
       <!-- ============================================================== -->
       <!-- Authentication (Workgroup Mode)                                 -->
       <!-- ============================================================== -->
-      <Property name="DomainName" value="{server}">
-        <Description>Set to SutComputerName for workgroup mode (no domain).</Description>
+      <Property name="DomainName" value="localhost">
+        <Description>A value without a dot keeps WPTS in workgroup mode, as this setup has no domain controller. WPTS takes a value shaped like a DNS name for a domain, and an address whose last byte has two digits has that shape.</Description>
       </Property>
       <Property name="DCServerComputerName" value="">
         <Description>Empty for workgroup mode (no domain controller).</Description>
