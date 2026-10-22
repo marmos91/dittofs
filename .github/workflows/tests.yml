@@ -240,21 +240,23 @@ jobs:
           echo "plan: $PLAN; blocking cells: $RUN"
           [ "$PLAN" = success ] && { [ "$RUN" = success ] || [ "$RUN" = skipped ]; }
 
-  # After the retry, on develop only: dt report --post writes the blocking
-  # cells' new failures and unexpected passes, and the cells that failed or
-  # didn't run, to the develop-status issue, and gives a test failing 2 runs in
-  # a row an issue of its own. The token can write issues and nothing else. A
-  # cancelled run posts nothing, as it has no result. It runs when plan failed
-  # too, and fails then, with nothing to post. A failed post doesn't fail the
-  # run, whose result is what CI Health reads as develop's. Posts run one at a
-  # time, so a merge run's and a nightly run's never overwrite each other's.
+  # After the retry, on develop only, pushed or scheduled: dt report --post
+  # writes the new failures and unexpected passes of every job gate waits for,
+  # and the cells that failed or didn't run, to the develop-status issue, and
+  # gives a test failing 2 runs in a row an issue of its own. Waiting for gate
+  # covers its jobs, whichever they are. The token can write issues and nothing
+  # else. A cancelled run posts nothing, as it has no result. It runs when plan
+  # or gate failed too, and fails when it has nothing to post. A failed post
+  # doesn't fail the run, whose result is what CI Health reads as develop's.
+  # Posts run one at a time, so a merge run's and a nightly run's never
+  # overwrite each other's.
   #
   # decision: the non-blocking cells don't post. They never fail the gate, so
   # they never make develop red; their failures show on their own jobs.
   post:
     name: post
-    needs: [plan, run]
-    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') }}
+    needs: [plan, gate]
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/develop' }}
     continue-on-error: true
     concurrency: { group: tests-post, cancel-in-progress: false }
     runs-on: ubuntu-latest
@@ -275,14 +277,15 @@ jobs:
       - name: Build dt
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
+      # Every job gate waits for uploads its results as dt-run-*; a pattern
+      # that matches none downloads none, and doesn't fail.
       - name: Download the results
-        if: needs.run.result != 'skipped'
         uses: actions/download-artifact@v7
         with:
           pattern: dt-run-*
           path: ${{ runner.temp }}/results
 
-      # Every blocking cell's run, each attempt's: dt counts a cell from its
+      # Every run those jobs made, each attempt's: dt counts a cell from its
       # last run by name, which is its latest attempt's, and a planned cell
       # whose job wrote no run as not run.
       - name: Post

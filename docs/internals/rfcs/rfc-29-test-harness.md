@@ -1562,10 +1562,11 @@ One workflow, `tests.yml`, runs every registered suite:
     `dt-non-blocking-CELL-ATTEMPT`, so the gate's report doesn't take them. It has
     `continue-on-error`, so a failed one doesn't fail the workflow run, whose result is what
     `ci-health.yml` reads as develop's.
-  - `post` runs after `run`, on a push to develop and on the schedule only, and not for a cancelled
-    run: `dt report --failures --post` over the blocking cells `plan` gave and every one's results,
-    with a token that can write issues and nothing else (§4.4). It runs when `plan` failed too,
-    and fails then, with nothing to post. It has `continue-on-error`, so a failed post, as when
+  - `post` runs after `gate`, on a push to develop and on the schedule only, and not for a
+    cancelled run: `dt report --failures --post` over the blocking cells `plan` gave and the results
+    of every job `gate` waits for, whichever they are, with a token that can write issues and
+    nothing else (§4.4). It runs when `plan` or `gate` failed too, and fails when it has nothing to
+    post. It has `continue-on-error`, so a failed post, as when
     GitHub answers a request with a 5xx twice in a row, doesn't turn the run red, and a
     concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
     and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
