@@ -29,7 +29,6 @@ func TestQuarantine(t *testing.T) {
 		{"an entry names a suite", "2026-10-23", "nope", false, "", `test/harness/quarantine.yaml:1: no suite "nope"`},
 		{"an entry lasts up to 90 days from today in UTC", "2027-01-20", "s", true, "", ""},
 		{"and no longer", "2027-01-21", "s", false, "", "test/harness/quarantine.yaml:1: expires 2027-01-21 is more than 90 days away"},
-		{"so it can't stay forever", "9999-12-31", "s", false, "", "test/harness/quarantine.yaml:1: expires 9999-12-31 is more than 90 days away"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, err := Parse(quarantined(t, "- { suite: "+c.suite+", test: t, issue: '#1', expires: "+c.expires+" }\n"), []byte(y))

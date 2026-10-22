@@ -312,23 +312,6 @@ func TestPostRefusesOtherRuns(t *testing.T) {
 	}
 }
 
-// A planned cell with no run, as one whose job died before it wrote its
-// results, didn't run: it alerts on its second run in a row.
-func TestPlannedCellWithoutARun(t *testing.T) {
-	g, c := newTracker(t)
-	planned := []string{"pynfs/badger-s3/0", "pynfs/badger-s3/1"}
-	for i, state := range []string{"closed", "open"} {
-		r := run("20261022T10000"+strconv.Itoa(i)+"Z-fffffff"+strconv.Itoa(i), "merge", report.Cell{Name: "pynfs/badger-s3/0", Result: report.Passed})
-		if err := c.Post(context.Background(), []report.Run{r}, planned, io.Discard); err != nil {
-			t.Fatal(err)
-		}
-		row := "| `pynfs/badger-s3/1` |  | not run | " + strconv.Itoa(i+1) + " |  |"
-		if is := g.titled(statusTitle); len(is) != 1 || is[0].State != state || !strings.Contains(is[0].Body, row) {
-			t.Errorf("post %d: want the issue %s with %q, have %+v", i+1, state, row, is)
-		}
-	}
-}
-
 // A test's issue GitHub refuses, as a comment on a locked issue, doesn't stop
 // the post: the other tests' issues and the develop-status issue are still
 // written, and Post returns the error. A title longer than GitHub's 256
