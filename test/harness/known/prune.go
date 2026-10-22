@@ -74,6 +74,12 @@ func Prune(path string, results []Result) ([]Entry, error) {
 // its kind, a failure or a skip. An entry no such result matched stays: its
 // test wasn't run or reached where it applies.
 func (e Entry) stale(results []Result) bool {
+	// decision: an intermittent entry is never removed: its test passes on
+	// some runs by definition, so no window of runs shows it stale. Remove
+	// it by hand once its cause is fixed.
+	if e.Intermittent {
+		return false
+	}
 	want := map[string]string{"fail": report.Failed, "skip": report.Skipped}[e.Status]
 	matched := false
 	for _, r := range results {

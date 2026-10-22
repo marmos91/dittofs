@@ -52,3 +52,24 @@ func TestPrune(t *testing.T) {
 		t.Errorf("nothing to remove: %v, %v", removed, err)
 	}
 }
+
+// Prune judges an entry on the results that matched its test in cells it
+// applies to.
+func TestPruneRule(t *testing.T) {
+	pass := Result{Name: "x", Outcome: report.Passed}
+	for _, c := range []struct {
+		name, entry string
+		results     []Result
+		removed     bool
+	}{
+		{"an intermittent entry is never removed", "{test: x, status: fail, fix: wontfix, category: proto, reason: r, intermittent: true}", []Result{pass}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := write(t, filepath.Join(t.TempDir(), "known.yaml"), "- "+c.entry+"\n")
+			removed, err := Prune(path, c.results)
+			if err != nil || (len(removed) == 1) != c.removed {
+				t.Errorf("removed %v, %v; want removed %v", removed, err, c.removed)
+			}
+		})
+	}
+}

@@ -1038,8 +1038,9 @@ with SUITE/TEST, also each of that test's results, run by run, which shows since
 the entries whose `test` matched results in the cells the file grades and the entry's `where`
 applies to, at each cell's option, matrix values, tier and OS as `dt run` grades it, none of them
 of the entry's kind, a failure or a skip. An entry no such result matched stays, since its test
-wasn't run or reached where it applies; a file none of whose cells has results in those runs is
-left as it is. It edits the YAML only: while a suite keeps
+wasn't run or reached where it applies, and an `intermittent` one is never removed, since its test
+passes on some runs by definition; a file none of whose cells has results in those runs is left as
+it is. It edits the YAML only: while a suite keeps
 its Markdown list (§4.7), the Go test that compares the two names the rows to remove.
 
 **Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the
