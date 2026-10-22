@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Shared known-failures (blacklist) loader for conformance test harnesses.
 #
-# Both the SMB conformance harnesses (smbtorture, WPTS) and the POSIX
-# compliance harness (pjdfstest) grade their results against a blacklist of
-# tests that are EXPECTED to fail — protocol-inherent limitations, upstream
-# bugs, or environment quirks. A run is green when every failure is on the
-# blacklist; only NEW failures (not on the list) fail CI.
+# smbtorture's harness and the NFS mount suites' (cthon04, nfstest) grade their
+# results against a blacklist of tests that are EXPECTED to fail: protocol-
+# inherent limitations, upstream bugs, or environment quirks. A run is green
+# when every failure is on the blacklist; only NEW failures (not on the list)
+# fail CI.
 #
 # Blacklist file format (a Markdown table, identical across protocols so the
 # files render nicely in GitHub and share this parser):
@@ -93,7 +93,7 @@ kf_load() {
     done < "$file"
 
     # KF_COUNT is part of the public API for scripts that source this file.
-    # shellcheck disable=SC2034  # consumed by callers (parse-results.sh, run-posix.sh)
+    # shellcheck disable=SC2034  # consumed by callers (parse-results.sh, grade.sh)
     KF_COUNT=${#KF_KNOWN[@]}
 }
 

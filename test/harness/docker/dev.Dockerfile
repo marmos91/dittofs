@@ -9,7 +9,7 @@
 # The kernel is the Docker host's; Docker Desktop's has no NFS Kerberos
 # (rpcsec_gss_krb5) and no dm-flakey.
 
-# pjdfstest at the flake.lock revision, in the layout run-posix.sh looks for.
+# pjdfstest at the flake.lock revision, in the layout dt looks for.
 FROM debian:bookworm-slim AS pjdfstest
 ARG PJDFSTEST_REV=03eb25706d8dbf3611c3f820b45b7a5e09a36c06
 RUN apt-get update && apt-get install -y --no-install-recommends \
