@@ -13,8 +13,9 @@
 # the commands dt runs, move in at once. plan keeps only the cells of those
 # that have moved: pynfs, pjdfstest, WPTS, smbtorture with its Kerberos
 # option, operator, the Windows unit run, the suites with a job of their own,
-# and the system scenarios, which had no workflow, less the cells the
-# dedicated host runs itself. A suite joins by being added to the select in
+# the system scenarios, which had no workflow, less the cells the dedicated
+# host runs itself, and clients, which runs beside smb-client-compat.yml until
+# their results match. A suite joins by being added to the select in
 # plan, with any step its cells need that run doesn't give yet, such as
 # another service; the select goes once every suite runs here.
 #
@@ -106,7 +107,8 @@ jobs:
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
-                or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated"))
+                or .suite == "smbtorture" or .name == "unit/windows" or (.suite == "system" and .place != "dedicated")
+                or .suite == "clients")
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           {
@@ -168,6 +170,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-common
+
+      # mount.cifs, for a cell whose fixture mounts the share over SMB with
+      # the kernel's client. The other places' own clients are there already.
+      - name: Install SMB client utilities
+        if: contains(matrix.needs, 'smb-client') && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cifs-utils
 
       # dt builds the test tools a cell names under {tools} with nix, at the
       # revisions flake.lock pins. On a push the cache's setup realizes them

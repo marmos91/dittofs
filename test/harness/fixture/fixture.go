@@ -55,6 +55,8 @@ func Unsupported(f *registry.Fixture) string {
 		return fmt.Sprintf("dt doesn't set up a %s fixture yet", f.Server)
 	case f.Profile != "memory" && f.Profile != "badger" && f.Profile != "badger-s3" && fixed(f.Profile):
 		return fmt.Sprintf("dt doesn't set up the %q profile yet", f.Profile)
+	case f.SMB.Mount && f.NFS.Mounts():
+		return "dt doesn't mount a share over both NFS and SMB yet"
 	case f.NFS.Mounts() && !f.NFS.FromOptions && fixed(f.NFS.Version) && mountVers[f.NFS.Version] == "":
 		return fmt.Sprintf("dt doesn't mount NFS %s yet", f.NFS.Version)
 	case f.NFS.Mounts() && fixed(f.NFS.Version) && runtime.GOOS != "linux":
@@ -63,8 +65,6 @@ func Unsupported(f *registry.Fixture) string {
 		return "dt sets up namespaced clients only on Linux yet"
 	case f.SMB.Encryption != "" && f.SMB.Encryption != "preferred" && fixed(f.SMB.Encryption):
 		return fmt.Sprintf("dt doesn't set SMB encryption %q", f.SMB.Encryption)
-	case f.SMB.Mount:
-		return "dt doesn't mount SMB yet"
 	case f.Kerberos && (runtime.GOOS != "linux" || !f.SMB.Enabled):
 		return "dt sets up Kerberos only for SMB on Linux yet"
 	case f.Reset != "" && f.Reset != "each" && fixed(f.Reset):
@@ -76,8 +76,8 @@ func Unsupported(f *registry.Fixture) string {
 // Placeholders names what fixture f gives a cell's commands, besides {bin}:
 // {server}, {share}, {user}, {user2} and {password}, {nfs-port} when it
 // serves NFS, {smb-port} when it serves SMB, {mount} when it mounts the
-// share, {client2} with a second client, and {realm} and {krb5-conf} with
-// Kerberos.
+// share, {bucket} on an S3 profile, {client2} with a second client, and
+// {realm} and {krb5-conf} with Kerberos.
 func Placeholders(f registry.Fixture) []string {
 	if f.Server == "knfsd" {
 		return []string{"server", "nfs-port"} // the kernel's server has no users, and runs no {bin}
@@ -89,8 +89,11 @@ func Placeholders(f registry.Fixture) []string {
 	if f.SMB.Enabled {
 		names = append(names, "smb-port")
 	}
-	if f.NFS.Mounts() {
+	if f.NFS.Mounts() || f.SMB.Mount {
 		names = append(names, "mount")
+	}
+	if f.Profile == "badger-s3" {
+		names = append(names, "bucket")
 	}
 	if f.Clients == 2 {
 		names = append(names, "client2")
@@ -265,6 +268,9 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	if s.kdc != nil {
 		s.vals["realm"], s.vals["krb5-conf"] = Realm, filepath.Join(s.kdc.dir, "krb5.conf")
 	}
+	if b != nil {
+		s.vals["bucket"] = b.listURL()
+	}
 	if s.nfsPort > 0 {
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
 		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
@@ -277,11 +283,17 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		}
 		_, _ = fmt.Fprintf(w, "[dt] fixture: SMB serves %s at %s:%d\n", strings.Join(names, " "), server, s.smbPort)
 	}
-	if f.NFS.Mounts() {
-		if err := s.mountShare(ctx, server, f.NFS); err != nil {
-			_ = s.Stop()
-			return nil, err
-		}
+	switch {
+	case f.NFS.Mounts():
+		err = s.mountShare(ctx, server, f.NFS)
+	case f.SMB.Mount:
+		err = s.mountSMB(ctx, server, password)
+	}
+	if err != nil {
+		_ = s.Stop()
+		return nil, err
+	}
+	if s.mount != "" {
 		s.vals["mount"] = s.mount
 	}
 	return s, nil

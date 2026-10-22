@@ -96,6 +96,13 @@ func answer(status int, err error) string {
 	return fmt.Sprintf("answered %d", status)
 }
 
+// listURL is {bucket}: the request that lists the keys under the fixture's
+// prefix, an S3 ListObjectsV2, with which a suite sees what the server put in
+// the bucket.
+func (b *bucket) listURL() string {
+	return b.endpoint + "/" + bucketName + "?list-type=2&prefix=" + b.prefix
+}
+
 // storeConfig is the server's S3 block store configuration for the bucket.
 func (b *bucket) storeConfig() map[string]any {
 	return map[string]any{

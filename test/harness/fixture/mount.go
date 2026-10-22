@@ -27,7 +27,7 @@ func mountOptions(nfs registry.NFS, port int, namespaced bool) string {
 	vers, opts := mountVers[nfs.Version], []string{}
 	switch {
 	case nfs.FromOptions:
-		vers, opts = nfsVers(nfs.Options), append(opts, nfs.Options)
+		vers, opts = versOf(nfs.Options), append(opts, nfs.Options)
 	case vers == "3":
 		opts = append(opts, "nfsvers=3", "tcp")
 	default:
@@ -53,7 +53,7 @@ func wantVers(nfs registry.NFS) string {
 	if !nfs.FromOptions {
 		return mountVers[nfs.Version]
 	}
-	if v := nfsVers(nfs.Options); v == "3" || strings.Contains(v, ".") {
+	if v := versOf(nfs.Options); v == "3" || strings.Contains(v, ".") {
 		return v
 	}
 	return ""
@@ -64,34 +64,50 @@ func wantVers(nfs registry.NFS) string {
 // has it mounted there at that version. With a namespaced client, the client
 // mounts it.
 func (s *Server) mountShare(ctx context.Context, server string, nfs registry.NFS) error {
-	// {mount} is no longer than the posix setup's /tmp/dittofs-test, so a
-	// test of path length measures the server rather than the mount point.
-	// decision: it is under /tmp, not the temporary directory the
-	// environment names, which can be long and sit under a directory
-	// private to its owner, so a suite's users couldn't walk to the share.
-	dir, err := os.MkdirTemp("/tmp", "dt")
+	opts, err := s.mountAt(ctx, "nfs", mountOptions(nfs, s.nfsPort, s.clients != nil), server+":"+Share)
 	if err != nil {
 		return err
 	}
+	if want := wantVers(nfs); want != "" && versOf(opts) != want {
+		return fmt.Errorf("%s is mounted with vers=%s, not vers=%s", s.mount, versOf(opts), want)
+	}
+	_, _ = fmt.Fprintf(s.out, "[dt] fixture: NFS vers=%s mounted at %s\n", versOf(opts), s.mount)
+	return nil
+}
+
+// mountAt mounts source as root, with a file system of type fstype and
+// options opts, on a new directory, {mount}, checks that the kernel has it
+// mounted there, and returns the mount's options as the kernel reports them.
+func (s *Server) mountAt(ctx context.Context, fstype, opts, source string) (string, error) {
+	dir, err := mountDir()
+	if err != nil {
+		return "", err
+	}
 	s.mount = dir
-	source := server + ":" + Share
-	argv := s.root("mount", "-t", "nfs", "-o", mountOptions(nfs, s.nfsPort, s.clients != nil), source, dir)
+	argv := s.root("mount", "-t", fstype, "-o", opts, source, dir)
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
 	if err := runFor(ctx, 0, argv); err != nil {
-		return fmt.Errorf("mounting %s at %s: %w", source, dir, err)
+		return "", fmt.Errorf("mounting %s at %s: %w", source, dir, err)
 	}
-	opts, mounted, err := s.mountedAt(dir)
-	want := wantVers(nfs)
+	got, mounted, err := s.mountedAt(dir)
 	switch {
 	case err != nil:
-		return err
+		return "", err
 	case !mounted:
-		return fmt.Errorf("mount exited 0, but nothing is mounted at %s", dir)
-	case want != "" && nfsVers(opts) != want:
-		return fmt.Errorf("%s is mounted with vers=%s, not vers=%s", dir, nfsVers(opts), want)
+		return "", fmt.Errorf("mount exited 0, but nothing is mounted at %s", dir)
 	}
-	_, _ = fmt.Fprintf(s.out, "[dt] fixture: NFS vers=%s mounted at %s\n", nfsVers(opts), dir)
-	return nil
+	return got, nil
+}
+
+// mountDir makes {mount}'s directory. It is no longer than the posix setup's
+// /tmp/dittofs-test, so a test of path length measures the server rather
+// than the mount point.
+//
+// decision: it is under /tmp, not the temporary directory the environment
+// names, which can be long and sit under a directory private to its owner,
+// so a suite's users couldn't walk to the share.
+func mountDir() (string, error) {
+	return os.MkdirTemp("/tmp", "dt")
 }
 
 // root is argv run as root where the share is mounted: on the namespaced
@@ -128,6 +144,10 @@ var unmountWaits = [2]time.Duration{15 * time.Second, 10 * time.Second}
 // namespace at once. A share that stays mounted keeps its directory, and dt
 // says so.
 func (s *Server) unmount() {
+	if goos == "darwin" || goos == "windows" { // where dt mounts over SMB alone, as the user
+		s.unmountSMB()
+		return
+	}
 	if _, mounted, err := s.mountedAt(s.mount); mounted || err != nil {
 		// decision: a umount that fails, as on a share a process still
 		// uses, is forced as one that hangs is, since the server stops next.
@@ -216,8 +236,8 @@ func lastMount(table, dir string) (opts string, mounted bool) {
 	return opts, mounted
 }
 
-// nfsVers is the vers= option among a mount's options, or "".
-func nfsVers(opts string) string {
+// versOf is the vers= option among a mount's options, or "".
+func versOf(opts string) string {
 	for _, o := range strings.Split(opts, ",") {
 		if v, ok := strings.CutPrefix(o, "vers="); ok {
 			return v
