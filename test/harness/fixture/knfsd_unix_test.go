@@ -83,19 +83,22 @@ fi`,
 	}
 }
 
-// listening sets knfsdPort to a port that answers when up is set, and to one
-// nothing listens on otherwise.
+// listening sets knfsdPort to a port that answers until the test ends when up
+// is set, and to port 1 otherwise, which nothing listens on and, unlike a
+// port the test frees, nothing else gets meanwhile: it's never handed out as
+// a free port.
 func listening(t *testing.T, up bool) {
 	t.Helper()
-	l, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatal(err)
-	}
 	real := knfsdPort
-	knfsdPort = l.Addr().(*net.TCPAddr).Port
-	t.Cleanup(func() { knfsdPort = real; _ = l.Close() })
-	if !up {
-		_ = l.Close()
+	t.Cleanup(func() { knfsdPort = real })
+	knfsdPort = 1
+	if up {
+		l, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = l.Close() })
+		knfsdPort = l.Addr().(*net.TCPAddr).Port
 	}
 }
 
