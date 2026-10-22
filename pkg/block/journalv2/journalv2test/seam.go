@@ -108,6 +108,7 @@ type change struct {
 	oldSize int64  // the file's size before it
 	newSize int64  // resize: the file's size after it
 	lost    bool   // a failed Sync covered it, so no Sync ever makes it durable
+	reorder bool   // write: a Reorder fault marked it for Reordered's draw
 }
 
 type dirOpKind int
@@ -175,14 +176,17 @@ var _ storage.FS = (*Seam)(nil)
 //     was pending stays pending and a later sync can make it durable.
 //   - Tear on write: writes only the first N bytes, and reports the whole
 //     write done. A write of N bytes or fewer is written whole.
+//   - Reorder on write: performs it and marks it. While any pending write
+//     is marked, Reordered draws only among the marked ones; a plain Crash
+//     and Torn ignore marks. A Sync that covers the write clears its mark.
 //   - Fail: performs nothing and returns the action's Err. A failed sync
 //     also marks every pending change of the file lost: ReadAt still
 //     serves it, and no later Sync makes it durable. A failed sync_dir
 //     loses its directory changes the same way: they stay in the directory,
 //     and no later SyncDir makes them durable.
 //
-// Any other kind, or Drop or Tear on any other op, panics, naming the kind and
-// the op: it is a mistake in the test, not a storage fault.
+// Any other kind, or Drop, Tear or Reorder on any other op, panics, naming the
+// kind and the op: it is a mistake in the test, not a storage fault.
 func (s *Seam) SetFault(f sim.Fault) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -216,7 +220,7 @@ func applies(k sim.FaultKind, op string) bool {
 		return true
 	case sim.Drop:
 		return op == OpWrite || op == OpSync || op == OpSyncDir
-	case sim.Tear:
+	case sim.Tear, sim.Reorder:
 		return op == OpWrite
 	default:
 		return false
@@ -580,9 +584,10 @@ func Torn(n int) CrashOption {
 
 // Reordered keeps a subset of the unsynced writes, chosen from seed, as a
 // device that wrote them in another order and lost power part-way would. A
-// write a failed Sync lost is never among them. The kept writes land in the
-// order they were issued, so a write never ends up under an older one it
-// overlapped. Unsynced allocations, truncations and directory changes are
+// write a failed Sync lost is never among them, and while any of them was
+// marked by a Reorder fault, only the marked ones are. The kept writes land
+// in the order they were issued, so a write never ends up under an older one
+// it overlapped. Unsynced allocations, truncations and directory changes are
 // lost as usual.
 //
 // decision: only data writes are reordered, as the format's crash model lists
@@ -662,6 +667,16 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 					writes = append(writes, &n.undo[i])
 				}
 			}
+		}
+
+		// ponytail: a mark narrows the draw to the marked writes and loses
+		// every other one, which any device may do. It cannot express a device
+		// that writes in order except for the marked writes: a seeded prefix of
+		// the unmarked writes kept alongside a seeded subset of the marked
+		// ones. Add that second draw when a check needs an earlier unmarked
+		// write kept while a later marked one is lost.
+		if slices.ContainsFunc(writes, func(c *change) bool { return c.reorder }) {
+			writes = slices.DeleteFunc(writes, func(c *change) bool { return !c.reorder })
 		}
 
 		slices.SortFunc(writes, func(a, b *change) int {
@@ -1072,6 +1087,7 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 			old:     old[:min(int64(len(old)), landed)],
 			oldSize: size,
 			lost:    a.Kind == sim.Drop,
+			reorder: a.Kind == sim.Reorder,
 		})
 	}
 

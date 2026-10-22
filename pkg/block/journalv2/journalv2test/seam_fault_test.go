@@ -424,6 +424,7 @@ func TestUnsupportedActionPanicsNamingTheKindAndTheOp(t *testing.T) {
 		{OpReadDirect, sim.Tear, func(s *Seam, f storage.File) { f.ReadAtDirect(make([]byte, 1), 0) }},
 		{OpSyncDir, sim.Tear, func(s *Seam, f storage.File) { s.SyncDir() }},
 		{OpRead, sim.Reorder, func(s *Seam, f storage.File) { f.ReadAt(make([]byte, 1), 0) }},
+		{OpSync, sim.Reorder, func(s *Seam, f storage.File) { f.Sync() }},
 	}
 	for _, tc := range cases {
 		name := fmt.Sprintf("%v on %s", tc.kind, tc.op)
@@ -1137,5 +1138,111 @@ func TestTornWriteRecordsOnlyTheBytesWritten(t *testing.T) {
 		if got := onDisk(t, s, "seg"); got != "" && got != "AB" {
 			t.Fatalf("seed %d left %q, want nothing or the 2 bytes written", seed, got)
 		}
+	}
+}
+
+var reorder = sim.FaultAction{Kind: sim.Reorder}
+
+// markWrites makes every write of a file whose name matches key take the
+// Reorder action, and every other call pass.
+func markWrites(t *testing.T, s *Seam, key string) {
+	t.Helper()
+
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: OpWrite, Key: key, Action: reorder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetFault(sched)
+}
+
+func TestAnUnmarkedWriteNeverSurvivesAReorderedCrashOnceOneIsMarked(t *testing.T) {
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := durableFile(t, s, "marked", "")
+		g := durableFile(t, s, "plain", "")
+
+		markWrites(t, s, "marked")
+		write(t, g, "uu", 0) // unmarked
+		write(t, f, "mm", 0) // marked
+
+		crash(t, s, Reordered(seed))
+		if got := onDisk(t, s, "plain"); got != "" {
+			t.Fatalf("seed %d kept the unmarked write %q while a write was marked", seed, got)
+		}
+	}
+}
+
+func TestAMarkedWriteSurvivesAReorderedCrashForSomeSeed(t *testing.T) {
+	kept, lost := false, false
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := durableFile(t, s, "seg", "")
+
+		markWrites(t, s, "seg")
+		write(t, f, "mm", 0)
+
+		crash(t, s, Reordered(seed))
+		switch onDisk(t, s, "seg") {
+		case "mm":
+			kept = true
+		case "":
+			lost = true
+		}
+	}
+
+	if !kept || !lost {
+		t.Fatalf("over 64 seeds a marked write was kept: %v, lost: %v; want both", kept, lost)
+	}
+}
+
+func TestMarksHaveNoEffectUnderCrashOrTorn(t *testing.T) {
+	s := newSeam(t)
+	f := durableFile(t, s, "seg", "")
+	markWrites(t, s, "seg")
+	write(t, f, "mm", 0)
+
+	crash(t, s)
+	if got := onDisk(t, s, "seg"); got != "" {
+		t.Fatalf("a plain crash kept the marked write: %q", got)
+	}
+
+	s = newSeam(t)
+	f = durableFile(t, s, "seg", "")
+	g := durableFile(t, s, "plain", "")
+	markWrites(t, s, "seg")
+	write(t, f, "mm", 0) // marked, older
+	write(t, g, "uu", 0) // unmarked, the last write
+
+	crash(t, s, Torn(1))
+	if got := onDisk(t, s, "seg") + "," + onDisk(t, s, "plain"); got != ",u" {
+		t.Fatalf("Torn left seg,plain = %q, want the last write torn: %q", got, ",u")
+	}
+}
+
+func TestASyncedMarkedWriteIsNeverDrawn(t *testing.T) {
+	// Once its mark is synced away, nothing is marked, so the draw covers
+	// every pending write again.
+	kept := false
+	for seed := range uint64(64) {
+		s := newSeam(t)
+		f := durableFile(t, s, "seg", "")
+		g := durableFile(t, s, "plain", "")
+
+		markWrites(t, s, "seg")
+		write(t, f, "mm", 0)
+		syncFile(t, f)
+		write(t, g, "uu", 0)
+
+		crash(t, s, Reordered(seed))
+		if got := onDisk(t, s, "seg"); got != "mm" {
+			t.Fatalf("seed %d: the synced marked write left %q", seed, got)
+		}
+		if onDisk(t, s, "plain") == "uu" {
+			kept = true
+		}
+	}
+
+	if !kept {
+		t.Fatal("no seed kept the unmarked write: a synced mark still narrowed the draw")
 	}
 }
