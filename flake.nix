@@ -213,30 +213,46 @@
         };
 
         # NetApp's nfstest modules, one wrapper each in bin, as nfstest_posix.
-        nfstest = pkgs.stdenvNoCC.mkDerivation {
-          pname = "nfstest";
-          version = "2024-01-17";
-          src = nfstest-src;
+        #
+        # Python 3.12 is deliberate, as for pynfs. nfstest's rexec runs each
+        # statement it is sent with a bare exec() inside a function, and from 3.13
+        # on a name one statement binds is gone by the next, so the lock and
+        # delegation modules abort at their setup with KeyError: 'fcntl'. The
+        # install check runs that setup, so moving to python3 fails the build.
+        nfstest =
+          let
+            python = pkgs.python312;
+          in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "nfstest";
+            version = "2024-01-17";
+            src = nfstest-src;
 
-          nativeBuildInputs = [ pkgs.makeWrapper ];
-          dontBuild = true;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            dontBuild = true;
 
-          installPhase = ''
-            mkdir -p $out/share $out/bin
-            cp -a . $out/share/nfstest
-            for t in $out/share/nfstest/test/nfstest_*; do
-              makeWrapper ${pkgs.python3}/bin/python3 "$out/bin/$(basename "$t")" \
-                --add-flags "$t" --prefix PYTHONPATH : $out/share/nfstest
-            done
-          '';
+            installPhase = ''
+              mkdir -p $out/share $out/bin
+              cp -a . $out/share/nfstest
+              for t in $out/share/nfstest/test/nfstest_*; do
+                makeWrapper ${python}/bin/python3 "$out/bin/$(basename "$t")" \
+                  --add-flags "$t" --prefix PYTHONPATH : $out/share/nfstest
+              done
+            '';
 
-          meta = with pkgs.lib; {
-            description = "NFS test modules";
-            homepage = "https://git.linux-nfs.org/?p=mora/nfstest.git";
-            license = licenses.gpl2Only;
-            platforms = platforms.linux;
+            doInstallCheck = true;
+            installCheckPhase = ''
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$out/share/nfstest ${python}/bin/python3 -P -c \
+                'from nfstest.rexec import Rexec; Rexec().rimport("fcntl", ["fcntl", "F_SETLK"])'
+            '';
+
+            meta = with pkgs.lib; {
+              description = "NFS test modules";
+              homepage = "https://git.linux-nfs.org/?p=mora/nfstest.git";
+              license = licenses.gpl2Only;
+              platforms = platforms.linux;
+            };
           };
-        };
 
         # Helper script to start PostgreSQL for testing
         dfs-postgres-start = pkgs.writeShellScriptBin "dfs-postgres-start" ''

@@ -31,6 +31,16 @@ const QuarantinePath = "test/harness/quarantine.yaml"
 // share/cthon04 is its built tree. A suite names a tool as {tools}/NAME.
 var ToolDirs = map[string]string{"cthon04": "share/cthon04", "nfstest": ".", "pjdfstest": "share/pjdfstest", "pynfs": "."}
 
+// ToolCopies are the tools {tools} holds a copy of, writable by the user dt
+// runs as, rather than a link to. cthon04's general tests cp their sources to
+// the mount, which keeps their modes, so from nix's read-only store each copy
+// is a read-only file its owner then writes: what special/op_chmod tests, not
+// what general does.
+//
+// decision: with the copy, general no longer writes to read-only files, so
+// special/op_chmod is where the server's handling of that write stays visible.
+var ToolCopies = []string{"cthon04"}
+
 // Registry is the whole file.
 type Registry struct {
 	Version  int                 `yaml:"version"`
