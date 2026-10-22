@@ -7,7 +7,13 @@ test/scenarios/setup.sh a.sh b.sh                       # runs several scenarios
 test/scenarios/setup.sh all                             # runs every scenario, 9x too (see Names)
 cd test/scenarios && ./setup.sh [0-8]?-*.sh             # runs every scenario but the long ones
 cd test/scenarios && ./setup.sh *-xs.sh                 # runs every xs scenario
+test/harness/bin/dt run system                          # the 0x to 8x scenarios, graded, as after a merge
 ```
+
+Through `dt`, a scenario that fails is graded against [`known.yaml`](known.yaml), which lists each
+one that fails today with the issue it reproduces: any other failure is new, and a listed scenario
+that passes fails the run until its fix removes the entry. A run through `dt` posts nothing to
+Slack (`docs/internals/rfcs/rfc-29-test-harness.md`).
 
 ## Names
 
@@ -100,15 +106,17 @@ caches, downloads (apt packages, the libnfs source), inputs and kept logs are in
 `/var/tmp/dittofs-scenarios`.
 
 On a laptop where Docker runs in a Linux VM (Docker Desktop, Colima), as on macOS, the host can be a
-container: run `setup.sh` in `quay.io/podman/stable`, as its user `podman`. Run this from the
-checkout's root, which it mounts as `$PWD`:
+container: run `setup.sh` in `quay.io/podman/stable`, as its user `podman`. `dt` does this itself
+where the host's podman is older than 5.6 or missing, with the same flags and volumes, as on a
+hosted CI runner (on macOS, through `test/harness/bin/dtc`). By hand, run this from the checkout's
+root, which it mounts as `$PWD`:
 
 ```bash
 docker run --rm -it --privileged -e CONTAINERS_CONF=/etc/containers/containers.conf \
   -v "$PWD":/src/dittofs -w /src/dittofs/test/scenarios --user podman \
   -v dittofs-podman-store:/home/podman/.local/share/containers \
   -v dittofs-scenarios-cache:/var/tmp/dittofs-scenarios \
-  quay.io/podman/stable ./setup.sh 00-smb-nfs-roundtrip-gc-xs.sh
+  quay.io/podman/stable:v5.8.9 ./setup.sh 00-smb-nfs-roundtrip-gc-xs.sh
 ```
 
 - `--privileged` lets the podman inside make user namespaces, mounts and its network. It gives up
@@ -119,10 +127,10 @@ docker run --rm -it --privileged -e CONTAINERS_CONF=/etc/containers/containers.c
   and `pkill` signals PIDs that are not its own: `s3 pause` and `s3 stop` fail.
 - The two volumes keep the pulled images and the cache between runs. Docker makes them owned by root,
   so before the first run: `docker run --rm -v dittofs-podman-store:/a -v dittofs-scenarios-cache:/b
-  quay.io/podman/stable chown -R podman:podman /a /b`.
+  quay.io/podman/stable:v5.8.9 chown -R podman:podman /a /b`.
 - A glob such as `[0-8]?-*.sh` must expand inside the container: `bash -c './setup.sh [0-8]?-*.sh'`.
 - To follow a run from another terminal: `docker exec -it $(docker ps -q --filter
-  ancestor=quay.io/podman/stable) tail -F /var/tmp/dittofs-scenarios/run/run.log`.
+  ancestor=quay.io/podman/stable:v5.8.9) tail -F /var/tmp/dittofs-scenarios/run/run.log`.
 - Times there are not comparable with a host's: two container layers and a VM slow builds and I/O,
   and Apple silicon runs arm64. They stay in the volume's own `times/`, apart from any host's.
 

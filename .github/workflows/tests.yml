@@ -12,10 +12,11 @@
 # consecutive runs; unit, integration, operator and lint, whose old jobs ran
 # the commands dt runs, move in at once. plan keeps only the cells of those
 # that have moved: pynfs, pjdfstest, WPTS, smbtorture without its Kerberos
-# option, operator, the Windows unit run, and the suites with a job of their
-# own. A suite joins by being added to the select in plan, with any step its
-# cells need that run doesn't give yet, such as another service; the select
-# goes once every suite runs here.
+# option, operator, the Windows unit run, the suites with a job of their own,
+# and the system scenarios, which had no workflow, less the cells the
+# dedicated host runs itself. A suite joins by being added to the select in
+# plan, with any step its cells need that run doesn't give yet, such as
+# another service; the select goes once every suite runs here.
 #
 # The suites with a job of their own, named as the checks the develop ruleset
 # requires, run in the jobs after non-blocking, which gate waits for too.
@@ -101,7 +102,7 @@ jobs:
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
             jq -c '[(.cells // [])[] | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator"
-                or (.suite == "smbtorture" and .option == null) or .name == "unit/windows")
+                or (.suite == "smbtorture" and .option == null) or .name == "unit/windows" or (.suite == "system" and .place != "dedicated"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
           {
