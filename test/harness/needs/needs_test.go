@@ -90,26 +90,29 @@ func TestToolNotFound(t *testing.T) {
 
 // The machine's own podman runs the scenarios from 5.6 on, compared as
 // numbers. An older one, or none, leaves the need met only where docker
-// runs, which then runs podman's own image, and unmet with the reason
-// otherwise. A podman that fails leaves it unmet even with docker.
+// runs, in podman's own image, and unmet with the reason otherwise. A podman
+// that fails leaves it unmet even with docker, never met in the image.
 func TestPodman(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake podman and docker are sh scripts")
 	}
+	const failed = "podman info --format {{.Version.Version}}: exit status 1"
 	for _, c := range []struct {
 		podman string // the version the fake podman reports, or "fail"; none when empty
 		docker bool
-		host   string // HostPodman's error, "" for none
-		need   string // Check's error, "" for none
+		image  bool   // met in podman's image
+		need   string // the need's error, "" for none
 	}{
-		{podman: "5.6.0", host: "", need: ""},
-		{podman: "5.10.1", host: "", need: ""},
-		{podman: "6.0.0", host: "", need: ""},
-		{podman: "4.9.3", host: "podman 4.9.3: the scenarios need 5.6 or later", need: "podman 4.9.3: the scenarios need 5.6 or later"},
-		{podman: "4.9.3", docker: true, host: "podman 4.9.3: the scenarios need 5.6 or later", need: ""},
-		{podman: "fail", docker: true, host: "podman info --format {{.Version.Version}}: exit status 1", need: "podman info --format {{.Version.Version}}: exit status 1"},
-		{host: "podman not found", need: "podman not found"},
-		{docker: true, host: "podman not found", need: ""},
+		{podman: "5.6.0"},
+		{podman: "5.10.1"},
+		{podman: "6.0.0"},
+		{podman: "5.6.0", docker: true},
+		{podman: "4.9.3", need: "podman 4.9.3: the scenarios need 5.6 or later"},
+		{podman: "4.9.3", docker: true, image: true},
+		{podman: "fail", need: failed},
+		{podman: "fail", docker: true, need: failed},
+		{need: "podman not found"},
+		{docker: true, image: true},
 	} {
 		bin := t.TempDir()
 		t.Setenv("PATH", bin)
@@ -129,8 +132,8 @@ func TestPodman(t *testing.T) {
 			}
 			return err.Error()
 		}
-		if got := errText(HostPodman()); got != c.host {
-			t.Errorf("podman %q, docker %t: HostPodman %q, want %q", c.podman, c.docker, got, c.host)
+		if image, err := Podman(); image != c.image || errText(err) != c.need {
+			t.Errorf("podman %q, docker %t: Podman %t, %q, want %t, %q", c.podman, c.docker, image, errText(err), c.image, c.need)
 		}
 		if got := errText(Check("", "podman")); got != c.need {
 			t.Errorf("podman %q, docker %t: Check %q, want %q", c.podman, c.docker, got, c.need)

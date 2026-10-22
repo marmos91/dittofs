@@ -117,16 +117,7 @@ func Check(root, n string) error {
 	case "docker":
 		return succeeds(kind, "info")
 	case "podman":
-		// decision: Docker meets it too, for a podman that is missing or
-		// older than the scenarios need: dt then runs the cell's commands in
-		// podman's own image. A podman that fails otherwise leaves it unmet,
-		// so a host with its own never falls back to that privileged
-		// container.
-		err := HostPodman()
-		_, missing := exec.LookPath("podman")
-		if (missing != nil || errors.Is(err, errOldPodman)) && succeeds("docker", "info") == nil {
-			return nil
-		}
+		_, err := Podman()
 		return err
 	case "rpcbind":
 		return succeeds("rpcinfo", "-p")
@@ -357,14 +348,32 @@ func hostPort(v string) (string, error) {
 	return v, nil
 }
 
-// errOldPodman is HostPodman's error for a podman older than the scenarios
+// errOldPodman is hostPodman's error for a podman older than the scenarios
 // need.
 var errOldPodman = errors.New("the scenarios need 5.6 or later")
 
-// HostPodman says why this machine's own podman can't run the scenarios, or
+// Podman says whether the podman need is met in podman's own image, which dt
+// then runs the cell's commands in, and why the need is unmet, if it is.
+//
+// decision: Docker meets it only for a podman that is missing or older than
+// the scenarios need. A podman that fails otherwise leaves it unmet, so a
+// host with its own never falls back to that privileged container.
+func Podman() (inImage bool, err error) {
+	err = hostPodman()
+	if err == nil {
+		return false, nil
+	}
+	_, missing := exec.LookPath("podman")
+	if (missing != nil || errors.Is(err, errOldPodman)) && succeeds("docker", "info") == nil {
+		return true, nil
+	}
+	return false, err
+}
+
+// hostPodman says why this machine's own podman can't run the scenarios, or
 // returns nil when it can: they need podman 5.6 or later, whose pull takes
 // --policy.
-func HostPodman() error {
+func hostPodman() error {
 	out, err := probe("podman", "info", "--format", "{{.Version.Version}}")
 	if err != nil {
 		return err

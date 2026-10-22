@@ -78,3 +78,26 @@ func TestPodmanImageNotStarted(t *testing.T) {
 		t.Errorf("%+v\n%s", o, out)
 	}
 }
+
+// A machine whose own podman meets the need runs the commands on the host,
+// even when a later podman info fails: the need and where the commands run
+// are one decision, and a host with its own podman never falls back to the
+// privileged container.
+func TestPodmanHostFailsLater(t *testing.T) {
+	root, r := repo(t, `suites:
+  sys: { cmd: { sh: 'echo ran "$(basename {test})"' }, tests: "t/*.sh", needs: [podman] }
+`, map[string]string{"t/a.sh": ""})
+	log := fakeDocker(t)
+	answered := filepath.Join(t.TempDir(), "answered")
+	podman := "#!/bin/sh\n[ ! -e " + answered + " ] || exit 1\n: > " + answered + "\necho 5.8.0\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(log), "podman"), []byte(podman), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep, out := runTarget(t, root, r, "sys", false)
+	if rep.Outcomes[0].Result != report.Passed || !strings.Contains(out, "ran a.sh") {
+		t.Errorf("on the host: %+v\n%s", rep.Outcomes[0], out)
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Errorf("docker was called for a host with its own podman:\n%s", readFile(t, log))
+	}
+}

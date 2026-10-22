@@ -190,7 +190,17 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun(why)
 		}
 	}
-	if why, unmet := Blocked(c.Unit, c.Needs, func(n string) error { return needs.Check(o.Root, n) }); why != "" {
+	// Docker meets a podman need the machine's own podman can't, and the
+	// commands then run in podman's image: the need's one check decides both.
+	podman := false
+	check := func(n string) (err error) {
+		if n != "podman" {
+			return needs.Check(o.Root, n)
+		}
+		podman, err = needs.Podman()
+		return err
+	}
+	if why, unmet := Blocked(c.Unit, c.Needs, check); why != "" {
 		// A machine that met the needs could run the cell, so without --ci
 		// it's skipped; what dt can't do yet is never a skip.
 		if len(unmet) > 0 && !o.CI {
@@ -198,9 +208,6 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		return didntRun(why)
 	}
-	// Docker met a podman need the machine's own podman can't, so the
-	// commands run in podman's image.
-	podman := slices.Contains(c.Needs, "podman") && needs.HostPodman() != nil
 	out := filepath.Join(dir, report.Slug(c.Name))
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
 	maps.Copy(vals, matrix)
