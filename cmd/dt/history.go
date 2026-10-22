@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -35,13 +36,14 @@ func historyFlags(cmd *cobra.Command, ci *bool, last *int) {
 
 // pastRuns are the runs dt history reads, oldest first: this checkout's last
 // ones, or with ci develop's, each with the cells of its jobs' first attempt.
-// With suite, only develop's artifacts of its cells are read.
-func pastRuns(ctx context.Context, suite string, ci bool, last int) ([]report.Run, error) {
+// With suite, only develop's artifacts of its cells are read, and warn says
+// which couldn't be.
+func pastRuns(ctx context.Context, suite string, ci bool, last int, warn io.Writer) ([]report.Run, error) {
 	if last < 1 {
 		return nil, fmt.Errorf("--last %d: expected 1 or more", last)
 	}
 	if ci {
-		return history.CI(ctx, suite, last)
+		return history.CI(ctx, suite, last, warn)
 	}
 	root, err := repoRoot()
 	if err != nil {
@@ -59,7 +61,7 @@ func newHistory() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			suite, test, _ := strings.Cut(first(args), "/")
-			runs, err := pastRuns(cmd.Context(), suite, ci, last)
+			runs, err := pastRuns(cmd.Context(), suite, ci, last, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -132,7 +134,7 @@ func newKnownPrune() *cobra.Command {
 			if s == nil {
 				return fmt.Errorf("no suite %q", args[0])
 			}
-			runs, err := pastRuns(cmd.Context(), s.Name, ci, last)
+			runs, err := pastRuns(cmd.Context(), s.Name, ci, last, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}

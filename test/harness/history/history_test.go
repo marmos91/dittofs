@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -80,7 +81,8 @@ func TestLocal(t *testing.T) {
 // the artifacts of the blocking and the non-blocking jobs, with suite only
 // those of its cells, not the expired ones, and in each artifact only the
 // first attempt's summary.json: each job's run, with its own OS, under the
-// workflow run's name. Every request carries the token.
+// workflow run's name, and a short commit as it is. An artifact gone or cut
+// short is skipped with a warning. Every request carries the token.
 func TestCI(t *testing.T) {
 	dir := t.TempDir()
 	cell := func(run, name, result, os string) []byte {
@@ -103,8 +105,10 @@ func TestCI(t *testing.T) {
 		"32": cell("20261021T130000Z-33333333-a2", "pjdfstest/badger-s3/4.1", "passed", "linux"),
 		"33": cell("20261021T120100Z-33333333", "pynfs/badger-s3/0", "passed", "windows"),
 		"34": cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/3", "passed", "linux"),
-		"11": cell("20261020T221400Z-11111111", "pjdfstest/badger-s3/3", "not run", "linux"),
+		"11": cell("20261020T221400Z-111", "pjdfstest/badger-s3/3", "not run", "linux"),
 	}
+	whole := cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/4.0", "passed", "linux")
+	downloads["42"] = whole[:len(whole)/2] // cut short
 	artifact := func(id, name string, expired bool) map[string]any {
 		return map[string]any{"name": name, "expired": expired, "archive_download_url": "/download/" + id}
 	}
@@ -115,6 +119,8 @@ func TestCI(t *testing.T) {
 			artifact("32", "dt-run-pjdfstest-badger-s3-4.1-2", false),
 			artifact("34", "dt-non-blocking-pjdfstest-badger-s3-3-1", true),
 			artifact("31", "dt-run-pjdfstest-badger-s3-4.1-1", false),
+			artifact("41", "dt-run-pjdfstest-badger-s3-4.2-1", false),
+			artifact("42", "dt-run-pjdfstest-badger-s3-4.0-1", false),
 		},
 		"1": {artifact("11", "dt-non-blocking-pjdfstest-badger-s3-3-1", false)},
 	}
@@ -133,7 +139,7 @@ func TestCI(t *testing.T) {
 		case p == "workflows/tests.yml/runs" && q.Get("branch") == "develop" && q.Get("status") == "completed":
 			pages := [][]any{
 				{run(4, "push", "cancelled", "4", "2026-10-21T12:30:00Z"), run(3, "push", "failure", "3", "2026-10-21T12:00:00Z"), run(2, "pull_request", "success", "2", "2026-10-21T11:00:00Z")},
-				{run(1, "schedule", "success", "1", "2026-10-20T22:13:00Z")},
+				{map[string]any{"id": 1, "event": "schedule", "conclusion": "success", "head_sha": "111", "created_at": "2026-10-20T22:13:00Z"}},
 				{},
 			}
 			body = map[string]any{"workflow_runs": pages[min(int(page[0]-'1'), 2)]}
@@ -144,6 +150,10 @@ func TestCI(t *testing.T) {
 		case strings.HasPrefix(r.URL.Path, "/download/"):
 			id := strings.TrimPrefix(r.URL.Path, "/download/")
 			fetched = append(fetched, id)
+			if id == "41" {
+				http.Error(w, "expired", http.StatusGone)
+				return
+			}
 			_, _ = w.Write(downloads[id])
 			return
 		default:
@@ -164,33 +174,39 @@ func TestCI(t *testing.T) {
 	}
 
 	for _, c := range []struct {
-		suite   string
-		n       int
-		want    []string
-		fetched string
+		suite    string
+		n        int
+		want     []string
+		fetched  string
+		warnings int // of the artifact gone and the one cut short
 	}{
 		{"pjdfstest", 2, []string{
-			"20261020T221300Z-11111111 on linux pjdfstest/badger-s3/3=not run",
+			"20261020T221300Z-111 on linux pjdfstest/badger-s3/3=not run",
 			"20261021T120000Z-33333333 on linux pjdfstest/badger-s3/4.1=failed",
-		}, "11 32 31"},
+		}, "11 32 31 41 42", 2},
 		{"", 1, []string{
 			"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed",
 			"20261021T120000Z-33333333 on linux pjdfstest/badger-s3/4.1=failed",
-		}, "33 32 31"},
-		{"pynfs", 5, []string{"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed"}, "33"},
+		}, "33 32 31 41 42", 2},
+		{"pynfs", 5, []string{"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed"}, "33", 0},
 	} {
 		fetched = nil
-		runs, err := CI(context.Background(), c.suite, c.n)
+		var warned bytes.Buffer
+		runs, err := CI(context.Background(), c.suite, c.n, &warned)
 		if err != nil || !slices.Equal(names(runs), c.want) {
 			t.Errorf("suite %q, last %d: %q, %v; want %q", c.suite, c.n, names(runs), err, c.want)
 		}
 		if got := strings.Join(fetched, " "); got != c.fetched {
 			t.Errorf("suite %q: downloaded %s, want %s", c.suite, got, c.fetched)
 		}
+		if strings.Count(warned.String(), "skipped the artifact") != c.warnings ||
+			c.warnings > 0 && !strings.Contains(warned.String(), "skipped the artifact dt-run-pjdfstest-badger-s3-4.2-1 of run 20261021T120000Z-33333333: GET") {
+			t.Errorf("suite %q: warned %q", c.suite, warned.String())
+		}
 	}
 
 	t.Setenv("GITHUB_TOKEN", "")
-	if _, err := CI(context.Background(), "", 1); err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+	if _, err := CI(context.Background(), "", 1, io.Discard); err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
 		t.Errorf("without a token: %v", err)
 	}
 }

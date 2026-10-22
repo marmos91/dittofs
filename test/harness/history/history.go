@@ -63,10 +63,11 @@ func Local(results string, n int) ([]report.Run, error) {
 // artifact dt-JOB-CELL-ATTEMPT, the cell's name with - for /, so with suite
 // only the artifacts of its cells are read.
 //
-// GITHUB_API_URL and GITHUB_REPOSITORY say where the API is and which
-// repository it's asked about, DittoFS's by default. Reading an artifact
-// needs a token, GITHUB_TOKEN.
-func CI(ctx context.Context, suite string, n int) ([]report.Run, error) {
+// An artifact that can't be read, as one gone or cut short, is skipped, and
+// warn says so. GITHUB_API_URL and GITHUB_REPOSITORY say where the API is
+// and which repository it's asked about, DittoFS's by default. Reading an
+// artifact needs a token, GITHUB_TOKEN.
+func CI(ctx context.Context, suite string, n int, warn io.Writer) ([]report.Run, error) {
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
 		return nil, errors.New("reading the runs' artifacts needs a token in GITHUB_TOKEN, as GITHUB_TOKEN=$(gh auth token)")
@@ -133,7 +134,7 @@ func CI(ctx context.Context, suite string, n int) ([]report.Run, error) {
 	}
 	var runs []report.Run
 	for _, w := range slices.Backward(found) {
-		name := w.CreatedAt.UTC().Format("20060102T150405Z") + "-" + w.HeadSHA[:8]
+		name := w.CreatedAt.UTC().Format("20060102T150405Z") + "-" + w.HeadSHA[:min(8, len(w.HeadSHA))]
 		var artifacts []artifact
 		for page, total := 1, 1; len(artifacts) < total; page++ {
 			var got struct {
@@ -153,12 +154,13 @@ func CI(ctx context.Context, suite string, n int) ([]report.Run, error) {
 				continue
 			}
 			data, err := get(a.URL)
-			if err != nil {
-				return nil, err
+			var jobs []report.Run
+			if err == nil {
+				jobs, err = jobRuns(a.Name, data)
 			}
-			jobs, err := jobRuns(a.Name, data)
 			if err != nil {
-				return nil, err
+				_, _ = fmt.Fprintf(warn, "skipped the artifact %s of run %s: %v\n", a.Name, name, err)
+				continue
 			}
 			for _, r := range jobs {
 				r.Name = name
