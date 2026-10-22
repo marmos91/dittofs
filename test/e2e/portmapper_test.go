@@ -156,11 +156,8 @@ func testPortmapperGetPort(t *testing.T, pmapPort, nfsPort int) {
 // When a system rpcbind is running, rpcinfo -n <port> still queries the system
 // portmapper (port 111) to check if the program is registered before probing.
 // Since our NFS is registered with our embedded portmapper (not the system one),
-// rpcinfo reports "Program not registered" even though our portmapper works.
-//
-// For full portmapper testing without system rpcbind interference, run:
-//
-//	./test/integration/portmap/run.sh
+// rpcinfo reports "Program not registered" even though our portmapper works,
+// so this test runs only where no system rpcbind holds port 111.
 func testPortmapperRpcinfo(t *testing.T, pmapPort, nfsPort int) {
 	t.Helper()
 

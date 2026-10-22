@@ -20,6 +20,7 @@ suites:
     job: Go Checks
     tier: pr
     cmd:
+      - go mod verify                         # the module cache still matches go.sum
       - { sh: 'test -z "$(gofmt -s -l .)" || { gofmt -s -l .; exit 1; }' }
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
@@ -65,7 +66,8 @@ suites:
   unit:
     job: Unit Tests (1.26.x)
     format: go-json
-    cmd: go test -race {args} -timeout=25m ./pkg/... ./internal/... ./cmd/... ./test/...
+    # Its coverage profile goes beside the cell's results, for the coverage report.
+    cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt ./pkg/... ./internal/... ./cmd/... ./test/...
     args: { pr: "-short" }
     tier: pr
     options:
