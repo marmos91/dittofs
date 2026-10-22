@@ -241,7 +241,7 @@ func TestTestIssues(t *testing.T) {
 	g.add("pjdfstest/badger-s3/4.1 open/00.t fails on develop", "open")
 	g.add("pjdfstest/badger-s3/4.1 open/01.t fails on develop", "closed")
 	tests := []report.Test{
-		newFailure("chmod/12.t", "\n  chmod.t: not ok 7  \nthe second line"),
+		newFailure("chmod/12.t", "\n  chmod.t: not ok 7 | mode 0644  \nthe second line"),
 		newFailure("open/00.t", "not ok 1"),
 		newFailure("open/01.t", "not ok 1"),
 		{Name: "rename/00.t", Status: report.Failed, RawStatus: report.Passed, Grade: report.UnexpectedPass},
@@ -265,7 +265,7 @@ func TestTestIssues(t *testing.T) {
 	post(run("20261022T110000Z-bbbbbbb2", "merge", cell))
 	chmod := g.titled("pjdfstest/badger-s3/4.1 chmod/12.t fails on develop")
 	if len(chmod) != 1 || !slices.Equal(chmod[0].labels, []string{label}) || chmod[0].Body != "`chmod/12.t` in `pjdfstest/badger-s3/4.1` has failed 2 runs in a row on develop.\n\n"+
-		"- Failing line: `chmod.t: not ok 7`\n- Commit: bbbbbbb2\n- Log: https://ci.example/runs/7\n" {
+		"- Commit: bbbbbbb2\n- Log: https://ci.example/runs/7\n\nThe failing line:\n\n    chmod.t: not ok 7 | mode 0644\n" {
 		t.Fatalf("chmod/12.t's issue: %+v", chmod)
 	}
 	if len(g.issues) != 3+1+1+7 || len(g.titled("pjdfstest/badger-s3/4.1 open/01.t fails on develop")) != 2 || len(g.titled("pjdfstest/badger-s3/4.1 rename/00.t fails on develop")) != 0 {
