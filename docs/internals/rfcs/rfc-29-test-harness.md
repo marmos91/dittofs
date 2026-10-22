@@ -1187,8 +1187,11 @@ There are three places to run:
 `smb-client-compat.yml`'s Windows job skipped `net use` on most runs from mid-September (#2994),
 until it was dropped: it tested nothing. Since Windows Server 2025, which the hosted runners are,
 the SMB client can connect on another port: `net use \\localhost\share /TCPPORT:12445`, or
-`New-SmbMapping -TcpPort`. So the fixture mounts on DittoFS's own port, and port 445 isn't needed.
-This still needs one run to prove it end to end.
+`New-SmbMapping -TcpPort`. So the fixture maps the share on DittoFS's own port with
+`New-SmbMapping`, which takes the password from the environment where `net use` would show it on
+its command line, and port 445 isn't needed. A dispatched run proved it end to end on 2026-10-22
+(run 39835268616): the hosted runner's client mapped the share at SMB 3.1.1, and the old job's
+checks passed over it.
 
 **Scenarios on a runner.** They need podman 5.6 or later (`test/scenarios/README.md`), and the
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:
