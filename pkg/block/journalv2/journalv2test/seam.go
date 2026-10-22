@@ -76,6 +76,7 @@ type Seam struct {
 	callsFor map[[2]string]int
 	stashed  int
 	holds    []*Hold
+	crashes  uint64 // Crash calls so far; a call that waited across one fails
 
 	mu sync.Mutex
 }
@@ -232,16 +233,25 @@ func applies(k sim.FaultKind, op string) bool {
 
 // enter counts op on name, waits at any hold that matches it, then consults
 // the fault. It returns the fault's action holding mu, unless the fault fails
-// the call: then it returns the fault's error, without mu.
+// the call: then it returns the fault's error, without mu. A call during
+// which a Crash ran, while it was held or delayed, fails with an error
+// matching fs.ErrClosed and does nothing: it comes from a process the crash
+// ended, and must not act on the directory as the crash left it.
 func (s *Seam) enter(op, name string) (sim.FaultAction, error) {
 	s.mu.Lock()
 	s.count(op, name)
+	crashes := s.crashes
 	s.mu.Unlock()
 
 	s.hold(op, name)
 	a := s.consult(op, name)
 
 	s.mu.Lock()
+	if s.crashes != crashes {
+		s.mu.Unlock()
+		return sim.FaultAction{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
+	}
+
 	if a.Kind == sim.Fail {
 		if op == OpSyncDir {
 			s.loseDirLog()
@@ -658,6 +668,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	for sf := range s.open {
 		sf.closeLocked()
 	}
+	s.crashes++
 
 	// The draws follow the order the writes were issued, never the map's, so
 	// a seed keeps the same writes on every run.

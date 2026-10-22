@@ -300,7 +300,8 @@ func TestCloseCrashAndCreateRunConcurrently(t *testing.T) {
 	})
 	wg.Go(func() {
 		for i := range 16 {
-			if _, err := s.Create(fmt.Sprint("new-", i)); err != nil {
+			// fs.ErrClosed when the Crash ran while the Create waited.
+			if _, err := s.Create(fmt.Sprint("new-", i)); err != nil && !errors.Is(err, fs.ErrClosed) {
 				t.Error(err)
 			}
 		}
@@ -1283,4 +1284,95 @@ func TestTearWithAnErrorPastTheWriteWritesItWhole(t *testing.T) {
 	if got := readAt(t, f, 16); got != "xABx" {
 		t.Fatalf("ReadAt: %q, want %q", got, "xABx")
 	}
+}
+
+func goSyncDir(s *Seam) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- s.SyncDir() }()
+	return done
+}
+
+func TestASyncDirDelayedAcrossACrashLeavesTheNewLogPending(t *testing.T) {
+	s := newSeam(t)
+
+	c := sim.NewTestClock(time.Unix(0, 0))
+	sched, err := sim.NewSchedule(1, c, sim.Rule{Op: OpSyncDir, Key: "*", Count: 1, Action: sim.FaultAction{Kind: sim.Delay, Delay: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetFault(sched)
+
+	done := goSyncDir(s)
+	waitPending(t, c)
+
+	crash(t, s)
+	if _, err := s.Create("a"); err != nil { // after the crash
+		t.Fatal(err)
+	}
+
+	c.Advance(time.Second)
+	if err := within(t, done, "the delayed SyncDir returning"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("a SyncDir delayed across a crash returned %v, want fs.ErrClosed", err)
+	}
+	wantDurable(t, s, "a", nil)
+
+	crash(t, s)
+	wantNames(t, s)
+}
+
+func TestAFailedSyncDirHeldAcrossACrashLeavesTheNewLogIntact(t *testing.T) {
+	s := newSeam(t)
+	failNext(t, s, OpSyncDir)
+
+	h := s.Hold(OpSyncDir, "*")
+	done := goSyncDir(s)
+	within(t, h.Reached(), "the SyncDir reaching the hold")
+
+	crash(t, s)
+	if _, err := s.Create("a"); err != nil { // after the crash
+		t.Fatal(err)
+	}
+
+	h.Release()
+	if err := within(t, done, "the released SyncDir returning"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("a failing SyncDir held across a crash returned %v, want fs.ErrClosed", err)
+	}
+
+	syncDir(t, s) // must cover the create: nothing was lost
+	wantDurable(t, s, "a", new(""))
+}
+
+func TestACreateHeldAcrossACrashDoesNotCreateTheFile(t *testing.T) {
+	s := newSeam(t)
+
+	h := s.Hold(OpCreate, "a")
+	done := make(chan error, 1)
+	go func() { _, err := s.Create("a"); done <- err }()
+	within(t, h.Reached(), "the Create reaching the hold")
+
+	crash(t, s)
+	h.Release()
+	if err := within(t, done, "the released Create returning"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("a Create held across a crash returned %v, want fs.ErrClosed", err)
+	}
+	wantNames(t, s)
+}
+
+func TestACallHeldAcrossARefusedCrashGoesAhead(t *testing.T) {
+	s := newSeam(t)
+
+	h := s.Hold(OpCreate, "a")
+	done := make(chan error, 1)
+	go func() { _, err := s.Create("a"); done <- err }()
+	within(t, h.Reached(), "the Create reaching the hold")
+
+	if err := s.Crash(Torn(1)); err == nil { // no unsynced write to tear
+		t.Fatal("Crash(Torn(1)) with nothing to tear succeeded")
+	}
+
+	h.Release()
+	if err := within(t, done, "the released Create returning"); err != nil {
+		t.Fatalf("a Create held across a refused crash returned %v, want nil", err)
+	}
+	wantNames(t, s, "a")
 }
