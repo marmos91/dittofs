@@ -23,6 +23,7 @@ func newRun() *cobra.Command {
 	var tier, results string
 	var only, skip []string
 	var ci bool
+	var retry int
 	options := map[string]bool{}
 	cmd := &cobra.Command{
 		Use:   "run SUITE|GROUP[/CELL] [--OPTION] [TEST...]",
@@ -48,7 +49,7 @@ func newRun() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier})
+			rep, err := run.Run(ctx, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry})
 			if rep.Dir == "" {
 				return err // the run couldn't start
 			}
@@ -73,6 +74,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these suites of the group")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these suites of the group")
 	cmd.Flags().BoolVar(&ci, "ci", false, "an unmet need fails the run instead of skipping the cell, and new failures are annotated")
+	cmd.Flags().IntVar(&retry, "retry", 0, "run each test that failed new again, up to N times: a pass on a retry is flaky")
 	cmd.Flags().StringVar(&results, "results", "", "where results go, relative to the checkout's root (default test/harness/results)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if _, r, err := load(); err == nil {

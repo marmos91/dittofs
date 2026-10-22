@@ -48,6 +48,10 @@ func Select(root string, r *registry.Registry, target, option, tier string, only
 			return nil, err
 		}
 		goTests := unit.Format == "go-json" // go test finds its tests; TEST names them
+		// decision: a tool that takes test names, through {names}, is given
+		// them only by a retry. A run that names them here would grade only
+		// those, and tell a named test its dependency left skipped, which dt
+		// doesn't do yet.
 		if len(tests) > 0 && !unit.Tests.Set() && !goTests {
 			if len(suites) > 1 {
 				continue // a group's suites without tests have none to pick

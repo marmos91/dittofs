@@ -65,6 +65,7 @@ type Options struct {
 	CI      bool      // --ci: an unmet need is an error, not a skip, and new failures and unexpected passes are annotated
 	Out     io.Writer // where the commands' output passes through
 	Tier    string    // the tier the run was asked for, recorded in its results
+	Retry   int       // --retry: how many times a new failure's test runs again
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -200,7 +201,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	out := filepath.Join(dir, report.Slug(c.Name))
 	vals := map[string]string{"base": base(), "out": out, "test": ""}
 	maps.Copy(vals, matrix)
-	lists := map[string][]string{"args": strings.Fields(c.Unit.Args[c.Tier])}
+	lists := map[string][]string{"args": strings.Fields(c.Unit.Args[c.Tier]), "names": strings.Fields(c.Unit.Names)}
 	if c.Unit.Tests.File != "" {
 		lists["test-args"] = []string{""} // until each test's, from its line, fills it
 	}
@@ -356,19 +357,17 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	setupDone()
 	t := tester{cell: c, ctx: cellCtx, root: o.Root, dir: workdir, inside: inside, env: append(os.Environ(), own...), own: own, vals: vals, lists: lists, paths: paths, lines: lines, server: server, out: w, log: log}
 	if c.Unit.Format == "go-json" {
-		result, note, tests := t.goJSON(c.Tests)
+		result, note, tests := t.goJSON(c.Tests, o.Retry)
 		return report.Cell{Name: c.Name, Result: result, Note: note, Log: logName, Tests: tests}
 	}
 	read := readers[c.Unit.Format]
 	var failed, notRun, didntStart []string
-	var cases []report.Test
-	unstarted, interrupted := 0, false
+	timedOut := map[string]string{} // why each test that timed out failed
+	interrupted := false
 	first := vals["share"] // the fixture's first share, which a test's share= replaces
-	for _, test := range tests {
-		if cellCtx.Err() != nil {
-			unstarted++
-			continue
-		}
+	// attempt runs one test, and returns its results and why it ran nothing,
+	// when it didn't.
+	attempt := func(test string) ([]report.Test, []string) {
 		prefix := ""
 		if test != "" {
 			prefix = test + ": "
@@ -381,8 +380,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// would run on what the test before it left there. The reset is
 			// one of the fixture's steps, so it isn't retried.
 			if err := server.Reset(vals["share"]); err != nil {
-				notRun = append(notRun, prefix+"its share wasn't reset: "+err.Error())
-				continue
+				return nil, []string{prefix + "its share wasn't reset: " + err.Error()}
 			}
 		}
 		var output bytes.Buffer
@@ -392,48 +390,61 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		start := time.Now()
 		r := t.run(test, plan.TestLimit(c.Unit.Timeout, test, lines))
 		interrupted = interrupted || r.interrupted
+		var why []string
 		if len(r.notRun) > 0 {
-			notRun = append(notRun, prefix+strings.Join(r.notRun, ", "))
+			why = append(why, prefix+strings.Join(r.notRun, ", "))
 		}
 		// A command that doesn't start for one test mostly doesn't for any,
 		// in the same way, so each reason is noted once.
-		for _, why := range r.didntStart {
-			if !slices.Contains(didntStart, why) {
-				didntStart = append(didntStart, why)
+		for _, reason := range r.didntStart {
+			if !slices.Contains(didntStart, reason) {
+				didntStart = append(didntStart, reason)
 			}
 		}
 		switch {
+		case read == nil && test == "":
+			return r.steps, why // exit without tests: each command is a test case
+		case read == nil && r.result == report.NotRun:
+			return nil, why
 		case read == nil:
-			// exit: each test is a test case, or without tests each command.
-			if test == "" {
-				cases = append(cases, r.steps...)
-			} else if r.result != report.NotRun {
-				tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
-				if r.result == report.Failed {
-					tc.Status, tc.Message = report.Failed, r.note
-				}
-				if r.timedOut {
-					tc.Grade = report.New // a hang, which no entry excuses
-				}
-				cases = append(cases, tc)
+			tc := report.Test{Name: test, Status: report.Passed, Duration: time.Since(start)}
+			if r.result == report.Failed {
+				tc.Status, tc.Message = report.Failed, r.note
 			}
+			if r.timedOut {
+				tc.Grade = report.New // a hang, which no entry excuses
+			}
+			return []report.Test{tc}, why
 		case r.interrupted:
-			// Its not-run note says so, and nothing it reported counts.
+			return nil, why // its not-run note says so, and nothing it reported counts
 		case len(r.didntStart) > 0:
 			// It ran in part at most, so what a reader finds isn't its
 			// result: it has none, and the note says why.
-		default:
-			got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
-			if err != nil {
-				notRun = append(notRun, prefix+err.Error())
-			}
-			if r.timedOut {
-				// A test that timed out failed, whatever its results say:
-				// the reader can only say which of its tests was open.
-				failed = append(failed, prefix+r.note)
-			}
-			cases = append(cases, got...)
+			return nil, why
 		}
+		got, err := read(report.Ran{Test: test, Prefix: lines[test].Prefix, Output: output.Bytes(), Exit: r.exit, TimedOut: r.timedOut, Took: time.Since(start), Out: out})
+		if err != nil {
+			why = append(why, prefix+err.Error())
+		}
+		if r.timedOut {
+			// A test that timed out failed, whatever its results say: the
+			// reader can only say which of its tests was open.
+			timedOut[test] = prefix + r.note
+		}
+		return got, why
+	}
+	var cases []report.Test
+	var from []string // the test each result came from
+	unstarted := 0
+	for _, test := range tests {
+		if cellCtx.Err() != nil {
+			unstarted++
+			continue
+		}
+		got, why := attempt(test)
+		cases = append(cases, got...)
+		from = append(from, slices.Repeat([]string{test}, len(got))...)
+		notRun = append(notRun, why...)
 	}
 	notRun = append(notRun, didntStart...)
 	if unstarted > 0 {
@@ -445,18 +456,83 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		// run.
 		notRun = append(notRun, "no results")
 	}
+	// A retry runs again what gave a new failure, on the same fixture and
+	// within the cell's limit: each test it came from, or, for a tool that
+	// takes test names, the test by name through {names}. What else the retry
+	// meets doesn't count: it only decides which failures were flaky.
+	//
+	// decision: a suite whose tests dt can't name, a command list or a tool
+	// run once for all its tests without names, isn't retried.
+	for n := 1; n <= o.Retry && !interrupted && cellCtx.Err() == nil; n++ {
+		graded := slices.Clone(cases)
+		c.grade(graded)
+		var again, names []string
+		for i, tc := range graded {
+			switch {
+			case tc.Grade != report.New:
+			case c.Unit.Names != "":
+				names = append(names, tc.Name)
+			case c.Unit.Tests.Set():
+				again = append(again, from[i])
+			}
+		}
+		again = slices.Compact(again)
+		shown := again
+		if len(names) > 0 {
+			lists["names"] = slices.Compact(names)
+			again, shown = []string{""}, lists["names"]
+		}
+		if len(again) == 0 {
+			break
+		}
+		_, _ = fmt.Fprintf(w, "[dt] retry %d: %s\n", n, strings.Join(shown, ", "))
+		// A retry by name runs the same command, which writes its results
+		// where the attempt before it did: those are kept, under a name no
+		// reader reads.
+		if ext := resultExt[c.Unit.Format]; len(names) > 0 && ext != "" {
+			for _, f := range resultFiles(out, ext) {
+				if err := os.Rename(f, f+".attempt-"+strconv.Itoa(n)); err != nil {
+					_, _ = fmt.Fprintf(w, "[dt] %v\n", err)
+				}
+			}
+		}
+		var results []report.Test
+		for _, test := range again {
+			if cellCtx.Err() != nil {
+				break
+			}
+			// Only a test run whole again can clear its timeout: a retry by
+			// name runs the failed tests, not those a timeout left unrun.
+			if len(names) == 0 {
+				delete(timedOut, test)
+			}
+			got, why := attempt(test)
+			results = append(results, got...)
+			if interrupted {
+				notRun = append(notRun, why...)
+			}
+		}
+		retried(cases, graded, results, n)
+	}
 	if interrupted {
 		// The cell didn't finish, and what its tests reported once
 		// interrupted can come from the interrupt itself.
 		cases = nil
 	}
+	for _, test := range tests {
+		if why, ok := timedOut[test]; ok {
+			failed = append(failed, why)
+		}
+	}
 	// The grades decide how the cell went. A new failure fails it: the note
 	// gives an exit suite's failing tests, or its failing commands, each with
-	// why, and a reader's by name.
+	// why, and a reader's by name. A flaky test passes, and is named.
 	c.grade(cases)
-	var names []string
+	var names, flaky []string
 	for _, tc := range cases {
 		switch {
+		case tc.Flaky:
+			flaky = append(flaky, tc.Name)
 		case tc.Grade != report.New:
 		case read != nil:
 			names = append(names, tc.Name)
@@ -471,14 +547,41 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 	}
 	unexpected, lost := gradeNotes(cases)
 	failed, notRun = append(failed, unexpected...), append(notRun, lost...)
-	cell := report.Cell{Name: c.Name, Result: report.Passed, Log: logName, Tests: cases}
+	notes := slices.Concat(failed, notRun)
+	if len(flaky) > 0 {
+		notes = append(notes, fmt.Sprintf("%d flaky: %s", len(flaky), some(flaky)))
+	}
+	cell := report.Cell{Name: c.Name, Result: report.Passed, Note: strings.Join(notes, "; "), Log: logName, Tests: cases}
 	switch {
 	case len(failed) > 0:
-		cell.Result, cell.Note = report.Failed, strings.Join(append(failed, notRun...), "; ")
+		cell.Result = report.Failed
 	case len(notRun) > 0:
-		cell.Result, cell.Note = report.NotRun, strings.Join(notRun, "; ")
+		cell.Result = report.NotRun
 	}
 	return cell
+}
+
+// retried records the n-th retry of the results graded holds as new
+// failures, from the results the retry gave, again: a failure whose test
+// passed in every result of the retry passes, flaky, and each failure the
+// retry ran again counts it. cases are the results as reported, before
+// grading, so a flaky one is graded as a pass.
+func retried(cases, graded, again []report.Test, n int) {
+	ran, failed := map[string]bool{}, map[string]bool{}
+	for _, tc := range again {
+		ran[tc.Title()] = true
+		failed[tc.Title()] = failed[tc.Title()] || tc.Status != report.Passed
+	}
+	for i := range cases {
+		test := cases[i].Title()
+		if graded[i].Grade != report.New || !ran[test] {
+			continue
+		}
+		cases[i].Retries = n
+		if !failed[test] {
+			cases[i].Status, cases[i].Grade, cases[i].Flaky = report.Passed, "", true
+		}
+	}
 }
 
 // grade grades the cell's results against its suite's known file, at the

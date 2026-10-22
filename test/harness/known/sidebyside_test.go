@@ -16,8 +16,6 @@ var sideBySide = []struct {
 }{
 	{"../../posix/KNOWN_FAILURES.md", "../../posix/known.yaml", "nfs", []string{"3"}},
 	{"../../posix/KNOWN_FAILURES_V4.md", "../../posix/known.yaml", "nfs", []string{"4", "4.1"}},
-	{"../../nfs-conformance/pynfs/KNOWN_FAILURES_V40.md", "../../nfs-conformance/pynfs/known.yaml", "minor", []string{"0"}},
-	{"../../nfs-conformance/pynfs/KNOWN_FAILURES_V41.md", "../../nfs-conformance/pynfs/known.yaml", "minor", []string{"1"}},
 	{"../../smb-conformance/KNOWN_FAILURES.md", "../../smb-conformance/known.yaml", "", nil},
 	{"../../smb-conformance/smbtorture/KNOWN_FAILURES.md", "../../smb-conformance/smbtorture/known.yaml", "", nil},
 	{"../../smb-conformance/smbtorture/KNOWN_FAILURES_KERBEROS.md", "../../smb-conformance/smbtorture/known-kerberos.yaml", "", nil},

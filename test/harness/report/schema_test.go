@@ -92,6 +92,12 @@ func check(node map[string]any, v any, at string) []string {
 			if arr, ok := v.([]any); ok && len(arr) < number(kw) {
 				fail("has fewer than %v items", kw)
 			}
+		case "minimum":
+			if n, ok := v.(json.Number); ok {
+				if i, err := n.Int64(); err != nil || i < int64(number(kw)) {
+					fail("is less than %v", kw)
+				}
+			}
 		case "minLength":
 			if str, ok := v.(string); ok && utf8.RuneCountInString(str) < number(kw) {
 				fail("is shorter than %v", kw)
