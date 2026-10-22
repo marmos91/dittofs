@@ -1303,7 +1303,7 @@ and never grade a run on their own (§4.10).
 | none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
 | `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
 | `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` or `quarantined` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
-| `quarantined` | failed, and an entry of the quarantine list matches it, unless a known-failure entry grades it first (§4.7) | `skipped`, `rawStatus: failed`, in `extra` the reason "quarantined as flaky, see #N" and the entry's issue | `<skipped>` with the reason | passes |
+| `quarantined` | failed or passed, and an entry of the quarantine list matches it, unless a known-failure entry grades it first (§4.7) | failed: `skipped`, `rawStatus: failed`; passed: `passed`; in `extra` the reason "quarantined as flaky, see #N" and the entry's issue | failed: `<skipped>` with the reason; passed: a pass with a `quarantined` property, the issue | passes |
 | `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
 | `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
@@ -1466,9 +1466,10 @@ flags leave out: a test of another minor version, and one whose own check fails,
   one is a registry error, so an entry can't stay forever: it is renewed while its issue is open.
 - A quarantined test still runs and its result is recorded, but its failure never fails a run and
   never alerts: the failure is graded `quarantined` (§4.6), unless a known-failure entry for the
-  test grades it `known` first, and a pass is reported, as an intermittent entry's is. A crash or a
-  hang of the code under test isn't such a failure: it stays new, since no entry excuses it (§4.6).
-  A skip is graded as any skip.
+  test grades it `known` first. A pass passes, graded `quarantined` too, so CTRF, JUnit and
+  `dt history` show whether the test still fails, and an entry whose test only passes can go. A
+  crash or a hang of the code under test isn't such a failure: it stays new, since no entry
+  excuses it (§4.6). A skip is graded as any skip.
 - An expired entry is an error from `dt doctor` and the registry check, a test of `dt` that
   `lint-repo` runs, so the list can't become a dumping ground. An entry expires at the start of its
   date in UTC. From then on it excuses nothing, so its test fails as new and the gate goes red on

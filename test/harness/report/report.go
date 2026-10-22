@@ -40,8 +40,8 @@ const (
 	New = "new"
 	// Known is a failure a known-failure entry matches: skipped.
 	Known = "known"
-	// Quarantined is a failure an entry of the quarantine list matches:
-	// skipped.
+	// Quarantined is a result an entry of the quarantine list matches:
+	// skipped when it failed, and passed when it passed.
 	Quarantined = "quarantined"
 	// UnexpectedPass is a pass an entry still lists: failed.
 	UnexpectedPass = "unexpected_pass"

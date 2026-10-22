@@ -90,16 +90,21 @@ func parseQuarantine(n *yaml.Node) (Quarantine, []string) {
 }
 
 // Entry is what Grade grades the test's results by, after the suite's known
-// file's entries: a known failure that grades a failure quarantined, with a
-// reason that says so and names the issue, and is intermittent, so a pass is
-// reported, not failed.
+// file's entries: a known failure that grades a failure, and a pass too,
+// quarantined, with a reason that says so and names the issue. A pass is
+// never unexpected on its account.
 //
-// decision: it grades failures only, as a known-failure entry does: a crash
-// or a hang of the code under test, which its reader grades, stays new, since
-// a hang is a regression until shown otherwise, and a skip is graded as any
-// skip is. Between it and a known entry matching the same test, Grade picks
-// as between two known entries, the known file's first. Revisit if a flake
-// that hangs needs quarantining.
+// decision: a pass is graded quarantined as well, still passing, so CTRF,
+// JUnit and dt history show whether a quarantined test still fails, and an
+// entry whose test only passes lately can go. Listing such tests in dt
+// doctor instead would need recent runs, which dt history reads.
+//
+// decision: it grades only what a tool reported as a failure or a pass: a
+// crash or a hang of the code under test, which its reader grades, stays new,
+// since a hang is a regression until shown otherwise, and a skip is graded as
+// any skip is. Between it and a known entry matching the same test, Grade
+// picks as between two known entries, the known file's first. Revisit if a
+// flake that hangs needs quarantining.
 func (q Quarantine) Entry() Entry {
-	return Entry{Test: q.Test, Status: "fail", Reason: "quarantined as flaky, see " + q.Issue, Issue: q.Issue, Intermittent: true, quarantined: true}
+	return Entry{Test: q.Test, Status: "fail", Reason: "quarantined as flaky, see " + q.Issue, Issue: q.Issue, quarantined: true}
 }

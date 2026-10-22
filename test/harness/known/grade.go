@@ -41,7 +41,9 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 		}
 		switch t.Status {
 		case report.Passed:
-			if e := entryFor(apply, t.Name, ""); e >= 0 && !apply[e].Intermittent && allPassed[e] {
+			if e := entryFor(apply, t.Name, ""); e >= 0 && apply[e].quarantined {
+				t.Grade, t.Reason, t.Issue = report.Quarantined, apply[e].Reason, apply[e].Issue
+			} else if e >= 0 && !apply[e].Intermittent && allPassed[e] {
 				t.Status, t.RawStatus, t.Grade = report.Failed, report.Passed, report.UnexpectedPass
 				t.Reason, t.Issue = apply[e].Reason, apply[e].Issue
 			}
