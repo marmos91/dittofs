@@ -51,7 +51,7 @@ func TestPodmanImage(t *testing.T) {
 	want := [][]string{
 		{"info"},
 		{"image", "inspect", podmanImage},
-		{"run", "--rm", "-v", "dittofs-scenarios-cache:/cache", podmanImage, "chown", "podman:podman", "/cache"},
+		{"run", "--rm", "-v", "dittofs-scenarios-cache:/cache", podmanImage, "chown", "-R", "podman:podman", "/cache"},
 		{"run", "--rm", "--name", "NAME", "--privileged", "--user", "podman", "-e", "CONTAINERS_CONF=/etc/containers/containers.conf",
 			"-v", "ROOT:/src/dittofs", "-w", "/src/dittofs",
 			"-v", "dittofs-podman-store:/home/podman/.local/share/containers", "-v", "dittofs-scenarios-cache:/var/tmp/dittofs-scenarios",

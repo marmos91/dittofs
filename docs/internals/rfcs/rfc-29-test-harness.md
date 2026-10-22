@@ -1186,12 +1186,12 @@ shared host, and a hosted runner is a single-use VM, so macOS and CI share one c
 pinned version, as the README's command does: privileged, as the image's user `podman`, with
 podman's own configuration, the checkout at `/src/dittofs`, and the README's two volumes, which
 keep podman's images and `setup.sh`'s cache from one scenario to the next. Before the first test
-it pulls the image and gives the cache volume to that user, as fixture steps (§4.2). A host whose
-own podman is new enough, as the dedicated host's, runs `setup.sh` on it, and one whose podman
-fails doesn't meet the need, so neither starts the privileged container. On macOS, `dtc` gives the
-cell its Linux and Docker its podman. Until `setup.sh` stops running `apt-get update` for every
-scenario, which stalls for minutes on hosted runners, `system` is `blocking: false`: reported and
-annotated, never failing the gate.
+it pulls the image and gives the cache volume and all in it to that user, as fixture steps (§4.2). A
+host whose own podman is new enough, as the dedicated host's, runs `setup.sh` on it, and one whose
+podman fails doesn't meet the need, so neither starts the privileged container. On macOS, `dtc`
+gives the cell its Linux and Docker its podman. Until `setup.sh` stops running `apt-get update` for
+every scenario, which stalls for minutes on hosted runners, `system` is `blocking: false`: reported
+and annotated, never failing the gate.
 
 **The dedicated host is not a self-hosted runner.** GitHub's guidance is that "self-hosted runners
 should almost never be used for public repositories", because any pull request could run code on

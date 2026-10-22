@@ -29,13 +29,14 @@ const (
 )
 
 // preparePodman pulls podman's image and gives its user the cache volume,
-// which docker creates owned by root. The store volume takes its owner from
-// the image's own directory.
+// which docker creates owned by root, and all in it, since a run by hand
+// shares it and can have left root's directories there. The store volume
+// takes its owner from the image's own directory.
 func preparePodman(ctx context.Context, dir string, env []string, w io.Writer) error {
 	if err := pull(ctx, podmanImage, dir, env, w); err != nil {
 		return err
 	}
-	chown := []string{"docker", "run", "--rm", "-v", podmanCache + ":/cache", podmanImage, "chown", "podman:podman", "/cache"}
+	chown := []string{"docker", "run", "--rm", "-v", podmanCache + ":/cache", podmanImage, "chown", "-R", "podman:podman", "/cache"}
 	shown := strings.Join(chown, " ")
 	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", shown)
 	code, err := execute(ctx, chown, dir, env, w, false)
