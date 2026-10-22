@@ -25,8 +25,8 @@ var update = flag.Bool("update", false, "rewrite the golden files from what the 
 // docker pull stalls when it's "stall", fails when it's "fail", and else
 // passes. docker run touches the log's name with .run added once it has
 // started, prints the value of each variable -e names, and runs the command
-// after the image as the container would, or says it ran the image's own.
-// docker rm does nothing more.
+// after the image as the container would, or says it ran the image's own; a
+// chown it doesn't run. docker rm does nothing more.
 func fakeDocker(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
@@ -43,13 +43,14 @@ esac
 shift
 while :; do
 	case "$1" in
-	--rm) shift ;;
-	--name|--network|-v|-w) shift 2 ;;
+	--rm|--privileged) shift ;;
+	--name|--network|--user|-v|-w) shift 2 ;;
 	-e) echo "env $2=$(printenv "$2")"; shift 2 ;;
 	*) break ;;
 	esac
 done
 shift
+[ "$1" != chown ] || exit 0
 [ $# -gt 0 ] || { echo "the image's own command"; exit 0; }
 exec "$@"
 `

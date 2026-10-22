@@ -35,6 +35,7 @@ For the end-user guide to connecting a Windows client, see
   - [smbtorture (Samba Test Suite)](#smbtorture-samba-test-suite)
   - [pynfs (NFSv4 protocol)](#pynfs-nfsv4-protocol)
   - [cthon04 and nfstest (NFS mount options)](#cthon04-and-nfstest-nfs-mount-options)
+  - [System scenarios](#system-scenarios)
 - [Device-loss crash testing (dm-flakey)](#device-loss-crash-testing-dm-flakey)
 
 ---
@@ -392,8 +393,8 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 
 DittoFS is validated against industry-standard conformance suites for SMB and
 NFS. The table comes from the test registry, `test/suites.yaml`. pjdfstest
-([`test/posix/README.md`](../../test/posix/README.md)), pynfs, WPTS and smbtorture
-run through `dt` (below); cthon04 and nfstest run through
+([`test/posix/README.md`](../../test/posix/README.md)), pynfs, WPTS, smbtorture and
+the system scenarios run through `dt` (below); cthon04 and nfstest run through
 `test/conformance/run.sh`, as `test/conformance/suites.json` describes, and
 smbtorture's Kerberos option through `smbtorture/run.sh --kerberos`, until each
 moves to `dt`. Until then cthon04 runs on pull requests and nightly, not after
@@ -412,6 +413,7 @@ merge as its tier says:
 | `smbtorture/kerberos` | SMB | `badger-s3` | none | `merge` | [`test/smb-conformance/smbtorture/known-kerberos.yaml`](../../test/smb-conformance/smbtorture/known-kerberos.yaml) |
 | `cthon04` | NFS | `badger-s3` | mount-options: `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `pr` | [`test/nfs-mount/cthon04/known.yaml`](../../test/nfs-mount/cthon04/known.yaml) |
 | `nfstest` | NFS | `badger-s3` | mount-options: `default`, `v3`, `v4.0`, `v4.1`, `v4.1-noac`, `v4.1-smallio` | `nightly` | [`test/nfs-mount/nfstest/known.yaml`](../../test/nfs-mount/nfstest/known.yaml) |
+| `system` | none | none | none | `merge` | [`test/scenarios/known.yaml`](../../test/scenarios/known.yaml) |
 
 From [`test/suites.yaml`](../../test/suites.yaml): its suites graded against a known file, and their options.
 Each runs in its tier and the wider ones, `pr` then `merge` then `nightly`; a `manual` one only when asked.
@@ -493,6 +495,23 @@ Runs in the `nfs-mount` job of `.github/workflows/conformance.yml`. See
 
 > Do not run two instances of the e2e or conformance suites concurrently — they share a Docker
 > container name and will collide. Run them serially and `docker rm -f` between runs if needed.
+
+### System scenarios
+
+Each scenario in [`test/scenarios/`](../../test/scenarios/README.md) runs a DittoFS server in a
+throwaway podman container, with SMB and NFS clients and faults such as an S3 outage or a crash.
+
+- **Known failures:** [`test/scenarios/known.yaml`](../../test/scenarios/known.yaml), each with its
+  issue
+- **Run locally:**
+  ```bash
+  test/harness/bin/dt run system     # Linux, with podman 5.6 or later, or Docker
+  test/harness/bin/dtc run system    # macOS, through Docker
+  ```
+
+The 0x to 8x scenarios run after every merge to develop, in `.github/workflows/tests.yml`, split
+over four runners. They don't fail the gate yet: each scenario's setup runs `apt-get update`, which
+stalls for minutes there at times.
 
 ---
 

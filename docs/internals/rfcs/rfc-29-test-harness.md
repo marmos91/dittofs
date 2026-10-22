@@ -682,9 +682,10 @@ suites:
 
   # The system scenarios: a real server in a container, real clients, faults injected.
   system:
-    cmd: test/scenarios/setup.sh {test}
+    cmd: { sh: 'test/scenarios/setup.sh "$(basename {test})"' }   # setup.sh takes a scenario's file name
     tests: test/scenarios/[0-9][0-9]-*.sh
     select: { merge: "[0-8]?-*.sh" }    # nightly runs all; the 0x smoke group joins pr once timed
+    env: { SLACK_DIR: /nonexistent }    # dt reports the run; setup.sh posts to Slack on its own runs only (§4.6)
     known: test/scenarios/known.yaml
     needs: [linux, podman]
     needs_by_test:                      # the long runs only fit the dedicated host (§4.5)
@@ -788,7 +789,10 @@ aren't run stay in the file.
 **Scenario timeouts.** A scenario's size class is in its file name (`test/scenarios/README.md`):
 `xs` under 10 s, `s` under 1 min, `m` under 5, `l` under 15, `xl` under 1 h. With `test: size`, its
 timeout is twice its class's bound plus 2 minutes for the container's setup, so 32 minutes for an
-`l`. An `xxl` scenario has no bound, so only the cell's timeout applies to it.
+`l`. An `xxl` scenario has no bound, so only the cell's timeout applies to it. Those 2 minutes
+assume `setup.sh`'s images and caches are there, and a hosted runner starts without them: the
+cell's first scenario, which pulls and fills them, also gets the fixture's 5 minutes, which the
+cell's limit counts (below) though `system` has no fixture.
 
 **A cell outlasts its tests.** A cell runs its tests one after another, so `dt plan` never gives
 it a limit shorter than the sum of its tests' limits plus the fixture's 5 minutes (§4.2); it raises
@@ -1138,7 +1142,8 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 `needs` names what a suite requires:
 - **platforms:** `linux`, `windows`, `macos`;
 - **privileges:** `root` (passwordless sudo);
-- **container engines:** `docker`, `podman`;
+- **container engines:** `docker`, `podman` (5.6 or later, which the scenarios need, or Docker to
+  run it in its own image, below);
 - **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`,
   `nfs4-acl-tools`, `kerberos`, `dm-flakey`;
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
@@ -1176,6 +1181,17 @@ This still needs one run to prove it end to end.
 hosted image has 4.9.3. So on a runner they use the path the README already gives for macOS:
 `setup.sh` inside `quay.io/podman/stable`, privileged. The README limits that to a VM, never a
 shared host, and a hosted runner is a single-use VM, so macOS and CI share one code path.
+`dt` takes that path itself. A machine whose podman is missing or older than 5.6 meets the
+`podman` need with Docker, and `dt` then runs each of the cell's commands in that image, at a
+pinned version, as the README's command does: privileged, as the image's user `podman`, with
+podman's own configuration, the checkout at `/src/dittofs`, and the README's two volumes, which
+keep podman's images and `setup.sh`'s cache from one scenario to the next. Before the first test
+it pulls the image and gives the cache volume to that user, as fixture steps (§4.2). A host whose
+own podman is new enough, as the dedicated host's, runs `setup.sh` on it, and one whose podman
+fails doesn't meet the need, so neither starts the privileged container. On macOS, `dtc` gives the
+cell its Linux and Docker its podman. Until `setup.sh` stops running `apt-get update` for every
+scenario, which stalls for minutes on hosted runners, `system` is `blocking: false`: reported and
+annotated, never failing the gate.
 
 **The dedicated host is not a self-hosted runner.** GitHub's guidance is that "self-hosted runners
 should almost never be used for public repositories", because any pull request could run code on
@@ -1327,7 +1343,10 @@ where one fails.
 
 The `system` suite is `exit` per scenario file. When another run holds its lock, `setup.sh` runs
 nothing and exits 75 (since #3018; it used to exit 0, #3000). `dt` reads 75 as not run, exit 2, and
-doesn't take the lock itself, so `setup.sh` stays the lock's only owner.
+doesn't take the lock itself, so `setup.sh` stays the lock's only owner. The suite's `env` sets
+`SLACK_DIR` to a directory that doesn't exist, so `setup.sh` posts nothing to the scenarios' Slack
+channel from a run through `dt`, which reports its results itself; its own runs, such as the
+dedicated host's schedule, keep their messages.
 
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
@@ -1570,7 +1589,8 @@ One workflow, `tests.yml`, runs every registered suite:
 - **Jobs:**
   - `plan` runs `dt plan --tier T --json`.
   - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`
-    named (`ubuntu-latest` for `ubuntu`), with `--retry 1` on develop and the schedule, never on
+    named (`ubuntu-latest` for `ubuntu`), less the cells it places on the dedicated host, which runs
+    them itself (§4.5), with `--retry 1` on develop and the schedule, never on
     PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
     artifact `dt-run-CELL-ATTEMPT`, the cell's name with `-` for `/`, without `{bin}` and `{tools}`.
     A cell with `tools` gets nix and the shared nix cache; on a push it builds them as

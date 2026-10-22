@@ -292,15 +292,23 @@ suites:
       windows: { needs: [windows], fixture: { profile: memory, smb: { mount: true }, nfs: "3" } }
 
   # The system scenarios: a real server in a container, real clients, faults injected.
+  # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
+  # by dt, and never posts to the scenarios' Slack channel.
   system:
-    cmd: test/scenarios/setup.sh {test}
+    cmd: { sh: 'test/scenarios/setup.sh "$(basename {test})"' }
     tests: test/scenarios/[0-9][0-9]-*.sh
     select: { merge: "[0-8]?-*.sh" }
+    env: { SLACK_DIR: /nonexistent }
+    known: test/scenarios/known.yaml
     needs: [linux, podman]
     needs_by_test:
       "9?-*.sh": ["host:dedicated", "disk:110"]
     timeout: { test: size, cell: 90m }
     shards: 4
+    # decision: reported, never failing the gate, since each scenario's setup runs apt-get update,
+    # which stalls for minutes on hosted runners. It becomes blocking once setup.sh stops stalling
+    # there, a change to setup.sh, which its owner makes.
+    blocking: false
   fio-verify:
     cmd: "fio --output-format=json --output={out}/{test}.json {test}"
     tests: bench/workloads/*.fio

@@ -88,6 +88,64 @@ func TestToolNotFound(t *testing.T) {
 	}
 }
 
+// The machine's own podman runs the scenarios from 5.6 on, compared as
+// numbers. An older one, or none, leaves the need met only where docker
+// runs, which then runs podman's own image, and unmet with the reason
+// otherwise. A podman that fails leaves it unmet even with docker.
+func TestPodman(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake podman and docker are sh scripts")
+	}
+	for _, c := range []struct {
+		podman string // the version the fake podman reports, or "fail"; none when empty
+		docker bool
+		host   string // HostPodman's error, "" for none
+		need   string // Check's error, "" for none
+	}{
+		{podman: "5.6.0", host: "", need: ""},
+		{podman: "5.10.1", host: "", need: ""},
+		{podman: "6.0.0", host: "", need: ""},
+		{podman: "4.9.3", host: "podman 4.9.3: the scenarios need 5.6 or later", need: "podman 4.9.3: the scenarios need 5.6 or later"},
+		{podman: "4.9.3", docker: true, host: "podman 4.9.3: the scenarios need 5.6 or later", need: ""},
+		{podman: "fail", docker: true, host: "podman info --format {{.Version.Version}}: exit status 1", need: "podman info --format {{.Version.Version}}: exit status 1"},
+		{host: "podman not found", need: "podman not found"},
+		{docker: true, host: "podman not found", need: ""},
+	} {
+		bin := t.TempDir()
+		t.Setenv("PATH", bin)
+		switch c.podman {
+		case "":
+		case "fail":
+			writeScript(t, filepath.Join(bin, "podman"), "exit 1")
+		default:
+			writeScript(t, filepath.Join(bin, "podman"), `[ "$*" = "info --format {{.Version.Version}}" ] && echo `+c.podman)
+		}
+		if c.docker {
+			writeScript(t, filepath.Join(bin, "docker"), `[ "$*" = info ]`)
+		}
+		errText := func(err error) string {
+			if err == nil {
+				return ""
+			}
+			return err.Error()
+		}
+		if got := errText(HostPodman()); got != c.host {
+			t.Errorf("podman %q, docker %t: HostPodman %q, want %q", c.podman, c.docker, got, c.host)
+		}
+		if got := errText(Check("", "podman")); got != c.need {
+			t.Errorf("podman %q, docker %t: Check %q, want %q", c.podman, c.docker, got, c.need)
+		}
+	}
+}
+
+// writeScript writes an sh script that runs body.
+func writeScript(t *testing.T, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(name, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Needs dt can't meet or check yet are unmet, never met.
 func TestUnmetUntilChecked(t *testing.T) {
 	for _, n := range []string{"host:dedicated", "cloud:aws", "disk:999999"} {
