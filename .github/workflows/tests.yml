@@ -244,14 +244,15 @@ jobs:
   # cells' new failures and unexpected passes, and the cells that failed or
   # didn't run, to the develop-status issue, and gives a test failing 2 runs in
   # a row an issue of its own. The token can write issues and nothing else. A
-  # cancelled run posts nothing, as it has no result.
+  # cancelled run posts nothing, as it has no result. It runs when plan failed
+  # too, and fails then, with nothing to post.
   #
   # decision: the non-blocking cells don't post. They never fail the gate, so
   # they never make develop red; their failures show on their own jobs.
   post:
     name: post
     needs: [plan, run]
-    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') && needs.run.result != 'skipped' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -271,17 +272,21 @@ jobs:
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
       - name: Download the results
+        if: needs.run.result != 'skipped'
         uses: actions/download-artifact@v7
         with:
           pattern: dt-run-*
           path: ${{ runner.temp }}/results
 
       # Every blocking cell's run, each attempt's: dt counts a cell from its
-      # last run by name, which is its latest attempt's.
+      # last run by name, which is its latest attempt's, and a planned cell
+      # whose job wrote no run as not run.
       - name: Post
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          BLOCKING: ${{ needs.plan.outputs.blocking }}
         run: |
           shopt -s nullglob
           runs=("$RUNNER_TEMP"/results/dt-run-*/*/summary.json)
-          "$RUNNER_TEMP/dt" report --failures --post "${runs[@]%/summary.json}"
+          cells=$(jq -r 'map(.name) | join(",")' <<<"${BLOCKING:-[]}")
+          "$RUNNER_TEMP/dt" report --failures --post "$cells" "${runs[@]%/summary.json}"

@@ -159,7 +159,9 @@ func next(old []entry, cells map[string]report.Cell) []entry {
 
 // Post posts runs, the cells of one tier run of develop, as each CI job writes
 // the run of its own cell; a cell in several runs, a job re-run by hand, counts
-// from the last run by name. The develop-status issue gets the failing set.
+// from the last run by name, and a planned cell with no run, as one whose job
+// died before it wrote its results, didn't run. The develop-status issue gets
+// the failing set.
 // Unless more than maxFailing tests failed anew, each new failure that has
 // failed 2 runs in a row gets an issue of its own, or a comment on the one open
 // for it, once: the develop-status issue links it from then on. Post refuses
@@ -169,7 +171,7 @@ func next(old []entry, cells map[string]report.Cell) []entry {
 // decision: two posts at once, as a merge run's and a nightly run's ending
 // together, can lose one's update of the develop-status issue: the next run of
 // its cells makes it again.
-func (c Client) Post(ctx context.Context, runs []report.Run, out io.Writer) error {
+func (c Client) Post(ctx context.Context, runs []report.Run, planned []string, out io.Writer) error {
 	runs = slices.SortedFunc(slices.Values(runs), func(a, b report.Run) int { return strings.Compare(a.Name, b.Name) })
 	cells := map[string]report.Cell{}
 	var last report.Run
@@ -184,6 +186,11 @@ func (c Client) Post(ctx context.Context, runs []report.Run, out io.Writer) erro
 			cells[cell.Name] = cell
 		}
 		last = r
+	}
+	for _, name := range planned {
+		if _, ok := cells[name]; !ok {
+			cells[name] = report.Cell{Name: name, Result: report.NotRun}
+		}
 	}
 	failing := map[key]report.Test{}
 	for _, cell := range cells {

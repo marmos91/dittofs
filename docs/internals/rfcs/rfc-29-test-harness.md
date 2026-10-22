@@ -1007,7 +1007,8 @@ dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exi
    [--tier T] [--only A,B] [--skip A,B] [--parallel N]
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
-dt report [RUN...] --failures [--post]         only the new failures; --post posts them, given a tier run's runs
+dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
+   [--post CELL,...]                           run's planned cells and its runs
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE                           remove entries that matched no failing or skipping test in recent runs
@@ -1066,8 +1067,10 @@ of the workflow run it belongs to, the fixed-name jobs (§4.8) included, so a pu
 
 **Posting failures.** `dt report --failures --post` opens a GitHub issue for each new failure, or
 comments on the one already open for it, and lists them in the develop-status issue (§4.8). It
-takes the runs of one tier run, as in CI each cell's job writes a run of its own; a cell in several
-runs, a job re-run by hand, counts from the last by name. Its token is `GITHUB_TOKEN`. The first
+takes the cells one tier run planned, and its runs, as in CI each cell's job writes a run of its
+own. A cell in several runs, a job re-run by hand, counts from the last by name, and a planned cell
+with no run, as one whose job died before it wrote its results, didn't run. With no run at all it
+fails and posts nothing, since no run shows it is develop's. Its token is `GITHUB_TOKEN`. The first
 version is narrow, so it can't flood the tracker as #1705's alarm did:
 - it posts only from develop and nightly runs, never from PRs or laptops: it refuses a run whose
   checkout wasn't on `develop` or whose tier isn't `merge` or `nightly`, and only `tests.yml`'s
@@ -1557,8 +1560,9 @@ One workflow, `tests.yml`, runs every registered suite:
     `continue-on-error`, so a failed one doesn't fail the workflow run, whose result is what
     `ci-health.yml` reads as develop's.
   - `post` runs after `run`, on a push to develop and on the schedule only, and not for a cancelled
-    run: `dt report --failures --post` over every blocking cell's results, with a token that can
-    write issues and nothing else (§4.4). Non-blocking cells don't post: they never fail the gate,
+    run: `dt report --failures --post` over the blocking cells `plan` gave and every one's results,
+    with a token that can write issues and nothing else (§4.4). It runs when `plan` failed too,
+    and fails then, with nothing to post. Non-blocking cells don't post: they never fail the gate,
     so they never make develop red.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, with

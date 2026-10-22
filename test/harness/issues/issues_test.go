@@ -129,7 +129,7 @@ func TestStatusIssue(t *testing.T) {
 	g.add("something a person labelled", "open")
 	post := func(runs ...report.Run) *tracked {
 		t.Helper()
-		if err := c.Post(context.Background(), runs, io.Discard); err != nil {
+		if err := c.Post(context.Background(), runs, nil, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		if found := g.titled(statusTitle); len(found) != 1 {
@@ -241,7 +241,7 @@ func TestTestIssues(t *testing.T) {
 	cell := report.Cell{Name: "pjdfstest/badger-s3/4.1", Result: report.Failed, Tests: tests}
 	post := func(r report.Run) {
 		t.Helper()
-		if err := c.Post(context.Background(), []report.Run{r}, io.Discard); err != nil {
+		if err := c.Post(context.Background(), []report.Run{r}, nil, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -294,8 +294,25 @@ func TestPostRefusesOtherRuns(t *testing.T) {
 	branch := run("20261022T100000Z-ccccccc1", "merge")
 	branch.Branch = "feat/x"
 	for _, r := range []report.Run{branch, run("20261022T100000Z-ccccccc2", "pr")} {
-		if err := c.Post(context.Background(), []report.Run{run("20261022T090000Z-ccccccc0", "merge"), r}, io.Discard); err == nil || g.requests != 0 {
+		if err := c.Post(context.Background(), []report.Run{run("20261022T090000Z-ccccccc0", "merge"), r}, nil, io.Discard); err == nil || g.requests != 0 {
 			t.Errorf("%s's %s run: %v, %d requests", r.Branch, r.Tier, err, g.requests)
+		}
+	}
+}
+
+// A planned cell with no run, as one whose job died before it wrote its
+// results, didn't run: it alerts on its second run in a row.
+func TestPlannedCellWithoutARun(t *testing.T) {
+	g, c := newTracker(t)
+	planned := []string{"pynfs/badger-s3/0", "pynfs/badger-s3/1"}
+	for i, state := range []string{"closed", "open"} {
+		r := run("20261022T10000"+strconv.Itoa(i)+"Z-fffffff"+strconv.Itoa(i), "merge", report.Cell{Name: "pynfs/badger-s3/0", Result: report.Passed})
+		if err := c.Post(context.Background(), []report.Run{r}, planned, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		row := "| `pynfs/badger-s3/1` |  | not run | " + strconv.Itoa(i+1) + " |  |"
+		if is := g.titled(statusTitle); len(is) != 1 || is[0].State != state || !strings.Contains(is[0].Body, row) {
+			t.Errorf("post %d: want the issue %s with %q, have %+v", i+1, state, row, is)
 		}
 	}
 }
@@ -307,11 +324,11 @@ func TestPostFailsWhenGitHubRefuses(t *testing.T) {
 	red := func(name, test string) []report.Run {
 		return []report.Run{run(name, "merge", report.Cell{Name: "unit", Result: report.Failed, Tests: []report.Test{newFailure(test, "boom")}})}
 	}
-	if err := c.Post(context.Background(), red("20261022T100000Z-eeeeeee1", "TestA"), io.Discard); err != nil {
+	if err := c.Post(context.Background(), red("20261022T100000Z-eeeeeee1", "TestA"), nil, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	c.Token = "read-only"
-	if err := c.Post(context.Background(), red("20261022T110000Z-eeeeeee2", "TestB"), io.Discard); err == nil || !strings.Contains(err.Error(), "403") {
+	if err := c.Post(context.Background(), red("20261022T110000Z-eeeeeee2", "TestB"), nil, io.Discard); err == nil || !strings.Contains(err.Error(), "403") {
 		t.Errorf("a refused edit: %v", err)
 	}
 }
@@ -325,7 +342,7 @@ func TestStatusIssueKeepsItsBodyInBounds(t *testing.T) {
 	for i := 299; i >= 0; i-- {
 		cell.Tests = append(cell.Tests, report.Test{Name: "Test" + strconv.Itoa(1000+i) + "/" + strings.Repeat("x", 200), Suite: []string{"github.com/marmos91/dittofs/pkg/block/engine"}, Status: report.Failed, Grade: report.New})
 	}
-	if err := c.Post(context.Background(), []report.Run{run("20261022T100000Z-ddddddd1", "merge", cell)}, io.Discard); err != nil {
+	if err := c.Post(context.Background(), []report.Run{run("20261022T100000Z-ddddddd1", "merge", cell)}, nil, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	body := g.titled(statusTitle)[0].Body

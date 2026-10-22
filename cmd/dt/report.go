@@ -16,12 +16,14 @@ import (
 
 func newReport() *cobra.Command {
 	var format, results string
-	var failures, post bool
+	var failures bool
+	var planned []string
 	cmd := &cobra.Command{
 		Use:   "report [RUN...]",
 		Short: "Show a run, the latest by default: how each cell went, and its new failures; with --post, post them",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			post := cmd.Flags().Changed("post")
 			switch {
 			case !slices.Contains(report.Formats, format):
 				return fmt.Errorf("--format %q is not one of %s", format, strings.Join(report.Formats, ", "))
@@ -40,6 +42,9 @@ func newReport() *cobra.Command {
 			var runs []report.Run
 			for _, run := range args {
 				dir, err := runDir(resultsDir(root, results), run)
+				if errors.Is(err, errNoRun) && post {
+					return fmt.Errorf("%w: nothing to post, as when the plan failed or no planned cell wrote its results", err)
+				}
 				if errors.Is(err, errNoRun) {
 					// decision: a job whose dt run stopped before it started a
 					// run gets a note in its summary, not a second failure. In
@@ -70,12 +75,12 @@ func newReport() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return c.Post(cmd.Context(), runs, cmd.ErrOrStderr())
+			return c.Post(cmd.Context(), runs, planned, cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "text", "text, md or json")
 	cmd.Flags().BoolVar(&failures, "failures", false, "only the new failures")
-	cmd.Flags().BoolVar(&post, "post", false, "post the new failures of develop's merge or nightly runs to the develop-status issue, and give a test failing 2 runs in a row an issue of its own, with the token in GITHUB_TOKEN")
+	cmd.Flags().StringSliceVar(&planned, "post", nil, "post the new failures of a tier run of develop, whose planned cells are CELL,..., to the develop-status issue, and give a test failing 2 runs in a row an issue of its own, with the token in GITHUB_TOKEN; a planned cell with no run didn't run")
 	cmd.Flags().StringVar(&results, "results", "", "where the runs are, relative to the checkout's root (default test/harness/results)")
 	return cmd
 }

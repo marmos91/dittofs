@@ -157,10 +157,11 @@ func TestReportAfterAKilledRun(t *testing.T) {
 	}
 }
 
-// dt report --failures --post RUN... posts the runs it's given together, as
-// the cells of one tier run, each of which a CI job wrote, with the token from
-// the environment: the develop-status issue it opens lists the new failures of
-// both. --post needs --failures.
+// dt report --failures --post CELLS RUN... posts the runs it's given together,
+// as the cells of one tier run, each of which a CI job wrote, with the token
+// from the environment: the develop-status issue it opens lists the new
+// failures of both, and a planned cell with no run as not run. --post needs
+// --failures, and with no run at all it fails.
 func TestReportPost(t *testing.T) {
 	checkout(t)
 	results := filepath.Join(t.TempDir(), "results")
@@ -193,13 +194,17 @@ func TestReportPost(t *testing.T) {
 	t.Setenv("GITHUB_REPOSITORY", "o/r")
 	t.Setenv("GITHUB_TOKEN", "tok")
 
-	if _, err := dt(t, append([]string{"report", "--post", "--results", results}, runs...)...); err == nil || opened != "" {
+	planned := "pynfs/badger-s3/0,pynfs/badger-s3/1,pynfs/badger-s3/2"
+	if _, err := dt(t, append([]string{"report", "--post", planned, "--results", results}, runs...)...); err == nil || opened != "" {
 		t.Fatalf("--post without --failures: %v, opened %q", err, opened)
 	}
-	if _, err := dt(t, append([]string{"report", "--failures", "--post", "--results", results}, runs...)...); err != nil {
+	if _, err := dt(t, "report", "--failures", "--post", planned, "--results", t.TempDir()); err == nil || opened != "" {
+		t.Fatalf("no run: %v, opened %q", err, opened)
+	}
+	if _, err := dt(t, append([]string{"report", "--failures", "--post", planned, "--results", results}, runs...)...); err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range []string{"| `pynfs/badger-s3/0` | `LOCK1` | new | 1 |", "| `pynfs/badger-s3/1` | `LOCK1` | new | 1 |"} {
+	for _, row := range []string{"| `pynfs/badger-s3/0` | `LOCK1` | new | 1 |", "| `pynfs/badger-s3/1` | `LOCK1` | new | 1 |", "| `pynfs/badger-s3/2` |  | not run | 1 |"} {
 		if !strings.Contains(opened, row) {
 			t.Errorf("no row %q in\n%s", row, opened)
 		}
