@@ -578,3 +578,42 @@ func TestCrashRefusesTornWithReordered(t *testing.T) {
 		t.Fatalf("WriteAt after a refused crash: %v, want the file still open", err)
 	}
 }
+
+func TestCrashRefusesTornOutOfRange(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "aaaa", 0)
+	syncFile(t, f)
+	write(t, f, "bbbb", 0)
+
+	for _, n := range []int{5, -1} {
+		// Catch a panic so this test reports it, instead of the whole test binary crashing.
+		var err error
+		panicked := func() (p any) {
+			defer func() {
+				p = recover()
+			}()
+
+			err = s.Crash(Torn(n))
+			return nil
+		}()
+
+		if panicked != nil {
+			t.Fatalf("Crash(Torn(%d)) of a 4-byte write panicked: %v; want it refused", n, panicked)
+		}
+
+		if err == nil {
+			t.Fatalf("Crash(Torn(%d)) of a 4-byte write succeeded; want it refused", n)
+		}
+	}
+
+	// The refused crashes must leave the file open and its write in place.
+	if got := onDisk(t, s, "seg"); got != "bbbb" {
+		t.Fatalf("after a refused crash seg holds %q, want the unsynced %q", got, "bbbb")
+	}
+
+	if _, err := f.WriteAt([]byte("c"), 0); err != nil {
+		t.Fatalf("WriteAt after a refused crash: %v, want the file still open", err)
+	}
+}
