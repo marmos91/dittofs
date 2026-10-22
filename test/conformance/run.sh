@@ -380,8 +380,10 @@ run_one() {
     done
 
     if [[ "$DRY_RUN" == false ]]; then
-        # Beside the grades the grader wrote, for comparing them with dt's.
+        # Beside the grades the grader wrote, for comparing them with dt's,
+        # with the kernel the run was on.
         echo "$status" >"${results_dir}/status"
+        uname -r >"${results_dir}/kernel"
         write_summary "$label" "$status" "${results_dir}" "$failed_step"
     fi
     return "$status"

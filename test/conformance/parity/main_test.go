@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
 )
 
@@ -17,8 +18,20 @@ type script struct{ status, grades string }
 
 // TestCompare compares cells as a workflow run's artifacts hold them: each dt
 // cell in a run of its own, as dt writes it, and each scripts' cell under the
-// path its job uploads. The plan is dt's cells, unless a case names it.
+// path its job uploads. The plan is dt's cells, unless a case names it. wpts's
+// known file has i, intermittent on memory only.
 func TestCompare(t *testing.T) {
+	root := t.TempDir()
+	const fail = "status: fail, fix: wontfix, category: env, reason: r"
+	write(t, filepath.Join(root, "known.yaml"), "- { test: k, "+fail+" }\n- { test: j, "+fail+" }\n- { test: i, "+fail+", where: { profile: [memory] }, intermittent: true }\n")
+	r, err := registry.Parse(root, []byte(`version: 1
+defaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }
+suites:
+  wpts: { cmd: "echo {profile}", matrix: { profile: [memory, badger] }, known: known.yaml }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	pass := report.Test{Name: "p", Status: report.Passed}
 	known := report.Test{Name: "k", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known}
 	knownToo := report.Test{Name: "j", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known}
@@ -29,7 +42,9 @@ func TestCompare(t *testing.T) {
 	// smbtorture fails the self-contradictory ChannelSequence draw, its reader
 	// grades it an expected skip and its scripts rewrite it to a skip.
 	draw := report.Test{Name: "smb2.replay.channel-sequence", Status: report.Skipped, RawStatus: report.Failed, Grade: report.ExpectedSkip}
-	noResult := report.Test{Name: "i", Status: report.Other, Grade: report.Incomplete}
+	noResult := report.Test{Name: "o", Status: report.Other, Grade: report.Incomplete}
+	intermittent := report.Test{Name: "i", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known}
+	intermittentPass := report.Test{Name: "i", Status: report.Passed}
 	cell := func(name, result string, tests ...report.Test) report.Cell {
 		return report.Cell{Name: name, Result: result, Tests: tests}
 	}
@@ -59,6 +74,21 @@ func TestCompare(t *testing.T) {
 		{"different numbers of tests run", []report.Cell{cell("wpts/memory", report.Passed, pass, known)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 3\n"}},
 			false, "differs: tests run: 2 through dt, 3 through the scripts", nil},
+		{"an intermittent known failure through dt only", []report.Cell{cell("wpts/memory", report.Passed, pass, known, intermittent)},
+			map[string]script{"wpts/memory": {"0", "known k\nran 3\n"}},
+			true, "(dt: passed, scripts: exit 0): the same", nil},
+		{"an intermittent known failure through the scripts only", []report.Cell{cell("wpts/memory", report.Passed, pass, known, intermittentPass)},
+			map[string]script{"wpts/memory": {"0", "known k\nknown i\nran 3\n"}},
+			true, "(dt: passed, scripts: exit 0): the same", nil},
+		{"an intermittent known failure and a verdict only the scripts give", []report.Cell{cell("wpts/memory", report.Passed, pass, known, intermittent)},
+			map[string]script{"wpts/memory": {"1", "known k\nran 3\n"}},
+			false, "(dt: passed, scripts: exit 1): differs: the verdict\n", nil},
+		{"an intermittent known failure and different numbers of tests run", []report.Cell{cell("wpts/memory", report.Passed, pass, known, intermittent)},
+			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
+			false, "): differs: tests run: 3 through dt, 2 through the scripts\n", nil},
+		{"a known failure whose intermittent entry applies elsewhere", []report.Cell{cell("wpts/badger", report.Passed, pass, known, intermittent)},
+			map[string]script{"wpts/badger": {"0", "known k\nran 3\n"}},
+			false, "differs: known failures only through dt: i; only through the scripts: none", nil},
 		{"skips only dt grades", []report.Cell{cell("wpts/memory", "not run", pass, known, skipped, expectedSkip)},
 			map[string]script{"wpts/memory": {"0", "known k\nran 2\n"}},
 			true, "(dt: not run, scripts: exit 0): the same", nil},
@@ -96,7 +126,7 @@ func TestCompare(t *testing.T) {
 			dir := t.TempDir()
 			for i, c := range tc.dt {
 				// Each dt job uploads its run, named after the time it started.
-				run := report.Run{Name: "20261019T040000Z-0d8dbdd8", Start: time.Now(), Stop: time.Now(), Cells: []report.Cell{c}}
+				run := report.Run{Name: "20261019T040000Z-0d8dbdd8", Start: time.Now(), Stop: time.Now(), OS: "linux", Tier: "nightly", Cells: []report.Cell{c}}
 				if err := run.Write(filepath.Join(dir, "dt-results-"+strconv.Itoa(i), run.Name)); err != nil {
 					t.Fatal(err)
 				}
@@ -115,7 +145,7 @@ func TestCompare(t *testing.T) {
 					plan = append(plan, c.Name)
 				}
 			}
-			out, same, err := compare(dir, plan, []string{"pjdfstest", "wpts", "smbtorture"})
+			out, same, err := compare(dir, plan, []string{"pjdfstest", "wpts", "smbtorture"}, root, r)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,6 +153,24 @@ func TestCompare(t *testing.T) {
 				t.Errorf("same %v, want %v; out:\n%s\nwant it to hold %q", same, tc.same, out, tc.says)
 			}
 		})
+	}
+}
+
+// Each side's results name the kernel it ran on: dt's run's, and the one the
+// scripts saved beside their cell's status.
+func TestKernels(t *testing.T) {
+	dir := t.TempDir()
+	run := report.Run{Name: "20261019T040000Z-0d8dbdd8", Kernel: "6.17.0-1022-azure", Cells: []report.Cell{{Name: "wpts/memory", Result: report.Passed}}}
+	if err := run.Write(filepath.Join(dir, "dt-results", run.Name)); err != nil {
+		t.Fatal(err)
+	}
+	cell := filepath.Join(dir, "wpts-memory", "conformance", "results", "wpts", "memory")
+	write(t, filepath.Join(cell, "status"), "0\n")
+	write(t, filepath.Join(cell, "kernel"), "7.0.0-1017-azure\n")
+	write(t, filepath.Join(cell, "grades"), "ran 0\n")
+	out, same, err := compare(dir, []string{"wpts/memory"}, []string{"wpts"}, "", nil)
+	if want := "- `wpts/memory` (dt: passed on kernel 6.17.0-1022-azure, scripts: exit 0 on kernel 7.0.0-1017-azure): the same\n"; err != nil || !same || !strings.Contains(out, want) {
+		t.Errorf("%v, same %v; out:\n%s\nwant it to hold %q", err, same, out, want)
 	}
 }
 

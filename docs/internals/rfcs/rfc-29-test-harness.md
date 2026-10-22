@@ -1245,7 +1245,8 @@ logged, such as a search of its lines for a planted secret, reads it there.
       { "name": "rename/09.t", "suite": ["pjdfstest", "badger-s3", "4.1"], "status": "passed",
         "duration": 3310, "flaky": true, "retries": 1 }
     ],
-    "environment": { "commit": "d0efaa75", "branchName": "develop", "osPlatform": "linux" },
+    "environment": { "commit": "d0efaa75", "branchName": "develop", "osPlatform": "linux",
+                     "osRelease": "6.17.0-1022-azure" },
     "extra": {
       "run": "20261007T201500Z-d0efaa75", "dirty": false, "tier": "merge", "in": "host", "exit": 1,
       "cells": [
@@ -1258,10 +1259,11 @@ logged, such as a search of its lines for a planted secret, reads it there.
 }
 ```
 
-The numbers and outcomes above are illustrative; the passing tests are left out. A cell's `result`
-is `passed`, `failed`, `skipped` or `not run`, and its `note` says why, as `dt run` prints it. A
-cell that a cancel or an interrupt stops is `not run` and keeps no per-test results: what its
-tests report after the interrupt can come from the interrupt itself.
+The numbers and outcomes above are illustrative; the passing tests are left out. `osRelease` is the
+kernel the run was on, as `uname -r` gives it. A cell's `result` is `passed`, `failed`, `skipped`
+or `not run`, and its `note` says why, as `dt run` prints it. A cell that a cancel or an interrupt
+stops is `not run` and keeps no per-test results: what its tests report after the interrupt can
+come from the interrupt itself.
 
 **Formats.** A format is a standard way a tool reports per-test results, not a kind of suite.
 There are seven, each read by one reader in `dt`:
@@ -1903,13 +1905,16 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      same known failures and the same tests run, counted as the tests that passed or failed,
      expected skips excluded, as smbtorture's failed `CSN 0x7fff` draw is (§4.6). A
      difference whose cause is listed beforehand doesn't reset the count: what `dt` grades that
-     the scripts don't, such as skips and tests with no result (§4.6, §4.7), and where the server
-     runs (§4.2). So `dt`'s skips and tests with no result aren't compared, and a `dt` cell they
-     alone leave not run is as green as the scripts'. A cell whose scripts' grader stopped before
-     grading each test, as it does when one has no result, compares only its verdict, and differs
-     when the scripts pass it. pynfs's scripts reached the server at the host's address, as `dt`
-     does (§4.2); a test whose difference comes from where its server runs is named, with the
-     cause, in the comparer before the runs it is excused in. None is named yet.
+     the scripts don't, such as skips and tests with no result (§4.6, §4.7), a known failure whose
+     entry is `intermittent` (§4.7), and where the server runs (§4.2). So `dt`'s skips and tests
+     with no result aren't compared, and a `dt` cell they alone leave not run is as green as the
+     scripts'. An `intermittent` entry's test fails on some runs only, on some kernels for
+     instance, and the two sides of a cell may run on different ones, so it isn't compared as a
+     known failure, while the cell's verdict and its tests run still are. A cell whose scripts'
+     grader stopped before grading each test, as it does when one has no result, compares only its
+     verdict, and differs when the scripts pass it. pynfs's scripts reached the server at the
+     host's address, as `dt` does (§4.2); a test whose difference comes from where its server runs
+     is named, with the cause, in the comparer before the runs it is excused in. None is named yet.
    - **Where:** non-blocking parity jobs beside the scripts' jobs in `conformance.yml` and
      `nfs-pynfs.yml`, on the schedule and on `workflow_dispatch` only, not on pushes to develop.
      They run the cells of the workflow's suites that `dt plan --json` gives, less their options,
@@ -1924,10 +1929,12 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
      moves into `tests.yml` (step 3).
    - **The comparer** is `test/conformance/parity`, and goes with `run.sh`. It pairs the cells by
      name, as the scripts' results directories name them (`pjdfstest/badger-s3-4.1` for `dt`'s
-     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status, and each grader its
-     grades: each failure, known or new, and the tests run. smbtorture's Kerberos job, which ran
-     its three filters one at a time without `run.sh`, saved the same for its one cell, with the
-     tests run only when each filter's grader counted them.
+     `pjdfstest/badger-s3/4.1`). For it, `run.sh` saves each cell's exit status and the kernel it
+     ran on, and each grader its grades: each failure, known or new, and the tests run.
+     smbtorture's Kerberos job, which ran its three filters one at a time without `run.sh`, saved
+     its exit status and grades for its one cell, with the tests run only when each filter's grader
+     counted them. The comparison names the kernel each side ran on, `dt`'s from its run's
+     `osRelease` (§4.6).
    - For the conformance suites, these are the 5 runs step 3 asks for. The CI jobs that don't run
      through `dt` yet publish through `dt report` when step 3 moves them.
 3. **One workflow and a gate.** `tests.yml` with plan, run and gate.

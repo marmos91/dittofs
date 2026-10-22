@@ -90,7 +90,9 @@ func Run(ctx context.Context, cells []Cell, o Options) (Report, error) {
 		return Report{}, err
 	}
 	rep := Report{Dir: dir}
-	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, Branch: branch, Dirty: dirty, OS: runtime.GOOS, In: "host", Tier: o.Tier, Exit: rep.Status()}
+	kernel, _ := exec.Command("uname", "-r").Output() // none where there is no uname
+	sum := report.Run{Name: filepath.Base(dir), Start: start, Stop: start, Commit: commit, Branch: branch, Dirty: dirty, OS: runtime.GOOS,
+		Kernel: strings.TrimSpace(string(kernel)), In: "host", Tier: o.Tier, Exit: rep.Status()}
 	if os.Getenv("DT_IN_CONTAINER") == "1" {
 		sum.In = "container"
 	}
@@ -615,15 +617,22 @@ func (c Cell) limit(test string, lines map[string]plan.Line, first bool) time.Du
 	return limit
 }
 
-// grade grades the cell's results against its suite's known file, at the
-// cell's matrix values, its tier, its option and this machine's OS.
+// grade grades the cell's results against its suite's known file, where the
+// cell runs on this machine.
 func (c Cell) grade(cases []report.Test) {
-	at := map[string]string{"tier": c.Tier, "option": c.Option, "os": runtime.GOOS}
-	if at["os"] == "darwin" {
-		at["os"] = "macos" // as the platform need names it
+	known.Grade(cases, c.Unit.Known != "", c.Known, c.At(runtime.GOOS))
+}
+
+// At is where the cell runs on goos, as a known entry's where names it: its
+// matrix values, its tier, its option and the OS, named as the platform need
+// names it.
+func (c Cell) At(goos string) map[string]string {
+	at := map[string]string{"tier": c.Tier, "option": c.Option, "os": goos}
+	if goos == "darwin" {
+		at["os"] = "macos"
 	}
 	maps.Copy(at, c.Matrix)
-	known.Grade(cases, c.Unit.Known != "", c.Known, at)
+	return at
 }
 
 // gradeNotes names the results that fail their cell, or leave it not run, by

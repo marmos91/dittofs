@@ -6,13 +6,15 @@
 //
 //	go run ./test/conformance/parity --plan CELLS DIR SUITE...
 //
-// CELLS are the cells dt plan --json gave the run, as its JSON, and SUITE the
-// suites whose scripts ran beside them. DIR holds the run's artifacts: dt's
-// runs, each with its summary.json, and the scripts' cells, each in
-// conformance/results/SUITE/LABEL with the runner's status and the grader's
-// grades. It prints the comparison as Markdown, for the job summary, and exits
-// 1 when a cell differs, as a planned cell missing on either side does, or when
-// there is none to compare.
+// It runs from the checkout, whose registry holds the known files. CELLS are
+// the cells dt plan --json gave the run, as its JSON, and SUITE the suites
+// whose scripts ran beside them. DIR holds the run's artifacts: dt's runs,
+// each with its summary.json, and the scripts' cells, each in
+// conformance/results/SUITE/LABEL with the runner's status, the grader's
+// grades and the kernel it ran on. It prints the comparison as Markdown, for
+// the job summary, with the kernel each side ran on, and exits 1 when a cell
+// differs, as a planned cell missing on either side does, or when there is
+// none to compare.
 //
 // The differences whose causes the RFC lists beforehand don't count:
 //   - what dt grades and the scripts don't: dt's skips and tests with no
@@ -20,6 +22,9 @@
 //     as the scripts', and a cell whose scripts' grader stopped before grading
 //     each test, as it does when one has no result, compares only its verdict,
 //     and differs when the scripts pass it;
+//   - a known failure whose entry, where dt ran the cell, is intermittent: it
+//     fails on some runs only, so either side may pass it, and it isn't
+//     compared as a known failure; the verdict and the tests run still are;
 //   - where the server runs: a test whose difference comes from where its
 //     server runs is named here, with the cause, before the runs it is
 //     excused in. None is named yet.
@@ -39,12 +44,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/marmos91/dittofs/test/harness/known"
+	"github.com/marmos91/dittofs/test/harness/registry"
 	"github.com/marmos91/dittofs/test/harness/report"
+	"github.com/marmos91/dittofs/test/harness/run"
 )
 
 // side is a cell's results through dt or through the scripts.
 type side struct {
-	result string // how the cell went, in the side's words
+	result string // how the cell went, in the side's words, and the kernel it ran on when it says
 	green  bool
 	// excused says a dt cell is not run only for its skips or its tests with
 	// no result, which the scripts don't grade.
@@ -54,6 +62,7 @@ type side struct {
 	graded     bool
 	new, known []string // the names of the new and the known failures, sorted, each once
 	ran        int      // the tests that passed or failed, expected skips excluded
+	tier, os   string   // where a dt cell ran: its run's tier and OS
 }
 
 func main() {
@@ -72,7 +81,12 @@ func main() {
 	for i, c := range cells {
 		planned[i] = c.Name
 	}
-	text, same, err := compare(flag.Arg(0), planned, flag.Args()[1:])
+	r, err := registry.Load(".")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "parity:", err)
+		os.Exit(2)
+	}
+	text, same, err := compare(flag.Arg(0), planned, flag.Args()[1:], ".", r)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "parity:", err)
 		os.Exit(2)
@@ -85,8 +99,9 @@ func main() {
 
 // compare compares the planned cells, and the scripts' cells of suites, in
 // dir, and says whether they are all the same. A cell missing on either side
-// differs, and comparing none isn't the same.
-func compare(dir string, planned, suites []string) (string, bool, error) {
+// differs, and comparing none isn't the same. r is the registry of the
+// checkout at root, whose known files graded dt's cells.
+func compare(dir string, planned, suites []string, root string, r *registry.Registry) (string, bool, error) {
 	dt := map[string]side{}
 	scripts := map[string]side{}
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -96,12 +111,12 @@ func compare(dir string, planned, suites []string) (string, bool, error) {
 		p := strings.Split(filepath.ToSlash(path), "/")
 		switch {
 		case d.Name() == "summary.json":
-			r, err := report.Read(filepath.Dir(path))
+			res, err := report.Read(filepath.Dir(path))
 			if err != nil {
 				return err
 			}
-			for _, c := range r.Cells {
-				dt[c.Name] = fromDT(c)
+			for _, c := range res.Cells {
+				dt[c.Name] = fromDT(res, c)
 			}
 		case d.Name() == "status" && len(p) >= 5 && p[len(p)-5] == "conformance" && p[len(p)-4] == "results" && slices.Contains(suites, p[len(p)-3]):
 			s, err := fromScripts(filepath.Dir(path))
@@ -145,6 +160,11 @@ func compare(dir string, planned, suites []string) (string, bool, error) {
 		case !inScripts:
 			diffs = []string{"no results through the scripts"}
 		default:
+			if s.graded && !slices.Equal(d.known, s.known) {
+				if err := dropIntermittent(root, r, name, &d, &s); err != nil {
+					return "", false, err
+				}
+			}
 			diffs = differences(d, s)
 		}
 		line(name, results, diffs)
@@ -170,11 +190,26 @@ func scriptsName(cell string) string {
 	return suite + "/" + strings.ReplaceAll(values, "/", "-")
 }
 
-// fromDT is a cell's results through dt. A test ran when the tool gave it a
-// pass or a failure, whatever its grade made of it, but for an expected skip,
-// which the scripts count as a skip.
-func fromDT(c report.Cell) side {
-	d := side{result: c.Result, green: c.Result == report.Passed, graded: true}
+// dropIntermittent leaves out of each side's known failures those whose
+// entry, where dt ran the cell named name, is intermittent, as dt run selects
+// the cell at its run's tier and grades it on its run's OS.
+func dropIntermittent(root string, r *registry.Registry, name string, d, s *side) error {
+	cells, err := run.Select(root, r, name, "", d.tier, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+	at := cells[0].At(d.os)
+	intermittent := func(test string) bool { return known.Intermittent(cells[0].Known, test, at) }
+	d.known = slices.DeleteFunc(slices.Clone(d.known), intermittent)
+	s.known = slices.DeleteFunc(slices.Clone(s.known), intermittent)
+	return nil
+}
+
+// fromDT is a cell's results through dt, in the run r. A test ran when the
+// tool gave it a pass or a failure, whatever its grade made of it, but for an
+// expected skip, which the scripts count as a skip.
+func fromDT(r report.Run, c report.Cell) side {
+	d := side{result: c.Result + on(r.Kernel), green: c.Result == report.Passed, graded: true, tier: r.Tier, os: r.OS}
 	onlyDT := false
 	for _, t := range c.Tests {
 		switch {
@@ -198,15 +233,20 @@ func fromDT(c report.Cell) side {
 }
 
 // fromScripts is a cell's results through the scripts, from the runner's exit
-// status and the grader's grades in dir: a line "known NAME" or "new NAME" for
-// each failure, then "ran N" once it graded every test.
+// status, the kernel it ran on, and the grader's grades in dir: a line
+// "known NAME" or "new NAME" for each failure, then "ran N" once it graded
+// every test.
 func fromScripts(dir string) (side, error) {
 	status, err := os.ReadFile(filepath.Join(dir, "status"))
 	if err != nil {
 		return side{}, err
 	}
+	kernel, err := os.ReadFile(filepath.Join(dir, "kernel"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return side{}, err
+	}
 	code := strings.TrimSpace(string(status))
-	s := side{result: "exit " + code, green: code == "0"}
+	s := side{result: "exit " + code + on(strings.TrimSpace(string(kernel))), green: code == "0"}
 	grades, err := os.ReadFile(filepath.Join(dir, "grades"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
@@ -259,6 +299,14 @@ func differences(d, s side) []string {
 		out = append(out, fmt.Sprintf("tests run: %d through dt, %d through the scripts", d.ran, s.ran))
 	}
 	return out
+}
+
+// on names the kernel a side ran on, when it says.
+func on(kernel string) string {
+	if kernel == "" {
+		return ""
+	}
+	return " on kernel " + kernel
 }
 
 // without is a, less what b holds.
