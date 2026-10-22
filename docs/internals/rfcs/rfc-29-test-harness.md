@@ -1012,7 +1012,7 @@ dt report [RUN] [--format text|md|json]        show a run; CI appends --format m
 dt report [RUN] --failures [--post]            only the new failures; --post opens or updates an issue per failure
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
-dt known prune SUITE                           remove entries that matched no failing or skipping test in recent runs
+dt known prune SUITE [--ci] [--last N]         remove entries that matched no failing or skipping test in recent runs
 dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure list into a known file, once;
    [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
@@ -1025,6 +1025,26 @@ and `dtc` for the container.
 **Which run.** RUN is a run's directory in `test/harness/results/`, or the path to one. Without it,
 `dt report` and `dt known baseline` read the latest run there: the last by name, since a run's
 name begins with the time it started.
+
+**History.** `dt history` reads the last N runs, 10 by default: the runs in `test/harness/results/`,
+or with `--ci` the last N finished runs of `tests.yml` on develop, through the GitHub API with the
+token in `GITHUB_TOKEN`. A run a pull request started is left out, since one from a fork's branch
+called develop is listed as develop's too, and so is a cancelled run, as a push replaced while it
+waits has no result (§4.8). Of each run it reads the first attempt's `summary.json` (§4.7), and a
+cell skipped for needs it didn't meet counts in nothing. It counts what each test did, not its
+grade: a known or quarantined failure is a fail, an unexpected pass a pass, every skip a skip, and a
+pass on a retry a pass that is also flaky. Without SUITE it gives a row per suite, with the p50 and
+p90 of its cells' durations (§4.3); with SUITE, a row per test, with the p50 and p90 of its own; and
+with SUITE/TEST, also each of that test's results, run by run, which shows since when it fails.
+`dt known prune` reads the same runs. It judges each entry of the known files of the suite and its
+options on the results that matched its `test` in the cells the file grades and the entry's `where`
+applies to, at each cell's option, matrix values, tier and OS as `dt run` grades it. It removes a
+known failure when one of them passed and none failed, and an expected skip when one of them ran,
+passing or failing, and none skipped. Any other result shows nothing, so an entry stays unless its
+test ran where it applies and did otherwise, and an `intermittent` one is never removed, since its
+test passes on some runs by definition; a file none of whose cells has results in those runs is
+left as it is. It edits the YAML only: while a suite keeps
+its Markdown list (§4.7), the Go test that compares the two names the rows to remove.
 
 **Cells.** `dt plan` names each cell by its suite, then its option, then its matrix values in the
 order the axes are written, then, for tests a `needs_by_test` entry sends elsewhere, the place they
