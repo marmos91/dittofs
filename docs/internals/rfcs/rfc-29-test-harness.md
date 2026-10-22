@@ -963,7 +963,7 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 | Tier | Runs on | Contains | Budget (wall clock) |
 |---|---|---|---|
 | `pr` | every pull request (and `merge_group`, if a merge queue is ever available) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
-| `merge` | every push to develop, that is, every merge | `pr` plus `tier: merge`, every profile | ≤ 60 min |
+| `merge` | every push to develop, that is, every merge, and to `main` and `feat/storage-v2` | `pr` plus `tier: merge`, every profile | ≤ 60 min |
 | `nightly` | schedule, and the dedicated host | everything except `manual` | ≤ 4 h |
 | `manual` | `dt run NAME`, or `workflow_dispatch` | benchmarks, comparisons, long simulations | none |
 
@@ -1527,9 +1527,11 @@ then green, a regression shows as a new failure, and a fix shows as an unexpecte
 
 One workflow, `tests.yml`, runs every registered suite:
 
-- **Triggers:** `pull_request` runs tier `pr`, a push to develop `merge`, the schedule `nightly`,
-  and `workflow_dispatch` the tier it's given. Pull requests are those to `develop`, `main` and
-  `feat/storage-v2`, as the workflows it replaces take them.
+- **Triggers:** `pull_request` runs tier `pr`, a push `merge`, the schedule `nightly`, and
+  `workflow_dispatch` the tier it's given. Pull requests and pushes are those to `develop`, `main`
+  and `feat/storage-v2`, as the workflows it replaces take them. Only develop's results alert or
+  post: the develop-status issue, a test's own issue (§4.4) and `ci-health.yml` read develop's
+  runs alone.
 - **Jobs:**
   - `plan` runs `dt plan --tier T --json`.
   - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`

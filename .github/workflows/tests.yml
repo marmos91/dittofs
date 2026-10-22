@@ -23,8 +23,10 @@ name: Tests
 on:
   pull_request:
     branches: [develop, main, feat/storage-v2]
+  # A push to any of them runs the merge tier; only develop's results alert
+  # or post.
   push:
-    branches: [develop]
+    branches: [develop, main, feat/storage-v2]
   schedule:
     # Nightly at 22:13 UTC, staggered from the other suites' runs.
     - cron: '13 22 * * *'
