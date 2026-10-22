@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/testruntime"
 	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 
@@ -47,22 +47,14 @@ func newRootACLTestRouter(t *testing.T, shareNames ...string) (http.Handler, str
 		t.Fatalf("create jwt service: %v", err)
 	}
 
-	// Opened before the runtime so cleanup removes the shares before this store closes.
-	metaStore := badgertest.NewInMemory(t)
-	rt := runtime.New(cpStore)
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
+	rt := testruntime.New(t, cpStore)
 
 	metaCfg := &models.MetadataStoreConfig{Name: "test-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, err := cpStore.CreateMetadataStore(ctx, metaCfg)
 	if err != nil {
 		t.Fatalf("create metadata store config: %v", err)
 	}
-	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+	if err := rt.RegisterMetadataStore("test-meta", badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("register metadata store: %v", err)
 	}
 	blockID, err := cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "test-block", Type: "memory"})
