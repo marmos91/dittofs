@@ -455,9 +455,9 @@ func (r *results) failures() int {
 // failures, without a parent whose subtest failed; then the broken packages
 // and the problems.
 //
-// decision: a test whose failures are all known is counted as known, not as
-// failed, so "N failed" counts only what fails the cell. A test with several
-// results, one of them new, is still counted as failed.
+// decision: a test whose failures are all known or quarantined is counted as
+// known, not as failed, so "N failed" counts only what fails the cell. A test
+// with several results, one of them new, is still counted as failed.
 func (r *results) note(problems []string) string {
 	grades := map[string]map[string]bool{} // "package test" to its results' grades
 	for _, tc := range r.cases {
@@ -475,7 +475,7 @@ func (r *results) note(problems []string) string {
 	for k, a := range r.tests {
 		switch {
 		case a != "fail" || grades[k][report.New]:
-		case grades[k][report.Known]:
+		case grades[k][report.Known], grades[k][report.Quarantined]:
 			a = "known"
 		case grades[k]["flaky"]:
 			a = "flaky"

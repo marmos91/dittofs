@@ -19,7 +19,8 @@ func junitPath(cell string) string {
 // CTRF status, which its grade decides, gives its JUnit one, so a reader of
 // either counts the same: failed is a failure, other an error, and skipped is
 // skipped, with the grade's reason, else the tool's. Each carries the tool's
-// message in its body, and a pass on a retry a flaky property.
+// message in its body, a pass on a retry a flaky property, and a quarantined
+// test's pass a quarantined property, its issue.
 //
 // decision: a testcase's classname is the test's suite in summary.json,
 // joined with /, so it names the cell and, for a Go test, its package. The
@@ -39,6 +40,9 @@ func (c Cell) junit() ([]byte, error) {
 		tc := junitCase{Name: t.Name, Classname: strings.Join(append([]string{c.Name}, t.Suite...), "/"), Time: seconds(t.Duration)}
 		if t.Flaky {
 			tc.Properties = &junitProperties{[]junitProperty{{"flaky", "true"}}}
+		}
+		if t.Status == Passed && t.Grade == Quarantined {
+			tc.Properties = &junitProperties{[]junitProperty{{"quarantined", t.Issue}}}
 		}
 		// decision: a failure or an error the tool said nothing about gets its
 		// grade as its message, so an unexpected pass isn't a blank failure.
