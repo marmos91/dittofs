@@ -658,6 +658,21 @@ func TestCrashRefusesTornOutOfRange(t *testing.T) {
 	}
 }
 
+func TestTornZeroLeavesTheSizeAlone(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+	write(t, f, "cccc", 8) // past the end: keeping none of it must not grow the file
+
+	crash(t, s, Torn(0))
+
+	if got := onDisk(t, s, "seg"); got != "ab" {
+		t.Fatalf("Torn(0) of a write past the end left %q (%d bytes), want the synced %q", got, len(got), "ab")
+	}
+}
+
 func TestTornAcceptsTheWholeRange(t *testing.T) {
 	// Torn(n) is valid from 0 to the write's length: 0 keeps none of the last
 	// write, its length keeps all of it.

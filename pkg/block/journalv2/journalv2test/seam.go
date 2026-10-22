@@ -595,8 +595,13 @@ func resize(b []byte, size int64) []byte {
 }
 
 // writeInto returns img with p written at off, extending it as a write past
-// the end of a file does.
+// the end of a file does. An empty p leaves img as it is, as an empty write
+// leaves a file's size alone.
 func writeInto(img []byte, off int64, p []byte) []byte {
+	if len(p) == 0 {
+		return img
+	}
+
 	if end := off + int64(len(p)); end > int64(len(img)) {
 		img = resize(img, end)
 	}
