@@ -141,14 +141,14 @@ What each piece also carries, and its §12 rows:
    `GrantID` and `WatchID` minted with their shard, so `AckRecall` and `Unwatch` route with no
    handle; the per-shard index, how a miss is classified, and the stateid seqid check
    (`ErrOldState`); every random bit from `Deps.Rand`, and the file map split 256 ways. The wire
-   layout is `pkg/vfs`'s (RFC 17 §3.4). `ErrStopped` before `Start` and after `Stop`, and no `Sink`
-   call under a lock. *Rows:* L26, L27, L49, L56, L57, L65.
+   layout is `pkg/vfs`'s (RFC 17 §3.4). *Rows:* L26, L27, L49, L56, L57.
 2. **Clients and leases:** `Propose` holds a client pending confirmation at the node that answered
    it, capped per node and per source address (RFC 14 §2.9), and `Connect` confirms it; an NLM
    host's restart notice is `Connect` with a new `Boot` (§4.5). `CREATE_SESSION`'s sequence and
    reply are the adapter's, kept in the record's opaque `Adapter` field and written through
    `AddSession` as a compare-and-swap. It needs the store's client record reshaped first (§8).
-   *Rows:* L25, L38, L41, L60, L64.
+   `Start` and `Stop` arrive here, with the `Sink`: `ErrStopped` before `Start` and after `Stop`,
+   and no `Sink` call under a lock. *Rows:* L25, L38, L41, L60, L64, L65.
 3. **Opens and deny modes:** deny modes at open; open-unlinked kept alive; delete on close; open
    children refuse an SMB rename or delete of their directory; `CheckIO` and `CheckChange`, which
    have something to check once opens exist; the `Closed` event, which every later piece that
