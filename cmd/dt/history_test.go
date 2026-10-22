@@ -69,10 +69,11 @@ func TestHistory(t *testing.T) {
 
 // dt known prune judges each known file of the suite and its options on the
 // results of the cells the file grades, and each entry on those of cells it
-// applies to, by its option, matrix value, tier (the run's, or the unit's own
-// when wider) and OS: a known failure goes when one passed and none failed,
-// as an unexpected pass does, and one that only skipped proves nothing. A file whose cells have no
-// results is left as it is.
+// applies to, by its option, matrix value, tier and OS: the run's own tier,
+// or the unit's when wider, so a pr suite's cell in a merge run is at merge,
+// and the run's own OS. A known failure goes when one passed and none
+// failed, as an unexpected pass does, and one that only skipped proves
+// nothing. A file whose cells have no results is left as it is.
 func TestKnownPrune(t *testing.T) {
 	root := t.TempDir()
 	entry := func(test, status, where string) string {
@@ -86,7 +87,8 @@ func TestKnownPrune(t *testing.T) {
 		"  other: { cmd: \"true\" }\n")
 	s := entry("a", "fail", "") + entry("pat/*", "fail", "") + entry("gone", "fail", "") + entry("b", "skip", "") + entry("c", "fail", "") +
 		entry("z", "fail", "") + entry("absent", "fail", "") + entry("w", "fail", ", where: {option: [shares]}") +
-		entry("v2", "fail", ", where: {v: [\"2\"]}") + entry("mac", "fail", ", where: {os: [macos]}") + entry("ws", "fail", ", where: {option: [shares]}") + entry("up", "fail", "")
+		entry("v2", "fail", ", where: {v: [\"2\"]}") + entry("mac", "fail", ", where: {os: [macos]}") + entry("ws", "fail", ", where: {option: [shares]}") + entry("up", "fail", "") +
+		entry("lin", "fail", ", where: {os: [linux]}") + entry("tp", "fail", ", where: {tier: [pr]}")
 	own := entry("z", "fail", "") + entry("tm", "fail", ", where: {tier: [merge]}")
 	writeFile(t, filepath.Join(root, "s.yaml"), s)
 	writeFile(t, filepath.Join(root, "own.yaml"), own)
@@ -110,17 +112,20 @@ func TestKnownPrune(t *testing.T) {
 		{Name: "s/shares/1", Result: report.Failed, Tests: append(passed("ws"), report.Test{Name: "pat/x", Status: report.Failed, Grade: report.New})},
 		{Name: "s/own", Result: report.Passed, Tests: append(passed("tm"), report.Test{Name: "z", Status: report.Skipped, RawStatus: report.Failed, Grade: report.Known})},
 		{Name: "other", Result: report.Failed, Tests: []report.Test{{Name: "c", Status: report.Failed, Grade: report.New}}},
+	}}, report.Run{Name: "20261019T110000Z-bbbbbbbb", Tier: "merge", OS: "linux", Cells: []report.Cell{
+		{Name: "s/1", Result: report.Passed, Tests: passed("lin", "tp")},
 	}})
 
 	out, err := dt(t, "known", "prune", "s")
 	want := "s.yaml:3: removed gone, a fail entry\ns.yaml:6: removed z, a fail entry\n" +
-		"s.yaml:9: removed v2, a fail entry\ns.yaml:10: removed mac, a fail entry\ns.yaml:11: removed ws, a fail entry\ns.yaml:12: removed up, a fail entry\n" +
+		"s.yaml:9: removed v2, a fail entry\ns.yaml:10: removed mac, a fail entry\ns.yaml:11: removed ws, a fail entry\ns.yaml:12: removed up, a fail entry\ns.yaml:13: removed lin, a fail entry\n" +
 		"own.yaml:2: removed tm, a fail entry\nidle.yaml: left as is: no cell it grades has results in the runs read\n"
 	if err != nil || out != want {
 		t.Errorf("dt known prune s: %v\n%s\nwant\n%s", err, out, want)
 	}
 	for file, want := range map[string]string{
-		"s.yaml":    entry("a", "fail", "") + entry("pat/*", "fail", "") + entry("b", "skip", "") + entry("c", "fail", "") + entry("absent", "fail", "") + entry("w", "fail", ", where: {option: [shares]}"),
+		"s.yaml": entry("a", "fail", "") + entry("pat/*", "fail", "") + entry("b", "skip", "") + entry("c", "fail", "") + entry("absent", "fail", "") + entry("w", "fail", ", where: {option: [shares]}") +
+			entry("tp", "fail", ", where: {tier: [pr]}"),
 		"own.yaml":  entry("z", "fail", ""),
 		"idle.yaml": entry("x", "fail", ""),
 	} {
