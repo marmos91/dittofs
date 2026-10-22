@@ -134,3 +134,12 @@ func (e Entry) applies(at map[string]string) bool {
 	}
 	return true
 }
+
+// matches reports whether the entry stands for the result named name: as
+// Match has it, or, for a quarantine entry, which names one test, exactly.
+func (e Entry) matches(name string) bool {
+	if e.quarantined {
+		return e.Test == name
+	}
+	return Match(e.Test, name)
+}

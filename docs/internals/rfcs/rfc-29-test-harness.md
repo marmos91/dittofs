@@ -1460,9 +1460,10 @@ flags leave out: a test of another minor version, and one whose own check fails,
 **Quarantine.** For a flaky test, failing some runs and not others:
 - `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date:
   `{ suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }`. An entry covers
-  the suite's options too, and its test matches as a known entry's does. The date is at most 90
-  days ahead, and a later one is a registry error, so an entry can't stay forever: it is renewed
-  while its issue is open.
+  the suite's options too. Its test is one test's name, matched exactly, not a pattern as a known
+  entry's may be, so a Go test's name never covers its subtests; a name with `*`, `?` or `[`, or a
+  suite's test listed twice, is a registry error. The date is at most 90 days ahead, and a later
+  one is a registry error, so an entry can't stay forever: it is renewed while its issue is open.
 - A quarantined test still runs and its result is recorded, but its failure never fails a run and
   never alerts: the failure is graded `quarantined` (§4.6), unless a known-failure entry for the
   test grades it `known` first, and a pass is reported, as an intermittent entry's is. A crash or a

@@ -25,7 +25,7 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 	}
 	allPassed := make([]bool, len(apply))
 	for i, e := range apply {
-		allPassed[i] = !slices.ContainsFunc(tests, func(t report.Test) bool { return t.Status != report.Passed && Match(e.Test, t.Name) })
+		allPassed[i] = !slices.ContainsFunc(tests, func(t report.Test) bool { return t.Status != report.Passed && e.matches(t.Name) })
 	}
 	throughSubtests := make([]bool, len(tests))
 	for i := range tests {
@@ -131,7 +131,7 @@ func failedThroughSubtests(tests []report.Test, i int, apply []Entry) bool {
 func entryFor(entries []Entry, name, status string) int {
 	first := -1
 	for i, e := range entries {
-		if status != "" && e.Status != status || !Match(e.Test, name) {
+		if status != "" && e.Status != status || !e.matches(name) {
 			continue
 		}
 		if e.Test == name {

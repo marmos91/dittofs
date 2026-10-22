@@ -25,6 +25,12 @@ func TestParseQuarantineRules(t *testing.T) {
 		{"expires is a date", strings.Replace(quarantined, "2026-12-31", "2026-12-31T00:00:00Z", 1), `expires "2026-12-31T00:00:00Z" is not a date`},
 		{"each problem at its entry's line", quarantined + strings.Replace(quarantined, "suite: s, ", "", 1),
 			"q.yaml:2: suite is required"},
+		{"a test is one name, not a glob", strings.Replace(quarantined, "test: a", "test: 'smb2.lock*'", 1), `q.yaml:1: test "smb2.lock*" is a pattern`},
+		{"nor a whole suite", strings.Replace(quarantined, "test: a", "test: '*'", 1), `test "*" is a pattern`},
+		{"nor a regex-like .*", strings.Replace(quarantined, "test: a", "test: smb2.lock.*", 1), `test "smb2.lock.*" is a pattern`},
+		{"nor a ?", strings.Replace(quarantined, "test: a", "test: 'chmod/0?.t'", 1), `test "chmod/0?.t" is a pattern`},
+		{"nor a set", strings.Replace(quarantined, "test: a", "test: 'chmod/0[0-9].t'", 1), `test "chmod/0[0-9].t" is a pattern`},
+		{"a test is listed once per suite", quarantined + strings.Replace(quarantined, "2026-12-31", "2026-12-01", 1), "q.yaml:2: s a is listed twice, first at line 1"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := ParseQuarantine("q.yaml", []byte(c.yaml))
@@ -57,6 +63,8 @@ func TestGradeQuarantined(t *testing.T) {
 		{"a crash or a hang stays new", []string{"a failed new"}, []string{"a: failed [new]"}},
 		{"a skip or a stopped result is graded as any", []string{"a skipped", "a other"},
 			[]string{"a: other (skipped) [unexpected_skip]", "a: other [incomplete]"}},
+		{"an entry names its test alone, not its subtests or a .t file", []string{"a/b failed", "a.t failed"},
+			[]string{"a/b: failed [new]", "a.t: failed [new]"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			list, err := ParseQuarantine("q.yaml", []byte("- { suite: s, test: a, issue: '#12', expires: 2026-12-31 }\n- { suite: s, test: TestP/a, issue: '#12', expires: 2026-12-31 }\n"))
