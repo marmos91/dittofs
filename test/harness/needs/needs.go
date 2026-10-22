@@ -35,6 +35,7 @@ var tools = map[string]map[string]string{
 	"kerberos":       {"linux": "kinit", "darwin": "kinit"},
 	"dm-flakey":      {"linux": "dmsetup"},
 	"knfsd":          {"linux": "exportfs"},
+	"fio":            {"linux": "fio", "darwin": "fio"},
 }
 
 // debian names the Debian and Ubuntu package holding a tool's program, where
@@ -48,7 +49,7 @@ var debian = map[string]string{
 }
 
 // inDtc are the tools the dtc image installs.
-var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true}
+var inDtc = map[string]bool{"nfs-client": true, "smb-client": true, "nfs4-acl-tools": true, "kerberos": true, "knfsd": true, "fio": true}
 
 // hints say how to meet a need that isn't a tool, by its kind.
 var hints = map[string]string{

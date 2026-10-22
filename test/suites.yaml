@@ -336,7 +336,7 @@ suites:
     env: { BENCH_DIR: "{mount}" }
     metrics: fio-json
     tier: nightly
-    needs: [linux, root, nfs-client]
+    needs: [linux, root, nfs-client, fio]
     options:
-      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client] }
+      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
   bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }

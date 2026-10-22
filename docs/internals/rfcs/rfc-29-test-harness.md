@@ -715,9 +715,9 @@ suites:
     env: { BENCH_DIR: "{mount}" }       # the job files write to ${BENCH_DIR:-/mnt/bench}
     metrics: fio-json                   # numbers recorded; a job with a non-zero `error` fails, a failed verify included
     tier: nightly
-    needs: [linux, root, nfs-client]
+    needs: [linux, root, nfs-client, fio]
     options:
-      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client] }
+      smb: { fixture: { profile: badger-s3, smb: { mount: true } }, needs: [linux, root, smb-client, fio] }
   bench-smoke: { cmd: go run ./cmd/bench run --smoke, metrics: dfsbench-json, tier: pr, blocking: false }   # bench-smoke.yml today
 ```
 
@@ -1164,7 +1164,7 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **container engines:** `docker`, `podman` (5.6 or later, which the scenarios need, or Docker to
   run it in its own image, below);
 - **system services and tools:** `rpcbind`, `knfsd`, `nfs-client`, `smb-client`,
-  `nfs4-acl-tools`, `kerberos`, `dm-flakey`;
+  `nfs4-acl-tools`, `kerberos`, `dm-flakey`, `fio`;
 - **resources:** `disk:<GB>`, `port:<n>` (nothing listens on it; a port below those an ordinary
   user may bind is checked by connecting to it on loopback, since only the fixture's capability binds
   it);
