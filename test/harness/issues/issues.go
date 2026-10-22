@@ -173,10 +173,6 @@ func next(old []entry, cells map[string]report.Cell) []entry {
 // other. Post refuses any run but develop's merge and nightly runs, and says
 // on out what it posted. A re-run of a tier run already posted, the same Run,
 // posts nothing: the run counts once.
-//
-// decision: two posts at once, as a merge run's and a nightly run's ending
-// together, can lose one's update of the develop-status issue: the next run of
-// its cells makes it again.
 func (c Client) Post(ctx context.Context, runs []report.Run, planned []string, out io.Writer) error {
 	runs = slices.SortedFunc(slices.Values(runs), func(a, b report.Run) int { return strings.Compare(a.Name, b.Name) })
 	cells := map[string]report.Cell{}

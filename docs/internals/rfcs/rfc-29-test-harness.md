@@ -1566,8 +1566,10 @@ One workflow, `tests.yml`, runs every registered suite:
     run: `dt report --failures --post` over the blocking cells `plan` gave and every one's results,
     with a token that can write issues and nothing else (§4.4). It runs when `plan` failed too,
     and fails then, with nothing to post. It has `continue-on-error`, so a failed post, as when
-    GitHub answers a request with a 5xx twice in a row, doesn't turn the run red. Non-blocking
-    cells don't post: they never fail the gate, so they never make develop red.
+    GitHub answers a request with a 5xx twice in a row, doesn't turn the run red, and a
+    concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
+    and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
+    fail the gate, so they never make develop red.
 - **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
   of the suites that have moved, pynfs first. A suite joins by being added to that filter, with
   any step its cells need that `run` doesn't give yet, such as a service; the filter goes once
