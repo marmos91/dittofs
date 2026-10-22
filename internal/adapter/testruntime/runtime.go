@@ -1,5 +1,5 @@
 // Package testruntime builds the control-plane runtime fixtures shared by the
-// protocol adapter tests.
+// protocol adapter and control-plane tests.
 //
 // Three adapters carried byte-identical copies of these two fixtures. Nothing
 // here touches a protocol type — they are control-plane fixtures wearing three
@@ -7,14 +7,14 @@
 // needs lands once instead of in three places, two of which keep compiling
 // when they are missed.
 //
-// Nothing here may import an adapter package. Every consumer is an in-package
-// test, so importing the package under test would close an import cycle, which
-// the go tool rejects for tests. That bound comes from the consumers, not from
-// this package: an adapter whose tests are external (`package handlers_test`,
-// as `nfs/v3/handlers` does) could be imported here without a cycle. Lift it
-// only for such a package, and only for a fixture that genuinely needs a
-// protocol type — which is also the point at which the fixture probably
-// belongs beside that adapter rather than here.
+// Nothing here may import a package whose tests use it. Every consumer is an
+// in-package test, so importing the package under test would close an import
+// cycle, which the go tool rejects for tests. That bound comes from the
+// consumers, not from this package: an adapter whose tests are external
+// (`package handlers_test`, as `nfs/v3/handlers` does) could be imported here
+// without a cycle. Lift it only for such a package, and only for a fixture
+// that genuinely needs a protocol type, which is also the point at which the
+// fixture probably belongs beside that adapter rather than here.
 package testruntime
 
 import (

@@ -8,9 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/internal/adapter/testruntime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -241,11 +240,10 @@ func TestReadiness_NoShares_ReturnsOK(t *testing.T) {
 
 func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 	ctx := context.Background()
-	// Opened before the runtime so cleanup removes the share before this store closes.
-	metaStore := badgertest.NewInMemory(t)
-	reg, bsID := newReadinessRuntime(t)
+	reg, bsID := testruntime.NewWithShareStore(t)
 
 	// Register metadata store
+	metaStore := badgertest.NewInMemory(t)
 	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
@@ -295,11 +293,10 @@ func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 
 func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
 	ctx := context.Background()
-	// Opened before the runtime so cleanup removes the share before this store closes.
-	metaStore := badgertest.NewInMemory(t)
-	reg, bsID := newReadinessRuntime(t)
+	reg, bsID := testruntime.NewWithShareStore(t)
 
 	// Register metadata store
+	metaStore := badgertest.NewInMemory(t)
 	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
@@ -361,36 +358,4 @@ func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
 	if adapters["running"].(float64) != 1 {
 		t.Errorf("Expected 1 running adapter, got %v", adapters["running"])
 	}
-}
-
-// newReadinessRuntime builds a runtime over an in-memory control-plane store
-// holding one memory block store, and returns that store's id. Every share
-// needs a block store, and a journal root to open it under.
-func newReadinessRuntime(t *testing.T) (*runtime.Runtime, string) {
-	t.Helper()
-	cps, err := store.New(&store.Config{
-		Type:   store.DatabaseTypeSQLite,
-		SQLite: store.SQLiteConfig{Path: ":memory:"},
-	})
-	if err != nil {
-		t.Fatalf("store.New(:memory:): %v", err)
-	}
-	t.Cleanup(func() { _ = cps.Close() })
-	bsID, err := cps.CreateBlockStore(context.Background(), &models.BlockStoreConfig{
-		Name: "test-blocks", Type: "memory",
-	})
-	if err != nil {
-		t.Fatalf("CreateBlockStore: %v", err)
-	}
-	reg := runtime.New(cps)
-	reg.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: t.TempDir()})
-	// A share holds its journal open until it is removed. Registered after the
-	// temp dir so cleanup's reverse order releases the journals before the dir
-	// is removed.
-	t.Cleanup(func() {
-		for _, name := range reg.ListShares() {
-			_ = reg.RemoveShare(name)
-		}
-	})
-	return reg, bsID
 }
