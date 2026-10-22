@@ -620,6 +620,41 @@ func TestDurableReadsOfAnUnlinkedFile(t *testing.T) {
 	}
 }
 
+func TestDurableReadsRejectANegativeOffset(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	write(t, f, "ab", 0)
+	syncFile(t, f)
+	s.StaleReads("seg")
+
+	for _, tc := range []struct {
+		how  string
+		read func(p []byte, off int64) (int, error)
+	}{
+		{"ReadAtDirect", f.ReadAtDirect},
+		{"stale ReadAt", f.ReadAt},
+	} {
+		// A panic is caught so it fails here, as this test's own failure.
+		var err error
+		panicked := func() (p any) {
+			defer func() { p = recover() }()
+			_, err = tc.read(make([]byte, 1), -1)
+			return nil
+		}()
+
+		if panicked != nil {
+			t.Fatalf("%s at offset -1 panicked: %v; want the error os.File.ReadAt returns", tc.how, panicked)
+		}
+
+		// os.File.ReadAt's own error for a negative offset.
+		var pe *fs.PathError
+		if !errors.As(err, &pe) || pe.Op != "readat" || pe.Err.Error() != "negative offset" {
+			t.Fatalf("%s at offset -1: %v; want a readat PathError for a negative offset", tc.how, err)
+		}
+	}
+}
+
 func TestCrashClosesEveryOpenFile(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")

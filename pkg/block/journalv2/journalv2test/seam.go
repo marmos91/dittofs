@@ -681,6 +681,11 @@ func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
 // readDurable reads through the open file rather than by path, so a file
 // removed or replaced while open still serves its durable image.
 func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
+	// The error os.File.ReadAt returns for a negative offset.
+	if off < 0 {
+		return 0, &fs.PathError{Op: "readat", Path: sf.name, Err: errors.New("negative offset")}
+	}
+
 	size, err := sf.size()
 	if err != nil {
 		return 0, err
