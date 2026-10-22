@@ -296,7 +296,12 @@ func (s *Seam) SyncDir() error {
 	s.count(OpSyncDir, "")
 
 	s.dirLog = nil
-	return s.emptyStash()
+
+	// decision: SyncDir's result is the commit of the directory log, which cannot
+	// fail here; unlinking the stash is cleanup, and what it leaves is removed by
+	// the next SyncDir or Crash.
+	_ = s.emptyStash()
+	return nil
 }
 
 // emptyStash unlinks every stashed file, now that nothing can bring one

@@ -355,6 +355,49 @@ func TestSyncDirEmptiesTheStash(t *testing.T) {
 	}
 }
 
+func TestSyncDirSucceedsWhenTheStashCannotBeEmptied(t *testing.T) {
+	s := newSeam(t)
+	create(t, s, "seg")
+
+	if err := s.Remove("seg"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A non-empty directory in the stash: os.Remove refuses it, even as root.
+	blocker := filepath.Join(s.stash, "blocker")
+	if err := os.MkdirAll(blocker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(blocker, "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SyncDir(); err != nil {
+		t.Fatalf("SyncDir with a stash it cannot empty: %v, want nil", err)
+	}
+
+	// The cleanup failure passes; the next Crash removes what it left.
+	if err := os.Remove(filepath.Join(blocker, "f")); err != nil {
+		t.Fatal(err)
+	}
+
+	crash(t, s)
+
+	if exists(s, "seg") {
+		t.Fatal("seg, removed before a SyncDir that returned nil, came back after the crash")
+	}
+
+	entries, err := os.ReadDir(s.stash)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(entries) != 0 {
+		t.Fatalf("after the crash the stash holds %d entries, want none", len(entries))
+	}
+}
+
 func TestTornKeepsExactlyNBytesOfTheLastWrite(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
