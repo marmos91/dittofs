@@ -96,6 +96,10 @@ func (r *Registry) check(root string) []error {
 		}
 		r.Known[path] = entries
 	}
+	var err error
+	if r.Quarantine, err = loadQuarantine(root, seen); err != nil {
+		errs = append(errs, err)
+	}
 	for g, members := range r.Groups {
 		if !nameRE.MatchString(g) {
 			fail("group %q: a name is [a-z0-9-]+", g)
@@ -385,6 +389,43 @@ func loadKnown(root, path string, where map[string][]string) ([]known.Entry, err
 					errs = append(errs, fmt.Errorf("%s:%d: where %s: no cell has the value %q", path, e.Line, k, v))
 				}
 			}
+		}
+	}
+	return entries, errors.Join(errs...)
+}
+
+// now is a variable so the tests can set the day.
+var now = time.Now
+
+// loadQuarantine reads and checks the quarantine list, and returns its
+// entries for each suite: each names one of suites and hasn't expired, since
+// an expired entry is a registry error. A missing list has no entries.
+//
+// decision: an entry expires at the start of its date, in UTC, so every
+// machine agrees on the day each dt command starts refusing it. It names a
+// suite and covers the suite's options too, since its test's name already
+// narrows it; give it a where, as a known entry has, when a test is flaky in
+// one option or on one OS only.
+func loadQuarantine(root string, suites map[string]bool) (map[string][]known.Entry, error) {
+	data, err := os.ReadFile(filepath.Join(root, QuarantinePath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	list, err := known.ParseQuarantine(QuarantinePath, data)
+	errs := []error{err}
+	today := now().UTC().Format(time.DateOnly)
+	entries := map[string][]known.Entry{}
+	for _, q := range list {
+		switch {
+		case !suites[q.Suite]:
+			errs = append(errs, fmt.Errorf("%s:%d: no suite %q", QuarantinePath, q.Line, q.Suite))
+		case q.Expires <= today:
+			errs = append(errs, fmt.Errorf("%s:%d: %s expired on %s: fix it (%s) and remove the entry, or give it a later date", QuarantinePath, q.Line, q.Test, q.Expires, q.Issue))
+		default:
+			entries[q.Suite] = append(entries[q.Suite], q.Entry())
 		}
 	}
 	return entries, errors.Join(errs...)

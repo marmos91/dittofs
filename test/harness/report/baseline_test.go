@@ -21,7 +21,8 @@ import (
 // with upper and lower case, and the per-sub-suite rates hold a half that
 // rounds to even, a two-thirds and suites with only skips. A cell that didn't
 // run to its end, not run or cut short by a limit, and a run with changes
-// write nothing.
+// write nothing. A quarantined failure counts as known: batch7, which the
+// scripts' list holds, is quarantined here.
 func TestBaseline(t *testing.T) {
 	pass := func(name string) Test { return Test{Name: name, Status: Passed} }
 	known := func(name string) Test { return Test{Name: name, Status: Skipped, RawStatus: Failed, Grade: Known} }
@@ -39,7 +40,8 @@ func TestBaseline(t *testing.T) {
 		pass("smb2.oplock.exclusive1"),
 		{Name: "smb2.oplock.batch1", Status: Other, Grade: Incomplete},
 		known("smb2.oplock.batch2"), known("smb2.oplock.batch3"), known("smb2.oplock.batch4"),
-		known("smb2.oplock.batch5"), known("smb2.oplock.batch6"), known("smb2.oplock.batch7"),
+		known("smb2.oplock.batch5"), known("smb2.oplock.batch6"),
+		{Name: "smb2.oplock.batch7", Status: Skipped, RawStatus: Failed, Grade: Quarantined},
 		fresh("smb2.oplock.stream1"),
 		{Name: "smb2.rename.simple", Status: Failed, RawStatus: Passed, Grade: UnexpectedPass},
 		{Name: "smb2.replay.channel-sequence", Status: Skipped, RawStatus: Failed, Grade: ExpectedSkip},

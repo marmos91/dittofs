@@ -9,13 +9,13 @@ import (
 )
 
 // Grade grades each result of one cell in place, setting its grade and the
-// status the grade gives it. entries are the suite's known file's; only those
-// that apply where the cell runs, at, count. listed says the suite has a
-// known file, so its skips are graded rather than reported ungraded. A pass
-// is unexpected when its entry, of either kind, isn't intermittent and every
-// result in the cell it matches passed: a pattern one of whose tests still
-// fails, or a name with one failing result among several, still says what
-// the server does.
+// status the grade gives it. entries are the suite's known file's, then its
+// quarantine list's (see Quarantine.Entry); only those that apply where the
+// cell runs, at, count. listed says the suite has a known file, so its skips
+// are graded rather than reported ungraded. A pass is unexpected when its
+// entry, of either kind, isn't intermittent and every result in the cell it
+// matches passed: a pattern one of whose tests still fails, or a name with
+// one failing result among several, still says what the server does.
 func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]string) {
 	var apply []Entry
 	for _, e := range entries {
@@ -49,6 +49,9 @@ func Grade(tests []report.Test, listed bool, entries []Entry, at map[string]stri
 			t.Grade = report.New
 			if e := entryFor(apply, t.Name, "fail"); e >= 0 {
 				t.Status, t.RawStatus, t.Grade = report.Skipped, report.Failed, report.Known
+				if apply[e].quarantined {
+					t.Grade = report.Quarantined
+				}
 				t.Reason, t.Issue = apply[e].Reason, apply[e].Issue
 			} else if throughSubtests[i] {
 				t.Status, t.RawStatus, t.Grade = report.Skipped, report.Failed, report.Known

@@ -1302,7 +1302,8 @@ and never grade a run on their own (§4.10).
 |---|---|---|---|---|
 | none | passed, and no entry of the `known` file matches it; or the entry that matches it is `intermittent`, or matched a result in the cell that didn't pass | `passed` | a pass | passes |
 | `new` | failed, and no known-failure entry matches it; or it crashed the code under test (§4.6) | `failed` | `<failure>` | exits 1 |
-| `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `known` | failed, and a known-failure entry matches it; or it failed only because its subtests did, and each of them is `known` or `quarantined` | `skipped`, `rawStatus: failed`, the entry's reason and issue in `extra` | `<skipped>` with the reason | passes |
+| `quarantined` | failed, and an entry of the quarantine list matches it, unless a known-failure entry grades it first (§4.7) | `skipped`, `rawStatus: failed`, the entry's issue in `extra` | `<skipped>` | passes |
 | `unexpected_pass` | passed, and the known-failure or expected-skip entry that matches it isn't `intermittent`, and every result it matched in the cell passed (§4.7) | `failed`, `rawStatus: passed` | `<failure>` | exits 1 |
 | `expected_skip` | skipped, and an expected-skip entry matches it, unless a run named it and it skipped because of a test it depends on (§4.7) | `skipped`, with the reason | `<skipped>` with the reason | passes |
 | `unexpected_skip` | skipped, in a suite with a `known` file, and no expected-skip entry matches it | `other` | `<error>` | exits 2 |
@@ -1457,11 +1458,17 @@ flags leave out: a test of another minor version, and one whose own check fails,
 `--security sys`; pynfs's entries say which.
 
 **Quarantine.** For a flaky test, failing some runs and not others:
-- `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date.
-- A quarantined test still runs and its result is recorded, but it never fails a run and never
-  alerts.
+- `test/harness/quarantine.yaml` lists it with the suite, the test, an issue and an expiry date:
+  `{ suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }`. An entry covers
+  the suite's options too, and its test matches as a known entry's does.
+- A quarantined test still runs and its result is recorded, but its failure never fails a run and
+  never alerts: the failure is graded `quarantined` (§4.6), unless a known-failure entry for the
+  test grades it `known` first, and a pass is reported, as an intermittent entry's is. A crash or a
+  hang of the code under test isn't such a failure: it stays new, since no entry excuses it (§4.6).
+  A skip is graded as any skip.
 - An expired entry is an error from `dt doctor` and the registry check, so the list can't become a
-  dumping ground.
+  dumping ground. An entry expires at the start of its date in UTC, and from then on every `dt`
+  command refuses the registry (exit 3), until the entry goes or gets a later date.
 
 The AD-DC keytab race (#2968) is what it's for, once that suite reports through `dt`. The other
 AD-DC failure of 2026-10-06/07 wasn't flaky: `TestSMBNTLMNetlogonPassthrough` failed on every run
@@ -1587,13 +1594,13 @@ tests against the kernel's server. Neither changes from one night to the next: t
 file was last written on 2026-10-20, from a `badger-s3` run. Both are manual:
 - `dt known baseline smbtorture/badger-s3` writes the file, in `test/smb-conformance/smbtorture/`,
   from that cell's results in a run, and it lands through a pull request like any change. It counts
-  each result as the nightly job's script did: a failure by its grade, `known` or `new`; a pass by
-  the tool's own status, so an unexpected pass is a pass; and anything else as a skip. Its header
-  gives the run's date, commit and platform, the cell, and the smbtorture version from the cell's
-  log. It refuses a run of a checkout with changes, whose commit doesn't say what ran, and a cell
-  that didn't run to its end, whose lost tests would leave the file without a trace: one whose
-  note gives any reason but new failures and unexpected passes, as a `not run` cell always does,
-  such as a limit that stopped it, a crash or a test that didn't run;
+  each result as the nightly job's script did: a failure by its grade, `known` or `new`, and a
+  `quarantined` one as known; a pass by the tool's own status, so an unexpected pass is a pass; and
+  anything else as a skip. Its header gives the run's date, commit and platform, the cell, and the
+  smbtorture version from the cell's log. It refuses a run of a checkout with changes, whose commit
+  doesn't say what ran, and a cell that didn't run to its end, whose lost tests would leave the
+  file without a trace: one whose note gives any reason but new failures and unexpected passes, as
+  a `not run` cell always does, such as a limit that stopped it, a crash or a test that didn't run;
 - `dt run pynfs --knfsd` runs the comparison, graded against pynfs's own known list: its known
   failures are the tests both servers fail, its new failures those only the kernel's server fails,
   and its unexpected passes the entries the kernel's server passes, which are DittoFS's alone. Its
