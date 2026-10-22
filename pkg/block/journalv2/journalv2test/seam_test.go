@@ -235,6 +235,47 @@ func TestCrashUndoesRemoveWithoutSyncDir(t *testing.T) {
 	}
 }
 
+func TestSyncDirCoversEveryPendingChange(t *testing.T) {
+	s := newSeam(t)
+	create(t, s, "c")
+	create(t, s, "d")
+
+	// Four directory changes pending at once, made durable by one SyncDir.
+	for _, name := range []string{"a", "b"} {
+		if _, err := s.Create(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.Remove("c"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Rename("d", "e"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SyncDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	crash(t, s)
+
+	for _, name := range []string{"a", "b"} {
+		if !exists(s, name) {
+			t.Fatalf("%s, created before a SyncDir, is missing after the crash", name)
+		}
+	}
+
+	if exists(s, "c") {
+		t.Fatal("c, removed before a SyncDir, came back after the crash")
+	}
+
+	if !exists(s, "e") || exists(s, "d") {
+		t.Fatal("the rename d to e, made before a SyncDir, was undone by the crash")
+	}
+}
+
 func TestTornKeepsExactlyNBytesOfTheLastWrite(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")
